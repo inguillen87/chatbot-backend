@@ -93,8 +93,8 @@ def demo_chat():
     response = openai_chat_response(messages)  # Tu función habitual
     return jsonify({ "content": response })
 
- @auth_bp.route('/debug/users', methods=['GET']) 
- def list_users():
+@auth_bp.route('/debug/users', methods=['GET']) 
+def list_users():
      try:
          users = User.query.all()
          return jsonify([
