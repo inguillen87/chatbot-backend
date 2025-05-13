@@ -72,7 +72,9 @@ def register():
         token=token
     )
     db.session.add(user)
+    print("📝 Usuario agregado al session")
     db.session.commit()
+    print("✅ Usuario guardado en DB")
 
     return jsonify({
         "token": user.token,
@@ -83,19 +85,19 @@ def register():
         "preguntas_usadas": user.preguntas_usadas
     })
 
-@auth_bp.route('/debug/users', methods=['GET'])
-def list_users():
-    try:
-        users = User.query.all()
-        return jsonify([
-            {
-                "id": user.id,
-                "name": user.name,
-                "email": user.email,
-                "plan": user.plan,
-                "preguntas_usadas": user.preguntas_usadas,
-                "token": user.token
-            } for user in users
-        ])
-    except Exception as e:
-        return jsonify({"error": f"Error al listar usuarios: {str(e)}"}), 500
+# @auth_bp.route('/debug/users', methods=['GET']) 
+# def list_users():
+#     try:
+#         users = User.query.all()
+#         return jsonify([
+#             {
+#                 "id": user.id,
+#                 "name": user.name,
+#                 "email": user.email,
+#                 "plan": user.plan,
+#                 "preguntas_usadas": user.preguntas_usadas,
+#                 "token": user.token
+#             } for user in users
+#         ])
+#     except Exception as e:
+#         return jsonify({"error": f"Error al listar usuarios: {str(e)}"}), 500
