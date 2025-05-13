@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login Chatbot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="login-container">
+    <h2>Iniciar sesión</h2>
+    <form id="login-form">
+      <input type="text" id="username" placeholder="Usuario" required />
+      <input type="password" id="password" placeholder="Contraseña" required />
+      <button type="submit">Ingresar</button>
+      <div id="login-error" class="error-msg"></div>
+    </form>
+    <p id="error-msg" style="color: red;"></p>
+  </div>
+
+  <script src="login.js"></script>
+</body>
+</html>
