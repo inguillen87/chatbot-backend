@@ -84,14 +84,6 @@ def register():
         "plan": user.plan,
         "preguntas_usadas": user.preguntas_usadas
     })
-@app.route('/demo-chat', methods=['POST'])
-def demo_chat():
-    data = request.json
-    messages = data.get('messages', [])
-
-    # Acá podés limitar o simular una respuesta fija si querés
-    response = openai_chat_response(messages)  # Tu función habitual
-    return jsonify({ "content": response })
 
 @auth_bp.route('/debug/users', methods=['GET']) 
 def list_users():
