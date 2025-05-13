@@ -9,7 +9,7 @@ import os
 
 chat_bp = Blueprint('chat', __name__)
 
-# ✅ RUTA PARA WEB FRONTEND
+# ✅ Ruta principal para usuarios logueados
 @chat_bp.route('/ask', methods=['POST'])
 def ask():
     token = request.headers.get("Authorization", "")
@@ -19,7 +19,7 @@ def ask():
 
     data = request.get_json()
     question = data.get("question", "").strip()
-    user_id = data.get("user_id")  # Puede ser None si no hay login
+    user_id = data.get("user_id")
 
     if not question:
         return jsonify({"answer": "Por favor escribí una consulta válida."})
@@ -27,7 +27,7 @@ def ask():
     try:
         user = User.query.get(user_id) if user_id else None
 
-        # ✅ Control de límite por plan
+        # ✅ Control de plan y límite
         if user:
             plan_limits = {
                 "free": 10,
@@ -35,7 +35,6 @@ def ask():
                 "pro": 1000,
                 "enterprise": float("inf")
             }
-
             limit = plan_limits.get(user.plan, 10)
 
             # Reset mensual
@@ -44,22 +43,18 @@ def ask():
                 user.last_reset = datetime.utcnow()
                 db.session.commit()
 
-            # ✅ Aplicar límites también en modo DEMO
             if user.preguntas_usadas >= limit:
                 return jsonify({
                     "answer": f"Has alcanzado el límite de tu plan ({user.plan}). Actualizá tu suscripción para seguir usando Chatboc."
                 })
 
-        # ✅ Mostrar info en consola
         print("📥 Pregunta recibida:", question)
         print("👤 Usuario:", user.name if user else "anónimo")
         print("📊 Plan:", user.plan if user else "sin plan")
 
-        # ✅ Obtener respuesta (OpenAI o demo)
         answer = get_gpt_response(question, user)
         print("🧠 Respuesta generada:", answer)
 
-        # ✅ Guardar en base y sumar contador
         if user:
             new_qa = QA(user_id=user.id, question=question, answer=answer)
             db.session.add(new_qa)
@@ -72,7 +67,42 @@ def ask():
         logging.error(f"❌ Error procesando la consulta: {str(e)}")
         return jsonify({"answer": "Ocurrió un error procesando tu consulta."}), 500
 
-# ✅ RUTA PARA WHATSAPP (Twilio)
+
+# ✅ Ruta abierta para demo (sin login)
+@chat_bp.route("/demo-chat", methods=["POST"])
+def demo_chat():
+    try:
+        data = request.get_json()
+        messages = data.get("messages", [])
+
+        # Último mensaje del usuario
+        last_user_msg = ""
+        for m in reversed(messages):
+            if m["role"] == "user":
+                last_user_msg = m["content"]
+                break
+
+        if not last_user_msg:
+            return jsonify({"content": "Por favor escribí una consulta válida."})
+
+        print("🧪 DEMO - pregunta:", last_user_msg)
+
+        # Demo usa FakeUser o None
+        class FakeUser:
+            name = "Usuario demo"
+            industry = "Pyme demo"
+
+        answer = get_gpt_response(last_user_msg, FakeUser())
+        print("🧪 DEMO - respuesta:", answer)
+
+        return jsonify({"content": answer})
+
+    except Exception as e:
+        logging.error(f"❌ Error en demo_chat: {e}")
+        return jsonify({"content": "⚠️ No se pudo generar una respuesta en este momento."}), 500
+
+
+# ✅ Ruta para WhatsApp con Twilio
 @chat_bp.route('/whatsapp', methods=['POST'])
 def whatsapp_reply():
     incoming_msg = request.form.get('Body')
