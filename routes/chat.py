@@ -75,7 +75,7 @@ def ask():
         return jsonify({"answer": "Ocurrió un error procesando tu consulta."}), 500
 
 
-# ✅ Ruta abierta para demo
+# ✅ Ruta abierta para demo sin login
 @chat_bp.route("/demo-chat", methods=["POST"])
 def demo_chat():
     try:
