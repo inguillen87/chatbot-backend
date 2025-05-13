@@ -1,30 +1,26 @@
 import spacy
 from models import QA
 
-# Cargar el modelo de spaCy en español
+# Cargamos el modelo español
 nlp = spacy.load("es_core_news_md")
 
-def buscar_en_faq_spacy(pregunta: str) -> str | None:
-    pregunta_doc = nlp(pregunta.lower())
-    faqs = QA.query.all()
+def buscar_en_faq_spacy(pregunta_usuario: str):
+    doc_user = nlp(pregunta_usuario.lower())
+    mejores_match = None
+    mejor_score = 0.0
 
-    coincidencias = []
+    for faq in QA.query.all():
+        doc_faq = nlp(faq.question.lower())
+        score = doc_user.similarity(doc_faq)
 
-    for faq in faqs:
-        faq_doc = nlp(faq.question.lower())
-        similitud = pregunta_doc.similarity(faq_doc)
+        if score > mejor_score:
+            mejor_score = score
+            mejores_match = faq
 
-        # Bonus si hay keywords y alguna coincide con la pregunta
-        if faq.keywords:
-            for palabra in faq.keywords.lower().split(","):
-                if palabra.strip() in pregunta.lower():
-                    similitud += 0.1  # Podes ajustar esto según resultados
+    print(f"🔎 Mejor score de match: {mejor_score:.2f} — Pregunta: {mejores_match.question if mejores_match else 'Ninguna'}")
 
-        coincidencias.append((faq.answer, similitud))
+    # ⚠️ Solo devolvemos si hay similitud alta
+    if mejor_score >= 0.75:
+        return mejores_match
 
-    # Buscar la mejor respuesta
-    mejor_respuesta, mejor_score = max(coincidencias, key=lambda x: x[1], default=(None, 0))
-
-    if mejor_score > 0.70:
-        return mejor_respuesta
     return None
