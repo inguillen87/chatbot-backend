@@ -5,6 +5,8 @@ from flask import Flask
 from flask_cors import CORS
 from config import Config
 from extensions import db
+from dotenv import load_dotenv
+load_dotenv()
 
 # Crear carpeta de logs si no existe
 if not os.path.exists("logs"):
