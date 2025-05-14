@@ -1,6 +1,7 @@
 from datetime import datetime
 from extensions import db
 import uuid
+from werkzeug.security import generate_password_hash, check_password_hash
 
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -13,34 +14,39 @@ class Rubro(db.Model):
 
     faqs = db.relationship('QA', backref='rubro', lazy=True)
 
+
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=True)
     question = db.Column(db.String(255), nullable=False)
     keywords = db.Column(db.String(255))
     answer = db.Column(db.Text, nullable=False)
-    rubro_id = db.Column(db.Integer)  # <-- ESTA LÍNEA DEBE ESTAR
-
+    rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-    rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
 
 def generate_token():
     return str(uuid.uuid4())
 
+
 class User(db.Model):
+    __tablename__ = "user"
+
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
-
-    token = db.Column(db.String(255), unique=True, default=generate_token)
-    plan = db.Column(db.String(20), default="free")
+    password_hash = db.Column(db.String(128), nullable=False)
+    token = db.Column(db.String(255))
+    plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
-    last_reset = db.Column(db.DateTime, default=datetime.utcnow)
+    last_reset = db.Column(db.DateTime)
+    rubro_id = db.Column(db.Integer)
 
-    rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
-    rubro = db.relationship('Rubro', backref='usuarios')
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
     def __repr__(self):
         return f"<User {self.email}>"
