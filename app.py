@@ -7,6 +7,7 @@ from config import Config
 from extensions import db, migrate
 from dotenv import load_dotenv
 from sqlalchemy import text
+from flask_migrate import upgrade  # 👈 esto es lo correcto
 
 load_dotenv()
 
@@ -63,6 +64,14 @@ def create_app():
 
 # App para producción (gunicorn o flask run)
 app = create_app()
+
+# 👇 Ejecutar migraciones automáticamente al iniciar
+with app.app_context():
+    try:
+        upgrade()
+        print("✅ Migraciones aplicadas automáticamente.")
+    except Exception as e:
+        print("❌ Error aplicando migraciones:", e)
 
 if __name__ == '__main__':
     os.environ["FLASK_ENV"] = "development"
