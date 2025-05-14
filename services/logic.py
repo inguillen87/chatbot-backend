@@ -11,9 +11,15 @@ PLAN_LIMITES = {
 }
 
 def responder_chatboc():
+    print("🚨 Entrando a responder_chatboc")
     data = request.get_json()
+    print("📨 DATA:", data)
+
     pregunta = data.get("pregunta", "")
+    print("🤔 Pregunta:", pregunta)
+
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    print("🔐 Token:", token)
 
     user = User.query.filter_by(token=token).first()
     if not user:
