@@ -12,41 +12,49 @@ PLAN_LIMITES = {
 
 def responder_chatboc():
     print("🚨 Entrando a responder_chatboc")
-    data = request.get_json()
-    print("📨 DATA:", data)
 
-    pregunta = data.get("pregunta", "")
-    print("🤔 Pregunta:", pregunta)
+    try:
+        data = request.get_json()
+        print("📨 DATA:", data)
 
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    print("🔐 Token:", token)
+        pregunta = data.get("pregunta") or data.get("question", "")
+        print("🤔 Pregunta:", pregunta)
 
-    user = User.query.filter_by(token=token).first()
-    if not user:
-        return jsonify({"error": "Usuario no autenticado"}), 401
+        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+        print("🔐 Token:", token)
 
-    # Reset mensual del contador de preguntas usadas
-    if (datetime.utcnow() - user.last_reset).days > 30:
-        user.preguntas_usadas = 0
-        user.last_reset = datetime.utcnow()
-        db.session.commit()
+        user = User.query.filter_by(token=token).first()
+        print("👤 Usuario:", user)
 
-    # Control de plan y uso
-    limite = PLAN_LIMITES.get(user.plan, 10)
-    if user.preguntas_usadas >= limite:
-        return jsonify({"respuesta": "Alcanzaste el límite de tu plan. Actualizá para más preguntas."})
+        if not user:
+            return jsonify({"error": "Usuario no autenticado"}), 401
 
-    # Buscar por FAQ local del rubro
-    match = buscar_en_faq_spacy(pregunta, rubro_id=user.rubro_id)
-    if match:
-        user.preguntas_usadas += 1
-        db.session.commit()
-        return jsonify({"respuesta": match.answer})
+        # Reset mensual del contador de preguntas usadas
+        if (datetime.utcnow() - user.last_reset).days > 30:
+            user.preguntas_usadas = 0
+            user.last_reset = datetime.utcnow()
+            db.session.commit()
 
-    # Escalar a OpenAI si es premium (opcional, depende si está habilitado)
-    if user.plan == "premium":
-        return jsonify({"respuesta": "No encontramos una respuesta exacta, pero estamos consultando con un experto..."})
+        # Control de plan y uso
+        limite = PLAN_LIMITES.get(user.plan, 10)
+        if user.preguntas_usadas >= limite:
+            return jsonify({"respuesta": "Alcanzaste el límite de tu plan. Actualizá para más preguntas."})
 
-    return jsonify({
-        "respuesta": "No encontré una respuesta en tu pack actual. Actualizá tu plan para recibir atención personalizada."
-    })
+        # Buscar por FAQ local del rubro
+        match = buscar_en_faq_spacy(pregunta, rubro_id=user.rubro_id)
+        if match:
+            user.preguntas_usadas += 1
+            db.session.commit()
+            return jsonify({"respuesta": match.answer})
+
+        # Escalar a OpenAI si es premium (opcional, depende si está habilitado)
+        if user.plan == "premium":
+            return jsonify({"respuesta": "No encontramos una respuesta exacta, pero estamos consultando con un experto..."})
+
+        return jsonify({
+            "respuesta": "No encontré una respuesta en tu pack actual. Actualizá tu plan para recibir atención personalizada."
+        })
+
+    except Exception as e:
+        print("❌ EXCEPCIÓN DETECTADA:", str(e))
+        return jsonify({"respuesta": "Error interno del servidor."}), 500
