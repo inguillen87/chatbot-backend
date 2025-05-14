@@ -19,6 +19,8 @@ class QA(db.Model):
     question = db.Column(db.String(255), nullable=False)
     keywords = db.Column(db.String(255))
     answer = db.Column(db.Text, nullable=False)
+    rubro_id = db.Column(db.Integer)  # <-- ESTA LÍNEA DEBE ESTAR
+
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)

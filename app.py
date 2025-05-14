@@ -1,12 +1,13 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
-from sqlalchemy import text
 from flask import Flask
 from flask_cors import CORS
 from config import Config
-from extensions import db
+from extensions import db, migrate
 from dotenv import load_dotenv
+from sqlalchemy import text
+
 load_dotenv()
 
 # Crear carpeta de logs si no existe
@@ -24,16 +25,20 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
+    # Activar CORS
     try:
         CORS(app, resources={r"/*": {"origins": "*"}})
     except Exception as e:
         print("❌ Error en CORS:", e)
 
+    # Inicializar extensiones
     try:
         db.init_app(app)
+        migrate.init_app(app, db)
     except Exception as e:
-        print("❌ Error en db.init_app:", e)
+        print("❌ Error en init_app:", e)
 
+    # Registrar Blueprints
     try:
         from routes.auth import auth_bp
         app.register_blueprint(auth_bp)
@@ -46,6 +51,7 @@ def create_app():
     except Exception as e:
         print("❌ Error registrando chat_bp:", e)
 
+    # Crear tablas si no existen (solo útil en desarrollo local)
     try:
         with app.app_context():
             from models import QA
@@ -55,20 +61,9 @@ def create_app():
 
     return app
 
-# 👇 ESTA LÍNEA VA ACÁ (fuera del if), PARA GUNICORN
+# App para producción (gunicorn o flask run)
 app = create_app()
 
-with app.app_context():
-    try:
-        with db.engine.connect() as conn:
-            conn.execute(text("ALTER TABLE user ADD COLUMN rubro_id INTEGER"))
-            print("✅ Columna rubro_id agregada a la tabla user.")
-    except Exception as e:
-        if "duplicate column name" in str(e) or "already exists" in str(e):
-            print("ℹ️ La columna rubro_id ya existe. Todo ok.")
-        else:
-            print("❌ Error al agregar columna rubro_id:", e)
-            
 if __name__ == '__main__':
     os.environ["FLASK_ENV"] = "development"
     os.environ["FLASK_RUN_FROM_CLI"] = "false"

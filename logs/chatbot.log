@@ -77,3 +77,5 @@
 2025-05-12 23:12:36,266 | INFO | 127.0.0.1 - - [12/May/2025 23:12:36] "[33mOPTIONS /update_user HTTP/1.1[0m" 404 -
 2025-05-12 23:22:00,662 | INFO | 127.0.0.1 - - [12/May/2025 23:22:00] "OPTIONS /login HTTP/1.1" 200 -
 2025-05-12 23:22:01,225 | INFO | 127.0.0.1 - - [12/May/2025 23:22:01] "POST /login HTTP/1.1" 200 -
+2025-05-14 09:55:06,279 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-14 09:55:18,693 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
