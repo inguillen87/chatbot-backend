@@ -20,7 +20,7 @@ def buscar_en_faq_spacy(pregunta_usuario: str):
     print(f"🔎 Mejor score de match: {mejor_score:.2f} — Pregunta: {mejores_match.question if mejores_match else 'Ninguna'}")
 
     # ⚠️ Solo devolvemos si hay similitud alta
-    if mejor_score >= 0.75:
+    if mejor_score >= 0.7:
         return mejores_match
 
     return None
