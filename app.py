@@ -1,6 +1,7 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+from sqlalchemy import text
 from flask import Flask
 from flask_cors import CORS
 from config import Config
@@ -57,6 +58,17 @@ def create_app():
 # 👇 ESTA LÍNEA VA ACÁ (fuera del if), PARA GUNICORN
 app = create_app()
 
+with app.app_context():
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(text("ALTER TABLE user ADD COLUMN rubro_id INTEGER"))
+            print("✅ Columna rubro_id agregada a la tabla user.")
+    except Exception as e:
+        if "duplicate column name" in str(e) or "already exists" in str(e):
+            print("ℹ️ La columna rubro_id ya existe. Todo ok.")
+        else:
+            print("❌ Error al agregar columna rubro_id:", e)
+            
 if __name__ == '__main__':
     os.environ["FLASK_ENV"] = "development"
     os.environ["FLASK_RUN_FROM_CLI"] = "false"
