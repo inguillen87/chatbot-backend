@@ -4,8 +4,10 @@ import logging
 
 try:
     nlp = spacy.load("es_core_news_md")
-except OSError:
-    logging.warning("❌ No se encontró el modelo 'es_core_news_md'. Ejecutá: python -m spacy download es_core_news_md")
+    if not nlp.vocab.vectors:
+        raise ValueError("❌ El modelo cargado no contiene vectores. Asegurate de usar 'es_core_news_md'.")
+except Exception as e:
+    logging.warning(f"❌ Error al cargar spaCy: {e}")
     raise
 
 def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.75):
@@ -27,14 +29,17 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
         doc_faq = nlp(faq.question.lower())
         score = doc_user.similarity(doc_faq)
 
+        logging.info(f"🧠 Comparando con: '{faq.question}' | Score: {score:.3f}")
+
         if score > mejor_score:
             mejor_score = score
             mejor_match = faq
 
     if mejor_match:
-        logging.info(f"🔍 Mejor match: {mejor_match.question} | Score: {mejor_score:.2f}")
+        logging.info(f"✅ Mejor match: '{mejor_match.question}' con score {mejor_score:.2f}")
 
     if mejor_score >= threshold:
         return mejor_match
 
+    logging.info("❌ No se alcanzó el umbral de similitud. No hay respuesta suficientemente parecida.")
     return None
