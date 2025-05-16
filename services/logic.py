@@ -1,5 +1,5 @@
 from flask import request, jsonify
-from models import User
+from models import User, Rubro
 from extensions import db
 from datetime import datetime
 from services.faq_matcher_spacy import buscar_en_faq_spacy
@@ -24,7 +24,7 @@ def responder_chatboc():
             return jsonify({"error": "Usuario no autenticado"}), 401
 
         # Reset mensual
-        if (datetime.utcnow() - user.last_reset).days > 30:
+        if not user.last_reset or (datetime.utcnow() - user.last_reset).days > 30:
             user.preguntas_usadas = 0
             user.last_reset = datetime.utcnow()
             db.session.commit()
@@ -34,23 +34,33 @@ def responder_chatboc():
         if user.preguntas_usadas >= limite:
             return jsonify({"respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas."})
 
-        # Intento con spaCy (preguntas frecuentes)
-        match = buscar_en_faq_spacy(pregunta, rubro_id=user.rubro_id)
+        # Buscar en rubro del usuario y, si es necesario, subir al padre
+        rubro_actual = Rubro.query.get(user.rubro_id)
+        match = None
+        niveles_intentados = []
+
+        while rubro_actual and not match:
+            niveles_intentados.append(rubro_actual.clave)
+            print(f"🔎 Buscando en rubro: {rubro_actual.clave}")
+            match = buscar_en_faq_spacy(pregunta, rubro_id=rubro_actual.id)
+            rubro_actual = rubro_actual.parent  # Subir al padre
+
         if match:
             user.preguntas_usadas += 1
             db.session.commit()
-            return jsonify({"respuesta": match.answer})
+            return jsonify({"respuesta": match.answer, "nivel_usado": niveles_intentados[0]})
 
         # Si no hay match y es premium, usar Cohere
         if user.plan == "premium":
             respuesta = get_cohere_response(pregunta)
             user.preguntas_usadas += 1
             db.session.commit()
-            return jsonify({"respuesta": respuesta})
+            return jsonify({"respuesta": respuesta, "fuente": "cohere"})
 
-        # Si no hay respuesta ni acceso a IA
+        # Sin respuesta válida
         return jsonify({
-            "respuesta": "🤖 No encontré una respuesta exacta. Intentá reformular la pregunta o actualizá tu plan para asistencia avanzada."
+            "respuesta": "🤖 No encontré una respuesta exacta. Intentá reformular la pregunta o actualizá tu plan para asistencia avanzada.",
+            "nivel_usado": niveles_intentados
         })
 
     except Exception as e:
