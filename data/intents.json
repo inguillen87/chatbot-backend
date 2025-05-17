@@ -1,0 +1,124 @@
+{
+  "medico": {
+    "obras_sociales": [
+      "¿Atienden con obra social?",
+      "¿Atienden por OSDE?",
+      "¿Aceptan Swiss Medical?",
+      "¿Puedo ir con mi prepaga?",
+      "¿Trabajan con obras sociales?"
+    ],
+    "turnos": [
+      "¿Atienden sin turno?",
+      "¿Puedo pedir turno online?",
+      "¿Hay que sacar turno?",
+      "¿Cómo saco turno?",
+      "¿Tienen turnos disponibles hoy?"
+    ],
+    "pagos": [
+      "¿Puedo pagar con tarjeta?",
+      "¿Cuánto cuesta una consulta?",
+      "¿Puedo pagar en cuotas?",
+      "¿Aceptan débito?",
+      "¿Cobran consulta inicial?"
+    ]
+  },
+  "heladeria": {
+    "sabores": [
+      "¿Qué sabores tienen?",
+      "¿Tienen dulce de leche granizado?",
+      "¿Tienen sabores sin azúcar?",
+      "¿Tienen sabores veganos?",
+      "¿Hay sabores sin lactosa?"
+    ],
+    "envios": [
+      "¿Hacen envíos?",
+      "¿Tienen delivery?",
+      "¿Puedo pedir por Rappi?",
+      "¿Cuánto cuesta el envío?",
+      "¿Cuál es el mínimo para delivery?"
+    ],
+    "medios_pago": [
+      "¿Puedo pagar con tarjeta?",
+      "¿Aceptan MercadoPago?",
+      "¿Cuáles son los medios de pago?",
+      "¿Puedo pagar online?",
+      "¿Tienen promociones con tarjeta?"
+    ]
+  },
+  "bodega": {
+    "visitas": [
+      "¿Puedo visitar la bodega?",
+      "¿Hacen degustaciones?",
+      "¿Tienen visitas guiadas?",
+      "¿Puedo reservar una visita?",
+      "¿Hay visitas con comida?"
+    ],
+    "compras": [
+      "¿Venden vinos online?",
+      "¿Puedo comprar por internet?",
+      "¿Hacen envíos al interior?",
+      "¿Hacen envíos al exterior?",
+      "¿Puedo pagar online?"
+    ],
+    "productos": [
+      "¿Qué tipos de vino tienen?",
+      "¿Venden espumantes?",
+      "¿Tienen vinos orgánicos?",
+      "¿Tienen vinos premiados?",
+      "¿Cuál es el vino más vendido?"
+    ]
+  },
+  "ecommerce": {
+    "envios": [
+      "¿Cuánto tarda el envío?",
+      "¿Puedo hacer seguimiento del pedido?",
+      "¿Envían a todo el país?",
+      "¿Hacen envíos por moto?",
+      "¿Tienen retiro en tienda?"
+    ],
+    "pagos": [
+      "¿Puedo pagar con tarjeta?",
+      "¿Aceptan MercadoPago?",
+      "¿Puedo pagar en cuotas?",
+      "¿Tienen descuento con transferencia?",
+      "¿El pago es seguro?"
+    ],
+    "cambios": [
+      "¿Puedo cambiar un producto?",
+      "¿Cómo gestiono una devolución?",
+      "¿Qué pasa si no me gusta?",
+      "¿Aceptan cambios por otro talle?",
+      "¿Cuál es la política de devoluciones?"
+    ]
+  },
+  "almacen": {
+    "productos": [
+      "¿Tienen cerveza fría?",
+      "¿Venden hielo?",
+      "¿Tienen fiambres?",
+      "¿Venden pan recién horneado?",
+      "¿Tienen productos sin TACC?"
+    ],
+    "horarios": [
+      "¿A qué hora abren?",
+      "¿Están abiertos los domingos?",
+      "¿Cierran al mediodía?",
+      "¿Cuál es el horario de atención?",
+      "¿Abren los feriados?"
+    ],
+    "envios": [
+      "¿Hacen envíos a domicilio?",
+      "¿Tienen delivery?",
+      "¿Puedo pedir por WhatsApp?",
+      "¿Hay mínimo de compra para el envío?",
+      "¿Cuánto tarda el delivery?"
+    ],
+    "pagos": [
+      "¿Puedo pagar con tarjeta?",
+      "¿Aceptan MercadoPago?",
+      "¿Hacen factura?",
+      "¿Tienen QR para pagar?",
+      "¿Puedo pagar en efectivo?"
+    ]
+  }
+}
