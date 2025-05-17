@@ -53,7 +53,7 @@ def responder_chatboc(pregunta, token):
             "fuente": "faq"
         }
 
-    # Paso 3: Fallback con Cohere
+        # Paso 3: Fallback con Cohere
     try:
         prompt = (
             f"Actuá como un asistente virtual especializado en el rubro '{rubro_nombre}'. "
@@ -65,20 +65,28 @@ def responder_chatboc(pregunta, token):
         cohere_response = co.generate(
             model="command",
             prompt=prompt,
-            max_tokens=100,
-            temperature=0.6,
+            max_tokens=60,
+            temperature=0.4,
         )
         generated_text = cohere_response.generations[0].text.strip()
+
+        # 🚨 Validar idioma y contenido
+        if any(word in generated_text.lower() for word in ["the", "you can", "hospital", "insurance", "thank you"]):
+            raise ValueError("Respuesta en inglés detectada")
+
+        if "nft" in pregunta.lower() and "token" not in generated_text.lower():
+            raise ValueError("Respuesta incoherente para NFT")
+
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
         return {
-            "respuesta": "⚠️ No se pudo generar una respuesta automática por ahora.",
+            "respuesta": "⚠️ No pude responder con suficiente precisión. ¿Podés reformular tu consulta?",
             "fuente": "error"
         }
 
+    # ✅ Guardar y responder
     user.preguntas_usadas += 1
     db.session.commit()
-
     return {
         "respuesta": f"{generated_text} 🤖 (Respuesta generada con IA)",
         "nivel_usado": rubro_nombre,
