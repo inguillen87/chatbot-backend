@@ -6,7 +6,6 @@ from flask_cors import CORS
 from config import Config
 from extensions import db, migrate
 from dotenv import load_dotenv
-from sqlalchemy import text
 from flask_migrate import upgrade
 
 load_dotenv()
@@ -26,19 +25,22 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # ✅ Activar CORS sólo para los orígenes válidos de producción
+    # ✅ CORS global habilitado para dominios de producción
     try:
-        CORS(app, resources={r"/*": {"origins": ["https://chatboc.ar", "https://www.chatboc.ar"]}})
-        print("✅ CORS configurado correctamente para producción.")
+        CORS(app, supports_credentials=True, origins=[
+            "https://chatboc.ar",
+            "https://www.chatboc.ar"
+        ])
+        print("✅ CORS aplicado globalmente.")
     except Exception as e:
-        print("❌ Error en CORS:", e)
+        print("❌ Error aplicando CORS:", e)
 
     # Inicializar extensiones
     try:
         db.init_app(app)
         migrate.init_app(app, db)
     except Exception as e:
-        print("❌ Error en init_app:", e)
+        print("❌ Error inicializando extensiones:", e)
 
     # Registrar Blueprints
     try:
@@ -53,13 +55,13 @@ def create_app():
     except Exception as e:
         print("❌ Error registrando chat_bp:", e)
 
-    # Crear tablas si no existen (útil en desarrollo)
+    # Crear tablas si no existen (solo en desarrollo)
     try:
         with app.app_context():
             from models import QA
             db.create_all()
     except Exception as e:
-        print("❌ Error en db.create_all:", e)
+        print("❌ Error creando tablas:", e)
 
     return app
 
@@ -70,12 +72,12 @@ app = create_app()
 with app.app_context():
     try:
         upgrade()
-        print("✅ Migraciones aplicadas automáticamente.")
+        print("✅ Migraciones aplicadas.")
     except Exception as e:
-        print("❌ Error aplicando migraciones:", e)
+        print("❌ Error en upgrade de migraciones:", e)
 
 if __name__ == '__main__':
     os.environ["FLASK_ENV"] = "development"
     os.environ["FLASK_RUN_FROM_CLI"] = "false"
-    print("✅ App creada, ahora intento iniciar el servidor...")
+    print("✅ Servidor iniciado en modo desarrollo.")
     app.run(debug=True, port=5000, use_reloader=False)
