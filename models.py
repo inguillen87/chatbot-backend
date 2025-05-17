@@ -9,10 +9,14 @@ class Rubro(db.Model):
     nombre = db.Column(db.String(100), nullable=False)
     descripcion = db.Column(db.Text, nullable=True)
 
-    parent_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
-    subrubros = db.relationship('Rubro', backref=db.backref('parent', remote_side=[id]), lazy=True)
+    padre_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
+    subrubros = db.relationship('Rubro', backref=db.backref('padre', remote_side=[id]), lazy=True)
 
     faqs = db.relationship('QA', backref='rubro', lazy=True)
+
+    def __repr__(self):
+        return f"<Rubro {self.nombre}>"
+
 
 
 class QA(db.Model):
@@ -39,6 +43,7 @@ class User(db.Model):
     token = db.Column(db.String(255))
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
+    limite_preguntas = db.Column(db.Integer, default=10)
     last_reset = db.Column(db.DateTime)
     rubro_id = db.Column(db.Integer)
 

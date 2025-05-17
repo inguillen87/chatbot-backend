@@ -3,6 +3,7 @@ import logging
 import cohere
 from models import User, QA, Rubro
 from services.faq_matcher_spacy import buscar_en_faq_spacy
+from extensions import db
 
 cohere_api_key = os.getenv("COHERE_API_KEY")
 co = cohere.Client(cohere_api_key)
@@ -18,7 +19,7 @@ def responder_chatboc(pregunta, token):
     if not user:
         return {"error": "Usuario no autenticado"}
 
-    if user.preguntas_realizadas >= user.limite_preguntas:
+    if user.preguntas_usadas >= user.limite_preguntas:
         return {
             "respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas.",
             "fuente": "sistema"
@@ -32,8 +33,8 @@ def responder_chatboc(pregunta, token):
     # Buscar en FAQs
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
-        user.preguntas_realizadas += 1
-        user.save()
+        user.preguntas_usadas += 1
+        db.session.commit()
         return {
             "respuesta": faq_match.answer,
             "nivel_usado": rubro_nombre,
@@ -56,8 +57,8 @@ def responder_chatboc(pregunta, token):
             "fuente": "error"
         }
 
-    user.preguntas_realizadas += 1
-    user.save()
+    user.preguntas_usadas += 1
+    db.session.commit()
 
     return {
         "respuesta": f"{generated_text} 🤖 (Respuesta generada con IA)",
