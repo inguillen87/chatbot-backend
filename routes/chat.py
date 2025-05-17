@@ -3,8 +3,12 @@ from services.logic import responder_chatboc
 
 chat_bp = Blueprint("chat", __name__)
 
-@chat_bp.route("/responder_chatboc", methods=["POST"])
+@chat_bp.route("/responder_chatboc", methods=["POST", "OPTIONS"])
 def responder():
+    if request.method == "OPTIONS":
+        # Respuesta rápida para preflight
+        return jsonify({"ok": True}), 200
+
     try:
         data = request.get_json()
         pregunta = data.get("question") or data.get("pregunta")
@@ -22,6 +26,7 @@ def responder():
 
     except Exception as e:
         return jsonify({"error": f"Error interno: {str(e)}"}), 500
+
 
 # ✅ FIX CORS manual
 @chat_bp.after_request
