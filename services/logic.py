@@ -3,6 +3,7 @@ import logging
 import cohere
 from models import User, QA, Rubro
 from services.faq_matcher_spacy import buscar_en_faq_spacy
+from services.intent_matcher import buscar_en_intents  # 👉 agregado
 from extensions import db
 
 cohere_api_key = os.getenv("COHERE_API_KEY")
@@ -28,9 +29,10 @@ def responder_chatboc(pregunta, token):
     rubro_id = user.rubro_id or 1
     rubro = Rubro.query.get(rubro_id)
     rubro_nombre = rubro.nombre if rubro else "general"
+    rubro_clave = rubro.clave if rubro else "general"  # 👈 asegura clave para intents
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-    # Buscar en FAQs
+    # 1. Buscar en FAQs
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         user.preguntas_usadas += 1
@@ -41,7 +43,18 @@ def responder_chatboc(pregunta, token):
             "fuente": "faq"
         }
 
-    # Fallback con Cohere
+    # 2. Buscar en INTENTS
+    intent_response = buscar_en_intents(pregunta, rubro_clave)
+    if intent_response:
+        user.preguntas_usadas += 1
+        db.session.commit()
+        return {
+            "respuesta": intent_response,
+            "nivel_usado": rubro_nombre,
+            "fuente": "intent"
+        }
+
+    # 3. Fallback con IA (Cohere)
     try:
         cohere_response = co.generate(
             model="command",
