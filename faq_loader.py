@@ -1,5 +1,3 @@
-# faqloader.py
-
 from app import app
 from models import db, Rubro, QA, User
 from faq_questions import faq_data
