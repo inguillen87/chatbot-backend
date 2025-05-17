@@ -3,7 +3,7 @@ import logging
 import cohere
 from models import User, QA, Rubro
 from services.faq_matcher_spacy import buscar_en_faq_spacy
-from services.intent_matcher import buscar_en_intents  # 👉 agregado
+from services.rubro_contextos import rubro_contextos
 from extensions import db
 
 cohere_api_key = os.getenv("COHERE_API_KEY")
@@ -13,26 +13,27 @@ def responder_chatboc(pregunta, token):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
+    # 🔐 Autenticación
     user = User.query.filter_by(token=token).first()
     if not user and token == "demo-token":
         user = User.query.filter_by(token="demo-token").first()
-
     if not user:
         return {"error": "Usuario no autenticado"}
 
+    # 🔒 Control de límite
     if user.preguntas_usadas >= user.limite_preguntas:
         return {
             "respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas.",
             "fuente": "sistema"
         }
 
+    # 🧠 Rubro
     rubro_id = user.rubro_id or 1
     rubro = Rubro.query.get(rubro_id)
     rubro_nombre = rubro.nombre if rubro else "general"
-    rubro_clave = rubro.clave if rubro else "general"  # 👈 asegura clave para intents
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-    # 1. Buscar en FAQs
+    # 🔍 FAQ local (spaCy)
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         user.preguntas_usadas += 1
@@ -43,22 +44,14 @@ def responder_chatboc(pregunta, token):
             "fuente": "faq"
         }
 
-    # 2. Buscar en INTENTS
-    intent_response = buscar_en_intents(pregunta, rubro_clave)
-    if intent_response:
-        user.preguntas_usadas += 1
-        db.session.commit()
-        return {
-            "respuesta": intent_response,
-            "nivel_usado": rubro_nombre,
-            "fuente": "intent"
-        }
-
-    # 3. Fallback con IA (Cohere)
+    # 🤖 Fallback con Cohere (usando contexto)
     try:
+        contexto = rubro_contextos.get(rubro_nombre.lower(), "una empresa del rubro general")
+        prompt = f"Respondé de forma clara y profesional esta consulta para {contexto}. Pregunta: {pregunta}"
+
         cohere_response = co.generate(
             model="command",
-            prompt=f"Respondé de forma clara y profesional esta consulta para una empresa del rubro {rubro_nombre}: {pregunta}",
+            prompt=prompt,
             max_tokens=100,
             temperature=0.6,
         )
