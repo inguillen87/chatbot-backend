@@ -3,7 +3,7 @@ import logging
 import cohere
 from models import User, QA, Rubro
 from services.faq_matcher_spacy import buscar_en_faq_spacy
-from services.intent_matcher import buscar_en_intents  # 👈 Integramos esto
+from services.intent_matcher import buscar_en_intents  
 from extensions import db
 
 cohere_api_key = os.getenv("COHERE_API_KEY")
