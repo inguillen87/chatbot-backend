@@ -6,6 +6,7 @@ from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from extensions import db
 
+# 🔐 Configurar cliente de Cohere
 cohere_api_key = os.getenv("COHERE_API_KEY")
 co = cohere.Client(cohere_api_key)
 
@@ -13,6 +14,7 @@ def responder_chatboc(pregunta, token):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
+    # 🔑 Validación de usuario o modo demo
     user = User.query.filter_by(token=token).first()
     if not user and token == "demo-token":
         user = User.query.filter_by(token="demo-token").first()
@@ -26,12 +28,13 @@ def responder_chatboc(pregunta, token):
             "fuente": "sistema"
         }
 
+    # 📚 Preparar contexto del rubro
     rubro_id = user.rubro_id or 1
     rubro = Rubro.query.get(rubro_id)
     rubro_nombre = rubro.nombre if rubro else "general"
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-    # Paso 1: INTENTS
+    # 🔍 Paso 1: Buscar en INTENTS
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
         user.preguntas_usadas += 1
@@ -42,7 +45,7 @@ def responder_chatboc(pregunta, token):
             "fuente": "intents"
         }
 
-    # Paso 2: FAQ
+    # 📘 Paso 2: Buscar en FAQs
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         user.preguntas_usadas += 1
@@ -53,7 +56,7 @@ def responder_chatboc(pregunta, token):
             "fuente": "faq"
         }
 
-    # Paso 3: COHERE (solo si no hubo respuesta anterior)
+    # 🤖 Paso 3: Generación con Cohere si no hay match
     try:
         prompt = (
             f"Actuá como un asistente virtual especializado en el rubro '{rubro_nombre}'. "
@@ -70,6 +73,7 @@ def responder_chatboc(pregunta, token):
         )
         generated_text = cohere_response.generations[0].text.strip()
 
+        # 🚨 Validación de idioma y coherencia
         if any(word in generated_text.lower() for word in ["the", "you can", "hospital", "insurance", "thank you"]):
             raise ValueError("Respuesta en inglés detectada")
 
@@ -83,7 +87,7 @@ def responder_chatboc(pregunta, token):
             "fuente": "error"
         }
 
-    # Registrar uso
+    # 🧾 Registrar uso
     user.preguntas_usadas += 1
     db.session.commit()
 
