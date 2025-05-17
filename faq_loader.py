@@ -1,3 +1,4 @@
+
 from app import app
 from models import db, Rubro, QA, User
 from faq_questions import faq_data
@@ -48,36 +49,36 @@ def crear_usuario_demo():
         last_reset=datetime.utcnow(),
         rubro_id=rubro_medico.id
     )
-    demo.set_password("demo1234")  # ✅ contraseña segura para el usuario demo
+    demo.set_password("demo1234")
 
     db.session.add(demo)
     db.session.commit()
     print("✅ Usuario demo creado con éxito.")
 
-
-def cargar_rubros_y_faqs():
+def cargar_rubros_y_faqs_con_categorias():
     for clave, contenido in faq_data.items():
         nombre = contenido.get("nombre", clave.capitalize())
         descripcion = contenido.get("descripcion", "")
         parent_clave = contenido.get("padre")
-        preguntas = contenido.get("faqs", [])
+        categorias = contenido.get("categorias", {})
 
         rubro = crear_rubro_si_no_existe(clave, nombre, descripcion, parent_clave)
 
-        nuevas_faqs = []
-        for pregunta, respuesta in preguntas:
-            existe = QA.query.filter_by(question=pregunta, rubro_id=rubro.id).first()
-            if not existe:
-                nuevas_faqs.append(QA(question=pregunta, answer=respuesta, rubro_id=rubro.id))
+        for categoria, faqs in categorias.items():
+            nuevas_faqs = []
+            for pregunta, respuesta in faqs:
+                existe = QA.query.filter_by(question=pregunta, rubro_id=rubro.id).first()
+                if not existe:
+                    nuevas_faqs.append(QA(question=pregunta, answer=respuesta, rubro_id=rubro.id, categoria=categoria))
 
-        if nuevas_faqs:
-            db.session.bulk_save_objects(nuevas_faqs)
-            db.session.commit()
-            print(f"📌 {len(nuevas_faqs)} FAQs agregadas para rubro '{clave}'")
-        else:
-            print(f"📚 Ya existían las FAQs para '{clave}'")
+            if nuevas_faqs:
+                db.session.bulk_save_objects(nuevas_faqs)
+                db.session.commit()
+                print(f"📌 {len(nuevas_faqs)} FAQs agregadas para '{clave}' > '{categoria}'")
+            else:
+                print(f"📚 Ya existían FAQs para '{clave}' > '{categoria}'")
 
 if __name__ == "__main__":
     with app.app_context():
-        cargar_rubros_y_faqs()
+        cargar_rubros_y_faqs_con_categorias()
         crear_usuario_demo()

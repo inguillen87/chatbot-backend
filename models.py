@@ -26,6 +26,7 @@ class QA(db.Model):
     keywords = db.Column(db.String(255))
     answer = db.Column(db.Text, nullable=False)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
+    categoria = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 
