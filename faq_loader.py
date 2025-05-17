@@ -50,9 +50,12 @@ def crear_usuario_demo():
         last_reset=datetime.utcnow(),
         rubro_id=rubro_medico.id
     )
+    demo.set_password("demo1234")  # ✅ contraseña segura para el usuario demo
+
     db.session.add(demo)
     db.session.commit()
     print("✅ Usuario demo creado con éxito.")
+
 
 def cargar_rubros_y_faqs():
     for clave, contenido in faq_data.items():

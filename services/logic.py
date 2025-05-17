@@ -43,19 +43,26 @@ def responder_chatboc():
             niveles_intentados.append(rubro_actual.clave)
             print(f"🔎 Buscando en rubro: {rubro_actual.clave}")
             match = buscar_en_faq_spacy(pregunta, rubro_id=rubro_actual.id)
-            rubro_actual = rubro_actual.parent  # Subir al padre
+            rubro_actual = rubro_actual.parent
 
         if match:
             user.preguntas_usadas += 1
             db.session.commit()
-            return jsonify({"respuesta": match.answer, "nivel_usado": niveles_intentados[0]})
+            return jsonify({
+                "respuesta": match.answer,
+                "nivel_usado": niveles_intentados[0]
+            })
 
         # Si no hay match y es premium, usar Cohere
         if user.plan == "premium":
-            respuesta = get_cohere_response(pregunta)
+            messages = [{"role": "user", "content": pregunta}]
+            respuesta = get_cohere_response(messages, rubro_id=user.rubro_id)
             user.preguntas_usadas += 1
             db.session.commit()
-            return jsonify({"respuesta": respuesta, "fuente": "cohere"})
+            return jsonify({
+                "respuesta": respuesta,
+                "fuente": "cohere"
+            })
 
         # Sin respuesta válida
         return jsonify({
