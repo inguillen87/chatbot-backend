@@ -27,10 +27,13 @@ def create_app():
     app.config.from_object(Config)
 
     # Activar CORS
-    try:
-        CORS(app, resources={r"/*": {"origins": "*"}})
-    except Exception as e:
-        print("❌ Error en CORS:", e)
+   # Activar CORS correctamente
+try:
+    CORS(app, origins=["https://chatboc.ar", "https://www.chatboc.ar"], supports_credentials=True)
+    print("✅ CORS configurado correctamente para producción.")
+except Exception as e:
+    print("❌ Error en CORS:", e)
+
 
     # Inicializar extensiones
     try:
