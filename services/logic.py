@@ -55,9 +55,16 @@ def responder_chatboc(pregunta, token):
 
     # Paso 3: Fallback con Cohere
     try:
+        prompt = (
+            f"Actuá como un asistente virtual especializado en el rubro '{rubro_nombre}'. "
+            f"Respondé de forma breve, profesional y clara la siguiente consulta: {pregunta}. "
+            f"Respondé en español neutro. No respondas en inglés ni inventes información si no estás seguro. "
+            f"Si no entendés la consulta, pedí más detalles de forma educada."
+        )
+
         cohere_response = co.generate(
             model="command",
-            prompt=f"Respondé de forma clara y profesional esta consulta para una empresa del rubro {rubro_nombre}: {pregunta}",
+            prompt=prompt,
             max_tokens=100,
             temperature=0.6,
         )
