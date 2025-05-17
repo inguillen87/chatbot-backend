@@ -21,7 +21,7 @@ def crear_rubro_si_no_existe(clave, nombre=None, descripcion=None, parent_clave=
         clave=clave,
         nombre=nombre or clave.capitalize(),
         descripcion=descripcion or "",
-        parent=parent
+        padre=parent
     )
     db.session.add(nuevo_rubro)
     db.session.commit()
