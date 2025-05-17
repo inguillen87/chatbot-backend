@@ -25,13 +25,13 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # ✅ CORS global habilitado para dominios de producción
+    # ✅ CORS global para frontend en producción
     try:
-        CORS(app, supports_credentials=True, origins=[
+        CORS(app, resources={r"/*": {"origins": [
             "https://chatboc.ar",
             "https://www.chatboc.ar"
-        ])
-        print("✅ CORS aplicado globalmente.")
+        ]}}, supports_credentials=True)
+        print("✅ CORS aplicado globalmente con control de origen.")
     except Exception as e:
         print("❌ Error aplicando CORS:", e)
 
@@ -55,7 +55,7 @@ def create_app():
     except Exception as e:
         print("❌ Error registrando chat_bp:", e)
 
-    # Crear tablas si no existen (solo en desarrollo)
+    # Crear tablas si no existen
     try:
         with app.app_context():
             from models import QA
