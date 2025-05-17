@@ -1,30 +1,32 @@
 from flask import Blueprint, request, jsonify
-from twilio.twiml.messaging_response import MessagingResponse  # type: ignore
-from services.faq_matcher_spacy import buscar_en_faq_spacy
-from services.nlp import get_gpt_response
-from models import QA, User
-from extensions import db
-from datetime import datetime
-import logging
-import os
 from services.logic import responder_chatboc
 
-chat_bp = Blueprint('chat', __name__)
+chat_bp = Blueprint("chat", __name__)
 
-# ✅ Ruta para usuarios logueados
-@chat_bp.route('/ask', methods=['POST'])
-def ask():
-    return responder_chatboc()
+@chat_bp.route("/responder_chatboc", methods=["POST"])
+def responder():
+    try:
+        data = request.get_json()
+        pregunta = data.get("question") or data.get("pregunta")
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
-# ✅ Ruta para la demo pública (sin login)
-@chat_bp.route('/responder_chatboc', methods=['POST', 'OPTIONS'])
-def responder_demo():
-    if request.method == "OPTIONS":
-        # Respuesta al preflight CORS
-        response = jsonify({"message": "OK"})
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-        response.headers.add("Access-Control-Allow-Methods", "POST,OPTIONS")
-        return response
+        if not pregunta:
+            return jsonify({"error": "Falta la pregunta"}), 400
 
-    return responder_chatboc()
+        resultado = responder_chatboc(pregunta, token)
+
+        if "error" in resultado:
+            return jsonify(resultado), 401
+
+        return jsonify(resultado), 200
+
+    except Exception as e:
+        return jsonify({"error": f"Error interno: {str(e)}"}), 500
+
+# ✅ FIX CORS manual
+@chat_bp.after_request
+def apply_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    return response

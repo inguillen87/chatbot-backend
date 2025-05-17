@@ -1,49 +1,46 @@
 import os
 import logging
 import cohere
-from flask import request, jsonify
 from models import User, QA, Rubro
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 
 cohere_api_key = os.getenv("COHERE_API_KEY")
 co = cohere.Client(cohere_api_key)
 
-def responder_chatboc():
-    data = request.get_json()
-    pregunta = data.get("question") or data.get("pregunta")
-    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-
+def responder_chatboc(pregunta, token):
     if not pregunta:
-        return jsonify({"error": "Falta la pregunta"}), 400
+        return {"error": "Falta la pregunta"}
 
-    # 🔐 Verificar modo demo o usuario real
     user = User.query.filter_by(token=token).first()
     if not user and token == "demo-token":
         user = User.query.filter_by(token="demo-token").first()
 
     if not user:
-        return jsonify({"error": "Usuario no autenticado"}), 401
+        return {"error": "Usuario no autenticado"}
 
     if user.preguntas_realizadas >= user.limite_preguntas:
-        return jsonify({"respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas."})
+        return {
+            "respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas.",
+            "fuente": "sistema"
+        }
 
     rubro_id = user.rubro_id or 1
     rubro = Rubro.query.get(rubro_id)
     rubro_nombre = rubro.nombre if rubro else "general"
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-    # 🔎 Buscar en FAQs primero
+    # Buscar en FAQs
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         user.preguntas_realizadas += 1
         user.save()
-        return jsonify({
+        return {
             "respuesta": faq_match.answer,
             "nivel_usado": rubro_nombre,
             "fuente": "faq"
-        })
+        }
 
-    # 🧠 Fallback con IA (Cohere)
+    # Fallback con Cohere
     try:
         cohere_response = co.generate(
             model="command",
@@ -54,13 +51,16 @@ def responder_chatboc():
         generated_text = cohere_response.generations[0].text.strip()
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
-        return jsonify({"respuesta": "⚠️ No se pudo generar una respuesta automática por ahora."})
+        return {
+            "respuesta": "⚠️ No se pudo generar una respuesta automática por ahora.",
+            "fuente": "error"
+        }
 
     user.preguntas_realizadas += 1
     user.save()
 
-    return jsonify({
+    return {
         "respuesta": f"{generated_text} 🤖 (Respuesta generada con IA)",
         "nivel_usado": rubro_nombre,
         "fuente": "cohere"
-    })
+    }
