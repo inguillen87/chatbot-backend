@@ -1,0 +1,2 @@
+[spacy_models]
+xx_sent_ud_sm = xx_sent_ud_sm

@@ -3,7 +3,7 @@ import spacy
 import logging
 
 try:
-    nlp = spacy.load("es_core_news_md")
+    nlp = spacy.load("xx_sent_ud_sm")
     if not nlp.vocab.vectors:
         raise ValueError("❌ El modelo cargado no contiene vectores. Asegurate de usar 'es_core_news_md'.")
 except Exception as e:
