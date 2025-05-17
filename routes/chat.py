@@ -11,6 +11,9 @@ def responder():
 
     try:
         data = request.get_json()
+        if not isinstance(data, dict):
+            raise ValueError("Formato JSON inválido")
+
         pregunta = data.get("question") or data.get("pregunta")
         token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
@@ -26,7 +29,6 @@ def responder():
 
     except Exception as e:
         return jsonify({"error": f"Error interno: {str(e)}"}), 500
-
 
 # ✅ FIX CORS manual
 @chat_bp.after_request
