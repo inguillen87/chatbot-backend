@@ -1,75 +1,66 @@
+import os
+import logging
+import cohere
 from flask import request, jsonify
-from models import User, Rubro
-from extensions import db
-from datetime import datetime
+from models import User, QA, Rubro
 from services.faq_matcher_spacy import buscar_en_faq_spacy
-from services.cohere_ai import get_cohere_response
 
-PLAN_LIMITES = {
-    "free": 10,
-    "pro": 50,
-    "premium": 50
-}
+cohere_api_key = os.getenv("COHERE_API_KEY")
+co = cohere.Client(cohere_api_key)
 
 def responder_chatboc():
-    print("🚨 Entrando a responder_chatboc")
+    data = request.get_json()
+    pregunta = data.get("question") or data.get("pregunta")
+    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
-    try:
-        data = request.get_json()
-        pregunta = data.get("pregunta") or data.get("question", "")
-        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not pregunta:
+        return jsonify({"error": "Falta la pregunta"}), 400
 
-        user = User.query.filter_by(token=token).first()
-        if not user:
-            return jsonify({"error": "Usuario no autenticado"}), 401
+    # 🔐 Verificar modo demo o usuario real
+    user = User.query.filter_by(token=token).first()
+    if not user and token == "demo-token":
+        user = User.query.filter_by(token="demo-token").first()
 
-        # Reset mensual
-        if not user.last_reset or (datetime.utcnow() - user.last_reset).days > 30:
-            user.preguntas_usadas = 0
-            user.last_reset = datetime.utcnow()
-            db.session.commit()
+    if not user:
+        return jsonify({"error": "Usuario no autenticado"}), 401
 
-        # Control de plan
-        limite = PLAN_LIMITES.get(user.plan, 10)
-        if user.preguntas_usadas >= limite:
-            return jsonify({"respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas."})
+    if user.preguntas_realizadas >= user.limite_preguntas:
+        return jsonify({"respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas."})
 
-        # Buscar en rubro del usuario y, si es necesario, subir al padre
-        rubro_actual = Rubro.query.get(user.rubro_id)
-        match = None
-        niveles_intentados = []
+    rubro_id = user.rubro_id or 1
+    rubro = Rubro.query.get(rubro_id)
+    rubro_nombre = rubro.nombre if rubro else "general"
+    logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-        while rubro_actual and not match:
-            niveles_intentados.append(rubro_actual.clave)
-            print(f"🔎 Buscando en rubro: {rubro_actual.clave}")
-            match = buscar_en_faq_spacy(pregunta, rubro_id=rubro_actual.id)
-            rubro_actual = rubro_actual.parent
-
-        if match:
-            user.preguntas_usadas += 1
-            db.session.commit()
-            return jsonify({
-                "respuesta": match.answer,
-                "nivel_usado": niveles_intentados[0]
-            })
-
-        # Si no hay match y es premium, usar Cohere
-        if user.plan == "premium":
-            messages = [{"role": "user", "content": pregunta}]
-            respuesta = get_cohere_response(messages, rubro_id=user.rubro_id)
-            user.preguntas_usadas += 1
-            db.session.commit()
-            return jsonify({
-                "respuesta": respuesta,
-                "fuente": "cohere"
-            })
-
-        # Sin respuesta válida
+    # 🔎 Buscar en FAQs primero
+    faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
+    if faq_match:
+        user.preguntas_realizadas += 1
+        user.save()
         return jsonify({
-            "respuesta": "🤖 No encontré una respuesta exacta. Intentá reformular la pregunta o actualizá tu plan para asistencia avanzada.",
-            "nivel_usado": niveles_intentados
+            "respuesta": faq_match.answer,
+            "nivel_usado": rubro_nombre,
+            "fuente": "faq"
         })
 
+    # 🧠 Fallback con IA (Cohere)
+    try:
+        cohere_response = co.generate(
+            model="command",
+            prompt=f"Respondé de forma clara y profesional esta consulta para una empresa del rubro {rubro_nombre}: {pregunta}",
+            max_tokens=100,
+            temperature=0.6,
+        )
+        generated_text = cohere_response.generations[0].text.strip()
     except Exception as e:
-        print("❌ EXCEPCIÓN DETECTADA:", str(e))
-        return jsonify({"respuesta": "⚠️ Error interno del servidor."}), 500
+        logging.error(f"❌ Error en Cohere: {e}")
+        return jsonify({"respuesta": "⚠️ No se pudo generar una respuesta automática por ahora."})
+
+    user.preguntas_realizadas += 1
+    user.save()
+
+    return jsonify({
+        "respuesta": f"{generated_text} 🤖 (Respuesta generada con IA)",
+        "nivel_usado": rubro_nombre,
+        "fuente": "cohere"
+    })

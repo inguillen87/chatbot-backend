@@ -1,9 +1,10 @@
+
 from models import QA
 import spacy
 import logging
 
 try:
-    nlp = spacy.load("xx_sent_ud_sm")
+    nlp = spacy.load("es_core_news_md")
     if not nlp.vocab.vectors:
         raise ValueError("❌ El modelo cargado no contiene vectores. Asegurate de usar 'es_core_news_md'.")
 except Exception as e:
@@ -27,6 +28,8 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
 
     for faq in faqs:
         doc_faq = nlp(faq.question.lower())
+        if not doc_user.vector_norm or not doc_faq.vector_norm:
+            continue  # Evitar comparación vacía
         score = doc_user.similarity(doc_faq)
 
         logging.info(f"🧠 Comparando con: '{faq.question}' | Score: {score:.3f}")
