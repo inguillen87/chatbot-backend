@@ -7,7 +7,7 @@ from config import Config
 from extensions import db, migrate
 from dotenv import load_dotenv
 from sqlalchemy import text
-from flask_migrate import upgrade  # 👈 esto es lo correcto
+from flask_migrate import upgrade
 
 load_dotenv()
 
@@ -26,14 +26,12 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # Activar CORS
-   # Activar CORS correctamente
-try:
-    CORS(app, origins=["https://chatboc.ar", "https://www.chatboc.ar"], supports_credentials=True)
-    print("✅ CORS configurado correctamente para producción.")
-except Exception as e:
-    print("❌ Error en CORS:", e)
-
+    # ✅ Activar CORS sólo para los orígenes válidos de producción
+    try:
+        CORS(app, resources={r"/*": {"origins": ["https://chatboc.ar", "https://www.chatboc.ar"]}})
+        print("✅ CORS configurado correctamente para producción.")
+    except Exception as e:
+        print("❌ Error en CORS:", e)
 
     # Inicializar extensiones
     try:
@@ -55,7 +53,7 @@ except Exception as e:
     except Exception as e:
         print("❌ Error registrando chat_bp:", e)
 
-    # Crear tablas si no existen (solo útil en desarrollo local)
+    # Crear tablas si no existen (útil en desarrollo)
     try:
         with app.app_context():
             from models import QA
@@ -65,10 +63,10 @@ except Exception as e:
 
     return app
 
-# App para producción (gunicorn o flask run)
+# App para producción
 app = create_app()
 
-# 👇 Ejecutar migraciones automáticamente al iniciar
+# Ejecutar migraciones automáticamente
 with app.app_context():
     try:
         upgrade()
