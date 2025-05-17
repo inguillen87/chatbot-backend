@@ -3,7 +3,7 @@ import logging
 import cohere
 from models import User, QA, Rubro
 from services.faq_matcher_spacy import buscar_en_faq_spacy
-from services.intent_matcher import buscar_en_intents  
+from services.intent_matcher import buscar_en_intents
 from extensions import db
 
 cohere_api_key = os.getenv("COHERE_API_KEY")
@@ -31,7 +31,7 @@ def responder_chatboc(pregunta, token):
     rubro_nombre = rubro.nombre if rubro else "general"
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-    # Paso 1: Buscar en INTENTS
+    # Paso 1: INTENTS
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
         user.preguntas_usadas += 1
@@ -42,7 +42,7 @@ def responder_chatboc(pregunta, token):
             "fuente": "intents"
         }
 
-    # Paso 2: Buscar en FAQs
+    # Paso 2: FAQ
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         user.preguntas_usadas += 1
@@ -53,7 +53,7 @@ def responder_chatboc(pregunta, token):
             "fuente": "faq"
         }
 
-        # Paso 3: Fallback con Cohere
+    # Paso 3: COHERE (solo si no hubo respuesta anterior)
     try:
         prompt = (
             f"Actuá como un asistente virtual especializado en el rubro '{rubro_nombre}'. "
@@ -70,7 +70,6 @@ def responder_chatboc(pregunta, token):
         )
         generated_text = cohere_response.generations[0].text.strip()
 
-        # 🚨 Validar idioma y contenido
         if any(word in generated_text.lower() for word in ["the", "you can", "hospital", "insurance", "thank you"]):
             raise ValueError("Respuesta en inglés detectada")
 
@@ -84,9 +83,10 @@ def responder_chatboc(pregunta, token):
             "fuente": "error"
         }
 
-    # ✅ Guardar y responder
+    # Registrar uso
     user.preguntas_usadas += 1
     db.session.commit()
+
     return {
         "respuesta": f"{generated_text} 🤖 (Respuesta generada con IA)",
         "nivel_usado": rubro_nombre,
