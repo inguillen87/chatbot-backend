@@ -31,7 +31,7 @@ def responder_chatboc(pregunta, token):
     # 📚 Preparar contexto del rubro
     rubro_id = user.rubro_id or 1
     rubro = Rubro.query.get(rubro_id)
-    rubro_nombre = rubro.nombre if rubro else "general"
+    rubro_nombre = rubro.nombre.lower() if rubro and rubro.nombre else "general"
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
     # 🔍 Paso 1: Buscar en INTENTS
@@ -88,7 +88,7 @@ def responder_chatboc(pregunta, token):
         }
 
     # 🧾 Registrar uso
-    user.preguntas_usadas += 1
+    user.preguntas_usadas += rubro
     db.session.commit()
 
     return {
