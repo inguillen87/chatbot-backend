@@ -1,11 +1,23 @@
 {
-  "almacén y minimarket": [
-    "formas de pago", "promociones", "horarios", "ubicación", "envíos a domicilio"
-  ],
   "bodega": [
-    "tipos de vinos", "maridajes", "promociones especiales", "envíos", "formas de pago"
+    "¿Tienen vinos tintos?",
+    "¿Cuáles son sus productos más vendidos?",
+    "¿Hacen envíos a domicilio?",
+    "¿Aceptan tarjetas de crédito?",
+    "¿Tienen promociones vigentes?"
   ],
-  "estudio jurídico": [
-    "honorarios", "turnos", "especialidades legales", "consultas online", "jurisdicción"
+  "almacen": [
+    "¿Tienen productos sin TACC?",
+    "¿Cuáles son las promos de esta semana?",
+    "¿A qué hora cierran?",
+    "¿Hacen envíos?",
+    "¿Dónde están ubicados?"
+  ],
+  "medico": [
+    "¿Atienden con obra social?",
+    "¿Puedo sacar turno online?",
+    "¿Tienen atención pediátrica?",
+    "¿Realizan certificados médicos?",
+    "¿Cuál es el costo de una consulta?"
   ]
 }

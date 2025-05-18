@@ -1,17 +1,29 @@
+import json
 from extensions import db
 from models import Rubro, Sugerencia
-from data.sugerencias_data import sugerencias_data
 
 def cargar_sugerencias():
-    for rubro_nombre, lista_sugerencias in sugerencias_data.items():
-        rubro = Rubro.query.filter_by(nombre=rubro_nombre).first()
-        if rubro:
-            for texto in lista_sugerencias:
-                existe = Sugerencia.query.filter_by(rubro_id=rubro.id, texto=texto).first()
-                if not existe:
-                    nueva = Sugerencia(rubro_id=rubro.id, texto=texto)
-                    db.session.add(nueva)
-        else:
-            print(f"⚠️ Rubro no encontrado: {rubro_nombre}")
+    try:
+        with open("data/sugerencias.json", "r", encoding="utf-8") as f:
+            sugerencias_data = json.load(f)
+    except FileNotFoundError:
+        print("❌ No se encontró el archivo data/sugerencias.json")
+        return
+
+    for clave_rubro, sugerencias in sugerencias_data.items():
+        rubro = Rubro.query.filter_by(clave=clave_rubro).first()
+        if not rubro:
+            print(f"⚠️ Rubro no encontrado: {clave_rubro}")
+            continue
+
+        nuevas = 0
+        for texto in sugerencias:
+            if not Sugerencia.query.filter_by(rubro_id=rubro.id, texto=texto).first():
+                db.session.add(Sugerencia(rubro_id=rubro.id, texto=texto))
+                nuevas += 1
+
+        if nuevas:
+            print(f"💡 {nuevas} sugerencias cargadas para '{clave_rubro}'")
+
     db.session.commit()
     print("✅ Sugerencias cargadas correctamente.")
