@@ -1,7 +1,8 @@
 import json
 from datetime import datetime
 from app import app
-from models import db, Rubro, QA, Sugerencia
+from models import db, Rubro, QA, Sugerencia, User
+from werkzeug.security import generate_password_hash
 from faq_questions import faq_data
 
 def crear_rubro_si_no_existe(clave, nombre=None, descripcion=None, parent_clave=None):
@@ -52,8 +53,12 @@ def cargar_faqs():
             print(f"📚 Ya existían FAQs para '{clave}'")
 
 def cargar_sugerencias():
-    with open("data/sugerencias.json", "r", encoding="utf-8") as f:
-        sugerencias_data = json.load(f)
+    try:
+        with open("data/sugerencias.json", "r", encoding="utf-8") as f:
+            sugerencias_data = json.load(f)
+    except FileNotFoundError:
+        print("❌ No se encontró el archivo data/sugerencias.json")
+        return
 
     for rubro_nombre, sugerencias in sugerencias_data.items():
         rubro = Rubro.query.filter_by(nombre=rubro_nombre).first()
@@ -72,8 +77,43 @@ def cargar_sugerencias():
 
     db.session.commit()
 
-if __name__ == "__main__":
-    with app.app_context():
-        cargar_faqs()
-        cargar_sugerencias()
-        print("✅ Base de datos inicializada correctamente.")
+def cargar_usuarios_demo():
+    usuarios_demo = [
+        {
+            "email": "demo+almacen@chatboc.ar",
+            "name": "Demo Almacén",
+            "password": "demo1234",
+            "rubro_clave": "almacen"
+        },
+        {
+            "email": "demo+bodega@chatboc.ar",
+            "name": "Demo Bodega",
+            "password": "demo1234",
+            "rubro_clave": "bodega"
+        },
+        {
+            "email": "demo+medico@chatboc.ar",
+            "name": "Demo Médico",
+            "password": "demo1234",
+            "rubro_clave": "medico"
+        }
+    ]
+
+    for data in usuarios_demo:
+        existente = User.query.filter_by(email=data["email"]).first()
+        if existente:
+            print(f"ℹ️ Usuario ya existe: {data['email']}")
+            continue
+
+        rubro = Rubro.query.filter_by(clave=data["rubro_clave"]).first()
+        if not rubro:
+            print(f"❌ Rubro no encontrado: {data['rubro_clave']} (para {data['email']})")
+            continue
+
+        nuevo_user = User(
+            name=data["name"],
+            email=data["email"],
+            password_hash=generate_password_hash(data["password"]),
+            token=f"demo-token-{data['rubro_clave']}",
+            plan="gratis",
+            preguntas_usadas=0,
