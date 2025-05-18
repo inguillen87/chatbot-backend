@@ -15,7 +15,7 @@ except Exception as e:
     logging.error(f"❌ No se pudo cargar intents.json: {e}")
     INTENTS = {}
 
-def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.80):
+def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.70):
     if not pregunta_usuario or not rubro_nombre:
         logging.warning("⚠️ Entrada inválida para búsqueda en intents.")
         return None
