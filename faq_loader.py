@@ -124,3 +124,11 @@ def cargar_usuarios_demo():
         print(f"✅ Usuario demo creado: {data['email']}")
 
     db.session.commit()
+
+# ✅ EJECUCIÓN
+if __name__ == "__main__":
+    with app.app_context():
+        cargar_faqs()
+        cargar_sugerencias()
+        cargar_usuarios_demo()
+        print("✅ Base de datos inicializada correctamente.")
