@@ -1,0 +1,11 @@
+{
+  "almacén y minimarket": [
+    "formas de pago", "promociones", "horarios", "ubicación", "envíos a domicilio"
+  ],
+  "bodega": [
+    "tipos de vinos", "maridajes", "promociones especiales", "envíos", "formas de pago"
+  ],
+  "estudio jurídico": [
+    "honorarios", "turnos", "especialidades legales", "consultas online", "jurisdicción"
+  ]
+}

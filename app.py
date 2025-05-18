@@ -43,11 +43,11 @@ def create_app():
         print("❌ Error inicializando extensiones:", e)
 
     # Registrar Blueprints
-    try:
-        from routes.auth import auth_bp
-        app.register_blueprint(auth_bp)
-    except Exception as e:
-        print("❌ Error registrando auth_bp:", e)
+   # try:
+    #    from routes.auth import auth_bp
+     #   app.register_blueprint(auth_bp)
+    #except Exception as e:
+     #   print("❌ Error registrando auth_bp:", e)
 
     try:
         from routes.chat import chat_bp

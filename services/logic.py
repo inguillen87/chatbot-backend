@@ -1,8 +1,7 @@
-
 import os
 import logging
 import cohere
-from models import User, QA, Rubro
+from models import User, QA, Rubro, Sugerencia
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from extensions import db
@@ -11,15 +10,18 @@ from extensions import db
 cohere_api_key = os.getenv("COHERE_API_KEY")
 co = cohere.Client(cohere_api_key)
 
+def obtener_sugerencias_por_rubro(rubro_id):
+    sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
+    if not sugerencias:
+        sugerencias = Sugerencia.query.filter_by(rubro_id=1).all()  # fallback a 'general'
+    return [s.texto for s in sugerencias]
+
 def responder_chatboc(pregunta, token):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
-    # 🔑 Validación de usuario o modo demo
+    # 🔑 Validación de usuario
     user = User.query.filter_by(token=token).first()
-    if not user and token == "demo-token":
-        user = User.query.filter_by(token="demo-token").first()
-
     if not user:
         return {"error": "Usuario no autenticado"}
 
@@ -29,13 +31,13 @@ def responder_chatboc(pregunta, token):
             "fuente": "sistema"
         }
 
-    # 📚 Preparar contexto del rubro
+    # 📚 Contexto del rubro
     rubro_id = user.rubro_id or 1
     rubro = Rubro.query.get(rubro_id)
     rubro_nombre = rubro.nombre.lower() if rubro and rubro.nombre else "general"
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-    # 📘 Paso 1: Buscar en FAQs
+    # Paso 1: FAQ
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         user.preguntas_usadas += 1
@@ -46,7 +48,7 @@ def responder_chatboc(pregunta, token):
             "fuente": "faq"
         }
 
-    # 🔍 Paso 2: Buscar en INTENTS
+    # Paso 2: INTENTS
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
         user.preguntas_usadas += 1
@@ -57,13 +59,13 @@ def responder_chatboc(pregunta, token):
             "fuente": "intents"
         }
 
-    # 🤖 Paso 3: Generación con Cohere si no hay match
+    # Paso 3: Cohere
     try:
         prompt = (
-            f"Actuá como un asistente virtual especializado en el rubro '{rubro_nombre}'. "
-            f"Respondé de forma breve, profesional y clara la siguiente consulta: {pregunta}. "
-            f"Respondé en español neutro. No respondas en inglés ni inventes información si no estás seguro. "
-            f"Si no entendés la consulta, pedí más detalles de forma educada."
+            f"Sos Chatboc, un chatbot experto en el rubro '{rubro_nombre}'. "
+            f"Respondé en forma breve, clara y profesional. "
+            f"No inventes información. Si no sabés, pedí más detalles al cliente.\n"
+            f"Consulta del cliente: \"{pregunta}\""
         )
 
         cohere_response = co.generate(
@@ -82,18 +84,10 @@ def responder_chatboc(pregunta, token):
 
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
-
-        sugerencias = {
-            "almacén y minimarket": ["precios", "horarios", "entregas", "formas de pago", "factura"],
-            "bodega": ["tipos de vino", "entrega", "descuentos", "precios", "envío"],
-            "general": ["formas de pago", "atención", "facturación", "envíos", "costos"]
-        }
-
-        temas_sugeridos = sugerencias.get(rubro_nombre, sugerencias["general"])
-        sugerencia_texto = "⚠️ No encontré una respuesta directa. Podés intentar con temas como: " + ", ".join(f"“{t}”" for t in temas_sugeridos)
-
+        sugerencias = obtener_sugerencias_por_rubro(rubro_id)
+        texto = "⚠️ No encontré una respuesta directa. Podés intentar con temas como: " + ", ".join(f"“{s}”" for s in sugerencias)
         return {
-            "respuesta": sugerencia_texto,
+            "respuesta": texto,
             "fuente": "sugerencia"
         }
 
