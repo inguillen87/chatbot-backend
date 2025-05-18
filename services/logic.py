@@ -88,7 +88,7 @@ def responder_chatboc(pregunta, token):
         }
 
     # 🧾 Registrar uso
-    user.preguntas_usadas += rubro
+    user.preguntas_usadas += 1
     db.session.commit()
 
     return {
