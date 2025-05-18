@@ -13,10 +13,10 @@ class Rubro(db.Model):
     subrubros = db.relationship('Rubro', backref=db.backref('padre', remote_side=[id]), lazy=True)
 
     faqs = db.relationship('QA', backref='rubro', lazy=True)
+    sugerencias = db.relationship('Sugerencia', backref='rubro', lazy=True)
 
     def __repr__(self):
         return f"<Rubro {self.nombre}>"
-
 
 
 class QA(db.Model):
@@ -30,6 +30,14 @@ class QA(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class Sugerencia(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=False)
+    texto = db.Column(db.String(255), nullable=False)
+
+    def __repr__(self):
+        return f'<Sugerencia {self.id}>'
+    
 def generate_token():
     return str(uuid.uuid4())
 
