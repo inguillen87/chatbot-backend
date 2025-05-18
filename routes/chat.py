@@ -6,13 +6,12 @@ chat_bp = Blueprint("chat", __name__)
 @chat_bp.route("/responder_chatboc", methods=["POST", "OPTIONS"])
 def responder():
     if request.method == "OPTIONS":
-        # Respuesta rápida para preflight
         return jsonify({"ok": True}), 200
 
     try:
         data = request.get_json()
         if not isinstance(data, dict):
-            raise ValueError("Formato JSON inválido")
+            return jsonify({"error": "El cuerpo de la solicitud debe ser un JSON válido."}), 400
 
         pregunta = data.get("question") or data.get("pregunta")
         token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -29,6 +28,7 @@ def responder():
 
     except Exception as e:
         return jsonify({"error": f"Error interno: {str(e)}"}), 500
+
 
 # ✅ FIX CORS manual
 @chat_bp.after_request
