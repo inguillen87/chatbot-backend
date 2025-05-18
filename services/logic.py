@@ -1,3 +1,4 @@
+
 import os
 import logging
 import cohere
@@ -34,18 +35,7 @@ def responder_chatboc(pregunta, token):
     rubro_nombre = rubro.nombre.lower() if rubro and rubro.nombre else "general"
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
-    # 🔍 Paso 1: Buscar en INTENTS
-    intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
-    if intent_respuesta:
-        user.preguntas_usadas += 1
-        db.session.commit()
-        return {
-            "respuesta": intent_respuesta,
-            "nivel_usado": rubro_nombre,
-            "fuente": "intents"
-        }
-
-    # 📘 Paso 2: Buscar en FAQs
+    # 📘 Paso 1: Buscar en FAQs
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         user.preguntas_usadas += 1
@@ -54,6 +44,17 @@ def responder_chatboc(pregunta, token):
             "respuesta": faq_match.answer,
             "nivel_usado": rubro_nombre,
             "fuente": "faq"
+        }
+
+    # 🔍 Paso 2: Buscar en INTENTS
+    intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
+    if intent_respuesta:
+        user.preguntas_usadas += 1
+        db.session.commit()
+        return {
+            "respuesta": intent_respuesta,
+            "nivel_usado": rubro_nombre,
+            "fuente": "intents"
         }
 
     # 🤖 Paso 3: Generación con Cohere si no hay match
@@ -73,7 +74,6 @@ def responder_chatboc(pregunta, token):
         )
         generated_text = cohere_response.generations[0].text.strip()
 
-        # 🚨 Validación de idioma y coherencia
         if any(word in generated_text.lower() for word in ["the", "you can", "hospital", "insurance", "thank you"]):
             raise ValueError("Respuesta en inglés detectada")
 
@@ -82,12 +82,21 @@ def responder_chatboc(pregunta, token):
 
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
-        return {
-            "respuesta": "⚠️ No pude responder con suficiente precisión. ¿Podés reformular tu consulta?",
-            "fuente": "error"
+
+        sugerencias = {
+            "almacén y minimarket": ["precios", "horarios", "entregas", "formas de pago", "factura"],
+            "bodega": ["tipos de vino", "entrega", "descuentos", "precios", "envío"],
+            "general": ["formas de pago", "atención", "facturación", "envíos", "costos"]
         }
 
-    # 🧾 Registrar uso
+        temas_sugeridos = sugerencias.get(rubro_nombre, sugerencias["general"])
+        sugerencia_texto = "⚠️ No encontré una respuesta directa. Podés intentar con temas como: " + ", ".join(f"“{t}”" for t in temas_sugeridos)
+
+        return {
+            "respuesta": sugerencia_texto,
+            "fuente": "sugerencia"
+        }
+
     user.preguntas_usadas += 1
     db.session.commit()
 
