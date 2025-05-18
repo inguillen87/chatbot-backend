@@ -117,3 +117,10 @@ def cargar_usuarios_demo():
             token=f"demo-token-{data['rubro_clave']}",
             plan="gratis",
             preguntas_usadas=0,
+            limite_preguntas=10,
+            rubro_id=rubro.id
+        )
+        db.session.add(nuevo_user)
+        print(f"✅ Usuario demo creado: {data['email']}")
+
+    db.session.commit()
