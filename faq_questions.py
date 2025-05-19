@@ -51,7 +51,7 @@ faq_data = {
         }
     },
     "almacen": {
-        "nombre": "Almacén y Minimarket",
+        "nombre": "Almacén",
         "descripcion": "Comercio de cercanía con productos de consumo diario, bebidas, alimentos y artículos básicos.",
         "categorias": {
             "Productos y stock": [
