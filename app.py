@@ -8,6 +8,9 @@ from extensions import db, migrate
 from dotenv import load_dotenv
 from flask_migrate import upgrade
 
+# ⬇️ Importar las funciones de carga
+from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
+
 load_dotenv()
 
 # Crear carpeta de logs si no existe
@@ -25,24 +28,21 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # ✅ CORS global para frontend en producción
     try:
         CORS(app, resources={r"/*": {"origins": [
             "https://chatboc.ar",
             "https://www.chatboc.ar"
         ]}}, supports_credentials=True)
-        print("✅ CORS aplicado globalmente con control de origen.")
+        print("✅ CORS aplicado globalmente.")
     except Exception as e:
         print("❌ Error aplicando CORS:", e)
 
-    # Inicializar extensiones
     try:
         db.init_app(app)
         migrate.init_app(app, db)
     except Exception as e:
         print("❌ Error inicializando extensiones:", e)
 
-    # Registrar Blueprints
     try:
         from routes.auth import auth_bp
         app.register_blueprint(auth_bp)
@@ -61,7 +61,6 @@ def create_app():
     except Exception as e:
         print("❌ Error registrando sugerencia_bp:", e)
 
-    # Crear tablas si no existen
     try:
         with app.app_context():
             from models import QA
@@ -69,12 +68,22 @@ def create_app():
     except Exception as e:
         print("❌ Error creando tablas:", e)
 
+    # Comando CLI para inicializar datos
+    @app.cli.command("cargar_datos_iniciales")
+    def cargar_datos_iniciales():
+        with app.app_context():
+            print("🚀 Iniciando carga de datos iniciales...")
+            cargar_faqs()
+            cargar_sugerencias()
+            cargar_usuarios_demo()
+            print("✅ Todo cargado correctamente.")
+
     return app
 
-# App para producción
+# App principal
 app = create_app()
 
-# Ejecutar migraciones automáticamente
+# Ejecutar migraciones al iniciar
 with app.app_context():
     try:
         upgrade()

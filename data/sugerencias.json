@@ -1,23 +1,38 @@
 {
   "bodega": [
-    "¿Tienen vinos tintos?",
-    "¿Cuáles son sus productos más vendidos?",
-    "¿Hacen envíos a domicilio?",
-    "¿Aceptan tarjetas de crédito?",
-    "¿Tienen promociones vigentes?"
+    "¿Tienen vinos tintos o blancos?",
+    "¿Cuál es su vino más vendido?",
+    "¿Hacen envíos a todo el país?",
+    "¿Qué formas de pago aceptan?",
+    "¿Tienen promociones por caja o por mayor?",
+    "¿Venden vinos orgánicos o naturales?",
+    "¿Tienen atención personalizada por WhatsApp?",
+    "¿Ofrecen descuentos para eventos o restaurantes?",
+    "¿Cuál es el horario de atención?",
+    "¿Puedo pasar a retirar mi pedido por el local?"
   ],
   "almacen": [
-    "¿Tienen productos sin TACC?",
-    "¿Cuáles son las promos de esta semana?",
-    "¿A qué hora cierran?",
-    "¿Hacen envíos?",
-    "¿Dónde están ubicados?"
+    "¿Tienen productos sin TACC o para celíacos?",
+    "¿Hay promociones esta semana?",
+    "¿Tienen ofertas en combos familiares?",
+    "¿A qué hora abren y cierran?",
+    "¿Dónde están ubicados?",
+    "¿Hacen envíos a domicilio?",
+    "¿Puedo pagar con MercadoPago?",
+    "¿Venden por mayor o solo por unidad?",
+    "¿Tienen productos veganos o light?",
+    "¿Hay estacionamiento cerca del local?"
   ],
   "medico": [
-    "¿Atienden con obra social?",
-    "¿Puedo sacar turno online?",
-    "¿Tienen atención pediátrica?",
-    "¿Realizan certificados médicos?",
-    "¿Cuál es el costo de una consulta?"
+    "¿Atienden con obra social o prepaga?",
+    "¿Puedo sacar turno online o por teléfono?",
+    "¿Atienden niños y adultos?",
+    "¿Realizan certificados médicos escolares o laborales?",
+    "¿Cuál es el costo de una consulta general?",
+    "¿Tienen servicio de urgencias?",
+    "¿Atienden los fines de semana?",
+    "¿Cuánto dura una consulta médica?",
+    "¿Ofrecen atención a domicilio?",
+    "¿Qué especialidades médicas tienen disponibles?"
   ]
 }

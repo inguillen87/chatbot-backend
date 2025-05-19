@@ -1,6 +1,5 @@
 import json
 from datetime import datetime
-from app import app
 from models import db, Rubro, QA, Sugerencia, User
 from werkzeug.security import generate_password_hash
 from faq_questions import faq_data
@@ -61,7 +60,7 @@ def cargar_sugerencias():
         return
 
     for rubro_nombre, sugerencias in sugerencias_data.items():
-        rubro = Rubro.query.filter_by(nombre=rubro_nombre).first()
+        rubro = Rubro.query.filter_by(clave=rubro_nombre).first()
         if not rubro:
             print(f"❌ No se encontró el rubro '{rubro_nombre}' para cargar sugerencias")
             continue
@@ -76,24 +75,28 @@ def cargar_sugerencias():
             print(f"💡 {nuevas} sugerencias cargadas para '{rubro_nombre}'")
 
     db.session.commit()
+    print("✅ Sugerencias cargadas correctamente.")
 
 def cargar_usuarios_demo():
     usuarios_demo = [
         {
             "email": "demo+almacen@chatboc.ar",
             "name": "Demo Almacén",
+            "nombre_empresa": "ByM almacen de bebidas",
             "password": "demo1234",
             "rubro_clave": "almacen"
         },
         {
             "email": "demo+bodega@chatboc.ar",
             "name": "Demo Bodega",
+            "nombre_empresa": "Bodega cuatro finas winery",
             "password": "demo1234",
             "rubro_clave": "bodega"
         },
         {
             "email": "demo+medico@chatboc.ar",
             "name": "Demo Médico",
+            "nombre_empresa": "clinica san dona",
             "password": "demo1234",
             "rubro_clave": "medico"
         }
@@ -113,22 +116,15 @@ def cargar_usuarios_demo():
         nuevo_user = User(
             name=data["name"],
             email=data["email"],
+            nombre_empresa=data["nombre_empresa"],
             password_hash=generate_password_hash(data["password"]),
             token=f"demo-token-{data['rubro_clave']}",
             plan="gratis",
             preguntas_usadas=0,
-            limite_preguntas=10,
+            limite_preguntas=50,
             rubro_id=rubro.id
         )
         db.session.add(nuevo_user)
         print(f"✅ Usuario demo creado: {data['email']}")
 
     db.session.commit()
-
-# ✅ EJECUCIÓN
-if __name__ == "__main__":
-    with app.app_context():
-        cargar_faqs()
-        cargar_sugerencias()
-        cargar_usuarios_demo()
-        print("✅ Base de datos inicializada correctamente.")
