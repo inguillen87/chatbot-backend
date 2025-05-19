@@ -116,7 +116,7 @@ def register():
 
 
 
-# 🐞 DEBUG USERS (completo)
+# 🐞 DEBUG USERS (solo para desarrollo)
 @auth_bp.route('/debug/users', methods=['GET'])
 def list_users():
     try:
@@ -126,11 +126,11 @@ def list_users():
                 "id": user.id,
                 "name": user.name,
                 "email": user.email,
+                "nombre_empresa": user.nombre_empresa,
                 "plan": user.plan,
                 "preguntas_usadas": user.preguntas_usadas,
                 "limite_preguntas": user.limite_preguntas,
                 "token": user.token,
-                "nombre_empresa": user.nombre_empresa,
                 "rubro_id": user.rubro_id,
                 "rubro_nombre": user.rubro.nombre if user.rubro else None
             } for user in users

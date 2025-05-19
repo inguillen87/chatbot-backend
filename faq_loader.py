@@ -89,28 +89,31 @@ def cargar_usuarios_demo():
         {
             "email": "demo+bodega@chatboc.ar",
             "name": "Demo Bodega",
-            "nombre_empresa": "Bodega cuatro finas winery",
+            "nombre_empresa": "Bodega Cuatro Fincas Winery",
             "password": "demo1234",
             "rubro_clave": "bodega"
         },
         {
             "email": "demo+medico@chatboc.ar",
             "name": "Demo Médico",
-            "nombre_empresa": "clinica san dona",
+            "nombre_empresa": "Clínica San Dona",
             "password": "demo1234",
             "rubro_clave": "medico"
         }
     ]
 
     for data in usuarios_demo:
-        existente = User.query.filter_by(email=data["email"]).first()
-        if existente:
-            print(f"ℹ️ Usuario ya existe: {data['email']}")
-            continue
-
         rubro = Rubro.query.filter_by(clave=data["rubro_clave"]).first()
         if not rubro:
             print(f"❌ Rubro no encontrado: {data['rubro_clave']} (para {data['email']})")
+            continue
+
+        existente = User.query.filter_by(email=data["email"]).first()
+        if existente:
+            existente.nombre_empresa = data["nombre_empresa"]
+            existente.rubro_id = rubro.id  # actualiza rubro en caso de ser necesario
+            db.session.commit()
+            print(f"🔄 Usuario actualizado: {data['email']}")
             continue
 
         nuevo_user = User(
@@ -128,3 +131,6 @@ def cargar_usuarios_demo():
         print(f"✅ Usuario demo creado: {data['email']}")
 
     db.session.commit()
+    print("✅ Usuarios demo listos.")
+
+            
