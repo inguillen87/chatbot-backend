@@ -63,12 +63,14 @@ def responder_chatboc(pregunta, token):
     try:
         nombre_empresa = user.nombre_empresa or "la empresa"
         prompt = (
-            f"Sos Chatboc, el asistente virtual de la empresa '{nombre_empresa}', que trabaja en el rubro '{rubro_nombre}'.\n"
-            f"Respondé consultas de clientes de forma clara, profesional y útil.\n"
-            f"Usá frases cortas, evitá rodeos y no inventes información. Si no sabés algo, decilo o pedí más detalles.\n"
+            f"Sos Chatboc, el asistente virtual oficial de la empresa '{nombre_empresa}', que trabaja en el rubro '{rubro_nombre}'.\n"
+            f"Respondé las consultas de los clientes de forma clara, profesional y útil.\n"
+            f"Usá frases cortas y naturales. Evitá rodeos, tecnicismos innecesarios y no aclares que sos un asistente virtual ni que la respuesta fue generada con IA.\n"
+            f"Respondé siempre como si fueras parte del equipo de la empresa. Si no sabés algo, pedí más detalles o derivá con amabilidad.\n"
             f"Plan actual del cliente: {user.plan}.\n\n"
             f"Consulta: \"{pregunta}\""
         )
+
 
         cohere_response = co.generate(
             model="command",
@@ -98,7 +100,7 @@ def responder_chatboc(pregunta, token):
     db.session.commit()
 
     return {
-        "respuesta": f"{generated_text} 🤖 (Respuesta generada con IA)",
-        "nivel_usado": rubro_nombre,
-        "fuente": "cohere"
-    }
+    "respuesta": generated_text,
+    "nivel_usado": rubro_nombre,
+    "fuente": "cohere"
+}
