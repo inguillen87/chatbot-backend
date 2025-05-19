@@ -14,12 +14,16 @@ def get_gpt_response(question, user: User = None):
     rubro = getattr(user, "industry", "empresa")
 
     prompt = f"""
-    Eres Chatboc, un asistente virtual profesional que ayuda a negocios como {rubro}.
-    Estás conversando con {nombre}. Responde de manera clara, útil y humana.
-    No inventes funciones que Chatboc no tiene. Si no sabés algo, ofrecé ayuda para contactar soporte.
+        Sos el asistente virtual de la empresa '{nombre_empresa}'. Respondé consultas de clientes en lenguaje claro, profesional y amable. 
+        Usá respuestas breves, útiles y concretas. 
+        Si no sabés algo, decilo con honestidad. Si tenés datos precargados (FAQs o sugerencias), priorizalos antes que improvisar.
 
-    Usuario: {question}
-    """
+        Información adicional:
+        - Nombre de empresa: {nombre_empresa}
+        - Rubro: {rubro_nombre}
+        - Plan actual: {user.plan}
+        """
+
 
     if DEMO_MODE:
         respuestas_fake = [

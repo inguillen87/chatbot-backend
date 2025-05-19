@@ -18,7 +18,6 @@ class Rubro(db.Model):
     def __repr__(self):
         return f"<Rubro {self.nombre}>"
 
-
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=True)
@@ -29,7 +28,6 @@ class QA(db.Model):
     categoria = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-
 class Sugerencia(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=False)
@@ -37,24 +35,25 @@ class Sugerencia(db.Model):
 
     def __repr__(self):
         return f'<Sugerencia {self.id}>'
-    
+
 def generate_token():
     return str(uuid.uuid4())
-
 
 class User(db.Model):
     __tablename__ = "user"
 
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
+    name = db.Column(db.String(100), nullable=False)  # Nombre personal
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255))
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
-    limite_preguntas = db.Column(db.Integer, default=10)
+    limite_preguntas = db.Column(db.Integer, default=50)  
     last_reset = db.Column(db.DateTime)
-    rubro_id = db.Column(db.Integer)
+    nombre_empresa = db.Column(db.String(150), nullable=True)  # Nombre de la pyme
+    rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
+    rubro = db.relationship("Rubro", backref="usuarios")
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
