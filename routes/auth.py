@@ -2,11 +2,12 @@ from flask import Blueprint, request, jsonify
 from models import User
 import logging
 from werkzeug.security import check_password_hash, generate_password_hash
-import uuid  # para generar token único
+import uuid
 from extensions import db
 
 auth_bp = Blueprint('auth', __name__)
 
+# 📥 LOGIN
 @auth_bp.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -19,23 +20,28 @@ def login():
     user = User.query.filter_by(email=email).first()
 
     if not user or not check_password_hash(user.password_hash, password):
-        logging.warning(f"Intento fallido de login con usuario: {email}")
+        logging.warning(f"❌ Intento fallido de login con usuario: {email}")
         return jsonify({"error": "Credenciales inválidas"}), 401
 
-    # ✅ Si todo bien, devolvemos el user
     return jsonify({
         "token": user.token,
         "id": user.id,
         "name": user.name,
         "email": user.email,
         "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas
     })
 
 
+# 🙋‍♂️ GET USER INFO (validación desde token)
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
-    token = request.headers.get("Authorization", "")
+    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+
+    if not token:
+        return jsonify({"error": "Token faltante"}), 401
+
     user = User.query.filter_by(token=token).first()
 
     if not user:
@@ -47,8 +53,12 @@ def get_current_user():
         "name": user.name,
         "email": user.email,
         "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas
     })
+
+
+# 📝 REGISTER
 @auth_bp.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -72,9 +82,8 @@ def register():
         token=token
     )
     db.session.add(user)
-    print("📝 Usuario agregado al session")
     db.session.commit()
-    print("✅ Usuario guardado en DB")
+    print(f"✅ Usuario registrado: {email}")
 
     return jsonify({
         "token": user.token,
@@ -82,22 +91,27 @@ def register():
         "name": user.name,
         "email": user.email,
         "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas
     })
 
-@auth_bp.route('/debug/users', methods=['GET']) 
+
+# 🐞 DEBUG USERS (solo para desarrollo)
+@auth_bp.route('/debug/users', methods=['GET'])
 def list_users():
-     try:
-         users = User.query.all()
-         return jsonify([
-             {
-                 "id": user.id,
-                 "name": user.name,
-                 "email": user.email,
-                 "plan": user.plan,
-                 "preguntas_usadas": user.preguntas_usadas,
-                 "token": user.token
-             } for user in users
-         ])
-     except Exception as e:
-         return jsonify({"error": f"Error al listar usuarios: {str(e)}"}), 500
+    try:
+        users = User.query.all()
+        return jsonify([
+            {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "plan": user.plan,
+                "preguntas_usadas": user.preguntas_usadas,
+                "limite_preguntas": user.limite_preguntas,
+                "token": user.token
+            } for user in users
+        ])
+    except Exception as e:
+        logging.error(f"❌ Error al listar usuarios: {str(e)}")
+        return jsonify({"error": f"Error al listar usuarios: {str(e)}"}), 500
