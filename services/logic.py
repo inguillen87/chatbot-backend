@@ -61,11 +61,13 @@ def responder_chatboc(pregunta, token):
 
     # Paso 3: Cohere
     try:
+        nombre_empresa = user.nombre_empresa or "la empresa"
         prompt = (
-            f"Sos Chatboc, un chatbot experto en el rubro '{rubro_nombre}'. "
-            f"Respondé en forma breve, clara y profesional. "
-            f"No inventes información. Si no sabés, pedí más detalles al cliente.\n"
-            f"Consulta del cliente: \"{pregunta}\""
+            f"Sos Chatboc, el asistente virtual de la empresa '{nombre_empresa}', que trabaja en el rubro '{rubro_nombre}'.\n"
+            f"Respondé consultas de clientes de forma clara, profesional y útil.\n"
+            f"Usá frases cortas, evitá rodeos y no inventes información. Si no sabés algo, decilo o pedí más detalles.\n"
+            f"Plan actual del cliente: {user.plan}.\n\n"
+            f"Consulta: \"{pregunta}\""
         )
 
         cohere_response = co.generate(
@@ -76,6 +78,7 @@ def responder_chatboc(pregunta, token):
         )
         generated_text = cohere_response.generations[0].text.strip()
 
+        # Validaciones básicas
         if any(word in generated_text.lower() for word in ["the", "you can", "hospital", "insurance", "thank you"]):
             raise ValueError("Respuesta en inglés detectada")
 

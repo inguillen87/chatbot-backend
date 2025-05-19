@@ -33,8 +33,6 @@ def login():
         "limite_preguntas": user.limite_preguntas
     })
 
-
-# 🙋‍♂️ GET USER INFO (validación desde token)
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -46,7 +44,10 @@ def get_current_user():
 
     if not user:
         return jsonify({"error": "Token inválido"}), 401
-    
+
+    from models import Rubro
+    rubro = Rubro.query.get(user.rubro_id)
+
     return jsonify({
         "token": user.token,
         "id": user.id,
@@ -54,8 +55,11 @@ def get_current_user():
         "email": user.email,
         "plan": user.plan,
         "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas
+        "limite_preguntas": user.limite_preguntas,
+        "nombre_empresa": user.nombre_empresa,
+        "rubro": rubro.nombre if rubro else "General"
     })
+
 
 
 # 📝 REGISTER
@@ -65,12 +69,19 @@ def register():
     name = data.get("name", "").strip()
     email = data.get("email", "").strip()
     password = data.get("password", "").strip()
+    nombre_empresa = data.get("nombre_empresa", "").strip()
+    rubro_nombre = data.get("rubro", "").strip()
 
-    if not name or not email or not password:
+    if not name or not email or not password or not nombre_empresa or not rubro_nombre:
         return jsonify({"error": "Todos los campos son obligatorios"}), 400
 
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "Ya existe un usuario con ese email"}), 400
+
+    from models import Rubro
+    rubro = Rubro.query.filter_by(nombre=rubro_nombre).first()
+    if not rubro:
+        return jsonify({"error": "Rubro no válido"}), 400
 
     hashed_password = generate_password_hash(password)
     token = str(uuid.uuid4())
@@ -79,8 +90,14 @@ def register():
         name=name,
         email=email,
         password_hash=hashed_password,
-        token=token
+        token=token,
+        nombre_empresa=nombre_empresa,
+        rubro_id=rubro.id,
+        plan="gratis",
+        preguntas_usadas=0,
+        limite_preguntas=50
     )
+
     db.session.add(user)
     db.session.commit()
     print(f"✅ Usuario registrado: {email}")
@@ -91,9 +108,12 @@ def register():
         "name": user.name,
         "email": user.email,
         "plan": user.plan,
+        "nombre_empresa": user.nombre_empresa,
+        "rubro": rubro.nombre,
         "preguntas_usadas": user.preguntas_usadas,
         "limite_preguntas": user.limite_preguntas
     })
+
 
 
 # 🐞 DEBUG USERS (solo para desarrollo)

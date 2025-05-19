@@ -1,98 +1,102 @@
-import logging
-from logging.handlers import RotatingFileHandler
-import os
-from flask import Flask
-from flask_cors import CORS
-from config import Config
-from extensions import db, migrate
-from dotenv import load_dotenv
-from flask_migrate import upgrade
+import React, { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { apiFetch } from '@/utils/api';
+import { useNavigate } from 'react-router-dom';
 
-# ⬇️ Importar las funciones de carga
-from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
+const Register = () => {
+  const navigate = useNavigate();
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [nombreEmpresa, setNombreEmpresa] = useState('');
+  const [rubroId, setRubroId] = useState('');
+  const [rubrosDisponibles, setRubrosDisponibles] = useState([]);
+  const [error, setError] = useState('');
 
-load_dotenv()
+  useEffect(() => {
+    const fetchRubros = async () => {
+      try {
+        const data = await apiFetch('/rubros', 'GET');
+        if (Array.isArray(data)) {
+          setRubrosDisponibles(data);
+        }
+      } catch (err) {
+        console.error('❌ Error al cargar rubros:', err);
+      }
+    };
+    fetchRubros();
+  }, []);
 
-# Crear carpeta de logs si no existe
-if not os.path.exists("logs"):
-    os.makedirs("logs")
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
 
-# Configuración de logging
-file_handler = RotatingFileHandler("logs/chatbot.log", maxBytes=10240, backupCount=5)
-file_handler.setLevel(logging.INFO)
-formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-file_handler.setFormatter(formatter)
-logging.getLogger().addHandler(file_handler)
+    try {
+      const payload = {
+        name,
+        email,
+        password,
+        nombre_empresa: nombreEmpresa,
+        rubro_id: parseInt(rubroId),
+      };
 
-def create_app():
-    app = Flask(__name__)
-    app.config.from_object(Config)
+      const data = await apiFetch('/register', 'POST', payload);
 
-    try:
-        CORS(app, resources={r"/*": {"origins": [
-            "https://chatboc.ar",
-            "https://www.chatboc.ar"
-        ]}}, supports_credentials=True)
-        print("✅ CORS aplicado globalmente.")
-    except Exception as e:
-        print("❌ Error aplicando CORS:", e)
+      if (data?.token && data?.email && data?.plan) {
+        const user = {
+          token: data.token,
+          name: data.name,
+          email: data.email,
+          plan: data.plan,
+          nombre_empresa: data.nombre_empresa,
+          rubro_id: data.rubro_id,
+          preguntas_usadas: data.preguntas_usadas ?? 0,
+          limite_preguntas: data.limite_preguntas ?? 50,
+        };
+        localStorage.setItem('user', JSON.stringify(user));
+        navigate('/perfil');
+      } else {
+        setError('❌ Error al registrarse. Verificá los datos.');
+      }
+    } catch (err) {
+      console.error('❌ Error al registrarse:', err);
+      setError('⚠️ No se pudo completar el registro.');
+    }
+  };
 
-    try:
-        db.init_app(app)
-        migrate.init_app(app, db)
-    except Exception as e:
-        print("❌ Error inicializando extensiones:", e)
+  return (
+    <div className="min-h-[calc(100vh-80px)] flex items-center justify-center px-4 bg-white dark:bg-[#0f0f0f] transition-colors">
+      <div className="w-full max-w-md bg-gray-100 dark:bg-[#1a1a1a] p-8 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700">
+        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800 dark:text-gray-100">
+          Registrarse
+        </h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Input type="text" placeholder="Tu nombre" value={name} onChange={(e) => setName(e.target.value)} required />
+          <Input type="email" placeholder="Correo electrónico" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <Input type="password" placeholder="Contraseña" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <Input type="text" placeholder="Nombre de la empresa (fantasía o legal)" value={nombreEmpresa} onChange={(e) => setNombreEmpresa(e.target.value)} required />
+          <select value={rubroId} onChange={(e) => setRubroId(e.target.value)} required className="w-full p-2 border rounded text-sm">
+            <option value="">Seleccioná tu rubro</option>
+            {rubrosDisponibles.map((rubro: any) => (
+              <option key={rubro.id} value={rubro.id}>{rubro.nombre}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-600 dark:text-gray-300 mt-1">
+            ⚠️ Es muy importante ingresar correctamente el nombre de tu empresa y seleccionar el rubro real, ya que esto mejora la experiencia del usuario y permite que el bot responda con mayor precisión.
+          </p>
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+          <Button type="submit" className="w-full">Registrarse</Button>
+        </form>
+        <div className="text-center text-sm text-gray-700 dark:text-gray-300 mt-4">
+          ¿Ya tenés cuenta?{' '}
+          <button onClick={() => navigate('/login')} className="text-blue-600 hover:underline dark:text-blue-400">
+            Iniciar sesión
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
-    try:
-        from routes.auth import auth_bp
-        app.register_blueprint(auth_bp)
-    except Exception as e:
-        print("❌ Error registrando auth_bp:", e)
-
-    try:
-        from routes.chat import chat_bp
-        app.register_blueprint(chat_bp)
-    except Exception as e:
-        print("❌ Error registrando chat_bp:", e)
-
-    try:
-        from routes.sugerencias import sugerencia_bp
-        app.register_blueprint(sugerencia_bp)
-    except Exception as e:
-        print("❌ Error registrando sugerencia_bp:", e)
-
-    try:
-        with app.app_context():
-            from models import QA
-            db.create_all()
-    except Exception as e:
-        print("❌ Error creando tablas:", e)
-
-    # Comando CLI para inicializar datos
-    @app.cli.command("cargar_datos_iniciales")
-    def cargar_datos_iniciales():
-        with app.app_context():
-            print("🚀 Iniciando carga de datos iniciales...")
-            cargar_faqs()
-            cargar_sugerencias()
-            cargar_usuarios_demo()
-            print("✅ Todo cargado correctamente.")
-
-    return app
-
-# App principal
-app = create_app()
-
-# Ejecutar migraciones al iniciar
-with app.app_context():
-    try:
-        upgrade()
-        print("✅ Migraciones aplicadas.")
-    except Exception as e:
-        print("❌ Error en upgrade de migraciones:", e)
-
-if __name__ == '__main__':
-    os.environ["FLASK_ENV"] = "development"
-    os.environ["FLASK_RUN_FROM_CLI"] = "false"
-    print("✅ Servidor iniciado en modo desarrollo.")
-    app.run(debug=True, port=5000, use_reloader=False)
+export default Register;
