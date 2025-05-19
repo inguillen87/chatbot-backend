@@ -1,6 +1,7 @@
 import os
 import logging
 import cohere
+from flask import session
 from models import User, QA, Rubro, Sugerencia
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
@@ -20,19 +21,42 @@ def responder_chatboc(pregunta, token):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
-    # 🔑 Validación de usuario
-    user = User.query.filter_by(token=token).first()
-    if not user:
-        return {"error": "Usuario no autenticado"}
+    # 🔓 MODO DEMO ANÓNIMO
+    if token.startswith("demo-anon"):
+        if "anon_preguntas" not in session:
+            session["anon_preguntas"] = 0
 
-    if user.preguntas_usadas >= user.limite_preguntas:
-        return {
-            "respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas.",
-            "fuente": "sistema"
-        }
+        if session["anon_preguntas"] >= 15:
+            return {
+                "respuesta": "🔒 Alcanzaste el límite de 15 preguntas en modo demo. Registrate gratis para seguir probando.",
+                "fuente": "sistema"
+            }
+
+        session["anon_preguntas"] += 1
+
+        class AnonUser:
+            nombre_empresa = "Demo Anónimo"
+            plan = "demo"
+            preguntas_usadas = session["anon_preguntas"]
+            limite_preguntas = 15
+            rubro_id = 0
+            rubro_nombre = "general"
+
+        user = AnonUser()
+
+    else:
+        user = User.query.filter_by(token=token).first()
+        if not user:
+            return {"error": "Usuario no autenticado"}
+
+        if user.preguntas_usadas >= user.limite_preguntas:
+            return {
+                "respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas.",
+                "fuente": "sistema"
+            }
 
     # 📚 Contexto del rubro
-    rubro_id = user.rubro_id or 1
+    rubro_id = getattr(user, "rubro_id", 1)
     rubro = Rubro.query.get(rubro_id)
     rubro_nombre = rubro.nombre.lower() if rubro and rubro.nombre else "general"
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
@@ -40,8 +64,9 @@ def responder_chatboc(pregunta, token):
     # Paso 1: FAQ
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
-        user.preguntas_usadas += 1
-        db.session.commit()
+        if not token.startswith("demo-anon"):
+            user.preguntas_usadas += 1
+            db.session.commit()
         return {
             "respuesta": faq_match.answer,
             "nivel_usado": rubro_nombre,
@@ -51,8 +76,9 @@ def responder_chatboc(pregunta, token):
     # Paso 2: INTENTS
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
-        user.preguntas_usadas += 1
-        db.session.commit()
+        if not token.startswith("demo-anon"):
+            user.preguntas_usadas += 1
+            db.session.commit()
         return {
             "respuesta": intent_respuesta,
             "nivel_usado": rubro_nombre,
@@ -61,7 +87,7 @@ def responder_chatboc(pregunta, token):
 
     # Paso 3: Cohere
     try:
-        nombre_empresa = user.nombre_empresa or "la empresa"
+        nombre_empresa = getattr(user, "nombre_empresa", "la empresa")
         prompt = (
             f"Sos Chatboc, el asistente virtual oficial de la empresa '{nombre_empresa}', que trabaja en el rubro '{rubro_nombre}'.\n"
             f"Respondé las consultas de los clientes de forma clara, profesional y útil.\n"
@@ -71,7 +97,6 @@ def responder_chatboc(pregunta, token):
             f"Consulta: \"{pregunta}\""
         )
 
-
         cohere_response = co.generate(
             model="command",
             prompt=prompt,
@@ -80,7 +105,6 @@ def responder_chatboc(pregunta, token):
         )
         generated_text = cohere_response.generations[0].text.strip()
 
-        # Validaciones básicas
         if any(word in generated_text.lower() for word in ["the", "you can", "hospital", "insurance", "thank you"]):
             raise ValueError("Respuesta en inglés detectada")
 
@@ -96,11 +120,12 @@ def responder_chatboc(pregunta, token):
             "fuente": "sugerencia"
         }
 
-    user.preguntas_usadas += 1
-    db.session.commit()
+    if not token.startswith("demo-anon"):
+        user.preguntas_usadas += 1
+        db.session.commit()
 
     return {
-    "respuesta": generated_text,
-    "nivel_usado": rubro_nombre,
-    "fuente": "cohere"
-}
+        "respuesta": generated_text,
+        "nivel_usado": rubro_nombre,
+        "fuente": "cohere"
+    }
