@@ -110,8 +110,8 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
         cohere_response = co.generate(
             model="command",
             prompt=prompt,
-            max_tokens=60,
-            temperature=0.4,
+            max_tokens=500,
+            temperature=0.5,
         )
         generated_text = cohere_response.generations[0].text.strip()
 
