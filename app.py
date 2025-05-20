@@ -25,14 +25,19 @@ file_handler.setFormatter(formatter)
 logging.getLogger().addHandler(file_handler)
 
 def create_app():
-    # ✅ Crear carpeta y archivo de base de datos si no existen
-    os.makedirs("/data", exist_ok=True)
-    db_path = "/data/database.db"
-    if not os.path.exists(db_path):
-        open(db_path, "w").close()
-
     app = Flask(__name__)
     app.config.from_object(Config)
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:////data/database.db"
+
+    # ✅ Crear carpeta y archivo de base de datos si no existen (dentro del contexto correcto)
+    try:
+        os.makedirs("/data", exist_ok=True)
+        db_path = "/data/database.db"
+        if not os.path.exists(db_path):
+            with open(db_path, "w"):
+                pass
+    except Exception as e:
+        print("❌ Error asegurando archivo de base de datos:", e)
 
     # ✅ CORS
     try:
@@ -84,7 +89,7 @@ def create_app():
     except Exception as e:
         print("❌ Error creando tablas:", e)
 
-    # ✅ Comando para cargar datos iniciales (si querés correrlo manualmente)
+    # ✅ Comando para cargar datos iniciales
     @app.cli.command("cargar_datos_iniciales")
     def cargar_datos_iniciales():
         with app.app_context():
@@ -99,7 +104,7 @@ def create_app():
 # App principal
 app = create_app()
 
-# ✅ Ejecutar migraciones al iniciar
+# ✅ Ejecutar migraciones automáticamente
 with app.app_context():
     try:
         upgrade()
@@ -107,6 +112,7 @@ with app.app_context():
     except Exception as e:
         print("❌ Error en upgrade de migraciones:", e)
 
+# ✅ Modo local
 if __name__ == '__main__':
     os.environ["FLASK_ENV"] = "development"
     os.environ["FLASK_RUN_FROM_CLI"] = "false"
