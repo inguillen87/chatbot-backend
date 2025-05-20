@@ -70,9 +70,10 @@ def register():
     email = data.get("email", "").strip()
     password = data.get("password", "").strip()
     nombre_empresa = data.get("nombre_empresa", "").strip()
-    rubro_id = data.get("rubro_id")
+    rubro_nombre = data.get("rubro", "").strip()
+    rubro = Rubro.query.filter_by(nombre=rubro_nombre).first()
 
-    if not name or not email or not password or not nombre_empresa or not rubro_id:
+    if not name or not email or not password or not nombre_empresa or not rubro:
         return jsonify({"error": "Todos los campos son obligatorios"}), 400
 
     if User.query.filter_by(email=email).first():
