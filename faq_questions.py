@@ -266,9 +266,6 @@ faq_data = {
     "descripcion": "Tiendas físicas que venden productos al público: indumentaria, tecnología, regalos, etc.",
     "categorias": {
         "Productos y servicios": [
-            ["¿Qué tipo de productos venden?", "Tenemos una gran variedad según la tienda: desde indumentaria hasta tecnología y artículos de regalo."],
-            ["¿Reparan celulares?", "Sí, ofrecemos servicio técnico y venta de accesorios para celulares."],
-            ..."Productos y servicios": [
     ["¿Tienen accesorios nuevos?", "Sí, renovamos stock todas las semanas con modelos y colores variados."],
     ["¿Reparan celulares?", "Sí, ofrecemos servicio técnico especializado para diferentes marcas y modelos."],
     ["¿Hacen composturas de ropa?", "Sí, realizamos arreglos simples como ruedos, cierres y ajustes de talle."],
@@ -378,7 +375,7 @@ faq_data = {
     ["¿El cambio tiene costo?", "No, siempre que sea dentro del plazo y condiciones acordadas."],
     ["¿Se puede cambiar un producto personalizado?", "No, los productos personalizados no tienen cambio."],
     ["¿Hasta qué hora hacen cambios?", "Durante todo nuestro horario comercial, de lunes a sábado."]
-]
+],
 
     }
 }
