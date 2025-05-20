@@ -14,12 +14,13 @@ def responder():
             return jsonify({"error": "El cuerpo de la solicitud debe ser un JSON válido."}), 400
 
         pregunta = data.get("question") or data.get("pregunta")
+        rubro = data.get("rubro", "").strip().lower()  # 👈 Nuevo: obtenemos el rubro como string
         token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
         if not pregunta:
             return jsonify({"error": "Falta la pregunta"}), 400
 
-        resultado = responder_chatboc(pregunta, token)
+        resultado = responder_chatboc(pregunta, token, rubro)  # 👈 Le pasamos también el rubro
 
         if "error" in resultado:
             return jsonify(resultado), 401
@@ -28,7 +29,6 @@ def responder():
 
     except Exception as e:
         return jsonify({"error": f"Error interno: {str(e)}"}), 500
-
 
 # ✅ FIX CORS manual
 @chat_bp.after_request

@@ -17,7 +17,7 @@ def obtener_sugerencias_por_rubro(rubro_id):
         sugerencias = Sugerencia.query.filter_by(rubro_id=1).all()  # fallback a 'general'
     return [s.texto for s in sugerencias]
 
-def responder_chatboc(pregunta, token):
+def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
@@ -39,8 +39,8 @@ def responder_chatboc(pregunta, token):
             plan = "demo"
             preguntas_usadas = session["anon_preguntas"]
             limite_preguntas = 15
-            rubro_id = 0
-            rubro_nombre = "general"
+            rubro_id = None
+            rubro_nombre = rubro_nombre_frontend or "general"
 
         user = AnonUser()
 
@@ -55,10 +55,16 @@ def responder_chatboc(pregunta, token):
                 "fuente": "sistema"
             }
 
-    # 📚 Contexto del rubro
-    rubro_id = getattr(user, "rubro_id", 1)
-    rubro = Rubro.query.get(rubro_id)
-    rubro_nombre = rubro.nombre.lower() if rubro and rubro.nombre else "general"
+    # 📚 Determinar rubro real
+    if rubro_nombre_frontend:
+        rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
+        rubro_id = rubro_obj.id if rubro_obj else 1
+        rubro_nombre = rubro_obj.nombre.lower() if rubro_obj else "general"
+    else:
+        rubro_id = getattr(user, "rubro_id", 1)
+        rubro = Rubro.query.get(rubro_id)
+        rubro_nombre = rubro.nombre.lower() if rubro and rubro.nombre else "general"
+
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
     # Paso 1: FAQ
