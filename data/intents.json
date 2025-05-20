@@ -244,9 +244,9 @@
       ],
       "respuesta": "Aceptamos efectivo, tarjetas, QR y MercadoPago. También emitimos facturas."
     },
-    
-    "local_comercial": [
-  {
+
+    "local_comercial"{
+  
     "categoria": "formas_pago",
     "ejemplos": [
       "¿Aceptan tarjetas?",
@@ -305,6 +305,5 @@
     "respuesta": "Tenés hasta 15 días para cambios con ticket. Devoluciones sujetas a condiciones."
   }
 ]
-  ]
 }
-  
+
