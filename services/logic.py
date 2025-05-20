@@ -6,6 +6,7 @@ from models import User, QA, Rubro, Sugerencia
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from extensions import db
+import random
 
 # 🔐 Configurar cliente de Cohere
 cohere_api_key = os.getenv("COHERE_API_KEY")
@@ -15,7 +16,10 @@ def obtener_sugerencias_por_rubro(rubro_id):
     sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
     if not sugerencias:
         sugerencias = Sugerencia.query.filter_by(rubro_id=1).all()  # fallback a 'general'
-    return [s.texto for s in sugerencias]
+
+    todas = [s.texto for s in sugerencias]
+    seleccionadas = random.sample(todas, min(5, len(todas)))  # máximo 5 random
+    return seleccionadas
 
 def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     if not pregunta:
@@ -120,7 +124,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
         sugerencias = obtener_sugerencias_por_rubro(rubro_id)
-        texto = "⚠️ No encontré una respuesta directa. Podés intentar con temas como: " + ", ".join(f"“{s}”" for s in sugerencias)
+        texto = "No encontré una respuesta directa. Pero podés preguntar algo como: " + " · ".join(f"“{s}”" for s in sugerencias)
         return {
             "respuesta": texto,
             "fuente": "sugerencia"
