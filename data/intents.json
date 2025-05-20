@@ -243,6 +243,68 @@
         "¿Puedo pagar en efectivo?"
       ],
       "respuesta": "Aceptamos efectivo, tarjetas, QR y MercadoPago. También emitimos facturas."
-    }
+    },
+    
+    "local_comercial": [
+  {
+    "categoria": "formas_pago",
+    "ejemplos": [
+      "¿Aceptan tarjetas?",
+      "¿Puedo pagar con QR?",
+      "¿Tienen cuotas?"
+    ],
+    "respuesta": "Aceptamos efectivo, tarjetas y MercadoPago. Consultanos si necesitás pagar en cuotas."
+  },
+  {
+    "categoria": "horario_apertura",
+    "ejemplos": [
+      "¿A qué hora abren?",
+      "¿Cuál es su horario?",
+      "¿Están abiertos los fines de semana?"
+    ],
+    "respuesta": "Nuestro horario habitual es de lunes a sábados de 9 a 19 hs. Domingos cerrado."
+  },
+  {
+    "categoria": "ubicacion",
+    "ejemplos": [
+      "¿Dónde están ubicados?",
+      "¿Dónde queda el local?",
+      "¿Cómo llego?",
+      "¿Tienen sucursales?"
+    ],
+    "respuesta": "Estamos en una ubicación céntrica. Consultanos por el local más cercano."
+  },
+  {
+    "categoria": "productos",
+    "ejemplos": [
+      "¿Qué productos venden?",
+      "¿Tienen medias?",
+      "¿Venden remeras?",
+      "¿Qué marcas trabajan?"
+    ],
+    "respuesta": "Vendemos indumentaria y accesorios. Tenemos variedad en medias, remeras, etc."
+  },
+  {
+    "categoria": "promociones",
+    "ejemplos": [
+      "¿Qué promociones tienen?",
+      "¿Hay descuentos?",
+      "¿Tienen 2x1?",
+      "¿Hay rebajas esta semana?"
+    ],
+    "respuesta": "Sí, tenemos promociones activas. Preguntanos por las ofertas de esta semana."
+  },
+  {
+    "categoria": "cambios_y_devoluciones",
+    "ejemplos": [
+      "¿Puedo cambiar el producto?",
+      "¿Hacen devoluciones?",
+      "¿Qué pasa si no me queda?",
+      "¿Cuál es la política de cambios?"
+    ],
+    "respuesta": "Tenés hasta 15 días para cambios con ticket. Devoluciones sujetas a condiciones."
+  }
+]
   ]
 }
+  
