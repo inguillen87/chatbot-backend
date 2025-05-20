@@ -257,7 +257,7 @@ faq_data = {
     ["¿Guardan historial de pedidos?", "Sí, si pedís por WhatsApp o con cuenta, podemos ver tu historial."],
     ["¿Se puede hacer una suscripción semanal?", "Estamos trabajando en un sistema de pedidos recurrentes. Consultanos."],
     ["¿Me pueden avisar si llega un producto que busco?", "Sí, te notificamos cuando esté disponible. Solo tenés que pedirlo."]
-]
+],
 
         }
     },
@@ -384,5 +384,3 @@ faq_data = {
 }
 
 }
-
-
