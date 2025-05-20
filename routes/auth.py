@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from models import User
+from models import User, Rubro
 import logging
 from werkzeug.security import check_password_hash, generate_password_hash
 import uuid
@@ -33,6 +33,8 @@ def login():
         "limite_preguntas": user.limite_preguntas
     })
 
+
+# 📋 INFO DEL USUARIO ACTUAL
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -45,7 +47,6 @@ def get_current_user():
     if not user:
         return jsonify({"error": "Token inválido"}), 401
 
-    from models import Rubro
     rubro = Rubro.query.get(user.rubro_id)
 
     return jsonify({
@@ -61,7 +62,6 @@ def get_current_user():
     })
 
 
-
 # 📝 REGISTER
 @auth_bp.route('/register', methods=['POST'])
 def register():
@@ -70,16 +70,15 @@ def register():
     email = data.get("email", "").strip()
     password = data.get("password", "").strip()
     nombre_empresa = data.get("nombre_empresa", "").strip()
-    rubro_nombre = data.get("rubro", "").strip()
+    rubro_id = data.get("rubro_id")
 
-    if not name or not email or not password or not nombre_empresa or not rubro_nombre:
+    if not name or not email or not password or not nombre_empresa or not rubro_id:
         return jsonify({"error": "Todos los campos son obligatorios"}), 400
 
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "Ya existe un usuario con ese email"}), 400
 
-    from models import Rubro
-    rubro = Rubro.query.filter_by(nombre=rubro_nombre).first()
+    rubro = Rubro.query.get(rubro_id)
     if not rubro:
         return jsonify({"error": "Rubro no válido"}), 400
 
@@ -109,11 +108,11 @@ def register():
         "email": user.email,
         "plan": user.plan,
         "nombre_empresa": user.nombre_empresa,
+        "rubro_id": user.rubro_id,
         "rubro": rubro.nombre,
         "preguntas_usadas": user.preguntas_usadas,
         "limite_preguntas": user.limite_preguntas
     })
-
 
 
 # 🐞 DEBUG USERS (solo para desarrollo)
