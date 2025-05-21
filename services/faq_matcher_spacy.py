@@ -1,6 +1,17 @@
-from models import QA
 import spacy
 import logging
+from models import QA
+
+# ✅ Cargar spaCy con vectores solo una vez
+try:
+    nlp = spacy.load("es_core_news_md")
+    print("✅ spaCy cargado correctamente en faq_matcher_spacy.py")
+
+    if not nlp.vocab.vectors:
+        raise ValueError("❌ El modelo spaCy no tiene vectores.")
+except Exception as e:
+    logging.error(f"❌ Error al cargar spaCy: {e}")
+    raise
 
 def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.82):
     if not pregunta_usuario or not rubro_id:

@@ -7,6 +7,8 @@ from models import QA
 # Cargar spaCy una sola vez con validación de vectores
 try:
     nlp = spacy.load("es_core_news_md")
+    print("✅ spaCy cargado correctamente en intent.py")
+
     if not nlp.vocab.vectors:
         raise ValueError("❌ El modelo spaCy no tiene vectores cargados.")
 except Exception as e:
