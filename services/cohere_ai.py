@@ -13,11 +13,18 @@ def get_cohere_response(messages: list[dict], rubro_id=None) -> str:
         logging.warning("⚠️ Lista de mensajes vacía o inválida.")
         return "No se recibió ningún mensaje válido para procesar."
 
-    # Último mensaje del usuario
+    # Extraer último mensaje del usuario
     last_user_message = next(
         (m["content"] for m in reversed(messages) if m.get("role") == "user" and "content" in m),
         "Hola"
     )
+
+    # Convertir a formato que espera Cohere (message en vez de content)
+    chat_history = [
+        {"role": m["role"], "message": m["content"]}
+        for m in messages
+        if m.get("role") and m.get("content")
+    ]
 
     url = "https://api.cohere.ai/v1/chat"
     headers = {
@@ -29,7 +36,7 @@ def get_cohere_response(messages: list[dict], rubro_id=None) -> str:
         "message": last_user_message,
         "model": "command-r-plus",
         "temperature": 0.3,
-        "chat_history": messages,
+        "chat_history": chat_history,
         "prompt_truncation": "auto"
     }
 
@@ -38,8 +45,8 @@ def get_cohere_response(messages: list[dict], rubro_id=None) -> str:
         if response.status_code == 200:
             respuesta = response.json().get("text", "").strip()
 
-            # Validaciones: respuesta útil, no en inglés
-            if any(w in respuesta.lower() for w in ["the", "you can", "insurance", "hospital", "thank you"]):
+            # Validaciones: idioma, longitud, utilidad
+            if any(w in respuesta.lower() for w in ["the", "you can", "hospital", "insurance", "thank you"]):
                 raise ValueError("Respuesta en inglés detectada.")
             if len(respuesta.split()) < 3:
                 raise ValueError("Respuesta demasiado corta.")
@@ -54,7 +61,7 @@ def get_cohere_response(messages: list[dict], rubro_id=None) -> str:
             return "No tengo autorización para responder."
 
         elif response.status_code == 429:
-            logging.warning("⏳ Error 429: Límite de uso alcanzado.")
+            logging.warning("⏳ Límite de uso alcanzado.")
             return "Se alcanzó el límite de consultas. Intentá más tarde."
 
         else:
