@@ -84,5 +84,32 @@
   "¿Cuánto demora la entrega de resultados?",
   "¿Atienden pacientes sin cobertura médica?",
   "¿Cómo cancelo o reprogramo un turno?"
-  ]
+  ],
+  "local_comercial": [
+  "¿Cuál es el horario de atención?",
+  "¿Dónde están ubicados exactamente?",
+  "¿Hacen envíos o entregas a domicilio?",
+  "¿Se puede retirar el pedido en el local?",
+  "¿Tienen estacionamiento para clientes?",
+  "¿Aceptan pagos con tarjeta de crédito y débito?",
+  "¿Se puede pagar con MercadoPago o QR?",
+  "¿Tienen algún descuento por pago en efectivo?",
+  "¿Hacen facturas A o B?",
+  "¿Cuáles son las promociones del mes?",
+  "¿Tienen programas de fidelidad o puntos?",
+  "¿Ofrecen descuentos por compras mayoristas?",
+  "¿Qué productos o servicios ofrecen?",
+  "¿Tienen algún catálogo disponible?",
+  "¿Atienden los fines de semana o feriados?",
+  "¿Tienen servicio de atención al cliente por WhatsApp?",
+  "¿Puedo hacer pedidos por redes sociales?",
+  "¿Cómo puedo hacer un reclamo o sugerencia?",
+  "¿Tienen stock de [producto específico]?",
+  "¿Puedo encargar productos fuera del catálogo?",
+  "¿Hacen envíos al interior del país?",
+  "¿Tienen políticas de cambios o devoluciones?",
+  "¿Cuál es el tiempo de entrega estimado?",
+  "¿Qué métodos de contacto tienen?",
+  "¿Tienen productos exclusivos o edición limitada?"
+]
 }

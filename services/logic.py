@@ -14,29 +14,27 @@ co = cohere.Client(cohere_api_key)
 
 def obtener_sugerencias_por_rubro(rubro_id):
     try:
-        if not rubro_id:
-            logging.warning("⚠️ rubro_id vacío o inválido. Usando fallback a 'general'.")
-            rubro_id = 1
-
         sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
 
-        if not sugerencias:
+        if sugerencias and len(sugerencias) > 0:
+            logging.info(f"✅ {len(sugerencias)} sugerencias encontradas para rubro_id={rubro_id}")
+            todas = [s.texto for s in sugerencias]
+            seleccionadas = random.sample(todas, min(5, len(todas)))  # máximo 5 random
+            return seleccionadas
+        else:
             logging.warning(f"⚠️ Sin sugerencias para rubro_id={rubro_id}. Intentando fallback a rubro_id=1 (general).")
-            sugerencias = Sugerencia.query.filter_by(rubro_id=1).all()
-
-        if not sugerencias:
-            logging.error("❌ Ni siquiera hay sugerencias para rubro general.")
-            return ["¿En qué puedo ayudarte?", "Probá preguntarme algo puntual.", "Estoy para asistirte."]
-
-        todas = [s.texto for s in sugerencias if s.texto]
-        seleccionadas = random.sample(todas, min(5, len(todas)))
-
-        logging.info(f"✅ Sugerencias devueltas para rubro_id={rubro_id}: {seleccionadas}")
-        return seleccionadas
+            sugerencias_fallback = Sugerencia.query.filter_by(rubro_id=1).all()
+            if sugerencias_fallback:
+                todas_fallback = [s.texto for s in sugerencias_fallback]
+                seleccionadas = random.sample(todas_fallback, min(5, len(todas_fallback)))
+                return seleccionadas
+            else:
+                logging.error("❌ No se encontraron sugerencias ni siquiera en el rubro general.")
+                return ["Lo siento, no tengo sugerencias disponibles en este momento."]
 
     except Exception as e:
-        logging.exception(f"❌ Error al obtener sugerencias para rubro_id={rubro_id}: {e}")
-        return ["Disculpá, hubo un error inesperado."]
+        logging.error(f"❌ Error al obtener sugerencias: {e}")
+        return ["Lo siento, ocurrió un error al buscar sugerencias."]
 
 def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     if not pregunta:
