@@ -1,4 +1,7 @@
 from models import QA
+import spacy
+import logging
+
 def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.82):
     if not pregunta_usuario or not rubro_id:
         logging.warning("⚠️ Entrada inválida para búsqueda en FAQ.")
