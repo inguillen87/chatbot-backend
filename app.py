@@ -8,7 +8,7 @@ from extensions import db, migrate
 from dotenv import load_dotenv
 from flask_migrate import upgrade
 
-# ⬇️ Importar funciones de carga
+# ⬇️ Importar funciones de carga manual (opcional desde consola)
 from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
 
 load_dotenv()
@@ -29,15 +29,12 @@ def create_app():
     app.config.from_object(Config)
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:////data/database.db"
 
-    # ✅ Crear carpeta y archivo de base de datos si no existen (dentro del contexto correcto)
-    try:
-        os.makedirs("/data", exist_ok=True)
-        db_path = "/data/database.db"
-        if not os.path.exists(db_path):
-            with open(db_path, "w"):
-                pass
-    except Exception as e:
-        print("❌ Error asegurando archivo de base de datos:", e)
+    # 🔒 Seguridad: abortar si no existe la base
+    db_path = "/data/database.db"
+    if not os.path.exists(db_path):
+        print("🚨 ERROR CRÍTICO: /data/database.db no existe.")
+        print("🛑 Abortando para evitar pérdida de datos.")
+        exit(1)
 
     # ✅ CORS
     try:
@@ -81,15 +78,10 @@ def create_app():
     except Exception as e:
         print("❌ Error registrando rubros_bp:", e)
 
-    # ✅ Crear tablas si no existen
-    try:
-        with app.app_context():
-            from models import QA
-            db.create_all()
-    except Exception as e:
-        print("❌ Error creando tablas:", e)
+    # 🚫 IMPORTANTE: NO USAR create_all() en producción
+    # Solo se usa flask db upgrade (ver abajo)
 
-    # ✅ Comando para cargar datos iniciales
+    # ✅ Comando CLI para cargar datos iniciales desde consola
     @app.cli.command("cargar_datos_iniciales")
     def cargar_datos_iniciales():
         with app.app_context():
@@ -104,7 +96,7 @@ def create_app():
 # App principal
 app = create_app()
 
-# ✅ Ejecutar migraciones automáticamente
+# ✅ Aplicar migraciones seguras al iniciar
 with app.app_context():
     try:
         upgrade()
