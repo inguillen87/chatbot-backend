@@ -10,7 +10,7 @@ except Exception as e:
     logging.warning(f"❌ Error al cargar spaCy: {e}")
     raise
 
-def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.84):  # 🔼 Umbral más exigente
+def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.8):  # 🔼 Umbral más exigente
     if not pregunta_usuario or not rubro_id:
         logging.warning("⚠️ Entrada inválida para búsqueda en FAQ.")
         return None
