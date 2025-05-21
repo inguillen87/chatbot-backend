@@ -125,15 +125,19 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             model="command",
             prompt=prompt,
             max_tokens=500,
-            temperature=0.5,
+            temperature=0.3,
         )
         generated_text = cohere_response.generations[0].text.strip()
 
-        # Validaciones básicas para evitar errores de idioma o contexto
-        if any(w in generated_text.lower() for w in ["the", "you can", "insurance", "hospital"]):
-            raise ValueError("Respuesta en inglés detectada.")
-        if "nft" in pregunta.lower() and "token" not in generated_text.lower():
-            raise ValueError("Respuesta incoherente para NFT.")
+        # Filtros para cortar respuestas malas
+        if any(w in generated_text.lower() for w in ["the", "you can", "hospital", "insurance", "thank you"]):
+            raise ValueError("Respuesta en inglés detectada")
+
+        if len(generated_text.split()) < 3:
+            raise ValueError("Respuesta demasiado corta o sin contenido")
+
+        if "lo siento" in generated_text.lower() and "podés" not in generated_text.lower():
+            raise ValueError("Respuesta tipo disculpa vacía detectada")
 
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
