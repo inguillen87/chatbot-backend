@@ -27,8 +27,9 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
 
     rubro_id = None
     rubro_nombre = None
+    rubro_origen = "❌ no definido"
 
-    # 🔓 MODO DEMO ANÓNIMO
+    # 🟡 MODO DEMO
     if token.startswith("demo-anon"):
         if "anon_preguntas" not in session:
             session["anon_preguntas"] = 0
@@ -50,16 +51,18 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
 
         user = AnonUser()
 
-        # Intentamos usar el rubro del frontend
         if rubro_nombre_frontend:
             rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
             if rubro_obj:
                 rubro_id = rubro_obj.id
                 rubro_nombre = rubro_obj.nombre.lower().strip()
+                rubro_origen = "🌐 frontend (demo)"
         if not rubro_id:
             rubro_id = 1
             rubro_nombre = "general"
+            rubro_origen = "⚠️ fallback general (demo)"
 
+    # 🔒 USUARIO REAL
     else:
         user = User.query.filter_by(token=token).first()
         if not user:
@@ -71,31 +74,33 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
                 "fuente": "sistema"
             }
 
-        # ✅ Siempre priorizar rubro del usuario
-        rubro_id = None
-        rubro_nombre = None
-
+        # 1. Intenta con rubro_id del usuario
         if user.rubro_id:
             rubro = Rubro.query.get(user.rubro_id)
             if rubro:
                 rubro_id = rubro.id
                 rubro_nombre = rubro.nombre.lower().strip()
+                rubro_origen = "👤 usuario logueado"
 
-        # ⛔️ Solo usar frontend si no hay rubro_id en el usuario
+        # 2. Si no tiene rubro asignado, intenta usar el frontend
         if not rubro_id and rubro_nombre_frontend:
             rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
             if rubro_obj:
                 rubro_id = rubro_obj.id
                 rubro_nombre = rubro_obj.nombre.lower().strip()
+                rubro_origen = "🌐 frontend (fallback user)"
 
-        if not rubro_id or not rubro_nombre:
+        # 3. Fallback final
+        if not rubro_id:
             rubro_id = 1
             rubro_nombre = "general"
+            rubro_origen = "⚠️ fallback general (user)"
 
-    logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'Anon')} | Rubro: {rubro_id} - {rubro_nombre}")
-    logging.info(f"🧠 Buscando respuesta para: '{pregunta}'")
+    # ✅ Verificación explícita por consola
+    logging.info(f"✅ Rubro asignado: ID={rubro_id} | nombre='{rubro_nombre}' | origen={rubro_origen}")
+    logging.info(f"🧠 Pregunta: '{pregunta}' | Usuario: {getattr(user, 'nombre_empresa', 'Anon')}")
 
-    # Paso 1: FAQ
+    # 🔍 Buscar respuesta: FAQ > INTENTS > Cohere > Sugerencias
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         if not token.startswith("demo-anon"):
@@ -107,7 +112,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             "fuente": "faq"
         }
 
-    # Paso 2: INTENTS
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
         if not token.startswith("demo-anon"):
@@ -119,7 +123,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             "fuente": "intents"
         }
 
-    # Paso 3: Cohere
     try:
         nombre_empresa = getattr(user, "nombre_empresa", "la empresa")
         prompt = (
