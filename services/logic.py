@@ -8,30 +8,20 @@ from services.intent_matcher import buscar_en_intents
 from extensions import db
 import random
 
-# 🔐 Configurar cliente de Cohere
+# Inicializar cliente Cohere
 cohere_api_key = os.getenv("COHERE_API_KEY")
 co = cohere.Client(cohere_api_key)
 
 def obtener_sugerencias_por_rubro(rubro_id):
     try:
         sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
-
-        if sugerencias and len(sugerencias) > 0:
+        if sugerencias:
             logging.info(f"✅ {len(sugerencias)} sugerencias encontradas para rubro_id={rubro_id}")
             todas = [s.texto for s in sugerencias]
-            seleccionadas = random.sample(todas, min(5, len(todas)))  # máximo 5 random
-            return seleccionadas
-        else:
-            logging.warning(f"⚠️ Sin sugerencias para rubro_id={rubro_id}. Intentando fallback a rubro_id=1 (general).")
-            sugerencias_fallback = Sugerencia.query.filter_by(rubro_id=1).all()
-            if sugerencias_fallback:
-                todas_fallback = [s.texto for s in sugerencias_fallback]
-                seleccionadas = random.sample(todas_fallback, min(5, len(todas_fallback)))
-                return seleccionadas
-            else:
-                logging.error("❌ No se encontraron sugerencias ni siquiera en el rubro general.")
-                return ["Lo siento, no tengo sugerencias disponibles en este momento."]
-
+            return random.sample(todas, min(5, len(todas)))
+        logging.warning(f"⚠️ Sin sugerencias para rubro_id={rubro_id}. Usando rubro_id=1 (general)")
+        fallback = Sugerencia.query.filter_by(rubro_id=1).all()
+        return random.sample([s.texto for s in fallback], min(5, len(fallback))) if fallback else ["Lo siento, no tengo sugerencias disponibles en este momento."]
     except Exception as e:
         logging.error(f"❌ Error al obtener sugerencias: {e}")
         return ["Lo siento, ocurrió un error al buscar sugerencias."]
@@ -40,20 +30,21 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
-    rubro_nombre = None
-    rubro_id = None
+    # =====================
+    # 🔓 Determinar usuario
+    # =====================
+    is_demo = token.startswith("demo-anon")
+    user = None
+    rubro_id = 1
+    rubro_nombre = "general"
 
-    # 🔓 MODO DEMO ANÓNIMO
-    if token.startswith("demo-anon"):
-        if "anon_preguntas" not in session:
-            session["anon_preguntas"] = 0
-
+    if is_demo:
+        session.setdefault("anon_preguntas", 0)
         if session["anon_preguntas"] >= 15:
             return {
                 "respuesta": "🔒 Alcanzaste el límite de 15 preguntas en modo demo. Registrate gratis para seguir probando.",
                 "fuente": "sistema"
             }
-
         session["anon_preguntas"] += 1
 
         class AnonUser:
@@ -62,51 +53,40 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             preguntas_usadas = session["anon_preguntas"]
             limite_preguntas = 15
             rubro_id = None
-
         user = AnonUser()
-
-        if rubro_nombre_frontend:
-            rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
-            if rubro_obj:
-                rubro_id = rubro_obj.id
-                rubro_nombre = rubro_obj.nombre.lower().strip()
-        if not rubro_id:
-            rubro_id = 1
-            rubro_nombre = "general"
 
     else:
         user = User.query.filter_by(token=token).first()
         if not user:
             return {"error": "Usuario no autenticado"}
-
         if user.preguntas_usadas >= user.limite_preguntas:
             return {
                 "respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas.",
                 "fuente": "sistema"
             }
 
-        if user.rubro_id:
-            rubro = Rubro.query.get(user.rubro_id)
-            if rubro:
-                rubro_id = rubro.id
-                rubro_nombre = rubro.nombre.lower().strip()
+    # ===========================
+    # 🧠 Determinar rubro válido
+    # ===========================
+    if user.rubro_id:
+        rubro = Rubro.query.get(user.rubro_id)
+        if rubro:
+            rubro_id = rubro.id
+            rubro_nombre = rubro.nombre.lower().strip()
+    elif rubro_nombre_frontend:
+        rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
+        if rubro_obj:
+            rubro_id = rubro_obj.id
+            rubro_nombre = rubro_obj.nombre.lower().strip()
 
-        if not rubro_id and rubro_nombre_frontend:
-            rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
-            if rubro_obj:
-                rubro_id = rubro_obj.id
-                rubro_nombre = rubro_obj.nombre.lower().strip()
+    logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'demo')} | Rubro: {rubro_nombre} (ID {rubro_id})")
 
-        if not rubro_id or not rubro_nombre:
-            rubro_id = 1
-            rubro_nombre = "general"
-
-    logging.info(f"📌 Usando rubro_id={rubro_id}, rubro_nombre='{rubro_nombre}' para usuario: {getattr(user, 'nombre_empresa', 'demo')}")
-
-    # Paso 1: FAQ
+    # ====================
+    # ✅ Paso 1: FAQs spaCy
+    # ====================
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
-        if not token.startswith("demo-anon"):
+        if not is_demo:
             user.preguntas_usadas += 1
             db.session.commit()
         return {
@@ -115,10 +95,12 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             "fuente": "faq"
         }
 
-    # Paso 2: INTENTS
+    # =====================
+    # ✅ Paso 2: Intents JSON
+    # =====================
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
-        if not token.startswith("demo-anon"):
+        if not is_demo:
             user.preguntas_usadas += 1
             db.session.commit()
         return {
@@ -127,15 +109,15 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             "fuente": "intents"
         }
 
-    # Paso 3: Cohere
+    # =====================
+    # ✅ Paso 3: Cohere GPT
+    # =====================
     try:
-        nombre_empresa = getattr(user, "nombre_empresa", "la empresa")
         prompt = (
-            f"Sos Chatboc, el asistente virtual oficial de la empresa '{nombre_empresa}', que trabaja en el rubro '{rubro_nombre}'.\n"
-            f"Respondé las consultas de los clientes de forma clara, profesional y útil.\n"
-            f"Usá frases cortas y naturales. Evitá rodeos, tecnicismos innecesarios y no aclares que sos un asistente virtual ni que la respuesta fue generada con IA.\n"
-            f"Respondé siempre como si fueras parte del equipo de la empresa. Si no sabés algo, pedí más detalles o derivá con amabilidad.\n"
-            f"Plan actual del cliente: {user.plan}.\n\n"
+            f"Sos Chatboc, el asistente virtual oficial de '{user.nombre_empresa}', empresa del rubro '{rubro_nombre}'.\n"
+            f"Respondé con claridad, profesionalismo y estilo humano.\n"
+            f"No digas que sos IA ni menciones que es una respuesta generada.\n"
+            f"Plan del cliente: {user.plan}.\n"
             f"Consulta: \"{pregunta}\""
         )
 
@@ -147,22 +129,21 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
         )
         generated_text = cohere_response.generations[0].text.strip()
 
-        if any(word in generated_text.lower() for word in ["the", "you can", "hospital", "insurance", "thank you"]):
-            raise ValueError("Respuesta en inglés detectada")
-
+        # Validaciones básicas para evitar errores de idioma o contexto
+        if any(w in generated_text.lower() for w in ["the", "you can", "insurance", "hospital"]):
+            raise ValueError("Respuesta en inglés detectada.")
         if "nft" in pregunta.lower() and "token" not in generated_text.lower():
-            raise ValueError("Respuesta incoherente para NFT")
+            raise ValueError("Respuesta incoherente para NFT.")
 
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
         sugerencias = obtener_sugerencias_por_rubro(rubro_id)
-        texto = "No encontré una respuesta directa. Pero podés preguntar algo como: " + " · ".join(f"“{s}”" for s in sugerencias)
         return {
-            "respuesta": texto,
+            "respuesta": "No encontré una respuesta directa. Podés probar preguntando algo como: " + " · ".join(f"“{s}”" for s in sugerencias),
             "fuente": "sugerencia"
         }
 
-    if not token.startswith("demo-anon"):
+    if not is_demo:
         user.preguntas_usadas += 1
         db.session.commit()
 

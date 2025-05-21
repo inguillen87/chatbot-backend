@@ -2,15 +2,16 @@ from models import QA
 import spacy
 import logging
 
+# Cargar spaCy una sola vez con validación
 try:
     nlp = spacy.load("es_core_news_md")
     if not nlp.vocab.vectors:
         raise ValueError("❌ El modelo 'es_core_news_md' no tiene vectores cargados.")
 except Exception as e:
-    logging.warning(f"❌ Error al cargar spaCy: {e}")
+    logging.error(f"❌ Error al cargar spaCy: {e}")
     raise
 
-def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.8):  # 🔼 Umbral más exigente
+def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.80):
     if not pregunta_usuario or not rubro_id:
         logging.warning("⚠️ Entrada inválida para búsqueda en FAQ.")
         return None
@@ -34,15 +35,18 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
             continue
 
         score = doc_user.similarity(doc_faq)
-        print(f"🔍 Pregunta vs FAQ: '{faq.question}' → Score: {score:.3f}")
+        logging.debug(f"🔍 Comparando con: '{faq.question}' → Score: {score:.3f}")
 
         if score > mejor_score:
             mejor_score = score
             mejor_match = faq
 
-    if mejor_match and mejor_score >= threshold:
-        print(f"✅ Match encontrado: '{mejor_match.question}' con score {mejor_score:.3f}")
+    if mejor_match:
+        if mejor_score >= threshold:
+            logging.info(f"✅ FAQ match fuerte: '{mejor_match.question}' (score: {mejor_score:.3f})")
+        else:
+            logging.warning(f"⚠️ FAQ match débil (score: {mejor_score:.3f}). Usando como respuesta tentativa.")
         return mejor_match
 
-    print(f"❌ No hay coincidencias suficientes (mejor score: {mejor_score:.3f})")
+    logging.info("❌ No se encontró ninguna coincidencia válida con spaCy.")
     return None
