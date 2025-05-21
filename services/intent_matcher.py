@@ -2,6 +2,7 @@ import json
 import os
 import spacy
 import logging
+from models import QA
 
 # Cargar spaCy una sola vez con validación de vectores
 try:
