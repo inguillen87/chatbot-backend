@@ -13,13 +13,31 @@ cohere_api_key = os.getenv("COHERE_API_KEY")
 co = cohere.Client(cohere_api_key)
 
 def obtener_sugerencias_por_rubro(rubro_id):
-    sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
-    if not sugerencias:
-        sugerencias = Sugerencia.query.filter_by(rubro_id=1).all()  # fallback a 'general'
+    try:
+        if not rubro_id:
+            logging.warning("⚠️ No se recibió rubro_id válido. Usando fallback a 'general'.")
+            rubro_id = 1
 
-    todas = [s.texto for s in sugerencias]
-    seleccionadas = random.sample(todas, min(5, len(todas)))  # máximo 5 random
-    return seleccionadas
+        sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
+
+        if not sugerencias:
+            logging.warning(f"⚠️ No se encontraron sugerencias para rubro_id={rubro_id}. Usando fallback a rubro_id=1 (general).")
+            sugerencias = Sugerencia.query.filter_by(rubro_id=1).all()
+
+        if not sugerencias:
+            logging.error("❌ No se encontraron sugerencias ni siquiera en el fallback (rubro general).")
+            return ["¿En qué puedo ayudarte?", "Probá preguntarme algo simple.", "Estoy listo para responder tus dudas."]
+
+        todas = [s.texto for s in sugerencias if s.texto]
+        seleccionadas = random.sample(todas, min(5, len(todas)))
+
+        logging.info(f"✅ Sugerencias devueltas para rubro_id={rubro_id}: {seleccionadas}")
+        return seleccionadas
+
+    except Exception as e:
+        logging.exception(f"❌ Error crítico al obtener sugerencias: {e}")
+        return ["Disculpá, hubo un error. Podés intentar reformular tu pregunta."]
+
 
 def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     if not pregunta:
