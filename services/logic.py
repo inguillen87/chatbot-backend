@@ -25,6 +25,9 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
+    rubro_id = None
+    rubro_nombre = None
+
     # 🔓 MODO DEMO ANÓNIMO
     if token.startswith("demo-anon"):
         if "anon_preguntas" not in session:
@@ -44,9 +47,18 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             preguntas_usadas = session["anon_preguntas"]
             limite_preguntas = 15
             rubro_id = None
-            rubro_nombre = rubro_nombre_frontend or "general"
 
         user = AnonUser()
+
+        # Intentamos usar el rubro del frontend
+        if rubro_nombre_frontend:
+            rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
+            if rubro_obj:
+                rubro_id = rubro_obj.id
+                rubro_nombre = rubro_obj.nombre.lower().strip()
+        if not rubro_id:
+            rubro_id = 1
+            rubro_nombre = "general"
 
     else:
         user = User.query.filter_by(token=token).first()
@@ -59,32 +71,29 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
                 "fuente": "sistema"
             }
 
-        # 📚 Determinar rubro correcto (PRIORIDAD: user.rubro_id > rubro del frontend > general)
+        # ✅ Siempre priorizar rubro del usuario
         rubro_id = None
         rubro_nombre = None
 
-        # 1. Si el user tiene rubro asociado
-        if hasattr(user, "rubro_id") and user.rubro_id:
+        if user.rubro_id:
             rubro = Rubro.query.get(user.rubro_id)
             if rubro:
                 rubro_id = rubro.id
                 rubro_nombre = rubro.nombre.lower().strip()
 
-        # 2. Si no hay rubro_id (modo demo), usamos el nombre del frontend
+        # ⛔️ Solo usar frontend si no hay rubro_id en el usuario
         if not rubro_id and rubro_nombre_frontend:
             rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
             if rubro_obj:
                 rubro_id = rubro_obj.id
                 rubro_nombre = rubro_obj.nombre.lower().strip()
 
-        # 3. Fallback a general
         if not rubro_id or not rubro_nombre:
             rubro_id = 1
             rubro_nombre = "general"
 
-
-
-    logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
+    logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'Anon')} | Rubro: {rubro_id} - {rubro_nombre}")
+    logging.info(f"🧠 Buscando respuesta para: '{pregunta}'")
 
     # Paso 1: FAQ
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
