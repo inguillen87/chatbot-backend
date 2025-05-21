@@ -54,32 +54,17 @@ def create_app():
         print("❌ Error inicializando extensiones:", e)
 
     # ✅ Registrar Blueprints
-    try:
-        from routes.auth import auth_bp
-        app.register_blueprint(auth_bp)
-    except Exception as e:
-        print("❌ Error registrando auth_bp:", e)
-
-    try:
-        from routes.chat import chat_bp
-        app.register_blueprint(chat_bp)
-    except Exception as e:
-        print("❌ Error registrando chat_bp:", e)
-
-    try:
-        from routes.sugerencias import sugerencia_bp
-        app.register_blueprint(sugerencia_bp)
-    except Exception as e:
-        print("❌ Error registrando sugerencia_bp:", e)
-
-    try:
-        from routes.rubros import rubros_bp
-        app.register_blueprint(rubros_bp)
-    except Exception as e:
-        print("❌ Error registrando rubros_bp:", e)
-
-    # 🚫 IMPORTANTE: NO USAR create_all() en producción
-    # Solo se usa flask db upgrade (ver abajo)
+    for bp_import, name in [
+        ("routes.auth", "auth_bp"),
+        ("routes.chat", "chat_bp"),
+        ("routes.sugerencias", "sugerencia_bp"),
+        ("routes.rubros", "rubros_bp")
+    ]:
+        try:
+            bp_module = __import__(bp_import, fromlist=[name])
+            app.register_blueprint(getattr(bp_module, name))
+        except Exception as e:
+            print(f"❌ Error registrando {name}:", e)
 
     # ✅ Comando CLI para cargar datos iniciales desde consola
     @app.cli.command("cargar_datos_iniciales")
@@ -100,9 +85,9 @@ app = create_app()
 with app.app_context():
     try:
         upgrade()
-        print("✅ Migraciones aplicadas.")
+        print("✅ Migraciones aplicadas correctamente.")
     except Exception as e:
-        print("❌ Error en upgrade de migraciones:", e)
+        logging.error(f"❌ Error en upgrade de migraciones (ignorado en producción): {e}")
 
 # ✅ Modo local
 if __name__ == '__main__':
