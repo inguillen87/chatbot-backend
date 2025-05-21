@@ -59,28 +59,30 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
                 "fuente": "sistema"
             }
 
-    # 📚 Determinar rubro correcto
-    rubro_id = None
-    rubro_nombre = "general"
+        # 📚 Determinar rubro correcto (PRIORIDAD: user.rubro_id > rubro del frontend > general)
+        rubro_id = None
+        rubro_nombre = None
 
-    # 1. Si el usuario real tiene rubro_id
-    if hasattr(user, "rubro_id") and user.rubro_id:
-        rubro = Rubro.query.get(user.rubro_id)
-        if rubro:
-            rubro_id = rubro.id
-            rubro_nombre = rubro.nombre.lower().strip()
+        # 1. Si el user tiene rubro asociado
+        if hasattr(user, "rubro_id") and user.rubro_id:
+            rubro = Rubro.query.get(user.rubro_id)
+            if rubro:
+                rubro_id = rubro.id
+                rubro_nombre = rubro.nombre.lower().strip()
 
-    # 2. Si no tiene rubro, intentamos con el nombre pasado desde frontend
-    if not rubro_id and rubro_nombre_frontend:
-        rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
-        if rubro_obj:
-            rubro_id = rubro_obj.id
-            rubro_nombre = rubro_obj.nombre.lower().strip()
+        # 2. Si no hay rubro_id (modo demo), usamos el nombre del frontend
+        if not rubro_id and rubro_nombre_frontend:
+            rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
+            if rubro_obj:
+                rubro_id = rubro_obj.id
+                rubro_nombre = rubro_obj.nombre.lower().strip()
 
-    # 3. Si aún no hay rubro, fallback explícito a general
-    if not rubro_id:
-        rubro_id = 1
-        rubro_nombre = "general"
+        # 3. Fallback a general
+        if not rubro_id or not rubro_nombre:
+            rubro_id = 1
+            rubro_nombre = "general"
+
+
 
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
