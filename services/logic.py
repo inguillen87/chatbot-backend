@@ -59,21 +59,28 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
                 "fuente": "sistema"
             }
 
-    # 📚 Determinar rubro real (prioridad al rubro del usuario)
-    rubro_id = getattr(user, "rubro_id", None)
+    # 📚 Determinar rubro correcto
+    rubro_id = None
     rubro_nombre = "general"
 
-    if rubro_id:
-        rubro = Rubro.query.get(rubro_id)
+    # 1. Si el usuario real tiene rubro_id
+    if hasattr(user, "rubro_id") and user.rubro_id:
+        rubro = Rubro.query.get(user.rubro_id)
         if rubro:
+            rubro_id = rubro.id
             rubro_nombre = rubro.nombre.lower().strip()
 
-    # Si viene rubro manual desde frontend (modo demo), se usa solo si no hay uno real
+    # 2. Si no tiene rubro, intentamos con el nombre pasado desde frontend
     if not rubro_id and rubro_nombre_frontend:
         rubro_obj = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
         if rubro_obj:
             rubro_id = rubro_obj.id
             rubro_nombre = rubro_obj.nombre.lower().strip()
+
+    # 3. Si aún no hay rubro, fallback explícito a general
+    if not rubro_id:
+        rubro_id = 1
+        rubro_nombre = "general"
 
     logging.info(f"🧠 Buscando respuesta para: '{pregunta}' | Rubro: {rubro_nombre}")
 
@@ -129,7 +136,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
 
     except Exception as e:
         logging.error(f"❌ Error en Cohere: {e}")
-        sugerencias = obtener_sugerencias_por_rubro(rubro_id or 1)
+        sugerencias = obtener_sugerencias_por_rubro(rubro_id)
         texto = "No encontré una respuesta directa. Pero podés preguntar algo como: " + " · ".join(f"“{s}”" for s in sugerencias)
         return {
             "respuesta": texto,
