@@ -13,31 +13,34 @@ def get_cohere_response(messages: list[dict], rubro_id=None, user_context=None) 
         logging.warning("⚠️ Lista de mensajes vacía o inválida.")
         return "No se recibió ningún mensaje válido para procesar."
 
-    # Contexto del usuario y empresa
-    nombre_empresa = user_context.get("nombre_empresa", "la empresa")
+    # Extraer contexto del usuario
+    nombre_empresa = user_context.get("nombre_empresa", "tu empresa")
     rubro_nombre = user_context.get("rubro_nombre", "general")
     plan = user_context.get("plan", "demo")
 
+    # Prompt para control total del tono
     system_prompt = (
-        f"Sos Chatboc, el asistente virtual oficial de la empresa '{nombre_empresa}', que trabaja en el rubro '{rubro_nombre}'. "
-        f"Respondé como si fueras parte real del equipo. Usá lenguaje natural, directo y en español. "
-        f"Nunca digas que sos una IA ni que esta respuesta fue generada automáticamente. "
-        f"Si no sabés algo, pedí más detalles o indicá que se puede consultar al equipo humano. "
-        f"Plan actual del cliente: {plan}."
+        f"Sos **Chatboc**, el asistente virtual profesional de la empresa '{nombre_empresa}', especializada en el rubro '{rubro_nombre}'. "
+        f"Tu tarea es responder dudas de clientes como si fueras parte del equipo humano, usando un tono cálido, directo y profesional. "
+        f"Nunca digas que sos una IA, un modelo de lenguaje, ni digas frases como 'esta respuesta fue generada automáticamente'. "
+        f"Si no sabés algo, invitá al usuario a comunicarse con el equipo real. "
+        f"Plan del cliente: {plan}. Siempre respondé en español neutro, sin tecnicismos, y usando ejemplos si es útil."
     )
 
-    # Insertar mensaje system al inicio del chat
+    # Estructura del historial de chat
     chat_history = [{"role": "system", "message": system_prompt}] + [
         {"role": m["role"], "message": m["content"]}
         for m in messages
         if m.get("role") and m.get("content")
     ]
 
+    # Último mensaje válido del usuario
     last_user_message = next(
         (m["content"] for m in reversed(messages) if m.get("role") == "user" and "content" in m),
         "Hola"
     )
 
+    # Configuración de la API de Cohere
     url = "https://api.cohere.ai/v1/chat"
     headers = {
         "Authorization": f"Bearer {COHERE_API_KEY}",
@@ -54,15 +57,17 @@ def get_cohere_response(messages: list[dict], rubro_id=None, user_context=None) 
 
     try:
         response = requests.post(url, headers=headers, json=payload)
+
         if response.status_code == 200:
             respuesta = response.json().get("text", "").strip()
 
+            # Filtros de seguridad (idioma, longitud, utilidad)
             if any(w in respuesta.lower() for w in ["the", "you can", "hospital", "insurance", "thank you"]):
                 raise ValueError("Respuesta en inglés detectada.")
             if len(respuesta.split()) < 3:
                 raise ValueError("Respuesta demasiado corta.")
             if "lo siento" in respuesta.lower() and "podés" not in respuesta.lower():
-                raise ValueError("Respuesta tipo disculpa sin valor.")
+                raise ValueError("Respuesta tipo disculpa sin acción.")
 
             logging.info(f"💬 Respuesta Cohere: {respuesta}")
             return respuesta or "Lo siento, no tengo una respuesta clara para eso."
