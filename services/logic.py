@@ -4,7 +4,7 @@ from flask import session
 from models import User, QA, Rubro, Sugerencia
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
-from services.cohere_ai import get_cohere_response  # 👈 NUEVO: uso de Cohere modular
+from services.cohere_ai import get_cohere_response  # ✅ Uso modular
 from extensions import db
 import random
 
@@ -26,9 +26,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
-    # =====================
-    # 🔓 Determinar usuario
-    # =====================
     is_demo = token.startswith("demo-anon")
     user = None
     rubro_id = 1
@@ -50,7 +47,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             limite_preguntas = 15
             rubro_id = None
         user = AnonUser()
-
     else:
         user = User.query.filter_by(token=token).first()
         if not user:
@@ -61,9 +57,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
                 "fuente": "sistema"
             }
 
-    # ===========================
-    # 🧠 Determinar rubro válido
-    # ===========================
+    # Determinar rubro
     if user.rubro_id:
         rubro = Rubro.query.get(user.rubro_id)
         if rubro:
@@ -77,9 +71,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
 
     logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'demo')} | Rubro: {rubro_nombre} (ID {rubro_id})")
 
-    # ====================
-    # ✅ Paso 1: FAQs spaCy
-    # ====================
+    # Paso 1: FAQ
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         if not is_demo:
@@ -91,9 +83,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             "fuente": "faq"
         }
 
-    # =====================
-    # ✅ Paso 2: Intents JSON
-    # =====================
+    # Paso 2: Intents
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
         if not is_demo:
@@ -105,12 +95,17 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             "fuente": "intents"
         }
 
-    # =====================
-    # ✅ Paso 3: Cohere command-r-plus (vía cohere_ai.py)
-    # =====================
+    # Paso 3: Cohere
     try:
         messages = [{"role": "user", "content": pregunta}]
-        generated_text = get_cohere_response(messages, rubro_id=rubro_id)
+        user_context = {
+            "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
+            "rubro_nombre": rubro_nombre,
+            "plan": getattr(user, "plan", "demo")
+        }
+
+        generated_text = get_cohere_response(messages, rubro_id=rubro_id, user_context=user_context)
+
     except Exception as e:
         logging.error(f"❌ Error al generar respuesta con Cohere: {e}")
         sugerencias = obtener_sugerencias_por_rubro(rubro_id)
