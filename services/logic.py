@@ -1,16 +1,12 @@
 import os
 import logging
-import cohere
 from flask import session
 from models import User, QA, Rubro, Sugerencia
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
+from services.cohere_ai import get_cohere_response  # 👈 NUEVO: uso de Cohere modular
 from extensions import db
 import random
-
-# Inicializar cliente Cohere
-cohere_api_key = os.getenv("COHERE_API_KEY")
-co = cohere.Client(cohere_api_key)
 
 def obtener_sugerencias_por_rubro(rubro_id):
     try:
@@ -110,37 +106,13 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
         }
 
     # =====================
-    # ✅ Paso 3: Cohere GPT
+    # ✅ Paso 3: Cohere command-r-plus (vía cohere_ai.py)
     # =====================
     try:
-        prompt = (
-            f"Sos Chatboc, el asistente virtual oficial de '{user.nombre_empresa}', empresa del rubro '{rubro_nombre}'.\n"
-            f"Respondé con claridad, profesionalismo y estilo humano.\n"
-            f"No digas que sos IA ni menciones que es una respuesta generada.\n"
-            f"Plan del cliente: {user.plan}.\n"
-            f"Consulta: \"{pregunta}\""
-        )
-
-        cohere_response = co.generate(
-            model="command",
-            prompt=prompt,
-            max_tokens=500,
-            temperature=0.3,
-        )
-        generated_text = cohere_response.generations[0].text.strip()
-
-        # Filtros para cortar respuestas malas
-        if any(w in generated_text.lower() for w in ["the", "you can", "hospital", "insurance", "thank you"]):
-            raise ValueError("Respuesta en inglés detectada")
-
-        if len(generated_text.split()) < 3:
-            raise ValueError("Respuesta demasiado corta o sin contenido")
-
-        if "lo siento" in generated_text.lower() and "podés" not in generated_text.lower():
-            raise ValueError("Respuesta tipo disculpa vacía detectada")
-
+        messages = [{"role": "user", "content": pregunta}]
+        generated_text = get_cohere_response(messages, rubro_id=rubro_id)
     except Exception as e:
-        logging.error(f"❌ Error en Cohere: {e}")
+        logging.error(f"❌ Error al generar respuesta con Cohere: {e}")
         sugerencias = obtener_sugerencias_por_rubro(rubro_id)
         return {
             "respuesta": "No encontré una respuesta directa. Podés probar preguntando algo como: " + " · ".join(f"“{s}”" for s in sugerencias),
