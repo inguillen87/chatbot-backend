@@ -28,9 +28,9 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # 🔒 Seguridad: abortar si no existe la base
+    # 🔒 Seguridad: abortar si no existe la base, excepto si estamos creando una nueva
     db_path = Config.SQLALCHEMY_DATABASE_URI.replace("sqlite:///", "")
-    if not os.path.exists(db_path):
+    if not os.path.exists(db_path) and not os.getenv("ALLOW_DB_INIT"):
         print(f"🚨 ERROR CRÍTICO: {db_path} no existe.")
         print("🛑 Abortando para evitar pérdida de datos.")
         exit(1)
