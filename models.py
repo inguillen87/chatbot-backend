@@ -1,4 +1,5 @@
 from datetime import datetime
+from sqlalchemy import Column, String, Integer, DateTime
 from extensions import db
 import uuid
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -17,6 +18,16 @@ class Rubro(db.Model):
 
     def __repr__(self):
         return f"<Rubro {self.nombre}>"
+    
+   
+class Log(db.Model):
+    __tablename__ = "logs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, nullable=False)
+    pregunta = db.Column(db.String(500), nullable=False)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+
 
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -47,6 +58,11 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255))
+    direccion = db.Column(db.String(200))
+    telefono = db.Column(db.String(20))  
+    link_web = db.Column(db.String(255))
+    horario = db.Column(db.String(100))
+    ubicacion = db.Column(db.String(100))
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
     limite_preguntas = db.Column(db.Integer, default=50)  

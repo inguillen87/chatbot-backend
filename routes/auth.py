@@ -4,6 +4,7 @@ import logging
 from werkzeug.security import check_password_hash, generate_password_hash
 import uuid
 from extensions import db
+from functools import wraps
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -33,7 +34,6 @@ def login():
         "limite_preguntas": user.limite_preguntas
     })
 
-
 # 📋 INFO DEL USUARIO ACTUAL
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
@@ -60,7 +60,6 @@ def get_current_user():
         "nombre_empresa": user.nombre_empresa,
         "rubro": rubro.nombre if rubro else "General"
     })
-
 
 # 📝 REGISTER
 @auth_bp.route('/register', methods=['POST'])
@@ -114,7 +113,6 @@ def register():
         "limite_preguntas": user.limite_preguntas
     })
 
-
 # 🐞 DEBUG USERS (solo para desarrollo)
 @auth_bp.route('/debug/users', methods=['GET'])
 def list_users():
@@ -137,3 +135,44 @@ def list_users():
     except Exception as e:
         logging.error(f"❌ Error al listar usuarios: {str(e)}")
         return jsonify({"error": f"Error al listar usuarios: {str(e)}"}), 500
+
+# 🛠️ ACTUALIZACIÓN DE PERFIL DEL USUARIO
+@auth_bp.route("/perfil", methods=["PUT"])
+def actualizar_perfil():
+    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    user = User.query.filter_by(token=token).first()
+
+    if not user:
+        return jsonify({"error": "Usuario no autenticado"}), 401
+
+    data = request.get_json()
+
+    user.nombre_empresa = data.get("nombre_empresa", user.nombre_empresa)
+    user.direccion = data.get("direccion", user.direccion)
+    user.telefono = data.get("telefono", user.telefono)
+    user.link_web = data.get("link_web", user.link_web)
+    user.horario = data.get("horario", user.horario)
+    user.ubicacion = data.get("ubicacion", user.ubicacion)
+    user.logo_url = data.get("logo_url", user.logo_url)
+
+    try:
+        db.session.commit()
+        return jsonify({"mensaje": "Perfil actualizado correctamente"}), 200
+    except Exception as e:
+        return jsonify({"error": f"No se pudo actualizar el perfil: {str(e)}"}), 500
+
+# 🔐 DECORADOR DE AUTENTICACIÓN REUTILIZABLE
+def token_requerido(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not token:
+            return jsonify({"error": "Token faltante"}), 401
+
+        user = User.query.filter_by(token=token).first()
+        if not user:
+            return jsonify({"error": "Token inválido"}), 403
+
+        return f(user, *args, **kwargs)
+
+    return decorated

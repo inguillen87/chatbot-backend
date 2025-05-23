@@ -8,6 +8,20 @@ from services.cohere_ai import get_cohere_response  # ✅ Uso modular
 from extensions import db
 import random
 
+def reemplazar_placeholders(texto: str, user) -> str:
+    telefono_link = f"https://wa.me/{user.telefono}" if user.telefono else "https://wa.me/"
+
+    return (
+        texto
+        .replace("[nombreEmpresa]", user.nombre_empresa or "nuestra empresa")
+        .replace("[linkWeb]", getattr(user, "link_web", "https://tusitioweb.com"))
+        .replace("[telefono]", telefono_link)
+        .replace("[direccion]", user.direccion or "dirección no informada")
+        .replace("[horario]", user.horario or "horario no disponible")
+        .replace("[ubicacion]", user.ubicacion or "")
+        .replace("[rubroNombre]", getattr(user, "rubro_nombre", "empresa"))
+    )
+
 def obtener_sugerencias_por_rubro(rubro_id):
     try:
         sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
@@ -86,6 +100,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
     # Paso 2: Intents
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
+        intent_respuesta = reemplazar_placeholders(intent_respuesta, user) 
         if not is_demo:
             user.preguntas_usadas += 1
             db.session.commit()
