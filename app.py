@@ -27,12 +27,11 @@ logging.getLogger().addHandler(file_handler)
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data/database.db"
 
     # 🔒 Seguridad: abortar si no existe la base
-    db_path = os.path.join(os.getcwd(), "data", "database.db")
+    db_path = Config.SQLALCHEMY_DATABASE_URI.replace("sqlite:///", "")
     if not os.path.exists(db_path):
-        print("🚨 ERROR CRÍTICO: /data/database.db no existe.")
+        print(f"🚨 ERROR CRÍTICO: {db_path} no existe.")
         print("🛑 Abortando para evitar pérdida de datos.")
         exit(1)
 
