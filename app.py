@@ -8,7 +8,7 @@ from extensions import db, migrate
 from dotenv import load_dotenv
 from flask_migrate import upgrade
 
-# ⬇️ Importar funciones de carga manual (opcional desde consola)
+# ⬇️ Importar funciones de carga manual
 from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
 
 load_dotenv()
@@ -24,18 +24,19 @@ formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 file_handler.setFormatter(formatter)
 logging.getLogger().addHandler(file_handler)
 
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # 🔒 Seguridad: abortar si no existe la base, excepto si estamos creando una nueva
     db_path = Config.SQLALCHEMY_DATABASE_URI.replace("sqlite:///", "")
     if not os.path.exists(db_path) and not os.getenv("ALLOW_DB_INIT"):
         print(f"🚨 ERROR CRÍTICO: {db_path} no existe.")
         print("🛑 Abortando para evitar pérdida de datos.")
         exit(1)
 
-    # ✅ CORS
+    os.makedirs(app.instance_path, exist_ok=True)
+
     try:
         CORS(app, resources={r"/*": {"origins": [
             "https://chatboc.ar",
@@ -45,14 +46,12 @@ def create_app():
     except Exception as e:
         print("❌ Error aplicando CORS:", e)
 
-    # ✅ Inicializar extensiones
     try:
         db.init_app(app)
         migrate.init_app(app, db)
     except Exception as e:
         print("❌ Error inicializando extensiones:", e)
 
-    # ✅ Registrar Blueprints
     for bp_import, name in [
         ("routes.auth", "auth_bp"),
         ("routes.chat", "chat_bp"),
@@ -66,20 +65,29 @@ def create_app():
         except Exception as e:
             print(f"❌ Error registrando {name}:", e)
 
-    # ✅ Comando CLI para cargar datos iniciales desde consola
-    @app.cli.command("cargar_datos_iniciales")
-    def cargar_datos_iniciales():
-        with app.app_context():
-            print("🚀 Iniciando carga de datos iniciales...")
-            cargar_faqs()
-            cargar_sugerencias()
-            cargar_usuarios_demo()
-            print("✅ Todo cargado correctamente.")
-
     return app
+
 
 # App principal
 app = create_app()
+
+# ✅ Agregar comando CLI correctamente
+@app.cli.command("cargar_datos_iniciales")
+def cargar_datos_iniciales():
+    with app.app_context():
+        db_path = os.path.join(app.instance_path, "database.db")
+        if not os.path.exists(db_path):
+            print(f"📁 No existe {db_path}, creando base de datos...")
+            db.create_all()
+        else:
+            print(f"✅ Base de datos encontrada en {db_path}")
+
+        cargar_usuarios_demo()
+        cargar_faqs()
+        cargar_sugerencias()
+
+        print("✅ Datos iniciales cargados correctamente.")
+
 
 # ✅ Aplicar migraciones seguras al iniciar
 with app.app_context():
@@ -88,6 +96,7 @@ with app.app_context():
         print("✅ Migraciones aplicadas correctamente.")
     except Exception as e:
         logging.error(f"❌ Error en upgrade de migraciones (ignorado en producción): {e}")
+
 
 # ✅ Modo local
 if __name__ == '__main__':
