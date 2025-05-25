@@ -22,7 +22,6 @@ def reemplazar_placeholders(texto: str, user) -> str:
         .replace("[rubroNombre]", safe(getattr(user, "rubro_nombre", "empresa")))
     )
 
-
 def obtener_sugerencias_por_rubro(rubro_id):
     try:
         sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
