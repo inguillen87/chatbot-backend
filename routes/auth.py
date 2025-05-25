@@ -24,7 +24,7 @@ def token_requerido(f):
     return decorated
 
 # Endpoint para obtener datos del usuario actual
-@auth_bp.route('/me', methods=['GET'])
+@@auth_bp.route('/me', methods=['GET'])
 def get_current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
@@ -36,7 +36,13 @@ def get_current_user():
     if not user:
         return jsonify({"error": "Token inválido"}), 401
 
-    rubro = Rubro.query.get(user.rubro_id)
+    rubro_nombre = "General"
+    try:
+        rubro = Rubro.query.get(user.rubro_id)
+        if rubro:
+            rubro_nombre = rubro.nombre
+    except:
+        pass
 
     return jsonify({
         "token": user.token,
@@ -53,8 +59,9 @@ def get_current_user():
         "horario": user.horario,
         "ubicacion": user.ubicacion,
         "logo_url": user.logo_url,
-        "rubro": rubro.nombre if rubro else "General"
+        "rubro": rubro_nombre
     })
+
 
 # Registro de usuario
 @auth_bp.route('/register', methods=['POST'])
