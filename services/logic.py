@@ -44,7 +44,7 @@ def obtener_sugerencias_por_rubro(rubro_id):
         logging.error(f"❌ Error al obtener sugerencias: {e}")
         return ["Lo siento, ocurrió un error al buscar sugerencias."]
 
-def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
+def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[]):
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
@@ -118,16 +118,31 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
             "fuente": "intents"
         }
 
-    # Paso 3: Cohere
+    # Paso 3: Cohere (con contexto y placeholders)
     try:
-        messages = [{"role": "user", "content": pregunta}]
+        messages = historial[-5:] if historial else []
+        messages.append({"role": "user", "content": pregunta})
+
         user_context = {
             "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
             "rubro_nombre": rubro_nombre,
-            "plan": getattr(user, "plan", "demo")
+            "plan": getattr(user, "plan", "demo"),
+            "telefono": getattr(user, "telefono", ""),
+            "link_web": getattr(user, "link_web", ""),
+            "direccion": getattr(user, "direccion", ""),
+            "horario": getattr(user, "horario", ""),
+            "ubicacion": getattr(user, "ubicacion", "")
         }
 
-        generated_text = get_cohere_response(messages, rubro_id=rubro_id, user_context=user_context)
+        system_prompt = (
+            f"Sos Chatboc, el asistente comercial oficial de [nombreEmpresa], dedicado a ayudar a clientes en el rubro [rubroNombre]. "
+            f"Tu objetivo es asistir, recomendar productos, resolver dudas y guiar al usuario hacia una compra o contacto real. "
+            f"Respondé siempre de forma amable, conversacional, directa y en español. Si hay un link, dirección o WhatsApp, usalo. "
+            f"Nunca digas que sos una inteligencia artificial."
+        )
+
+        generated_text = get_cohere_response(messages, rubro_id=rubro_id, user_context=user_context, system_prompt=system_prompt)
+        respuesta_final = reemplazar_placeholders(generated_text, user)
 
     except Exception as e:
         logging.error(f"❌ Error al generar respuesta con Cohere: {e}")
@@ -142,7 +157,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
         db.session.commit()
 
     return {
-        "respuesta": generated_text,
+        "respuesta": respuesta_final,
         "nivel_usado": rubro_nombre,
         "fuente": "cohere"
     }
