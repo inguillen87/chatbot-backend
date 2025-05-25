@@ -30,3 +30,11 @@
 2025-05-24 21:45:05,185 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
 2025-05-24 21:45:08,151 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
 2025-05-24 21:45:11,162 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 21:50:01,309 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 21:50:08,824 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 21:51:26,476 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 21:55:19,163 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 21:59:00,135 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 22:02:55,492 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 22:03:43,830 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
+2025-05-24 22:04:54,714 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
