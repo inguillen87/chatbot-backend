@@ -1,67 +1,29 @@
 from flask import Blueprint, request, jsonify
-from models import User, Rubro
-import logging
 from werkzeug.security import check_password_hash, generate_password_hash
-import uuid
+from models import User, Rubro
 from extensions import db
 from functools import wraps
+import uuid
+import logging
 
 auth_bp = Blueprint('auth', __name__)
 
-# 📥 LOGIN
-@auth_bp.route('/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    email = data.get("email", "").strip()
-    password = data.get("password", "").strip()
+# Decorador de autenticación robusto
+def token_requerido(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not token:
+            return jsonify({"error": "Token faltante"}), 401
 
-    if not email or not password:
-        return jsonify({"error": "Email y contraseña requeridos"}), 400
+        user = User.query.filter_by(token=token).first()
+        if not user:
+            return jsonify({"error": "Token inválido"}), 403
 
-    user = User.query.filter_by(email=email).first()
+        return f(user, *args, **kwargs)
+    return decorated
 
-    if not user or not check_password_hash(user.password_hash, password):
-        logging.warning(f"❌ Intento fallido de login con usuario: {email}")
-        return jsonify({"error": "Credenciales inválidas"}), 401
-
-    return jsonify({
-        "token": user.token,
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas
-    })
-
-# 📋 INFO DEL USUARIO ACTUAL
-@auth_bp.route('/me', methods=['GET'])
-def get_current_user():
-    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-
-    if not token:
-        return jsonify({"error": "Token faltante"}), 401
-
-    user = User.query.filter_by(token=token).first()
-
-    if not user:
-        return jsonify({"error": "Token inválido"}), 401
-
-    rubro = Rubro.query.get(user.rubro_id)
-
-    return jsonify({
-        "token": user.token,
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas,
-        "nombre_empresa": user.nombre_empresa,
-        "rubro": rubro.nombre if rubro else "General"
-    })
-
-# 📝 REGISTER
+# Registro de usuario
 @auth_bp.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -71,7 +33,7 @@ def register():
     nombre_empresa = data.get("nombre_empresa", "").strip()
     rubro_nombre = data.get("rubro", "").strip()
 
-    if not name or not email or not password or not nombre_empresa or not rubro_nombre:
+    if not all([name, email, password, nombre_empresa, rubro_nombre]):
         return jsonify({"error": "Todos los campos son obligatorios"}), 400
 
     if User.query.filter_by(email=email).first():
@@ -98,7 +60,7 @@ def register():
 
     db.session.add(user)
     db.session.commit()
-    print(f"✅ Usuario registrado: {email}")
+    logging.info(f"✅ Usuario registrado: {email}")
 
     return jsonify({
         "token": user.token,
@@ -113,66 +75,88 @@ def register():
         "limite_preguntas": user.limite_preguntas
     })
 
-# 🐞 DEBUG USERS (solo para desarrollo)
-@auth_bp.route('/debug/users', methods=['GET'])
-def list_users():
-    try:
-        users = User.query.all()
-        return jsonify([
-            {
-                "id": user.id,
-                "name": user.name,
-                "email": user.email,
-                "nombre_empresa": user.nombre_empresa,
-                "plan": user.plan,
-                "preguntas_usadas": user.preguntas_usadas,
-                "limite_preguntas": user.limite_preguntas,
-                "token": user.token,
-                "rubro_id": user.rubro_id,
-                "rubro_nombre": user.rubro.nombre if user.rubro else None
-            } for user in users
-        ])
-    except Exception as e:
-        logging.error(f"❌ Error al listar usuarios: {str(e)}")
-        return jsonify({"error": f"Error al listar usuarios: {str(e)}"}), 500
+# Login de usuario
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get("email", "").strip()
+    password = data.get("password", "").strip()
 
-# 🛠️ ACTUALIZACIÓN DE PERFIL DEL USUARIO
-@auth_bp.route("/perfil", methods=["PUT"])
-def actualizar_perfil():
-    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-    user = User.query.filter_by(token=token).first()
+    if not email or not password:
+        return jsonify({"error": "Email y contraseña requeridos"}), 400
 
-    if not user:
-        return jsonify({"error": "Usuario no autenticado"}), 401
+    user = User.query.filter_by(email=email).first()
+    if not user or not check_password_hash(user.password_hash, password):
+        logging.warning(f"❌ Intento fallido de login: {email}")
+        return jsonify({"error": "Credenciales inválidas"}), 401
 
+    return jsonify({
+        "token": user.token,
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "plan": user.plan,
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas
+    })
+
+# Obtener perfil completo
+@auth_bp.route('/perfil', methods=['GET'])
+@token_requerido
+def get_profile(user):
+    rubro = Rubro.query.get(user.rubro_id)
+    return jsonify({
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "nombre_empresa": user.nombre_empresa,
+        "telefono": user.telefono,
+        "direccion": user.direccion,
+        "ubicacion": user.ubicacion,
+        "horario": user.horario,
+        "link_web": user.link_web,
+        "logo_url": user.logo_url,
+        "plan": user.plan,
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas,
+        "rubro": rubro.nombre if rubro else "General"
+    })
+
+# Actualizar perfil
+@auth_bp.route('/perfil', methods=['PUT'])
+@token_requerido
+def update_profile(user):
     data = request.get_json()
 
     user.nombre_empresa = data.get("nombre_empresa", user.nombre_empresa)
-    user.direccion = data.get("direccion", user.direccion)
     user.telefono = data.get("telefono", user.telefono)
-    user.link_web = data.get("link_web", user.link_web)
-    user.horario = data.get("horario", user.horario)
+    user.direccion = data.get("direccion", user.direccion)
     user.ubicacion = data.get("ubicacion", user.ubicacion)
+    user.horario = data.get("horario", user.horario)
+    user.link_web = data.get("link_web", user.link_web)
     user.logo_url = data.get("logo_url", user.logo_url)
 
     try:
         db.session.commit()
-        return jsonify({"mensaje": "Perfil actualizado correctamente"}), 200
+        return jsonify({"mensaje": "Perfil actualizado correctamente"})
     except Exception as e:
-        return jsonify({"error": f"No se pudo actualizar el perfil: {str(e)}"}), 500
+        logging.error(f"❌ Error al actualizar perfil: {str(e)}")
+        return jsonify({"error": "Error interno al guardar los datos"}), 500
 
-# 🔐 DECORADOR DE AUTENTICACIÓN REUTILIZABLE
-def token_requerido(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        if not token:
-            return jsonify({"error": "Token faltante"}), 401
-
-        user = User.query.filter_by(token=token).first()
-        if not user:
-            return jsonify({"error": "Token inválido"}), 403
-
-        return f(user, *args, **kwargs)
-
-    return decorated
+# Endpoint opcional para administración y debug (limitar en producción)
+@auth_bp.route('/admin/usuarios', methods=['GET'])
+def admin_list_users():
+    try:
+        users = User.query.all()
+        return jsonify([{
+            "id": u.id,
+            "email": u.email,
+            "nombre_empresa": u.nombre_empresa,
+            "plan": u.plan,
+            "token": u.token,
+            "rubro_id": u.rubro_id,
+            "rubro_nombre": u.rubro.nombre if u.rubro else None
+        } for u in users])
+    except Exception as e:
+        logging.error(f"❌ Error en admin/usuarios: {str(e)}")
+        return jsonify({"error": "No se pudo listar usuarios"}), 500
