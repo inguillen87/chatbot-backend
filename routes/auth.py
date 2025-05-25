@@ -127,17 +127,17 @@ def get_profile(user):
 @token_requerido
 def update_profile(user):
     data = request.get_json()
-
-    user.nombre_empresa = data.get("nombre_empresa", user.nombre_empresa)
-    user.telefono = data.get("telefono", user.telefono)
-    user.direccion = data.get("direccion", user.direccion)
-    user.ubicacion = data.get("ubicacion", user.ubicacion)
-    user.horario = data.get("horario", user.horario)
-    user.link_web = data.get("link_web", user.link_web)
-    user.logo_url = data.get("logo_url", user.logo_url)
-
     try:
+        user.nombre_empresa = data.get("nombre_empresa", user.nombre_empresa).strip()
+        user.telefono = data.get("telefono", user.telefono).strip()
+        user.direccion = data.get("direccion", user.direccion).strip()
+        user.ubicacion = data.get("ubicacion", user.ubicacion).strip()
+        user.horario = data.get("horario", user.horario).strip()
+        user.link_web = data.get("link_web", user.link_web).strip()
+        user.logo_url = data.get("logo_url", user.logo_url).strip()
+
         db.session.commit()
+        logging.info(f"✅ Perfil actualizado: {user.email}")
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
     except Exception as e:
         logging.error(f"❌ Error al actualizar perfil: {str(e)}")
