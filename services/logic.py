@@ -9,26 +9,19 @@ from extensions import db
 import random
 
 def reemplazar_placeholders(texto: str, user) -> str:
-    telefono = getattr(user, "telefono", "")
-    nombre_empresa = getattr(user, "nombre_empresa", "nuestra empresa")
-    link_web = getattr(user, "link_web", "https://tusitioweb.com")
-    direccion = getattr(user, "direccion", "dirección no informada")
-    horario = getattr(user, "horario", "horario no disponible")
-    ubicacion = getattr(user, "ubicacion", "")
-    rubro_nombre = getattr(user, "rubro_nombre", "empresa")
-
-    telefono_link = f"https://wa.me/{telefono}" if telefono else "https://wa.me/"
+    def safe(val, fallback=""): return str(val or fallback)
 
     return (
         texto
-        .replace("[nombreEmpresa]", nombre_empresa)
-        .replace("[linkWeb]", link_web)
-        .replace("[telefono]", telefono_link)
-        .replace("[direccion]", direccion)
-        .replace("[horario]", horario)
-        .replace("[ubicacion]", ubicacion)
-        .replace("[rubroNombre]", rubro_nombre)
+        .replace("[nombreEmpresa]", safe(getattr(user, "nombre_empresa", "nuestra empresa")))
+        .replace("[linkWeb]", safe(getattr(user, "link_web", "https://tusitioweb.com")))
+        .replace("[telefono]", f"https://wa.me/{safe(getattr(user, 'telefono', ''))}")
+        .replace("[direccion]", safe(getattr(user, "direccion", "dirección no informada")))
+        .replace("[horario]", safe(getattr(user, "horario", "horario no disponible")))
+        .replace("[ubicacion]", safe(getattr(user, "ubicacion", "")))
+        .replace("[rubroNombre]", safe(getattr(user, "rubro_nombre", "empresa")))
     )
+
 
 def obtener_sugerencias_por_rubro(rubro_id):
     try:
