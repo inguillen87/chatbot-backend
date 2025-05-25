@@ -24,7 +24,7 @@ def token_requerido(f):
     return decorated
 
 # Endpoint para obtener datos del usuario actual
-@@auth_bp.route('/me', methods=['GET'])
+@auth_bp.route('/me', methods=['GET'])
 def get_current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
@@ -38,7 +38,7 @@ def get_current_user():
 
     rubro_nombre = "General"
     try:
-        rubro = Rubro.query.get(user.rubro_id)
+        rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
         if rubro:
             rubro_nombre = rubro.nombre
     except:
@@ -61,7 +61,6 @@ def get_current_user():
         "logo_url": user.logo_url,
         "rubro": rubro_nombre
     })
-
 
 # Registro de usuario
 @auth_bp.route('/register', methods=['POST'])
@@ -144,7 +143,7 @@ def login():
 @auth_bp.route('/perfil', methods=['GET'])
 @token_requerido
 def get_profile(user):
-    rubro = Rubro.query.get(user.rubro_id)
+    rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
     return jsonify({
         "id": user.id,
         "name": user.name,
@@ -168,13 +167,13 @@ def get_profile(user):
 def update_profile(user):
     data = request.get_json()
     try:
-        user.nombre_empresa = data.get("nombre_empresa", user.nombre_empresa).strip()
-        user.telefono = data.get("telefono", user.telefono).strip()
-        user.direccion = data.get("direccion", user.direccion).strip()
-        user.ubicacion = data.get("ubicacion", user.ubicacion).strip()
-        user.horario = data.get("horario", user.horario).strip()
-        user.link_web = data.get("link_web", user.link_web).strip()
-        user.logo_url = data.get("logo_url", user.logo_url).strip()
+        user.nombre_empresa = (data.get("nombre_empresa") or user.nombre_empresa or "").strip()
+        user.telefono = (data.get("telefono") or user.telefono or "").strip()
+        user.direccion = (data.get("direccion") or user.direccion or "").strip()
+        user.ubicacion = (data.get("ubicacion") or user.ubicacion or "").strip()
+        user.horario = (data.get("horario") or user.horario or "").strip()
+        user.link_web = (data.get("link_web") or user.link_web or "").strip()
+        user.logo_url = (data.get("logo_url") or user.logo_url or "").strip()
 
         db.session.commit()
         logging.info(f"✅ Perfil actualizado: {user.email}")
@@ -182,4 +181,3 @@ def update_profile(user):
     except Exception as e:
         logging.error(f"❌ Error al actualizar perfil: {str(e)}")
         return jsonify({"error": "Error interno al guardar los datos"}), 500
-
