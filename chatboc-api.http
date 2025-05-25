@@ -1,0 +1,63 @@
+### 🔐 Login
+POST https://api.chatboc.ar/login
+Content-Type: application/json
+
+{
+  "email": "demo@demo.com",
+  "password": "123456"
+}
+
+###
+
+### 🆕 Registro
+POST https://api.chatboc.ar/register
+Content-Type: application/json
+
+{
+  "name": "Marcelo",
+  "email": "demo@demo.com",
+  "password": "123456",
+  "nombre_empresa": "Chatboc",
+  "rubro": "Bodega"
+}
+
+###
+
+### 👤 Obtener perfil (/me)
+GET https://api.chatboc.ar/me
+Authorization: Bearer TU_TOKEN_ACA
+
+###
+
+### 📋 Obtener perfil completo (/perfil)
+GET https://api.chatboc.ar/perfil
+Authorization: Bearer TU_TOKEN_ACA
+
+###
+
+### ✏️ Actualizar perfil
+PUT https://api.chatboc.ar/perfil
+Content-Type: application/json
+Authorization: Bearer TU_TOKEN_ACA
+
+{
+  "nombre_empresa": "Cuatro Fincas Winery",
+  "direccion": "Ruta 89, Mendoza",
+  "telefono": "2611234567",
+  "link_web": "https://cuatrofincas.com",
+  "horario": "Lunes a Sábado de 9 a 18",
+  "ubicacion": "Tunuyán, Mendoza",
+  "logo_url": "https://cuatrofincas.com/logo.png"
+}
+
+###
+
+### 💬 Probar el chatbot
+POST https://api.chatboc.ar/responder_chatboc
+Content-Type: application/json
+Authorization: Bearer TU_TOKEN_ACA
+
+{
+  "pregunta": "¿Puedo visitar la bodega?",
+  "rubro": "Bodega"
+}
