@@ -41,8 +41,8 @@ def get_current_user():
         rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
         if rubro:
             rubro_nombre = rubro.nombre
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"❌ Error cargando rubro en /me: {str(e)}")
 
     return jsonify({
         "token": user.token,
@@ -165,8 +165,9 @@ def get_profile(user):
 @auth_bp.route('/perfil', methods=['PUT'])
 @token_requerido
 def update_profile(user):
-    data = request.get_json()
     try:
+        data = request.get_json()
+
         user.nombre_empresa = (data.get("nombre_empresa") or user.nombre_empresa or "").strip()
         user.telefono = (data.get("telefono") or user.telefono or "").strip()
         user.direccion = (data.get("direccion") or user.direccion or "").strip()
@@ -180,4 +181,4 @@ def update_profile(user):
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
     except Exception as e:
         logging.error(f"❌ Error al actualizar perfil: {str(e)}")
-        return jsonify({"error": "Error interno al guardar los datos"}), 500
+        return jsonify({"error": f"Error interno al guardar los datos: {str(e)}"}), 500

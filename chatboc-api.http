@@ -1,16 +1,19 @@
+@host = https://api.chatboc.ar
+@token = e497eb24-69d5-4551-852c-c9a0a3b1213a
+
 ### 🔐 Login
-POST https://api.chatboc.ar/login
+POST {{host}}/login
 Content-Type: application/json
 
 {
   "email": "demo@demo.com",
-  "password": "123456"
+  "password": "marcemarce"
 }
 
 ###
 
 ### 🆕 Registro
-POST https://api.chatboc.ar/register
+POST {{host}}/register
 Content-Type: application/json
 
 {
@@ -24,21 +27,21 @@ Content-Type: application/json
 ###
 
 ### 👤 Obtener perfil (/me)
-GET https://api.chatboc.ar/me
-Authorization: Bearer TU_TOKEN_ACA
+GET {{host}}/me
+Authorization: Bearer {{token}}
 
 ###
 
 ### 📋 Obtener perfil completo (/perfil)
-GET https://api.chatboc.ar/perfil
-Authorization: Bearer TU_TOKEN_ACA
+GET {{host}}/perfil
+Authorization: Bearer {{token}}
 
 ###
 
 ### ✏️ Actualizar perfil
-PUT https://api.chatboc.ar/perfil
+PUT {{host}}/perfil
 Content-Type: application/json
-Authorization: Bearer TU_TOKEN_ACA
+Authorization: Bearer {{token}}
 
 {
   "nombre_empresa": "Cuatro Fincas Winery",
@@ -53,11 +56,11 @@ Authorization: Bearer TU_TOKEN_ACA
 ###
 
 ### 💬 Probar el chatbot
-POST https://api.chatboc.ar/responder_chatboc
+POST {{host}}/responder_chatboc
 Content-Type: application/json
-Authorization: Bearer TU_TOKEN_ACA
+Authorization: Bearer {{token}}
 
 {
-  "pregunta": "¿Puedo visitar la bodega?",
+  "pregunta": "quiero comprar vinos?",
   "rubro": "Bodega"
 }
