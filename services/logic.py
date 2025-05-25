@@ -9,17 +9,25 @@ from extensions import db
 import random
 
 def reemplazar_placeholders(texto: str, user) -> str:
-    telefono_link = f"https://wa.me/{user.telefono}" if user.telefono else "https://wa.me/"
+    telefono = getattr(user, "telefono", "")
+    nombre_empresa = getattr(user, "nombre_empresa", "nuestra empresa")
+    link_web = getattr(user, "link_web", "https://tusitioweb.com")
+    direccion = getattr(user, "direccion", "dirección no informada")
+    horario = getattr(user, "horario", "horario no disponible")
+    ubicacion = getattr(user, "ubicacion", "")
+    rubro_nombre = getattr(user, "rubro_nombre", "empresa")
+
+    telefono_link = f"https://wa.me/{telefono}" if telefono else "https://wa.me/"
 
     return (
         texto
-        .replace("[nombreEmpresa]", user.nombre_empresa or "nuestra empresa")
-        .replace("[linkWeb]", getattr(user, "link_web", "https://tusitioweb.com"))
+        .replace("[nombreEmpresa]", nombre_empresa)
+        .replace("[linkWeb]", link_web)
         .replace("[telefono]", telefono_link)
-        .replace("[direccion]", user.direccion or "dirección no informada")
-        .replace("[horario]", user.horario or "horario no disponible")
-        .replace("[ubicacion]", user.ubicacion or "")
-        .replace("[rubroNombre]", getattr(user, "rubro_nombre", "empresa"))
+        .replace("[direccion]", direccion)
+        .replace("[horario]", horario)
+        .replace("[ubicacion]", ubicacion)
+        .replace("[rubroNombre]", rubro_nombre)
     )
 
 def obtener_sugerencias_por_rubro(rubro_id):

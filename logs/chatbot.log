@@ -45,3 +45,6 @@
 2025-05-24 23:03:02,461 | ERROR | Error: Directory migrations already exists and is not empty
 2025-05-25 18:24:22,467 | ERROR | Error: Directory migrations already exists and is not empty
 2025-05-25 18:24:26,540 | ERROR | Error: Could not determine revision id from filename 0001_initial.py. Be sure the 'revision' variable is declared inside the script (please see 'Upgrading from Alembic 0.1 to 0.2' in the documentation).
+2025-05-25 18:26:44,338 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5000
+2025-05-25 18:26:44,339 | INFO | [33mPress CTRL+C to quit[0m
