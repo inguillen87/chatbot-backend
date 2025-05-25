@@ -32,7 +32,6 @@ def get_current_user():
         return jsonify({"error": "Token faltante"}), 401
 
     user = User.query.filter_by(token=token).first()
-
     if not user:
         return jsonify({"error": "Token inválido"}), 401
 
@@ -47,20 +46,21 @@ def get_current_user():
     return jsonify({
         "token": user.token,
         "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas,
-        "nombre_empresa": user.nombre_empresa,
-        "direccion": user.direccion,
-        "telefono": user.telefono,
-        "link_web": user.link_web,
-        "horario": user.horario,
-        "ubicacion": user.ubicacion,
-        "logo_url": user.logo_url,
+        "name": user.name or "",
+        "email": user.email or "",
+        "plan": user.plan or "gratis",
+        "preguntas_usadas": user.preguntas_usadas or 0,
+        "limite_preguntas": user.limite_preguntas or 0,
+        "nombre_empresa": user.nombre_empresa or "",
+        "direccion": user.direccion or "",
+        "telefono": user.telefono or "",
+        "link_web": user.link_web or "",
+        "horario": user.horario or "",
+        "ubicacion": user.ubicacion or "",
+        "logo_url": user.logo_url or "",
         "rubro": rubro_nombre
     })
+
 
 # Registro de usuario
 @auth_bp.route('/register', methods=['POST'])
