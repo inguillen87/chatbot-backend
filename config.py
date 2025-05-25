@@ -7,5 +7,6 @@ class Config:
     if os.getenv("RENDER") == "true":
         SQLALCHEMY_DATABASE_URI = "sqlite:////data/database.db"
     else:
-        SQLALCHEMY_DATABASE_URI = f"sqlite:///{os.path.join(basedir, 'instance', 'database.db')}"
+        # Ruta relativa al path real de Flask
+        SQLALCHEMY_DATABASE_URI = "sqlite:///database.db"  # ✅ Esto lo guarda en /instance/database.db real de Flask
     SQLALCHEMY_TRACK_MODIFICATIONS = False
