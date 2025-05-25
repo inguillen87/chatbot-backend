@@ -3,9 +3,15 @@ from datetime import datetime
 from models import db, Rubro, QA, Sugerencia, User
 from werkzeug.security import generate_password_hash
 from faq_questions import faq_data
+import logging
 
 def crear_rubro_si_no_existe(clave, nombre=None, descripcion=None, parent_clave=None):
-    rubro = Rubro.query.filter_by(clave=clave).first()
+    try:
+        rubro = Rubro.query.filter_by(clave=clave).first()
+    except Exception as e:
+        logging.error(f"❌ Error al consultar Rubro: {e}")
+        return None
+
     if rubro:
         return rubro
 
@@ -32,11 +38,19 @@ def cargar_faqs():
         categorias = contenido.get("categorias", {})
 
         rubro = crear_rubro_si_no_existe(clave, nombre, descripcion, parent_clave)
+        if not rubro:
+            print(f"❌ Error creando rubro '{clave}'")
+            continue
 
         nuevas_faqs = []
         for categoria, faqs in categorias.items():
             for pregunta, respuesta in faqs:
-                existe = QA.query.filter_by(question=pregunta, rubro_id=rubro.id).first()
+                try:
+                    existe = QA.query.filter_by(question=pregunta, rubro_id=rubro.id).first()
+                except Exception as e:
+                    logging.error(f"❌ Error al buscar FAQ existente: {e}")
+                    continue
+
                 if not existe:
                     nuevas_faqs.append(QA(
                         question=pregunta,
@@ -44,6 +58,7 @@ def cargar_faqs():
                         rubro_id=rubro.id,
                         categoria=categoria
                     ))
+
         if nuevas_faqs:
             db.session.bulk_save_objects(nuevas_faqs)
             db.session.commit()
@@ -111,7 +126,7 @@ def cargar_usuarios_demo():
         existente = User.query.filter_by(email=data["email"]).first()
         if existente:
             existente.nombre_empresa = data["nombre_empresa"]
-            existente.rubro_id = rubro.id  # actualiza rubro en caso de ser necesario
+            existente.rubro_id = rubro.id
             db.session.commit()
             print(f"🔄 Usuario actualizado: {data['email']}")
             continue
@@ -132,5 +147,3 @@ def cargar_usuarios_demo():
 
     db.session.commit()
     print("✅ Usuarios demo listos.")
-
-            

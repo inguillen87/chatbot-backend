@@ -1,40 +1,48 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import click
 from flask import Flask
 from flask_cors import CORS
 from config import Config
 from extensions import db, migrate
 from dotenv import load_dotenv
 from flask_migrate import upgrade
+from flask.cli import with_appcontext
 
-# ⬇️ Importar funciones de carga manual
-from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
-
+# ⬇️ Cargar entorno
 load_dotenv()
 
 # Crear carpeta de logs si no existe
 if not os.path.exists("logs"):
     os.makedirs("logs")
 
-# Configuración de logging
+# Logging
 file_handler = RotatingFileHandler("logs/chatbot.log", maxBytes=10240, backupCount=5)
 file_handler.setLevel(logging.INFO)
 formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 file_handler.setFormatter(formatter)
 logging.getLogger().addHandler(file_handler)
 
-
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
+    # 🧪 Mostrar la ruta de la base y el estado de la variable de entorno
     db_path = Config.SQLALCHEMY_DATABASE_URI.replace("sqlite:///", "")
-    if not os.path.exists(db_path) and not os.getenv("ALLOW_DB_INIT"):
-        print(f"🚨 ERROR CRÍTICO: {db_path} no existe.")
-        print("🛑 Abortando para evitar pérdida de datos.")
-        exit(1)
+    print(f"🧪 CHECK db_path = {db_path}")
+    print(f"🧪 ALLOW_DB_INIT = {os.getenv('ALLOW_DB_INIT')}")
 
+    # 🟢 Avisamos si no existe, pero no cortamos
+    if not os.path.exists(db_path):
+        if not os.getenv("ALLOW_DB_INIT"):
+            print("🛑 La base de datos no existe y ALLOW_DB_INIT no está seteado.")
+        else:
+            print("🟢 La base no existe, pero ALLOW_DB_INIT está presente. Se permitirá crear.")
+    else:
+        print("📦 La base de datos ya existe.")
+
+    # 🧱 Crear carpeta instance si no existe
     os.makedirs(app.instance_path, exist_ok=True)
 
     try:
@@ -52,6 +60,7 @@ def create_app():
     except Exception as e:
         print("❌ Error inicializando extensiones:", e)
 
+    # Blueprints
     for bp_import, name in [
         ("routes.auth", "auth_bp"),
         ("routes.chat", "chat_bp"),
@@ -67,38 +76,37 @@ def create_app():
 
     return app
 
-
-# App principal
+# Crear app
 app = create_app()
 
-# ✅ Agregar comando CLI correctamente
-@app.cli.command("cargar_datos_iniciales")
-def cargar_datos_iniciales():
-    with app.app_context():
-        db_path = os.path.join(app.instance_path, "database.db")
-        if not os.path.exists(db_path):
-            print(f"📁 No existe {db_path}, creando base de datos...")
-            db.create_all()
-        else:
-            print(f"✅ Base de datos encontrada en {db_path}")
+# Importar modelos
+import models
 
-        cargar_usuarios_demo()
-        cargar_faqs()
-        cargar_sugerencias()
+# Comando CLI para cargar datos
+@click.command("cargar_datos_iniciales")
+@with_appcontext
+def cargar_datos():
+    from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
+    print("⚙️ Iniciando carga de datos iniciales...")
 
-        print("✅ Datos iniciales cargados correctamente.")
+    db.create_all()
+    cargar_usuarios_demo()
+    cargar_faqs()
+    cargar_sugerencias()
+    print("✅ Datos iniciales cargados correctamente.")
 
+# Registrar comando
+app.cli.add_command(cargar_datos)
 
-# ✅ Aplicar migraciones seguras al iniciar
+# Aplicar migraciones
 with app.app_context():
     try:
         upgrade()
         print("✅ Migraciones aplicadas correctamente.")
     except Exception as e:
-        logging.error(f"❌ Error en upgrade de migraciones (ignorado en producción): {e}")
+        logging.error(f"❌ Error en upgrade de migraciones: {e}")
 
-
-# ✅ Modo local
+# Local dev
 if __name__ == '__main__':
     os.environ["FLASK_ENV"] = "development"
     os.environ["FLASK_RUN_FROM_CLI"] = "false"

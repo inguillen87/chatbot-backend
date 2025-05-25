@@ -4,27 +4,37 @@ import spacy
 import logging
 from models import QA
 
-# Cargar spaCy una sola vez con validación de vectores
-try:
-    nlp = spacy.load("es_core_news_md")
-    print("✅ spaCy cargado correctamente en intent.py")
+nlp = None
+INTENTS = {}
 
-    if not nlp.vocab.vectors:
-        raise ValueError("❌ El modelo spaCy no tiene vectores cargados.")
-except Exception as e:
-    logging.error(f"❌ Error al cargar spaCy: {e}")
-    raise
+def cargar_spacy():
+    global nlp
+    if nlp is None:
+        try:
+            nlp = spacy.load("es_core_news_md")
+            print("✅ spaCy cargado correctamente en intent.py")
 
-# Cargar intents desde archivo JSON
-file_path = os.path.join(os.path.dirname(__file__), "../data/intents.json")
-try:
-    with open(file_path, "r", encoding="utf-8") as f:
-        INTENTS = json.load(f)
-except Exception as e:
-    logging.error(f"❌ No se pudo cargar intents.json: {e}")
-    INTENTS = {}
+            if not nlp.vocab.vectors:
+                raise ValueError("❌ El modelo spaCy no tiene vectores cargados.")
+        except Exception as e:
+            logging.error(f"❌ Error al cargar spaCy en intent.py: {e}")
+            raise
+
+def cargar_intents():
+    global INTENTS
+    if not INTENTS:
+        try:
+            file_path = os.path.join(os.path.dirname(__file__), "../data/intents.json")
+            with open(file_path, "r", encoding="utf-8") as f:
+                INTENTS = json.load(f)
+        except Exception as e:
+            logging.error(f"❌ No se pudo cargar intents.json: {e}")
+            INTENTS = {}
 
 def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.70):
+    cargar_spacy()
+    cargar_intents()
+
     if not pregunta_usuario or not rubro_nombre:
         logging.warning("⚠️ Entrada inválida para búsqueda en intents.")
         return None
