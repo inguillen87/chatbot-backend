@@ -79,3 +79,4 @@ class User(db.Model):
 
     def __repr__(self):
         return f"<User {self.email}>"
+print("✅ models.py fue importado con éxito y contiene modelos.")
