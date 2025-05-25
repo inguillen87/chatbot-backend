@@ -176,20 +176,3 @@ def update_profile(user):
         logging.error(f"❌ Error al actualizar perfil: {str(e)}")
         return jsonify({"error": "Error interno al guardar los datos"}), 500
 
-# Endpoint opcional para administración y debug (limitar en producción)
-@auth_bp.route('/admin/usuarios', methods=['GET'])
-def admin_list_users():
-    try:
-        users = User.query.all()
-        return jsonify([{
-            "id": u.id,
-            "email": u.email,
-            "nombre_empresa": u.nombre_empresa,
-            "plan": u.plan,
-            "token": u.token,
-            "rubro_id": u.rubro_id,
-            "rubro_nombre": u.rubro.nombre if u.rubro else None
-        } for u in users])
-    except Exception as e:
-        logging.error(f"❌ Error en admin/usuarios: {str(e)}")
-        return jsonify({"error": "No se pudo listar usuarios"}), 500
