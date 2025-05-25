@@ -43,3 +43,5 @@
 2025-05-24 22:24:32,916 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
 2025-05-24 22:32:46,955 | ERROR | Error: Directory migrations already exists and is not empty
 2025-05-24 23:03:02,461 | ERROR | Error: Directory migrations already exists and is not empty
+2025-05-25 18:24:22,467 | ERROR | Error: Directory migrations already exists and is not empty
+2025-05-25 18:24:26,540 | ERROR | Error: Could not determine revision id from filename 0001_initial.py. Be sure the 'revision' variable is declared inside the script (please see 'Upgrading from Alembic 0.1 to 0.2' in the documentation).
