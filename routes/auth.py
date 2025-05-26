@@ -5,6 +5,7 @@ from extensions import db
 from functools import wraps
 import uuid
 import logging
+import traceback
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -38,7 +39,7 @@ def get_current_user():
     try:
         rubro_nombre = "General"
         rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
-        if rubro:
+        if rubro and rubro.nombre:
             rubro_nombre = rubro.nombre
 
         return jsonify({
@@ -59,7 +60,7 @@ def get_current_user():
             "rubro": rubro_nombre
         })
     except Exception as e:
-        logging.error(f"❌ Error en /me: {str(e)}")
+        logging.error("❌ Error en /me: %s", traceback.format_exc())
         return jsonify({"error": "Error interno al obtener perfil"}), 500
 
 # Registro de usuario
@@ -180,8 +181,8 @@ def update_profile(user):
         logging.info(f"✅ Perfil actualizado: {user.email}")
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
     except Exception as e:
-        logging.error(f"❌ Error al actualizar perfil: {str(e)}")
-        return jsonify({"error": f"Error interno al guardar los datos: {str(e)}"}), 500
+        logging.error("❌ Error al actualizar perfil: %s", traceback.format_exc())
+        return jsonify({"error": f"Error interno al guardar los datos"}), 500
 
 # Crear base directo si no existen migraciones
 @auth_bp.cli.command("crear_base")
