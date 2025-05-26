@@ -153,7 +153,12 @@ def login():
 def update_profile(user):
     try:
         data = request.get_json()
-        current_app.logger.info(f"📥 Datos recibidos en /perfil: {data}")
+        print("📥 RECIBIDO EN /perfil:", data)
+        print("🔑 USER TOKEN:", user.token)
+
+        if not data:
+            print("❌ No se recibió JSON válido")
+            return jsonify({"error": "No se recibió ningún dato"}), 400
 
         campos_actualizables = [
             "nombre_empresa",
@@ -171,13 +176,16 @@ def update_profile(user):
                 if isinstance(valor, str):
                     valor = valor.strip()
                 setattr(user, campo, valor)
+                print(f"✅ Campo actualizado: {campo} → {valor}")
 
         db.session.commit()
-        current_app.logger.info(f"✅ Perfil actualizado para {user.email}")
+        print(f"✅ PERFIL ACTUALIZADO PARA: {user.email}")
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
-    except Exception:
-        current_app.logger.error("❌ Error al actualizar perfil:\n" + traceback.format_exc())
-        return jsonify({"error": "Error interno al guardar los datos"}), 500
+    except Exception as e:
+        print("❌ ERROR EN /perfil:", e)
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Error interno"}), 500
 
 
 # Comando CLI opcional para crear base sin migraciones
