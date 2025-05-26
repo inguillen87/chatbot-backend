@@ -9,6 +9,7 @@ from extensions import db, migrate
 from dotenv import load_dotenv
 from flask_migrate import upgrade
 from flask.cli import with_appcontext
+from datetime import timedelta
 
 # Cargar entorno
 load_dotenv()
@@ -44,19 +45,23 @@ def create_app():
     os.makedirs(app.instance_path, exist_ok=True)
 
     try:
-        CORS(app, resources={r"/*": {"origins": [
-            "https://chatboc.ar",
-            "https://www.chatboc.ar"
-        ]}}, supports_credentials=True)
-        print("CORS aplicado globalmente.")
+        CORS(
+            app,
+            origins=["https://chatboc.ar", "https://www.chatboc.ar"],
+            supports_credentials=True,
+            allow_headers=["Content-Type", "Authorization"],
+            methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            max_age=timedelta(hours=1)
+        )
+        print("✅ CORS aplicado correctamente.")
     except Exception as e:
-        print("Error aplicando CORS:", e)
+        print("❌ Error aplicando CORS:", e)
 
     try:
         db.init_app(app)
         migrate.init_app(app, db)
     except Exception as e:
-        print("Error inicializando extensiones:", e)
+        print("❌ Error inicializando extensiones:", e)
 
     # Registrar blueprints
     for bp_import, name in [
@@ -70,7 +75,7 @@ def create_app():
             bp_module = __import__(bp_import, fromlist=[name])
             app.register_blueprint(getattr(bp_module, name))
         except Exception as e:
-            print(f"Error registrando {name}:", e)
+            print(f"❌ Error registrando {name}:", e)
 
     return app
 
@@ -85,12 +90,12 @@ import models
 @with_appcontext
 def cargar_datos():
     from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
-    print("Iniciando carga de datos iniciales...")
+    print("🚀 Iniciando carga de datos iniciales...")
     db.create_all()
     cargar_usuarios_demo()
     cargar_faqs()
     cargar_sugerencias()
-    print("Datos iniciales cargados correctamente.")
+    print("✅ Datos iniciales cargados correctamente.")
 
 # Registrar comando
 app.cli.add_command(cargar_datos)
@@ -101,8 +106,8 @@ app.cli.add_command(cargar_datos)
 def aplicar_migraciones():
     try:
         upgrade()
-        print("Migraciones aplicadas correctamente.")
+        print("✅ Migraciones aplicadas correctamente.")
     except Exception as e:
-        logging.error(f"Error en upgrade de migraciones: {e}")
+        logging.error(f"❌ Error en upgrade de migraciones: {e}")
 
 app.cli.add_command(aplicar_migraciones)
