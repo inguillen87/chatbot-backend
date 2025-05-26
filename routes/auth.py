@@ -37,10 +37,8 @@ def get_current_user():
         return jsonify({"error": "Token inválido"}), 401
 
     try:
-        rubro_nombre = "General"
         rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
-        if rubro:
-            rubro_nombre = rubro.nombre
+        rubro_nombre = rubro.nombre if rubro else "General"
 
         return jsonify({
             "token": user.token,
