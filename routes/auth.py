@@ -25,8 +25,13 @@ def token_requerido(f):
     return decorated
 
 # Endpoint para obtener datos del usuario actual
+import traceback  # asegurate de tener esto arriba
+
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
+    from flask import current_app
+    import traceback
+
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
     if not token:
@@ -39,7 +44,7 @@ def get_current_user():
     try:
         rubro_nombre = "General"
         rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
-        if rubro and rubro.nombre:
+        if rubro:
             rubro_nombre = rubro.nombre
 
         return jsonify({
@@ -59,108 +64,14 @@ def get_current_user():
             "logo_url": user.logo_url or "",
             "rubro": rubro_nombre
         })
+
     except Exception as e:
-        logging.error("❌ Error en /me: %s", traceback.format_exc())
+        error_trace = traceback.format_exc()
+        print("❌ ERROR EN /me")
+        print(error_trace)
+        current_app.logger.error("❌ Error crítico en /me:\n" + error_trace)
         return jsonify({"error": "Error interno al obtener perfil"}), 500
 
-# Registro de usuario
-@auth_bp.route('/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    name = data.get("name", "").strip()
-    email = data.get("email", "").strip()
-    password = data.get("password", "").strip()
-    nombre_empresa = data.get("nombre_empresa", "").strip()
-    rubro_nombre = data.get("rubro", "").strip()
-
-    if not all([name, email, password, nombre_empresa, rubro_nombre]):
-        return jsonify({"error": "Todos los campos son obligatorios"}), 400
-
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "Ya existe un usuario con ese email"}), 400
-
-    rubro = Rubro.query.filter_by(nombre=rubro_nombre).first()
-    if not rubro:
-        return jsonify({"error": "Rubro no válido"}), 400
-
-    hashed_password = generate_password_hash(password)
-    token = str(uuid.uuid4())
-
-    user = User(
-        name=name,
-        email=email,
-        password_hash=hashed_password,
-        token=token,
-        nombre_empresa=nombre_empresa,
-        rubro_id=rubro.id,
-        plan="gratis",
-        preguntas_usadas=0,
-        limite_preguntas=50
-    )
-
-    db.session.add(user)
-    db.session.commit()
-    logging.info(f"✅ Usuario registrado: {email}")
-
-    return jsonify({
-        "token": user.token,
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "plan": user.plan,
-        "nombre_empresa": user.nombre_empresa,
-        "rubro_id": user.rubro_id,
-        "rubro": rubro.nombre,
-        "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas
-    })
-
-# Login de usuario
-@auth_bp.route('/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    email = data.get("email", "").strip()
-    password = data.get("password", "").strip()
-
-    if not email or not password:
-        return jsonify({"error": "Email y contraseña requeridos"}), 400
-
-    user = User.query.filter_by(email=email).first()
-    if not user or not check_password_hash(user.password_hash, password):
-        logging.warning(f"❌ Intento fallido de login: {email}")
-        return jsonify({"error": "Credenciales inválidas"}), 401
-
-    return jsonify({
-        "token": user.token,
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas
-    })
-
-# Obtener perfil completo
-@auth_bp.route('/perfil', methods=['GET'])
-@token_requerido
-def get_profile(user):
-    rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
-    return jsonify({
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "nombre_empresa": user.nombre_empresa,
-        "telefono": user.telefono,
-        "direccion": user.direccion,
-        "ubicacion": user.ubicacion,
-        "horario": user.horario,
-        "link_web": user.link_web,
-        "logo_url": user.logo_url,
-        "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas,
-        "rubro": rubro.nombre if rubro else "General"
-    })
 
 # Actualizar perfil
 @auth_bp.route('/perfil', methods=['PUT'])
