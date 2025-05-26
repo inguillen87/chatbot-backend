@@ -3,6 +3,7 @@ from sqlalchemy import Column, String, Integer, DateTime
 from extensions import db
 import uuid
 from werkzeug.security import generate_password_hash, check_password_hash
+from flask_login import UserMixin
 
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -49,6 +50,16 @@ class Conversacion(db.Model):
     rubro = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
+class CatalogoItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    texto = db.Column(db.Text, nullable=False)  # Producto, precio, etc en texto plano
+    embedding = db.Column(db.PickleType, nullable=True)  # Para usar con IA (más adelante)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<CatalogoItem {self.id} para user {self.user_id}>'
+
 class Sugerencia(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=False)
@@ -60,7 +71,7 @@ class Sugerencia(db.Model):
 def generate_token():
     return str(uuid.uuid4())
 
-class User(db.Model):
+class User(db.Model, UserMixin):
     __tablename__ = "user"
 
     id = db.Column(db.Integer, primary_key=True)

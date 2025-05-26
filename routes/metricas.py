@@ -13,6 +13,7 @@ def obtener_metricas(usuario_actual):
     try:
         total = usuario_actual.preguntas_usadas or 0
 
+
         # Preguntas esta semana
         desde = datetime.now() - timedelta(days=7)
         preguntas_esta_semana = db.session.execute(
