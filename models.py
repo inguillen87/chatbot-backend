@@ -39,6 +39,16 @@ class QA(db.Model):
     categoria = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
+
+class Conversacion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    pregunta = db.Column(db.Text, nullable=False)
+    respuesta = db.Column(db.Text, nullable=False)
+    fuente = db.Column(db.String(50), nullable=False)
+    rubro = db.Column(db.String(100), nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
 class Sugerencia(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=False)
