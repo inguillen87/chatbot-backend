@@ -1,1 +1,0 @@
-# script.py.mako placeholder

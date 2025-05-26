@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from flask_migrate import upgrade
 from flask.cli import with_appcontext
 
-# ⬇️ Cargar entorno
+# Cargar entorno
 load_dotenv()
 
 # Crear carpeta de logs si no existe
@@ -28,21 +28,19 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # 🧪 Mostrar la ruta de la base y el estado de la variable de entorno
+    # Mostrar info de base de datos
     db_path = Config.SQLALCHEMY_DATABASE_URI.replace("sqlite:///", "")
-    print(f"🧪 CHECK db_path = {db_path}")
-    print(f"🧪 ALLOW_DB_INIT = {os.getenv('ALLOW_DB_INIT')}")
+    print(f"CHECK db_path = {db_path}")
+    print(f"ALLOW_DB_INIT = {os.getenv('ALLOW_DB_INIT')}")
 
-    # 🟢 Avisamos si no existe, pero no cortamos
     if not os.path.exists(db_path):
         if not os.getenv("ALLOW_DB_INIT"):
-            print("🛑 La base de datos no existe y ALLOW_DB_INIT no está seteado.")
+            print("La base de datos no existe y ALLOW_DB_INIT no está seteado.")
         else:
-            print("🟢 La base no existe, pero ALLOW_DB_INIT está presente. Se permitirá crear.")
+            print("La base no existe, pero ALLOW_DB_INIT está presente. Se permitirá crear.")
     else:
-        print("📦 La base de datos ya existe.")
+        print("La base de datos ya existe.")
 
-    # 🧱 Crear carpeta instance si no existe
     os.makedirs(app.instance_path, exist_ok=True)
 
     try:
@@ -50,17 +48,17 @@ def create_app():
             "https://chatboc.ar",
             "https://www.chatboc.ar"
         ]}}, supports_credentials=True)
-        print("✅ CORS aplicado globalmente.")
+        print("CORS aplicado globalmente.")
     except Exception as e:
-        print("❌ Error aplicando CORS:", e)
+        print("Error aplicando CORS:", e)
 
     try:
         db.init_app(app)
         migrate.init_app(app, db)
     except Exception as e:
-        print("❌ Error inicializando extensiones:", e)
+        print("Error inicializando extensiones:", e)
 
-    # Blueprints
+    # Registrar blueprints
     for bp_import, name in [
         ("routes.auth", "auth_bp"),
         ("routes.chat", "chat_bp"),
@@ -72,7 +70,7 @@ def create_app():
             bp_module = __import__(bp_import, fromlist=[name])
             app.register_blueprint(getattr(bp_module, name))
         except Exception as e:
-            print(f"❌ Error registrando {name}:", e)
+            print(f"Error registrando {name}:", e)
 
     return app
 
@@ -82,33 +80,29 @@ app = create_app()
 # Importar modelos
 import models
 
-# Comando CLI para cargar datos
+# Comando CLI para cargar datos iniciales
 @click.command("cargar_datos_iniciales")
 @with_appcontext
 def cargar_datos():
     from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
-    print("⚙️ Iniciando carga de datos iniciales...")
-
+    print("Iniciando carga de datos iniciales...")
     db.create_all()
     cargar_usuarios_demo()
     cargar_faqs()
     cargar_sugerencias()
-    print("✅ Datos iniciales cargados correctamente.")
+    print("Datos iniciales cargados correctamente.")
 
 # Registrar comando
 app.cli.add_command(cargar_datos)
 
-# Aplicar migraciones
-with app.app_context():
+# Comando CLI opcional para aplicar migraciones manualmente
+@click.command("aplicar_migraciones")
+@with_appcontext
+def aplicar_migraciones():
     try:
         upgrade()
-        print("✅ Migraciones aplicadas correctamente.")
+        print("Migraciones aplicadas correctamente.")
     except Exception as e:
-        logging.error(f"❌ Error en upgrade de migraciones: {e}")
+        logging.error(f"Error en upgrade de migraciones: {e}")
 
-# Local dev
-if __name__ == '__main__':
-    os.environ["FLASK_ENV"] = "development"
-    os.environ["FLASK_RUN_FROM_CLI"] = "false"
-    print("✅ Servidor iniciado en modo desarrollo.")
-    app.run(debug=True, port=5000, use_reloader=False)
+app.cli.add_command(aplicar_migraciones)

@@ -1,50 +1,24 @@
-2025-05-24 20:41:14,146 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:43:34,810 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:44:48,229 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:45:35,003 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:47:43,204 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:49:26,336 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:50:16,350 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:52:49,028 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:54:13,627 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:56:38,670 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 20:58:27,395 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:00:17,836 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:01:34,976 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:03:13,012 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:04:07,180 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:04:42,606 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:05:40,482 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:06:49,640 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:08:31,114 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:10:47,928 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:13:42,818 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:14:34,123 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:15:48,413 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:16:10,778 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:17:12,827 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:17:50,108 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:21:19,995 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:25:24,348 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:26:16,901 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:45:05,185 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:45:08,151 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:45:11,162 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:50:01,309 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:50:08,824 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:51:26,476 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:55:19,163 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 21:59:00,135 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 22:02:55,492 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 22:03:43,830 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 22:04:54,714 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 22:21:56,479 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 22:23:04,952 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 22:24:32,916 | ERROR | Error: Path doesn't exist: migrations.  Please use the 'init' command to create a new scripts folder.
-2025-05-24 22:32:46,955 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-24 23:03:02,461 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-25 18:24:22,467 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-25 18:24:26,540 | ERROR | Error: Could not determine revision id from filename 0001_initial.py. Be sure the 'revision' variable is declared inside the script (please see 'Upgrading from Alembic 0.1 to 0.2' in the documentation).
-2025-05-25 18:26:44,338 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
- * Running on http://127.0.0.1:5000
-2025-05-25 18:26:44,339 | INFO | [33mPress CTRL+C to quit[0m
+2025-05-25 20:26:35,023 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:26:56,250 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:29:23,220 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:30:07,154 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:30:11,116 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:30:15,037 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:31:08,097 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:32:59,933 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:35:44,338 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:36:09,106 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:36:37,723 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:37:22,117 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:37:59,891 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:40:17,969 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:40:21,797 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:40:39,918 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:41:22,608 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:42:18,503 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:45:39,380 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:46:17,266 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:46:43,267 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:47:37,337 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:48:45,125 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
+2025-05-25 20:49:27,156 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
