@@ -153,21 +153,32 @@ def login():
 def update_profile(user):
     try:
         data = request.get_json()
+        current_app.logger.info(f"📥 Datos recibidos en /perfil: {data}")
 
-        user.nombre_empresa = (data.get("nombre_empresa") or user.nombre_empresa or "").strip()
-        user.telefono = (data.get("telefono") or user.telefono or "").strip()
-        user.direccion = (data.get("direccion") or user.direccion or "").strip()
-        user.ubicacion = (data.get("ubicacion") or user.ubicacion or "").strip()
-        user.horario = (data.get("horario") or user.horario or "").strip()
-        user.link_web = (data.get("link_web") or user.link_web or "").strip()
-        user.logo_url = (data.get("logo_url") or user.logo_url or "").strip()
+        campos_actualizables = [
+            "nombre_empresa",
+            "telefono",
+            "direccion",
+            "ubicacion",
+            "horario",
+            "link_web",
+            "logo_url"
+        ]
+
+        for campo in campos_actualizables:
+            if campo in data:
+                valor = data[campo]
+                if isinstance(valor, str):
+                    valor = valor.strip()
+                setattr(user, campo, valor)
 
         db.session.commit()
-        logging.info(f"✅ Perfil actualizado: {user.email}")
+        current_app.logger.info(f"✅ Perfil actualizado para {user.email}")
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
     except Exception:
-        logging.error("❌ Error al actualizar perfil: %s", traceback.format_exc())
+        current_app.logger.error("❌ Error al actualizar perfil:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno al guardar los datos"}), 500
+
 
 # Comando CLI opcional para crear base sin migraciones
 @auth_bp.cli.command("crear_base")
