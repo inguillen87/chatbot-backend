@@ -35,32 +35,32 @@ def get_current_user():
     if not user:
         return jsonify({"error": "Token inválido"}), 401
 
-    rubro_nombre = "General"
     try:
+        rubro_nombre = "General"
         rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
         if rubro:
             rubro_nombre = rubro.nombre
+
+        return jsonify({
+            "token": user.token,
+            "id": user.id,
+            "name": user.name or "",
+            "email": user.email or "",
+            "plan": user.plan or "gratis",
+            "preguntas_usadas": user.preguntas_usadas or 0,
+            "limite_preguntas": user.limite_preguntas or 0,
+            "nombre_empresa": user.nombre_empresa or "",
+            "direccion": user.direccion or "",
+            "telefono": user.telefono or "",
+            "link_web": user.link_web or "",
+            "horario": user.horario or "",
+            "ubicacion": user.ubicacion or "",
+            "logo_url": user.logo_url or "",
+            "rubro": rubro_nombre
+        })
     except Exception as e:
-        logging.error(f"❌ Error cargando rubro en /me: {str(e)}")
-
-    return jsonify({
-        "token": user.token,
-        "id": user.id,
-        "name": user.name or "",
-        "email": user.email or "",
-        "plan": user.plan or "gratis",
-        "preguntas_usadas": user.preguntas_usadas or 0,
-        "limite_preguntas": user.limite_preguntas or 0,
-        "nombre_empresa": user.nombre_empresa or "",
-        "direccion": user.direccion or "",
-        "telefono": user.telefono or "",
-        "link_web": user.link_web or "",
-        "horario": user.horario or "",
-        "ubicacion": user.ubicacion or "",
-        "logo_url": user.logo_url or "",
-        "rubro": rubro_nombre
-    })
-
+        logging.error(f"❌ Error en /me: {str(e)}")
+        return jsonify({"error": "Error interno al obtener perfil"}), 500
 
 # Registro de usuario
 @auth_bp.route('/register', methods=['POST'])
@@ -182,3 +182,9 @@ def update_profile(user):
     except Exception as e:
         logging.error(f"❌ Error al actualizar perfil: {str(e)}")
         return jsonify({"error": f"Error interno al guardar los datos: {str(e)}"}), 500
+
+# Crear base directo si no existen migraciones
+@auth_bp.cli.command("crear_base")
+def crear_base():
+    db.create_all()
+    print("Base creada directamente desde los modelos.")
