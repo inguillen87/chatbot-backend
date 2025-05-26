@@ -118,6 +118,7 @@ app.cli.add_command(aplicar_migraciones)
 
 # Agregar headers de CORS a todas las respuestas
 @app.after_request
+@app.after_request
 def apply_cors_headers(response):
     origin = request.headers.get("Origin")
     allowed_origins = [
@@ -127,13 +128,10 @@ def apply_cors_headers(response):
     ]
     if origin in allowed_origins:
         response.headers["Access-Control-Allow-Origin"] = origin
-    else:
-        response.headers["Access-Control-Allow-Origin"] = "https://www.chatboc.ar"
-
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Vary"] = "Origin"
     return response
 
 # Manejar preflight OPTIONS devolviendo 200 OK
