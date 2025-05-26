@@ -2,7 +2,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import click
-from flask import Flask
+from flask import Flask, request, make_response
 from flask_cors import CORS
 from config import Config
 from extensions import db, migrate
@@ -47,7 +47,11 @@ def create_app():
     try:
         CORS(
             app,
-            origins=["https://chatboc.ar", "https://www.chatboc.ar"],
+            origins=[
+                "https://chatboc.ar",
+                "https://www.chatboc.ar",
+                "http://localhost:5173"  # para pruebas locales
+            ],
             supports_credentials=True,
             allow_headers=["Content-Type", "Authorization"],
             methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -111,3 +115,32 @@ def aplicar_migraciones():
         logging.error(f"❌ Error en upgrade de migraciones: {e}")
 
 app.cli.add_command(aplicar_migraciones)
+
+# Agregar headers de CORS a todas las respuestas
+@app.after_request
+def apply_cors_headers(response):
+    origin = request.headers.get("Origin")
+    allowed_origins = [
+        "https://chatboc.ar",
+        "https://www.chatboc.ar",
+        "http://localhost:5173"
+    ]
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "https://www.chatboc.ar"
+
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Vary"] = "Origin"
+    return response
+
+# Manejar preflight OPTIONS devolviendo 200 OK
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        print(f"🟡 Preflight OPTIONS recibido en {request.path}")
+        response = make_response()
+        response.status_code = 200
+        return response

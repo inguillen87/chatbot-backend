@@ -9,7 +9,7 @@ import traceback
 
 auth_bp = Blueprint('auth', __name__)
 
-# Decorador de autenticación robusto
+# Decorador para verificar token en rutas protegidas
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -24,11 +24,10 @@ def token_requerido(f):
         return f(user, *args, **kwargs)
     return decorated
 
-# Endpoint para obtener datos del usuario actual
+# Obtener información del usuario actual
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-
     if not token:
         return jsonify({"error": "Token faltante"}), 401
 
@@ -37,13 +36,11 @@ def get_current_user():
         return jsonify({"error": "Token inválido"}), 401
 
     try:
-       try:
         rubro_nombre = "General"
-        rubro = None
         if user.rubro_id:
             rubro = db.session.get(Rubro, user.rubro_id)
-        if rubro and hasattr(rubro, "nombre"):
-            rubro_nombre = rubro.nombre
+            if rubro and hasattr(rubro, "nombre"):
+                rubro_nombre = rubro.nombre
 
         return jsonify({
             "token": user.token,
@@ -62,9 +59,8 @@ def get_current_user():
             "logo_url": user.logo_url or "",
             "rubro": rubro_nombre
         })
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        current_app.logger.error("❌ Error crítico en /me:\n" + error_trace)
+    except Exception:
+        current_app.logger.error("❌ Error crítico en /me:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno al obtener perfil"}), 500
 
 # Registro de usuario
@@ -88,14 +84,11 @@ def register():
         if not rubro:
             return jsonify({"error": "Rubro no válido"}), 400
 
-        hashed_password = generate_password_hash(password)
-        token = str(uuid.uuid4())
-
         user = User(
             name=name,
             email=email,
-            password_hash=hashed_password,
-            token=token,
+            password_hash=generate_password_hash(password),
+            token=str(uuid.uuid4()),
             nombre_empresa=nombre_empresa,
             rubro_id=rubro.id,
             plan="gratis",
@@ -119,9 +112,8 @@ def register():
             "preguntas_usadas": user.preguntas_usadas,
             "limite_preguntas": user.limite_preguntas
         })
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        logging.error("❌ Error en /register:\n" + error_trace)
+    except Exception:
+        logging.error("❌ Error en /register:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno al registrar usuario"}), 500
 
 # Login de usuario
@@ -146,15 +138,14 @@ def login():
             "name": user.name,
             "email": user.email,
             "plan": user.plan,
-            "preguntas_usadas": user.preguntas_usadas,
-            "limite_preguntas": user.limite_preguntas
+            "preguntas_usadas": user.preguntas_usadas or 0,
+            "limite_preguntas": user.limite_preguntas or 0
         })
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        logging.error("❌ Error en /login:\n" + error_trace)
+    except Exception:
+        logging.error("❌ Error en /login:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno al iniciar sesión"}), 500
 
-# Actualizar perfil
+# Actualizar perfil del usuario
 @auth_bp.route('/perfil', methods=['PUT'])
 @token_requerido
 def update_profile(user):
@@ -172,12 +163,12 @@ def update_profile(user):
         db.session.commit()
         logging.info(f"✅ Perfil actualizado: {user.email}")
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
-    except Exception as e:
+    except Exception:
         logging.error("❌ Error al actualizar perfil: %s", traceback.format_exc())
-        return jsonify({"error": f"Error interno al guardar los datos"}), 500
+        return jsonify({"error": "Error interno al guardar los datos"}), 500
 
-# Crear base directo si no existen migraciones
+# Comando CLI opcional para crear base sin migraciones
 @auth_bp.cli.command("crear_base")
 def crear_base():
     db.create_all()
-    print("Base creada directamente desde los modelos.")
+    print("✅ Base creada directamente desde los modelos.")
