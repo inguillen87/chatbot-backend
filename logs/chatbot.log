@@ -28,3 +28,5 @@
 2025-05-26 20:05:43,562 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
 2025-05-26 20:05:47,639 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
 2025-05-26 20:36:56,700 | ERROR | Error: Directory migrations already exists and is not empty
+2025-05-26 20:44:57,389 | ERROR | Error: Directory migrations already exists and is not empty
+2025-05-26 20:48:20,878 | ERROR | Error: Directory migrations already exists and is not empty
