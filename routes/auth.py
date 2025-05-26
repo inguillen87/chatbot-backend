@@ -28,6 +28,7 @@ def token_requerido(f):
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+
     if not token:
         return jsonify({"error": "Token faltante"}), 401
 
@@ -37,28 +38,29 @@ def get_current_user():
 
     try:
         rubro_nombre = "General"
-        if user.rubro_id:
-            rubro = db.session.get(Rubro, user.rubro_id)
-            if rubro and hasattr(rubro, "nombre"):
-                rubro_nombre = rubro.nombre
+        rubro = db.session.get(Rubro, user.rubro_id) if user.rubro_id else None
+        if rubro and hasattr(rubro, "nombre"):
+            rubro_nombre = rubro.nombre
 
+        # Usar .getattr con valores por defecto seguros
         return jsonify({
             "token": user.token,
             "id": user.id,
-            "name": user.name or "",
-            "email": user.email or "",
-            "plan": user.plan or "gratis",
-            "preguntas_usadas": user.preguntas_usadas or 0,
-            "limite_preguntas": user.limite_preguntas or 0,
-            "nombre_empresa": user.nombre_empresa or "",
-            "direccion": user.direccion or "",
-            "telefono": user.telefono or "",
-            "link_web": user.link_web or "",
-            "horario": user.horario or "",
-            "ubicacion": user.ubicacion or "",
-            "logo_url": user.logo_url or "",
+            "name": getattr(user, "name", "") or "",
+            "email": getattr(user, "email", "") or "",
+            "plan": getattr(user, "plan", "gratis") or "gratis",
+            "preguntas_usadas": getattr(user, "preguntas_usadas", 0) or 0,
+            "limite_preguntas": getattr(user, "limite_preguntas", 0) or 0,
+            "nombre_empresa": getattr(user, "nombre_empresa", "") or "",
+            "direccion": getattr(user, "direccion", "") or "",
+            "telefono": getattr(user, "telefono", "") or "",
+            "link_web": getattr(user, "link_web", "") or "",
+            "horario": getattr(user, "horario", "") or "",
+            "ubicacion": getattr(user, "ubicacion", "") or "",
+            "logo_url": getattr(user, "logo_url", "") or "",
             "rubro": rubro_nombre
         })
+
     except Exception:
         current_app.logger.error("❌ Error crítico en /me:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno al obtener perfil"}), 500
