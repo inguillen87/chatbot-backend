@@ -37,8 +37,13 @@ def get_current_user():
         return jsonify({"error": "Token inválido"}), 401
 
     try:
-        rubro = Rubro.query.get(user.rubro_id) if user.rubro_id else None
-        rubro_nombre = rubro.nombre if rubro else "General"
+       try:
+        rubro_nombre = "General"
+        rubro = None
+        if user.rubro_id:
+            rubro = db.session.get(Rubro, user.rubro_id)
+        if rubro and hasattr(rubro, "nombre"):
+            rubro_nombre = rubro.nombre
 
         return jsonify({
             "token": user.token,
