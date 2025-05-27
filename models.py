@@ -108,8 +108,9 @@ class CatalogoEmbedding(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
     nombre = db.Column(db.String(255))
+    cantidad = db.Column(db.Float)  
     descripcion = db.Column(db.String(1024))
     precio = db.Column(db.String(50))
-    embedding_vector = db.Column(JSON)  # Guarda como lista de floats
-
+    embedding_vector = db.Column(JSON) 
+    
 print("✅ models.py fue importado con éxito y contiene modelos.")

@@ -6,12 +6,16 @@ from google.cloud import documentai_v1beta3 as documentai
 from google.oauth2 import service_account
 
 # ✅ Cargar credenciales desde archivo secreto en Render
+ruta_render = "/etc/secrets/GOOGLE_SERVICE_KEY_JSON"
+ruta_local = "instance/google-credentials.json"
+
 try:
-    with open("/etc/secrets/GOOGLE_SERVICE_KEY_JSON", "r") as f:
+    ruta_cred = ruta_render if os.path.exists(ruta_render) else ruta_local
+    with open(ruta_cred, "r") as f:
         credentials_info = json.load(f)
     credentials = service_account.Credentials.from_service_account_info(credentials_info)
 except Exception as e:
-    raise RuntimeError(f"❌ Error al cargar credenciales del archivo secreto: {e}")
+    raise RuntimeError(f"❌ Error al cargar credenciales desde {ruta_cred}: {e}")
 
 # 🔍 Procesamiento universal de catálogos PDF
 def procesar_catalogo_pdf_google(pdf_path):
