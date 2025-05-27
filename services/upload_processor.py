@@ -1,39 +1,63 @@
 import os
 import logging
 import pandas as pd
+import pdfplumber
+
 from models import CatalogoEmbedding
 from extensions import db
-from services.cohere_ai import embed_textos  # Asegurate de tener esta función implementada
+from services.cohere_ai import embed_textos
+
 
 def procesar_y_embedear_catalogo(path, user_id):
     try:
         ext = os.path.splitext(path)[1].lower()
-        if ext not in [".csv", ".xlsx", ".xls"]:
-            raise ValueError("Formato no soportado")
+        if ext not in [".csv", ".xlsx", ".xls", ".pdf"]:
+            raise ValueError("❌ Formato no soportado")
 
-        # Leer archivo
-        df = pd.read_csv(path) if ext == ".csv" else pd.read_excel(path)
-        if df.empty:
-            return 0
-
-        registros = []
         textos = []
+        registros = []
 
-        for _, row in df.iterrows():
-            nombre = str(row.get("nombre", "")).strip()
-            descripcion = str(row.get("descripcion", "")).strip()
-            precio = str(row.get("precio", "")).strip()
+        # Procesar CSV o Excel
+        if ext in [".csv", ".xlsx", ".xls"]:
+            df = pd.read_csv(path) if ext == ".csv" else pd.read_excel(path)
+            if df.empty:
+                return 0
 
-            texto_base = f"{nombre}. {descripcion}. Precio: {precio}."
-            textos.append(texto_base)
+            for _, row in df.iterrows():
+                nombre = str(row.get("nombre", "")).strip()
+                descripcion = str(row.get("descripcion", "")).strip()
+                precio = str(row.get("precio", "")).strip()
 
-            registros.append({
-                "nombre": nombre,
-                "descripcion": descripcion,
-                "precio": precio,
-            })
+                if not nombre and not descripcion:
+                    continue
 
-        vectores = embed_textos(textos)  # Devuelve una lista de listas
+                texto_base = f"{nombre}. {descripcion}. Precio: {precio}."
+                textos.append(texto_base)
+
+                registros.append({
+                    "nombre": nombre,
+                    "descripcion": descripcion,
+                    "precio": precio,
+                })
+
+        # Procesar PDF (texto plano por línea)
+        elif ext == ".pdf":
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    for line in page.extract_text().split("\n"):
+                        texto = line.strip()
+                        if texto:
+                            textos.append(texto)
+                            registros.append({
+                                "nombre": texto[:50],
+                                "descripcion": texto,
+                                "precio": "-"
+                            })
+
+        # Embeddings con Cohere
+        vectores = embed_textos(textos)
+        if not vectores:
+            raise ValueError("No se generaron vectores")
 
         items = []
         for r, vec in zip(registros, vectores):
