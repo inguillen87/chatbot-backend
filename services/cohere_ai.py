@@ -95,10 +95,12 @@ def embed_textos(textos: list[str]) -> list[list[float]]:
         "Content-Type": "application/json"
     }
     payload = {
-        "texts": textos,
-        "model": "embed-english-v3.0",  # También funciona con 'embed-multilingual-v3.0'
-        "input_type": "search_document"
-    }
+    "texts": textos,
+    "model": "embed-multilingual-v3.0",
+    "input_type": "search_document"
+}
+
+
 
     try:
         response = requests.post(url, headers=headers, json=payload)
