@@ -1,19 +1,20 @@
 import os
-import logging
 import uuid
+import logging
 import pandas as pd
 import pdfplumber
 
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
-from flask_login import login_required
-from models import CatalogoEmbedding, User
+from flask_login import login_required, current_user
 from extensions import db
+from models import CatalogoEmbedding
 from services.cohere_ai import embed_textos
 
-upload_bp = Blueprint("upload", __name__)
+upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
@@ -24,11 +25,11 @@ def extension_valida(nombre_archivo):
 def procesar_y_embedear_catalogo(path, user_id):
     try:
         ext = os.path.splitext(path)[1].lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            raise ValueError("❌ Formato no soportado")
-
         textos = []
         registros = []
+
+        if ext not in ALLOWED_EXTENSIONS:
+            raise ValueError("❌ Formato no soportado")
 
         # CSV / Excel
         if ext in [".csv", ".xlsx", ".xls"]:
@@ -89,7 +90,7 @@ def procesar_y_embedear_catalogo(path, user_id):
 
         vectores = embed_textos(textos)
         if not vectores:
-            raise ValueError("❌ No se pudieron generar embeddings")
+            raise ValueError("❌ No se generaron vectores")
 
         items = [
             CatalogoEmbedding(
@@ -115,23 +116,20 @@ def procesar_y_embedear_catalogo(path, user_id):
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 @login_required
 def subir_catalogo():
-    user: User = request.user
-
-    if "file" not in request.files:
-        return jsonify({"error": "No se adjuntó ningún archivo"}), 400
-
-    archivo = request.files["file"]
-    if archivo.filename == "":
-        return jsonify({"error": "Nombre de archivo vacío"}), 400
+    archivo = request.files.get("file")
+    if not archivo or archivo.filename == "":
+        return jsonify({"error": "Archivo no válido o no presente"}), 400
 
     if not extension_valida(archivo.filename):
         return jsonify({"error": "Formato de archivo no permitido"}), 400
 
-    nombre_seguro = secure_filename(f"{user.nombre_empresa}_{uuid.uuid4().hex}{os.path.splitext(archivo.filename)[1]}")
+    nombre_seguro = secure_filename(
+        f"{current_user.nombre_empresa}_{uuid.uuid4().hex}{os.path.splitext(archivo.filename)[1]}"
+    )
     ruta = os.path.join(UPLOAD_FOLDER, nombre_seguro)
     archivo.save(ruta)
 
-    cantidad = procesar_y_embedear_catalogo(ruta, user.id)
+    cantidad = procesar_y_embedear_catalogo(ruta, current_user.id)
     if cantidad == 0:
         return jsonify({"error": "No se procesó ningún ítem válido"}), 500
 
