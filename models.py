@@ -103,8 +103,6 @@ class User(db.Model, UserMixin):
     def __repr__(self):
         return f"<User {self.email}>"
     
-from sqlalchemy.dialects.sqlite import JSON
-
 class CatalogoEmbedding(db.Model):
     __tablename__ = "catalogo_embedding"
     id = db.Column(db.Integer, primary_key=True)
