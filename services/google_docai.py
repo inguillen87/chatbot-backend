@@ -4,21 +4,18 @@ import logging
 from google.cloud import documentai_v1beta3 as documentai
 from google.oauth2 import service_account
 
-# 🛡️ Cargar credenciales desde variable de entorno
-json_str = os.getenv("GOOGLE_SERVICE_KEY_JSON")
-if not json_str:
-    raise RuntimeError("❌ GOOGLE_SERVICE_KEY_JSON no está definido en las env vars.")
-
+# ✅ Cargar credenciales desde archivo secreto en Render
 try:
-    credentials_info = json.loads(json_str)
+    with open("/etc/secrets/GOOGLE_SERVICE_KEY_JSON", "r") as f:
+        credentials_info = json.load(f)
     credentials = service_account.Credentials.from_service_account_info(credentials_info)
 except Exception as e:
-    raise RuntimeError(f"❌ Error al cargar credenciales desde GOOGLE_SERVICE_KEY_JSON: {e}")
+    raise RuntimeError(f"❌ Error al cargar credenciales del archivo secreto: {e}")
 
 # 🔍 Función principal de procesamiento con Document AI
 def procesar_catalogo_pdf_google(pdf_path):
     try:
-        project_id = "ambient-stack-461118-k7"  # <- CORRECTO
+        project_id = "ambient-stack-461118-k7"  
         location = "us"
         processor_id = "55c57b09a179531a"
 
