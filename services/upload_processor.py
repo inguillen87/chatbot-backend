@@ -63,7 +63,7 @@ def procesar_y_embedear_catalogo(path, user_id):
                 for page in pdf.pages:
                     table = page.extract_table()
                     if table and len(table[0]) >= 2:
-                        headers = [h.lower() for h in table[0]]
+                        headers = [h.lower() if h else "" for h in table[0]]
                         for row in table[1:]:
                             row_dict = dict(zip(headers, row))
                             nombre = row_dict.get("nombre", row[0]) or ""
