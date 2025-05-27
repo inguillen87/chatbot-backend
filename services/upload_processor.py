@@ -24,36 +24,43 @@ def extension_valida(nombre_archivo):
 def procesar_y_embedear_catalogo(path, user_id):
     try:
         ext = os.path.splitext(path)[1].lower()
-        print("📥 Archivo recibido:", path)
-        print("📦 Extensión:", ext)
-        print("👤 User ID:", user_id)
-
-        registros = []
+        logging.info(f"📥 Archivo recibido: {path}")
+        logging.info(f"📦 Extensión: {ext} | 👤 User ID: {user_id}")
 
         if ext not in ALLOWED_EXTENSIONS:
-            raise ValueError("❌ Formato no soportado")
+            raise ValueError("❌ Formato de archivo no soportado")
 
-        # 📄 PDF: usar Google Document AI
+        # Leer y procesar registros
         if ext == ".pdf":
             registros = procesar_catalogo_pdf_google(path)
-
-        # 📊 Excel o CSV: usar función separada
-        elif ext in [".csv", ".xlsx", ".xls"]:
+        else:
             registros = procesar_catalogo_excel(path)
 
         if not registros:
             raise ValueError("⚠️ No se extrajo contenido útil del archivo")
 
-        # 🧠 Generar texto para embebido
+        # Validación de campos requeridos
+        registros_filtrados = []
+        for i, r in enumerate(registros):
+            if not all(k in r and r[k] for k in ("nombre", "descripcion", "precio", "cantidad")):
+                logging.warning(f"⚠️ Registro inválido (índice {i}): {r}")
+                continue
+            registros_filtrados.append(r)
+
+        if not registros_filtrados:
+            raise ValueError("⚠️ Todos los registros estaban incompletos")
+
+        # Generar texto para vectores
         textos = [
             f"{r['nombre']}. {r['descripcion']}. Precio: {r['precio']}. Cantidad: {r['cantidad']}."
-            for r in registros
+            for r in registros_filtrados
         ]
 
         vectores = embed_textos(textos)
-        if not vectores:
-            raise ValueError("❌ No se generaron vectores")
+        if not vectores or len(vectores) != len(registros_filtrados):
+            raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(registros_filtrados)})")
 
+        # Guardar en DB
         items = [
             CatalogoEmbedding(
                 user_id=user_id,
@@ -63,46 +70,48 @@ def procesar_y_embedear_catalogo(path, user_id):
                 cantidad=r["cantidad"],
                 embedding_vector=vec
             )
-            for r, vec in zip(registros, vectores)
+            for r, vec in zip(registros_filtrados, vectores)
         ]
 
         db.session.bulk_save_objects(items)
         db.session.commit()
-        logging.info(f"✅ {len(items)} ítems embebidos (user_id={user_id})")
+        logging.info(f"✅ {len(items)} ítems embebidos para user_id={user_id}")
         return len(items)
 
-    except Exception as e:
-        print("❌ ERROR al procesar catálogo:")
-        traceback.print_exc()
-        logging.exception("❌ Error inesperado procesando catálogo:")
+    except Exception:
+        logging.exception("❌ Error inesperado procesando catálogo")
         return 0
 
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():
-    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-    if not token:
-        return jsonify({"error": "Token no proporcionado"}), 401
+    try:
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not token:
+            return jsonify({"error": "Token no proporcionado"}), 401
 
-    user = User.query.filter_by(token=token).first()
-    if not user:
-        return jsonify({"error": "Token inválido o expirado"}), 401
+        user = User.query.filter_by(token=token).first()
+        if not user:
+            return jsonify({"error": "Token inválido o expirado"}), 401
 
-    archivo = request.files.get("file")
-    if not archivo or archivo.filename == "":
-        return jsonify({"error": "Archivo no válido o no presente"}), 400
+        archivo = request.files.get("file")
+        if not archivo or archivo.filename == "":
+            return jsonify({"error": "Archivo no válido o no presente"}), 400
 
-    if not extension_valida(archivo.filename):
-        return jsonify({"error": "Formato de archivo no permitido"}), 400
+        if not extension_valida(archivo.filename):
+            return jsonify({"error": "Formato de archivo no permitido"}), 400
 
-    nombre_seguro = secure_filename(
-        f"{user.nombre_empresa}_{uuid.uuid4().hex}{os.path.splitext(archivo.filename)[1]}"
-    )
-    ruta = os.path.join(UPLOAD_FOLDER, nombre_seguro)
-    archivo.save(ruta)
+        nombre_seguro = secure_filename(
+            f"{user.nombre_empresa}_{uuid.uuid4().hex}{os.path.splitext(archivo.filename)[1]}"
+        )
+        ruta = os.path.join(UPLOAD_FOLDER, nombre_seguro)
+        archivo.save(ruta)
 
-    cantidad = procesar_y_embedear_catalogo(ruta, user.id)
-    if cantidad == 0:
-        return jsonify({"error": "No se procesó ningún ítem válido"}), 500
+        cantidad = procesar_y_embedear_catalogo(ruta, user.id)
+        if cantidad == 0:
+            return jsonify({"error": "No se procesó ningún ítem válido"}), 500
 
-    return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
+        return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
+    except Exception:
+        logging.exception("❌ Error inesperado en el endpoint /subir_catalogo")
+        return jsonify({"error": "Error interno al procesar el catálogo"}), 500
