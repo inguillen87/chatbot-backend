@@ -4,8 +4,8 @@ from flask import session
 from models import User, QA, Rubro, Sugerencia, Conversacion, CatalogoItem
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
-from services.cohere_ai import get_cohere_response  # ✅ Uso modular
-from services.vector_search import buscar_item_vectorizado  # Nuevo
+from services.cohere_ai import get_cohere_response, embed_textos  # ✅ Uso modular
+from services.vector_search import buscar_item_vectorizado  # ✅ Búsqueda por embeddings
 from extensions import db
 import random
 
