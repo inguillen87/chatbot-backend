@@ -31,6 +31,7 @@ def procesar_y_embedear_catalogo(path, user_id):
 
         # Procesar archivo
         registros = procesar_catalogo_pdf_google(path) if ext == ".pdf" else procesar_catalogo_excel(path)
+        print("🔎 REGISTROS EXTRAIDOS:", registros)
 
         if not registros:
             raise ValueError("⚠️ No se extrajo contenido útil del archivo")
