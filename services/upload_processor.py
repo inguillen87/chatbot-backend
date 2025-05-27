@@ -124,7 +124,7 @@ def subir_catalogo():
     if not user:
         return jsonify({"error": "Token inválido o expirado"}), 401
 
-    archivo = request.files.get("archivo")
+    archivo = request.files.get("file")
     if not archivo or archivo.filename == "":
         return jsonify({"error": "Archivo no válido o no presente"}), 400
 
