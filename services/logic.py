@@ -152,6 +152,23 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 logging.warning(f"⚠️ Error guardando conversación intent: {e}")
         return {"respuesta": intent_respuesta, "nivel_usado": rubro_nombre, "fuente": "intents"}
 
+    # Paso 3.5: Catálogo de productos
+    try:
+        catalogo_respuesta = None
+        if not is_demo:
+            from services.catalogo_matcher import buscar_en_catalogo
+            catalogo_respuesta = buscar_en_catalogo(pregunta, user.id)
+
+        if catalogo_respuesta:
+            user.preguntas_usadas += 1
+            db.session.commit()
+            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=catalogo_respuesta, fuente="catalogo", rubro=rubro_nombre))
+            db.session.commit()
+            return {"respuesta": catalogo_respuesta, "nivel_usado": rubro_nombre, "fuente": "catalogo"}
+
+    except Exception as e:
+        logging.warning(f"⚠️ Error en catálogo matcher: {e}")
+
     # Paso 4: Cohere
     try:
         user_context = {

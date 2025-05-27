@@ -1,0 +1,7 @@
+# Ignorar claves y datos sensibles
+/data/*.json
+*.json
+__pycache__/
+*.pyc
+instance/
+.env
