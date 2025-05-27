@@ -8,6 +8,7 @@ from services.cohere_ai import get_cohere_response  # ✅ Uso modular
 from extensions import db
 import random
 
+
 def reemplazar_placeholders(texto: str, user) -> str:
     def safe(val, fallback=""): return str(val or fallback)
 
@@ -22,6 +23,7 @@ def reemplazar_placeholders(texto: str, user) -> str:
         .replace("[rubroNombre]", safe(getattr(user, "rubro_nombre", "empresa")))
     )
 
+
 def obtener_sugerencias_por_rubro(rubro_id):
     try:
         sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
@@ -35,6 +37,7 @@ def obtener_sugerencias_por_rubro(rubro_id):
     except Exception as e:
         logging.error(f"❌ Error al obtener sugerencias: {e}")
         return ["Lo siento, ocurrió un error al buscar sugerencias."]
+
 
 def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[]):
     if not pregunta:
@@ -83,54 +86,22 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             rubro_nombre = rubro_obj.nombre.lower().strip()
 
     logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'demo')} | Rubro: {rubro_nombre} (ID {rubro_id})")
-    # Paso 0.5: Buscar en catálogo del usuario
-    if not is_demo:
-        from models import CatalogoItem
-        try:
-            catalogo = CatalogoItem.query.filter_by(user_id=user.id).all()
-            pregunta_lower = pregunta.lower()
 
-            for item in catalogo:
-                nombre = (item.nombre or "").lower()
-                descripcion = (item.descripcion or "").lower()
-                if nombre in pregunta_lower or any(palabra in pregunta_lower for palabra in descripcion.split()):
-                    logging.info(f"📦 Coincidencia en catálogo: {item.nombre}")
-                    user.preguntas_usadas += 1
-                    db.session.add(Conversacion(
-                        user_id=user.id,
-                        pregunta=pregunta,
-                        respuesta=f"Tenemos '{item.nombre}' a ${item.precio}. {item.descripcion or ''}",
-                        fuente="catalogo",
-                        rubro=rubro_nombre
-                    ))
-                    db.session.commit()
-                    return {
-                        "respuesta": f"Tenemos '{item.nombre}' a ${item.precio}. {item.descripcion or ''}",
-                        "nivel_usado": "catalogo",
-                        "fuente": "catalogo"
-                    }
-        except Exception as e:
-            logging.warning(f"⚠️ Error al buscar en catálogo: {e}")
-
+    historial_chat = Conversacion.query.filter_by(user_id=user.id).order_by(Conversacion.timestamp.desc()).limit(5).all() if not is_demo else []
+    historial_texto = [
+        {"role": "user", "content": conv.pregunta} if i % 2 == 0 else {"role": "assistant", "content": conv.respuesta}
+        for i, conv in enumerate(reversed(historial_chat))
+    ]
+    historial_texto.append({"role": "user", "content": pregunta})
 
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
         if not is_demo:
             user.preguntas_usadas += 1
             db.session.commit()
-            db.session.add(Conversacion(
-                user_id=user.id,
-                pregunta=pregunta,
-                respuesta=faq_match.answer,
-                fuente="faq",
-                rubro=rubro_nombre
-            ))
+            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=faq_match.answer, fuente="faq", rubro=rubro_nombre))
             db.session.commit()
-        return {
-            "respuesta": faq_match.answer,
-            "nivel_usado": rubro_nombre,
-            "fuente": "faq"
-        }
+        return {"respuesta": faq_match.answer, "nivel_usado": rubro_nombre, "fuente": "faq"}
 
     intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     if intent_respuesta:
@@ -138,24 +109,11 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         if not is_demo:
             user.preguntas_usadas += 1
             db.session.commit()
-            db.session.add(Conversacion(
-                user_id=user.id,
-                pregunta=pregunta,
-                respuesta=intent_respuesta,
-                fuente="intents",
-                rubro=rubro_nombre
-            ))
+            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=intent_respuesta, fuente="intents", rubro=rubro_nombre))
             db.session.commit()
-        return {
-            "respuesta": intent_respuesta,
-            "nivel_usado": rubro_nombre,
-            "fuente": "intents"
-        }
+        return {"respuesta": intent_respuesta, "nivel_usado": rubro_nombre, "fuente": "intents"}
 
     try:
-        messages = historial[-5:] if historial else []
-        messages.append({"role": "user", "content": pregunta})
-
         user_context = {
             "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
             "rubro_nombre": rubro_nombre,
@@ -177,7 +135,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             f"Si hay un link, dirección o WhatsApp, usalo. Nunca digas que sos una inteligencia artificial."
         )
 
-        generated_text = get_cohere_response(messages, rubro_id=rubro_id, user_context=user_context, system_prompt=system_prompt)
+        generated_text = get_cohere_response(historial_texto, rubro_id=rubro_id, user_context=user_context, system_prompt=system_prompt)
         respuesta_final = reemplazar_placeholders(generated_text, user)
 
     except Exception as e:
@@ -192,21 +150,11 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         user.preguntas_usadas += 1
         db.session.commit()
         try:
-            nueva = Conversacion(
-                user_id=user.id,
-                pregunta=pregunta,
-                respuesta=respuesta_final,
-                fuente="cohere",
-                rubro=rubro_nombre
-            )
+            nueva = Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_final, fuente="cohere", rubro=rubro_nombre)
             db.session.add(nueva)
             db.session.commit()
             logging.info(f"💬 Conversación guardada: {pregunta[:50]}...")
         except Exception as e:
             logging.warning(f"⚠️ No se pudo guardar la conversación: {e}")
 
-    return {
-        "respuesta": respuesta_final,
-        "nivel_usado": rubro_nombre,
-        "fuente": "cohere"
-    }
+    return {"respuesta": respuesta_final, "nivel_usado": rubro_nombre, "fuente": "cohere"}
