@@ -10,6 +10,7 @@ from extensions import db
 from models import CatalogoEmbedding
 from services.cohere_ai import embed_textos
 from models import User
+import traceback
 
 upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
@@ -23,8 +24,13 @@ def extension_valida(nombre_archivo):
 
 
 def procesar_y_embedear_catalogo(path, user_id):
+    
     try:
         ext = os.path.splitext(path)[1].lower()
+        print("📥 Archivo recibido:", path)
+        print("📦 Extensión:", ext)
+        print("👤 User ID:", user_id)
+        
         textos = []
         registros = []
 
@@ -109,8 +115,10 @@ def procesar_y_embedear_catalogo(path, user_id):
         return len(items)
 
     except Exception as e:
-        logging.error(f"❌ Error al procesar catálogo: {e}")
-        return 0
+     print("❌ ERROR al procesar catálogo:")
+    traceback.print_exc()
+    logging.exception("❌ Error inesperado procesando catálogo:")
+    return 0
 
 
 
