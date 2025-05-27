@@ -4,9 +4,9 @@ from models import CatalogoEmbedding
 from services.cohere_ai import embed_textos
 from sqlalchemy.orm import load_only
 
-def buscar_item_vectorizado(pregunta: str, user_id: int, umbral: float = 0.75) -> str | None:
+def buscar_item_vectorizado(pregunta: str, user: User, umbral: float = 0.75) -> str | None:
     try:
-        catalogo = CatalogoEmbedding.query.filter_by(user_id=user_id).options(
+        catalogo = CatalogoEmbedding.query.filter_by(user_id=user.id).options(
             load_only("nombre", "descripcion", "precio", "cantidad", "embedding_vector")
         ).all()
 

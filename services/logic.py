@@ -158,7 +158,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         catalogo_respuesta = None
         if not is_demo:
             from services.catalogo_matcher import buscar_en_catalogo
-            catalogo_respuesta = buscar_en_catalogo(pregunta, user.id)
+            respuesta_vector = buscar_item_vectorizado(pregunta, user)
 
         if catalogo_respuesta:
             user.preguntas_usadas += 1
