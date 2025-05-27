@@ -108,12 +108,11 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         try:
             respuesta_vector = buscar_item_vectorizado(pregunta, user.id)
             if respuesta_vector:
-             logging.info(f'🧠 Respuesta VECTOR encontrada: {respuesta_vector}')
-            user.preguntas_usadas += 1
-            db.session.commit()
-            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_vector, fuente="vector", rubro=rubro_nombre))
-            db.session.commit()
-            return {"respuesta": respuesta_vector, "nivel_usado": rubro_nombre, "fuente": "vector"}
+                user.preguntas_usadas += 1
+                db.session.commit()
+                db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_vector, fuente="vector", rubro=rubro_nombre))
+                db.session.commit()
+                return {"respuesta": respuesta_vector, "nivel_usado": rubro_nombre, "fuente": "vector"}
         except Exception as e:
             logging.warning(f"❌ Error al usar vector embedding: {e}")
 
