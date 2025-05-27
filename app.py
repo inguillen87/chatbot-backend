@@ -11,6 +11,7 @@ from flask_migrate import upgrade
 from flask.cli import with_appcontext
 from datetime import timedelta
 from models import User
+from services.upload_processor import upload_bp
 
 # Cargar entorno
 load_dotenv()
@@ -73,20 +74,26 @@ def create_app():
     except Exception as e:
         print("❌ Error inicializando extensiones:", e)
 
-    # Registrar blueprints
+        # Registrar blueprints
     for bp_import, name in [
         ("routes.auth", "auth_bp"),
         ("routes.chat", "chat_bp"),
         ("routes.sugerencias", "sugerencia_bp"),
         ("routes.rubros", "rubros_bp"),
         ("routes.metricas", "metricas_bp"),
-        ("routes.upload_processor", "upload_bp")  # ✅ Nuevo con embeddings
     ]:
         try:
             bp_module = __import__(bp_import, fromlist=[name])
             app.register_blueprint(getattr(bp_module, name))
         except Exception as e:
             print(f"❌ Error registrando {name}:", e)
+
+    # Registrar blueprint para subir catálogos embebidos
+    try:
+        app.register_blueprint(upload_bp)
+        print("✅ Blueprint upload_bp registrado.")
+    except Exception as e:
+        print("❌ Error registrando upload_bp:", e)
 
     return app
 

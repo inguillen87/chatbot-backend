@@ -1,23 +1,36 @@
 import os
 import logging
+import uuid
 import pandas as pd
 import pdfplumber
 
-from models import CatalogoEmbedding
+from flask import Blueprint, request, jsonify
+from werkzeug.utils import secure_filename
+from flask_login import login_required
+from models import CatalogoEmbedding, User
 from extensions import db
 from services.cohere_ai import embed_textos
+
+upload_bp = Blueprint("upload", __name__)
+UPLOAD_FOLDER = os.path.join("static", "uploads")
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+def extension_valida(nombre_archivo):
+    return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def procesar_y_embedear_catalogo(path, user_id):
     try:
         ext = os.path.splitext(path)[1].lower()
-        if ext not in [".csv", ".xlsx", ".xls", ".pdf"]:
+        if ext not in ALLOWED_EXTENSIONS:
             raise ValueError("❌ Formato no soportado")
 
         textos = []
         registros = []
 
-        # Leer CSV / Excel
+        # CSV / Excel
         if ext in [".csv", ".xlsx", ".xls"]:
             df = pd.read_csv(path) if ext == ".csv" else pd.read_excel(path)
             if df.empty:
@@ -39,11 +52,10 @@ def procesar_y_embedear_catalogo(path, user_id):
                     "precio": precio
                 })
 
-        # Leer PDF con soporte de tablas
+        # PDF
         elif ext == ".pdf":
             with pdfplumber.open(path) as pdf:
                 for page in pdf.pages:
-                    # Intentar extraer tabla estructurada
                     table = page.extract_table()
                     if table and len(table[0]) >= 2:
                         headers = [h.lower() for h in table[0]]
@@ -60,7 +72,6 @@ def procesar_y_embedear_catalogo(path, user_id):
                                 "precio": precio.strip()
                             })
                     else:
-                        # Fallback a texto plano por línea
                         text = page.extract_text()
                         if text:
                             for line in text.split("\n"):
@@ -74,11 +85,11 @@ def procesar_y_embedear_catalogo(path, user_id):
                                     })
 
         if not textos:
-            raise ValueError("No se extrajo contenido útil del archivo")
+            raise ValueError("⚠️ No se extrajo contenido útil")
 
         vectores = embed_textos(textos)
         if not vectores:
-            raise ValueError("❌ No se pudieron generar vectores con Cohere")
+            raise ValueError("❌ No se pudieron generar embeddings")
 
         items = [
             CatalogoEmbedding(
@@ -93,9 +104,35 @@ def procesar_y_embedear_catalogo(path, user_id):
 
         db.session.bulk_save_objects(items)
         db.session.commit()
-        logging.info(f"✅ {len(items)} ítems embebidos correctamente (user_id={user_id})")
+        logging.info(f"✅ {len(items)} ítems embebidos (user_id={user_id})")
         return len(items)
 
     except Exception as e:
-        logging.error(f"❌ Error en procesamiento de catálogo: {e}")
+        logging.error(f"❌ Error al procesar catálogo: {e}")
         return 0
+
+
+@upload_bp.route("/subir_catalogo", methods=["POST"])
+@login_required
+def subir_catalogo():
+    user: User = request.user
+
+    if "file" not in request.files:
+        return jsonify({"error": "No se adjuntó ningún archivo"}), 400
+
+    archivo = request.files["file"]
+    if archivo.filename == "":
+        return jsonify({"error": "Nombre de archivo vacío"}), 400
+
+    if not extension_valida(archivo.filename):
+        return jsonify({"error": "Formato de archivo no permitido"}), 400
+
+    nombre_seguro = secure_filename(f"{user.nombre_empresa}_{uuid.uuid4().hex}{os.path.splitext(archivo.filename)[1]}")
+    ruta = os.path.join(UPLOAD_FOLDER, nombre_seguro)
+    archivo.save(ruta)
+
+    cantidad = procesar_y_embedear_catalogo(ruta, user.id)
+    if cantidad == 0:
+        return jsonify({"error": "No se procesó ningún ítem válido"}), 500
+
+    return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
