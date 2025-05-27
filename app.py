@@ -5,12 +5,12 @@ import click
 from flask import Flask, request, make_response
 from flask_cors import CORS
 from config import Config
-from extensions import db, migrate
+from extensions import db, migrate, login_manager
 from dotenv import load_dotenv
 from flask_migrate import upgrade
 from flask.cli import with_appcontext
 from datetime import timedelta
-from extensions import login_manager
+from models import User
 
 # Cargar entorno
 load_dotenv()
@@ -34,7 +34,6 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
     login_manager.init_app(app)
-
 
     # Mostrar info de base de datos
     db_path = Config.SQLALCHEMY_DATABASE_URI.replace("sqlite:///", "")
@@ -81,8 +80,7 @@ def create_app():
         ("routes.sugerencias", "sugerencia_bp"),
         ("routes.rubros", "rubros_bp"),
         ("routes.metricas", "metricas_bp"),
-        ("routes.upload_catalogo", "upload_bp") 
-
+        ("routes.upload_processor", "upload_bp")  # ✅ Nuevo con embeddings
     ]:
         try:
             bp_module = __import__(bp_import, fromlist=[name])
