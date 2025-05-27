@@ -83,6 +83,35 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             rubro_nombre = rubro_obj.nombre.lower().strip()
 
     logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'demo')} | Rubro: {rubro_nombre} (ID {rubro_id})")
+    # Paso 0.5: Buscar en catálogo del usuario
+    if not is_demo:
+        from models import CatalogoItem
+        try:
+            catalogo = CatalogoItem.query.filter_by(user_id=user.id).all()
+            pregunta_lower = pregunta.lower()
+
+            for item in catalogo:
+                nombre = (item.nombre or "").lower()
+                descripcion = (item.descripcion or "").lower()
+                if nombre in pregunta_lower or any(palabra in pregunta_lower for palabra in descripcion.split()):
+                    logging.info(f"📦 Coincidencia en catálogo: {item.nombre}")
+                    user.preguntas_usadas += 1
+                    db.session.add(Conversacion(
+                        user_id=user.id,
+                        pregunta=pregunta,
+                        respuesta=f"Tenemos '{item.nombre}' a ${item.precio}. {item.descripcion or ''}",
+                        fuente="catalogo",
+                        rubro=rubro_nombre
+                    ))
+                    db.session.commit()
+                    return {
+                        "respuesta": f"Tenemos '{item.nombre}' a ${item.precio}. {item.descripcion or ''}",
+                        "nivel_usado": "catalogo",
+                        "fuente": "catalogo"
+                    }
+        except Exception as e:
+            logging.warning(f"⚠️ Error al buscar en catálogo: {e}")
+
 
     faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     if faq_match:
