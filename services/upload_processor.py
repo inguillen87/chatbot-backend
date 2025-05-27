@@ -9,6 +9,7 @@ from flask_login import login_required, current_user
 from extensions import db
 from models import CatalogoEmbedding
 from services.cohere_ai import embed_textos
+from models import User
 
 upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
@@ -112,10 +113,18 @@ def procesar_y_embedear_catalogo(path, user_id):
         return 0
 
 
+
 @upload_bp.route("/subir_catalogo", methods=["POST"])
-@login_required
 def subir_catalogo():
-    archivo = request.files.get("file")
+    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    if not token:
+        return jsonify({"error": "Token no proporcionado"}), 401
+
+    user = User.query.filter_by(token=token).first()
+    if not user:
+        return jsonify({"error": "Token inválido o expirado"}), 401
+
+    archivo = request.files.get("archivo")
     if not archivo or archivo.filename == "":
         return jsonify({"error": "Archivo no válido o no presente"}), 400
 
@@ -123,13 +132,14 @@ def subir_catalogo():
         return jsonify({"error": "Formato de archivo no permitido"}), 400
 
     nombre_seguro = secure_filename(
-        f"{current_user.nombre_empresa}_{uuid.uuid4().hex}{os.path.splitext(archivo.filename)[1]}"
+        f"{user.nombre_empresa}_{uuid.uuid4().hex}{os.path.splitext(archivo.filename)[1]}"
     )
     ruta = os.path.join(UPLOAD_FOLDER, nombre_seguro)
     archivo.save(ruta)
 
-    cantidad = procesar_y_embedear_catalogo(ruta, current_user.id)
+    cantidad = procesar_y_embedear_catalogo(ruta, user.id)
     if cantidad == 0:
         return jsonify({"error": "No se procesó ningún ítem válido"}), 500
 
     return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
+
