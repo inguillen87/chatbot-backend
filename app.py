@@ -127,7 +127,6 @@ app.cli.add_command(aplicar_migraciones)
 
 # Agregar headers de CORS a todas las respuestas
 @app.after_request
-@app.after_request
 def apply_cors_headers(response):
     origin = request.headers.get("Origin")
     allowed_origins = [
