@@ -1,44 +1,52 @@
-# services/google_docai.py
-
 import os
+import json
+import logging
+from google.cloud import documentai_v1beta3 as documentai
 from google.oauth2 import service_account
-from google.cloud import documentai_v1 as documentai
 
-# Datos reales de tu cuenta
-PROJECT_ID = "ambient-stack-461118-k7"
-LOCATION = "us"
-PROCESSOR_ID = "55c57b09a179531a"
-CREDENTIALS_PATH = "data/google_service_key.json"
+# 🛡️ Cargar credenciales desde variable de entorno
+json_str = os.getenv("GOOGLE_SERVICE_KEY_JSON")
+if not json_str:
+    raise RuntimeError("❌ GOOGLE_SERVICE_KEY_JSON no está definido en las env vars.")
 
-def procesar_catalogo_pdf_google(path_pdf):
-    credentials = service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
-    client = documentai.DocumentUnderstandingServiceClient(credentials=credentials)
+try:
+    credentials_info = json.loads(json_str)
+    credentials = service_account.Credentials.from_service_account_info(credentials_info)
+except Exception as e:
+    raise RuntimeError(f"❌ Error al cargar credenciales desde GOOGLE_SERVICE_KEY_JSON: {e}")
 
-    with open(path_pdf, "rb") as f:
-        pdf_bytes = f.read()
+# 🔍 Función principal de procesamiento con Document AI
+def procesar_catalogo_pdf_google(pdf_path):
+    try:
+        project_id = "ambient-stack-461118"  # Reemplazá si es otro
+        location = "us"
+        processor_id = "e4f3d290e4896c4b"  # Reemplazá si es otro
 
-    name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}"
+        client = documentai.DocumentProcessorServiceClient(credentials=credentials)
+        name = f"projects/{project_id}/locations/{location}/processors/{processor_id}"
 
-    document = {"content": pdf_bytes, "mime_type": "application/pdf"}
-    request = {"name": name, "raw_document": document}
-    result = client.process_document(request=request)
+        with open(pdf_path, "rb") as file:
+            pdf_content = file.read()
 
-    doc = result.document
-    productos = []
+        raw_document = documentai.RawDocument(content=pdf_content, mime_type="application/pdf")
 
-    for page in doc.pages:
-        for table in page.tables:
-            for row in table.body_rows:
-                try:
-                    celdas = [cell.layout.text.strip() for cell in row.cells]
-                    if len(celdas) >= 3:
-                        productos.append({
-                            "nombre": celdas[0][:50],
-                            "descripcion": " ".join(celdas),
-                            "precio": celdas[-1].replace("$", "").replace(".", "").replace(",", ".").strip(),
-                            "cantidad": "1"  # opcional: podés mejorar esto según columna
-                        })
-                except Exception as e:
-                    print("⚠️ Error al procesar fila:", e)
+        request = documentai.ProcessRequest(
+            name=name,
+            raw_document=raw_document
+        )
 
-    return productos
+        result = client.process_document(request=request)
+
+        document = result.document
+        texto_extraido = document.text
+
+        logging.info("📝 Texto extraído con Google Document AI:")
+        logging.info(texto_extraido)
+
+        # 💡 Acá podés parsear líneas en productos, precios, etc.
+        items = [{"descripcion": linea.strip()} for linea in texto_extraido.split("\n") if linea.strip()]
+        return items
+
+    except Exception as e:
+        logging.error(f"❌ Error procesando catálogo con Google Doc AI: {e}")
+        return []
