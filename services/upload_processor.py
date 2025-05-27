@@ -3,14 +3,13 @@ import uuid
 import logging
 import pandas as pd
 import pdfplumber
+import traceback
+
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
-from flask_login import login_required, current_user
 from extensions import db
-from models import CatalogoEmbedding
+from models import CatalogoEmbedding, User
 from services.cohere_ai import embed_textos
-from models import User
-import traceback
 
 upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
@@ -24,13 +23,12 @@ def extension_valida(nombre_archivo):
 
 
 def procesar_y_embedear_catalogo(path, user_id):
-    
     try:
         ext = os.path.splitext(path)[1].lower()
         print("📥 Archivo recibido:", path)
         print("📦 Extensión:", ext)
         print("👤 User ID:", user_id)
-        
+
         textos = []
         registros = []
 
@@ -79,8 +77,12 @@ def procesar_y_embedear_catalogo(path, user_id):
                                 "precio": precio.strip()
                             })
                     else:
-                        text = page.extract_text()
-                        if text:
+                        try:
+                            text = page.extract_text()
+                            if not text:
+                                logging.warning("⚠️ Página vacía o sin texto, se omite.")
+                                continue
+
                             for line in text.split("\n"):
                                 texto = line.strip()
                                 if texto:
@@ -90,6 +92,8 @@ def procesar_y_embedear_catalogo(path, user_id):
                                         "descripcion": texto,
                                         "precio": "-"
                                     })
+                        except Exception as e:
+                            logging.warning(f"⚠️ Error al extraer texto plano del PDF: {e}")
 
         if not textos:
             raise ValueError("⚠️ No se extrajo contenido útil")
@@ -115,11 +119,10 @@ def procesar_y_embedear_catalogo(path, user_id):
         return len(items)
 
     except Exception as e:
-     print("❌ ERROR al procesar catálogo:")
-    traceback.print_exc()
-    logging.exception("❌ Error inesperado procesando catálogo:")
-    return 0
-
+        print("❌ ERROR al procesar catálogo:")
+        traceback.print_exc()
+        logging.exception("❌ Error inesperado procesando catálogo:")
+        return 0
 
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
@@ -150,4 +153,3 @@ def subir_catalogo():
         return jsonify({"error": "No se procesó ningún ítem válido"}), 500
 
     return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
-
