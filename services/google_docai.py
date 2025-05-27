@@ -18,9 +18,9 @@ except Exception as e:
 # 🔍 Función principal de procesamiento con Document AI
 def procesar_catalogo_pdf_google(pdf_path):
     try:
-        project_id = "ambient-stack-461118"  # Reemplazá si es otro
+        project_id = "ambient-stack-461118-k7"  # <- CORRECTO
         location = "us"
-        processor_id = "e4f3d290e4896c4b"  # Reemplazá si es otro
+        processor_id = "55c57b09a179531a"
 
         client = documentai.DocumentProcessorServiceClient(credentials=credentials)
         name = f"projects/{project_id}/locations/{location}/processors/{processor_id}"
