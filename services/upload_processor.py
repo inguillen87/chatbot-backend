@@ -7,7 +7,8 @@ from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoEmbedding, User
-from services.cohere_ai import embed_textos
+from services.cohere_ai import embed_textos  # usa esto o...
+# from services.vector_search import generar_embedding_vector  # ...esto si lo preferís
 from services.google_docai import procesar_catalogo_pdf_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
 
@@ -16,10 +17,8 @@ UPLOAD_FOLDER = os.path.join("static", "uploads")
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-
 def extension_valida(nombre_archivo):
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
-
 
 def procesar_y_embedear_catalogo(path, user_id):
     try:
@@ -30,16 +29,13 @@ def procesar_y_embedear_catalogo(path, user_id):
         if ext not in ALLOWED_EXTENSIONS:
             raise ValueError("❌ Formato de archivo no soportado")
 
-        # Leer y procesar registros
-        if ext == ".pdf":
-            registros = procesar_catalogo_pdf_google(path)
-        else:
-            registros = procesar_catalogo_excel(path)
+        # Procesar archivo
+        registros = procesar_catalogo_pdf_google(path) if ext == ".pdf" else procesar_catalogo_excel(path)
 
         if not registros:
             raise ValueError("⚠️ No se extrajo contenido útil del archivo")
 
-        # Validación de campos requeridos
+        # Validar estructura mínima
         registros_filtrados = []
         for i, r in enumerate(registros):
             if not all(k in r and r[k] for k in ("nombre", "descripcion", "precio", "cantidad")):
@@ -50,13 +46,16 @@ def procesar_y_embedear_catalogo(path, user_id):
         if not registros_filtrados:
             raise ValueError("⚠️ Todos los registros estaban incompletos")
 
-        # Generar texto para vectores
+        # Embedding
         textos = [
             f"{r['nombre']}. {r['descripcion']}. Precio: {r['precio']}. Cantidad: {r['cantidad']}."
             for r in registros_filtrados
         ]
+        print("🧠 Textos a embebear:", textos)
 
         vectores = embed_textos(textos)
+        # vectores = generar_embedding_vector(textos)  # alternativo
+
         if not vectores or len(vectores) != len(registros_filtrados):
             raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(registros_filtrados)})")
 
@@ -78,10 +77,10 @@ def procesar_y_embedear_catalogo(path, user_id):
         logging.info(f"✅ {len(items)} ítems embebidos para user_id={user_id}")
         return len(items)
 
-    except Exception:
-        logging.exception("❌ Error inesperado procesando catálogo")
-        return 0
-
+    except Exception as e:
+        logging.error(f"❌ ERROR: {e}")
+        traceback.print_exc()
+        raise ValueError(f"❌ Error procesando catálogo: {e}")
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():
@@ -108,10 +107,10 @@ def subir_catalogo():
         archivo.save(ruta)
 
         cantidad = procesar_y_embedear_catalogo(ruta, user.id)
-        if cantidad == 0:
-            return jsonify({"error": "No se procesó ningún ítem válido"}), 500
-
         return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
-    except Exception:
+
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 500
+    except Exception as e:
         logging.exception("❌ Error inesperado en el endpoint /subir_catalogo")
-        return jsonify({"error": "Error interno al procesar el catálogo"}), 500
+        return jsonify({"error": f"Error inesperado: {str(e)}"}), 500
