@@ -2,7 +2,6 @@ import os
 import uuid
 import logging
 import traceback
-import pandas as pd
 
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
@@ -10,6 +9,7 @@ from extensions import db
 from models import CatalogoEmbedding, User
 from services.cohere_ai import embed_textos
 from services.google_docai import procesar_catalogo_pdf_google
+from services.procesar_catalogo_excel import procesar_catalogo_excel
 
 upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
@@ -37,27 +37,9 @@ def procesar_y_embedear_catalogo(path, user_id):
         if ext == ".pdf":
             registros = procesar_catalogo_pdf_google(path)
 
-        # 📊 CSV / Excel
+        # 📊 Excel o CSV: usar función separada
         elif ext in [".csv", ".xlsx", ".xls"]:
-            df = pd.read_csv(path) if ext == ".csv" else pd.read_excel(path)
-            if df.empty:
-                raise ValueError("⚠️ El archivo está vacío")
-
-            for _, row in df.iterrows():
-                nombre = str(row.get("nombre", "")).strip()
-                descripcion = str(row.get("descripcion", "")).strip()
-                precio = str(row.get("precio", "")).replace("$", "").replace(",", ".").strip()
-                cantidad = str(row.get("cantidad", "1")).strip()
-
-                if not nombre and not descripcion:
-                    continue
-
-                registros.append({
-                    "nombre": nombre[:50],
-                    "descripcion": descripcion or nombre,
-                    "precio": precio or "-",
-                    "cantidad": cantidad or "1"
-                })
+            registros = procesar_catalogo_excel(path)
 
         if not registros:
             raise ValueError("⚠️ No se extrajo contenido útil del archivo")
@@ -78,6 +60,7 @@ def procesar_y_embedear_catalogo(path, user_id):
                 nombre=r["nombre"],
                 descripcion=r["descripcion"],
                 precio=r["precio"],
+                cantidad=r["cantidad"],
                 embedding_vector=vec
             )
             for r, vec in zip(registros, vectores)

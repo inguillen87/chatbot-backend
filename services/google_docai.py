@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from google.cloud import documentai_v1beta3 as documentai
 from google.oauth2 import service_account
 
@@ -12,10 +13,10 @@ try:
 except Exception as e:
     raise RuntimeError(f"❌ Error al cargar credenciales del archivo secreto: {e}")
 
-# 🔍 Función principal de procesamiento con Document AI
+# 🔍 Procesamiento universal de catálogos PDF
 def procesar_catalogo_pdf_google(pdf_path):
     try:
-        project_id = "ambient-stack-461118-k7"  
+        project_id = "ambient-stack-461118-k7"
         location = "us"
         processor_id = "55c57b09a179531a"
 
@@ -26,23 +27,39 @@ def procesar_catalogo_pdf_google(pdf_path):
             pdf_content = file.read()
 
         raw_document = documentai.RawDocument(content=pdf_content, mime_type="application/pdf")
-
-        request = documentai.ProcessRequest(
-            name=name,
-            raw_document=raw_document
-        )
-
+        request = documentai.ProcessRequest(name=name, raw_document=raw_document)
         result = client.process_document(request=request)
 
-        document = result.document
-        texto_extraido = document.text
-
+        texto_extraido = result.document.text
         logging.info("📝 Texto extraído con Google Document AI:")
         logging.info(texto_extraido)
 
-        # 💡 Acá podés parsear líneas en productos, precios, etc.
-        items = [{"descripcion": linea.strip()} for linea in texto_extraido.split("\n") if linea.strip()]
-        return items
+        lineas = [line.strip() for line in texto_extraido.split("\n") if line.strip()]
+        productos = []
+
+        for linea in lineas:
+            nombre = linea
+            precio = ""
+            cantidad = ""
+
+            # 💰 Buscar precios: $ 123,45 - 123.45 - 123,45
+            precio_match = re.search(r"\$?\s?(\d{1,4}(?:[.,]\d{2})?)", linea)
+            if precio_match:
+                precio = precio_match.group(1).replace(",", ".")
+
+            # 🔢 Buscar cantidades: x10 - (10) - 10 u
+            cantidad_match = re.search(r"\b(?:x\s?)?(\d{1,4})\b", linea)
+            if cantidad_match:
+                cantidad = cantidad_match.group(1)
+
+            productos.append({
+                "nombre": nombre,
+                "descripcion": linea,
+                "precio": precio,
+                "cantidad": cantidad
+            })
+
+        return productos
 
     except Exception as e:
         logging.error(f"❌ Error procesando catálogo con Google Doc AI: {e}")
