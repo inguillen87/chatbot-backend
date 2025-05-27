@@ -1,5 +1,3 @@
-# services/vector_search.py
-
 import logging
 from models import CatalogoEmbedding
 from services.cohere_ai import embed_textos

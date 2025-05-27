@@ -2,6 +2,8 @@ from datetime import datetime
 from sqlalchemy import Column, String, Integer, DateTime
 from extensions import db
 import uuid
+from sqlalchemy.dialects.sqlite import JSON
+
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 
@@ -100,4 +102,16 @@ class User(db.Model, UserMixin):
 
     def __repr__(self):
         return f"<User {self.email}>"
+    
+from sqlalchemy.dialects.sqlite import JSON
+
+class CatalogoEmbedding(db.Model):
+    __tablename__ = "catalogo_embedding"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
+    nombre = db.Column(db.String(255))
+    descripcion = db.Column(db.String(1024))
+    precio = db.Column(db.String(50))
+    embedding_vector = db.Column(JSON)  # Guarda como lista de floats
+
 print("✅ models.py fue importado con éxito y contiene modelos.")
