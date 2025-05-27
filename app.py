@@ -15,6 +15,10 @@ from extensions import login_manager
 # Cargar entorno
 load_dotenv()
 
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
 # Crear carpeta de logs si no existe
 if not os.path.exists("logs"):
     os.makedirs("logs")

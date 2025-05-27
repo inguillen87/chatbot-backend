@@ -1,10 +1,11 @@
 import os
 import logging
 from flask import session
-from models import User, QA, Rubro, Sugerencia, Conversacion
+from models import User, QA, Rubro, Sugerencia, Conversacion, CatalogoItem
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.cohere_ai import get_cohere_response  # ✅ Uso modular
+from services.vector_search import buscar_item_vectorizado  # Nuevo
 from extensions import db
 import random
 
@@ -63,6 +64,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             preguntas_usadas = session["anon_preguntas"]
             limite_preguntas = 15
             rubro_id = None
+
         user = AnonUser()
     else:
         user = User.query.filter_by(token=token).first()
@@ -87,32 +89,70 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
 
     logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'demo')} | Rubro: {rubro_nombre} (ID {rubro_id})")
 
-    historial_chat = Conversacion.query.filter_by(user_id=user.id).order_by(Conversacion.timestamp.desc()).limit(5).all() if not is_demo else []
-    historial_texto = [
-        {"role": "user", "content": conv.pregunta} if i % 2 == 0 else {"role": "assistant", "content": conv.respuesta}
-        for i, conv in enumerate(reversed(historial_chat))
-    ]
+    historial_chat = []
+    try:
+        if not is_demo:
+            historial_chat = Conversacion.query.filter_by(user_id=user.id).order_by(Conversacion.timestamp.desc()).limit(5).all()
+    except Exception as e:
+        logging.warning(f"⚠️ No se pudo obtener historial de conversación: {e}")
+
+    historial_texto = []
+    for conv in reversed(historial_chat):
+        historial_texto.append({"role": "user", "content": conv.pregunta})
+        historial_texto.append({"role": "assistant", "content": conv.respuesta})
     historial_texto.append({"role": "user", "content": pregunta})
 
-    faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
+    # Paso 1: búsqueda vectorizada
+    if not is_demo:
+        try:
+            respuesta_vector = buscar_item_vectorizado(pregunta, user.id)
+            if respuesta_vector:
+                user.preguntas_usadas += 1
+                db.session.commit()
+                db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_vector, fuente="vector", rubro=rubro_nombre))
+                db.session.commit()
+                return {"respuesta": respuesta_vector, "nivel_usado": rubro_nombre, "fuente": "vector"}
+        except Exception as e:
+            logging.warning(f"❌ Error al usar vector embedding: {e}")
+
+    # Paso 2: FAQ
+    try:
+        faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
+    except Exception as e:
+        faq_match = None
+        logging.warning(f"⚠️ Error buscando en FAQ: {e}")
+
     if faq_match:
         if not is_demo:
-            user.preguntas_usadas += 1
-            db.session.commit()
-            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=faq_match.answer, fuente="faq", rubro=rubro_nombre))
-            db.session.commit()
+            try:
+                user.preguntas_usadas += 1
+                db.session.commit()
+                db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=faq_match.answer, fuente="faq", rubro=rubro_nombre))
+                db.session.commit()
+            except Exception as e:
+                logging.warning(f"⚠️ Error guardando conversación FAQ: {e}")
         return {"respuesta": faq_match.answer, "nivel_usado": rubro_nombre, "fuente": "faq"}
 
-    intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
+    # Paso 3: Intents
+    try:
+        intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
+    except Exception as e:
+        intent_respuesta = None
+        logging.warning(f"⚠️ Error buscando en intents: {e}")
+
     if intent_respuesta:
         intent_respuesta = reemplazar_placeholders(intent_respuesta, user)
         if not is_demo:
-            user.preguntas_usadas += 1
-            db.session.commit()
-            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=intent_respuesta, fuente="intents", rubro=rubro_nombre))
-            db.session.commit()
+            try:
+                user.preguntas_usadas += 1
+                db.session.commit()
+                db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=intent_respuesta, fuente="intents", rubro=rubro_nombre))
+                db.session.commit()
+            except Exception as e:
+                logging.warning(f"⚠️ Error guardando conversación intent: {e}")
         return {"respuesta": intent_respuesta, "nivel_usado": rubro_nombre, "fuente": "intents"}
 
+    # Paso 4: Cohere
     try:
         user_context = {
             "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
@@ -147,9 +187,9 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         }
 
     if not is_demo:
-        user.preguntas_usadas += 1
-        db.session.commit()
         try:
+            user.preguntas_usadas += 1
+            db.session.commit()
             nueva = Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_final, fuente="cohere", rubro=rubro_nombre)
             db.session.add(nueva)
             db.session.commit()
