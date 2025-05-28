@@ -1,18 +1,17 @@
 import os
 import logging
+import random
 from flask import session
 from models import User, QA, Rubro, Sugerencia, Conversacion, CatalogoItem
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
-from services.cohere_ai import get_cohere_response, embed_textos  # ✅ Uso modular
-from services.vector_search import buscar_item_vectorizado  # 🔁 necesario para responder
+from services.cohere_ai import get_cohere_response, embed_textos
+from services.vector_search import buscar_item_vectorizado
 from extensions import db
-import random
 
 
 def reemplazar_placeholders(texto: str, user) -> str:
     def safe(val, fallback=""): return str(val or fallback)
-
     return (
         texto
         .replace("[nombreEmpresa]", safe(getattr(user, "nombre_empresa", "nuestra empresa")))
@@ -64,7 +63,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             preguntas_usadas = session["anon_preguntas"]
             limite_preguntas = 15
             rubro_id = None
-
         user = AnonUser()
     else:
         user = User.query.filter_by(token=token).first()
@@ -76,7 +74,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 "fuente": "sistema"
             }
 
-    if user.rubro_id:
+    if hasattr(user, "rubro_id") and user.rubro_id:
         rubro = Rubro.query.get(user.rubro_id)
         if rubro:
             rubro_id = rubro.id
@@ -91,7 +89,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
 
     historial_chat = []
     try:
-        if not is_demo:
+        if not is_demo and hasattr(user, "id"):
             historial_chat = Conversacion.query.filter_by(user_id=user.id).order_by(Conversacion.timestamp.desc()).limit(5).all()
     except Exception as e:
         logging.warning(f"⚠️ No se pudo obtener historial de conversación: {e}")
@@ -102,7 +100,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         historial_texto.append({"role": "assistant", "content": conv.respuesta})
     historial_texto.append({"role": "user", "content": pregunta})
 
-    if not is_demo:
+    if not is_demo and hasattr(user, "id"):
         try:
             respuesta_vector = buscar_item_vectorizado(pregunta, user.id)
             if respuesta_vector:
@@ -121,7 +119,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         logging.warning(f"⚠️ Error buscando en FAQ: {e}")
 
     if faq_match:
-        if not is_demo:
+        if not is_demo and hasattr(user, "id"):
             try:
                 user.preguntas_usadas += 1
                 db.session.commit()
@@ -139,7 +137,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
 
     if intent_respuesta:
         intent_respuesta = reemplazar_placeholders(intent_respuesta, user)
-        if not is_demo:
+        if not is_demo and hasattr(user, "id"):
             try:
                 user.preguntas_usadas += 1
                 db.session.commit()
@@ -151,9 +149,9 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
 
     try:
         catalogo_respuesta = None
-        if not is_demo:
+        if not is_demo and hasattr(user, "id"):
             from services.catalogo_matcher import buscar_en_catalogo
-            catalogo_respuesta = buscar_en_catalogo(pregunta, user)
+            catalogo_respuesta = buscar_en_catalogo(pregunta, user.id)
 
         if catalogo_respuesta:
             user.preguntas_usadas += 1
@@ -198,7 +196,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             "fuente": "sugerencia"
         }
 
-    if not is_demo:
+    if not is_demo and hasattr(user, "id"):
         try:
             user.preguntas_usadas += 1
             db.session.commit()
