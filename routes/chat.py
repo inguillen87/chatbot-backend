@@ -1,34 +1,27 @@
+import logging
 from flask import Blueprint, request, jsonify
 from services.logic import responder_chatboc
+from models import User  # ✅ Este era el que faltaba
 
-chat_bp = Blueprint("chat", __name__)
+chat_bp = Blueprint("chat_bp", __name__)
 
-@chat_bp.route("/responder_chatboc", methods=["POST", "OPTIONS"])
+@chat_bp.route("/ask", methods=["POST"])
 def responder():
-    if request.method == "OPTIONS":
-        return jsonify({"ok": True}), 200
+    data = request.get_json()
+    pregunta = data.get("question") or data.get("pregunta")
+    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    rubro_nombre = data.get("rubro_nombre", None)
+    historial = data.get("historial", [])
+
+    logging.info(f"🎯 Pregunta recibida: {pregunta}")
 
     try:
-        data = request.get_json()
-        if not isinstance(data, dict):
-            return jsonify({"error": "El cuerpo de la solicitud debe ser un JSON válido."}), 400
-
-        pregunta = data.get("question") or data.get("pregunta")
-        rubro = data.get("rubro", "").strip().lower()
-        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-
-        if not pregunta:
-            return jsonify({"error": "Falta la pregunta"}), 400
-
-        resultado = responder_chatboc(pregunta, token, rubro)
-
-        if "error" in resultado:
-            return jsonify(resultado), 401
-
+        resultado = responder_chatboc(pregunta, token, rubro_nombre_frontend=rubro_nombre, historial=historial)
         return jsonify(resultado), 200
-
     except Exception as e:
-        return jsonify({"error": f"Error interno: {str(e)}"}), 500
+        logging.error(f"❌ Error en /ask: {e}")
+        return jsonify({"error": "Ocurrió un error al procesar tu pregunta."}), 500
+
 
 @chat_bp.after_request
 def apply_cors(response):
