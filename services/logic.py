@@ -65,6 +65,9 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             rubro_id = None
         user = AnonUser()
     else:
+       
+        from models import User
+
         user = User.query.filter_by(token=token).first()
         if not user:
             return {"error": "Usuario no autenticado"}
