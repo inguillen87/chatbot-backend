@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, current_app
 from werkzeug.security import check_password_hash, generate_password_hash
-from models import User, Rubro
+from models import User, Rubro, CatalogoItem  # 👈 importamos también CatalogoItem
 from extensions import db
 from functools import wraps
 import uuid
@@ -42,7 +42,6 @@ def get_current_user():
         if rubro and hasattr(rubro, "nombre"):
             rubro_nombre = rubro.nombre
 
-        # Usar .getattr con valores por defecto seguros
         return jsonify({
             "token": user.token,
             "id": user.id,
@@ -64,6 +63,45 @@ def get_current_user():
     except Exception:
         current_app.logger.error("❌ Error crítico en /me:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno al obtener perfil"}), 500
+
+# Endpoint debug: ver todos los usuarios y su catálogo
+@auth_bp.route('/debug/users', methods=['GET'])
+def debug_usuarios():
+    try:
+        usuarios = User.query.all()
+        resultado = []
+        for u in usuarios:
+            rubro = db.session.get(Rubro, u.rubro_id) if u.rubro_id else None
+            items = CatalogoItem.query.filter_by(user_id=u.id).all()
+
+            catalogo = []
+            for item in items:
+                catalogo.append({
+                    "nombre": item.nombre,
+                    "descripcion": item.descripcion,
+                    "precio": item.precio,
+                    "stock": item.stock,
+                    "categoria": item.categoria or "",
+                    "unidad": item.unidad or ""
+                })
+
+            resultado.append({
+                "id": u.id,
+                "token": u.token,
+                "name": u.name,
+                "email": u.email,
+                "empresa": u.nombre_empresa,
+                "rubro": rubro.nombre if rubro else "General",
+                "telefono": u.telefono,
+                "direccion": u.direccion,
+                "link_web": u.link_web,
+                "horario": u.horario,
+                "catalogo": catalogo  # ✅ lo que importa
+            })
+        return jsonify(resultado)
+    except Exception:
+        current_app.logger.error("❌ Error crítico en /debug/users:\n" + traceback.format_exc())
+        return jsonify({"error": "Error interno en debug"}), 500
 
 # Registro de usuario
 @auth_bp.route('/register', methods=['POST'])
@@ -183,12 +221,10 @@ def update_profile(user):
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
     except Exception as e:
         print("❌ ERROR EN /perfil:", e)
-        import traceback
         traceback.print_exc()
         return jsonify({"error": "Error interno"}), 500
 
-
-# Comando CLI opcional para crear base sin migraciones
+# CLI opcional para crear base sin migraciones
 @auth_bp.cli.command("crear_base")
 def crear_base():
     db.create_all()
