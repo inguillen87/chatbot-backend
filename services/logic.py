@@ -8,7 +8,6 @@ from services.cohere_ai import get_cohere_response, embed_textos  # ✅ Uso modu
 from services.vector_search import buscar_item_vectorizado  # 🔁 necesario para responder
 from extensions import db
 import random
-from models import User
 
 
 def reemplazar_placeholders(texto: str, user) -> str:
@@ -103,7 +102,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         historial_texto.append({"role": "assistant", "content": conv.respuesta})
     historial_texto.append({"role": "user", "content": pregunta})
 
-    # Paso 1: búsqueda vectorizada
     if not is_demo:
         try:
             respuesta_vector = buscar_item_vectorizado(pregunta, user.id)
@@ -116,7 +114,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         except Exception as e:
             logging.warning(f"❌ Error al usar vector embedding: {e}")
 
-    # Paso 2: FAQ
     try:
         faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
     except Exception as e:
@@ -134,7 +131,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 logging.warning(f"⚠️ Error guardando conversación FAQ: {e}")
         return {"respuesta": faq_match.answer, "nivel_usado": rubro_nombre, "fuente": "faq"}
 
-    # Paso 3: Intents
     try:
         intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
     except Exception as e:
@@ -153,12 +149,11 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 logging.warning(f"⚠️ Error guardando conversación intent: {e}")
         return {"respuesta": intent_respuesta, "nivel_usado": rubro_nombre, "fuente": "intents"}
 
-    # Paso 3.5: Catálogo de productos
     try:
         catalogo_respuesta = None
         if not is_demo:
             from services.catalogo_matcher import buscar_en_catalogo
-            respuesta_vector = buscar_item_vectorizado(pregunta, user)
+            catalogo_respuesta = buscar_en_catalogo(pregunta, user)
 
         if catalogo_respuesta:
             user.preguntas_usadas += 1
@@ -170,7 +165,6 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
     except Exception as e:
         logging.warning(f"⚠️ Error en catálogo matcher: {e}")
 
-    # Paso 4: Cohere
     try:
         user_context = {
             "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
