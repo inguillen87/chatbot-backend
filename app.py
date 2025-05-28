@@ -57,7 +57,7 @@ def create_app():
             origins=[
                 "https://chatboc.ar",
                 "https://www.chatboc.ar",
-                "http://localhost:5173"  # para pruebas locales
+                "http://localhost:5173"
             ],
             supports_credentials=True,
             allow_headers=["Content-Type", "Authorization"],
@@ -68,27 +68,32 @@ def create_app():
     except Exception as e:
         print("❌ Error aplicando CORS:", e)
 
+    # ✅ Inicializar extensiones
     try:
         db.init_app(app)
         migrate.init_app(app, db)
+        print("✅ DB y migraciones iniciadas.")
     except Exception as e:
         print("❌ Error inicializando extensiones:", e)
 
-        # Registrar blueprints
-    for bp_import, name in [
+    # ✅ Registrar blueprints
+    blueprints = [
         ("routes.auth", "auth_bp"),
         ("routes.chat", "chat_bp"),
         ("routes.sugerencias", "sugerencia_bp"),
         ("routes.rubros", "rubros_bp"),
-        ("routes.metricas", "metricas_bp"),
-    ]:
+        ("routes.metricas", "metricas_bp")
+    ]
+
+    for bp_import, name in blueprints:
         try:
             bp_module = __import__(bp_import, fromlist=[name])
             app.register_blueprint(getattr(bp_module, name))
+            print(f"✅ Blueprint {name} registrado.")
         except Exception as e:
-            print(f"❌ Error registrando {name}:", e)
+            print(f"❌ Error registrando {name}: {e}")
 
-    # Registrar blueprint para subir catálogos embebidos
+    # ✅ Blueprint para subir catálogos
     try:
         app.register_blueprint(upload_bp)
         print("✅ Blueprint upload_bp registrado.")
@@ -115,10 +120,9 @@ def cargar_datos():
     cargar_sugerencias()
     print("✅ Datos iniciales cargados correctamente.")
 
-# Registrar comando
 app.cli.add_command(cargar_datos)
 
-# Comando CLI opcional para aplicar migraciones manualmente
+# Comando CLI para migraciones
 @click.command("aplicar_migraciones")
 @with_appcontext
 def aplicar_migraciones():
@@ -130,7 +134,7 @@ def aplicar_migraciones():
 
 app.cli.add_command(aplicar_migraciones)
 
-# Agregar headers de CORS a todas las respuestas
+# CORS global para todas las respuestas
 @app.after_request
 def apply_cors_headers(response):
     origin = request.headers.get("Origin")
@@ -147,7 +151,7 @@ def apply_cors_headers(response):
         response.headers["Vary"] = "Origin"
     return response
 
-# Manejar preflight OPTIONS devolviendo 200 OK
+# Preflight OPTIONS
 @app.before_request
 def handle_preflight():
     if request.method == "OPTIONS":
