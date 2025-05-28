@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from flask_migrate import upgrade
 from flask.cli import with_appcontext
 from datetime import timedelta
-from models import User
 from services.upload_processor import upload_bp
 
 # Cargar entorno
