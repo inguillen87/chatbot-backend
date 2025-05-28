@@ -1,35 +1,10 @@
-2025-05-25 20:26:35,023 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:26:56,250 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:29:23,220 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:30:07,154 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:30:11,116 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:30:15,037 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:31:08,097 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:32:59,933 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:35:44,338 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:36:09,106 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:36:37,723 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:37:22,117 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:37:59,891 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:40:17,969 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:40:21,797 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:40:39,918 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:41:22,608 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:42:18,503 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:45:39,380 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:46:17,266 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:46:43,267 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:47:37,337 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:48:45,125 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-25 20:49:27,156 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-26 20:02:51,628 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-26 20:02:55,744 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-26 20:05:25,805 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-26 20:05:43,562 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-26 20:05:47,639 | ERROR | Error: Path doesn't exist: 'C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\migrations'.  Please use the 'init' command to create a new scripts folder.
-2025-05-26 20:36:56,700 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-26 20:44:57,389 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-26 20:48:20,878 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-26 21:49:25,424 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-26 21:53:13,608 | ERROR | Error: Directory migrations already exists and is not empty
-2025-05-28 19:43:39,800 | ERROR | Error: Directory migrations already exists and is not empty
+2025-05-28 20:13:01,474 | INFO | Base de datos y migraciones listas.
+2025-05-28 20:13:01,482 | INFO | CORS aplicado correctamente.
+2025-05-28 20:13:01,486 | INFO | Blueprint auth_bp registrado.
+2025-05-28 20:13:05,017 | INFO | Blueprint chat_bp registrado.
+2025-05-28 20:13:05,019 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-28 20:13:05,021 | INFO | Blueprint rubros_bp registrado.
+2025-05-28 20:13:05,024 | INFO | Blueprint metricas_bp registrado.
+2025-05-28 20:13:05,025 | INFO | Blueprint upload_bp registrado.
+2025-05-28 20:13:05,028 | INFO | Cargando datos iniciales...
+2025-05-28 20:13:05,715 | INFO | Datos iniciales cargados correctamente.
