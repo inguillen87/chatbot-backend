@@ -1,3 +1,4 @@
+from models import User
 import logging
 import numpy as np
 from models import CatalogoEmbedding
