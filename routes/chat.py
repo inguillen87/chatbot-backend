@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 from services.logic import responder_chatboc
+from models import User
 
 chat_bp = Blueprint("chat", __name__)
 
