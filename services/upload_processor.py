@@ -7,8 +7,7 @@ from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoEmbedding, User
-from services.cohere_ai import embed_textos  # usa esto o...
-# from services.vector_search import generar_embedding_vector  # ...esto si lo preferís
+from services.cohere_ai import embed_textos
 from services.google_docai import procesar_catalogo_pdf_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
 
@@ -23,18 +22,24 @@ def extension_valida(nombre_archivo):
 def procesar_y_embedear_catalogo(path, user_id):
     try:
         ext = os.path.splitext(path)[1].lower()
-        logging.info(f"📥 Archivo recibido: {path}")
+        logging.info(f"\n📥 Archivo recibido: {path} ({os.path.getsize(path)} bytes)")
         logging.info(f"📦 Extensión: {ext} | 👤 User ID: {user_id}")
 
         if ext not in ALLOWED_EXTENSIONS:
-            raise ValueError("❌ Formato de archivo no soportado")
+            raise ValueError(f"❌ Formato de archivo no soportado: {ext}")
 
         # Procesar archivo
-        registros = procesar_catalogo_pdf_google(path) if ext == ".pdf" else procesar_catalogo_excel(path)
-        print("🔎 REGISTROS EXTRAIDOS:", registros)
+        if ext == ".pdf":
+            logging.info("🔍 Usando Google Document AI para procesar PDF...")
+            registros = procesar_catalogo_pdf_google(path)
+        else:
+            logging.info("📊 Usando pandas para procesar Excel...")
+            registros = procesar_catalogo_excel(path)
+
+        logging.info(f"🔎 REGISTROS EXTRAIDOS: {registros}")
 
         if not registros:
-            raise ValueError("⚠️ No se extrajo contenido útil del archivo")
+            raise ValueError(f"⚠️ No se extrajo contenido útil del archivo {path}")
 
         # Validar estructura mínima
         registros_filtrados = []
@@ -52,15 +57,16 @@ def procesar_y_embedear_catalogo(path, user_id):
             f"{r['nombre']}. {r['descripcion']}. Precio: {r['precio']}. Cantidad: {r['cantidad']}."
             for r in registros_filtrados
         ]
-        print("🧠 Textos a embebear:", textos)
+        logging.info(f"🧠 Textos a embebear: {textos}")
 
+        logging.info("🧬 Generando vectores de embedding con Cohere...")
         vectores = embed_textos(textos)
-        # vectores = generar_embedding_vector(textos)  # alternativo
 
         if not vectores or len(vectores) != len(registros_filtrados):
             raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(registros_filtrados)})")
 
         # Guardar en DB
+        logging.info("💾 Guardando embeddings en la base de datos...")
         items = [
             CatalogoEmbedding(
                 user_id=user_id,
@@ -79,7 +85,7 @@ def procesar_y_embedear_catalogo(path, user_id):
         return len(items)
 
     except Exception as e:
-        logging.error(f"❌ ERROR: {e}")
+        logging.error(f"❌ Excepción no controlada: {str(e)}")
         traceback.print_exc()
         raise ValueError(f"❌ Error procesando catálogo: {e}")
 
@@ -106,8 +112,10 @@ def subir_catalogo():
         )
         ruta = os.path.join(UPLOAD_FOLDER, nombre_seguro)
         archivo.save(ruta)
+        logging.info(f"📂 Archivo guardado temporalmente en: {ruta}")
 
         cantidad = procesar_y_embedear_catalogo(ruta, user.id)
+        logging.info(f"🎉 Proceso completado: {cantidad} productos embebidos")
         return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
 
     except ValueError as ve:
