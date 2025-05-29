@@ -1,13 +1,7 @@
 import logging
 from flask import Blueprint, request, jsonify
+from services.logic import responder_chatboc  # <--- IMPORTÁ ACÁ LA FUNCIÓN REAL
 
-# Import seguro del responder_chatboc:
-try:
-    from services.logic import responder_chatboc
-except Exception as e:
-    logging.error(f"❌ Error importando responder_chatboc: {e}")
-    def responder_chatboc(*args, **kwargs):
-        return {"error": "No se pudo inicializar la IA (qdrant/services/logic roto)."}
 
 chat_bp = Blueprint("chat_bp", __name__)
 

@@ -85,3 +85,13 @@ ImportError: cannot import name 'get_cohere_response' from 'services.cohere_ai' 
 2025-05-29 16:00:02,558 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on http://127.0.0.1:5000
 2025-05-29 16:00:02,558 | INFO | [33mPress CTRL+C to quit[0m
+2025-05-29 16:05:55,322 | INFO | Base de datos y migraciones listas.
+2025-05-29 16:05:55,322 | INFO | CORS aplicado correctamente.
+2025-05-29 16:05:55,420 | INFO | Blueprint upload_bp registrado.
+2025-05-29 16:05:55,436 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5000
+2025-05-29 16:05:55,438 | INFO | [33mPress CTRL+C to quit[0m
+2025-05-29 16:06:49,789 | INFO | 127.0.0.1 - - [29/May/2025 16:06:49] "[31m[1mGET /me HTTP/1.1[0m" 401 -
+2025-05-29 16:06:55,313 | INFO | 127.0.0.1 - - [29/May/2025 16:06:55] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2025-05-29 16:06:56,812 | INFO | 127.0.0.1 - - [29/May/2025 16:06:56] "GET /ping HTTP/1.1" 200 -
+2025-05-29 16:07:04,896 | INFO | 127.0.0.1 - - [29/May/2025 16:07:04] "[31m[1mGET /ask HTTP/1.1[0m" 405 -
