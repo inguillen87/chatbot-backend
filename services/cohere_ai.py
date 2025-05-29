@@ -1,98 +1,16 @@
-import requests
 import os
 import logging
+import requests
 
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 
-def get_cohere_response(messages: list[dict], rubro_id=None, user_context=None) -> str:
-    if not COHERE_API_KEY:
-        logging.warning("⚠️ COHERE_API_KEY no está configurada.")
-        return "Lo siento, no puedo responder en este momento."
-
-    if not isinstance(messages, list) or not messages:
-        logging.warning("⚠️ Lista de mensajes vacía o inválida.")
-        return "No se recibió ningún mensaje válido para procesar."
-
-    # Extraer contexto del usuario
-    nombre_empresa = user_context.get("nombre_empresa", "tu empresa")
-    rubro_nombre = user_context.get("rubro_nombre", "general")
-    plan = user_context.get("plan", "demo")
-
-    # Prompt para control total del tono
-    system_prompt = (
-        f"Sos **Chatboc**, el asistente virtual profesional de la empresa '{nombre_empresa}', especializada en el rubro '{rubro_nombre}'. "
-        f"Tu tarea es responder dudas de clientes como si fueras parte del equipo humano, usando un tono cálido, directo y profesional. "
-        f"Nunca digas que sos una IA, un modelo de lenguaje, ni digas frases como 'esta respuesta fue generada automáticamente'. "
-        f"Si no sabés algo, invitá al usuario a comunicarse con el equipo real. "
-        f"Plan del cliente: {plan}. Siempre respondé en español neutro, sin tecnicismos, y usando ejemplos si es útil."
-    )
-
-    # Estructura del historial de chat
-    chat_history = [{"role": "system", "message": system_prompt}] + [
-        {"role": m["role"], "message": m["content"]}
-        for m in messages
-        if m.get("role") and m.get("content")
-    ]
-
-    # Último mensaje válido del usuario
-    last_user_message = next(
-        (m["content"] for m in reversed(messages) if m.get("role") == "user" and "content" in m),
-        "Hola"
-    )
-
-    # Configuración de la API de Cohere
-    url = "https://api.cohere.ai/v1/chat"
-    headers = {
-        "Authorization": f"Bearer {COHERE_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "message": last_user_message,
-        "model": "command-r-plus",
-        "temperature": 0.3,
-        "chat_history": chat_history,
-        "prompt_truncation": "auto"
-    }
-
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-
-        if response.status_code == 200:
-            respuesta = response.json().get("text", "").strip()
-
-            # Filtros de seguridad (idioma, longitud, utilidad)
-            if any(w in respuesta.lower() for w in ["the", "you can", "hospital", "insurance", "thank you"]):
-                raise ValueError("Respuesta en inglés detectada.")
-            if len(respuesta.split()) < 3:
-                raise ValueError("Respuesta demasiado corta.")
-            if "lo siento" in respuesta.lower() and "podés" not in respuesta.lower():
-                raise ValueError("Respuesta tipo disculpa sin acción.")
-
-            logging.info(f"💬 Respuesta Cohere: {respuesta}")
-            return respuesta or "Lo siento, no tengo una respuesta clara para eso."
-
-        elif response.status_code == 401:
-            logging.error("🔒 Error 401: API Key inválida.")
-            return "No tengo autorización para responder."
-
-        elif response.status_code == 429:
-            logging.warning("⏳ Límite de uso alcanzado.")
-            return "Se alcanzó el límite de consultas. Intentá más tarde."
-
-        else:
-            logging.warning(f"⚠️ Error Cohere {response.status_code}: {response.text}")
-            return "Lo siento, no puedo responder en este momento."
-
-    except Exception as e:
-        logging.error(f"❌ Excepción al consultar Cohere: {e}")
-        return "Lo siento, ocurrió un error inesperado al responder."
-
 def embed_textos(textos: list[str]) -> list[list[float]]:
-    import requests
+    """
+    Devuelve embeddings de Cohere para una lista de textos.
+    """
     url = "https://api.cohere.ai/v1/embed"
     headers = {
-        "Authorization": f"Bearer {os.getenv('COHERE_API_KEY')}",
+        "Authorization": f"Bearer {COHERE_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -100,15 +18,76 @@ def embed_textos(textos: list[str]) -> list[list[float]]:
         "model": "embed-multilingual-v3.0",
         "input_type": "search_document"
     }
-    print(f"➡️ [COHERE] Primeros textos a embed: {textos[:5]}")
+    logging.info(f"➡️ [COHERE] Solicitando embeddings para: {textos[:3]}")
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        print(f"⬅️ [COHERE] status: {response.status_code}, body: {response.text[:300]}")
+        response = requests.post(url, headers=headers, json=payload, timeout=25)
+        logging.info(f"⬅️ [COHERE] Status: {response.status_code}, Body: {response.text[:200]}")
         response.raise_for_status()
         embeddings = response.json().get("embeddings", [])
-        print(f"⬅️ [COHERE] Cantidad de vectores devueltos: {len(embeddings)}")
+        logging.info(f"⬅️ [COHERE] Vectores devueltos: {len(embeddings)}")
         return embeddings
     except Exception as e:
-        print(f"❌ [COHERE] Error al obtener embeddings: {e}")
+        logging.error(f"❌ [COHERE] Error al obtener embeddings: {e}")
         return []
+
+def get_cohere_chat_response(messages: list[dict], user_context=None) -> str:
+    """
+    Usa Cohere Chat para mantener conversación.
+    """
+    if not COHERE_API_KEY:
+        logging.error("⚠️ COHERE_API_KEY no está configurada.")
+        return "No puedo responder en este momento."
+
+    if not messages or not isinstance(messages, list):
+        logging.error("⚠️ Mensajes inválidos.")
+        return "No se recibió ningún mensaje válido."
+
+    nombre_empresa = user_context.get("nombre_empresa", "tu empresa") if user_context else "tu empresa"
+    rubro_nombre = user_context.get("rubro_nombre", "general") if user_context else "general"
+    plan = user_context.get("plan", "demo") if user_context else "demo"
+
+    system_prompt = (
+        f"Sos Chatboc, el asistente virtual profesional de '{nombre_empresa}' (rubro: '{rubro_nombre}'). "
+        f"Respondé como si fueras del equipo humano, cálido, profesional y directo. Nunca digas que sos una IA."
+        f" Plan del cliente: {plan}. Siempre respondé en español neutro."
+    )
+
+    chat_history = [{"role": "system", "message": system_prompt}] + [
+        {"role": m["role"], "message": m["content"]}
+        for m in messages if m.get("role") and m.get("content")
+    ]
+    last_user_message = next(
+        (m["content"] for m in reversed(messages) if m.get("role") == "user" and "content" in m), "Hola"
+    )
+
+    url = "https://api.cohere.ai/v1/chat"
+    headers = {
+        "Authorization": f"Bearer {COHERE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "message": last_user_message,
+        "model": "command-r-plus",
+        "temperature": 0.3,
+        "chat_history": chat_history,
+        "prompt_truncation": "auto"
+    }
+    logging.info(f"➡️ [COHERE_CHAT] Mensaje: {last_user_message}")
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        logging.info(f"⬅️ [COHERE_CHAT] Status: {response.status_code}, Body: {response.text[:200]}")
+        if response.status_code == 200:
+            respuesta = response.json().get("text", "").strip()
+            if not respuesta or len(respuesta) < 3:
+                raise ValueError("Respuesta vacía o muy corta de Cohere.")
+            return respuesta
+        elif response.status_code == 401:
+            return "No tengo autorización para responder."
+        elif response.status_code == 429:
+            return "Se alcanzó el límite de consultas. Intentá más tarde."
+        else:
+            return "Lo siento, no puedo responder en este momento."
+    except Exception as e:
+        logging.error(f"❌ [COHERE_CHAT] Error: {e}")
+        return "Ocurrió un error inesperado al responder."
 

@@ -6,10 +6,11 @@ import traceback
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
-from models import CatalogoEmbedding, CatalogoItem, User
+from models import CatalogoItem, User  # <--- Ya no uses CatalogoEmbedding
 from services.cohere_ai import embed_textos
 from services.google_docai import procesar_catalogo_pdf_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
+from services.qdrant_utils import get_qdrant_client  # Importá tu función de conexión Qdrant
 
 upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
@@ -18,6 +19,32 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def extension_valida(nombre_archivo):
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
+
+def guardar_en_qdrant(user_id, textos, vectores):
+    qdrant = get_qdrant_client()
+    try:
+        # Crea la colección si no existe (idempotente)
+        qdrant.recreate_collection(
+            collection_name="catalogos",
+            vectors_config={"size": 768, "distance": "Cosine"}
+        )
+    except Exception as e:
+        logging.info(f"Qdrant: la colección ya existe o fue creada. {e}")
+
+    # Guardar cada texto como un punto en Qdrant
+    for idx, (texto, vector) in enumerate(zip(textos, vectores)):
+        qdrant.upsert(
+            collection_name="catalogos",
+            points=[{
+                "id": f"{user_id}_{idx}",
+                "vector": vector,
+                "payload": {
+                    "texto": texto,
+                    "user_id": user_id
+                }
+            }]
+        )
+    logging.info(f"✅ {len(textos)} ítems guardados en Qdrant para user_id={user_id}")
 
 def procesar_y_embedear_catalogo(path, user_id):
     try:
@@ -37,22 +64,19 @@ def procesar_y_embedear_catalogo(path, user_id):
             registros = procesar_catalogo_excel(path)
 
         logging.info(f"🔎 REGISTROS EXTRAIDOS (primeros 3): {registros[:3]} | TOTAL: {len(registros)}")
-        print(f"🔎 REGISTROS EXTRAIDOS (primeros 3): {registros[:3]} | TOTAL: {len(registros)}")
 
         if not registros:
             raise ValueError(f"⚠️ No se extrajo contenido útil del archivo {path}")
 
-        # Validar estructura mínima
+        # Filtrar y validar estructura mínima
         registros_filtrados = []
         for i, r in enumerate(registros):
             if not all(k in r and r[k] for k in ("nombre", "descripcion", "precio", "cantidad")):
                 logging.warning(f"⚠️ Registro inválido (índice {i}): {r}")
-                print(f"⚠️ Registro inválido (índice {i}): {r}")
                 continue
             registros_filtrados.append(r)
 
         logging.info(f"🟢 Registros válidos para embedding: {len(registros_filtrados)}")
-        print(f"🟢 Registros válidos para embedding: {len(registros_filtrados)}")
 
         if not registros_filtrados:
             raise ValueError("⚠️ Todos los registros estaban incompletos")
@@ -63,33 +87,18 @@ def procesar_y_embedear_catalogo(path, user_id):
             for r in registros_filtrados
         ]
         logging.info(f"🧠 Textos a embebear (primeros 3): {textos[:3]} | TOTAL: {len(textos)}")
-        print(f"🧠 Textos a embebear (primeros 3): {textos[:3]} | TOTAL: {len(textos)}")
 
         logging.info("🧬 Generando vectores de embedding con Cohere...")
-        print("🧬 Generando vectores de embedding con Cohere...")
         vectores = embed_textos(textos)
         logging.info(f"🧬 Vectores generados: {len(vectores)} (esperados: {len(registros_filtrados)})")
-        print(f"🧬 Vectores generados: {len(vectores)} (esperados: {len(registros_filtrados)})")
 
         if not vectores or len(vectores) != len(registros_filtrados):
             raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(registros_filtrados)})")
 
-        # Guardar en DB
-        logging.info("💾 Guardando en la base de datos...")
-        print("💾 Guardando en la base de datos...")
+        # Guardar en Qdrant
+        guardar_en_qdrant(user_id, textos, vectores)
 
-        embeddings = [
-            CatalogoEmbedding(
-                user_id=user_id,
-                nombre=r["nombre"],
-                descripcion=r["descripcion"],
-                precio=r["precio"],
-                cantidad=r["cantidad"],
-                embedding_vector=vec
-            )
-            for r, vec in zip(registros_filtrados, vectores)
-        ]
-
+        # (Opcional) Guardar los items claros en la base (sin embedding)
         items_claros = [
             CatalogoItem(
                 user_id=user_id,
@@ -103,20 +112,18 @@ def procesar_y_embedear_catalogo(path, user_id):
             )
             for r in registros_filtrados
         ]
-
-        db.session.bulk_save_objects(embeddings)
         db.session.bulk_save_objects(items_claros)
         db.session.commit()
 
-        logging.info(f"✅ {len(embeddings)} ítems embebidos y guardados para user_id={user_id}")
-        print(f"✅ {len(embeddings)} ítems embebidos y guardados para user_id={user_id}")
-        return len(embeddings)
+        logging.info(f"✅ {len(textos)} ítems procesados y guardados (Qdrant y base) para user_id={user_id}")
+        return len(textos)
 
     except Exception as e:
         logging.error(f"❌ Excepción no controlada: {str(e)}")
-        print(f"❌ Excepción no controlada: {str(e)}")
         traceback.print_exc()
         raise ValueError(f"❌ Error procesando catálogo: {e}")
+
+# El endpoint /subir_catalogo queda igual, solo cambia el procesamiento interno
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():

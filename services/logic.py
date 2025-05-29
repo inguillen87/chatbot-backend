@@ -1,41 +1,24 @@
-import os
 import logging
 import random
 from flask import session
-from models import User, Rubro, Sugerencia, Conversacion, CatalogoItem
+from models import User, Rubro, Sugerencia, Conversacion
+from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
+from services.cohere_ai import get_cohere_response
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
-from services.cohere_ai import get_cohere_response, embed_textos
-from services.vector_search import buscar_item_vectorizado
 from extensions import db
 
-
-def reemplazar_placeholders(texto: str, user) -> str:
-    def safe(val, fallback=""): return str(val or fallback)
-    return (
-        texto
-        .replace("[nombreEmpresa]", safe(getattr(user, "nombre_empresa", "nuestra empresa")))
-        .replace("[linkWeb]", safe(getattr(user, "link_web", "https://tusitioweb.com")))
-        .replace("[telefono]", f"https://wa.me/{safe(getattr(user, 'telefono', ''))}")
-        .replace("[direccion]", safe(getattr(user, "direccion", "dirección no informada")))
-        .replace("[horario]", safe(getattr(user, "horario", "horario no disponible")))
-        .replace("[ubicacion]", safe(getattr(user, "ubicacion", "")))
-        .replace("[rubroNombre]", safe(getattr(user, "rubro_nombre", "empresa")))
-    )
-
-
-def obtener_sugerencias_por_rubro(rubro_id):
+def sugerencias_por_rubro(rubro_id):
     try:
         sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
         if sugerencias:
-            logging.info(f"✅ {len(sugerencias)} sugerencias encontradas para rubro_id={rubro_id}")
             todas = [s.texto for s in sugerencias]
             return random.sample(todas, min(5, len(todas)))
-        logging.warning(f"⚠️ Sin sugerencias para rubro_id={rubro_id}. Usando rubro_id=1 (general)")
+        # Si no hay para ese rubro, usá las generales (rubro_id=1)
         fallback = Sugerencia.query.filter_by(rubro_id=1).all()
-        return random.sample([s.texto for s in fallback], min(5, len(fallback))) if fallback else ["Lo siento, no tengo sugerencias disponibles en este momento."]
+        return random.sample([s.texto for s in fallback], min(5, len(fallback))) if fallback else ["No tengo sugerencias en este momento."]
     except Exception as e:
-        logging.error(f"❌ Error al obtener sugerencias: {e}")
+        print(f"❌ Error buscando sugerencias: {e}")
         return ["Lo siento, ocurrió un error al buscar sugerencias."]
 
 
@@ -43,6 +26,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
     if not pregunta:
         return {"error": "Falta la pregunta"}
 
+    # --- Usuario y límites ---
     is_demo = token.startswith("demo-anon")
     user = None
     rubro_id = 1
@@ -65,9 +49,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             rubro_id = None
         user = AnonUser()
     else:
-       
         from models import User
-
         user = User.query.filter_by(token=token).first()
         if not user:
             return {"error": "Usuario no autenticado"}
@@ -77,6 +59,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 "fuente": "sistema"
             }
 
+    # --- Rubro ---
     if hasattr(user, "rubro_id") and user.rubro_id:
         rubro = Rubro.query.get(user.rubro_id)
         if rubro:
@@ -90,124 +73,111 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
 
     logging.info(f"📌 Usuario: {getattr(user, 'nombre_empresa', 'demo')} | Rubro: {rubro_nombre} (ID {rubro_id})")
 
+    # --- Historial conversacional real (para IA) ---
     historial_chat = []
-    try:
-        if not is_demo and hasattr(user, "id"):
-            historial_chat = Conversacion.query.filter_by(user_id=user.id).order_by(Conversacion.timestamp.desc()).limit(5).all()
-    except Exception as e:
-        logging.warning(f"⚠️ No se pudo obtener historial de conversación: {e}")
-
-    historial_texto = []
-    for conv in reversed(historial_chat):
-        historial_texto.append({"role": "user", "content": conv.pregunta})
-        historial_texto.append({"role": "assistant", "content": conv.respuesta})
-    historial_texto.append({"role": "user", "content": pregunta})
-
     if not is_demo and hasattr(user, "id"):
         try:
-            respuesta_vector = buscar_item_vectorizado(pregunta, user.id)
-            if respuesta_vector:
-                user.preguntas_usadas += 1
-                db.session.commit()
-                db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_vector, fuente="vector", rubro=rubro_nombre))
-                db.session.commit()
-                return {"respuesta": respuesta_vector, "nivel_usado": rubro_nombre, "fuente": "vector"}
+            historial_chat = Conversacion.query.filter_by(user_id=user.id).order_by(Conversacion.timestamp.desc()).limit(10).all()
         except Exception as e:
-            logging.warning(f"❌ Error al usar vector embedding: {e}")
+            logging.warning(f"⚠️ No se pudo obtener historial de conversación: {e}")
 
+    mensajes = []
+    for conv in reversed(historial_chat):
+        mensajes.append({"role": "user", "content": conv.pregunta})
+        mensajes.append({"role": "assistant", "content": conv.respuesta})
+    mensajes.append({"role": "user", "content": pregunta})
+
+    # --- 1. Qdrant: buscar productos relevantes (embedding semántico) ---
+    from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
+    resultados_qdrant = []
+    contexto_catalogo = ""
+    if not is_demo and hasattr(user, "id"):
+        try:
+            resultados_qdrant = buscar_catalogo_qdrant(user.id, pregunta, limite=5)
+            contexto_catalogo = armar_respuesta_legible(resultados_qdrant) if resultados_qdrant else ""
+        except Exception as e:
+            logging.warning(f"❌ Error al buscar en Qdrant: {e}")
+
+    # --- 2. Cohere Chat: responde con info real + hilo conversacional ---
+    from services.cohere_ai import get_cohere_response
+    user_context = {
+        "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
+        "rubro_nombre": rubro_nombre,
+        "plan": getattr(user, "plan", "demo"),
+        "telefono": getattr(user, "telefono", ""),
+        "link_web": getattr(user, "link_web", ""),
+        "direccion": getattr(user, "direccion", ""),
+        "horario": getattr(user, "horario", ""),
+        "ubicacion": getattr(user, "ubicacion", "")
+    }
+
+    # --- PROMPT PRO: info real de catálogo, datos empresa y objetivo ventas ---
+    if contexto_catalogo:
+        prompt = (
+            f"Contexto del catálogo extraído automáticamente (productos relevantes):\n{contexto_catalogo}\n"
+            f"Sos Chatboc, el agente comercial digital de {user_context['nombre_empresa']} (rubro: {user_context['rubro_nombre']}). "
+            f"Tu objetivo es vender, sugerir productos, mostrar promociones, responder con info precisa y guiar la conversación a una acción (ejemplo: compra, reserva, pedir más info, mandar link, enviar WhatsApp, etc). "
+            f"Nunca digas que sos IA. Usá siempre un tono humano, amable, directo, y ofrecé ayuda para cerrar una venta o resolver la consulta.\n"
+            f"Datos útiles: dirección {user_context['direccion']}, link {user_context['link_web']}, tel {user_context['telefono']}, horario {user_context['horario']}.\n"
+            f"Respondé la siguiente conversación como si fueras un vendedor profesional y digital."
+        )
+    else:
+        prompt = (
+            f"Sos Chatboc, el agente comercial digital de {user_context['nombre_empresa']} (rubro: {user_context['rubro_nombre']}). "
+            f"Tu objetivo es vender, sugerir productos, mostrar promociones, responder con info precisa y guiar la conversación a una acción (ejemplo: compra, reserva, pedir más info, mandar link, enviar WhatsApp, etc). "
+            f"Nunca digas que sos IA. Usá siempre un tono humano, amable, directo, y ofrecé ayuda para cerrar una venta o resolver la consulta.\n"
+            f"Datos útiles: dirección {user_context['direccion']}, link {user_context['link_web']}, tel {user_context['telefono']}, horario {user_context['horario']}.\n"
+            f"Respondé la siguiente conversación como si fueras un vendedor profesional y digital."
+        )
+    messages = [{"role": "system", "content": prompt}] + mensajes
+
+    # --- Llamada a Cohere: elabora la respuesta, toma catálogo y contexto, sigue el hilo ---
+    respuesta_final = ""
     try:
-        faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
+        respuesta_final = get_cohere_response(messages, rubro_id=rubro_id, user_context=user_context)
+        respuesta_final = reemplazar_placeholders(respuesta_final, user)
     except Exception as e:
-        faq_match = None
-        logging.warning(f"⚠️ Error buscando en FAQ: {e}")
+        logging.error(f"❌ Error al generar respuesta con Cohere: {e}")
 
-    if faq_match:
+    if respuesta_final and len(respuesta_final) > 5:
         if not is_demo and hasattr(user, "id"):
-            try:
+            user.preguntas_usadas += 1
+            db.session.commit()
+            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_final, fuente="cohere", rubro=rubro_nombre))
+            db.session.commit()
+        return {"respuesta": respuesta_final, "nivel_usado": rubro_nombre, "fuente": "cohere"}
+
+    # --- 3. FAQ e intents solo como backup barato ---
+    try:
+        from services.faq_matcher_spacy import buscar_en_faq_spacy
+        faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
+        if faq_match:
+            if not is_demo and hasattr(user, "id"):
                 user.preguntas_usadas += 1
                 db.session.commit()
                 db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=faq_match.answer, fuente="faq", rubro=rubro_nombre))
                 db.session.commit()
-            except Exception as e:
-                logging.warning(f"⚠️ Error guardando conversación FAQ: {e}")
-        return {"respuesta": faq_match.answer, "nivel_usado": rubro_nombre, "fuente": "faq"}
+            return {"respuesta": faq_match.answer, "nivel_usado": rubro_nombre, "fuente": "faq"}
+    except Exception as e:
+        logging.warning(f"⚠️ Error buscando en FAQ: {e}")
 
     try:
+        from services.intent_matcher import buscar_en_intents
         intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
-    except Exception as e:
-        intent_respuesta = None
-        logging.warning(f"⚠️ Error buscando en intents: {e}")
-
-    if intent_respuesta:
-        intent_respuesta = reemplazar_placeholders(intent_respuesta, user)
-        if not is_demo and hasattr(user, "id"):
-            try:
+        if intent_respuesta:
+            intent_respuesta = reemplazar_placeholders(intent_respuesta, user)
+            if not is_demo and hasattr(user, "id"):
                 user.preguntas_usadas += 1
                 db.session.commit()
                 db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=intent_respuesta, fuente="intents", rubro=rubro_nombre))
                 db.session.commit()
-            except Exception as e:
-                logging.warning(f"⚠️ Error guardando conversación intent: {e}")
-        return {"respuesta": intent_respuesta, "nivel_usado": rubro_nombre, "fuente": "intents"}
-
-    try:
-        catalogo_respuesta = None
-        if not is_demo and hasattr(user, "id"):
-            from services.catalogo_matcher import buscar_en_catalogo
-            catalogo_respuesta = buscar_en_catalogo(pregunta, user.id)
-
-        if catalogo_respuesta:
-            user.preguntas_usadas += 1
-            db.session.commit()
-            db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=catalogo_respuesta, fuente="catalogo", rubro=rubro_nombre))
-            db.session.commit()
-            return {"respuesta": catalogo_respuesta, "nivel_usado": rubro_nombre, "fuente": "catalogo"}
-
+            return {"respuesta": intent_respuesta, "nivel_usado": rubro_nombre, "fuente": "intents"}
     except Exception as e:
-        logging.warning(f"⚠️ Error en catálogo matcher: {e}")
+        logging.warning(f"⚠️ Error buscando en intents: {e}")
 
-    try:
-        user_context = {
-            "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
-            "rubro_nombre": rubro_nombre,
-            "plan": getattr(user, "plan", "demo"),
-            "telefono": getattr(user, "telefono", ""),
-            "link_web": getattr(user, "link_web", ""),
-            "direccion": getattr(user, "direccion", ""),
-            "horario": getattr(user, "horario", ""),
-            "ubicacion": getattr(user, "ubicacion", "")
-        }
-
-        system_prompt = (
-            f"Sos Chatboc, el asistente comercial oficial de {user_context['nombre_empresa']}, "
-            f"dedicado a ayudar a clientes en el rubro {user_context['rubro_nombre']}. "
-            f"Tu objetivo es asistir, recomendar productos, resolver dudas y guiar al usuario hacia una compra o contacto real. "
-            f"Estás ubicado en {user_context['ubicacion']} y tenés tienda en {user_context['link_web']}. "
-            f"Tu horario es: {user_context['horario']}. "
-            f"Respondé siempre de forma amable, conversacional, directa y en español. "
-            f"Si hay un link, dirección o WhatsApp, usalo. Nunca digas que sos una inteligencia artificial."
-        )
-
-        generated_text = get_cohere_response(historial_texto, rubro_id=rubro_id, user_context=user_context, system_prompt=system_prompt)
-        respuesta_final = reemplazar_placeholders(generated_text, user)
-
-    except Exception as e:
-        logging.error(f"❌ Error al generar respuesta con Cohere: {e}")
-        sugerencias = obtener_sugerencias_por_rubro(rubro_id)
-        return {
-            "respuesta": "No encontré una respuesta directa. Podés probar preguntando algo como: " + " · ".join(f"“{s}”" for s in sugerencias),
-            "fuente": "sugerencia"
-        }
-
-    if not is_demo and hasattr(user, "id"):
-        try:
-            user.preguntas_usadas += 1
-            db.session.commit()
-            nueva = Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_final, fuente="cohere", rubro=rubro_nombre)
-            db.session.add(nueva)
-            db.session.commit()
-            logging.info(f"💬 Conversación guardada: {pregunta[:50]}...")
-        except Exception as e:
-            logging.warning(f"⚠️ No se pudo guardar la conversación: {e}")
-
-    return {"respuesta": respuesta_final, "nivel_usado": rubro_nombre, "fuente": "cohere"}
+    # --- 4. Sugerencias: último recurso ---
+    sugerencias = sugerencias_por_rubro(rubro_id)
+    return {
+        "respuesta": "No encontré una respuesta directa. Probá preguntando: " + " · ".join(f"“{s}”" for s in sugerencias),
+        "fuente": "sugerencia"
+    }
