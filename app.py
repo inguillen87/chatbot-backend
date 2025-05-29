@@ -1,86 +1,143 @@
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from flask import Flask
+import click
+from flask import Flask, request, make_response
 from flask_cors import CORS
-from config import Config
-from extensions import db, migrate
-from dotenv import load_dotenv
 from flask_migrate import upgrade
+from flask.cli import with_appcontext
+from dotenv import load_dotenv
+from datetime import timedelta
+import traceback
 
-# Importar funciones opcionales
-from faq_loader import cargar_datos_iniciales
+from config import Config
+from extensions import db, migrate, login_manager
+from services.upload_processor import upload_bp
+from models import User
 
+# Cargar entorno
 load_dotenv()
 
+# Configurar logs
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+file_handler = RotatingFileHandler("logs/chatbot.log", maxBytes=10240, backupCount=5)
+file_handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+file_handler.setFormatter(formatter)
+logging.getLogger().addHandler(file_handler)
+logging.getLogger().setLevel(logging.INFO)
+
+logger = logging.getLogger(__name__)
+
+# Login manager
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
 def create_app():
-    app = Flask(__name__, instance_relative_config=True)
+    app = Flask(__name__)
     app.config.from_object(Config)
 
-    # Crear carpeta de logs si no existe
-    os.makedirs("logs", exist_ok=True)
-
-    # Configurar logging con rotación
-    handler = RotatingFileHandler("logs/app.log", maxBytes=1000000, backupCount=3)
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    handler.setFormatter(formatter)
-
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    logger.addHandler(handler)
-
-    # Soporte CORS
-    CORS(app)
-
-    # Inicializar extensiones
+    login_manager.init_app(app)
     db.init_app(app)
     migrate.init_app(app, db)
 
-    with app.app_context():
+    os.makedirs(app.instance_path, exist_ok=True)
+    logger.info("Base de datos y migraciones listas.")
+
+    # CORS
+    try:
+        CORS(
+            app,
+            origins=[
+                "https://chatboc.ar",
+                "https://www.chatboc.ar",
+                "http://localhost:5173"
+            ],
+            supports_credentials=True,
+            allow_headers=["Content-Type", "Authorization"],
+            methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            max_age=timedelta(hours=1)
+        )
+        logger.info("CORS aplicado correctamente.")
+    except Exception as e:
+        logger.error(f"Error aplicando CORS: {e}")
+
+    # Blueprints
+    blueprints = [
+        ("routes.auth", "auth_bp"),
+        ("routes.chat", "chat_bp"),
+        ("routes.sugerencias", "sugerencia_bp"),
+        ("routes.rubros", "rubros_bp"),
+        ("routes.metricas", "metricas_bp")
+    ]
+
+    for bp_import, name in blueprints:
         try:
-            db_path = app.config.get("SQLALCHEMY_DATABASE_URI", "").replace("sqlite:///", "")
-            logger.info(f"📦 Ruta de la base de datos: {db_path}")
-
-            if os.getenv("FORZAR_RESET") == "1" and db_path and os.path.exists(db_path):
-                os.remove(db_path)
-                logger.warning("💣 Base de datos borrada manualmente por FORZAR_RESET=1")
-
-            if not os.path.exists(db_path):
-                logger.info("🆕 Base no encontrada, creando nueva y cargando datos iniciales")
-                db.create_all()
-                cargar_datos_iniciales()
-            else:
-                logger.info("✅ Base ya existe. Ejecutando migraciones...")
-                upgrade()
-
-            if os.getenv("ALLOW_DB_INIT") == "1":
-                logger.info("🚀 Ejecutando carga de datos iniciales por ALLOW_DB_INIT=1")
-                cargar_datos_iniciales()
-
+            bp_module = __import__(bp_import, fromlist=[name])
+            app.register_blueprint(getattr(bp_module, name))
+            logger.info(f"Blueprint {name} registrado.")
         except Exception as e:
-            logger.exception("❌ Error crítico durante la inicialización")
+            logger.error(f"Error registrando {name}: {e}\n{traceback.format_exc()}")
 
-    # Registro de Blueprints
-    from routes.auth_bp import auth_bp
-    from routes.chat_bp import chat_bp
-    from routes.upload_bp import upload_bp
-    from routes.rubros_bp import rubros_bp
-    from routes.metricas_bp import metricas_bp
-    from routes.sugerencia_bp import sugerencia_bp
-
-    for bp in [auth_bp, chat_bp, upload_bp, rubros_bp, metricas_bp, sugerencia_bp]:
-        app.register_blueprint(bp)
-        logger.info(f"✅ Blueprint {bp.name} registrado.")
+    try:
+        app.register_blueprint(upload_bp)
+        logger.info("Blueprint upload_bp registrado.")
+    except Exception as e:
+        logger.error(f"Error registrando upload_bp: {e}")
 
     return app
 
 app = create_app()
 
-# Comando personalizado para carga manual desde consola
-@app.cli.command("cargar_datos_iniciales")
+# CLI: Cargar datos iniciales
+@click.command("cargar_datos_iniciales")
+@with_appcontext
 def cargar_datos():
+    from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
+    logger.info("Cargando datos iniciales...")
+    db.create_all()
+    cargar_usuarios_demo()
+    cargar_faqs()
+    cargar_sugerencias()
+    logger.info("Datos iniciales cargados correctamente.")
+
+app.cli.add_command(cargar_datos)
+
+# CLI: Migraciones
+@click.command("aplicar_migraciones")
+@with_appcontext
+def aplicar_migraciones():
     try:
-        cargar_datos_iniciales()
-        logging.info("✅ Datos iniciales cargados.")
+        upgrade()
+        logger.info("Migraciones aplicadas correctamente.")
     except Exception as e:
-        logging.exception("❌ Error al cargar datos iniciales")
+        logger.error(f"Error en upgrade de migraciones: {e}\n{traceback.format_exc()}")
+
+app.cli.add_command(aplicar_migraciones)
+
+@app.after_request
+def apply_cors_headers(response):
+    origin = request.headers.get("Origin")
+    allowed_origins = [
+        "https://chatboc.ar",
+        "https://www.chatboc.ar",
+        "http://localhost:5173"
+    ]
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Vary"] = "Origin"
+    return response
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        logger.info(f"Preflight OPTIONS recibido en {request.path}")
+        response = make_response()
+        response.status_code = 200
+        return response
