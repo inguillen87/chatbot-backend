@@ -23,16 +23,15 @@ def extension_valida(nombre_archivo):
 def guardar_en_qdrant(user_id, textos, vectores):
     qdrant = get_qdrant_client()
     try:
-        # Crea la colección si no existe (idempotente)
         qdrant.recreate_collection(
             collection_name="catalogos",
-            vectors_config={"size": 1024, "distance": "Cosine"}
+            vectors_config={"size": len(vectores[0]), "distance": "Cosine"}
         )
     except Exception as e:
         logging.info(f"Qdrant: la colección ya existe o fue creada. {e}")
 
     puntos = []
-    for idx, (texto, vector) in enumerate(zip(textos, vectores)):
+    for texto, vector in zip(textos, vectores):
         puntos.append({
             "id": str(uuid.uuid4()),
             "vector": vector,
@@ -41,10 +40,12 @@ def guardar_en_qdrant(user_id, textos, vectores):
                 "user_id": user_id
             }
         })
+
     qdrant.upsert(
         collection_name="catalogos",
         points=puntos
     )
+
     logging.info(f"✅ {len(textos)} ítems guardados en Qdrant para user_id={user_id}")
 
 def procesar_y_embedear_catalogo(path, user_id):
@@ -69,52 +70,47 @@ def procesar_y_embedear_catalogo(path, user_id):
         if not registros:
             raise ValueError(f"⚠️ No se extrajo contenido útil del archivo {path}")
 
-        # Filtrar y validar estructura mínima
-        registros_filtrados = []
-        for i, r in enumerate(registros):
-            if not all(k in r and r[k] for k in ("nombre", "descripcion", "precio", "cantidad")):
-                logging.warning(f"⚠️ Registro inválido (índice {i}): {r}")
-                continue
-            registros_filtrados.append(r)
+        # Embebe el texto crudo de cada registro (sea dict, string, lista, etc.)
+        textos = []
+        for r in registros:
+            if isinstance(r, dict):
+                fila_cruda = " | ".join([str(v) for v in r.values() if v])
+            else:
+                fila_cruda = str(r)
+            if fila_cruda.strip():
+                textos.append(fila_cruda)
 
-        logging.info(f"🟢 Registros válidos para embedding: {len(registros_filtrados)}")
-
-        if not registros_filtrados:
-            raise ValueError("⚠️ Todos los registros estaban incompletos")
-
-        # Embedding
-        textos = [
-            f"{r['nombre']}. {r['descripcion']}. Precio: {r['precio']}. Cantidad: {r['cantidad']}."
-            for r in registros_filtrados
-        ]
         logging.info(f"🧠 Textos a embebear (primeros 3): {textos[:3]} | TOTAL: {len(textos)}")
 
         logging.info("🧬 Generando vectores de embedding con Cohere...")
         vectores = embed_textos(textos)
-        logging.info(f"🧬 Vectores generados: {len(vectores)} (esperados: {len(registros_filtrados)})")
+        logging.info(f"🧬 Vectores generados: {len(vectores)} (esperados: {len(textos)})")
 
-        if not vectores or len(vectores) != len(registros_filtrados):
-            raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(registros_filtrados)})")
+        if not vectores or len(vectores) != len(textos):
+            raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(textos)})")
 
         # Guardar en Qdrant
         guardar_en_qdrant(user_id, textos, vectores)
 
-        # Guardar los items claros en la base (sin embedding)
-        items_claros = [
-            CatalogoItem(
-                user_id=user_id,
-                nombre=r["nombre"],
-                descripcion=r["descripcion"],
-                precio=r["precio"],
-                cantidad=r["cantidad"],
-                categoria=r.get("categoria", ""),
-                unidad=r.get("unidad", ""),
-                texto=f"{r['nombre']}. {r['descripcion']}. Precio: {r['precio']}. Cantidad: {r['cantidad']}."
-            )
-            for r in registros_filtrados
-        ]
-        db.session.bulk_save_objects(items_claros)
-        db.session.commit()
+        # (Opcional) Guardar los items en la base para otras funciones tradicionales
+        items_claros = []
+        for r in registros:
+            if isinstance(r, dict):
+                items_claros.append(
+                    CatalogoItem(
+                        user_id=user_id,
+                        nombre=r.get("nombre", ""),
+                        descripcion=r.get("descripcion", ""),
+                        precio=r.get("precio", ""),
+                        cantidad=r.get("cantidad", ""),
+                        categoria=r.get("categoria", ""),
+                        unidad=r.get("unidad", ""),
+                        texto=" | ".join([str(v) for v in r.values() if v])
+                    )
+                )
+        if items_claros:
+            db.session.bulk_save_objects(items_claros)
+            db.session.commit()
 
         logging.info(f"✅ {len(textos)} ítems procesados y guardados (Qdrant y base) para user_id={user_id}")
         return len(textos)
@@ -150,8 +146,8 @@ def subir_catalogo():
         logging.info(f"📂 Archivo guardado temporalmente en: {ruta}")
 
         cantidad = procesar_y_embedear_catalogo(ruta, user.id)
-        logging.info(f"🎉 Proceso completado: {cantidad} productos embebidos")
-        return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} productos."})
+        logging.info(f"🎉 Proceso completado: {cantidad} bloques/textos embebidos")
+        return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad} bloques/textos."})
 
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 500
