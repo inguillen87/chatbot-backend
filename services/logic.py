@@ -9,30 +9,29 @@ def sugerencias_por_rubro(rubro_id):
         sugerencias = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
         if sugerencias:
             todas = [s.texto for s in sugerencias]
-            logging.info(f"Sugerencias encontradas para rubro {rubro_id}: {len(todas)}")
+            logging.info(f"Sugerencias para rubro {rubro_id}: {len(todas)}")
             return random.sample(todas, min(5, len(todas)))
         fallback = Sugerencia.query.filter_by(rubro_id=1).all()
         logging.info(f"No se encontraron sugerencias para rubro {rubro_id}, usando fallback general")
-        return random.sample([s.texto for s in fallback], min(5, len(fallback))) if fallback else ["No tengo sugerencias en este momento."]
+        return random.sample([s.texto for s in fallback], min(5, len(fallback))) if fallback else ["No tengo sugerencias ahora."]
     except Exception as e:
         logging.error(f"Error buscando sugerencias: {e}", exc_info=True)
-        return ["Lo siento, ocurrió un error al buscar sugerencias."]
+        return ["Ocurrió un error buscando sugerencias."]
 
 def reemplazar_placeholders(texto, user):
     try:
-        # Ejemplo básico, adaptá a tu necesidad
         texto = texto.replace("[nombreEmpresa]", getattr(user, "nombre_empresa", "tu empresa"))
         texto = texto.replace("[linkWeb]", getattr(user, "link_web", ""))
         return texto
     except Exception as e:
-        logging.error(f"Error reemplazando placeholders: {e}", exc_info=True)
+        logging.error(f"Error en placeholders: {e}", exc_info=True)
         return texto
 
-def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[]):
-    logging.info(f"Inicio responder_chatboc con pregunta: {pregunta} | token: {token} | rubro frontend: {rubro_nombre_frontend}")
+def responder_chatboc(pregunta, token, rubro_nombre_frontend=None):
+    logging.info(f"▶️ Inicio responder_chatboc: pregunta='{pregunta}', token='{token}', rubro='{rubro_nombre_frontend}'")
 
     if not pregunta:
-        logging.warning("Falta la pregunta")
+        logging.warning("❌ Pregunta vacía")
         return {"error": "Falta la pregunta"}
 
     is_demo = False
@@ -42,21 +41,24 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
 
     try:
         is_demo = token.startswith("demo-anon")
-    except Exception as e:
-        logging.warning(f"Token inválido o no string: {token} | Error: {e}")
+    except Exception:
+        pass
 
     if is_demo:
-        logging.info("Modo demo anónimo detectado")
+        logging.info("Modo demo anónimo")
         session.setdefault("anon_preguntas", 0)
         if session["anon_preguntas"] >= 15:
-            return {"respuesta": "🔒 Alcanzaste el límite de 15 preguntas en modo demo. Registrate gratis para seguir probando.", "fuente": "sistema"}
+            return {"respuesta": "🔒 Alcanzaste el límite de preguntas en demo. Regístrate para seguir.", "fuente": "sistema"}
         session["anon_preguntas"] += 1
+
         class AnonUser:
             nombre_empresa = "Demo Anónimo"
             plan = "demo"
             preguntas_usadas = session["anon_preguntas"]
             limite_preguntas = 15
             rubro_id = None
+            telefono = link_web = direccion = horario = ubicacion = ""
+
         user = AnonUser()
     else:
         try:
@@ -65,11 +67,12 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 logging.warning("Usuario no autenticado")
                 return {"error": "Usuario no autenticado"}
             if user.preguntas_usadas >= user.limite_preguntas:
-                return {"respuesta": "🔒 Alcanzaste el límite de tu plan. Actualizá para más preguntas.", "fuente": "sistema"}
+                return {"respuesta": "🔒 Límite de preguntas alcanzado. Actualiza tu plan.", "fuente": "sistema"}
         except Exception as e:
-            logging.error(f"Error obteniendo usuario: {e}", exc_info=True)
+            logging.error(f"Error al obtener usuario: {e}", exc_info=True)
             return {"error": "Error interno al obtener usuario"}
 
+    # Rubro
     try:
         if hasattr(user, "rubro_id") and user.rubro_id:
             rubro = Rubro.query.get(user.rubro_id)
@@ -81,9 +84,9 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             if rubro_obj:
                 rubro_id = rubro_obj.id
                 rubro_nombre = rubro_obj.nombre.lower().strip()
-        logging.info(f"Usuario: {getattr(user, 'nombre_empresa', 'demo')} | Rubro: {rubro_nombre} (ID {rubro_id})")
+        logging.info(f"Usuario '{getattr(user, 'nombre_empresa', 'demo')}' usa rubro '{rubro_nombre}' (id {rubro_id})")
     except Exception as e:
-        logging.error(f"Error obteniendo rubro: {e}", exc_info=True)
+        logging.error(f"Error al obtener rubro: {e}", exc_info=True)
 
     # Historial
     historial_chat = []
@@ -92,7 +95,7 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             historial_chat = Conversacion.query.filter_by(user_id=user.id).order_by(Conversacion.timestamp.desc()).limit(10).all()
             logging.info(f"Historial recuperado: {len(historial_chat)} mensajes")
         except Exception as e:
-            logging.warning(f"No se pudo obtener historial: {e}")
+            logging.warning(f"No se pudo obtener historial: {e}", exc_info=True)
 
     mensajes = []
     for conv in reversed(historial_chat):
@@ -100,23 +103,23 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
         mensajes.append({"role": "assistant", "content": conv.respuesta})
     mensajes.append({"role": "user", "content": pregunta})
 
-    # Intentar Qdrant
-    resultados_qdrant = []
+    # Qdrant
     contexto_catalogo = ""
-    if not is_demo and hasattr(user, "id"):
-        try:
+    try:
+        if not is_demo and hasattr(user, "id"):
             from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
-            logging.info("Buscando en Qdrant...")
+            logging.info("Buscando catálogo en Qdrant...")
             resultados_qdrant = buscar_catalogo_qdrant(user.id, pregunta, limite=5)
             logging.info(f"Resultados Qdrant: {resultados_qdrant}")
             contexto_catalogo = armar_respuesta_legible(resultados_qdrant)
-        except Exception as e:
-            logging.error(f"Error al buscar en Qdrant: {e}", exc_info=True)
+    except Exception as e:
+        logging.error(f"Error en Qdrant: {e}", exc_info=True)
 
-    # Intentar Cohere AI
+    # Cohere AI
     respuesta_final = ""
     try:
         from services.cohere_ai import get_cohere_response
+
         user_context = {
             "nombre_empresa": getattr(user, "nombre_empresa", "la empresa"),
             "rubro_nombre": rubro_nombre,
@@ -130,33 +133,37 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
 
         if contexto_catalogo:
             prompt = (
-                f"Contexto del catálogo extraído automáticamente (productos relevantes):\n{contexto_catalogo}\n"
-                f"Sos Chatboc, el agente comercial digital de {user_context['nombre_empresa']} (rubro: {user_context['rubro_nombre']}). "
-                f"Tu objetivo es vender, sugerir productos, mostrar promociones, responder con info precisa y guiar la conversación a una acción (ejemplo: compra, reserva, pedir más info, mandar link, enviar WhatsApp, etc). "
-                f"Nunca digas que sos IA. Usá siempre un tono humano, amable, directo, y ofrecé ayuda para cerrar una venta o resolver la consulta.\n"
-                f"Datos útiles: dirección {user_context['direccion']}, link {user_context['link_web']}, tel {user_context['telefono']}, horario {user_context['horario']}.\n"
-                f"Respondé la siguiente conversación como si fueras un vendedor profesional y digital."
+                f"Contexto del catálogo:\n{contexto_catalogo}\n"
+                f"Sos Chatboc, agente comercial digital de {user_context['nombre_empresa']} (rubro: {user_context['rubro_nombre']}). "
+                f"Tu objetivo es vender, sugerir productos, mostrar promociones, responder con info precisa y guiar la conversación hacia una acción (compra, reserva, etc). "
+                f"Nunca digas que sos IA. Usa tono humano, amable, directo, y ayuda a cerrar la venta.\n"
+                f"Datos: dirección {user_context['direccion']}, link {user_context['link_web']}, tel {user_context['telefono']}, horario {user_context['horario']}.\n"
+                f"Respondé la conversación como vendedor profesional."
             )
         else:
             prompt = (
-                f"Sos Chatboc, el agente comercial digital de {user_context['nombre_empresa']} (rubro: {user_context['rubro_nombre']}). "
-                f"Tu objetivo es vender, sugerir productos, mostrar promociones, responder con info precisa y guiar la conversación a una acción (ejemplo: compra, reserva, pedir más info, mandar link, enviar WhatsApp, etc). "
-                f"Nunca digas que sos IA. Usá siempre un tono humano, amable, directo, y ofrecé ayuda para cerrar una venta o resolver la consulta.\n"
-                f"Datos útiles: dirección {user_context['direccion']}, link {user_context['link_web']}, tel {user_context['telefono']}, horario {user_context['horario']}.\n"
-                f"Respondé la siguiente conversación como si fueras un vendedor profesional y digital."
+                f"Sos Chatboc, agente comercial digital de {user_context['nombre_empresa']} (rubro: {user_context['rubro_nombre']}). "
+                f"Tu objetivo es vender, sugerir productos, mostrar promociones, responder con info precisa y guiar la conversación hacia una acción (compra, reserva, etc). "
+                f"Nunca digas que sos IA. Usa tono humano, amable, directo, y ayuda a cerrar la venta.\n"
+                f"Datos: dirección {user_context['direccion']}, link {user_context['link_web']}, tel {user_context['telefono']}, horario {user_context['horario']}.\n"
+                f"Respondé la conversación como vendedor profesional."
             )
 
         messages = [{"role": "system", "content": prompt}] + mensajes
-        logging.info(f"Enviando mensaje a Cohere con prompt de largo {len(prompt)} y {len(mensajes)} mensajes de historial")
+        logging.info(f"Enviando mensaje a Cohere con prompt largo {len(prompt)} y {len(mensajes)} mensajes")
 
         respuesta_final = get_cohere_response(messages, rubro_id=rubro_id, user_context=user_context)
-        logging.info(f"Respuesta de Cohere recibida: {respuesta_final[:200]}...")
+        logging.info(f"Respuesta Cohere: {respuesta_final[:200]}...")
         respuesta_final = reemplazar_placeholders(respuesta_final, user)
 
-    except Exception as e:
-        logging.error(f"Error al generar respuesta con Cohere: {e}", exc_info=True)
+        # Agregar botón para terminar compra
+        boton_compra = '\n\n<a href="https://salvadorpatti.com/carrito" target="_blank">🛒 Terminar compra</a>'
+        respuesta_final += boton_compra
 
-    # Guardar y devolver respuesta de Cohere si es válida
+    except Exception as e:
+        logging.error(f"Error en Cohere: {e}", exc_info=True)
+
+    # Guardar respuesta y actualizar preguntas usadas
     if respuesta_final and len(respuesta_final) > 5:
         try:
             if not is_demo and hasattr(user, "id"):
@@ -167,9 +174,9 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
             logging.info("Respuesta final enviada desde Cohere")
             return {"respuesta": respuesta_final, "nivel_usado": rubro_nombre, "fuente": "cohere"}
         except Exception as e:
-            logging.error(f"Error guardando conversación en DB: {e}", exc_info=True)
+            logging.error(f"Error guardando conversación: {e}", exc_info=True)
 
-    # Backup: FAQ
+    # Backup FAQ
     try:
         from services.faq_matcher_spacy import buscar_en_faq_spacy
         faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
@@ -179,12 +186,12 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 db.session.commit()
                 db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=faq_match.answer, fuente="faq", rubro=rubro_nombre))
                 db.session.commit()
-            logging.info("Respuesta enviada desde FAQ")
+            logging.info("Respuesta desde FAQ")
             return {"respuesta": faq_match.answer, "nivel_usado": rubro_nombre, "fuente": "faq"}
     except Exception as e:
-        logging.warning(f"Error buscando en FAQ: {e}", exc_info=True)
+        logging.warning(f"Error FAQ: {e}", exc_info=True)
 
-    # Backup: Intents
+    # Backup intents
     try:
         from services.intent_matcher import buscar_en_intents
         intent_respuesta = buscar_en_intents(pregunta, rubro_nombre)
@@ -195,11 +202,12 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
                 db.session.commit()
                 db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=intent_respuesta, fuente="intents", rubro=rubro_nombre))
                 db.session.commit()
-            logging.info("Respuesta enviada desde intents")
+            logging.info("Respuesta desde intents")
             return {"respuesta": intent_respuesta, "nivel_usado": rubro_nombre, "fuente": "intents"}
     except Exception as e:
-        logging.warning(f"Error buscando en intents: {e}", exc_info=True)
+        logging.warning(f"Error intents: {e}", exc_info=True)
 
+    # Finalmente sugerencias
     sugerencias = sugerencias_por_rubro(rubro_id)
     logging.info("No se encontró respuesta directa, enviando sugerencias")
     return {

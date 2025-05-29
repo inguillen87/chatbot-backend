@@ -11,3 +11,48 @@
 2025-05-29 17:29:39,912 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
 2025-05-29 17:29:39,913 | WARNING | Usuario no autenticado
 2025-05-29 17:29:39,914 | INFO | 127.0.0.1 - - [29/May/2025 17:29:39] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:33:39,685 | INFO | Base de datos y migraciones listas.
+2025-05-29 17:33:39,685 | INFO | CORS aplicado correctamente.
+2025-05-29 17:33:39,756 | INFO | Blueprint upload_bp registrado.
+2025-05-29 17:33:39,772 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5000
+2025-05-29 17:33:39,772 | INFO | [33mPress CTRL+C to quit[0m
+2025-05-29 17:33:44,227 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:33:44,275 | WARNING | Usuario no autenticado
+2025-05-29 17:33:44,276 | INFO | 127.0.0.1 - - [29/May/2025 17:33:44] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:33:46,117 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:33:46,118 | WARNING | Usuario no autenticado
+2025-05-29 17:33:46,119 | INFO | 127.0.0.1 - - [29/May/2025 17:33:46] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:33:48,167 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:33:48,170 | WARNING | Usuario no autenticado
+2025-05-29 17:33:48,171 | INFO | 127.0.0.1 - - [29/May/2025 17:33:48] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:34:11,886 | INFO | Base de datos y migraciones listas.
+2025-05-29 17:34:11,887 | INFO | CORS aplicado correctamente.
+2025-05-29 17:34:11,931 | INFO | Blueprint upload_bp registrado.
+2025-05-29 17:34:11,933 | INFO | Base de datos y migraciones listas.
+2025-05-29 17:34:11,933 | INFO | CORS aplicado correctamente.
+2025-05-29 17:34:11,967 | INFO | Blueprint upload_bp registrado.
+2025-05-29 17:34:20,282 | INFO | Base de datos y migraciones listas.
+2025-05-29 17:34:20,282 | INFO | CORS aplicado correctamente.
+2025-05-29 17:34:20,373 | INFO | Blueprint upload_bp registrado.
+2025-05-29 17:34:20,391 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5000
+2025-05-29 17:34:20,391 | INFO | [33mPress CTRL+C to quit[0m
+2025-05-29 17:34:22,022 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:34:22,060 | WARNING | Usuario no autenticado
+2025-05-29 17:34:22,061 | INFO | 127.0.0.1 - - [29/May/2025 17:34:22] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:34:23,389 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:34:23,391 | WARNING | Usuario no autenticado
+2025-05-29 17:34:23,392 | INFO | 127.0.0.1 - - [29/May/2025 17:34:23] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:34:24,216 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:34:24,219 | WARNING | Usuario no autenticado
+2025-05-29 17:34:24,220 | INFO | 127.0.0.1 - - [29/May/2025 17:34:24] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:34:24,932 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:34:24,935 | WARNING | Usuario no autenticado
+2025-05-29 17:34:24,936 | INFO | 127.0.0.1 - - [29/May/2025 17:34:24] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:34:25,645 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:34:25,647 | WARNING | Usuario no autenticado
+2025-05-29 17:34:25,649 | INFO | 127.0.0.1 - - [29/May/2025 17:34:25] "POST /ask HTTP/1.1" 200 -
+2025-05-29 17:40:57,593 | INFO | Inicio responder_chatboc con pregunta: Hola, quiero consultar sobre vinos | token: 154485a9-6671-4161-b310-9524a58cbf37 | rubro frontend: bodega
+2025-05-29 17:40:57,595 | WARNING | Usuario no autenticado
+2025-05-29 17:40:57,596 | INFO | 127.0.0.1 - - [29/May/2025 17:40:57] "POST /ask HTTP/1.1" 200 -
