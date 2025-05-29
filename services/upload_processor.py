@@ -23,13 +23,7 @@ def extension_valida(nombre_archivo):
 
 def guardar_en_qdrant(user_id, textos, vectores):
     qdrant = get_qdrant_client()
-    try:
-        qdrant.recreate_collection(
-            collection_name="catalogos",
-            vectors_config={"size": len(vectores[0]), "distance": "Cosine"}
-        )
-    except Exception as e:
-        logging.info(f"Qdrant: la colección ya existe o fue creada. {e}")
+    # No recreamos colección acá. Se supone creada previamente.
 
     puntos = []
     for texto, vector in zip(textos, vectores):
