@@ -1,9 +1,9 @@
 import json
+import logging
 from datetime import datetime
 from models import db, Rubro, QA, Sugerencia, User
 from werkzeug.security import generate_password_hash
 from faq_questions import faq_data
-import logging
 
 def crear_rubro_si_no_existe(clave, nombre=None, descripcion=None, parent_clave=None):
     try:
@@ -92,31 +92,31 @@ def cargar_sugerencias():
     db.session.commit()
     print("✅ Sugerencias cargadas correctamente.")
 
-def cargar_usuarios_demo():
-    usuarios_demo = [
-        {
-            "email": "demo+almacen@chatboc.ar",
-            "name": "Demo Almacén",
-            "nombre_empresa": "ByM almacen de bebidas",
-            "password": "demo1234",
-            "rubro_clave": "almacen"
-        },
-        {
-            "email": "demo+bodega@chatboc.ar",
-            "name": "Demo Bodega",
-            "nombre_empresa": "Bodega Cuatro Fincas Winery",
-            "password": "demo1234",
-            "rubro_clave": "bodega"
-        },
-        {
-            "email": "demo+medico@chatboc.ar",
-            "name": "Demo Médico",
-            "nombre_empresa": "Clínica San Dona",
-            "password": "demo1234",
-            "rubro_clave": "medico"
-        }
-    ]
+usuarios_demo = [
+    {
+        "email": "demo+almacen@chatboc.ar",
+        "name": "Demo Almacén",
+        "nombre_empresa": "ByM almacen de bebidas",
+        "password": "demo1234",
+        "rubro_clave": "almacen"
+    },
+    {
+        "email": "demo+bodega@chatboc.ar",
+        "name": "Demo Bodega",
+        "nombre_empresa": "Bodega Cuatro Fincas Winery",
+        "password": "demo1234",
+        "rubro_clave": "bodega"
+    },
+    {
+        "email": "demo+medico@chatboc.ar",
+        "name": "Demo Médico",
+        "nombre_empresa": "Clínica San Dona",
+        "password": "demo1234",
+        "rubro_clave": "medico"
+    }
+]
 
+def cargar_usuarios_demo():
     for data in usuarios_demo:
         rubro = Rubro.query.filter_by(clave=data["rubro_clave"]).first()
         if not rubro:
@@ -147,3 +147,10 @@ def cargar_usuarios_demo():
 
     db.session.commit()
     print("✅ Usuarios demo listos.")
+
+def cargar_datos_iniciales():
+    print("🚀 Cargando datos iniciales...")
+    cargar_faqs()
+    cargar_sugerencias()
+    cargar_usuarios_demo()
+    print("✅ Todos los datos iniciales fueron cargados correctamente.")
