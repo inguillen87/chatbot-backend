@@ -1,3 +1,8 @@
+from flask import Blueprint, jsonify, request
+from extensions import db
+from sqlalchemy import func
+from datetime import datetime, timedelta
+from routes.auth import token_requerido
 import logging
 from flask import Blueprint, request, jsonify
 from services.logic import responder_chatboc
