@@ -1,5 +1,6 @@
 import logging
 from flask import Blueprint, request, jsonify
+from services.logic import responder_chatboc
 
 
 chat_bp = Blueprint("chat_bp", __name__)
