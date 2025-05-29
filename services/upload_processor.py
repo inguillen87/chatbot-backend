@@ -2,16 +2,15 @@ import os
 import uuid
 import logging
 import traceback
-import uuid
 
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
-from models import CatalogoItem, User  # <--- Ya no uses CatalogoEmbedding
+from models import CatalogoItem, User
 from services.cohere_ai import embed_textos
 from services.google_docai import procesar_catalogo_pdf_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
-from services.qdrant_utils import get_qdrant_client  # Importá tu función de conexión Qdrant
+from services.qdrant_utils import get_qdrant_client
 
 upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
@@ -32,40 +31,20 @@ def guardar_en_qdrant(user_id, textos, vectores):
     except Exception as e:
         logging.info(f"Qdrant: la colección ya existe o fue creada. {e}")
 
-    # Guardar cada texto como un punto en Qdrant
     puntos = []
     for idx, (texto, vector) in enumerate(zip(textos, vectores)):
         puntos.append({
-            "id": str(uuid.uuid4()),  # ID único y válido
+            "id": str(uuid.uuid4()),
             "vector": vector,
             "payload": {
                 "texto": texto,
                 "user_id": user_id
             }
         })
-
     qdrant.upsert(
         collection_name="catalogos",
         points=puntos
     )
-
-    logging.info(f"✅ {len(textos)} ítems guardados en Qdrant para user_id={user_id}")
-
-
-# Guardar cada texto como un punto en Qdrant
-for idx, (texto, vector) in enumerate(zip(textos, vectores)):
-    qdrant.upsert(
-        collection_name="catalogos",
-        points=[{
-            "id": str(uuid.uuid4()),  # ✅ ID único y válido
-            "vector": vector,
-            "payload": {
-                "texto": texto,
-                "user_id": user_id
-            }
-        }]
-    )
-
     logging.info(f"✅ {len(textos)} ítems guardados en Qdrant para user_id={user_id}")
 
 def procesar_y_embedear_catalogo(path, user_id):
@@ -120,7 +99,7 @@ def procesar_y_embedear_catalogo(path, user_id):
         # Guardar en Qdrant
         guardar_en_qdrant(user_id, textos, vectores)
 
-        # (Opcional) Guardar los items claros en la base (sin embedding)
+        # Guardar los items claros en la base (sin embedding)
         items_claros = [
             CatalogoItem(
                 user_id=user_id,
@@ -144,9 +123,6 @@ def procesar_y_embedear_catalogo(path, user_id):
         logging.error(f"❌ Excepción no controlada: {str(e)}")
         traceback.print_exc()
         raise ValueError(f"❌ Error procesando catálogo: {e}")
-
-
-# El endpoint /subir_catalogo queda igual, solo cambia el procesamiento interno
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():
