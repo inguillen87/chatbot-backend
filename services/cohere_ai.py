@@ -1,4 +1,4 @@
-# services/cohere_ai.py
+# En tu archivo: services/cohere_ai.py
 
 import os
 import logging
@@ -7,13 +7,16 @@ from time import sleep # Para embed_textos
 import cohere
 
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
-COHERE_EMBED_BATCH = 50 # Para la función embed_textos
+COHERE_EMBED_BATCH = 50
 
-# --- Tu función embed_textos (se mantiene como la tienes) ---
+# --- Tu función embed_textos (sin cambios, se mantiene como la tienes) ---
 def embed_textos(textos: list[str]) -> list[list[float]]:
     if not COHERE_API_KEY:
         logging.error("[COHERE EMBED] COHERE_API_KEY no está configurada.")
         return []
+    # ... (el resto de tu función embed_textos aquí, tal como la tienes) ...
+    # Asegúrate de que tu función embed_textos completa esté aquí.
+    # Por brevedad, la omito, pero es la misma que ya tienes y funciona.
     url = "https://api.cohere.ai/v1/embed"
     headers = {
         "Authorization": f"Bearer {COHERE_API_KEY}",
@@ -47,11 +50,10 @@ def embed_textos(textos: list[str]) -> list[list[float]]:
     return all_embeddings
 # --- Fin de embed_textos ---
 
-
 def get_cohere_response(messages_for_llm: list, rubro_id: int, user_context: dict) -> str:
     """
     Obtiene una respuesta de chat de la API de Cohere.
-    Las instrucciones del sistema se incluyen como el primer mensaje en chat_history.
+    Las instrucciones del sistema se incluyen como el primer mensaje en chat_history con rol 'SYSTEM'.
     """
     logging.info(f"➡️ [COHERE CHAT ATTEMPT] Iniciando get_cohere_response. {len(messages_for_llm)} mensajes recibidos.")
 
@@ -67,7 +69,7 @@ def get_cohere_response(messages_for_llm: list, rubro_id: int, user_context: dic
         logging.error(f"❌ [COHERE CHAT] Error al inicializar el cliente de Cohere: {e}", exc_info=True)
         return ""
 
-    chat_history_for_api = []
+    chat_history_for_api = [] # Este será el historial final enviado a la API
     current_user_message = ""
     system_instructions_content = ""
 
@@ -78,10 +80,15 @@ def get_cohere_response(messages_for_llm: list, rubro_id: int, user_context: dic
     # Procesar messages_for_llm para separar instrucciones del sistema, historial y mensaje actual
     if messages_for_llm[0]["role"] == "system":
         system_instructions_content = messages_for_llm[0]["content"]
-        # El historial "real" son los mensajes entre el sistema y el último del usuario
+        # Añadir las instrucciones del sistema como el primer mensaje del historial para la API
+        chat_history_for_api.append({"role": "SYSTEM", "message": system_instructions_content})
+        logging.info(f"   [COHERE CHAT] Instrucciones del sistema añadidas al historial API: '{system_instructions_content[:100]}...'")
+
+        # El historial "real" de usuario/asistente son los mensajes entre el sistema y el último del usuario
         for msg in messages_for_llm[1:-1]:
             role_cohere = "USER" if msg["role"].lower() == "user" else "CHATBOT"
             chat_history_for_api.append({"role": role_cohere, "message": msg["content"]})
+        
         if messages_for_llm[-1]["role"] == "user":
             current_user_message = messages_for_llm[-1]["content"]
         else:
@@ -102,37 +109,28 @@ def get_cohere_response(messages_for_llm: list, rubro_id: int, user_context: dic
         logging.warning("[COHERE CHAT] Mensaje actual del usuario está vacío. No se llamará a la API.")
         return ""
 
-    # Integrar las instrucciones del sistema en el chat_history si existen
-    # Algunos modelos esperan el rol "SYSTEM", otros "USER" para las instrucciones.
-    # Prueba con "SYSTEM" primero. Si da error o no funciona bien, prueba con "USER".
-    final_chat_history_for_api = []
-    if system_instructions_content:
-        final_chat_history_for_api.append({"role": "SYSTEM", "message": system_instructions_content})
-        # Alternativamente, si "SYSTEM" no es bien interpretado por tu modelo/versión:
-        # final_chat_history_for_api.append({"role": "USER", "message": f"Instrucciones importantes: {system_instructions_content}\n\nAhora empieza la conversación:"})
-    
-    final_chat_history_for_api.extend(chat_history_for_api) # Añadir el historial de usuario/chatbot
-
     try:
-        logging.info(f"➡️ [COHERE CHAT CALL] Usando modelo 'command-r'. Mensaje: '{current_user_message}'. Historial para API (incluye sistema si se añadió): {len(final_chat_history_for_api)} mensajes.")
+        # 'model' es un parámetro importante. Asegúrate que "command-r" es el que quieres.
+        # Otros parámetros comunes son 'connectors', 'documents' (para RAG), etc.
+        logging.info(f"➡️ [COHERE CHAT CALL] Modelo: 'command-r'. Mensaje: '{current_user_message}'. Historial para API (con sistema integrado): {len(chat_history_for_api)} mensajes.")
         
-        # Llamada a co.chat SIN el parámetro 'preamble'
         response = co_client.chat(
             message=current_user_message,
-            chat_history=final_chat_history_for_api, # Aquí ya van las instrucciones del sistema (si las hubo)
-            model="command-r", # Asegúrate que este es el modelo correcto y disponible
+            chat_history=chat_history_for_api, # Este historial ya contiene las instrucciones del sistema al inicio
+            model="command-r-plus", 
             temperature=0.3
-            # Otros parámetros como 'connectors', 'documents' pueden ir aquí si los necesitas
+            # NO SE PASA 'preamble'
         )
 
         respuesta_texto = response.text
         logging.info(f"⬅️ [COHERE CHAT] Respuesta API (primeros 200 chars): {respuesta_texto[:200]}")
         return respuesta_texto
 
-    except cohere.CohereAPIError as e: # Errores específicos de la API
+    except cohere.CohereAPIError as e:
         logging.error(f"❌ [COHERE CHAT] Error de API Cohere: Status {e.http_status} - {e.message}", exc_info=True)
-        # Puedes añadir manejo específico para ciertos códigos de error, ej. rate limits (429)
-    except Exception as e: # Otros errores (red, etc.)
+    except TypeError as te: # Capturar TypeError por si acaso, aunque ya no deberíamos tenerlo por 'preamble'
+        logging.error(f"❌ [COHERE CHAT] TypeError al llamar a co.chat(): {te}. Verifica los argumentos.", exc_info=True)
+    except Exception as e:
         logging.error(f"❌ [COHERE CHAT] Error genérico durante la llamada a Cohere: {e}", exc_info=True)
 
     return ""
