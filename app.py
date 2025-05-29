@@ -31,7 +31,6 @@ logging.getLogger().setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 
-# Login manager
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -65,7 +64,7 @@ def create_app():
     except Exception as e:
         logger.error(f"Error aplicando CORS: {e}")
 
-    # Blueprints
+    # Blueprints - REGISTRO A PRUEBA DE ERRORES
     blueprints = [
         ("routes.auth", "auth_bp"),
         ("routes.chat", "chat_bp"),
@@ -78,9 +77,9 @@ def create_app():
         try:
             bp_module = __import__(bp_import, fromlist=[name])
             app.register_blueprint(getattr(bp_module, name))
-            logger.info(f"Blueprint {name} registrado.")
+            logger.info(f"✅ Blueprint {name} registrado.")
         except Exception as e:
-            logger.error(f"Error registrando {name}: {e}\n{traceback.format_exc()}")
+            logger.error(f"❌ Error registrando {name}: {e}\n{traceback.format_exc()}")
 
     try:
         app.register_blueprint(upload_bp)
@@ -106,7 +105,6 @@ def cargar_datos():
 
 app.cli.add_command(cargar_datos)
 
-# CLI: Migraciones
 @click.command("aplicar_migraciones")
 @with_appcontext
 def aplicar_migraciones():

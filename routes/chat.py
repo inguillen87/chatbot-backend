@@ -1,13 +1,13 @@
-from flask import Blueprint, jsonify, request
-from extensions import db
-from sqlalchemy import func
-from datetime import datetime, timedelta
-from routes.auth import token_requerido
 import logging
 from flask import Blueprint, request, jsonify
-from services.logic import responder_chatboc
 
-# 👇 Importarlo después, no al tope del archivo
+# Import seguro del responder_chatboc:
+try:
+    from services.logic import responder_chatboc
+except Exception as e:
+    logging.error(f"❌ Error importando responder_chatboc: {e}")
+    def responder_chatboc(*args, **kwargs):
+        return {"error": "No se pudo inicializar la IA (qdrant/services/logic roto)."}
 
 chat_bp = Blueprint("chat_bp", __name__)
 
@@ -38,6 +38,7 @@ def apply_cors(response):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
+
 @chat_bp.route("/ping", methods=["GET"])
 def ping():
     return jsonify({"msg": "pong"}), 200
