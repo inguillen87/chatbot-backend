@@ -54,3 +54,53 @@
 2025-05-28 21:34:32,669 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on http://127.0.0.1:5000
 2025-05-28 21:34:32,669 | INFO | [33mPress CTRL+C to quit[0m
+2025-05-29 00:28:26,057 | INFO | Base de datos y migraciones listas.
+2025-05-29 00:28:26,058 | INFO | CORS aplicado correctamente.
+2025-05-29 00:28:26,064 | INFO | Blueprint auth_bp registrado.
+2025-05-29 00:28:31,118 | INFO | Blueprint chat_bp registrado.
+2025-05-29 00:28:31,120 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-29 00:28:31,123 | INFO | Blueprint rubros_bp registrado.
+2025-05-29 00:28:31,126 | INFO | Blueprint metricas_bp registrado.
+2025-05-29 00:28:31,128 | INFO | Blueprint upload_bp registrado.
+2025-05-29 00:37:02,611 | INFO | Base de datos y migraciones listas.
+2025-05-29 00:37:02,612 | INFO | CORS aplicado correctamente.
+2025-05-29 00:37:02,616 | INFO | Blueprint auth_bp registrado.
+2025-05-29 00:37:05,209 | INFO | Blueprint chat_bp registrado.
+2025-05-29 00:37:05,211 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-29 00:37:05,212 | INFO | Blueprint rubros_bp registrado.
+2025-05-29 00:37:05,214 | INFO | Blueprint metricas_bp registrado.
+2025-05-29 00:37:05,215 | INFO | Blueprint upload_bp registrado.
+2025-05-29 00:38:04,398 | INFO | Base de datos y migraciones listas.
+2025-05-29 00:38:04,399 | INFO | CORS aplicado correctamente.
+2025-05-29 00:38:04,403 | INFO | Blueprint auth_bp registrado.
+2025-05-29 00:38:07,360 | INFO | Blueprint chat_bp registrado.
+2025-05-29 00:38:07,361 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-29 00:38:07,363 | INFO | Blueprint rubros_bp registrado.
+2025-05-29 00:38:07,364 | INFO | Blueprint metricas_bp registrado.
+2025-05-29 00:38:07,365 | INFO | Blueprint upload_bp registrado.
+2025-05-29 00:38:12,016 | INFO | Base de datos y migraciones listas.
+2025-05-29 00:38:12,017 | INFO | CORS aplicado correctamente.
+2025-05-29 00:38:12,022 | INFO | Blueprint auth_bp registrado.
+2025-05-29 00:38:14,604 | INFO | Blueprint chat_bp registrado.
+2025-05-29 00:38:14,606 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-29 00:38:14,607 | INFO | Blueprint rubros_bp registrado.
+2025-05-29 00:38:14,609 | INFO | Blueprint metricas_bp registrado.
+2025-05-29 00:38:14,609 | INFO | Blueprint upload_bp registrado.
+2025-05-29 00:38:19,029 | INFO | Base de datos y migraciones listas.
+2025-05-29 00:38:19,030 | INFO | CORS aplicado correctamente.
+2025-05-29 00:38:19,034 | INFO | Blueprint auth_bp registrado.
+2025-05-29 00:38:21,562 | INFO | Blueprint chat_bp registrado.
+2025-05-29 00:38:21,564 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-29 00:38:21,565 | INFO | Blueprint rubros_bp registrado.
+2025-05-29 00:38:21,566 | INFO | Blueprint metricas_bp registrado.
+2025-05-29 00:38:21,567 | INFO | Blueprint upload_bp registrado.
+2025-05-29 00:38:32,359 | INFO | Base de datos y migraciones listas.
+2025-05-29 00:38:32,360 | INFO | CORS aplicado correctamente.
+2025-05-29 00:38:32,364 | INFO | Blueprint auth_bp registrado.
+2025-05-29 00:38:35,221 | INFO | Blueprint chat_bp registrado.
+2025-05-29 00:38:35,223 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-29 00:38:35,225 | INFO | Blueprint rubros_bp registrado.
+2025-05-29 00:38:35,227 | INFO | Blueprint metricas_bp registrado.
+2025-05-29 00:38:35,228 | INFO | Blueprint upload_bp registrado.
+2025-05-29 00:38:35,232 | INFO | Cargando datos iniciales...
+2025-05-29 00:38:35,641 | INFO | Datos iniciales cargados correctamente.

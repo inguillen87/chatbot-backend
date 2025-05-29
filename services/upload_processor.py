@@ -6,7 +6,7 @@ import traceback
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
-from models import CatalogoEmbedding, User
+from models import CatalogoEmbedding, CatalogoItem, User
 from services.cohere_ai import embed_textos
 from services.google_docai import procesar_catalogo_pdf_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
@@ -66,8 +66,9 @@ def procesar_y_embedear_catalogo(path, user_id):
             raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(registros_filtrados)})")
 
         # Guardar en DB
-        logging.info("💾 Guardando embeddings en la base de datos...")
-        items = [
+        logging.info("💾 Guardando en la base de datos...")
+
+        embeddings = [
             CatalogoEmbedding(
                 user_id=user_id,
                 nombre=r["nombre"],
@@ -79,10 +80,26 @@ def procesar_y_embedear_catalogo(path, user_id):
             for r, vec in zip(registros_filtrados, vectores)
         ]
 
-        db.session.bulk_save_objects(items)
+        items_claros = [
+            CatalogoItem(
+                user_id=user_id,
+                nombre=r["nombre"],
+                descripcion=r["descripcion"],
+                precio=r["precio"],
+                cantidad=r["cantidad"],
+                categoria=r.get("categoria", ""),
+                unidad=r.get("unidad", ""),
+                texto=f"{r['nombre']}. {r['descripcion']}. Precio: {r['precio']}. Cantidad: {r['cantidad']}."
+            )
+            for r in registros_filtrados
+        ]
+
+        db.session.bulk_save_objects(embeddings)
+        db.session.bulk_save_objects(items_claros)
         db.session.commit()
-        logging.info(f"✅ {len(items)} ítems embebidos para user_id={user_id}")
-        return len(items)
+
+        logging.info(f"✅ {len(embeddings)} ítems embebidos y guardados para user_id={user_id}")
+        return len(embeddings)
 
     except Exception as e:
         logging.error(f"❌ Excepción no controlada: {str(e)}")

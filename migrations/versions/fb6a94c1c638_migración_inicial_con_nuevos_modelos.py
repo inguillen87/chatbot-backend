@@ -1,8 +1,8 @@
-"""Migración inicial
+"""Migración inicial con nuevos modelos
 
-Revision ID: cd559f6878bb
+Revision ID: fb6a94c1c638
 Revises: 
-Create Date: 2025-05-28 20:11:28.043786
+Create Date: 2025-05-29 00:38:14.666964
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
-revision = 'cd559f6878bb'
+revision = 'fb6a94c1c638'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -89,7 +89,13 @@ def upgrade():
     op.create_table('catalogo_item',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
-    sa.Column('texto', sa.Text(), nullable=False),
+    sa.Column('nombre', sa.String(length=255), nullable=False),
+    sa.Column('descripcion', sa.String(length=1024), nullable=True),
+    sa.Column('precio', sa.String(length=50), nullable=True),
+    sa.Column('cantidad', sa.String(length=50), nullable=True),
+    sa.Column('categoria', sa.String(length=100), nullable=True),
+    sa.Column('unidad', sa.String(length=50), nullable=True),
+    sa.Column('texto', sa.Text(), nullable=True),
     sa.Column('embedding', sa.PickleType(), nullable=True),
     sa.Column('timestamp', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
