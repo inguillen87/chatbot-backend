@@ -34,3 +34,27 @@ ImportError: cannot import name 'get_cohere_response' from 'services.cohere_ai' 
 2025-05-29 15:29:55,532 | INFO | Blueprint rubros_bp registrado.
 2025-05-29 15:29:55,533 | INFO | Blueprint metricas_bp registrado.
 2025-05-29 15:29:55,534 | INFO | Blueprint upload_bp registrado.
+2025-05-29 15:48:15,503 | INFO | Base de datos y migraciones listas.
+2025-05-29 15:48:15,504 | INFO | CORS aplicado correctamente.
+2025-05-29 15:48:15,514 | INFO | Blueprint auth_bp registrado.
+2025-05-29 15:48:15,532 | ERROR | Error registrando chat_bp: cannot import name 'get_cohere_response' from 'services.cohere_ai' (C:\Users\Marcelo\Desktop\chatbot-backend\services\cohere_ai.py)
+Traceback (most recent call last):
+  File "C:\Users\Marcelo\Desktop\chatbot-backend\app.py", line 79, in create_app
+    bp_module = __import__(bp_import, fromlist=[name])
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Marcelo\Desktop\chatbot-backend\routes\chat.py", line 8, in <module>
+    from services.logic import responder_chatboc
+  File "C:\Users\Marcelo\Desktop\chatbot-backend\services\logic.py", line 6, in <module>
+    from services.cohere_ai import get_cohere_response
+ImportError: cannot import name 'get_cohere_response' from 'services.cohere_ai' (C:\Users\Marcelo\Desktop\chatbot-backend\services\cohere_ai.py)
+
+2025-05-29 15:48:15,534 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-29 15:48:15,537 | INFO | Blueprint rubros_bp registrado.
+2025-05-29 15:48:15,538 | INFO | Blueprint metricas_bp registrado.
+2025-05-29 15:48:15,539 | INFO | Blueprint upload_bp registrado.
+2025-05-29 15:48:15,549 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5000
+2025-05-29 15:48:15,550 | INFO | [33mPress CTRL+C to quit[0m
+2025-05-29 15:48:51,083 | INFO | 127.0.0.1 - - [29/May/2025 15:48:51] "[33mGET /ask HTTP/1.1[0m" 404 -
+2025-05-29 15:48:55,983 | INFO | 127.0.0.1 - - [29/May/2025 15:48:55] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2025-05-29 15:49:01,490 | INFO | 127.0.0.1 - - [29/May/2025 15:49:01] "[33mGET /ping HTTP/1.1[0m" 404 -
