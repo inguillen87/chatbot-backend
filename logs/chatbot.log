@@ -43,3 +43,14 @@
 2025-05-28 21:33:28,214 | INFO | Blueprint rubros_bp registrado.
 2025-05-28 21:33:28,215 | INFO | Blueprint metricas_bp registrado.
 2025-05-28 21:33:28,216 | INFO | Blueprint upload_bp registrado.
+2025-05-28 21:34:30,134 | INFO | Base de datos y migraciones listas.
+2025-05-28 21:34:30,134 | INFO | CORS aplicado correctamente.
+2025-05-28 21:34:30,139 | INFO | Blueprint auth_bp registrado.
+2025-05-28 21:34:32,654 | INFO | Blueprint chat_bp registrado.
+2025-05-28 21:34:32,657 | INFO | Blueprint sugerencia_bp registrado.
+2025-05-28 21:34:32,658 | INFO | Blueprint rubros_bp registrado.
+2025-05-28 21:34:32,660 | INFO | Blueprint metricas_bp registrado.
+2025-05-28 21:34:32,661 | INFO | Blueprint upload_bp registrado.
+2025-05-28 21:34:32,669 | INFO | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5000
+2025-05-28 21:34:32,669 | INFO | [33mPress CTRL+C to quit[0m
