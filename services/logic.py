@@ -92,7 +92,11 @@ def responder_chatboc(pregunta, token, rubro_nombre_frontend=None, historial=[])
     contexto_catalogo = ""
     if not is_demo and hasattr(user, "id"):
         try:
+            logging.info("Antes de buscar en Qdrant")
+
             resultados_qdrant = buscar_catalogo_qdrant(user.id, pregunta, limite=5)
+            logging.info(f"Resultados Qdrant: {resultados_qdrant}")
+
             contexto_catalogo = armar_respuesta_legible(resultados_qdrant) if resultados_qdrant else ""
         except Exception as e:
             logging.warning(f"❌ Error al buscar en Qdrant: {e}")

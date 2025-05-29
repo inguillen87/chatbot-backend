@@ -19,10 +19,8 @@ def buscar_catalogo_qdrant(user_id, pregunta, limite=3, score_min=0.25):
     return respuestas
 
 def armar_respuesta_legible(resultados_qdrant):
-    # Si hay resultado, devolvé el más relevante (o armá una lista)
     if not resultados_qdrant:
-        return None
+        return ""  # Cambié None por cadena vacía
     textos = [texto for texto, score in resultados_qdrant]
-    # Podés mejorar este formato, pero así ya sirve y se lee bien:
     respuesta = "\n".join(textos)
     return respuesta
