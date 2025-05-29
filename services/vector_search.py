@@ -4,7 +4,7 @@ import numpy as np
 from models import CatalogoEmbedding
 from services.cohere_ai import embed_textos
 
-def buscar_item_vectorizado(pregunta: str, user: User, umbral: float = 0.75) -> str | None:
+def buscar_item_vectorizado(pregunta: str, user: User, umbral: float = 0.6) -> str | None:
     try:
         # 🚫 IMPORTANTE: no usar load_only con embedding_vector (puede traer nulls o datos mal formateados)
         catalogo = CatalogoEmbedding.query.filter_by(user_id=user.id).all()
