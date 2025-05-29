@@ -89,23 +89,26 @@ def get_cohere_response(messages: list[dict], rubro_id=None, user_context=None) 
         return "Lo siento, ocurrió un error inesperado al responder."
 
 def embed_textos(textos: list[str]) -> list[list[float]]:
+    import requests
     url = "https://api.cohere.ai/v1/embed"
     headers = {
-        "Authorization": f"Bearer {COHERE_API_KEY}",
+        "Authorization": f"Bearer {os.getenv('COHERE_API_KEY')}",
         "Content-Type": "application/json"
     }
     payload = {
-    "texts": textos,
-    "model": "embed-multilingual-v3.0",
-    "input_type": "search_document"
-}
-
-
-
+        "texts": textos,
+        "model": "embed-multilingual-v3.0",
+        "input_type": "search_document"
+    }
+    print(f"➡️ [COHERE] Primeros textos a embed: {textos[:5]}")
     try:
         response = requests.post(url, headers=headers, json=payload)
+        print(f"⬅️ [COHERE] status: {response.status_code}, body: {response.text[:300]}")
         response.raise_for_status()
-        return response.json().get("embeddings", [])
+        embeddings = response.json().get("embeddings", [])
+        print(f"⬅️ [COHERE] Cantidad de vectores devueltos: {len(embeddings)}")
+        return embeddings
     except Exception as e:
-        logging.error(f"❌ Error al obtener embeddings: {e}")
+        print(f"❌ [COHERE] Error al obtener embeddings: {e}")
         return []
+

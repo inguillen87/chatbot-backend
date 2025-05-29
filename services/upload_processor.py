@@ -36,7 +36,8 @@ def procesar_y_embedear_catalogo(path, user_id):
             logging.info("📊 Usando pandas para procesar Excel...")
             registros = procesar_catalogo_excel(path)
 
-        logging.info(f"🔎 REGISTROS EXTRAIDOS: {registros}")
+        logging.info(f"🔎 REGISTROS EXTRAIDOS (primeros 3): {registros[:3]} | TOTAL: {len(registros)}")
+        print(f"🔎 REGISTROS EXTRAIDOS (primeros 3): {registros[:3]} | TOTAL: {len(registros)}")
 
         if not registros:
             raise ValueError(f"⚠️ No se extrajo contenido útil del archivo {path}")
@@ -46,8 +47,12 @@ def procesar_y_embedear_catalogo(path, user_id):
         for i, r in enumerate(registros):
             if not all(k in r and r[k] for k in ("nombre", "descripcion", "precio", "cantidad")):
                 logging.warning(f"⚠️ Registro inválido (índice {i}): {r}")
+                print(f"⚠️ Registro inválido (índice {i}): {r}")
                 continue
             registros_filtrados.append(r)
+
+        logging.info(f"🟢 Registros válidos para embedding: {len(registros_filtrados)}")
+        print(f"🟢 Registros válidos para embedding: {len(registros_filtrados)}")
 
         if not registros_filtrados:
             raise ValueError("⚠️ Todos los registros estaban incompletos")
@@ -57,16 +62,21 @@ def procesar_y_embedear_catalogo(path, user_id):
             f"{r['nombre']}. {r['descripcion']}. Precio: {r['precio']}. Cantidad: {r['cantidad']}."
             for r in registros_filtrados
         ]
-        logging.info(f"🧠 Textos a embebear: {textos}")
+        logging.info(f"🧠 Textos a embebear (primeros 3): {textos[:3]} | TOTAL: {len(textos)}")
+        print(f"🧠 Textos a embebear (primeros 3): {textos[:3]} | TOTAL: {len(textos)}")
 
         logging.info("🧬 Generando vectores de embedding con Cohere...")
+        print("🧬 Generando vectores de embedding con Cohere...")
         vectores = embed_textos(textos)
+        logging.info(f"🧬 Vectores generados: {len(vectores)} (esperados: {len(registros_filtrados)})")
+        print(f"🧬 Vectores generados: {len(vectores)} (esperados: {len(registros_filtrados)})")
 
         if not vectores or len(vectores) != len(registros_filtrados):
             raise ValueError(f"❌ Fallo en generación de vectores ({len(vectores)} / {len(registros_filtrados)})")
 
         # Guardar en DB
         logging.info("💾 Guardando en la base de datos...")
+        print("💾 Guardando en la base de datos...")
 
         embeddings = [
             CatalogoEmbedding(
@@ -99,10 +109,12 @@ def procesar_y_embedear_catalogo(path, user_id):
         db.session.commit()
 
         logging.info(f"✅ {len(embeddings)} ítems embebidos y guardados para user_id={user_id}")
+        print(f"✅ {len(embeddings)} ítems embebidos y guardados para user_id={user_id}")
         return len(embeddings)
 
     except Exception as e:
         logging.error(f"❌ Excepción no controlada: {str(e)}")
+        print(f"❌ Excepción no controlada: {str(e)}")
         traceback.print_exc()
         raise ValueError(f"❌ Error procesando catálogo: {e}")
 
