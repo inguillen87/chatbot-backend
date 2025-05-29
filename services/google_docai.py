@@ -6,7 +6,8 @@ from google.cloud import documentai_v1beta3 as documentai
 from google.oauth2 import service_account
 
 # ✅ Cargar credenciales desde archivo secreto en Render
-ruta_render = "/etc/secrets/GOOGLE_SERVICE_KEY_JSON"
+ruta_render = "/etc/secrets/google_service_key.json"
+
 ruta_local = "instance/google-credentials.json"
 
 try:
