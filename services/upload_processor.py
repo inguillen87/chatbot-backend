@@ -26,7 +26,7 @@ def guardar_en_qdrant(user_id, textos, vectores):
         # Crea la colección si no existe (idempotente)
         qdrant.recreate_collection(
             collection_name="catalogos",
-            vectors_config={"size": 768, "distance": "Cosine"}
+            vectors_config={"size": 1024, "distance": "Cosine"}
         )
     except Exception as e:
         logging.info(f"Qdrant: la colección ya existe o fue creada. {e}")
