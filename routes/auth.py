@@ -70,6 +70,7 @@ def debug_usuarios():
     try:
         usuarios = User.query.all()
         resultado = []
+
         for u in usuarios:
             rubro = db.session.get(Rubro, u.rubro_id) if u.rubro_id else None
             items = CatalogoItem.query.filter_by(user_id=u.id).all()
@@ -80,7 +81,7 @@ def debug_usuarios():
                     "nombre": item.nombre,
                     "descripcion": item.descripcion,
                     "precio": item.precio,
-                    "stock": item.stock,
+                    "cantidad": item.cantidad,
                     "categoria": item.categoria or "",
                     "unidad": item.unidad or ""
                 })
@@ -96,12 +97,14 @@ def debug_usuarios():
                 "direccion": u.direccion,
                 "link_web": u.link_web,
                 "horario": u.horario,
-                "catalogo": catalogo  # ✅ lo que importa
+                "catalogo": catalogo
             })
+
         return jsonify(resultado)
     except Exception:
         current_app.logger.error("❌ Error crítico en /debug/users:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno en debug"}), 500
+
 
 # Registro de usuario
 @auth_bp.route('/register', methods=['POST'])
