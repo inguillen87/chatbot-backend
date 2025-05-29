@@ -33,3 +33,6 @@ def apply_cors(response):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
+@chat_bp.route("/ping", methods=["GET"])
+def ping():
+    return jsonify({"msg": "pong"}), 200
