@@ -92,31 +92,31 @@ def cargar_sugerencias():
     db.session.commit()
     print("✅ Sugerencias cargadas correctamente.")
 
-usuarios_demo = [
-    {
-        "email": "demo+almacen@chatboc.ar",
-        "name": "Demo Almacén",
-        "nombre_empresa": "ByM almacen de bebidas",
-        "password": "demo1234",
-        "rubro_clave": "almacen"
-    },
-    {
-        "email": "demo+bodega@chatboc.ar",
-        "name": "Demo Bodega",
-        "nombre_empresa": "Bodega Cuatro Fincas Winery",
-        "password": "demo1234",
-        "rubro_clave": "bodega"
-    },
-    {
-        "email": "demo+medico@chatboc.ar",
-        "name": "Demo Médico",
-        "nombre_empresa": "Clínica San Dona",
-        "password": "demo1234",
-        "rubro_clave": "medico"
-    }
-]
-
 def cargar_usuarios_demo():
+    usuarios_demo = [
+        {
+            "email": "demo+almacen@chatboc.ar",
+            "name": "Demo Almacén",
+            "nombre_empresa": "ByM almacen de bebidas",
+            "password": "demo1234",
+            "rubro_clave": "almacen"
+        },
+        {
+            "email": "demo+bodega@chatboc.ar",
+            "name": "Demo Bodega",
+            "nombre_empresa": "Bodega Cuatro Fincas Winery",
+            "password": "demo1234",
+            "rubro_clave": "bodega"
+        },
+        {
+            "email": "demo+medico@chatboc.ar",
+            "name": "Demo Médico",
+            "nombre_empresa": "Clínica San Dona",
+            "password": "demo1234",
+            "rubro_clave": "medico"
+        }
+    ]
+
     for data in usuarios_demo:
         rubro = Rubro.query.filter_by(clave=data["rubro_clave"]).first()
         if not rubro:
