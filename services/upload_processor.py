@@ -2,6 +2,7 @@ import os
 import uuid
 import logging
 import traceback
+import uuid
 
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
@@ -32,18 +33,39 @@ def guardar_en_qdrant(user_id, textos, vectores):
         logging.info(f"Qdrant: la colección ya existe o fue creada. {e}")
 
     # Guardar cada texto como un punto en Qdrant
+    puntos = []
     for idx, (texto, vector) in enumerate(zip(textos, vectores)):
-        qdrant.upsert(
-            collection_name="catalogos",
-            points=[{
-                "id": f"{user_id}_{idx}",
-                "vector": vector,
-                "payload": {
-                    "texto": texto,
-                    "user_id": user_id
-                }
-            }]
-        )
+        puntos.append({
+            "id": str(uuid.uuid4()),  # ID único y válido
+            "vector": vector,
+            "payload": {
+                "texto": texto,
+                "user_id": user_id
+            }
+        })
+
+    qdrant.upsert(
+        collection_name="catalogos",
+        points=puntos
+    )
+
+    logging.info(f"✅ {len(textos)} ítems guardados en Qdrant para user_id={user_id}")
+
+
+# Guardar cada texto como un punto en Qdrant
+for idx, (texto, vector) in enumerate(zip(textos, vectores)):
+    qdrant.upsert(
+        collection_name="catalogos",
+        points=[{
+            "id": str(uuid.uuid4()),  # ✅ ID único y válido
+            "vector": vector,
+            "payload": {
+                "texto": texto,
+                "user_id": user_id
+            }
+        }]
+    )
+
     logging.info(f"✅ {len(textos)} ítems guardados en Qdrant para user_id={user_id}")
 
 def procesar_y_embedear_catalogo(path, user_id):
@@ -122,6 +144,7 @@ def procesar_y_embedear_catalogo(path, user_id):
         logging.error(f"❌ Excepción no controlada: {str(e)}")
         traceback.print_exc()
         raise ValueError(f"❌ Error procesando catálogo: {e}")
+
 
 # El endpoint /subir_catalogo queda igual, solo cambia el procesamiento interno
 
