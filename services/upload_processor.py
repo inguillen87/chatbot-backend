@@ -2,6 +2,7 @@ import os
 import uuid
 import logging
 import traceback
+from collections import Counter
 
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
@@ -48,6 +49,13 @@ def guardar_en_qdrant(user_id, textos, vectores):
 
     logging.info(f"✅ {len(textos)} ítems guardados en Qdrant para user_id={user_id}")
 
+def limpiar_textos(textos):
+    # Borra vacíos y muy cortos
+    textos = [t.strip() for t in textos if t and len(t.strip()) > 10]
+    # Saca filas repetidas más de 3 veces (headers/footers de página)
+    counter = Counter(textos)
+    return [t for t in textos if counter[t] < 3]
+
 def procesar_y_embedear_catalogo(path, user_id):
     try:
         ext = os.path.splitext(path)[1].lower()
@@ -80,7 +88,9 @@ def procesar_y_embedear_catalogo(path, user_id):
             if fila_cruda.strip():
                 textos.append(fila_cruda)
 
-        logging.info(f"🧠 Textos a embebear (primeros 3): {textos[:3]} | TOTAL: {len(textos)}")
+        # --- LIMPIEZA universal ---
+        textos = limpiar_textos(textos)
+        logging.info(f"🧠 Textos limpios a embebear (primeros 3): {textos[:3]} | TOTAL: {len(textos)}")
 
         logging.info("🧬 Generando vectores de embedding con Cohere...")
         vectores = embed_textos(textos)
