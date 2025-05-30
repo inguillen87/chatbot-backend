@@ -1,5 +1,4 @@
 import os
-
 basedir = os.path.abspath(os.path.dirname(__file__))
 
 class Config:
@@ -7,6 +6,5 @@ class Config:
     if os.getenv("RENDER") == "true":
         SQLALCHEMY_DATABASE_URI = "sqlite:////data/database.db"
     else:
-        # Ruta absoluta al archivo instance/database.db
         SQLALCHEMY_DATABASE_URI = f"sqlite:///{os.path.join(basedir, 'instance', 'database.db')}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
