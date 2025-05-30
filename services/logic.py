@@ -198,8 +198,19 @@ def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = No
         "Si el cliente muestra interés en un producto o servicio, intenta cerrar la venta ofreciendo añadirlo al carrito, llevarlo a la página del producto en la tienda online, o facilitando el siguiente paso. "
         "No menciones que eres una IA ni un 'asistente virtual'. Habla como un vendedor humano y entusiasta. "
         f"Si es relevante, puedes usar estos datos de la empresa: Teléfono: {user_profile_context['telefono']}, Dirección: {user_profile_context['direccion']}, Horario: {user_profile_context['horario']}. "
-        "\nIMPORTANTE SOBRE PRODUCTOS Y PRECIOS: Si el cliente pregunta por un tipo de producto (ej. 'vinos malbec', 'medias deportivas talle L') y el contexto del catálogo recuperado tiene varias opciones, lista claramente al menos 2-3 opciones relevantes con su nombre y precio exacto tal como aparece en el catálogo. Ejemplo: 'Claro, tenemos estos Malbecs: Vino Malbec A $3500, Vino Malbec B Reserva $5200.'. Si el cliente pregunta por el precio de un producto específico y lo encuentras, da el precio. Si pide varias unidades de un producto con precio, calcula el total y ofréceselo. Si la información del catálogo no es clara sobre un precio, indica que puede consultarlo en la tienda online."
+        "\nIMPORTANTE SOBRE PRODUCTOS Y PRECIOS DEL CATÁLOGO QUE TE PROVEERÉ:"
+        "\n1. Cuando el cliente pregunte por un tipo de producto (ej. 'vinos malbec', 'medias talle L'), y si el catálogo recuperado contiene múltiples opciones, PRESENTA CLARAMENTE AL MENOS 2-3 OPCIONES relevantes con su 'Nombre' y 'Precio' exactos tal como aparecen en la información del catálogo. Ejemplo: 'Claro, tenemos estos Malbecs: [Nombre Malbec A] a [Precio A], [Nombre Malbec B Reserva] a [Precio B].'"
+        "\n2. Si el cliente pregunta por el precio de un producto específico y lo encuentras en el catálogo, da el 'Precio' indicado."
+        "\n3. Si el cliente pide varias unidades de un producto con precio, y el precio es numérico, calcula el total y ofréceselo (ej. '3 unidades de [Producto X] a $[Precio Y] serían $[Total]')."
+        "\n4. Si la información del catálogo no es clara sobre un precio para un producto específico que el cliente menciona, o si el precio dice 'Consultar precio', indica que pueden consultarlo en la tienda online o que te pidan más detalles para verificarlo."
+        "\n5. Si no hay información del catálogo, o no es relevante para la pregunta del cliente, responde con conocimiento general o pide más detalles."
     )
+    if contexto_catalogo: # contexto_catalogo es generado por armar_respuesta_legible
+        prompt_sistema_texto += f"\n\nINFORMACIÓN DEL CATÁLOGO PARA ESTA CONSULTA:\n---\n{contexto_catalogo}\n---\nUsa esta información del catálogo para responder, siguiendo las instrucciones sobre productos y precios que te di."
+    else:
+        prompt_sistema_texto += "\nNo encontré información específica en el catálogo para esta consulta, intenta ayudar al cliente con tu conocimiento general sobre los productos/servicios del rubro y la empresa, o pide más detalles."
+    prompt_sistema_texto += "\n\nInicia tu respuesta directamente al cliente, continuando la conversación de forma natural."
+
     if contexto_catalogo:
        prompt_sistema_texto += f"\n\n{contexto_catalogo}\nUsa la información del catálogo anterior para responder y ofrecer productos específicos, prestando especial atención a listar nombres y precios correctamente como te indiqué."
     else:

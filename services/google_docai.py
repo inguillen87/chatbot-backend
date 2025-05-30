@@ -2,15 +2,20 @@
 
 import os
 import json
-import logging  # <--- AÑADIDO: Importar logging
+import logging
 import re
 from google.cloud import documentai_v1beta3 as documentai
 from google.oauth2 import service_account
 
-# --- Carga de Credenciales (tu código existente, asegúrate que esté correcto) ---
-ruta_render = "/etc/secrets/google_service_key.json"
-ruta_local = "instance/google-credentials.json" # Asegúrate que esta ruta sea correcta para tu desarrollo local si aplica
+# --- Carga de Credenciales (tu código existente) ---
+# ... (asegúrate que tus credenciales se carguen correctamente y logging esté importado)
+# Ejemplo de importación y carga básica de credenciales:
+if 'google.oauth2' not in globals() or 'service_account' not in globals()['google.oauth2'].__dict__:
+    logging.warning("google.oauth2.service_account no parece estar disponible globalmente como se esperaba.")
+
 try:
+    ruta_render = "/etc/secrets/google_service_key.json"
+    ruta_local = "instance/google-credentials.json"
     ruta_cred = ruta_render if os.path.exists(ruta_render) else ruta_local
     with open(ruta_cred, "r") as f:
         credentials_info = json.load(f)
@@ -18,58 +23,51 @@ try:
     logging.info(f"Credenciales de Google cargadas desde: {ruta_cred}")
 except FileNotFoundError:
     logging.error(f"❌ Archivo de credenciales de Google no encontrado en {ruta_render} ni en {ruta_local}.")
-    # Considera si quieres que la aplicación falle aquí o continúe con Document AI deshabilitado.
-    # Por ahora, la siguiente llamada a Document AI fallará si 'credentials' no está definido.
-    # Es mejor que falle pronto si las credenciales son esenciales.
-    raise RuntimeError(f"Archivo de credenciales no encontrado. La aplicación no puede iniciar sin ellas si Document AI es esencial.")
+    raise RuntimeError(f"Archivo de credenciales no encontrado.")
 except Exception as e:
-    logging.error(f"❌ Error crítico al cargar credenciales de Google desde {ruta_cred}: {e}")
-    raise RuntimeError(f"❌ Error al cargar credenciales desde {ruta_cred}: {e}")
+    logging.error(f"❌ Error crítico al cargar credenciales de Google: {e}")
+    raise RuntimeError(f"❌ Error al cargar credenciales: {e}")
 # --- Fin Carga de Credenciales ---
 
-def limpiar_texto(texto: str) -> str:
+
+def limpiar_texto_simple(texto: str) -> str:
     if not texto: return ""
     return re.sub(r'\s+', ' ', texto).strip()
 
-def extraer_precio_float(precio_str: str) -> float | None:
-    if not precio_str: return None
+def normalizar_precio_str(precio_str: str) -> str:
+    """Limpia y normaliza un string de precio a 'DDDD.CC' o devuelve vacío."""
+    if not precio_str: return ""
+    # Quitar símbolo de moneda y espacios iniciales/finales
+    precio = precio_str.replace("$", "").strip()
+    # Quitar separadores de miles (puntos en formato ARS como 1.234,56)
+    # Esta lógica asume que la coma es el separador decimal si está presente.
+    if ',' in precio and '.' in precio: # Ej: 1.234,56 o 1,234.56
+        if precio.rfind(',') > precio.rfind('.'): # Coma es decimal (1.234,56)
+            precio = precio.replace('.', '') # Queda 1234,56
+            precio = precio.replace(',', '.') # Queda 1234.56
+        else: # Punto es decimal (1,234.56)
+            precio = precio.replace(',', '') # Queda 1234.56
+    elif ',' in precio: # Solo comas, asumir que la última es decimal (1234,56)
+        precio = precio.replace(',', '.')
+    # Si solo hay puntos, o ninguno, se asume que el punto es decimal o es entero.
+    # Validar que sea un formato numérico válido antes de devolver
+    if re.fullmatch(r"\d+(\.\d{1,2})?", precio):
+        return precio
+    return "" # Devolver vacío si no se pudo normalizar a un formato esperado
+
+def extraer_precio_float_desde_normalizado(precio_normalizado_str: str) -> float | None:
+    if not precio_normalizado_str: return None
     try:
-        precio_limpio = precio_str.replace("$", "").strip()
-        if ',' in precio_limpio and '.' in precio_limpio:
-            if precio_limpio.rfind(',') > precio_limpio.rfind('.'):
-                precio_limpio = precio_limpio.replace('.', '').replace(',', '.')
-            else:
-                precio_limpio = precio_limpio.replace(',', '')
-        elif ',' in precio_limpio:
-            partes = precio_limpio.split(',')
-            if len(partes) > 1:
-                parte_entera = "".join(partes[:-1])
-                parte_decimal = partes[-1]
-                precio_limpio = f"{parte_entera}.{parte_decimal}"
-            else:
-                precio_limpio = precio_limpio.replace(',', '.')
-        
-        precio_final_str = "".join(c for c in precio_limpio if c.isdigit() or c == '.')
-        if precio_final_str.count('.') > 1:
-            partes = precio_final_str.split('.')
-            precio_final_str = partes[0] + '.' + "".join(partes[1:])
-        
-        return float(precio_final_str)
+        return float(precio_normalizado_str)
     except ValueError:
-        logging.warning(f"No se pudo convertir el precio '{precio_str}' a float.")
-        return None
-    except Exception as e:
-        logging.error(f"Error inesperado al convertir precio '{precio_str}': {e}")
         return None
 
-def procesar_catalogo_pdf_google(pdf_path, tipo_catalogo="generico", pyme_user_id=None): # Añadido pyme_user_id
+def procesar_catalogo_pdf_google(pdf_path, tipo_catalogo="generico", pyme_user_id=None):
     try:
-        # Estas son las configuraciones de tu procesador de Document AI
-        project_id = "ambient-stack-461118-k7"  # De tus logs y google_service_key.json
-        location = "us"  # O la región correcta de tu procesador
-        processor_id = "55c57b09a179531a" # De tu código anterior
+        project_id = "ambient-stack-461118-k7"
+        location = "us"
+        processor_id = "55c57b09a179531a"
 
-        # Inicializar el cliente de Document AI
         client = documentai.DocumentProcessorServiceClient(credentials=credentials)
         name = f"projects/{project_id}/locations/{location}/processors/{processor_id}"
 
@@ -78,100 +76,124 @@ def procesar_catalogo_pdf_google(pdf_path, tipo_catalogo="generico", pyme_user_i
 
         raw_document = documentai.RawDocument(content=pdf_content, mime_type="application/pdf")
         request = documentai.ProcessRequest(name=name, raw_document=raw_document)
-
-        # --- ASEGÚRATE QUE ESTA LÍNEA ESTÉ DESCOMENTADA Y ACTIVA ---
         result = client.process_document(request=request)
-        # ----------------------------------------------------------
+        document = result.document
         
-        document = result.document # Ahora 'result' está definido
-        
-        logging.info(f"📝 Documento '{os.path.basename(pdf_path)}' para PYME ID {pyme_user_id} procesado. {len(document.pages)} páginas. Tipo catálogo: {tipo_catalogo}. Procesando texto...")
+        logging.info(f"📝 Documento '{os.path.basename(pdf_path)}' (PYME ID {pyme_user_id}) procesado: {len(document.pages)} pág. Tipo: {tipo_catalogo}. Analizando texto...")
         productos_extraidos = []
 
-        # --- Lógica de Procesamiento de Texto Plano Línea por Línea (MEJORADO) ---
-        # (Aquí va la lógica de extracción mejorada que te proporcioné en el mensaje anterior,
-        # la que incluye limpiar_texto, regex_precio, y el bucle sobre lineas_documento.
-        # Por brevedad, no la repito toda aquí, pero es la sección que comienza con:
-        # logging.info("Procesando texto plano línea por línea con heurísticas mejoradas...")
-        # y termina con:
-        # logging.info(f"Total de productos potencialmente extraídos del texto plano: {len(productos_extraidos)}")
-        # Asegúrate de que esa lógica esté aquí.)
+        # --- INICIO DEL PROCESAMIENTO LÍNEA POR LÍNEA MEJORADO ---
+        # Esta es una aproximación genérica. Para mayor precisión, especialmente con tablas,
+        # necesitarías procesar document.tables o crear heurísticas más específicas por 'tipo_catalogo'.
 
-        # --- INICIO DE LA LÓGICA DE EXTRACCIÓN QUE ESTABA EN EL MENSAJE ANTERIOR ---
-        logging.info("Procesando texto plano línea por línea con heurísticas mejoradas...")
-        lineas_documento = document.text.split('\n')
-        
-        regex_precio = r"\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))|\$?\s*(\d+)"
+        # Regex para precios: busca patrones como $1.234,56 o 1234.56 o $1234 etc.
+        # Captura el grupo numérico principal.
+        precio_regex = r"(?:\$|\bARS\b)?\s*([\d.,]+(?:\.\d{2}|,\d{2})?|\d+)"
 
-        for i, linea_original in enumerate(lineas_documento):
-            linea = limpiar_texto(linea_original)
-            if not linea or len(linea) < 5: 
-                continue
+        for page_num, page in enumerate(document.pages): # Iterar por página puede ayudar con el contexto
+            logging.debug(f"Procesando página {page_num + 1}")
+            # El texto de la página ya viene ordenado por Document AI
+            # (o puedes usar document.text para todo el documento a la vez)
+            lineas_pagina = page.lines 
+            # Si page.lines no está disponible o es problemático, usa:
+            # texto_pagina = document.text[page.layout.text_anchor.text_segments[0].start_index:page.layout.text_anchor.text_segments[0].end_index]
+            # lineas_pagina_texto = texto_pagina.split('\n')
 
-            posibles_precios_match = list(re.finditer(regex_precio, linea))
-            
-            nombre_producto = linea 
-            descripcion_producto = linea 
-            precio_str_final = ""
-            precio_float_final = None
-
-            if posibles_precios_match:
-                mejor_candidato_precio_str = ""
-                for match_p in reversed(posibles_precios_match): 
-                    precio_capturado_grupo1 = match_p.group(1) 
-                    precio_capturado_grupo2 = match_p.group(2) 
-                    if precio_capturado_grupo1:
-                        mejor_candidato_precio_str = precio_capturado_grupo1
-                        break 
-                    elif precio_capturado_grupo2 and not mejor_candidato_precio_str:
-                        mejor_candidato_precio_str = precio_capturado_grupo2
+            for line_obj in lineas_pagina: # Asumiendo que line_obj tiene una forma de obtener su texto
+                # Extraer el texto de la línea usando el text_anchor
+                line_text = ""
+                if line_obj.layout.text_anchor and line_obj.layout.text_anchor.text_segments:
+                    for segment in line_obj.layout.text_anchor.text_segments:
+                        line_text += document.text[segment.start_index:segment.end_index]
                 
-                if mejor_candidato_precio_str:
-                    precio_str_final = limpiar_texto(mejor_candidato_precio_str)
-                    precio_float_final = extraer_precio_float(precio_str_final)
-                    pos_precio_en_linea = linea.rfind(mejor_candidato_precio_str.strip())
-                    if pos_precio_en_linea != -1:
-                        nombre_producto = limpiar_texto(linea[:pos_precio_en_linea])
-                    else: 
-                        nombre_producto = limpiar_texto(linea.replace(mejor_candidato_precio_str, ""))
-                    if len(nombre_producto) < 4 and len(linea) > len(mejor_candidato_precio_str) + 5:
-                         nombre_producto = limpiar_texto(linea)
-                    descripcion_producto = nombre_producto
-            else:
-                nombre_producto = linea
-                descripcion_producto = linea
-            
-            palabras_clave_descarte = ["MARCA", "VARIETAL", "UN/CAJA", "CAJA/PALLET", "PRECIO", "TALLE", "EMPAQUETADO", "LINEA", "COLECCIÓN", "LISTA DE PRECIOS"]
-            # Convertir nombre_producto a mayúsculas para la comparación de descarte
-            nombre_producto_upper = nombre_producto.upper()
-            if any(palabra_clave.upper() in nombre_producto_upper for palabra_clave in palabras_clave_descarte) and not precio_float_final :
-                # Si la línea es muy corta Y contiene una palabra clave de encabezado, es más probable que sea un encabezado
-                if len(nombre_producto) < 30 : 
-                    logging.debug(f"Línea descartada como posible encabezado (corta y con palabra clave): '{linea}'")
+                linea_limpia = limpiar_texto_simple(line_text)
+
+                if not linea_limpia or len(linea_limpia) < 4: # Ignorar líneas muy cortas
                     continue
-                # Si la línea es más larga, pero NO tiene un precio y SÍ una palabra clave, también podría ser un encabezado de sección
-                # Esta heurística puede necesitar más ajustes.
-                # Podríamos también verificar si la línea es completamente en mayúsculas, etc.
-            
-            if len(nombre_producto) < 3:
-                continue
 
-            productos_extraidos.append({
-                "user_id": pyme_user_id if pyme_user_id is not None else 0, # Asegurar que user_id se guarde
-                "nombre": nombre_producto[:250], 
-                "descripcion": descripcion_producto[:500],
-                "precio_str": precio_str_final, 
-                "precio_float": precio_float_final, 
-                "moneda": "ARS", 
-                "texto_para_embedding": f"{nombre_producto} {descripcion_producto} {precio_str_final if precio_str_final else ''}"
-            })
-            logging.debug(f"Producto extraído: Nombre='{nombre_producto}', PrecioStr='{precio_str_final}', PrecioFloat={precio_float_final}")
-        # --- FIN DE LA LÓGICA DE EXTRACCIÓN ---
+                nombre_producto = linea_limpia # Default inicial
+                descripcion_producto = linea_limpia # Default inicial
+                precio_str_final = ""
+                precio_float_final = None
 
-        logging.info(f"Total de productos potencialmente extraídos: {len(productos_extraidos)}")
+                # Encontrar todos los candidatos a precio en la línea
+                candidatos_precio_match = list(re.finditer(precio_regex, linea_limpia))
+
+                if candidatos_precio_match:
+                    # Heurística: el precio "principal" suele ser el último en la línea,
+                    # o el que está más a la derecha en listas de precios.
+                    match_precio_elegido = candidatos_precio_match[-1] # Tomar el último
+                    precio_texto_crudo = match_precio_elegido.group(1) # El grupo que captura el número
+                    
+                    precio_str_final = normalizar_precio_str(precio_texto_crudo)
+                    if precio_str_final:
+                        precio_float_final = extraer_precio_float_desde_normalizado(precio_str_final)
+
+                        # Intentar aislar el nombre del producto quitando el precio y lo que le sigue
+                        # Esto es delicado y depende de la estructura.
+                        inicio_span_precio, fin_span_precio = match_precio_elegido.span(1) # Posición del número del precio
+                        
+                        # Considerar el texto a la izquierda del precio como el nombre/descripción
+                        texto_antes_de_precio = linea_limpia[:match_precio_elegido.start()].strip()
+                        
+                        if texto_antes_de_precio:
+                            nombre_producto = texto_antes_de_precio
+                            descripcion_producto = texto_antes_de_precio
+                        else: # Si no hay nada antes, el precio estaba al inicio (raro para nombre)
+                              # o la línea solo contenía el precio.
+                              # Intentar tomar la línea completa sin el precio.
+                            nombre_producto = limpiar_texto_simple(linea_limpia.replace(match_precio_elegido.group(0), ""))
+                            if not nombre_producto: # Si al quitar el precio no queda nada, es una línea de solo precio
+                                logging.debug(f"Línea parece ser solo un precio, se descarta como producto: '{linea_limpia}'")
+                                continue
+                else: # No se encontró precio, la línea podría ser un nombre de producto o encabezado
+                    nombre_producto = linea_limpia
+                    descripcion_producto = linea_limpia
+                    logging.debug(f"No se encontró precio con regex en: '{linea_limpia}'")
+
+
+                # --- Filtros y Heurísticas Adicionales ---
+                # 1. Descartar si parece un encabezado muy obvio y no tiene precio
+                palabras_encabezado_comunes = ["ART.", "CODIGO", "DESCRIPCION", "TALLE", "PRECIO", "MARCA", "LINEA", "TOTAL", "SUBTOTAL", "CANTIDAD"]
+                # Convertir nombre_producto a mayúsculas para la comparación
+                nombre_producto_upper = nombre_producto.upper()
+                es_posible_encabezado = any(palabra.upper() in nombre_producto_upper for palabra in palabras_encabezado_comunes)
+                
+                if es_posible_encabezado and not precio_float_final and len(nombre_producto.split()) < 5:
+                    logging.debug(f"Línea descartada (posible encabezado sin precio): '{linea_limpia}'")
+                    continue
+                
+                # 2. Si después de todo el nombre es muy corto o genérico, y no hay precio, descartar.
+                if not precio_float_final and (len(nombre_producto) < 5 or nombre_producto.isdigit()):
+                    logging.debug(f"Línea descartada (nombre corto/numérico sin precio): '{linea_limpia}'")
+                    continue
+                
+                # 3. Validar que el nombre no sea solo un precio (si la regex de precio falló en aislarlo antes)
+                if normalizar_precio_str(nombre_producto) == nombre_producto and not precio_float_final : # Si el nombre es en sí un precio
+                     logging.debug(f"Línea descartada (nombre es solo un precio): '{linea_limpia}'")
+                     continue
+
+
+                # --- Añadir producto ---
+                # Solo añadir si tenemos un nombre y preferiblemente un precio, o si el nombre es suficientemente descriptivo
+                if nombre_producto and (precio_float_final is not None or len(nombre_producto) > 10): # Umbral de longitud para nombres sin precio
+                    productos_extraidos.append({
+                        "user_id": pyme_user_id if pyme_user_id is not None else 0,
+                        "nombre": nombre_producto[:250],
+                        "descripcion": descripcion_producto[:500],
+                        "precio_str": precio_str_final if precio_str_final else "", # Asegurar string vacío si no hay precio
+                        "precio_float": precio_float_final, # Puede ser None
+                        "moneda": "ARS", # Asumir ARS, o intentar detectarlo si es posible
+                        "texto_para_embedding": f"{nombre_producto} {descripcion_producto} {precio_str_final if precio_str_final else ''}"
+                    })
+                    logging.debug(f"Producto candidato: Nombre='{nombre_producto}', PrecioStr='{precio_str_final}', PrecioFloat={precio_float_final}")
+                else:
+                    logging.debug(f"Producto descartado por falta de nombre/precio o nombre corto: '{linea_limpia}'")
+
+
+        logging.info(f"Total de productos potencialmente extraídos del PDF ({tipo_catalogo}): {len(productos_extraidos)}")
         return productos_extraidos
 
     except Exception as e:
-        # Asegurarse que logging esté importado para que este error se registre
-        logging.error(f"❌ Error procesando catálogo con Google Doc AI ({pdf_path}): {e}", exc_info=True)
-        return [] # Devolver lista vacía en caso de error
+        logging.error(f"❌ Error fatal procesando catálogo con Google Doc AI ({os.path.basename(pdf_path)}): {e}", exc_info=True)
+        return []
