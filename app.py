@@ -1,10 +1,8 @@
-# app.py
-
 import os
 import logging
 from logging.handlers import RotatingFileHandler
 import click
-from flask import Flask # request, make_response ya no se usan directamente aquí
+from flask import Flask, request, make_response
 from flask_cors import CORS
 from flask_migrate import upgrade
 from flask.cli import with_appcontext
@@ -12,151 +10,133 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import traceback
 
-# --- Importaciones de la Aplicación ---
 from config import Config
 from extensions import db, migrate, login_manager
-from models import User # Necesario para el user_loader
+from services.upload_processor import upload_bp
+from models import User
 
-# --- Importar Blueprints Directamente ---
-from routes.auth import auth_bp
-from routes.chat import chat_bp
-from routes.sugerencias import sugerencia_bp
-# Descomenta la siguiente línea y la entrada en 'blueprints_to_register'
-# si restauraste el archivo routes/rubros.py y necesitas ese endpoint.
-# from routes.rubros import rubros_bp 
-from routes.metricas import metricas_bp
-from services.upload_processor import upload_bp # Este se importa directamente
-
-# Cargar variables de entorno desde .env
+# Cargar entorno
 load_dotenv()
 
-# --- Configuración de Logging ---
+# Configurar logs
 if not os.path.exists("logs"):
-    try:
-        os.makedirs("logs")
-    except OSError as e:
-        print(f"Advertencia: No se pudo crear el directorio 'logs': {e}")
+    os.makedirs("logs")
 
-file_handler = RotatingFileHandler("logs/chatbot.log", maxBytes=10 * 1024 * 1024, backupCount=5)
+file_handler = RotatingFileHandler("logs/chatbot.log", maxBytes=10240, backupCount=5)
 file_handler.setLevel(logging.INFO)
-formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s:%(module)s:%(lineno)d] %(message)s")
+formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 file_handler.setFormatter(formatter)
+logging.getLogger().addHandler(file_handler)
+logging.getLogger().setLevel(logging.INFO)
 
-logging.basicConfig(level=logging.INFO, handlers=[file_handler])
-logger = logging.getLogger(__name__) # Logger para uso en este archivo (app.py)
-# --- Fin Configuración de Logging ---
+logger = logging.getLogger(__name__)
 
 @login_manager.user_loader
 def load_user(user_id):
-    try:
-        return User.query.get(int(user_id))
-    except ValueError:
-        logger.warning(f"Intento de cargar usuario con user_id no entero: {user_id}")
-        return None
+    return User.query.get(int(user_id))
 
-def create_app(config_class=Config):
-    app = Flask(__name__, instance_relative_config=True)
-    app.config.from_object(config_class)
-
-    logger.info(f"SQLALCHEMY_DATABASE_URI: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
-    logger.info(f"SECRET_KEY está configurada: {'Sí' if app.config.get('SECRET_KEY') else 'No (Usando default si existe)'}")
-
-    try:
-        os.makedirs(app.instance_path, exist_ok=True)
-        logger.info(f"Directorio de instancia asegurado en: {app.instance_path}")
-    except OSError as e:
-        logger.error(f"No se pudo crear el directorio de instancia {app.instance_path}: {e}")
-
-    upload_folder_config = app.config.get('UPLOAD_FOLDER')
-    if upload_folder_config:
-        try:
-            os.makedirs(upload_folder_config, exist_ok=True)
-            logger.info(f"Directorio de subida asegurado en: {upload_folder_config}")
-        except OSError as e:
-             logger.error(f"No se pudo crear el directorio de subida {upload_folder_config}: {e}")
-    else:
-        logger.warning("UPLOAD_FOLDER no está definido en la configuración de la app. La subida de archivos podría no funcionar como se espera en todos los entornos.")
+def create_app():
+    app = Flask(__name__)
+    app.config.from_object(Config)
 
     login_manager.init_app(app)
-    login_manager.login_view = "auth.login" # Redirige a esta vista si @login_required falla
-    
     db.init_app(app)
     migrate.init_app(app, db)
-    logger.info("Extensiones Flask (LoginManager, SQLAlchemy, Migrate) inicializadas.")
 
-    allowed_origins = app.config.get("ALLOWED_ORIGINS", [
-        "http://localhost:5173", # Tu frontend local
-        "https://www.chatboc.ar",
-        "https://chatboc.ar"
-        # Añade URLs de Vercel aquí si es necesario
-    ])
-    
-    CORS(
-        app,
-        origins=allowed_origins,
-        supports_credentials=True,
-        allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        max_age=int(timedelta(days=1).total_seconds())
-    )
-    logger.info(f"CORS aplicado centralmente para orígenes: {allowed_origins}")
+    os.makedirs(app.instance_path, exist_ok=True)
+    logger.info("Base de datos y migraciones listas.")
 
-    blueprints_to_register = [
-        (auth_bp, "/api/v1/auth"),    
-        (chat_bp, "/api/v1/chat"),    
-        (sugerencia_bp, "/api/v1/sugerencias"), 
-        # (rubros_bp, "/api/v1/rubros"), # Descomenta si restauraste routes/rubros.py
-        (metricas_bp, "/api/v1/metricas"),   
-        (upload_bp, "/api/v1/catalogo") 
+    # CORS
+    try:
+        CORS(
+            app,
+            origins=[
+                "https://chatboc.ar",
+                "https://www.chatboc.ar",
+                "http://localhost:5173"
+            ],
+            supports_credentials=True,
+            allow_headers=["Content-Type", "Authorization"],
+            methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            max_age=timedelta(hours=1)
+        )
+        logger.info("CORS aplicado correctamente.")
+    except Exception as e:
+        logger.error(f"Error aplicando CORS: {e}")
+
+    # Blueprints - REGISTRO A PRUEBA DE ERRORES
+    blueprints = [
+        ("routes.auth", "auth_bp"),
+        ("routes.chat", "chat_bp"),
+        ("routes.sugerencias", "sugerencia_bp"),
+        ("routes.rubros", "rubros_bp"),
+
+        ("routes.metricas", "metricas_bp")
     ]
 
-    for blueprint_object, url_prefix in blueprints_to_register:
-        if blueprint_object is not None:
-            try:
-                app.register_blueprint(blueprint_object, url_prefix=url_prefix)
-                logger.info(f"✅ Blueprint '{blueprint_object.name}' registrado en '{url_prefix}'.")
-            except Exception as e:
-                logger.error(f"❌ Error registrando Blueprint '{blueprint_object.name}': {e}", exc_info=True)
-        else:
-            logger.warning(f"Intento de registrar un Blueprint None con prefijo '{url_prefix}'. Revisar importaciones de blueprints.")
+    for bp_import, name in blueprints:
+        try:
+            bp_module = __import__(bp_import, fromlist=[name])
+            app.register_blueprint(getattr(bp_module, name))
+            logger.info(f"✅ Blueprint {name} registrado.")
+        except Exception as e:
+            logger.error(f"❌ Error registrando {name}: {e}\n{traceback.format_exc()}")
 
-    app.cli.add_command(cargar_datos_cmd_cli) # Nombre de la función Python
-    app.cli.add_command(aplicar_migraciones_cmd_cli) # Nombre de la función Python
+    try:
+        app.register_blueprint(upload_bp)
+        logger.info("Blueprint upload_bp registrado.")
+    except Exception as e:
+        logger.error(f"Error registrando upload_bp: {e}")
 
-    logger.info("Aplicación Flask creada y configurada exitosamente.")
     return app
 
-# --- Comandos CLI ---
-@click.command("cargar_datos_iniciales") # Este es el nombre que usas en la terminal: flask cargar_datos_iniciales
-@with_appcontext
-def cargar_datos_cmd_cli(): # Nombre de la función Python
-    from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
-    
-    logger.info("⚙️ Iniciando carga de datos iniciales...") # Usar el logger del módulo app.py
-    logger.info("(Asegúrate que el esquema de BD ya esté migrado con 'flask aplicar_migraciones')")
-    
-    # NO db.create_all() aquí.
-    
-    try:
-        cargar_usuarios_demo()
-        cargar_faqs()
-        cargar_sugerencias()
-        logger.info("✅ Datos iniciales cargados/verificados correctamente.")
-    except Exception as e:
-        logger.error(f"❌ Error durante la carga de datos iniciales: {e}", exc_info=True)
-
-@click.command("aplicar_migraciones") # Nombre para la terminal: flask aplicar_migraciones
-@with_appcontext
-def aplicar_migraciones_cmd_cli(): # Nombre de la función Python
-    logger.info("⚙️ Aplicando migraciones de base de datos...") # Usar el logger del módulo app.py
-    try:
-        upgrade() 
-        logger.info("✅ Migraciones aplicadas correctamente.")
-    except Exception as e:
-        logger.error(f"❌ Error al aplicar migraciones (flask db upgrade): {e}", exc_info=True)
-
-# Crear la instancia de la app
 app = create_app()
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.getenv("PORT", 10000)))
+# CLI: Cargar datos iniciales
+@click.command("cargar_datos_iniciales")
+@with_appcontext
+def cargar_datos():
+    from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo
+    logger.info("Cargando datos iniciales...")
+    db.create_all()
+    cargar_usuarios_demo()
+    cargar_faqs()
+    cargar_sugerencias()
+    logger.info("Datos iniciales cargados correctamente.")
+
+app.cli.add_command(cargar_datos)
+
+@click.command("aplicar_migraciones")
+@with_appcontext
+def aplicar_migraciones():
+    try:
+        upgrade()
+        logger.info("Migraciones aplicadas correctamente.")
+    except Exception as e:
+        logger.error(f"Error en upgrade de migraciones: {e}\n{traceback.format_exc()}")
+
+app.cli.add_command(aplicar_migraciones)
+
+@app.after_request
+def apply_cors_headers(response):
+    origin = request.headers.get("Origin")
+    allowed_origins = [
+        "https://chatboc.ar",
+        "https://www.chatboc.ar",
+        "http://localhost:5173"
+    ]
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Vary"] = "Origin"
+    return response
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        logger.info(f"Preflight OPTIONS recibido en {request.path}")
+        response = make_response()
+        response.status_code = 200
+        return response

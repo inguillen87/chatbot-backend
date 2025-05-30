@@ -1,8 +1,8 @@
-"""Un mensaje descriptivo
+"""inicial
 
-Revision ID: 35b5b4d98634
+Revision ID: 76b7b52a4428
 Revises: 
-Create Date: 2025-05-30 19:38:15.868789
+Create Date: 2025-05-30 20:13:46.391804
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
-revision = '35b5b4d98634'
+revision = '76b7b52a4428'
 down_revision = None
 branch_labels = None
 depends_on = None
