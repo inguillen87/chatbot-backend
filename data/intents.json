@@ -8,68 +8,121 @@
         "¿Trabajan con prepagas?",
         "¿Tienen convenio con OSDE?",
         "¿Aceptan mi plan de Swiss Medical?",
-        "¿Puedo ir con Galeno?",
-        "¿Qué cobertura tengo con mi plan de salud?",
-        "¿Cubre mi obra social la consulta?",
-        "¿El plan Más Salud es aceptado?",
-        "¿Necesito autorización de la obra social?",
-        "¿Cómo es el trámite con mi seguro médico?",
+        "¿Puedo usar Galeno?",
+        "¿Qué cobertura de salud tienen?",
+        "¿Cubre mi seguro la consulta?",
+        "¿Aceptan el plan Salud Total?",
+        "¿Necesito autorización de mi obra social?",
+        "¿Cómo es el trámite con mi prepaga?",
         "¿Atienden PAMI?",
-        "¿Aceptan IOMA?",
-        "Listado de obras sociales",
-        "¿Reciben pacientes de OSECAC?",
-        "¿Y prepagas como Medifé?",
-        "¿Sirve mi carnet de salud?",
-        "¿Atienden particular para reintegro?",
-        "¿Hay copago con mi obra social?",
-        "¿El Dr. Pérez atiende por mi obra social?"
+        "¿Trabajan con IOMA?",
+        "Quisiera el listado de obras sociales",
+        "¿Reciben la obra social de empleados de comercio?",
+        "¿Y prepagas como Medifé o Accord Salud?",
+        "¿Sirve mi carnet de la obra social?",
+        "¿Atienden particular para pedir reintegro?",
+        "¿Hay que pagar coseguro con mi plan?",
+        "¿El Dr. Pérez atiende por OSDE?"
       ],
-      "respuesta": "En [nombreEmpresa] trabajamos con una amplia gama de obras sociales y prepagas. Para verificar si tu cobertura específica está incluida y los detalles sobre copagos o autorizaciones, te invitamos a consultar la sección de convenios en nuestro sitio web [linkWeb] o a contactarnos directamente al [telefono]. ¿Tienes alguna obra social particular sobre la que quieras consultar?"
+      "respuesta": "En [nombreEmpresa] trabajamos con una amplia gama de obras sociales y prepagas. Para verificar si tu cobertura específica está incluida, y conocer detalles sobre copagos o autorizaciones, te invitamos a visitar la sección de convenios en nuestro sitio web [linkWeb] o a contactarnos directamente al [telefono]. ¿Sobre qué obra social o prepaga te gustaría consultar?"
     },
     {
       "categoria": "turnos",
       "ejemplos": [
-        "¿Cómo saco turno?",
-        "¿Puedo pedir turno online?",
+        "¿Cómo puedo sacar un turno?",
+        "¿Se puede pedir turno por internet?",
         "¿Dan turnos por WhatsApp?",
-        "Necesito un turno para cardiología",
-        "Necesito un turno con el Dr. Gonzalez",
-        "¿Tienen turnos disponibles para hoy?",
+        "Necesito un turno para ver a un cardiólogo.",
+        "Quiero un turno con la Dra. Fernández.",
+        "¿Tienen turnos disponibles para hoy o mañana?",
         "¿Hay turnos para esta semana?",
-        "¿Qué horarios tienen para turnos?",
-        "¿Cómo cancelo un turno?",
-        "Quiero cambiar mi turno",
-        "¿Puedo reprogramar mi cita?",
-        "¿Hay que pagar para reservar el turno?",
-        "¿Cuánto tiempo de espera hay para un turno con el dermatólogo?",
-        "Necesito un turno urgente",
-        "¿Dan sobreturnos?",
-        "¿Me pueden recordar mi turno?",
-        "¿Qué necesito llevar el día de la consulta?",
-        "Turno para control general",
-        "¿La Dra. López tiene agenda abierta?",
-        "¿Se puede sacar turno presencialmente en [direccion]?",
-        "¿Qué pasa si llego tarde al turno?",
-        "¿Con cuánta anticipación debo pedir turno?",
-        "¿Me avisan cuando tengo el turno confirmado?",
-        "¿Dan turnos sin obra social?",
-        "¿Qué disponibilidad tienen para la semana que viene?"
+        "¿Cuáles son los horarios para sacar turnos?",
+        "¿Cómo hago para cancelar un turno?",
+        "Necesito cambiar la fecha de mi turno.",
+        "¿Es posible reprogramar mi cita médica?",
+        "¿Se paga algo para reservar el turno?",
+        "¿Cuánta demora tienen para un turno con el oftalmólogo?",
+        "Necesito un turno de urgencia, ¿es posible?",
+        "¿Manejan sobreturnos?",
+        "¿Envían recordatorio de turnos?",
+        "¿Qué debo llevar a la consulta?",
+        "Quiero un turno para un control general de salud.",
+        "¿El Dr. Acuña tiene agenda disponible?",
+        "¿Puedo sacar turno personalmente en [direccion]?",
+        "¿Qué sucede si llego tarde a mi turno?",
+        "¿Con cuánta anticipación es mejor pedir un turno?",
+        "¿Me confirman el turno por email o mensaje?",
+        "¿Atienden pacientes sin obra social?",
+        "¿Qué disponibilidad de turnos tienen para el mes que viene?"
       ],
-      "respuesta": "Puedes gestionar tus turnos en [nombreEmpresa] a través de nuestro portal online en [linkWeb], llamando al [telefono] durante nuestro [horario] de atención, o escribiéndonos por WhatsApp al mismo número. Para algunas urgencias, atendemos sin turno previo en [direccion], pero te recomendamos llamar antes. Si necesitas cancelar o reprogramar, por favor avísanos con la mayor antelación posible, idealmente 24 horas antes. ¿Deseas sacar, modificar o consultar un turno ahora?"
+      "respuesta": "Puedes gestionar tus turnos en [nombreEmpresa] de varias formas: a través de nuestro portal online en [linkWeb], llamando al [telefono] durante nuestro [horario] de atención, o escribiéndonos por WhatsApp al mismo número. Para algunas urgencias, atendemos sin turno previo en [direccion], pero siempre es recomendable llamar antes si es posible. Si necesitas cancelar o reprogramar tu cita, te pedimos que nos avises con la mayor antelación posible, idealmente 24 horas antes. ¿Deseas sacar, modificar o consultar un turno en este momento?"
     },
+    {
+      "categoria": "pagos_costos",
+      "ejemplos": [
+        "¿Cuánto cuesta la consulta médica?",
+        "¿Se puede pagar con tarjeta de crédito o débito?",
+        "¿Aceptan MercadoPago para pagar?",
+        "¿Qué formas de pago tienen disponibles?",
+        "¿Ofrecen planes de pago en cuotas?",
+        "¿Cobran la primera consulta?",
+        "¿Aceptan transferencias bancarias? ¿Me pasan los datos?",
+        "¿Hay algún descuento si pago en efectivo?",
+        "¿El precio de la consulta con un especialista es diferente?",
+        "¿Cuánto sale un estudio de sangre completo?",
+        "¿Los precios que informan son finales o hay que sumarles IVA?",
+        "¿Qué hago si mi obra social no me cubre el total de la consulta?",
+        "¿Puedo pagar una parte de la consulta en efectivo y otra con tarjeta?",
+        "¿Tienen algún tipo de financiación para tratamientos prolongados?",
+        "¿Hay tarifas especiales para jubilados o pensionados?",
+        "¿El valor de la consulta médica incluye la realización de algún estudio o práctica?"
+      ],
+      "respuesta": "En [nombreEmpresa] aceptamos diversos medios de pago: efectivo, tarjetas de débito y crédito (Visa, Mastercard, Amex, etc.), MercadoPago (a través de QR o link de pago) y transferencias bancarias. El costo de la consulta particular puede variar, te sugerimos contactarnos al [telefono] para información actualizada. Para pacientes con obra social, se aplican los coseguros correspondientes. Puedes encontrar más detalles sobre costos y formas de pago en [linkWeb] o consultando al [telefono]. ¿Te gustaría saber el precio de algún servicio específico o cómo puedes abonar?"
+    },
+
     {
       "categoria": "productos_stock_consultas",
       "ejemplos": [
-        "¿Tienen stock de la remera azul?", 
-        "¿Cuándo vuelve a ingresar el talle M?", 
-        "¿De qué material es la campera?", 
-        "¿Esta zapatilla viene en otros colores?",
-        "¿Pueden avisarme cuando un producto esté disponible?",
-        "¿Cuál es la diferencia entre el modelo X y el modelo Y?", 
-        "¿Tienen una guía de talles?",
-        "Recomendaciones similares a las zapatillas deportivas" 
+        "¿Tienen stock de la remera azul?",
+        "¿Cuándo vuelve a ingresar el talle L de la campera negra?",
+        "¿De qué material son los pantalones cargo?",
+        "¿Este modelo de zapatillas viene en otros colores?",
+        "¿Me pueden avisar cuando tengan disponible la mochila X?",
+        "¿Cuál es la diferencia entre el producto A y el producto B?",
+        "¿Tienen una guía de talles en su web?",
+        "Necesito recomendaciones de productos similares a las calzas deportivas."
       ],
-      "respuesta": "Podés verificar el stock, talles, colores y detalles de todos nuestros productos en nuestro catálogo online en [linkWeb]. Si necesitás ayuda específica para encontrar algo o querés que te avisemos cuando un producto esté disponible, escribinos por WhatsApp al [telefono]. ¿Hay algún artículo en particular sobre el que quieras consultar?"
+      "respuesta": "Podés verificar el stock, talles, colores y todos los detalles de nuestros productos directamente en nuestro catálogo online en [linkWeb]. Si necesitás ayuda para encontrar un artículo específico, o querés que te avisemos cuando un producto vuelva a estar disponible, no dudes en escribirnos por WhatsApp al [telefono]. ¿Hay algún producto en particular sobre el que te gustaría que te ayude a buscar información?"
+    }
+  ],
+  "local_comercial": [
+    {
+      "categoria": "formas_pago_cuotas",
+      "ejemplos": [
+        "¿Aceptan tarjetas de crédito y débito?",
+        "¿Puedo pagar con QR de MercadoPago o MODO?",
+        "¿Tienen cuotas sin interés? ¿Con qué bancos o tarjetas?",
+        "¿Trabajan con Ahora 12?",
+        "¿Hay descuento por pago en efectivo?",
+        "¿Qué medios de pago tienen para compras online?",
+        "¿Aceptan dólares?",
+        "¿Puedo señar un producto?"
+      ],
+      "respuesta": "En [nombreEmpresa] aceptamos efectivo, tarjetas de débito y crédito, MercadoPago, transferencias bancarias y pagos QR. Solemos ofrecer opciones de financiación y cuotas sin interés con distintos bancos y planes vigentes. Puedes encontrar más detalles sobre los medios de pago en nuestro sitio web [linkWeb] o consultando en nuestro local en [direccion]. ¿Cómo preferirías abonar tu compra?"
+    },
+    {
+      "categoria": "cambios_devoluciones_garantias_local",
+      "ejemplos": [
+        "¿Si compro algo y no me sirve, lo puedo cambiar?",
+        "¿Cuál es la política de cambios?",
+        "¿Cuánto tiempo tengo para hacer un cambio?",
+        "¿Necesito el ticket para cambiar algo?",
+        "¿Los productos en oferta tienen cambio?",
+        "¿Hacen devoluciones de dinero?",
+        "¿Los productos tienen garantía?",
+        "Compré una campera y tiene una falla, ¿qué hago?"
+      ],
+      "respuesta": "Podés realizar cambios en [nombreEmpresa] dentro del plazo establecido en nuestra política, la cual puedes consultar en [linkWeb] o en nuestro local en [direccion]. Es necesario presentar el ticket de compra y que el producto esté en perfectas condiciones. Todos nuestros productos cuentan con garantía por defectos de fabricación. Ante cualquier inconveniente, contáctanos directamente por WhatsApp al [telefono] o acércate al local. ¿Tienes algún producto que necesites cambiar o consultar por su garantía?"
     }
   ]
 }
