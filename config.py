@@ -6,7 +6,7 @@ import logging # Añade esto si usas logging dentro de Config, como te sugerí
 basedir = os.path.abspath(os.path.dirname(__file__))
 
 class Config:
-    SECRET_KEY = os.getenv("SECRET_KEY", "clave-generica")
+    SECRET_KEY = os.getenv("SECRET_KEY")
     RENDER_ENV_VAR = os.getenv("RENDER")
     # Si añadiste el logging que te sugerí:
     # logging.info(f"RENDER environment variable en Config: '{RENDER_ENV_VAR}' (type: {type(RENDER_ENV_VAR)})")
