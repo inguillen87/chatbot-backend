@@ -169,7 +169,6 @@ def procesar_y_embedear_catalogo(path: str, user_id: int, pyme_rubro_nombre: str
 
 
 # ... (tu Blueprint upload_bp, UPLOAD_FOLDER, ALLOWED_EXTENSIONS, limpiar_texto, extension_valida, 
-#      guardar_en_qdrant, procesar_y_embedear_catalogo se mantienen como la última versión que te di) ...
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():

@@ -118,7 +118,7 @@ def get_cohere_response(messages_for_llm: list, rubro_id: int, user_context: dic
             message=current_user_message,
             chat_history=chat_history_for_api, # Este historial ya contiene las instrucciones del sistema al inicio
             model="command-r-plus", 
-            temperature=0.3
+            temperature=0.4
             # NO SE PASA 'preamble'
         )
 
