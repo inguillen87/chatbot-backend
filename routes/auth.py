@@ -28,7 +28,6 @@ def token_requerido(f):
 @auth_bp.route('/me', methods=['GET'])
 def get_current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-
     if not token:
         return jsonify({"error": "Token faltante"}), 401
 
@@ -51,18 +50,21 @@ def get_current_user():
             "preguntas_usadas": getattr(user, "preguntas_usadas", 0) or 0,
             "limite_preguntas": getattr(user, "limite_preguntas", 0) or 0,
             "nombre_empresa": getattr(user, "nombre_empresa", "") or "",
-            "direccion": getattr(user, "direccion", "") or "",
             "telefono": getattr(user, "telefono", "") or "",
+            "direccion": getattr(user, "direccion", "") or "",
+            "ciudad": getattr(user, "ciudad", "") or "",
+            "provincia": getattr(user, "provincia", "") or "",
+            "lat": getattr(user, "lat", None),
+            "lng": getattr(user, "lng", None),
             "link_web": getattr(user, "link_web", "") or "",
-            "horario": getattr(user, "horario", "") or "",
+            "horario_json": getattr(user, "horario_json", "") or "",
             "ubicacion": getattr(user, "ubicacion", "") or "",
-            "logo_url": getattr(user, "logo_url", "") or "",
             "rubro": rubro_nombre
         })
-
     except Exception:
-        current_app.logger.error("❌ Error crítico en /me:\n" + traceback.format_exc())
+        logging.error("❌ Error crítico en /me:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno al obtener perfil"}), 500
+
 
 # Endpoint debug: ver todos los usuarios y su catálogo
 @auth_bp.route('/debug/users', methods=['GET'])
@@ -194,39 +196,39 @@ def login():
 def update_profile(user):
     try:
         data = request.get_json()
-        print("📥 RECIBIDO EN /perfil:", data)
-        print("🔑 USER TOKEN:", user.token)
-
         if not data:
-            print("❌ No se recibió JSON válido")
             return jsonify({"error": "No se recibió ningún dato"}), 400
 
+        # Campos permitidos para actualizar
         campos_actualizables = [
             "nombre_empresa",
             "telefono",
             "direccion",
-            "ubicacion",
-            "horario",
+            "ciudad",
+            "provincia",
+            "lat",
+            "lng",
             "link_web",
-            "logo_url"
+            "horario_json",
+            "ubicacion",
         ]
 
+        cambios = []
         for campo in campos_actualizables:
             if campo in data:
                 valor = data[campo]
                 if isinstance(valor, str):
                     valor = valor.strip()
                 setattr(user, campo, valor)
-                print(f"✅ Campo actualizado: {campo} → {valor}")
+                cambios.append(f"{campo} → {valor}")
 
         db.session.commit()
-        print(f"✅ PERFIL ACTUALIZADO PARA: {user.email}")
+        logging.info(f"✅ PERFIL ACTUALIZADO PARA: {user.email} | Cambios: {cambios}")
         return jsonify({"mensaje": "Perfil actualizado correctamente"})
     except Exception as e:
-        print("❌ ERROR EN /perfil:", e)
-        traceback.print_exc()
+        logging.error("❌ ERROR EN /perfil:\n" + traceback.format_exc())
         return jsonify({"error": "Error interno"}), 500
-
+    
 # CLI opcional para crear base sin migraciones
 @auth_bp.cli.command("crear_base")
 def crear_base():
