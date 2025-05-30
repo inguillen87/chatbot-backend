@@ -287,8 +287,6 @@ def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = No
     }
     
     numero_intercambios_previos = len(session[NOMBRE_HISTORIAL_SESION]) // 2
-    prompt_sistema_texto = (
-   # Dentro de la función responder_chatboc en logic.py
 
     # ... (user_profile_context y numero_intercambios_previos se definen antes) ...
 
