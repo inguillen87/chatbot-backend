@@ -6,24 +6,25 @@
         "¿Atienden con obra social?",
         "¿Qué obras sociales aceptan?",
         "¿Trabajan con prepagas?",
-        "¿Tienen convenio con [NombreObraSocialEspecifica como OSDE, Swiss Medical, Galeno]?",
-        "¿Aceptan mi plan de [NombrePrepagaEspecifica]?",
-        "¿Puedo ir con mi prepaga?",
-        "¿Qué cobertura tengo con [NombreObraSocial]?",
-        "¿Cubre [NombreObraSocial] la consulta con [Especialidad/Doctor]?",
-        "¿El plan [NombrePlanObraSocial] es aceptado?",
-        "¿Necesito autorización de la obra social para la consulta?",
-        "¿Cómo es el trámite con [NombreObraSocial] para atenderme?",
-        "¿Atienden PAMI / IOMA?",
-        "Listado de obras sociales con las que trabajan",
-        "¿Reciben pacientes de la obra social de empleados de comercio?",
-        "¿Y prepagas como [nombre_prepaga_ejemplo]?",
-        "¿Sirve mi carnet de [obra_social/prepaga]?",
-        "¿Atienden particular y luego pido reintegro a [obra_social/prepaga]?",
-        "¿Hay copago si uso [NombreObraSocial]?",
-        "¿El Dr. [NombreDoctor] atiende por [NombreObraSocial]?"
+        "¿Tienen convenio con OSDE?",
+        "¿Aceptan mi plan de Swiss Medical?",
+        "¿Puedo ir con Galeno?",
+        "¿Qué cobertura tengo con mi plan de salud?",
+        "¿Cubre mi obra social la consulta?",
+        "¿El plan Más Salud es aceptado?",
+        "¿Necesito autorización de la obra social?",
+        "¿Cómo es el trámite con mi seguro médico?",
+        "¿Atienden PAMI?",
+        "¿Aceptan IOMA?",
+        "Listado de obras sociales",
+        "¿Reciben pacientes de OSECAC?",
+        "¿Y prepagas como Medifé?",
+        "¿Sirve mi carnet de salud?",
+        "¿Atienden particular para reintegro?",
+        "¿Hay copago con mi obra social?",
+        "¿El Dr. Pérez atiende por mi obra social?"
       ],
-      "respuesta": "En [nombreEmpresa] trabajamos con una amplia gama de obras sociales y prepagas. Para verificar si tu cobertura está incluida, conocer detalles sobre copagos o autorizaciones necesarias, te invitamos a consultar nuestro listado actualizado en [LinkListaObrasSociales] o contactarnos al [Telefonministracion] mencionando tu obra social/prepaga y el servicio que necesitas. ¿Tienes alguna obra social específica sobre la que quieras consultar ahora?"
+      "respuesta": "En [nombreEmpresa] trabajamos con una amplia gama de obras sociales y prepagas. Para verificar si tu cobertura específica está incluida y los detalles sobre copagos o autorizaciones, te invitamos a consultar la sección de convenios en nuestro sitio web [linkWeb] o a contactarnos directamente al [telefono]. ¿Tienes alguna obra social particular sobre la que quieras consultar?"
     },
     {
       "categoria": "turnos",
@@ -31,457 +32,44 @@
         "¿Cómo saco turno?",
         "¿Puedo pedir turno online?",
         "¿Dan turnos por WhatsApp?",
-        "Necesito un turno para [Especialidad/Doctor]",
-        "¿Tienen turnos disponibles para hoy/esta semana?",
+        "Necesito un turno para cardiología",
+        "Necesito un turno con el Dr. Gonzalez",
+        "¿Tienen turnos disponibles para hoy?",
+        "¿Hay turnos para esta semana?",
         "¿Qué horarios tienen para turnos?",
         "¿Cómo cancelo un turno?",
         "Quiero cambiar mi turno",
         "¿Puedo reprogramar mi cita?",
         "¿Hay que pagar para reservar el turno?",
-        "¿Cuánto tiempo de espera hay para un turno con [Especialidad/Doctor]?",
+        "¿Cuánto tiempo de espera hay para un turno con el dermatólogo?",
         "Necesito un turno urgente",
         "¿Dan sobreturnos?",
         "¿Me pueden recordar mi turno?",
         "¿Qué necesito llevar el día de la consulta?",
         "Turno para control general",
-        "¿El Dr./Dra. [NombreDoctor] tiene agenda abierta?",
-        "¿Se puede sacar turno presencialmente?",
+        "¿La Dra. López tiene agenda abierta?",
+        "¿Se puede sacar turno presencialmente en [direccion]?",
         "¿Qué pasa si llego tarde al turno?",
         "¿Con cuánta anticipación debo pedir turno?",
         "¿Me avisan cuando tengo el turno confirmado?",
         "¿Dan turnos sin obra social?",
-        "¿Qué disponibilidad tienen para [mes/semana_proxima]?"
+        "¿Qué disponibilidad tienen para la semana que viene?"
       ],
-      "respuesta": "Puedes gestionar tus turnos en [nombreEmpresa] de varias formas: a través de nuestro portal online en [linkweb], llamando al [telefono] durante nuestro horario de atención ([horario]), o escribiéndonos por [telefono] al  Para urgencias, atendemos sin turno previo en [direccion] ([HorarioAtencionUrgencias]). Si necesitas cancelar o reprogramar, te pedimos que nos avises con al menos [TiempoAntelacionCancelacion] de anticipación. ¿Deseas sacar, modificar o consultar un turno ahora?"
+      "respuesta": "Puedes gestionar tus turnos en [nombreEmpresa] a través de nuestro portal online en [linkWeb], llamando al [telefono] durante nuestro [horario] de atención, o escribiéndonos por WhatsApp al mismo número. Para algunas urgencias, atendemos sin turno previo en [direccion], pero te recomendamos llamar antes. Si necesitas cancelar o reprogramar, por favor avísanos con la mayor antelación posible, idealmente 24 horas antes. ¿Deseas sacar, modificar o consultar un turno ahora?"
     },
     {
-      "categoria": "pagos_costos",
+      "categoria": "productos_stock_consultas",
       "ejemplos": [
-        "¿Cuánto cuesta una consulta?",
-        "¿Puedo pagar con tarjeta de crédito/débito?",
-        "¿Aceptan MercadoPago?",
-        "¿Qué formas de pago tienen?",
-        "¿Puedo pagar en cuotas?",
-        "¿Cobran consulta inicial?",
-        "¿Aceptan transferencias bancarias? ¿Cuál es el CBU/Alias?",
-        "¿Hay descuento por pagar en efectivo?",
-        "¿El precio de la consulta con [Especialidad/Doctor] es diferente?",
-        "¿Cuánto sale un estudio de [NombreEstudio]?",
-        "¿Los precios son finales o más IVA?",
-        "¿Qué pasa si mi obra social no cubre todo?",
-        "¿Puedo pagar una parte en efectivo y otra con tarjeta?",
-        "¿Tienen financiación para tratamientos?",
-        "Tarifas para jubilados/pensionados",
-        "¿El precio de la consulta incluye algún estudio o práctica?"
+        "¿Tienen stock de la remera azul?", 
+        "¿Cuándo vuelve a ingresar el talle M?", 
+        "¿De qué material es la campera?", 
+        "¿Esta zapatilla viene en otros colores?",
+        "¿Pueden avisarme cuando un producto esté disponible?",
+        "¿Cuál es la diferencia entre el modelo X y el modelo Y?", 
+        "¿Tienen una guía de talles?",
+        "Recomendaciones similares a las zapatillas deportivas" 
       ],
-      "respuesta": "En [nombreEmpresa] aceptamos diversos medios de pago: efectivo, tarjetas de débito y crédito (Visa, Mastercard, Amex, etc.), MercadoPago (QR o link de pago) y transferencias bancarias. El costo de la consulta particular es de $[PrecioConsultaParticular] (puede variar según el especialista o la práctica requerida). Para pacientes con obra social, se aplican los coseguros correspondientes. Puedes encontrar más detalles sobre costos y formas de pago en [LinkInfoPagos] o consultando al [telefono]. ¿Te gustaría saber el precio de algún servicio específico o cómo puedes abonar?"
-    },
-    {
-      "categoria": "ubicacion_horarios",
-      "ejemplos": [
-        "¿Dónde están ubicados?",
-        "¿Cuál es la dirección?",
-        "¿Cómo llego en colectivo/subte/tren?",
-        "¿Tienen estacionamiento cerca o propio?",
-        "¿El lugar es accesible para sillas de ruedas?",
-        "¿Cuál es su horario de atención general?",
-        "¿Abren los sábados? ¿Y los domingos?",
-        "¿Atienden en feriados?",
-        "¿Hasta qué hora puedo llamar o ir?",
-        "¿Desde qué hora están abiertos?",
-        "Horarios de [AreaEspecifica, ej: laboratorio, vacunatorio]",
-        "¿Tienen sucursales?"
-      ],
-      "respuesta": "Nos encontramos en [DireccionCompletaClinica], en el barrio de [Barrio/Localidad]. Puedes llegar utilizando [LineasColectivoCercanas] o [EstacionSubte/TrenCercana]. [InformacionSobreEstacionamientoYAcesibilidad]. Nuestro horario de atención general es de Lunes a Viernes de [horario] a [HoraCierreLV], y los Sábados de [HoraAperturaSabado] a [HoraCierreSabado]. Para horarios específicos de servicios o profesionales, visita [LinkHorariosDetallados] o llama al [telefono]. ¿Necesitas que te ayude a planificar tu ruta?"
-    },
-    {
-      "categoria": "especialidades_profesionales",
-      "ejemplos": [
-        "¿Qué especialidades médicas ofrecen?",
-        "¿Tienen cardiólogo/dermatólogo/pediatra, etc.?",
-        "Necesito un especialista en [AreaMedica]",
-        "¿Qué doctores atienden en [Especialidad]?",
-        "¿El Dr./Dra. [NombreDoctor] sigue atendiendo en [nombreEmpresa]?",
-        "¿Me podrían recomendar un buen clínico?",
-        "¿Quién está de guardia hoy en [Especialidad]?",
-        "Busco un especialista en [ProblemaMedicoEspecifico]",
-        "Listado de profesionales por especialidad",
-        "¿Atienden niños/adultos mayores?"
-      ],
-      "respuesta": "En [nombreEmpresa] contamos con un completo equipo de profesionales en diversas especialidades como [Especialidad1], [Especialidad2], [Especialidad3], y muchas más. Puedes consultar nuestro staff médico completo y las especialidades disponibles en [LinkStaffMedicoEspecialidades]. Si buscas un profesional o una especialidad en particular, indícamelo y con gusto te ayudaré. ¿Qué especialista o tipo de atención necesitas?"
-    },
-    {
-      "categoria": "preparacion_estudios",
-      "ejemplos": [
-        "¿Cómo debo prepararme para una ecografía abdominal?",
-        "¿Se necesita ayuno para el análisis de sangre de [TipoAnalisis]?",
-        "Indicaciones para una resonancia magnética de [ParteCuerpo]",
-        "¿Puedo tomar mi medicación habitual antes del estudio [NombreEstudio]?",
-        "¿Cuánto tiempo dura aproximadamente el estudio de [NombreEstudio]?",
-        "¿Debo ir acompañado/a para [NombreEstudio]?",
-        "¿Qué ropa debo usar para [NombreEstudio]?",
-        "¿Hay que llevar estudios anteriores?",
-        "¿Tengo que suspender algún alimento o bebida?"
-      ],
-      "respuesta": "La preparación es específica para cada estudio. Por ejemplo, para [EstudioComun1] generalmente se requiere [PreparacionBasica1], mientras que para [EstudioComun2] es necesario [PreparacionBasica2]. Puedes encontrar todas las indicaciones detalladas por estudio en nuestra sección web [LinkPreparacionEstudios]. Es muy importante seguir estas indicaciones para asegurar la calidad del resultado. Si no encuentras tu estudio o tienes dudas, por favor contacta a nuestro personal al [telefono]. ¿Para qué estudio necesitas conocer la preparación?"
-    },
-    {
-      "categoria": "resultados_estudios",
-      "ejemplos": [
-        "¿Cómo puedo ver o retirar mis resultados?",
-        "¿Ya están listos los resultados de mi [NombreEstudio] del día [FechaEstudio]?",
-        "¿Puedo acceder a mis resultados online?",
-        "¿Cuánto tardan en entregar los resultados de laboratorio/imagen?",
-        "¿Me envían los resultados por correo electrónico o WhatsApp?",
-        "¿Qué necesito presentar para retirar los estudios de otra persona?",
-        "Perdí mi comprobante, ¿cómo puedo obtener mis resultados?",
-        "¿En qué horario puedo retirar los estudios?",
-        "¿Interpretan los resultados o debo llevarlos a mi médico?"
-      ],
-      "respuesta": "Puedes acceder a tus resultados de estudios online a través de nuestro Portal de Pacientes en [LinkPortalPacientes], utilizando tu DNI y el número de comprobante/acceso que te brindamos. Generalmente, los resultados de [TipoEstudioComun] están disponibles en [TiempoEstimadoEntregaResultados]. También puedes retirarlos personalmente en [LugarEntregaResultadosPresencial] de Lunes a Viernes de [HorarioEntregaResultadosPresencial]. Si tienes alguna dificultad para acceder o alguna consulta, no dudes en llamar al [telefono]. ¿Tienes a mano tu número de comprobante o DNI para ayudarte?"
-    }
-  ],
-  "heladeria": [
-    {
-      "categoria": "sabores_productos",
-      "ejemplos": [
-        "¿Qué sabores de helado tienen?",
-        "¿Tienen dulce de leche granizado?",
-        "¿Hay sambayón?",
-        "Lista de sabores",
-        "Me decís los gustos que hay",
-        "¿Tienen sabores sin azúcar / aptos para diabéticos?",
-        "¿Ofrecen sabores veganos / sin lactosa?",
-        "¿Qué gustos son aptos para celíacos / sin TACC?",
-        "¿El chocolate [NombreChocolateEspecifico] es sin TACC?",
-        "¿Qué sabores de fruta tienen?",
-        "¿Hay algún sabor nuevo o de temporada?",
-        "¿Venden palitos helados / postres helados?",
-        "¿Tienen tortas heladas?",
-        "¿Venden cucuruchos solos?",
-        "¿Qué tipo de chocolate ofrecen? (amargo, con leche, blanco)"
-      ],
-      "respuesta": "¡Claro! En [nombreEmpresa] tenemos una gran variedad de sabores para todos los gustos, desde los clásicos como Limon y Chocolate, hasta nuestras especialidades como [SaborEspecial1]. Contamos con opciones sin azúcar, veganas, sin lactosa y aptas para celíacos. Puedes ver nuestra carta completa de sabores y productos en [LinkMenuSaboresOnline] o pasar por nuestro local en [direccion]. ¿Hay algún sabor o tipo de producto en particular que estés buscando?"
-    },
-    {
-      "categoria": "envios_delivery",
-      "ejemplos": [
-        "¿Hacen envíos a domicilio?",
-        "¿Tienen delivery?",
-        "¿Puedo pedir por Rappi / PedidosYa?",
-        "¿Cuánto cuesta el envío a [Barrio/Zona]?",
-        "¿Cuál es el monto mínimo para el delivery?",
-        "¿Hasta qué zona llegan con los envíos?",
-        "¿Cómo hago un pedido para envío?",
-        "¿Cuánto tarda en llegar el pedido?",
-        "¿Puedo pedir por teléfono o WhatsApp para delivery?",
-        "¿Aceptan pedidos online para enviar?",
-        "Horarios de delivery",
-        "¿Se puede programar un envío para más tarde?"
-      ],
-      "respuesta": "¡Sí, llevamos nuestros helados hasta tu casa! Hacemos envíos en [ubicacion]. El costo de envío a [TuBarrio/Zona] es de $[CostoEnvioPromedio] y el pedido mínimo es de $[MontoMinimoDelivery]. Puedes realizar tu pedido a través de nuestra web [linkweb], Whatsapp [telefono], encontrarnos en apps como Rappi y PedidosYa. El tiempo estimado de entrega es de [TiempoEstimadoEntrega] minutos. ¿Te gustaría hacer un pedido o verificar la cobertura en tu dirección?"
-    },
-    {
-      "categoria": "medios_pago_promociones",
-      "ejemplos": [
-        "¿Puedo pagar con tarjeta de crédito/débito?",
-        "¿Aceptan MercadoPago / Ualá?",
-        "¿Cuáles son los medios de pago disponibles?",
-        "¿Se puede pagar online el pedido?",
-        "¿Tienen promociones con alguna tarjeta o banco?",
-        "¿Hay descuentos por cantidad (ej: por kilo, 2x1)?",
-        "¿Aceptan efectivo para delivery?",
-        "¿Tienen QR para pagar en el local?",
-        "Promos vigentes",
-        "¿Cuál es el precio del kilo/medio kilo/cuarto de helado?",
-        "¿Acumulo puntos con mis compras?"
-      ],
-      "respuesta": "En [nombreEmpresa] aceptamos diversos medios de pago: efectivo, tarjetas de débito y crédito (Visa, Mastercard, Amex), MercadoPago (con QR en el local o para pagos online), y transferencias. ¡Sí! Solemos tener promociones como [PromocionEjemplo1] o descuentos con [Banco/TarjetaEjemplo]. Puedes ver todas nuestras promociones actuales en [LinkPromociones] o consultarnos por WhatsApp al [NumeroWhatsAppConsultas]. El precio del kilo es $[PrecioKilo], medio kilo $[PrecioMedioKilo] y cuarto $[PrecioCuarto]. ¿Cómo te gustaría abonar o qué promoción te interesa?"
-    },
-    {
-      "categoria": "horarios_ubicacion_heladeria",
-      "ejemplos": [
-        "¿A qué hora abren/cierran?",
-        "¿Cuál es el horario de atención hoy?",
-        "¿Están abiertos los domingos o feriados?",
-        "¿Dónde queda la heladería?",
-        "Dirección de [nombreEmpresa]",
-        "¿Tienen mesas para sentarse en el local?",
-        "¿Hay estacionamiento cerca?",
-        "¿Cómo llego a la heladería?"
-      ],
-      "respuesta": "Nuestra heladería [nombreEmpresa] está ubicada en [direccion]. ¡Te esperamos! Atendemos todos los días de [HoraAperturaSemana] a [HoraCierreSemana], y los fines de semana/feriados de [HoraAperturaFinde] a [HoraCierreFinde]. Sí, contamos con [MesasDisponiblesSiNo] para que disfrutes tu helado aquí. Para más detalles sobre cómo llegar o ver nuestros horarios especiales, visita [LinkInfoLocal]. ¿Planeas visitarnos pronto?"
-    }
-  ],
-  "bodega": [
-    {
-      "categoria": "visitas_degustaciones",
-      "ejemplos": [
-        "¿Se puede visitar la bodega?",
-        "¿Hacen degustaciones de vinos?",
-        "¿Cómo reservo una visita guiada?",
-        "¿Cuánto cuesta la visita y degustación?",
-        "¿Qué incluyen las visitas?",
-        "¿Hay visitas con almuerzo/cena/picada?",
-        "¿Qué horarios tienen para las visitas?",
-        "¿Se puede ir con niños a la bodega?",
-        "¿Necesito reservar con anticipación?",
-        "¿Hacen recorridos por los viñedos?",
-        "¿Cuánto dura la visita estándar?",
-        "¿Hay opciones de degustación premium o personalizadas?",
-        "¿La degustación es solo de vinos o incluye algo más?"
-      ],
-      "respuesta": "¡Claro que sí! En [nombreEmpresa] nos encanta recibir visitas. Ofrecemos diferentes experiencias que incluyen recorridos guiados por nuestros viñedos e instalaciones, y degustaciones de nuestros selectos vinos como [VinoEstrella1] y [VinoEstrella2]. Tenemos opciones con [OpcionConComidaEj: picada, almuerzo regional]. Los precios varían según la experiencia, desde $[PrecioVisitaBasica]. Te recomendamos reservar con anticipación a través de nuestra web [linkweb] o Whatsapp al [telefono]. ¿Te gustaría conocer las opciones disponibles para alguna fecha en particular?"
-    },
-    {
-      "categoria": "compras_envios_vinos",
-      "ejemplos": [
-        "¿Venden vinos en la bodega para llevar?",
-        "¿Puedo comprar vinos online?",
-        "¿Hacen envíos al interior del país / a [CiudadEspecifica]?",
-        "¿Realizan envíos al exterior?",
-        "¿Cómo es el proceso para comprar online?",
-        "¿Cuánto cuesta el envío de vinos?",
-        "¿Hay un mínimo de compra para envíos?",
-        "¿Qué medios de pago aceptan para compras online?",
-        "¿Se puede retirar la compra por la bodega?",
-        "¿Tienen tienda física en [OtraCiudad]?",
-        "Catálogo de vinos para comprar",
-        "¿Venden cajas de vino o estuches para regalo?"
-      ],
-      "respuesta": "Sí, puedes adquirir todos nuestros vinos directamente en la bodega o a través de nuestra tienda online en [linkWeb]. Realizamos envíos a todo el territorio argentino y también gestionamos envíos internacionales (consulta destinos y costos). El costo de envío dentro de Argentina varía según la cantidad y destino, pero a menudo tenemos promociones de envío gratuito superando un monto de [MontoEnvioGratis]. Aceptamos [MediosPagoOnline]. ¿Estás interesado en algún vino en particular o necesitas ayuda con tu compra?"
-    },
-    {
-      "categoria": "productos_vinos_info",
-      "ejemplos": [
-        "¿Qué tipos de vino producen (Malbec, Cabernet, etc.)?",
-        "¿Tienen vinos blancos/rosados/espumantes?",
-        "¿Producen vinos orgánicos o biodinámicos?",
-        "¿Cuál es su vino ícono o más premiado?",
-        "Información sobre la añada [Año] del vino [NombreVino]",
-        "¿Qué maridaje recomiendan para el [NombreVino]?",
-        "¿Tienen vinos de guarda?",
-        "¿Venden accesorios para vino (decantadores, copas, etc.)?",
-        "¿Ofrecen aceites de oliva u otros productos regionales?",
-        "Me gustaría saber más sobre la línea [NombreLineaVinos]"
-      ],
-      "respuesta": "En [nombreEmpresa] elaboramos una amplia variedad de vinos, destacándonos por nuestros [TipoVinoPrincipal1 como Malbec] y [TipoVinoPrincipal2 como Chardonnay]. Contamos con líneas jóvenes, de reserva, gran reserva, espumantes y también opciones [Organicas/BiodinamicasSiHay]. Nuestro vino [NombreVinoIcono] ha sido reconocido con [PremioImportante]. Puedes explorar todo nuestro portfolio, notas de cata y sugerencias de maridaje en [LinkCatalogoVinos]. ¿Hay algún tipo de vino o característica que te interese especialmente?"
-    },
-    {
-        "categoria": "eventos_alquiler_espacios",
-        "ejemplos": [
-            "¿Alquilan espacios en la bodega para eventos (casamientos, corporativos)?",
-            "¿Organizan eventos especiales en la bodega (ej: día de la vendimia, conciertos)?",
-            "Me gustaría cotizar un evento para [NumeroPersonas] personas.",
-            "¿Qué servicios incluyen para eventos?",
-            "¿Tienen capacidad para cuántas personas en eventos?",
-            "¿Se puede contratar catering externo o es propio?",
-            "Disponibilidad de fechas para eventos",
-            "¿Tienen un calendario de eventos públicos?"
-        ],
-        "respuesta": "Sí, en [nombreEmpresa] ofrecemos nuestros hermosos espacios para la realización de eventos sociales y corporativos. Contamos con [SalonPrincipalCapacidad] y [EspacioExteriorDescripcion] con vistas a los viñedos. También organizamos eventos propios como [EventoPropioEjemplo1] y [EventoPropioEjemplo2]. Para más información, cotizaciones o consultar nuestro calendario de eventos, visita [LinkEventosBodega] o contacta a nuestro equipo de eventos en [EmailEventos] o al [Telefono]. ¿Qué tipo de evento tienes en mente?"
-    }
-  ],
-  "ecommerce": [
-  {
-    "categoria": "envios_seguimiento",
-    "ejemplos": [
-      "¿Cuánto tarda el envío a [Ciudad/Provincia]?",
-      "¿Cómo puedo hacer el seguimiento de mi pedido número [NumeroPedido]?",
-      "¿Envían a todo el país?",
-      "¿Qué empresas utilizan para los envíos?",
-      "¿Hacen envíos por moto mensajería en [Ciudad]?",
-      "¿Tienen opción de retiro en tienda?",
-      "Costo de envío a [CodigoPostal]",
-      "¿Qué pasa si no estoy en casa cuando llega el pedido?",
-      "¿Puedo cambiar la dirección de envío?",
-      "Mi pedido figura entregado pero no lo recibí."
-    ],
-    "respuesta": "Los envíos suelen demorar entre 2 y 7 días hábiles dependiendo de la ubicación. Recibirás un código de seguimiento al email para consultar el estado. Realizamos envíos a todo el país, y también podés retirar tu compra en nuestro local ubicado en [direccion], [ubicacion]. Más información en [linkWeb]. ¿Tenés el número de pedido para ayudarte con el seguimiento?"
-  },
-  {
-    "categoria": "pagos_facturacion",
-    "ejemplos": [
-      "¿Qué medios de pago aceptan?",
-      "¿Puedo pagar en cuotas?",
-      "¿Tienen descuento por transferencia?",
-      "¿Es seguro el pago online?",
-      "¿Cómo solicito factura A o B?",
-      "Necesito factura a nombre de mi empresa",
-      "¿Los precios incluyen IVA?",
-      "¿Aceptan pagos contra entrega?",
-      "¿Puedo usar dos tarjetas para pagar un pedido?"
-    ],
-    "respuesta": "En [nombreEmpresa] podés pagar con tarjetas de crédito/débito, MercadoPago y transferencia bancaria. Ofrecemos cuotas y promociones especiales. Todos nuestros precios incluyen IVA. Para factura A, solicitá con tu CUIT al momento de compra. Más detalles en [linkWeb]. ¿Necesitás ayuda con algún medio de pago específico?"
-  },
-  {
-    "categoria": "cambios_devoluciones_garantia",
-    "ejemplos": [
-      "¿Puedo cambiar un producto?",
-      "¿Cómo gestiono una devolución?",
-      "¿Cuál es la política de cambios?",
-      "¿Cuánto tiempo tengo para hacer un cambio?",
-      "¿Qué hago si recibí un producto incorrecto?",
-      "¿Los productos tienen garantía?",
-      "¿Cómo hago valer la garantía?",
-      "¿Devuelven el dinero o dan crédito?"
-    ],
-    "respuesta": "Podés solicitar cambios o devoluciones dentro del plazo indicado en nuestra política disponible en [linkWeb]. Todos nuestros productos tienen garantía por defectos de fabricación. Ante cualquier problema contactanos al [whatsapp] con tu número de pedido. ¿Querés iniciar un cambio o devolución ahora?"
-  },
-  {
-    "categoria": "productos_stock_consultas",
-    "ejemplos": [
-      "¿Tienen stock del producto [producto]?",
-      "¿Cuándo vuelve a ingresar el talle [talle]?",
-      "¿De qué material es el [producto]?",
-      "¿Este producto viene en otros colores?",
-      "¿Pueden avisarme cuando esté disponible?",
-      "¿Cuál es la diferencia entre [producto] y [producto]?",
-      "¿Tienen una guía de talles?",
-      "Recomendaciones similares a [producto]"
-    ],
-    "respuesta": "Podés verificar el stock y detalles de todos nuestros productos en nuestro catálogo online [linkWeb]. Si necesitás ayuda específica o que te avisemos cuando un producto esté disponible, escribinos por WhatsApp [whatsapp]. ¿Qué producto en particular te interesa?"
-  }
-],
-
-  "almacen": [
-  {
-    "categoria": "productos_stock_variedad",
-    "ejemplos": [
-      "¿Tienen cerveza fría / gaseosas / agua?",
-      "¿Venden hielo en bolsa?",
-      "¿Hay fiambres y quesos por peso?",
-      "¿Tienen pan recién horneado o facturas del día?",
-      "¿Ofrecen productos sin TACC / aptos para celíacos?",
-      "¿Venden frutas y verduras frescas?",
-      "¿Tienen carbón o leña?",
-      "Busco [producto], ¿lo tienen?",
-      "¿Qué marcas de [producto] tienen?",
-      "¿Hay productos de limpieza / perfumería?",
-      "¿Venden comida para mascotas?",
-      "¿Tienen yerba, azúcar, café?"
-    ],
-    "respuesta": "Sí, en [nombreEmpresa] tenemos una amplia variedad de productos: bebidas frías, panificados frescos, fiambres, productos saludables, sin TACC, frutas, verduras, artículos de limpieza y más. Acercate al local en [direccion] o consultanos por WhatsApp [whatsapp]. ¿Buscás algún producto en particular?"
-  },
-  {
-    "categoria": "horarios_atencion",
-    "ejemplos": [
-      "¿A qué hora abren y cierran?",
-      "¿Cuál es el horario hoy?",
-      "¿Están abiertos domingos o feriados?",
-      "¿Cierran al mediodía?",
-      "Horario de fin de semana",
-      "¿Hasta qué hora puedo ir a comprar?",
-      "¿Abren temprano por la mañana?",
-      "¿El horario del feriado es normal?"
-    ],
-    "respuesta": "En [nombreEmpresa] nuestro horario habitual es [horario]. Para domingos, feriados o horarios especiales, recomendamos consultar previamente en nuestra web [linkWeb] o por WhatsApp [whatsapp]. ¿Necesitás el horario exacto para un día específico?"
-  },
-  {
-    "categoria": "envios_pedidos",
-    "ejemplos": [
-      "¿Hacen envíos a domicilio en la zona?",
-      "¿Tienen servicio de delivery?",
-      "¿Puedo hacer un pedido por WhatsApp?",
-      "¿Hay monto mínimo de compra para envío?",
-      "¿Cuánto tarda el delivery en llegar?",
-      "¿Costo del envío?",
-      "¿Hasta qué distancia llegan?",
-      "¿Puedo encargar algo para retirar más tarde?",
-      "¿Aceptan pedidos para el día?"
-    ],
-    "respuesta": "Sí, tenemos servicio de delivery en [ubicacion]. Podés realizar tu pedido directamente por WhatsApp [whatsapp] o llamando al [telefono]. Consultá el costo y tiempo aproximado en [linkWeb]. ¿Querés realizar tu pedido ahora?"
-  },
-  {
-    "categoria": "pagos_ofertas",
-    "ejemplos": [
-      "¿Puedo pagar con tarjeta de crédito o débito?",
-      "¿Aceptan MercadoPago o Cuenta DNI?",
-      "¿Tienen QR para pagar?",
-      "¿Puedo pagar en efectivo al delivery?",
-      "¿Hacen factura A o B?",
-      "¿Hay ofertas hoy?",
-      "¿Tienen descuentos para jubilados?",
-      "¿Aceptan tarjetas alimentarias?",
-      "¿Precios de [producto]?"
-    ],
-    "respuesta": "En [nombreEmpresa] aceptamos efectivo, tarjetas de débito y crédito, MercadoPago con QR y transferencias. Emitimos factura A y B (solicitá factura A con CUIT). Consultá nuestras promociones actuales en [linkWeb] o envianos un WhatsApp [whatsapp]. ¿Cómo preferís abonar o qué oferta te interesa hoy?"
-  }
-],
-
- "local_comercial": [
-    {
-      "categoria": "formas_pago_cuotas",
-      "ejemplos": [
-        "¿Aceptan tarjetas de crédito y débito?",
-        "¿Puedo pagar con QR de MercadoPago / MODO?",
-        "¿Tienen cuotas sin interés? ¿Con qué bancos/tarjetas?",
-        "¿Trabajan con Ahora 12, Ahora 18?",
-        "¿Hay descuento por pago en efectivo o transferencia?",
-        "¿Qué medios de pago aceptan para compras online/telefónicas?",
-        "¿Aceptan dólares u otra moneda extranjera?",
-        "¿Se puede señar un producto y pagar el resto después?"
-      ],
-      "respuesta": "En [nombreEmpresa] aceptamos efectivo, tarjetas de débito y crédito, MercadoPago, transferencias bancarias y pagos QR. Ofrecemos opciones de financiación y cuotas sin interés con distintos bancos y planes Ahora 12 o 18. Encontrá más detalles sobre medios de pago en [linkWeb]. ¿Cómo preferís abonar tu compra?"
-    },
-    {
-      "categoria": "horario_ubicacion_contacto",
-      "ejemplos": [
-        "¿A qué hora abren y cierran?",
-        "¿Cuál es su horario de atención los sábados/domingos?",
-        "¿Están abiertos los feriados? ¿Qué horario?",
-        "¿Dónde están ubicados? ¿Dirección exacta?",
-        "¿Cómo llego al local en transporte público/auto?",
-        "¿Tienen sucursales? ¿Dónde?",
-        "¿Cuál es el teléfono de contacto o WhatsApp?",
-        "¿Hay estacionamiento cerca?",
-        "¿Es un local a la calle o en galería?"
-      ],
-      "respuesta": "[nombreEmpresa] está en [direccion], [ubicacion]. Nuestro horario es [horario]. Podés contactarnos por teléfono al [telefono] o directamente por [telefono]. Más detalles y mapa en [linkweb]. ¿Necesitás indicaciones para llegar?"
-    },
-    {
-      "categoria": "productos_servicios_stock",
-      "ejemplos": [
-        "¿Qué tipo de productos venden / servicios ofrecen?",
-        "¿Tienen [producto] en stock?",
-        "¿Trabajan con la marca [marca]?",
-        "¿Hay stock del artículo [codigo]?",
-        "¿En qué colores viene [producto]?",
-        "¿Pueden conseguir [producto]?",
-        "¿Hacen [servicio]?",
-        "¿Tienen catálogo online de productos?",
-        "¿Cuál es el precio de [producto]?",
-        "¿Tienen talles grandes / especiales?"
-      ],
-      "respuesta": "En [nombreEmpresa] ofrecemos una amplia variedad de productos y servicios. Podés consultar disponibilidad, precios y detalles específicos en nuestro catálogo online [linkWeb]. ¿Qué producto o servicio en particular estás buscando?"
-    },
-    {
-      "categoria": "promociones_descuentos_ofertas",
-      "ejemplos": [
-        "¿Qué promociones tienen esta semana/mes?",
-        "¿Hay descuentos especiales hoy?",
-        "¿Tienen alguna oferta 2x1 o liquidación?",
-        "¿Hay rebajas por fin de temporada?",
-        "¿Hacen descuentos a jubilados/estudiantes/socios de clubes?",
-        "¿Cómo me entero de las nuevas ofertas?",
-        "¿El precio publicado en la web es el mismo que en el local?",
-        "¿Tienen programa de puntos o fidelización?"
-      ],
-      "respuesta": "Sí, en [nombreEmpresa] tenemos promociones y ofertas especiales cada mes. Encontrá todas las promociones vigentes en [linkWeb], o seguinos en [redSocial] para recibir novedades. ¿Te interesa alguna promoción específica?"
-    },
-    {
-      "categoria": "cambios_devoluciones_garantias_local",
-      "ejemplos": [
-        "¿Si compro algo y no me gusta/no me sirve, lo puedo cambiar?",
-        "¿Cuál es la política de cambios y devoluciones?",
-        "¿Cuánto tiempo tengo para realizar n cambio?",
-        "¿Necesito el ticket para el cambio?",
-        "¿Los productos en oferta tienen cambio?",
-        "¿Hacen devoluciones de dinero?",
-        "¿Los productos tienen garantía? ¿Cómo funciona?",
-        "Compré [producto] y tiene una falla, ¿qué hago?"
-      ],
-      "respuesta": "Podés realizar cambios en [nombreEmpresa] dentro del plazo indicado en nuestra política disponible en [linkWeb]. Todos nuestros productos cuentan con garantía y respaldo. Ante cualquier inconveniente, contactanos directamente por WhatsApp ([whatsapp]) o acercate al local con tu ticket. ¿Tenés algún producto para cambiar o devolver?"
+      "respuesta": "Podés verificar el stock, talles, colores y detalles de todos nuestros productos en nuestro catálogo online en [linkWeb]. Si necesitás ayuda específica para encontrar algo o querés que te avisemos cuando un producto esté disponible, escribinos por WhatsApp al [telefono]. ¿Hay algún artículo en particular sobre el que quieras consultar?"
     }
   ]
 }
