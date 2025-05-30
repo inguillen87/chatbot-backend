@@ -1,5 +1,3 @@
-# En tu archivo: services/upload_processor.py
-
 import os
 import uuid
 import logging
@@ -15,6 +13,7 @@ from services.cohere_ai import embed_textos
 from services.google_docai import procesar_catalogo_pdf_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
 from services.qdrant_utils import get_qdrant_client
+from qdrant_client import models as qdrant_models
 
 upload_bp = Blueprint("upload_bp", __name__)
 
@@ -168,10 +167,12 @@ def procesar_y_embedear_catalogo(path: str, user_id: int, pyme_rubro_nombre: str
         traceback.print_exc()
         raise ValueError(f"Error interno grave al procesar el catálogo: {str(e)}")
 
+
+# ... (tu Blueprint upload_bp, UPLOAD_FOLDER, ALLOWED_EXTENSIONS, limpiar_texto, extension_valida, 
+#      guardar_en_qdrant, procesar_y_embedear_catalogo se mantienen como la última versión que te di) ...
+
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():
-    # ... (tu endpoint se mantiene mayormente igual, solo asegúrate que UPLOAD_FOLDER se resuelva bien) ...
-    # ... y que pases el `pyme_rubro_nombre` a `procesar_y_embedear_catalogo` ...
     user = None
     try:
         token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -187,9 +188,7 @@ def subir_catalogo():
             f"{nombre_empresa_seguro}_{user.id}_{uuid.uuid4().hex[:8]}{os.path.splitext(archivo.filename)[1]}"
         )
         
-        # Usar una ruta absoluta o una configurada en la app para UPLOAD_FOLDER
-        # upload_dir = current_app.config.get('UPLOAD_FOLDER', UPLOAD_FOLDER) # Si UPLOAD_FOLDER está en app.config
-        upload_dir = os.path.abspath(UPLOAD_FOLDER) # O si es una ruta relativa al proyecto
+        upload_dir = os.path.abspath(UPLOAD_FOLDER)
         os.makedirs(upload_dir, exist_ok=True)
         ruta_guardado = os.path.join(upload_dir, nombre_seguro)
         
@@ -200,15 +199,34 @@ def subir_catalogo():
         if user.rubro_id:
             rubro_obj = Rubro.query.get(user.rubro_id)
             if rubro_obj: pyme_rubro_nombre = rubro_obj.nombre.lower().strip()
+
+        # --- INICIO: BORRAR CATÁLOGO ANTERIOR EN QDRANT ---
+        logging.info(f"Intentando eliminar catálogo anterior en Qdrant para user_id={user.id}...")
+        try:
+            client_qdrant = get_qdrant_client()
+            client_qdrant.delete(
+                collection_name="catalogos", # El nombre de tu colección
+                points_selector=qdrant_models.FilterSelector(
+                    filter=qdrant_models.Filter(
+                        must=[
+                            qdrant_models.FieldCondition(
+                                key="user_id", # El campo en tu payload para filtrar
+                                match=qdrant_models.MatchValue(value=user.id)
+                            )
+                        ]
+                    )
+                )
+            )
+            logging.info(f"✅ Catálogo anterior en Qdrant para user_id={user.id} eliminado (o intento realizado).")
+        except Exception as e_delete_qdrant:
+            # Si falla la eliminación, podría ser porque no había nada o un error de Qdrant.
+            # Es importante loguearlo, pero podrías decidir continuar con la subida del nuevo catálogo.
+            logging.error(f"⚠️ Error al intentar eliminar catálogo anterior en Qdrant para user_id={user.id}: {e_delete_qdrant}", exc_info=True)
+        # --- FIN: BORRAR CATÁLOGO ANTERIOR EN QDRANT ---
         
         cantidad_procesada = procesar_y_embedear_catalogo(ruta_guardado, user.id, pyme_rubro_nombre=pyme_rubro_nombre)
         
-        # Opcional: Eliminar archivo después de procesar
-        # try:
-        #     os.remove(ruta_guardado)
-        #     logging.info(f"Archivo temporal {ruta_guardado} eliminado.")
-        # except OSError as e_remove:
-        #     logging.error(f"Error eliminando archivo temporal {ruta_guardado}: {e_remove}")
+        # ... (resto del endpoint, incluyendo el os.remove opcional) ...
 
         return jsonify({"mensaje": f"✅ Catálogo procesado con {cantidad_procesada} ítems."}), 200
 
