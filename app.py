@@ -69,7 +69,6 @@ def create_app():
         ("routes.auth", "auth_bp"),
         ("routes.chat", "chat_bp"),
         ("routes.sugerencias", "sugerencia_bp"),
-        ("routes.rubros", "rubros_bp"),
         ("routes.metricas", "metricas_bp")
     ]
 
