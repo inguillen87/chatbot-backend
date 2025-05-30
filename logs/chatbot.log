@@ -92,3 +92,35 @@
 2025-05-30 19:05:05,121 | INFO | Blueprint upload_bp registrado.
 2025-05-30 19:05:05,124 | INFO | Cargando datos iniciales...
 2025-05-30 19:05:05,754 | INFO | Datos iniciales cargados correctamente.
+2025-05-30 19:24:39,278 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:24:39,279 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:24:39,280 | INFO | CORS aplicado centralmente.
+2025-05-30 19:24:39,341 | INFO | Aplicación Flask creada y configurada.
+2025-05-30 19:24:49,340 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:24:49,341 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:24:49,342 | INFO | CORS aplicado centralmente.
+2025-05-30 19:24:49,404 | INFO | Aplicación Flask creada y configurada.
+2025-05-30 19:24:59,338 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:24:59,339 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:24:59,340 | INFO | CORS aplicado centralmente.
+2025-05-30 19:24:59,399 | INFO | Aplicación Flask creada y configurada.
+2025-05-30 19:25:11,990 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:25:11,991 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:25:11,992 | INFO | CORS aplicado centralmente.
+2025-05-30 19:25:12,052 | INFO | Aplicación Flask creada y configurada.
+2025-05-30 19:25:43,502 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:25:43,503 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:25:43,504 | INFO | CORS aplicado centralmente.
+2025-05-30 19:25:43,690 | INFO | Aplicación Flask creada y configurada.
+2025-05-30 19:26:01,629 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:26:01,630 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:26:01,631 | INFO | CORS aplicado centralmente.
+2025-05-30 19:26:01,751 | INFO | Aplicación Flask creada y configurada.
+2025-05-30 19:26:52,796 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:26:52,796 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:26:52,797 | INFO | CORS aplicado centralmente.
+2025-05-30 19:26:52,856 | INFO | Aplicación Flask creada y configurada.
+2025-05-30 19:27:23,781 | INFO | Extensiones (Login, DB, Migrate) inicializadas.
+2025-05-30 19:27:23,782 | INFO | Usando DATABASE_URI: sqlite:///C:\Users\Marcelo\Desktop\chatbot-backend\instance\database.db
+2025-05-30 19:27:23,783 | INFO | CORS aplicado centralmente.
+2025-05-30 19:27:23,953 | INFO | Aplicación Flask creada y configurada.
