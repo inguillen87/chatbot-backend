@@ -1,11 +1,8 @@
-# En tu archivo: services/procesar_catalogo_excel.py
-
 import pandas as pd
 import logging
 import re 
-import os # <--- AÑADIR ESTA LÍNEA
+import os 
 
-# ... (el resto de tus funciones normalizar_precio_excel_str, extraer_precio_excel_float se mantienen igual) ...
 def normalizar_precio_excel_str(precio_val) -> str:
     # ... (código como antes)
     if pd.isna(precio_val) if 'pd' in globals() and isinstance(precio_val, float) else not precio_val: # Asegurar que pd esté en scope
