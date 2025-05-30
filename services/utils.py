@@ -9,7 +9,6 @@ def limpiar_texto_base(texto: str) -> str:
     """Limpia espacios extra y caracteres problemáticos comunes."""
     if not texto: 
         return ""
-    # Eliminar múltiples espacios, tabulaciones, y saltos de línea residuales
     texto_limpio = re.sub(r'\s+', ' ', texto).strip()
     return texto_limpio
 
