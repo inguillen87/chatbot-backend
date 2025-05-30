@@ -47,29 +47,38 @@ class User(db.Model, UserMixin):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255))
+    # Datos de contacto y perfil
+    nombre_empresa = db.Column(db.String(150), nullable=True)
     direccion = db.Column(db.String(200))
+    ciudad = db.Column(db.String(100))           # Nuevo: ciudad
+    provincia = db.Column(db.String(100))        # Nuevo: provincia (ubicacion anterior)
+    pais = db.Column(db.String(100))             # Nuevo: país
+    latitud = db.Column(db.Float)                # Nuevo: para Google Maps
+    longitud = db.Column(db.Float)               # Nuevo: para Google Maps
     telefono = db.Column(db.String(20))
     link_web = db.Column(db.String(255))
     horario = db.Column(db.String(100))
-    ubicacion = db.Column(db.String(100))
+    # Plan y uso
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
     limite_preguntas = db.Column(db.Integer, default=50)
-    last_reset = db.Column(db.DateTime)
-    catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
-    catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
-    nombre_empresa = db.Column(db.String(150), nullable=True)
+    last_reset = db.Column(db.DateTime, default=datetime.utcnow)
+    # Relaciones
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     rubro = db.relationship("Rubro", backref="usuarios")
-
+    catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
+    catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
+    
+    # Métodos de seguridad
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
-
+    
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
-
+    
     def __repr__(self):
         return f"<User {self.email}>"
+
 
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
