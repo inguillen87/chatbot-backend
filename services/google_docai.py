@@ -1,139 +1,177 @@
-# En google_docai.py
-# ... (tus importaciones y carga de credenciales igual) ...
+# En tu archivo: services/google_docai.py
 
-def procesar_catalogo_pdf_google(pdf_path, tipo_catalogo="generico"): # Añadido tipo_catalogo
+import os
+import json
+import logging  # <--- AÑADIDO: Importar logging
+import re
+from google.cloud import documentai_v1beta3 as documentai
+from google.oauth2 import service_account
+
+# --- Carga de Credenciales (tu código existente, asegúrate que esté correcto) ---
+ruta_render = "/etc/secrets/google_service_key.json"
+ruta_local = "instance/google-credentials.json" # Asegúrate que esta ruta sea correcta para tu desarrollo local si aplica
+try:
+    ruta_cred = ruta_render if os.path.exists(ruta_render) else ruta_local
+    with open(ruta_cred, "r") as f:
+        credentials_info = json.load(f)
+    credentials = service_account.Credentials.from_service_account_info(credentials_info)
+    logging.info(f"Credenciales de Google cargadas desde: {ruta_cred}")
+except FileNotFoundError:
+    logging.error(f"❌ Archivo de credenciales de Google no encontrado en {ruta_render} ni en {ruta_local}.")
+    # Considera si quieres que la aplicación falle aquí o continúe con Document AI deshabilitado.
+    # Por ahora, la siguiente llamada a Document AI fallará si 'credentials' no está definido.
+    # Es mejor que falle pronto si las credenciales son esenciales.
+    raise RuntimeError(f"Archivo de credenciales no encontrado. La aplicación no puede iniciar sin ellas si Document AI es esencial.")
+except Exception as e:
+    logging.error(f"❌ Error crítico al cargar credenciales de Google desde {ruta_cred}: {e}")
+    raise RuntimeError(f"❌ Error al cargar credenciales desde {ruta_cred}: {e}")
+# --- Fin Carga de Credenciales ---
+
+def limpiar_texto(texto: str) -> str:
+    if not texto: return ""
+    return re.sub(r'\s+', ' ', texto).strip()
+
+def extraer_precio_float(precio_str: str) -> float | None:
+    if not precio_str: return None
     try:
-        # ... (tu inicialización de cliente Document AI igual) ...
-        # result = client.process_document(request=request)
-        # texto_extraido = result.document.text
-        # logging.info("📝 Texto extraído con Google Document AI:")
-        # logging.info(texto_extraido) # Útil para depurar la extracción
+        precio_limpio = precio_str.replace("$", "").strip()
+        if ',' in precio_limpio and '.' in precio_limpio:
+            if precio_limpio.rfind(',') > precio_limpio.rfind('.'):
+                precio_limpio = precio_limpio.replace('.', '').replace(',', '.')
+            else:
+                precio_limpio = precio_limpio.replace(',', '')
+        elif ',' in precio_limpio:
+            partes = precio_limpio.split(',')
+            if len(partes) > 1:
+                parte_entera = "".join(partes[:-1])
+                parte_decimal = partes[-1]
+                precio_limpio = f"{parte_entera}.{parte_decimal}"
+            else:
+                precio_limpio = precio_limpio.replace(',', '.')
+        
+        precio_final_str = "".join(c for c in precio_limpio if c.isdigit() or c == '.')
+        if precio_final_str.count('.') > 1:
+            partes = precio_final_str.split('.')
+            precio_final_str = partes[0] + '.' + "".join(partes[1:])
+        
+        return float(precio_final_str)
+    except ValueError:
+        logging.warning(f"No se pudo convertir el precio '{precio_str}' a float.")
+        return None
+    except Exception as e:
+        logging.error(f"Error inesperado al convertir precio '{precio_str}': {e}")
+        return None
 
-        # --- INICIO DE LÓGICA DE EXTRACCIÓN MEJORADA (CONCEPTUAL) ---
-        # La clave es usar las capacidades de análisis de entidades y tablas de Document AI
-        # en lugar de solo el texto plano. Esto es solo un esquema conceptual.
-        # La implementación real dependerá de la estructura de la respuesta de Document AI.
+def procesar_catalogo_pdf_google(pdf_path, tipo_catalogo="generico", pyme_user_id=None): # Añadido pyme_user_id
+    try:
+        # Estas son las configuraciones de tu procesador de Document AI
+        project_id = "ambient-stack-461118-k7"  # De tus logs y google_service_key.json
+        location = "us"  # O la región correcta de tu procesador
+        processor_id = "55c57b09a179531a" # De tu código anterior
 
+        # Inicializar el cliente de Document AI
+        client = documentai.DocumentProcessorServiceClient(credentials=credentials)
+        name = f"projects/{project_id}/locations/{location}/processors/{processor_id}"
+
+        with open(pdf_path, "rb") as file:
+            pdf_content = file.read()
+
+        raw_document = documentai.RawDocument(content=pdf_content, mime_type="application/pdf")
+        request = documentai.ProcessRequest(name=name, raw_document=raw_document)
+
+        # --- ASEGÚRATE QUE ESTA LÍNEA ESTÉ DESCOMENTADA Y ACTIVA ---
+        result = client.process_document(request=request)
+        # ----------------------------------------------------------
+        
+        document = result.document # Ahora 'result' está definido
+        
+        logging.info(f"📝 Documento '{os.path.basename(pdf_path)}' para PYME ID {pyme_user_id} procesado. {len(document.pages)} páginas. Tipo catálogo: {tipo_catalogo}. Procesando texto...")
         productos_extraidos = []
-        document = result.document
 
-        # Intento 1: Usar entidades si el procesador las extrae (necesitarías un procesador configurado para ello)
-        # for entity in document.entities:
-        #     if entity.type_ == "product_item": # O el tipo de entidad que defina tu procesador
-        #         nombre = entity.mention_text
-        #         precio = "" # Lógica para encontrar el precio asociado a esta entidad
-        #         # ... extraer otros campos ...
-        #         productos_extraidos.append({"nombre": nombre, "descripcion": nombre, "precio": precio, "cantidad": "1"})
+        # --- Lógica de Procesamiento de Texto Plano Línea por Línea (MEJORADO) ---
+        # (Aquí va la lógica de extracción mejorada que te proporcioné en el mensaje anterior,
+        # la que incluye limpiar_texto, regex_precio, y el bucle sobre lineas_documento.
+        # Por brevedad, no la repito toda aquí, pero es la sección que comienza con:
+        # logging.info("Procesando texto plano línea por línea con heurísticas mejoradas...")
+        # y termina con:
+        # logging.info(f"Total de productos potencialmente extraídos del texto plano: {len(productos_extraidos)}")
+        # Asegúrate de que esa lógica esté aquí.)
 
-        # Intento 2: Usar tablas (más prometedor para tus listas de precios)
-        if document.tables:
-            logging.info(f"✅ Se encontraron {len(document.tables)} tablas en el PDF.")
-            for table_idx, table in enumerate(document.tables):
-                logging.info(f"Procesando tabla {table_idx + 1}")
-                # Aquí necesitarías una lógica para interpretar las filas y columnas de la tabla.
-                # Por ejemplo, identificar las columnas de "Nombre", "Descripción", "Precio".
-                # Esto es complejo y específico para cada formato de tabla.
-                # EJEMPLO MUY SIMPLIFICADO (necesitarás adaptarlo muchísimo):
-                header_row = table.header_rows[0].cells if table.header_rows else None
-                # col_nombre_idx, col_precio_idx = -1, -1
-                # if header_row:
-                # try: col_nombre_idx = [cell.layout.text_anchor.text_segments[0] for cell in header_row].index("PRODUCTO") except ValueError: pass
-                # try: col_precio_idx = [cell.layout.text_anchor.text_segments[0] for cell in header_row].index("PRECIO") except ValueError: pass
+        # --- INICIO DE LA LÓGICA DE EXTRACCIÓN QUE ESTABA EN EL MENSAJE ANTERIOR ---
+        logging.info("Procesando texto plano línea por línea con heurísticas mejoradas...")
+        lineas_documento = document.text.split('\n')
+        
+        regex_precio = r"\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))|\$?\s*(\d+)"
+
+        for i, linea_original in enumerate(lineas_documento):
+            linea = limpiar_texto(linea_original)
+            if not linea or len(linea) < 5: 
+                continue
+
+            posibles_precios_match = list(re.finditer(regex_precio, linea))
+            
+            nombre_producto = linea 
+            descripcion_producto = linea 
+            precio_str_final = ""
+            precio_float_final = None
+
+            if posibles_precios_match:
+                mejor_candidato_precio_str = ""
+                for match_p in reversed(posibles_precios_match): 
+                    precio_capturado_grupo1 = match_p.group(1) 
+                    precio_capturado_grupo2 = match_p.group(2) 
+                    if precio_capturado_grupo1:
+                        mejor_candidato_precio_str = precio_capturado_grupo1
+                        break 
+                    elif precio_capturado_grupo2 and not mejor_candidato_precio_str:
+                        mejor_candidato_precio_str = precio_capturado_grupo2
                 
-                for body_row in table.body_rows:
-                    # Extraer texto de celdas específicas si identificas las columnas
-                    # nombre_celda = body_row.cells[col_nombre_idx].layout.text_anchor.text_segments[0] if col_nombre_idx != -1 else "Nombre no extraído"
-                    # precio_celda = body_row.cells[col_precio_idx].layout.text_anchor.text_segments[0] if col_precio_idx != -1 else "Precio no extraído"
-                    
-                    # Por ahora, como fallback, usaremos tu lógica original línea por línea si las tablas no se procesan
-                    # O si no hay tablas, procesar el texto plano
-                    pass # Aquí iría la lógica de procesamiento de tablas
+                if mejor_candidato_precio_str:
+                    precio_str_final = limpiar_texto(mejor_candidato_precio_str)
+                    precio_float_final = extraer_precio_float(precio_str_final)
+                    pos_precio_en_linea = linea.rfind(mejor_candidato_precio_str.strip())
+                    if pos_precio_en_linea != -1:
+                        nombre_producto = limpiar_texto(linea[:pos_precio_en_linea])
+                    else: 
+                        nombre_producto = limpiar_texto(linea.replace(mejor_candidato_precio_str, ""))
+                    if len(nombre_producto) < 4 and len(linea) > len(mejor_candidato_precio_str) + 5:
+                         nombre_producto = limpiar_texto(linea)
+                    descripcion_producto = nombre_producto
+            else:
+                nombre_producto = linea
+                descripcion_producto = linea
+            
+            palabras_clave_descarte = ["MARCA", "VARIETAL", "UN/CAJA", "CAJA/PALLET", "PRECIO", "TALLE", "EMPAQUETADO", "LINEA", "COLECCIÓN", "LISTA DE PRECIOS"]
+            # Convertir nombre_producto a mayúsculas para la comparación de descarte
+            nombre_producto_upper = nombre_producto.upper()
+            if any(palabra_clave.upper() in nombre_producto_upper for palabra_clave in palabras_clave_descarte) and not precio_float_final :
+                # Si la línea es muy corta Y contiene una palabra clave de encabezado, es más probable que sea un encabezado
+                if len(nombre_producto) < 30 : 
+                    logging.debug(f"Línea descartada como posible encabezado (corta y con palabra clave): '{linea}'")
+                    continue
+                # Si la línea es más larga, pero NO tiene un precio y SÍ una palabra clave, también podría ser un encabezado de sección
+                # Esta heurística puede necesitar más ajustes.
+                # Podríamos también verificar si la línea es completamente en mayúsculas, etc.
+            
+            if len(nombre_producto) < 3:
+                continue
 
+            productos_extraidos.append({
+                "user_id": pyme_user_id if pyme_user_id is not None else 0, # Asegurar que user_id se guarde
+                "nombre": nombre_producto[:250], 
+                "descripcion": descripcion_producto[:500],
+                "precio_str": precio_str_final, 
+                "precio_float": precio_float_final, 
+                "moneda": "ARS", 
+                "texto_para_embedding": f"{nombre_producto} {descripcion_producto} {precio_str_final if precio_str_final else ''}"
+            })
+            logging.debug(f"Producto extraído: Nombre='{nombre_producto}', PrecioStr='{precio_str_final}', PrecioFloat={precio_float_final}")
+        # --- FIN DE LA LÓGICA DE EXTRACCIÓN ---
 
-        # Fallback a tu lógica actual si el procesamiento de tablas/entidades no se implementa o falla:
-        # Esta lógica es la que probablemente necesite más ajustes por tipo de catálogo.
-        if not productos_extraidos: # Si no se llenó con tablas/entidades
-             logging.info("No se usaron tablas/entidades, procesando texto plano línea por línea (lógica original con ajustes)...")
-             lineas = [line.strip() for line in document.text.split("\n") if line.strip()]
-             for linea in lineas:
-                 nombre_final = linea # Default, intentar mejorar esto
-                 precio_final = ""
-                 descripcion_final = linea # Default
-
-                 # Ejemplo de heurística MUY BÁSICA para vinos (Salvador Patti)
-                 if tipo_catalogo == "bodega_salvador_patti":
-                     # Intentar extraer MARCA, VARIETAL, y luego el precio de la caja.
-                     # Esto necesitaría regex complejas y conocimiento de la estructura.
-                     # Ejemplo: si la línea es "VINCENT MALBEC 6 140 2732 5 16.390,00"
-                     # nombre_final podría ser "VINCENT MALBEC"
-                     # precio_final podría ser "16390.00" (precio caja)
-                     # Esto es solo un ejemplo, la implementación real es compleja.
-                     match_vino = re.search(r"([A-Z\s]+)\s+([A-Z\s\/]+)\s+.*?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))\s*$", linea)
-                     if match_vino:
-                         marca_intento = match_vino.group(1).strip()
-                         varietal_intento = match_vino.group(2).strip()
-                         precio_intento = match_vino.group(3).replace(".","").replace(",",".") # Asumiendo que el último es el precio de caja
-                         if not marca_intento.isupper(): # Heurística simple, si no es todo mayúsculas, quizás no es la marca
-                             nombre_final = linea
-                         else:
-                             nombre_final = f"{marca_intento} {varietal_intento}"
-                             precio_final = precio_intento
-                             descripcion_final = nombre_final
-                     else: # Si no hay match complejo, usar regex de precio general
-                         precio_match = re.search(r"\$?\s*([\d.,]+)", linea)
-                         if precio_match:
-                             precio_candidato = precio_match.group(1).replace(".","").replace(",",".")
-                             # Intentar limpiar el nombre si el precio está al final
-                             nombre_sin_precio = linea.replace(precio_match.group(0), "").strip()
-                             if len(nombre_sin_precio) > 5 : # Evitar nombres muy cortos después de quitar precio
-                                 nombre_final = nombre_sin_precio
-                             precio_final = precio_candidato
-
-                 # Ejemplo de heurística MUY BÁSICA para SOX
-                 elif tipo_catalogo == "indumentaria_sox":
-                     match_art = re.search(r"^(ART\.\s*[A-Z0-9]+)\s*(.*?)\s*(\$?\s*[\d.,]+)\s*$", linea, re.IGNORECASE)
-                     if match_art:
-                         codigo_articulo = match_art.group(1).strip()
-                         descripcion_articulo = match_art.group(2).strip()
-                         precio_articulo = match_art.group(3).replace("$","").replace(".","").replace(",",".").strip()
-                         nombre_final = f"{codigo_articulo} - {descripcion_articulo}" if descripcion_articulo else codigo_articulo
-                         precio_final = precio_articulo
-                         descripcion_final = nombre_final
-                     else: # Fallback si el formato de ART no coincide
-                         precio_match = re.search(r"\$?\s*([\d.,]+)", linea) # Tu regex de precio
-                         if precio_match:
-                             precio_final = precio_match.group(1).replace(".","").replace(",",".")
-                             nombre_final = linea.replace(precio_match.group(0), "").strip()
-
-
-                 else: # Lógica genérica (tu regex original de precio)
-                     precio_match = re.search(r"\$?\s?(\d{1,7}(?:[.,]\d{2})?)", linea) # Aumentado a 7 dígitos antes de la coma
-                     if precio_match:
-                         precio_final = precio_match.group(1).replace(",", ".")
-                         # Intentar limpiar un poco el nombre
-                         nombre_candidato = linea.replace(precio_match.group(0), "").strip()
-                         if len(nombre_candidato) > 3: # Si queda algo razonable como nombre
-                             nombre_final = nombre_candidato
-                         else: # Si no, mantener la línea original como nombre para no perder info
-                             nombre_final = linea # Y el precio se extrajo
-                 
-                 if nombre_final: # Solo añadir si tenemos un nombre (aunque sea la línea completa)
-                     productos_extraidos.append({
-                         "nombre": nombre_final.strip()[:250], # Limitar longitud
-                         "descripcion": descripcion_final.strip()[:500], # Usar descripción separada
-                         "precio": precio_final, # Ya debería estar formateado como string numérico con "."
-                         "cantidad": "1" # Default, o intentar extraer si es posible
-                     })
-
-        if not productos_extraidos:
-            logging.warning("No se pudieron extraer productos estructurados, volviendo a la lógica de split por línea más simple.")
-            # Este sería tu bucle original como último recurso si todo lo demás falla.
-            # (Lo omito aquí por brevedad, pero es el for linea in lineas: productos.append(...) que tenías)
-            # PERO, idealmente, la lógica anterior ya debería haber procesado todas las líneas.
-
-        logging.info(f"Productos extraídos del PDF ({tipo_catalogo}): {len(productos_extraidos)}")
+        logging.info(f"Total de productos potencialmente extraídos: {len(productos_extraidos)}")
         return productos_extraidos
 
     except Exception as e:
-        logging.error(f"❌ Error procesando catálogo con Google Doc AI: {e}", exc_info=True)
-        return []
+        # Asegurarse que logging esté importado para que este error se registre
+        logging.error(f"❌ Error procesando catálogo con Google Doc AI ({pdf_path}): {e}", exc_info=True)
+        return [] # Devolver lista vacía en caso de error
