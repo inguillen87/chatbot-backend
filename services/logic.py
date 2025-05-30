@@ -3,7 +3,7 @@ import random
 from flask import session
 from models import User, Rubro, Sugerencia, Conversacion
 from extensions import db
-import re # Asegúrate que re esté importado
+import re 
 
 
 # --- Funciones Auxiliares ---
