@@ -1,8 +1,8 @@
-"""Migración inicial con nuevos modelos
+"""Inicial
 
-Revision ID: fb6a94c1c638
+Revision ID: 8e1144141282
 Revises: 
-Create Date: 2025-05-29 00:38:14.666964
+Create Date: 2025-05-30 17:06:50.623401
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
-revision = 'fb6a94c1c638'
+revision = '8e1144141282'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -60,16 +60,20 @@ def upgrade():
     sa.Column('email', sa.String(length=120), nullable=False),
     sa.Column('password_hash', sa.String(length=128), nullable=False),
     sa.Column('token', sa.String(length=255), nullable=True),
+    sa.Column('nombre_empresa', sa.String(length=150), nullable=True),
     sa.Column('direccion', sa.String(length=200), nullable=True),
+    sa.Column('ciudad', sa.String(length=100), nullable=True),
+    sa.Column('provincia', sa.String(length=100), nullable=True),
+    sa.Column('pais', sa.String(length=100), nullable=True),
+    sa.Column('latitud', sa.Float(), nullable=True),
+    sa.Column('longitud', sa.Float(), nullable=True),
     sa.Column('telefono', sa.String(length=20), nullable=True),
     sa.Column('link_web', sa.String(length=255), nullable=True),
     sa.Column('horario', sa.String(length=100), nullable=True),
-    sa.Column('ubicacion', sa.String(length=100), nullable=True),
     sa.Column('plan', sa.String(length=20), nullable=True),
     sa.Column('preguntas_usadas', sa.Integer(), nullable=True),
     sa.Column('limite_preguntas', sa.Integer(), nullable=True),
     sa.Column('last_reset', sa.DateTime(), nullable=True),
-    sa.Column('nombre_empresa', sa.String(length=150), nullable=True),
     sa.Column('rubro_id', sa.Integer(), nullable=True),
     sa.ForeignKeyConstraint(['rubro_id'], ['rubro.id'], ),
     sa.PrimaryKeyConstraint('id'),
