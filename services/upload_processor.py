@@ -20,17 +20,6 @@ upload_bp = Blueprint("upload_bp", __name__)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
 
-# --- FUNCIÓN DE UTILIDAD (AHORA DEFINIDA AQUÍ) ---
-def limpiar_texto(texto: str) -> str:
-    """Limpia espacios extra y caracteres problemáticos comunes."""
-    if not texto:
-        return ""
-    # Eliminar múltiples espacios, tabulaciones, y saltos de línea residuales
-    texto_limpio = re.sub(r'\s+', ' ', texto).strip()
-    # Puedes añadir más reglas de limpieza aquí si es necesario
-    return texto_limpio
-# --- FIN FUNCIÓN DE UTILIDAD ---
-
 def extension_valida(nombre_archivo):
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -66,62 +55,51 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: list, vectores: lis
 
 def procesar_y_embedear_catalogo(path: str, user_id: int, pyme_rubro_nombre: str = "generico"):
     try:
-        ext = os.path.splitext(path)[1].lower()
-        base_filename = os.path.basename(path)
-        logging.info(f"📥 Archivo: {base_filename}, Tamaño: {os.path.getsize(path)} bytes")
-        logging.info(f"📦 Ext: {ext}, User ID: {user_id}, Rubro: {pyme_rubro_nombre}")
-
-        if ext not in ALLOWED_EXTENSIONS:
-            raise ValueError(f"❌ Formato no soportado: {ext}")
-
-        registros_estructurados = []
-        if ext == ".pdf":
-            logging.info("🔍 Procesando PDF con Google Document AI...")
-            registros_estructurados = procesar_catalogo_pdf_google(path, tipo_catalogo=pyme_rubro_nombre, pyme_user_id=user_id)
-        else:
-            logging.info("📊 Procesando Excel/CSV con pandas...")
-            registros_estructurados = procesar_catalogo_excel(path)
-
-        logging.info(f"🔎 REGISTROS EXTRAÍDOS (Total: {len(registros_estructurados)}). Primeros 3: {registros_estructurados[:3]}")
-
-        if not registros_estructurados:
-            raise ValueError(f"⚠️ No se extrajo contenido estructurado de {base_filename}")
+        # ... (lógica para obtener ext, base_filename) ...
+        # ... (lógica para llamar a procesar_catalogo_pdf_google o procesar_catalogo_excel) ...
+        # Estas funciones ahora deben devolver la lista de diccionarios con campos estructurados
+        # incluyendo 'nombre', 'descripcion', 'precio_str', 'precio_float', 'moneda', 'unidad', etc.
+        # ... (logging de REGISTROS_ESTRUCTURADOS) ...
+        # ... (check si registros_estructurados está vacío) ...
 
         textos_para_embedding = []
         productos_finales_para_qdrant = []
 
         for prod_dict in registros_estructurados:
-            if not isinstance(prod_dict, dict):
-                logging.warning(f"Registro no es dict, se omite: {prod_dict}")
-                continue
-
+            # ... (check si prod_dict es un diccionario) ...
             nombre = prod_dict.get("nombre", "")
             descripcion = prod_dict.get("descripcion", "")
             precio_str = prod_dict.get("precio_str", "")
-            categoria = prod_dict.get("categoria", "")
+            categoria = prod_dict.get("categoria", "") 
+            unidad = prod_dict.get("unidad", "")
 
-            # Construir texto para embedding de forma más selectiva
             partes_texto_embed = [f"Producto: {nombre}" if nombre else "Producto"]
             if categoria: partes_texto_embed.append(f"Categoría: {categoria}")
-            if descripcion and limpiar_texto(descripcion) != limpiar_texto(nombre): partes_texto_embed.append(f"Detalles: {descripcion}")
+            # Usar limpiar_texto_base de utils
+            if descripcion and limpiar_texto_base(descripcion) != limpiar_texto_base(nombre): 
+                partes_texto_embed.append(f"Detalles: {descripcion}")
             if precio_str: partes_texto_embed.append(f"Precio: {precio_str}")
+            if unidad: partes_texto_embed.append(f"Presentación: {unidad}")
             
-            texto_embed_limpio = limpiar_texto(" | ".join(partes_texto_embed)) # Limpiar el texto final
+            texto_embed_limpio = limpiar_texto_base(" | ".join(partes_texto_embed)) # <--- USA limpiar_texto_base
 
             if texto_embed_limpio and len(texto_embed_limpio) > 10:
                 textos_para_embedding.append(texto_embed_limpio)
                 prod_dict_copy = prod_dict.copy()
                 prod_dict_copy["texto_para_embedding"] = texto_embed_limpio
                 productos_finales_para_qdrant.append(prod_dict_copy)
-            else:
-                logging.warning(f"Se omitió registro por texto de embedding corto/vacío: {prod_dict}. Texto generado: '{texto_embed_limpio}'")
+            # ... (else logging warning) ...
         
+        # ... (resto de la función: check de textos_para_embedding, llamada a embed_textos, 
+        #      guardar_en_qdrant, guardar en CatalogoItem, etc.) ...
+        # La lógica aquí se mantiene como la última versión que te di,
+        # solo asegúrate de que `limpiar_texto_base` se llame desde `utils`.
         if not textos_para_embedding:
             raise ValueError("No se generaron textos válidos para embedding.")
 
         logging.info(f"🧠 Textos para embedding (Total: {len(textos_para_embedding)}). Primeros 3: {textos_para_embedding[:3]}")
         logging.info("🧬 Generando vectores con Cohere...")
-        vectores = embed_textos(textos_para_embedding) # Esta es tu función de services.cohere_ai
+        vectores = embed_textos(textos_para_embedding) 
         logging.info(f"🧬 Vectores generados: {len(vectores)}")
 
         if not vectores or len(vectores) != len(productos_finales_para_qdrant):
@@ -129,46 +107,42 @@ def procesar_y_embedear_catalogo(path: str, user_id: int, pyme_rubro_nombre: str
             raise ValueError("Fallo en generación de vectores o desajuste con productos.")
 
         guardar_en_qdrant(user_id, productos_finales_para_qdrant, vectores)
-
+        # ... (resto del guardado en DB relacional y retorno) ...
         items_para_db = []
-        for prod_dict in productos_finales_para_qdrant:
+        for prod_dict_final in productos_finales_para_qdrant:
             items_para_db.append(
                 CatalogoItem(
                     user_id=user_id,
-                    nombre=prod_dict.get("nombre", "")[:255],
-                    descripcion=prod_dict.get("descripcion", "")[:1024],
-                    precio=str(prod_dict.get("precio_str", prod_dict.get("precio", "")))[:50],
-                    cantidad=str(prod_dict.get("cantidad", "1"))[:50],
-                    categoria=prod_dict.get("categoria", "")[:100],
-                    unidad=prod_dict.get("unidad", "")[:50],
-                    texto=prod_dict.get("texto_para_embedding", "")
+                    nombre=prod_dict_final.get("nombre", "")[:255],
+                    descripcion=prod_dict_final.get("descripcion", "")[:1024],
+                    precio=str(prod_dict_final.get("precio_str", prod_dict_final.get("precio", "")))[:50],
+                    cantidad=str(prod_dict_final.get("cantidad_disponible", prod_dict_final.get("cantidad", "1")))[:50], 
+                    categoria=prod_dict_final.get("categoria", "")[:100],
+                    unidad=prod_dict_final.get("unidad", "")[:50],
+                    texto=prod_dict_final.get("texto_para_embedding", "")
                 )
             )
-        
         if items_para_db:
             try:
                 CatalogoItem.query.filter_by(user_id=user_id).delete()
-                # db.session.commit() # Cometer la eliminación por separado podría ser más seguro, o hacerla parte de la misma transacción
                 db.session.bulk_save_objects(items_para_db)
                 db.session.commit()
                 logging.info(f"✅ {len(items_para_db)} ítems guardados en DB relacional para user_id={user_id}")
             except Exception as e_db:
                 db.session.rollback()
                 logging.error(f"❌ Error guardando en DB relacional: {e_db}", exc_info=True)
-
         logging.info(f"🎉 Proceso de catálogo completado: {len(productos_finales_para_qdrant)} ítems procesados para user_id={user_id}")
         return len(productos_finales_para_qdrant)
 
+
     except ValueError as ve:
-        logging.error(f"❌ Error de Valor en procesar_y_embedear_catalogo ({os.path.basename(path)}): {str(ve)}", exc_info=True) # Añadido exc_info
+        logging.error(f"❌ Error de Valor en procesar_y_embedear_catalogo ({os.path.basename(path)}): {str(ve)}", exc_info=True)
         raise
     except Exception as e:
         logging.error(f"❌ Excepción no controlada en procesar_y_embedear_catalogo ({os.path.basename(path)}): {str(e)}")
         traceback.print_exc()
         raise ValueError(f"Error interno grave al procesar el catálogo: {str(e)}")
 
-
-# ... (tu Blueprint upload_bp, UPLOAD_FOLDER, ALLOWED_EXTENSIONS, limpiar_texto, extension_valida, 
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():
