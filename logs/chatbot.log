@@ -48,3 +48,25 @@
 2025-05-30 17:09:00,129 | INFO | Blueprint upload_bp registrado.
 2025-05-30 17:09:00,136 | INFO | Cargando datos iniciales...
 2025-05-30 17:09:00,798 | INFO | Datos iniciales cargados correctamente.
+2025-05-30 18:50:04,884 | INFO | Base de datos y migraciones listas.
+2025-05-30 18:50:04,885 | INFO | CORS aplicado correctamente.
+2025-05-30 18:50:04,981 | INFO | Blueprint upload_bp registrado.
+2025-05-30 18:50:10,224 | INFO | Base de datos y migraciones listas.
+2025-05-30 18:50:10,225 | INFO | CORS aplicado correctamente.
+2025-05-30 18:50:10,295 | INFO | Blueprint upload_bp registrado.
+2025-05-30 18:50:15,224 | INFO | Base de datos y migraciones listas.
+2025-05-30 18:50:15,224 | INFO | CORS aplicado correctamente.
+2025-05-30 18:50:15,295 | INFO | Blueprint upload_bp registrado.
+2025-05-30 18:50:23,321 | INFO | Base de datos y migraciones listas.
+2025-05-30 18:50:23,322 | INFO | CORS aplicado correctamente.
+2025-05-30 18:50:23,414 | INFO | Blueprint upload_bp registrado.
+2025-05-30 18:50:23,419 | INFO | Cargando datos iniciales...
+2025-05-30 18:50:23,829 | INFO | Datos iniciales cargados correctamente.
+2025-05-30 18:50:55,123 | INFO | Base de datos y migraciones listas.
+2025-05-30 18:50:55,124 | INFO | CORS aplicado correctamente.
+2025-05-30 18:50:55,220 | INFO | Blueprint upload_bp registrado.
+2025-05-30 18:51:03,251 | INFO | Base de datos y migraciones listas.
+2025-05-30 18:51:03,252 | INFO | CORS aplicado correctamente.
+2025-05-30 18:51:03,327 | INFO | Blueprint upload_bp registrado.
+2025-05-30 18:51:03,330 | INFO | Cargando datos iniciales...
+2025-05-30 18:51:03,872 | INFO | Datos iniciales cargados correctamente.
