@@ -4,18 +4,18 @@ import os
 import json
 import logging
 import re
-from google.cloud import documentai_v1beta3 as documentai # type: ignore
-from google.oauth2 import service_account # type: ignore
+from google.cloud import documentai_v1beta3 as documentai
+from google.oauth2 import service_account
+# from price_parser import Price # Opcional: si decides usar una librería externa para precios
 
 # --- Carga de Credenciales ---
-# (Tu código de carga de credenciales se mantiene igual, asegúrate que logging esté importado al inicio del archivo)
-if 'logging' not in globals(): # Solo para asegurar que logging esté disponible
-    import logging
+# (Tu código de carga de credenciales aquí, asegúrate que 'credentials' esté disponible)
+# ...
 if 'google.oauth2' not in globals() or 'service_account' not in globals()['google.oauth2'].__dict__:
     logging.warning("google.oauth2.service_account no parece estar disponible globalmente como se esperaba.")
 try:
     ruta_render = "/etc/secrets/google_service_key.json"
-    ruta_local = "instance/google-credentials.json" # Para desarrollo local
+    ruta_local = "instance/google-credentials.json" # Ajusta si tu ruta local es diferente
     ruta_cred = ruta_render if os.path.exists(ruta_render) else ruta_local
     with open(ruta_cred, "r") as f:
         credentials_info = json.load(f)
@@ -23,204 +23,257 @@ try:
     logging.info(f"Credenciales de Google cargadas desde: {ruta_cred}")
 except FileNotFoundError:
     logging.error(f"❌ Archivo de credenciales de Google no encontrado en {ruta_render} ni en {ruta_local}.")
-    raise RuntimeError(f"Archivo de credenciales no encontrado. Verifica las rutas.")
+    raise RuntimeError(f"Archivo de credenciales no encontrado.")
 except Exception as e:
     logging.error(f"❌ Error crítico al cargar credenciales de Google: {e}")
     raise RuntimeError(f"❌ Error al cargar credenciales: {e}")
 # --- Fin Carga de Credenciales ---
 
-def limpiar_texto_pdf(texto: str) -> str:
+def limpiar_texto_base(texto: str) -> str:
     if not texto: return ""
-    # Eliminar múltiples espacios y tabulaciones, pero conservar saltos de línea intencionales (párrafos)
-    # Esta limpieza es genérica, puede necesitar ajustes.
-    texto = re.sub(r'[ \t]+', ' ', texto) # Reemplaza múltiples espacios/tabs con uno solo
-    texto = texto.strip() # Quita espacios al inicio/final
-    return texto
+    return re.sub(r'\s+', ' ', texto).strip()
 
-def normalizar_y_extraer_precio(texto_precio: str) -> tuple[str | None, float | None, str | None]:
+def normalizar_y_convertir_precio(precio_str: str) -> tuple[str | None, float | None, str | None]:
     """
-    Intenta extraer y normalizar un precio de un string.
-    Devuelve: (precio_str_formateado, precio_float, moneda_detectada)
-    Ej: "$ 1.250,50 ARS" -> ("1250.50", 1250.50, "ARS")
-    Ej: "USD 50.99" -> ("50.99", 50.99, "USD")
-    Ej: "1200" -> ("1200.00", 1200.00, None)
+    Intenta normalizar un string de precio, convertirlo a float e identificar la moneda.
+    Devuelve: (precio_normalizado_str, precio_float, moneda_detectada)
     """
-    if not texto_precio:
+    if not precio_str:
         return None, None, None
 
-    texto_precio_limpio = texto_precio.strip()
-    moneda_detectada = None
+    precio_limpio = limpiar_texto_base(precio_str)
+    moneda_detectada = "ARS" # Default ARS
 
-    # Detectar moneda
-    if "ARS" in texto_precio_limpio.upper(): moneda_detectada = "ARS"
-    elif "USD" in texto_precio_limpio.upper() or "U$S" in texto_precio_limpio.upper(): moneda_detectada = "USD"
+    # Detectar y quitar símbolos de moneda comunes, guardando la moneda
+    if "USD" in precio_limpio.upper():
+        moneda_detectada = "USD"
+        precio_limpio = re.sub(r'(?i)USD', '', precio_limpio).strip()
+    elif "ARS" in precio_limpio.upper():
+        moneda_detectada = "ARS"
+        precio_limpio = re.sub(r'(?i)ARS', '', precio_limpio).strip()
+    elif "$" in precio_limpio:
+        # Podríamos asumir ARS si solo hay $, o necesitar más contexto si se manejan múltiples monedas con $
+        precio_limpio = precio_limpio.replace("$", "").strip()
+        # Si el $ está al final (ej. 100$), quitarlo
+        if precio_limpio.endswith('$'):
+            precio_limpio = precio_limpio[:-1].strip()
+
+
+    # Normalizar separadores numéricos (asumiendo patrón argentino como común, pero intentando ser flexible)
+    # 1.234,56 -> 1234.56
+    # 1,234.56 -> 1234.56
+    # 1234.56 -> 1234.56
+    # 1234,56 -> 1234.56
+    # 1234    -> 1234.00 (o dejar como 1234)
     
-    # Quitar símbolos de moneda y letras para aislar el número
-    numero_str = texto_precio_limpio.replace("$", "").replace("ARS", "").replace("USD", "").replace("U$S", "").strip()
-
-    # Normalizar separadores: asumir que la última coma o punto es el decimal
-    if ',' in numero_str and '.' in numero_str:
-        if numero_str.rfind(',') > numero_str.rfind('.'): # Formato 1.234,56
-            numero_str = numero_str.replace('.', '') # Quitar miles
-            numero_str = numero_str.replace(',', '.') # Coma a punto decimal
+    numero_str_normalizado = precio_limpio
+    if ',' in numero_str_normalizado and '.' in numero_str_normalizado:
+        if numero_str_normalizado.rfind(',') > numero_str_normalizado.rfind('.'): # Formato 1.234,56
+            numero_str_normalizado = numero_str_normalizado.replace('.', '') 
+            numero_str_normalizado = numero_str_normalizado.replace(',', '.')
         else: # Formato 1,234.56
-            numero_str = numero_str.replace(',', '') # Quitar miles
-    elif ',' in numero_str: # Solo comas, la última es decimal
-        numero_str = numero_str.replace(',', '.')
+            numero_str_normalizado = numero_str_normalizado.replace(',', '')
+    elif ',' in numero_str_normalizado: # Formato 1234,56
+        numero_str_normalizado = numero_str_normalizado.replace(',', '.')
     
-    # Validar que sea un número flotante válido
-    if re.fullmatch(r"\d+(\.\d{1,2})?", numero_str):
+    # Validar que sea un número flotante o entero válido
+    if re.fullmatch(r"^\d+(\.\d+)?$", numero_str_normalizado):
         try:
-            precio_flt = float(numero_str)
-            # Formatear a dos decimales para precio_str
-            precio_str_fmt = f"{precio_flt:.2f}" 
-            return precio_str_fmt, precio_flt, moneda_detectada
+            precio_flt = float(numero_str_normalizado)
+            # Devolver el string original limpio (antes de convertir a float y perder formato)
+            # y el float.
+            return precio_limpio, precio_flt, moneda_detectada
         except ValueError:
-            logging.warning(f"No se pudo convertir a float: '{numero_str}' (original: '{texto_precio}')")
-            return str(texto_precio_limpio), None, moneda_detectada # Devolver original si falla conversión
+            logging.warning(f"No se pudo convertir a float tras normalizar: '{precio_str}' -> '{numero_str_normalizado}'")
+            return precio_limpio, None, moneda_detectada # Devolver el string limpio aunque no sea float
     else:
-        logging.warning(f"Formato de precio no reconocido: '{numero_str}' (original: '{texto_precio}')")
-        # Devolver el texto original del precio si no se pudo normalizar
-        return str(texto_precio_limpio), None, moneda_detectada
+        logging.warning(f"Formato de precio no reconocido tras normalizar: '{precio_str}' -> '{numero_str_normalizado}'")
+        return precio_limpio, None, moneda_detectada # Devolver el string limpio aunque no sea float reconocido
 
 
-def procesar_catalogo_pdf_google(pdf_path: str, tipo_catalogo: str = "generico", pyme_user_id: int | None = None) -> list[dict]:
+def extraer_unidades_y_tipos_precio(texto_linea: str, rubro: str = "generico") -> tuple[str | None, str | None]:
+    """
+    Intenta extraer unidades (ej. "caja x 6", "750ml") o tipos de precio (ej. "por mayor") de una línea.
+    Devuelve: (unidad_extraida, tipo_precio_extraido)
+    """
+    texto_linea_lower = texto_linea.lower()
+    unidad = None
+    tipo_precio = None
+
+    # Patrones comunes de unidades
+    unidades_regex = {
+        "caja": r"\b(caja(?:s)?\s*(?:x\s*\d{1,2})?)\b",
+        "botella": r"\b(\d{3,4}ml|botella(?:s)?)\b",
+        "pack": r"\b(pack\s*(?:x\s*\d{1,2})?)\b",
+        "docena": r"\b(docena(?:s)?)\b",
+        "par": r"\b(par(?:es)?)\b",
+        "unidad_simple": r"\b(u\.?|unid(?:ad|ades)?)\b",
+        "litro": r"\b(\d{1,2}\s*lts?)\b",
+        "kilo": r"\b(kg|kilo(?:s)?)\b"
+    }
+    # Palabras clave para tipos de precio
+    tipos_precio_keywords = {
+        "mayorista": ["mayorista", "por mayor", "distribuidor"],
+        "minorista": ["minorista", "al detalle", "público"],
+        "promocion": ["promo", "oferta", "descuento"]
+    }
+
+    for tipo, patron in unidades_regex.items():
+        match = re.search(patron, texto_linea_lower)
+        if match:
+            unidad = limpiar_texto_base(match.group(1))
+            break # Tomar la primera unidad encontrada
+
+    for tipo, keywords in tipos_precio_keywords.items():
+        if any(kw in texto_linea_lower for kw in keywords):
+            tipo_precio = tipo
+            break
+            
+    return unidad, tipo_precio
+
+
+def procesar_catalogo_pdf_google(pdf_path, pyme_user_id=None, pyme_rubro_nombre="generico"):
     try:
-        project_id = credentials.project_id # Usar project_id de las credenciales
-        location = "us"  # Asegúrate que esta sea la región de tu procesador
-        processor_id = "55c57b09a179531a" # Tu Processor ID
+        project_id = os.getenv("GOOGLE_PROJECT_ID", "ambient-stack-461118-k7")
+        location = os.getenv("GOOGLE_DOCAI_LOCATION", "us")
+        processor_id = os.getenv("GOOGLE_DOCAI_PROCESSOR_ID", "55c57b09a179531a")
 
-        client_options = {"api_endpoint": f"{location}-documentai.googleapis.com"}
-        client = documentai.DocumentProcessorServiceClient(client_options=client_options, credentials=credentials)
-        
-        name = client.processor_path(project_id, location, processor_id)
+        client = documentai.DocumentProcessorServiceClient(credentials=credentials)
+        resource_name = client.processor_path(project_id, location, processor_id)
 
         with open(pdf_path, "rb") as file:
             pdf_content = file.read()
 
         raw_document = documentai.RawDocument(content=pdf_content, mime_type="application/pdf")
-        request = documentai.ProcessRequest(name=name, raw_document=raw_document)
-        
-        logging.info(f"Enviando solicitud a Document AI para: {os.path.basename(pdf_path)}")
+        request = documentai.ProcessRequest(name=resource_name, raw_document=raw_document)
         result = client.process_document(request=request)
         document = result.document
         
-        logging.info(f"📝 Documento '{os.path.basename(pdf_path)}' (PYME ID {pyme_user_id}) procesado: {len(document.pages)} pág. Analizando texto...")
+        logging.info(f"📝 Documento '{os.path.basename(pdf_path)}' (PYME ID {pyme_user_id}) procesado: {len(document.pages)} pág. Rubro: {pyme_rubro_nombre}. Analizando texto...")
         productos_extraidos = []
 
-        # --- ANÁLISIS DE TEXTO LÍNEA POR LÍNEA (MEJORADO) ---
-        # Regex para encontrar posibles precios. Más permisiva para capturar candidatos.
-        # Captura números con o sin $, con . o , como separadores, y opcionalmente con 2 decimales.
-        # También captura números enteros que podrían ser precios.
-        precio_regex_pattern = r"(?:\$|\bARS\b|\bUSD\b)?\s*([\d.,]+[\d])" # Captura '1.250,00', '1250,50', '50.00', '1200'
+        # --- PROCESAMIENTO DE TEXTO LÍNEA POR LÍNEA ---
+        # (El análisis de tablas sería una mejora adicional aquí)
+        
+        # Regex general para precios, un poco más permisiva y captura el texto completo del precio.
+        # Intenta capturar "$ 1.234,56" o "1234.56" o "ARS 500" etc.
+        # El grupo 1 es el importante (el número y sus símbolos).
+        precio_pattern = re.compile(r"((?:\$|\bARS\b|\bUSD\b)?\s*[\d.,]+(?:[.,]\d{2})?)")
+        
+        # Regex para códigos de artículo comunes (ej. ART. XXX, COD 123) - para ayudar a separar nombres
+        codigo_pattern = re.compile(r"(\b(?:ART|COD|REF|SKU)\.?\s*[\w\d/-]+)", re.IGNORECASE)
+
+        texto_completo_doc = document.text # Usar el texto completo para contexto si es necesario
 
         for page_num, page in enumerate(document.pages):
-            logging.debug(f"Procesando página {page_num + 1}/{len(document.pages)}")
+            # Document AI puede dar 'lines' que a veces son fragmentos.
+            # Puede ser mejor reconstruir "párrafos" o bloques de texto lógicos.
+            # Por ahora, seguimos con la idea de líneas, pero usando page.text.
+            # Si page.lines es más fiable en tu procesador, ajústalo.
+            # Esta es una simplificación, el layout real es más complejo.
             
-            # Iterar sobre párrafos o bloques de texto puede ser más robusto que líneas individuales
-            # si Document AI los agrupa bien. Por ahora, usaremos líneas.
-            for line_idx, line_obj in enumerate(page.lines):
-                line_text_raw = ""
-                if line_obj.layout.text_anchor and line_obj.layout.text_anchor.text_segments:
-                    for segment in line_obj.layout.text_anchor.text_segments:
-                        line_text_raw += document.text[segment.start_index:segment.end_index]
-                
-                linea_procesada = limpiar_texto_pdf(line_text_raw)
+            # Obtener texto de la página si page.lines no es lo ideal
+            page_text_anchor = page.layout.text_anchor
+            page_text = document.text[page_text_anchor.text_segments[0].start_index : page_text_anchor.text_segments[0].end_index]
+            lineas_de_pagina = page_text.split('\n')
 
-                if not linea_procesada or len(linea_procesada) < 5: # Ignorar líneas muy cortas
+            for linea_original in lineas_de_pagina:
+                linea = limpiar_texto_base(linea_original)
+                if not linea or len(linea) < 5 : # Ignorar líneas muy cortas o basura
                     continue
+
+                nombre_prod = linea
+                desc_prod = "" # Empezar con descripción vacía
+                precio_str_norm = None
+                precio_flt = None
+                moneda = "ARS" # Default
+                unidad_ext = None
+                tipo_precio_ext = None
+
+                # 1. Extraer todos los precios candidatos de la línea
+                precios_encontrados_match = list(precio_pattern.finditer(linea))
                 
-                logging.debug(f"  Línea {line_idx+1}: '{linea_procesada}'")
+                texto_sin_precios = linea # Texto restante después de quitar precios
+                precios_info = [] # Guardar (texto_precio, pos_inicio)
 
-                nombre_producto = linea_procesada # Default inicial, se intentará refinar
-                descripcion_producto = "" # Intentar encontrarla separada
-                precio_str_final = ""
-                precio_float_final = None
-                moneda_final = "ARS" # Default
-                unidad_presentacion = ""
-
-                # Buscar todos los candidatos a precio en la línea
-                candidatos_precio = list(re.finditer(precio_regex_pattern, linea_procesada))
-
-                mejor_precio_info = (None, None, None) # (precio_str, precio_float, moneda)
-                pos_inicio_mejor_precio = -1
-                pos_fin_mejor_precio = -1
-
-                if candidatos_precio:
-                    # Heurística: tomar el último candidato como el más probable de ser EL precio
-                    # Podrías tener lógica más compleja aquí para PDFs muy densos.
-                    for match_p in reversed(candidatos_precio):
-                        precio_texto_capturado = match_p.group(1)
-                        p_str, p_float, p_moneda = normalizar_y_extraer_precio(precio_texto_capturado)
-                        
-                        if p_float is not None: # Si es un número válido
-                            mejor_precio_info = (p_str, p_float, p_moneda if p_moneda else moneda_final)
-                            pos_inicio_mejor_precio = match_p.start()
-                            pos_fin_mejor_precio = match_p.end()
-                            break # Encontramos un buen candidato
-
-                precio_str_final, precio_float_final, moneda_final_detectada = mejor_precio_info
-                if moneda_final_detectada: moneda_final = moneda_final_detectada
-
-
-                # Intentar aislar el nombre del producto y la descripción
-                if pos_inicio_mejor_precio != -1:
-                    texto_antes_precio = limpiar_texto_pdf(linea_procesada[:pos_inicio_mejor_precio])
-                    texto_despues_precio = limpiar_texto_pdf(linea_procesada[pos_fin_mejor_precio:])
-
-                    if texto_antes_precio:
-                        nombre_producto = texto_antes_precio
-                        # Si hay algo después del precio, podría ser la unidad o parte de la descripción
-                        if texto_despues_precio: 
-                            descripcion_producto = texto_despues_precio 
-                            # Intentar detectar unidades aquí si el formato lo permite
-                            # ej. si texto_despues_precio es "caja x6" o "750ml"
-                            match_unidad = re.search(r"^(caja x\d+|\d+ml|\d+L|unidad|par|docena|pack x\d+)\b", texto_despues_precio, re.IGNORECASE)
-                            if match_unidad:
-                                unidad_presentacion = match_unidad.group(0)
-                                # Podrías querer remover la unidad de la descripción si es muy obvia
-                                # descripcion_producto = limpiar_texto_pdf(descripcion_producto.replace(unidad_presentacion, ""))
-                    else: # El precio estaba al inicio, el resto es nombre/desc
-                        nombre_producto = texto_despues_precio
-                        descripcion_producto = texto_despues_precio
-                else: # No se encontró precio, la línea completa es nombre/descripción
-                    nombre_producto = linea_procesada
-                    descripcion_producto = linea_procesada
+                if precios_encontrados_match:
+                    for match_p in precios_encontrados_match:
+                        precio_texto_crudo = match_p.group(1)
+                        precios_info.append((precio_texto_crudo, match_p.start()))
+                        # Eliminar el precio del texto para ayudar a aislar el nombre
+                        texto_sin_precios = texto_sin_precios.replace(match_p.group(0), " [PRECIO] ", 1) 
+                    
+                    # Heurística: tomar el último precio como el principal, o el más a la derecha
+                    # (Asumimos que los precios están al final de la descripción del producto)
+                    if precios_info:
+                        precio_texto_crudo_principal, _, moneda_detectada = normalizar_y_convertir_precio(precios_info[-1][0])
+                        if precio_texto_crudo_principal: # Si la normalización tuvo éxito
+                           precio_str_norm = precio_texto_crudo_principal
+                           precio_flt = extraer_precio_float_desde_normalizado(precio_str_norm) # Usa el string ya normalizado
+                           if moneda_detectada: moneda = moneda_detectada
                 
-                # Limpieza final de nombre y descripción (quitar códigos, etc.)
-                # Esto es muy dependiente del tipo de catálogo.
-                if tipo_catalogo == "indumentaria_sox":
-                    # Quitar "ART. XXXX" del inicio del nombre si está
-                    nombre_producto = re.sub(r"^(ART\.\s*[A-Z0-9]+\s*-?\s*)", "", nombre_producto, flags=re.IGNORECASE).strip()
-                elif tipo_catalogo == "bodega_salvador_patti":
-                    # Podrías intentar separar MARCA y VARIETAL aquí si es posible
-                    pass # Añadir lógica específica para vinos si es necesario
+                texto_sin_precios = limpiar_texto_base(texto_sin_precios.replace("[PRECIO]", ""))
 
-                # Descartar líneas que son claramente encabezados o basura
-                if not nombre_producto or len(nombre_producto) < 3 : continue # Nombre muy corto
-                if nombre_producto.isupper() and len(nombre_producto.split()) < 4 and not precio_float_final:
-                    # Probablemente un encabezado si es todo mayúsculas, corto, y sin precio
-                    logging.debug(f"Línea descartada (posible encabezado MAYUS): '{linea_procesada}'")
+                # 2. Intentar extraer códigos de artículo
+                codigo_match = codigo_pattern.search(texto_sin_precios)
+                codigo_articulo = ""
+                if codigo_match:
+                    codigo_articulo = limpiar_texto_base(codigo_match.group(1))
+                    # Quitar el código del texto para aislar mejor el nombre/descripción
+                    texto_sin_precios_ni_codigo = limpiar_texto_base(texto_sin_precios.replace(codigo_articulo, ""))
+                    if texto_sin_precios_ni_codigo : # Si queda algo, ese es el nombre/desc
+                        nombre_prod = texto_sin_precios_ni_codigo
+                    else: # Si solo había código y precios, el código puede ser parte del nombre
+                        nombre_prod = codigo_articulo
+                else:
+                    nombre_prod = texto_sin_precios # Lo que queda después de quitar precios
+
+                # 3. Extraer unidades y tipos de precio del texto restante o de la línea original
+                unidad_ext, tipo_precio_ext = extraer_unidades_y_tipos_precio(linea, pyme_rubro_nombre)
+                if unidad_ext and unidad_ext in nombre_prod: # Evitar duplicar unidad en nombre
+                    nombre_prod = limpiar_texto_base(nombre_prod.replace(unidad_ext, ""))
+                
+                # Si el nombre es muy genérico y hay un código, usar el código
+                if not nombre_prod and codigo_articulo:
+                    nombre_prod = codigo_articulo
+                
+                # Asignar descripción
+                if nombre_prod != linea_limpia : # Si logramos aislar un nombre
+                    desc_prod = nombre_prod # Por ahora, o podrías intentar buscar más contexto
+                else: # Si el nombre sigue siendo la línea completa (menos precios), no hay desc separada
+                    desc_prod = "" 
+                    # Si no hay precio y el nombre es la línea, podría ser un encabezado.
+                    if not precio_flt and len(nombre_prod.split()) < 6: # Heurística para descartar posibles encabezados
+                        palabras_encabezado_comunes = ["ARTICULO", "CODIGO", "DESCRIPCION", "TALLE", "PRECIO", "MARCA", "LINEA", "TOTAL", "SUBTOTAL", "CANTIDAD"]
+                        if any(palabra.upper() in nombre_prod.upper() for palabra in palabras_encabezado_comunes):
+                            logging.debug(f"Línea descartada como encabezado: '{linea_limpia}'")
+                            continue
+                
+                # Chequeo final de calidad
+                if not nombre_prod or len(nombre_prod) < 3: # Nombre muy corto
+                    logging.debug(f"Producto descartado (nombre corto o inválido): '{linea_limpia}' -> Nombre procesado: '{nombre_prod}'")
                     continue
-                if nombre_producto.lower() in ["producto", "descripción", "precio", "cantidad", "total", "marca", "código"]:
-                    logging.debug(f"Línea descartada (palabra clave de encabezado): '{linea_procesada}'")
+                if not precio_flt and len(nombre_prod) < 10: # Si no hay precio, el nombre debe ser más descriptivo
+                    logging.debug(f"Producto descartado (nombre corto sin precio): '{nombre_prod}'")
                     continue
+
 
                 productos_extraidos.append({
-                    "user_id": pyme_user_id,
-                    "nombre": limpiar_texto_pdf(nombre_producto)[:250],
-                    "descripcion": limpiar_texto_pdf(descripcion_producto)[:500],
-                    "precio_str": precio_str_final if precio_str_final else "",
-                    "precio_float": precio_float_final,
-                    "moneda": moneda_final,
-                    "unidad": limpiar_texto_pdf(unidad_presentacion)[:50],
-                    "texto_para_embedding": f"Nombre: {nombre_producto}. Descripción: {descripcion_producto}. Precio: {precio_str_final if precio_str_final else 'Consultar'}. Unidad: {unidad_presentacion if unidad_presentacion else ''}"
+                    "user_id": pyme_user_id if pyme_user_id is not None else 0,
+                    "nombre": nombre_prod[:250],
+                    "descripcion": desc_prod[:500] if desc_prod else nombre_prod[:500], # Usar nombre si no hay desc
+                    "precio_str": precio_str_norm if precio_str_norm else "",
+                    "precio_float": precio_flt, # Puede ser None
+                    "moneda": moneda,
+                    "unidad": unidad_ext if unidad_ext else "",
+                    "tipo_precio": tipo_precio_ext if tipo_precio_ext else "", # ej. mayorista
+                    "texto_para_embedding": f"{nombre_prod} {desc_prod} {unidad_ext if unidad_ext else ''} {precio_str_norm if precio_str_norm else ''}".strip()
                 })
-                logging.debug(f"  -> Producto: {productos_extraidos[-1]}")
+                logging.debug(f"Extracción Línea: Orig='{linea_limpia}' -> Prod='{nombre_prod}', Precio='{precio_str_norm}', Unidad='{unidad_ext}'")
 
-        logging.info(f"Total de productos estructurados extraídos del PDF ({tipo_catalogo}): {len(productos_extraidos)}")
+        logging.info(f"Total de productos potencialmente extraídos del PDF ({os.path.basename(pdf_path)}): {len(productos_extraidos)}")
         return productos_extraidos
 
     except Exception as e:
-        logging.error(f"❌ Error fatal procesando catálogo PDF '{os.path.basename(pdf_path)}': {e}", exc_info=True)
+        logging.error(f"❌ Error fatal procesando catálogo PDF ({os.path.basename(pdf_path)}): {e}", exc_info=True)
         return []
