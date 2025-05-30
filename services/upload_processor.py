@@ -3,7 +3,7 @@ import uuid
 import logging
 import traceback
 from collections import Counter
-
+import re
 from flask import Blueprint, request, jsonify # Flask ya está importado
 from werkzeug.utils import secure_filename
 from extensions import db
