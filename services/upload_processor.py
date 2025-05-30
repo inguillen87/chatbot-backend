@@ -1,5 +1,3 @@
-# En tu archivo: services/upload_processor.py
-
 import os
 import uuid
 import logging
@@ -15,7 +13,7 @@ from services.google_docai import procesar_catalogo_pdf_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
 from services.qdrant_utils import get_qdrant_client
 
-# upload_bp = Blueprint("upload_bp", __name__) # Ya lo tienes
+upload_bp = Blueprint("upload_bp", __name__) # Ya lo tienes
 UPLOAD_FOLDER = os.path.join("static", "uploads") # O usa app.config['UPLOAD_FOLDER']
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
 # os.makedirs(UPLOAD_FOLDER, exist_ok=True) # Mejor hacerlo en create_app o al inicio
