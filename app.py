@@ -114,7 +114,7 @@ def create_app(config_class=Config): # Permitir pasar diferentes clases de confi
             module = __import__(bp_import_path, fromlist=[bp_name])
             blueprint = getattr(module, bp_name)
             app.register_blueprint(blueprint)
-            logger.info(f"✅ Blueprint '{bp_name}' registrado desde '{bp_import_path}'.")
+            logger.info(f" Blueprint '{bp_name}' registrado desde '{bp_import_path}'.")
         except ImportError:
             logger.error(f"❌ Error de importación: No se pudo encontrar el módulo o blueprint '{bp_name}' en '{bp_import_path}'.\n{traceback.format_exc()}")
         except AttributeError:
@@ -129,7 +129,7 @@ def create_app(config_class=Config): # Permitir pasar diferentes clases de confi
         # module_upload = __import__("services.upload_processor", fromlist=["upload_bp"])
         # bp_upload = getattr(module_upload, "upload_bp")
         # app.register_blueprint(bp_upload)
-        logger.info("✅ Blueprint 'upload_bp' registrado.")
+        logger.info(" Blueprint 'upload_bp' registrado.")
     except Exception as e:
         logger.error(f"❌ Error registrando 'upload_bp': {e}\n{traceback.format_exc()}")
         
@@ -176,7 +176,7 @@ def cargar_datos_command(): # Cambiado el nombre de la función para evitar conf
         cargar_usuarios_demo()
         cargar_faqs()
         cargar_sugerencias()
-        logger.info("✅ Datos iniciales cargados correctamente.")
+        logger.info(" Datos iniciales cargados correctamente.")
     except Exception as e:
         logger.error(f"❌ Error cargando datos iniciales: {e}\n{traceback.format_exc()}")
 
@@ -190,7 +190,7 @@ def aplicar_migraciones_command(): # Nombre de función cambiado
     logger.info("Intentando aplicar migraciones de base de datos...")
     try:
         upgrade() # Esta es la función de Flask-Migrate para aplicar migraciones.
-        logger.info("✅ Migraciones de base de datos aplicadas correctamente.")
+        logger.info(" Migraciones de base de datos aplicadas correctamente.")
     except Exception as e:
         logger.error(f"❌ Error durante la aplicación de migraciones (upgrade): {e}\n{traceback.format_exc()}")
 

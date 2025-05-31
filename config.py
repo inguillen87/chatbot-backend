@@ -13,7 +13,7 @@ class Config:
 
     if RENDER_ENV_VAR == "true":
         SQLALCHEMY_DATABASE_URI = "sqlite:////data/database.db"
-        # logging.info(f"✅ Usando DB de Render desde Config: {SQLALCHEMY_DATABASE_URI}")
+        logging.info(f" Usando DB de Render desde Config: {SQLALCHEMY_DATABASE_URI}")
     else:
         # TU LÍNEA ACTUAL para local, asegúrate que la ruta sea correcta para tu estructura
         local_db_path = os.path.join(basedir, 'instance', 'database.db')
