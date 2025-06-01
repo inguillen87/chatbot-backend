@@ -3,14 +3,13 @@ import logging
 import random
 from flask import session
 from sqlalchemy import func
-from models import User, Rubro, Sugerencia, Conversacion, db # Asegúrate de importar db
-# from extensions import db # O si lo importas así
+from models import User, Rubro, Sugerencia, Conversacion, db 
+from extensions import db as extensions_db # Si tienes dos 'db', asegúrate cuál usar o renombra uno. Usaré 'db' de models.
 import re 
 import json 
 from typing import Any, Optional, Dict, List
 
 logger = logging.getLogger(__name__)
-# logging.basicConfig(level=logging.INFO) # Descomenta si sospechas que el logger no está configurado en app.py
 
 # --- Clases para usuarios anónimos (definidas a nivel de módulo) ---
 class _BaseAnonUser:
@@ -25,7 +24,8 @@ class GenericAnonUser(_BaseAnonUser):
         super().__init__(); self.plan = "anonimo_general"; self.preguntas_usadas = session.get("generic_anon_preguntas", 0); self.limite_preguntas = 5
 # --- Fin Clases Anónimas ---
 
-# --- Funciones Auxiliares ---
+# --- Funciones Auxiliares (Asegúrate que estas definiciones estén aquí o importadas correctamente) ---
+# (Incluyo las versiones que ya trabajamos)
 def sugerencias_por_rubro(rubro_id: int) -> list:
     try:
         sugerencias_obj = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
@@ -116,7 +116,7 @@ def reemplazar_placeholders(texto: str, user_obj: Any) -> str:
                     valor_para_reemplazo = ". ".join(p for p in partes if p) + ("." if partes else "")
                     if not valor_para_reemplazo.strip() or valor_para_reemplazo == ".": valor_para_reemplazo = defaults_textos.get(attr_key)
                 else: 
-                    logger.info(f"[LOGIC-PH] No se pudo formatear horario detallado para {ph_template} con valor '{str(valor_atributo)[:50]}...'. Usando fallback a string simple.")
+                    logger.info(f"[LOGIC-PH] No se pudo formatear horario detallado para {ph_template} con valor '{str(valor_atributo)[:50]}...'. Usando fallback.")
                     valor_para_reemplazo = str(getattr(user_obj, "horario", defaults_textos.get("horario")))
             elif isinstance(valor_atributo, str) and valor_atributo.strip() == "":
                 valor_para_reemplazo = defaults_textos.get(attr_key, "")
@@ -135,6 +135,7 @@ def reemplazar_placeholders(texto: str, user_obj: Any) -> str:
 
 # --- COMIENZO DE responder_chatboc ---
 def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: str | None = None) -> Dict[str, Any]:
+    # Convertir todos los logger.debug a logger.info para asegurar visibilidad en Render
     logger.info(f"▶️ [LOGIC] Inicio responder_chatboc: Pregunta='{pregunta[:100]}...' Token='{str(token)[:15] if token else 'N/A'}' RubroFrontend='{rubro_nombre_frontend}'")
 
     if not pregunta or not pregunta.strip():
@@ -184,9 +185,8 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
     logger.info(f"[LOGIC] ==> User Obj Determinado: {type(user_obj).__name__}")
     logger.info(f"[LOGIC]     user_obj.nombre_empresa: {getattr(user_obj, 'nombre_empresa', 'N/A')}")
     logger.info(f"[LOGIC]     user_obj.horario (string crudo): '{getattr(user_obj, 'horario', 'N/A')}'")
-    horario_json_val = getattr(user_obj, 'horario_json', 'N/A') # Para User de BD, esto llama a @property
+    horario_json_val = getattr(user_obj, 'horario_json', 'N/A')
     logger.info(f"[LOGIC]     user_obj.horario_json (valor directo atributo/propiedad): {str(horario_json_val)[:250]}...")
-
 
     rubro_id_final: int = 1 
     rubro_nombre_final: str = "general"
@@ -228,7 +228,8 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         "horario_str": getattr(user_obj, "horario", "nuestro horario de atención"),
         "horario_json_str": horario_json_str_para_contexto, 
     }
-    # logger.info(f"[LOGIC] ==> User Profile Context para LLM: {json.dumps(user_profile_context, ensure_ascii=False, indent=2)}") # Log muy verboso, usar con cuidado
+    # CAMBIO: logger.debug a logger.info
+    logger.info(f"[LOGIC] ==> User Profile Context para LLM (horario_json_str='{user_profile_context['horario_json_str']}'): {json.dumps(user_profile_context, ensure_ascii=False)}")
 
     horarios_para_prompt = user_profile_context['horario_str'] 
     try:
@@ -248,7 +249,6 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
     
     numero_intercambios_previos = len(session.get(NOMBRE_HISTORIAL_SESION, [])) // 2
     
-    # --- CONSTRUCCIÓN DEL PROMPT DEL SISTEMA (¡ASEGÚRATE QUE ESTÉ COMPLETO Y SEA EL QUE QUIERES!) ---
     prompt_sistema_texto = (
         f"Sos Chatboc, un asistente comercial experto de {user_profile_context['nombre_empresa']} (rubro: {user_profile_context['rubro_nombre']}), ubicada en {user_profile_context['direccion_completa']}. "
         f"Tu principal objetivo es entender rápidamente las necesidades del cliente y guiarlo hacia una compra o una visita a la tienda online ({user_profile_context['link_web'] if user_profile_context['link_web'] else 'nuestra página web'}) en los próximos 2-4 intercambios. "
@@ -272,7 +272,6 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         "\n6. Si no hay información del catálogo relevante, responde concisamente con conocimiento general o pide más detalles."
         "\n7. Si te preguntan '¿Están abiertos ahora?' o sobre horarios específicos, utiliza la información de 'Horarios de Atención' que te proporcioné para responder lo más precisamente posible."
     )
-    # --- FIN CONSTRUCCIÓN DEL PROMPT DEL SISTEMA ---
 
     contexto_catalogo = ""
     if is_usuario_registrado_real and user_obj.id is not None:
@@ -293,10 +292,10 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         prompt_sistema_texto += "\nNo hay un catálogo de productos específico para este modo. Responde con conocimiento general del rubro y la información de la empresa."
 
     prompt_sistema_texto += "\n\nInicia tu respuesta directamente al cliente, continuando la conversación de forma natural y concisa."
-    logger.info(f"[LOGIC] ==> Prompt Sistema FINAL para Cohere (longitud: {len(prompt_sistema_texto)}): {prompt_sistema_texto[:300]}...")
+    # CAMBIO: logger.debug a logger.info
+    logger.info(f"[LOGIC] ==> Prompt Sistema FINAL para Cohere (longitud: {len(prompt_sistema_texto)}): {prompt_sistema_texto[:500]}...")
 
 
-    # --- LLAMADA AL LLM (COHERE) ---
     respuesta_obtenida_llm = "" 
     fuente_respuesta = "no_especificada_aun"
     try:
@@ -314,7 +313,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         respuesta_obtenida_llm = get_cohere_response(
             current_message=pregunta,
             chat_history_for_api=historial_para_api,
-            system_prompt_for_api=prompt_sistema_texto, # Preamble
+            system_prompt_for_api=prompt_sistema_texto,
             rubro_id=rubro_id_final, 
             user_context=user_profile_context
         )
@@ -332,7 +331,6 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         logger.error(f"[LOGIC] Error al llamar a Cohere: {e_cohere}", exc_info=True)
         respuesta_obtenida_llm = ""
 
-    # --- FALLBACKS (FAQ, Intents) ---
     respuesta_final_procesada = ""
     if respuesta_obtenida_llm:
         respuesta_final_procesada = reemplazar_placeholders(respuesta_obtenida_llm, user_obj)
@@ -360,7 +358,6 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             except ImportError: logger.error("[LOGIC] Módulo Intent Matcher (intent_matcher) no encontrado.")
             except Exception as e_intent: logger.warning(f"[LOGIC] Error en Intents backup: {e_intent}", exc_info=True)
 
-    # --- RESPUESTA FINAL Y GUARDADO ---
     if respuesta_final_procesada and respuesta_final_procesada.strip():
         session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta})
         session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": respuesta_final_procesada})
