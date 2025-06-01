@@ -5,7 +5,7 @@ from extensions import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 import uuid
-
+import json
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     clave = db.Column(db.String(50), unique=True, nullable=False)
@@ -46,38 +46,40 @@ class User(db.Model, UserMixin):
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
-    token = db.Column(db.String(255))
+    token = db.Column(db.String(255), nullable=True)
+    
     # Datos de contacto y perfil
     nombre_empresa = db.Column(db.String(150), nullable=True)
-    direccion = db.Column(db.String(200))
-    ciudad = db.Column(db.String(100))           # Nuevo: ciudad
-    provincia = db.Column(db.String(100))        # Nuevo: provincia (ubicacion anterior)
-    pais = db.Column(db.String(100))             # Nuevo: país
-    latitud = db.Column(db.Float)                # Nuevo: para Google Maps
-    longitud = db.Column(db.Float)               # Nuevo: para Google Maps
-    telefono = db.Column(db.String(20))
-    link_web = db.Column(db.String(255))
-    horario = db.Column(db.String(100))
+    direccion = db.Column(db.String(200), nullable=True) # Permitir nulo si se actualiza después
+    ciudad = db.Column(db.String(100), nullable=True)
+    provincia = db.Column(db.String(100), nullable=True)
+    pais = db.Column(db.String(100), nullable=True)
+    latitud = db.Column(db.Float, nullable=True)
+    longitud = db.Column(db.Float, nullable=True)
+    telefono = db.Column(db.String(20), nullable=True)
+    link_web = db.Column(db.String(255), nullable=True)
+    
+    # Este es el campo que guarda el string JSON en la base de datos
+    horario = db.Column(db.String(100), nullable=True) 
+    
     # Plan y uso
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
     limite_preguntas = db.Column(db.Integer, default=50)
     last_reset = db.Column(db.DateTime, default=datetime.utcnow)
+    
     # Relaciones
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     rubro = db.relationship("Rubro", backref="usuarios")
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
+
+    # Métodos de seguridad
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
     
-    # En models.py
-import json # Asegúrate de que esté importado al principio del archivo
-
-class User(db.Model, UserMixin):
-    # ... (todos tus otros campos como id, name, email, etc.) ...
-
-    horario = db.Column(db.String(100), nullable=True) # Este es el campo que guarda el string JSON
-
-    # ... (tus métodos set_password, check_password, etc.) ...
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
     @property
     def horario_json(self):
@@ -86,32 +88,20 @@ class User(db.Model, UserMixin):
         como un diccionario Python.
         Devuelve el diccionario parseado, o None si el horario está vacío o no es JSON válido.
         """
-        if self.horario:
+        if self.horario: # Si hay algo en el campo horario
             try:
+                # Intenta convertir el string self.horario a un diccionario Python
                 return json.loads(self.horario)
             except json.JSONDecodeError:
-                # Si el string en la BD no es JSON válido, ¿qué hacer?
-                # Opción 1: Devolver None (o un dict vacío {}) para indicar que no hay estructura válida
-                return None
-                # Opción 2: Devolver el string original (no recomendado si se espera un dict)
-                # return self.horario
-                # Opción 3: Levantar un error o loguear (pero para una propiedad, devolver None o {} es común)
-                # logging.error(f"Error al parsear horario para user {self.id}: {self.horario}")
-                # return None
-        return None # O {} si prefieres un diccionario vacío por defecto
+                # Si el string en la BD no es JSON válido, devolvemos None.
+                # Podrías loguear un error aquí si quisieras:
+                # import logging
+                # logging.warning(f"Error al parsear JSON del campo 'horario' para user {self.id}: {self.horario}")
+                return None 
+        return None # Devolver None si self.horario está vacío
 
     def __repr__(self):
         return f"<User {self.email}>"
-    # Métodos de seguridad
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-    
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-    
-    def __repr__(self):
-        return f"<User {self.email}>"
-
 
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
