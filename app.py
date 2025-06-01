@@ -79,6 +79,8 @@ def create_app(config_class=Config): # Permitir pasar diferentes clases de confi
         "https://chatboc.ar",
         "https://www.chatboc.ar",
         "http://localhost:5173", # Para desarrollo local del frontend
+        "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app" # TU URL DE VERCEL
+
     ]
     # Si tienes una variable de entorno para orígenes adicionales, puedes añadirla aquí.
     # por ejemplo: extra_origins = os.getenv("CORS_EXTRA_ORIGINS")
