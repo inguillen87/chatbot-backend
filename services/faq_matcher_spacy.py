@@ -2,6 +2,7 @@
 import spacy
 import logging
 from models import QA
+from typing import Optional # Para tipado
 from .utils import limpiar_texto_base # <--- IMPORTACIÓN AÑADIDA
 
 logger = logging.getLogger(__name__)
@@ -16,22 +17,21 @@ def _cargar_spacy_modelo_faq():
             if NLP_SPACY_FAQ.vocab.vectors.shape[0] == 0: # CORREGIDO
                  logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (FAQ) se cargó pero no tiene vectores.")
         except OSError:
-            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado.")
+            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado. Descárgalo: python -m spacy download es_core_news_md")
         except Exception as e:
             logger.error(f"❌ Error inesperado al cargar spaCy (FAQ): {e}", exc_info=True)
 
-def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.80) -> QA | None:
+def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.80) -> Optional[QA]:
     _cargar_spacy_modelo_faq()
     
     if NLP_SPACY_FAQ is None:
         logger.error("[FAQ] Imposible buscar: modelo spaCy no está cargado.")
         return None
-    # ... (resto de la función como la tenías, pero usando la importada limpiar_texto_base)
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip():
         logger.warning("[FAQ] Pregunta de usuario vacía o inválida para búsqueda en FAQ.")
         return None
     if not isinstance(rubro_id, int):
-        logger.warning(f"[FAQ] Rubro ID inválido ({rubro_id}) para búsqueda en FAQ.")
+        logger.warning(f"[FAQ] Rubro ID inválido ({rubro_id}, tipo: {type(rubro_id)}) para búsqueda en FAQ.")
         return None
 
     try:
@@ -44,7 +44,7 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
         logger.info(f"[FAQ] No se encontraron FAQs en BD para rubro ID {rubro_id}.")
         return None
 
-    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO
+    pregunta_limpia = limpiar_texto_base(pregunta_usuario) 
     doc_user = NLP_SPACY_FAQ(pregunta_limpia)
 
     if not doc_user.has_vector or not doc_user.vector_norm: 
