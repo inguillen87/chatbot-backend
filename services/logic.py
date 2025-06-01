@@ -4,7 +4,7 @@ import random
 from flask import session
 from sqlalchemy import func
 from models import User, Rubro, Sugerencia, Conversacion, db 
-from extensions import db as extensions_db # Si tienes dos 'db', asegúrate cuál usar o renombra uno. Usaré 'db' de models.
+from extensions import db as extensions_db 
 import re 
 import json 
 from typing import Any, Optional, Dict, List
@@ -24,8 +24,7 @@ class GenericAnonUser(_BaseAnonUser):
         super().__init__(); self.plan = "anonimo_general"; self.preguntas_usadas = session.get("generic_anon_preguntas", 0); self.limite_preguntas = 5
 # --- Fin Clases Anónimas ---
 
-# --- Funciones Auxiliares (Asegúrate que estas definiciones estén aquí o importadas correctamente) ---
-# (Incluyo las versiones que ya trabajamos)
+# --- Funciones Auxiliares ---
 def sugerencias_por_rubro(rubro_id: int) -> list:
     try:
         sugerencias_obj = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
@@ -78,9 +77,9 @@ def reemplazar_placeholders(texto: str, user_obj: Any) -> str:
                     valor_atributo = user_obj.horario_json 
                 else: 
                     valor_atributo = getattr(user_obj, attr_key, None)
-            elif attr_key == "horario" and isinstance(user_obj, User):
-                 valor_atributo = user_obj.horario 
-            else:
+            elif attr_key == "horario" and isinstance(user_obj, User): # Si pide [horario] para User de BD
+                 valor_atributo = user_obj.horario # Devolver el string JSON crudo de la BD
+            else: # Para otros atributos o para mocks pidiendo [horario]
                 valor_atributo = getattr(user_obj, attr_key, None)
 
         if valor_atributo is not None:
@@ -116,7 +115,7 @@ def reemplazar_placeholders(texto: str, user_obj: Any) -> str:
                     valor_para_reemplazo = ". ".join(p for p in partes if p) + ("." if partes else "")
                     if not valor_para_reemplazo.strip() or valor_para_reemplazo == ".": valor_para_reemplazo = defaults_textos.get(attr_key)
                 else: 
-                    logger.info(f"[LOGIC-PH] No se pudo formatear horario detallado para {ph_template} con valor '{str(valor_atributo)[:50]}...'. Usando fallback.")
+                    logger.info(f"[LOGIC-PH] No se pudo formatear horario detallado para {ph_template} con valor '{str(valor_atributo)[:50]}...'. Usando fallback (string simple).")
                     valor_para_reemplazo = str(getattr(user_obj, "horario", defaults_textos.get("horario")))
             elif isinstance(valor_atributo, str) and valor_atributo.strip() == "":
                 valor_para_reemplazo = defaults_textos.get(attr_key, "")
@@ -135,7 +134,6 @@ def reemplazar_placeholders(texto: str, user_obj: Any) -> str:
 
 # --- COMIENZO DE responder_chatboc ---
 def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: str | None = None) -> Dict[str, Any]:
-    # Convertir todos los logger.debug a logger.info para asegurar visibilidad en Render
     logger.info(f"▶️ [LOGIC] Inicio responder_chatboc: Pregunta='{pregunta[:100]}...' Token='{str(token)[:15] if token else 'N/A'}' RubroFrontend='{rubro_nombre_frontend}'")
 
     if not pregunta or not pregunta.strip():
@@ -185,8 +183,9 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
     logger.info(f"[LOGIC] ==> User Obj Determinado: {type(user_obj).__name__}")
     logger.info(f"[LOGIC]     user_obj.nombre_empresa: {getattr(user_obj, 'nombre_empresa', 'N/A')}")
     logger.info(f"[LOGIC]     user_obj.horario (string crudo): '{getattr(user_obj, 'horario', 'N/A')}'")
-    horario_json_val = getattr(user_obj, 'horario_json', 'N/A')
+    horario_json_val = getattr(user_obj, 'horario_json', 'N/A') 
     logger.info(f"[LOGIC]     user_obj.horario_json (valor directo atributo/propiedad): {str(horario_json_val)[:250]}...")
+
 
     rubro_id_final: int = 1 
     rubro_nombre_final: str = "general"
@@ -228,8 +227,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         "horario_str": getattr(user_obj, "horario", "nuestro horario de atención"),
         "horario_json_str": horario_json_str_para_contexto, 
     }
-    # CAMBIO: logger.debug a logger.info
-    logger.info(f"[LOGIC] ==> User Profile Context para LLM (horario_json_str='{user_profile_context['horario_json_str']}'): {json.dumps(user_profile_context, ensure_ascii=False)}")
+    logger.info(f"[LOGIC] ==> User Profile Context para LLM (horario_json_str='{user_profile_context['horario_json_str']}'): {json.dumps(user_profile_context, ensure_ascii=False, indent=2)}")
 
     horarios_para_prompt = user_profile_context['horario_str'] 
     try:
@@ -245,7 +243,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             if partes_horario: horarios_para_prompt = ". ".join(p for p in partes_horario if p) + ("." if partes_horario else "")
         logger.info(f"[LOGIC] ==> Horarios formateados para prompt: {horarios_para_prompt}")
     except Exception as e_json_h_prompt:
-        logger.warning(f"[LOGIC] No se pudo parsear/formatear horario_json_str ('{user_profile_context['horario_json_str']}') para prompt: {e_json_h_prompt}. Usando horario_str simple.")
+        logger.warning(f"[LOGIC] No se pudo parsear/formatear horario_json_str ('{user_profile_context['horario_json_str']}') para el prompt: {e_json_h_prompt}. Usando horario_str simple.")
     
     numero_intercambios_previos = len(session.get(NOMBRE_HISTORIAL_SESION, [])) // 2
     
@@ -285,16 +283,18 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             else: 
                 logger.info("[LOGIC] Sin contexto de catálogo Qdrant para esta pregunta (o score bajo).")
                 prompt_sistema_texto += "\nNo se encontró información específica del catálogo."
-        except ImportError: logger.error("[LOGIC] Módulo Qdrant (qdrant_search) no encontrado."); prompt_sistema_texto += "\n(Error interno: sistema de catálogo no disponible)."
-        except Exception as e_qdrant: logger.error(f"[LOGIC] Error buscando en Qdrant: {e_qdrant}", exc_info=True); prompt_sistema_texto += "\n(Error interno: problema al buscar en catálogo)."
+        except ImportError: 
+            logger.error("[LOGIC] Módulo Qdrant (qdrant_search) no encontrado.")
+            prompt_sistema_texto += "\n(Error interno: sistema de catálogo no disponible)."
+        except Exception as e_qdrant: 
+            logger.error(f"[LOGIC] Error buscando en Qdrant: {e_qdrant}", exc_info=True)
+            prompt_sistema_texto += "\n(Error interno: problema al buscar en catálogo)."
     else:
         logger.info("[LOGIC] Usuario no es PYME registrada o no tiene ID, no se buscará en catálogo Qdrant.")
         prompt_sistema_texto += "\nNo hay un catálogo de productos específico para este modo. Responde con conocimiento general del rubro y la información de la empresa."
 
     prompt_sistema_texto += "\n\nInicia tu respuesta directamente al cliente, continuando la conversación de forma natural y concisa."
-    # CAMBIO: logger.debug a logger.info
     logger.info(f"[LOGIC] ==> Prompt Sistema FINAL para Cohere (longitud: {len(prompt_sistema_texto)}): {prompt_sistema_texto[:500]}...")
-
 
     respuesta_obtenida_llm = "" 
     fuente_respuesta = "no_especificada_aun"
@@ -308,12 +308,13 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             role_api = "USER" if msg.get("role") == "user" else "CHATBOT"
             historial_para_api.append({"role": role_api, "message": msg.get("content","")})
         
-        logger.info(f"[LOGIC] Enviando a Cohere: Pregunta='{pregunta[:50]}...'. Historial API: {len(historial_para_api)} mensajes. Preamble usado.")
+        logger.info(f"[LOGIC] Enviando a Cohere: Pregunta='{pregunta[:50]}...'. Historial API: {len(historial_para_api)} mensajes.")
         
+        # LLAMADA CORREGIDA A get_cohere_response
         respuesta_obtenida_llm = get_cohere_response(
-            current_message=pregunta,
-            chat_history_for_api=historial_para_api,
-            system_prompt_for_api=prompt_sistema_texto,
+            message=pregunta,
+            chat_history=historial_para_api,
+            preamble=prompt_sistema_texto,
             rubro_id=rubro_id_final, 
             user_context=user_profile_context
         )
@@ -327,9 +328,10 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             respuesta_obtenida_llm = "" 
     except ImportError: 
         logger.error("[LOGIC] Módulo Cohere (services.cohere_ai) no encontrado.")
+        respuesta_obtenida_llm = "" # Asegurar que esté vacío para fallbacks
     except Exception as e_cohere: 
         logger.error(f"[LOGIC] Error al llamar a Cohere: {e_cohere}", exc_info=True)
-        respuesta_obtenida_llm = ""
+        respuesta_obtenida_llm = "" # Asegurar que esté vacío para fallbacks
 
     respuesta_final_procesada = ""
     if respuesta_obtenida_llm:
@@ -414,7 +416,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
 
         session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta}) 
         session.modified = True 
-        logger.info(f"[LOGIC] Enviando respuesta de fallback con sugerencias.")
+        logger.info(f"[LOGIC] Enviando respuesta de fallback con sugerencias: '{respuesta_final_procesada[:100]}...'")
         return {"respuesta": respuesta_final_procesada, "fuente": "sugerencia_sistema"}
 
 # --- FIN DE responder_chatboc ---
