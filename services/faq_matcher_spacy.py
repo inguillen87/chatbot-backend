@@ -13,14 +13,10 @@ def _cargar_spacy_modelo_faq():
         try:
             NLP_SPACY_FAQ = spacy.load("es_core_news_md")
             logger.info("✅ Modelo spaCy 'es_core_news_md' cargado para FAQ Matcher.")
-            # Para verificar si tiene vectores: nlp.vocab.vectors.shape[0] > 0
-            # o simplemente asumir que los modelos 'md' o 'lg' los tienen.
-            # El error 'AttributeError: 'spacy.vectors.Vectors' object has no attribute 'length''
-            # se debe a que .length no es el atributo correcto.
-            if NLP_SPACY_FAQ.vocab.vectors.shape[0] == 0: # Forma correcta de verificar
-                 logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (FAQ) se cargó pero no tiene vectores. La similitud podría no funcionar.")
+            if NLP_SPACY_FAQ.vocab.vectors.shape[0] == 0: # CORREGIDO: Usar .shape[0]
+                 logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (FAQ) se cargó pero no tiene vectores.")
         except OSError:
-            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado. Descárgalo con: python -m spacy download es_core_news_md")
+            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado.")
         except Exception as e:
             logger.error(f"❌ Error inesperado al cargar spaCy (FAQ): {e}", exc_info=True)
 
@@ -31,10 +27,10 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
         logger.error("[FAQ] Imposible buscar: modelo spaCy no está cargado.")
         return None
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip():
-        logger.warning("[FAQ] Pregunta de usuario vacía o inválida.")
+        logger.warning("[FAQ] Pregunta de usuario vacía o inválida para búsqueda en FAQ.")
         return None
     if not isinstance(rubro_id, int):
-        logger.warning(f"[FAQ] Rubro ID inválido ({rubro_id}).")
+        logger.warning(f"[FAQ] Rubro ID inválido ({rubro_id}) para búsqueda en FAQ.")
         return None
 
     try:
@@ -47,10 +43,10 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
         logger.info(f"[FAQ] No se encontraron FAQs en BD para rubro ID {rubro_id}.")
         return None
 
-    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # Usar la función importada
+    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO: Usa la función importada
     doc_user = NLP_SPACY_FAQ(pregunta_limpia)
 
-    if not doc_user.has_vector or not doc_user.vector_norm: # doc_user.vector_norm verifica si el vector no es cero
+    if not doc_user.has_vector or not doc_user.vector_norm: 
         logger.warning(f"[FAQ] No se pudo generar vector para pregunta: '{pregunta_limpia}'.")
         return None
 
@@ -61,19 +57,18 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
         if not faq_item.question or not faq_item.question.strip():
             continue 
 
-        doc_faq = NLP_SPACY_FAQ(limpiar_texto_base(faq_item.question)) # Limpiar también la pregunta de la FAQ
+        doc_faq = NLP_SPACY_FAQ(limpiar_texto_base(faq_item.question)) 
         if not doc_faq.has_vector or not doc_faq.vector_norm:
             continue
         
         try:
             score = doc_user.similarity(doc_faq)
-            # logger.debug(f"[FAQ] Comparando '{pregunta_limpia}' con FAQ ID {faq_item.id} ('{faq_item.question[:50]}...'): Score {score:.3f}")
             if score > mejor_score:
                 mejor_score = score
                 mejor_match = faq_item
-        except Exception as e_sim: # Capturar cualquier error durante la similitud
+        except Exception as e_sim: 
             logger.error(f"[FAQ] Error calculando similitud para FAQ ID {faq_item.id} ('{faq_item.question[:50]}...'): {e_sim}", exc_info=True)
-            continue # Continuar con la siguiente FAQ
+            continue
 
     if mejor_match and mejor_score >= threshold:
         logger.info(f"✅ [FAQ] Match encontrado para '{pregunta_limpia}' (Rubro {rubro_id}): FAQ ID {mejor_match.id} ('{mejor_match.question[:50]}...') con score {mejor_score:.3f}")

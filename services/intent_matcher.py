@@ -16,7 +16,7 @@ def _cargar_recursos_intent():
         try:
             NLP_SPACY_INTENT = spacy.load("es_core_news_md")
             logger.info("✅ Modelo spaCy 'es_core_news_md' cargado para Intent Matcher.")
-            if NLP_SPACY_INTENT.vocab.vectors.shape[0] == 0: # Forma correcta de verificar vectores
+            if NLP_SPACY_INTENT.vocab.vectors.shape[0] == 0: # CORREGIDO: Usar .shape[0]
                  logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (Intent) se cargó pero no tiene vectores.")
         except OSError:
             logger.error("❌ Error al cargar spaCy 'es_core_news_md' (Intent): Modelo no encontrado.")
@@ -40,7 +40,7 @@ def _cargar_recursos_intent():
             logger.error(f"❌ No se pudo cargar o parsear intents.json desde {file_path}: {e_load}", exc_info=True)
             INTENTS_DATA = {}
 
-def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.75) -> str | None: # Ajustado threshold
+def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.75) -> str | None:
     _cargar_recursos_intent()
     
     if NLP_SPACY_INTENT is None or not INTENTS_DATA:
@@ -53,7 +53,7 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
         logger.warning(f"[INTENT] Nombre de rubro vacío o inválido ('{rubro_nombre}').")
         return None
 
-    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # Usar la función importada
+    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO: Usa la función importada
     doc_user = NLP_SPACY_INTENT(pregunta_limpia)
 
     if not doc_user.has_vector or not doc_user.vector_norm:
@@ -64,7 +64,7 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
     rubro_intent_data = INTENTS_DATA.get(rubro_key)
     
     if not rubro_intent_data:
-        if rubro_key != "general": # Intentar fallback a "general" si no es ya "general"
+        if rubro_key != "general":
             logger.info(f"[INTENT] No hay intents para rubro '{rubro_key}'. Intentando con 'general'.")
             rubro_intent_data = INTENTS_DATA.get("general")
         if not rubro_intent_data:
@@ -89,7 +89,6 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
             
             try:
                 score = doc_user.similarity(doc_ejemplo)
-                # logger.debug(f"[INTENT] Comparando '{pregunta_limpia}' con Ejemplo '{ejemplo[:50]}...' (Rubro '{rubro_key}'): Score {score:.3f}")
                 if score > mejor_score:
                     mejor_score = score
                     mejor_intent_respuesta = intent_obj["respuesta"]
@@ -99,7 +98,7 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
 
     if mejor_intent_respuesta and mejor_score >= threshold:
         logger.info(f"✅ [INTENT] Match encontrado para '{pregunta_limpia}' (Rubro '{rubro_key}'): Respuesta (parcial) '{str(mejor_intent_respuesta)[:50]}...' con score {mejor_score:.3f}")
-        return str(mejor_intent_respuesta) # Asegurar que sea string
+        return str(mejor_intent_respuesta)
     else:
         logger.info(f"📉 [INTENT] No se encontró intent con similitud >= {threshold} para '{pregunta_limpia}' (Rubro '{rubro_key}'). Mejor score: {mejor_score:.3f}")
         return None
