@@ -13,7 +13,7 @@ def _cargar_spacy_modelo_faq():
         try:
             NLP_SPACY_FAQ = spacy.load("es_core_news_md")
             logger.info("✅ Modelo spaCy 'es_core_news_md' cargado para FAQ Matcher.")
-            if NLP_SPACY_FAQ.vocab.vectors.shape[0] == 0: # CORREGIDO: Usar .shape[0]
+            if NLP_SPACY_FAQ.vocab.vectors.shape[0] == 0: # CORREGIDO
                  logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (FAQ) se cargó pero no tiene vectores.")
         except OSError:
             logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado.")
@@ -26,6 +26,7 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
     if NLP_SPACY_FAQ is None:
         logger.error("[FAQ] Imposible buscar: modelo spaCy no está cargado.")
         return None
+    # ... (resto de la función como la tenías, pero usando la importada limpiar_texto_base)
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip():
         logger.warning("[FAQ] Pregunta de usuario vacía o inválida para búsqueda en FAQ.")
         return None
@@ -43,7 +44,7 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
         logger.info(f"[FAQ] No se encontraron FAQs en BD para rubro ID {rubro_id}.")
         return None
 
-    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO: Usa la función importada
+    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO
     doc_user = NLP_SPACY_FAQ(pregunta_limpia)
 
     if not doc_user.has_vector or not doc_user.vector_norm: 

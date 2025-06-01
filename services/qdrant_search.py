@@ -2,21 +2,30 @@
 from .qdrant_utils import get_qdrant_client
 from .cohere_ai import embed_textos 
 import logging
-# IMPORTANTE: Asegurar que qdrant_models esté disponible para Filter, FieldCondition, etc.
-from qdrant_client.http import models as qdrant_models # Ajusta esta línea según tu versión de qdrant-client
+# IMPORTACIÓN CORREGIDA/AÑADIDA:
+from qdrant_client.http import models as qdrant_models # Para Filter, FieldCondition, etc.
+# O si tu versión de qdrant-client es más antigua y esto no funciona, podría ser:
+# from qdrant_client import models as qdrant_models
+# O importar específicamente:
+# from qdrant_client.http.models import Filter, FieldCondition, MatchValue (si es una versión muy nueva)
+# Revisa la documentación de tu versión de qdrant-client para la importación correcta de estos.
 
 logger = logging.getLogger(__name__)
 
-def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_min: float = 0.68) -> list:
-    qdrant_client = get_qdrant_client() # Nombre de variable cambiado para claridad
-    if not qdrant_client:
+# Asumo que tienes limpiar_texto_base en utils.py, aunque no se usa directamente aquí,
+# armar_respuesta_legible podría beneficiarse de ello.
+from .utils import limpiar_texto_base
+
+def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_min: float = 0.68) -> list: # Devuelve lista de ScoredPoint
+    qdrant_cli = get_qdrant_client() # Renombrado para evitar colisión con el módulo importado
+    if not qdrant_cli:
         logger.error("[QDRANT SEARCH] No se pudo obtener el cliente de Qdrant.")
         return []
 
     try:
-        pregunta_limpia = pregunta.strip() # limpiar_texto_base podría ser útil aquí también
+        pregunta_limpia = limpiar_texto_base(pregunta.strip()) # Limpiar pregunta
         if not pregunta_limpia:
-            logger.warning("[QDRANT SEARCH] La pregunta para búsqueda semántica está vacía.")
+            logger.warning("[QDRANT SEARCH] La pregunta para búsqueda semántica está vacía después de limpiar.")
             return []
 
         vector_pregunta_lista = embed_textos([pregunta_limpia]) 
@@ -31,16 +40,17 @@ def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_m
     try:
         logger.info(f"[QDRANT SEARCH] Buscando para user_id {user_id}, pregunta '{pregunta_limpia}', límite={limite}, umbral={score_min}")
         
-        search_filter = qdrant_models.Filter( # CORREGIDO: Usa el alias qdrant_models
+        search_filter = qdrant_models.Filter( 
             must=[
-                qdrant_models.FieldCondition( # CORREGIDO
+                qdrant_models.FieldCondition(
                     key="user_id", 
-                    match=qdrant_models.MatchValue(value=user_id) # CORREGIDO
+                    match=qdrant_models.MatchValue(value=user_id)
                 )
             ]
         )
         
-        resultados = qdrant_client.search(
+        # El método search ahora se llama directamente en el cliente
+        resultados = qdrant_cli.search(
             collection_name="catalogos",
             query_vector=vector_q,
             query_filter=search_filter,
@@ -48,33 +58,59 @@ def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_m
             score_threshold=score_min 
         )
         logger.info(f"[QDRANT SEARCH] Búsqueda para user_id {user_id}, pregunta '{pregunta_limpia}': {len(resultados)} hits con score >= {score_min}.")
-        return resultados # Devuelve la lista de ScoredPoint
-    except NameError as ne: # Específicamente para el error de qdrant_models si la importación falló
-        logger.error(f"[QDRANT SEARCH] NameError durante búsqueda en Qdrant (probable problema de importación de qdrant_models): {ne}", exc_info=True)
+        return resultados # Devuelve la lista de qdrant_models.ScoredPoint
+    except NameError as ne: 
+        logger.error(f"[QDRANT SEARCH] NameError en Qdrant (verificar import de qdrant_models): {ne}", exc_info=True)
         return[]
     except Exception as e_qdrant:
         logger.error(f"[QDRANT SEARCH] Error buscando en Qdrant para user_id {user_id}, pregunta '{pregunta_limpia}': {e_qdrant}", exc_info=True)
         return []
 
 
-def armar_respuesta_legible(resultados_qdrant: list) -> str: # resultados_qdrant es list[ScoredPoint]
-    # ... (Tu función armar_respuesta_legible, que ya estaba bastante bien) ...
-    # (Asegúrate que use logger.info, logger.debug como en mis ejemplos anteriores si quieres logs aquí)
-    if not resultados_qdrant: return "" 
+def armar_respuesta_legible(resultados_qdrant: list) -> str: # resultados_qdrant es list[qdrant_models.ScoredPoint]
+    if not resultados_qdrant: 
+        logger.info("[QDRANT FORMAT] No hay resultados de Qdrant para formatear.")
+        return "" 
+    
     contexto_items = []
     logger.info(f"[QDRANT FORMAT] Formateando {len(resultados_qdrant)} resultados de Qdrant.")
+
     for hit_idx, hit in enumerate(resultados_qdrant):
-        payload = hit.payload 
-        if not isinstance(payload, dict): continue
-        nombre = payload.get('nombre', 'Producto'); precio_str = payload.get('precio_str', ''); descripcion = payload.get('descripcion', ''); categoria = payload.get('categoria_qdrant', ''); unidad = payload.get('unidad', ''); moneda = payload.get('moneda', '')
+        if not hasattr(hit, 'payload') or not isinstance(hit.payload, dict):
+            logger.warning(f"[QDRANT FORMAT] Hit {hit_idx} (ID: {getattr(hit, 'id', 'N/A')}) no tiene payload o no es dict.")
+            continue
+            
+        payload = hit.payload
+        nombre = payload.get('nombre', 'Producto') 
+        precio_str = payload.get('precio_str', '') 
+        descripcion = payload.get('descripcion', '')
+        categoria = payload.get('categoria_qdrant', '') 
+        unidad = payload.get('unidad', '')
+        moneda = payload.get('moneda', '') # Mostrar solo si está presente
+        
         item_info_parts = [f"Nombre: {nombre}"]
         if categoria: item_info_parts.append(f"Categoría: {categoria}")
-        if precio_str: item_info_parts.append(f"Precio: {moneda} {precio_str}".strip())
-        else: item_info_parts.append("Precio: Consultar")
+        
+        if precio_str:
+            precio_display = f"{moneda} {precio_str}".strip() if moneda else precio_str
+            item_info_parts.append(f"Precio: {precio_display}")
+        else: 
+            item_info_parts.append("Precio: Consultar")
+        
         if unidad: item_info_parts.append(f"Presentación/Unidad: {unidad}")
-        if descripcion and limpiar_texto_base(descripcion) != limpiar_texto_base(nombre): item_info_parts.append(f"Descripción: {(descripcion[:100] + '...') if len(descripcion) > 100 else descripcion}")
+        
+        desc_limpia_para_comparar = limpiar_texto_base(descripcion)
+        nombre_limpio_para_comparar = limpiar_texto_base(nombre)
+        if desc_limpia_para_comparar and desc_limpia_para_comparar != nombre_limpio_para_comparar:
+            desc_corta = (descripcion[:100] + '...') if len(descripcion) > 100 else descripcion
+            item_info_parts.append(f"Descripción: {desc_corta}")
+        
         contexto_items.append("- " + "\n  - ".join(item_info_parts)) 
-    if not contexto_items: return "" 
-    contexto_final = "Información relevante de nuestro catálogo para tu consulta:\n" + "\n\n".join(contexto_items)
+    
+    if not contexto_items:
+        logger.info("[QDRANT FORMAT] Ningún ítem de Qdrant fue formateado válidamente.")
+        return "" 
+        
+    contexto_final = "Según nuestro catálogo, esto podría interesarte:\n" + "\n\n".join(contexto_items) # Cambiado el prefijo
     logger.info(f"[QDRANT FORMAT] Contexto para LLM (parcial): {contexto_final[:300]}...")
     return contexto_final

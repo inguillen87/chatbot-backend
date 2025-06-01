@@ -16,7 +16,7 @@ def _cargar_recursos_intent():
         try:
             NLP_SPACY_INTENT = spacy.load("es_core_news_md")
             logger.info("✅ Modelo spaCy 'es_core_news_md' cargado para Intent Matcher.")
-            if NLP_SPACY_INTENT.vocab.vectors.shape[0] == 0: # CORREGIDO: Usar .shape[0]
+            if NLP_SPACY_INTENT.vocab.vectors.shape[0] == 0: # CORREGIDO
                  logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (Intent) se cargó pero no tiene vectores.")
         except OSError:
             logger.error("❌ Error al cargar spaCy 'es_core_news_md' (Intent): Modelo no encontrado.")
@@ -26,7 +26,7 @@ def _cargar_recursos_intent():
     if not INTENTS_DATA:
         try:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            file_path = os.path.join(current_dir, "..", "data", "intents.json")
+            file_path = os.path.join(current_dir, "..", "data", "intents.json") # Asumiendo que data está un nivel arriba de services
             
             if not os.path.exists(file_path):
                 logger.error(f"❌ Archivo intents.json NO encontrado en: {file_path}")
@@ -46,6 +46,7 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
     if NLP_SPACY_INTENT is None or not INTENTS_DATA:
         logger.error("[INTENT] Imposible buscar: spaCy o datos de intents no cargados.")
         return None
+    # ... (resto de la función como la tenías, pero usando la importada limpiar_texto_base)
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip():
         logger.warning("[INTENT] Pregunta de usuario vacía o inválida.")
         return None
@@ -53,7 +54,7 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
         logger.warning(f"[INTENT] Nombre de rubro vacío o inválido ('{rubro_nombre}').")
         return None
 
-    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO: Usa la función importada
+    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO
     doc_user = NLP_SPACY_INTENT(pregunta_limpia)
 
     if not doc_user.has_vector or not doc_user.vector_norm:
