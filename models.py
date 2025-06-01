@@ -69,6 +69,39 @@ class User(db.Model, UserMixin):
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
     
+    # En models.py
+import json # Asegúrate de que esté importado al principio del archivo
+
+class User(db.Model, UserMixin):
+    # ... (todos tus otros campos como id, name, email, etc.) ...
+
+    horario = db.Column(db.String(100), nullable=True) # Este es el campo que guarda el string JSON
+
+    # ... (tus métodos set_password, check_password, etc.) ...
+
+    @property
+    def horario_json(self):
+        """
+        Propiedad para obtener el campo 'horario' (que es un string JSON)
+        como un diccionario Python.
+        Devuelve el diccionario parseado, o None si el horario está vacío o no es JSON válido.
+        """
+        if self.horario:
+            try:
+                return json.loads(self.horario)
+            except json.JSONDecodeError:
+                # Si el string en la BD no es JSON válido, ¿qué hacer?
+                # Opción 1: Devolver None (o un dict vacío {}) para indicar que no hay estructura válida
+                return None
+                # Opción 2: Devolver el string original (no recomendado si se espera un dict)
+                # return self.horario
+                # Opción 3: Levantar un error o loguear (pero para una propiedad, devolver None o {} es común)
+                # logging.error(f"Error al parsear horario para user {self.id}: {self.horario}")
+                # return None
+        return None # O {} si prefieres un diccionario vacío por defecto
+
+    def __repr__(self):
+        return f"<User {self.email}>"
     # Métodos de seguridad
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
