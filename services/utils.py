@@ -1,135 +1,151 @@
 # services/utils.py
-
 import re
 import logging
-# import pandas as pd # Solo si 'pd.isna' se usa aquí; si no, no es necesario.
-                      # La función parse_precio_flexible_excel_input lo maneja sin pd.
 
-def limpiar_texto_base(texto: str) -> str:
-    """Limpia espacios extra y caracteres problemáticos comunes."""
-    if not texto: 
+logger = logging.getLogger(__name__)
+
+def limpiar_texto_base(texto: str | None) -> str:
+    """Limpia espacios extra y convierte a minúsculas. Devuelve string vacío si el input es None."""
+    if texto is None:
         return ""
-    texto_limpio = re.sub(r'\s+', ' ', texto).strip()
-    return texto_limpio
+    if not isinstance(texto, str):
+        texto = str(texto) # Intentar convertir a string si no lo es
+        
+    texto_limpio = texto.lower() # Convertir a minúsculas
+    texto_limpio = re.sub(r'\s+', ' ', texto_limpio) # Reemplazar múltiples espacios/saltos de línea con uno solo
+    return texto_limpio.strip()
 
-def parse_precio_flexible(texto_precio_input: str | float | None) -> tuple[str | None, float | None, str | None]:
+def parse_precio_flexible(texto_precio_input: str | float | int | None) -> tuple[str | None, float | None, str | None]:
     """
     Intenta extraer y normalizar un precio y su moneda de un string o valor numérico.
-    Devuelve (precio_str_original_del_numero, precio_float, moneda_detectada).
-    Ej: "$ 1.250,50 ARS" -> ("1.250,50", 1250.50, "ARS")
+    Devuelve (precio_str_numerico_limpio, precio_float, moneda_detectada).
+    Ej: "$ 1.250,50 ARS" -> ("1250.50", 1250.50, "ARS")
         "1250.50 USD" -> ("1250.50", 1250.50, "USD")
-        1250.50 (float) -> ("1250.50", 1250.50, "ARS")
+        1250.50 (float) -> ("1250.50", 1250.50, "ARS") (Asumiendo ARS por defecto si es número)
     """
-    if texto_precio_input is None or str(texto_precio_input).strip() == "":
+    if texto_precio_input is None:
+        return None, None, None
+    
+    texto_precio_str = str(texto_precio_input).strip()
+    if not texto_precio_str:
         return None, None, None
 
-    texto_precio_str = str(texto_precio_input) # Convertir a string si es float/int
-    texto_limpio_original = limpiar_texto_base(texto_precio_str)
-    moneda = "ARS"  # Default
-    numero_final_para_float = texto_limpio_original # El string que intentaremos convertir a float
+    moneda_detectada = "ARS" # Default
+    numero_para_procesar = texto_precio_str
 
-    # Detectar y quitar símbolos/palabras de moneda, actualizando 'moneda'
-    # Esta regex busca símbolos al principio o al final, y también palabras como USD/ARS
-    # Es importante quitar los símbolos ANTES de intentar normalizar los separadores numéricos.
+    # Detectar y extraer moneda (palabras y símbolos comunes)
+    patron_moneda = re.compile(r"(ARS|USD|\$|U\$S)\s*", re.IGNORECASE)
+    match_moneda_simbolo = patron_moneda.search(numero_para_procesar)
     
-    # Guardar el texto original para ver si se modifica por la extracción de moneda
-    texto_antes_extraccion_moneda = numero_final_para_float
-    
-    if re.search(r'(?i)\bUSD\b', numero_final_para_float):
-        moneda = "USD"
-        numero_final_para_float = re.sub(r'(?i)\bUSD\b', '', numero_final_para_float).strip()
-    elif re.search(r'(?i)\bARS\b', numero_final_para_float):
-        moneda = "ARS" # Ya es default, pero por claridad
-        numero_final_para_float = re.sub(r'(?i)\bARS\b', '', numero_final_para_float).strip()
-    
-    # Quitar símbolo $ si está presente, después de las palabras de moneda
-    numero_final_para_float = numero_final_para_float.replace("$", "").strip()
-    
-    # Si después de quitar moneda y $ no queda nada o solo espacios, no era un precio válido
-    if not numero_final_para_float:
-        logging.debug(f"parse_precio_flexible: No quedó parte numérica de '{texto_precio_input}' tras quitar moneda/símbolos.")
-        return None, None, None # O devolver el texto original limpio si se prefiere no perderlo
+    if match_moneda_simbolo:
+        simbolo_encontrado = match_moneda_simbolo.group(1).upper()
+        if "USD" in simbolo_encontrado or "U$S" in simbolo_encontrado:
+            moneda_detectada = "USD"
+        elif "ARS" in simbolo_encontrado:
+            moneda_detectada = "ARS"
+        # Quitar todos los símbolos de moneda y espacios extra alrededor
+        numero_para_procesar = patron_moneda.sub("", numero_para_procesar).strip()
 
-    # Normalizar separadores numéricos del 'numero_final_para_float'
-    # Esta lógica intenta ser robusta para formatos como "1.234,56" (ARS) y "1,234.56" (USD style)
-    # y también "1234,56" o "1234.56"
-    
-    numero_a_convertir = numero_final_para_float
-    if ',' in numero_a_convertir and '.' in numero_a_convertir:
-        if numero_a_convertir.rfind(',') > numero_a_convertir.rfind('.'): # Coma es decimal (ej. 1.234,56)
-            numero_a_convertir = numero_a_convertir.replace('.', '')  # Quitar separador de miles
-            numero_a_convertir = numero_a_convertir.replace(',', '.')  # Convertir coma decimal a punto
+    # Si después de quitar moneda no queda nada, no es un precio válido
+    if not numero_para_procesar:
+        logger.debug(f"parse_precio_flexible: No quedó parte numérica de '{texto_precio_input}' tras quitar moneda/símbolos.")
+        return None, None, None
+
+    # Normalizar separadores numéricos
+    # Esta lógica asume que si ambos '.' y ',' existen, el último es el decimal.
+    # Si solo hay ',', se asume como decimal. Si solo hay '.', se asume como decimal.
+    numero_normalizado = numero_para_procesar
+    if ',' in numero_normalizado and '.' in numero_normalizado:
+        if numero_normalizado.rfind(',') > numero_normalizado.rfind('.'): # Coma es decimal (ej. 1.234,56)
+            numero_normalizado = numero_normalizado.replace('.', '')  # Quitar separador de miles
+            numero_normalizado = numero_normalizado.replace(',', '.')  # Convertir coma decimal a punto
         else:  # Punto es decimal (ej. 1,234.56)
-            numero_a_convertir = numero_a_convertir.replace(',', '')  # Quitar separador de miles
-    elif ',' in numero_a_convertir:  # Solo comas, asumir que la última es decimal (ej. 1234,56 o 1,234,56)
-        partes_coma = numero_a_convertir.split(',')
-        if len(partes_coma[-1]) == 2 and all(c.isdigit() for c in partes_coma[-1]): # Si lo después de la última coma son 2 dígitos
-            numero_a_convertir = "".join(partes_coma[:-1]) + "." + partes_coma[-1] # Unir y poner punto decimal
-        else: # Si no parece tener decimales con coma, tratar comas como miles o ruido
-            numero_a_convertir = numero_a_convertir.replace(',', '')
+            numero_normalizado = numero_normalizado.replace(',', '')  # Quitar separador de miles
+    elif ',' in numero_normalizado:  # Solo comas, asumir que la última es decimal
+        numero_normalizado = numero_normalizado.replace(',', '.') 
+        # Si hay múltiples comas, esto podría ser un problema. Ej. "1,234,56" -> "1.234.56" (inválido)
+        # Una lógica más robusta podría quitar todas las comas excepto la última si es seguida por 1 o 2 dígitos.
+        # Ejemplo simplificado: si la última coma es decimal:
+        if numero_normalizado.count('.') > 1: # Si ahora hay múltiples puntos por el replace de comas
+            partes = numero_normalizado.split('.')
+            numero_normalizado = "".join(partes[:-1]) + "." + partes[-1]
 
-    # A este punto, numero_a_convertir debería usar '.' como separador decimal (si tiene)
-    # y no tener separadores de miles.
-    
+
+    # Quitar cualquier caracter no numérico excepto el punto decimal
+    numero_final_para_float_str = re.sub(r"[^0-9.]", "", numero_normalizado)
+
     try:
-        precio_flt = float(numero_a_convertir)
-        # Devolver el 'numero_final_para_float' (que es el número sin símbolos de moneda pero con su formato original de puntos/comas)
-        # y el 'precio_flt' (el número puro para cálculos)
-        return limpiar_texto_base(numero_final_para_float), precio_flt, moneda
+        precio_flt = float(numero_final_para_float_str)
+        # Devolver el string numérico original (sin símbolos de moneda pero con formato) 
+        # y el float. Si numero_para_procesar es el original sin moneda, usarlo.
+        precio_str_display = numero_para_procesar # El número tal como quedó después de quitar moneda
+        return precio_str_display, precio_flt, moneda_detectada
     except ValueError:
-        logging.warning(f"[UTILS] parse_precio_flexible: No se pudo convertir a float: '{numero_a_convertir}' (procesado de '{texto_precio_input}')")
-        # Si no se puede convertir a float, pero parece un número, devolvemos el string y None para float
-        if re.fullmatch(r"[\d.,]+", numero_final_para_float): # Rechequear si el string original (sin símbolos) es numérico
-             return limpiar_texto_base(numero_final_para_float), None, moneda
-        return None, None, moneda # Si no, no era un precio
+        logger.warning(f"parse_precio_flexible: No se pudo convertir a float: '{numero_final_para_float_str}' (procesado de '{texto_precio_input}')")
+        # Si no se puede convertir, pero el original (sin moneda) parece un número, devolver el string
+        if re.fullmatch(r"[\d.,]+", numero_para_procesar.strip()):
+             return numero_para_procesar.strip(), None, moneda_detectada
+        return None, None, moneda_detectada # Si no, no era un precio
+
 
 def extraer_unidades_y_tipos_precio(texto_linea: str, pyme_rubro_nombre: str = "generico") -> tuple[str | None, str | None]:
     """
     Intenta extraer unidades (ej. "caja x 6", "750ml") o tipos de precio (ej. "por mayor") de una línea.
     Devuelve: (unidad_extraida, tipo_precio_extraido)
     """
+    # Tu lógica se mantiene, pero asegúrate de que las regex sean robustas
+    # y que limpiar_texto_base se aplique consistentemente si es necesario.
+    # (El código que pasaste para esta función ya estaba bastante bien)
     if not texto_linea: return None, None
-    texto_linea_lower = texto_linea.lower()
+    texto_linea_lower = limpiar_texto_base(texto_linea) # Usar la versión mejorada de limpiar_texto_base
     unidad = None
     tipo_precio = None
 
+    # Patrones ordenados de más específico a más genérico
     unidades_patrones = [
-        (r"\b(caja(?:s)?\s*x\s*\d{1,2})\b", "caja_especifica"),
-        (r"\b(pack\s*x\s*\d{1,2})\b", "pack_especifico"),
-        (r"\b(\d{3,4}\s*ml)\b", "volumen_ml"),
-        (r"\b(\d{1,2}\s*lts?)\b", "volumen_lts"),
+        (r"\b(caja(?:s)?\s*x\s*\d{1,3})\b", "caja_especifica"), # ej. caja x 6, caja x 12
+        (r"\b(pack\s*x\s*\d{1,3})\b", "pack_especifico"),   # ej. pack x 24
+        (r"\b(\d{1,4}\s*ml)\b", "volumen_ml"),           # ej. 750ml, 1000 ml
+        (r"\b(\d{1,2}(?:[.,]\d{1,2})?\s*lts?)\b", "volumen_lts"), # ej. 1 lts, 1.5 lt, 2,5lts
+        (r"\b(\d{1,3}(?:[.,]\d{1,3})?\s*kilos?g?)\b", "peso_kg"),# ej. 1kg, 2.5kilos
+        (r"\b(\d{1,4}\s*gr(?:s)?|gramo(?:s)?)\b", "peso_gr"),# ej. 250grs, 100 gramos
         (r"\b(docena(?:s)?)\b", "docena"),
         (r"\b(par(?:es)?)\b", "par"),
-        (r"\b(kilo(?:s)?|kg)\b", "kilo"),
-        (r"\b(gr(?:s)?|gramo(?:s)?)\b", "gramo"),
-        (r"\b(caja)\b", "caja_generica"),
-        (r"\b(botella)\b", "botella_generica"),
+        (r"\b(blister(?:es)?\s*x\s*\d{1,2})\b", "blister_especifico"),
+        (r"\b(caja|box)\b", "caja_generica"), # Caja o Box genérico
+        (r"\b(botella|bottle)\b", "botella_generica"),
         (r"\b(pack)\b", "pack_generico"),
-        (r"\b(unidad|unid\.?|un\.?|u\.?)\b", "unidad") # 'un.' y 'u.' añadidos
+        (r"\b(blister)\b", "blister_generico"),
+        (r"\b(unidad|unid\.?|un\.?|u\.?)\b", "unidad_generica")
     ]
     
     tipos_precio_keywords = {
-        "mayorista": ["mayorista", "por mayor", "distribuidor", "dist."],
-        "minorista": ["minorista", "al detalle", "público", "consumidor final", "c.f."],
-        "promocion": ["promo", "oferta", "descuento", "especial", "sale", "liquidación"]
+        "mayorista": ["mayorista", "por mayor", "distribuidor", "distr?"], # dist? para dist. o distr
+        "minorista": ["minorista", "al detalle", "público", "publico", "consumidor final", "cf"],
+        "promocion": ["promo", "oferta", "descuento", "dcto", "dto", "especial", "sale", "liquidación", "outlet"]
     }
 
-    # Extraer unidades
+    # Extraer unidades: buscar la coincidencia más larga y específica primero
+    # Esta lógica simple toma la primera que encuentra según el orden de la lista.
     for patron, _ in unidades_patrones:
         match = re.search(patron, texto_linea_lower)
         if match:
-            unidad_encontrada = limpiar_texto_base(match.group(1))
-            # Heurística: preferir la unidad más larga o específica si hay múltiples matches simples.
-            # Esta lógica es simple, podría mejorarse.
-            if unidad is None or len(unidad_encontrada) > len(unidad):
-                unidad = unidad_encontrada
-            # No hacer break aquí para permitir que un patrón más específico posterior reemplace uno más genérico
-            # Ejemplo: "caja x6" es mejor que solo "caja". (Se logra ordenando unidades_patrones)
+            unidad_encontrada_raw = match.group(1)
+            # Limpiar un poco la unidad encontrada
+            unidad = re.sub(r'\s+', ' ', unidad_encontrada_raw).strip()
+            # Remover la unidad del texto para evitar que se confunda con el nombre
+            texto_linea_lower = texto_linea_lower.replace(unidad_encontrada_raw, "", 1).strip() 
+            break # Tomar la primera (y más específica por orden) unidad encontrada
 
     # Extraer tipos de precio
     for tipo, keywords in tipos_precio_keywords.items():
-        if any(kw in texto_linea_lower for kw in keywords):
-            tipo_precio = tipo # Tomar el primero que coincida
-            break 
+        for kw in keywords:
+            if re.search(r'\b' + re.escape(kw) + r'\b', texto_linea_lower): # Usar word boundaries
+                tipo_precio = tipo 
+                # Opcional: remover keyword del texto
+                # texto_linea_lower = re.sub(r'\b' + re.escape(kw) + r'\b', '', texto_linea_lower).strip()
+                break
+        if tipo_precio:
+            break
             
     return unidad, tipo_precio
