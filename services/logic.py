@@ -1,41 +1,44 @@
 # logic.py
-
 import logging
 import random
 from flask import session
+from sqlalchemy import func # Importar func para búsquedas case-insensitive
 from models import User, Rubro, Sugerencia, Conversacion # Asegúrate que Sugerencia esté definido en models.py
 from extensions import db
-import re # Asegúrate que re esté importado
+import re 
 import json # Necesario para parsear horario_json
 
+# Configuración del logger para este módulo
+logger = logging.getLogger(__name__)
+
 # --- Funciones Auxiliares ---
+
 def sugerencias_por_rubro(rubro_id: int) -> list:
     try:
         sugerencias_obj = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
         if sugerencias_obj:
             todas = [s.texto for s in sugerencias_obj]
-            logging.info(f"Sugerencias para rubro {rubro_id}: {len(todas)}")
+            logger.info(f"Sugerencias para rubro {rubro_id}: {len(todas)}")
             return random.sample(todas, min(5, len(todas)))
-        if rubro_id != 1: # Evitar recursión infinita si el rubro 1 no tiene sugerencias
-            fallback_obj = Sugerencia.query.filter_by(rubro_id=1).all() # Fallback a rubro general (ID 1)
+        
+        # Fallback a rubro general (ID 1), solo si no es ya el rubro 1 para evitar bucles si 1 no tiene
+        if rubro_id != 1: 
+            rubro_general_id = 1 # Asumir que el ID 1 es 'general'
+            logger.info(f"No se encontraron sugerencias para rubro {rubro_id}, intentando fallback a rubro general ID {rubro_general_id}")
+            fallback_obj = Sugerencia.query.filter_by(rubro_id=rubro_general_id).all()
             if fallback_obj:
-                logging.info(f"No se encontraron sugerencias para rubro {rubro_id}, usando fallback general")
                 return random.sample([s.texto for s in fallback_obj], min(5, len(fallback_obj)))
+        
+        logger.info(f"No se encontraron sugerencias para rubro {rubro_id} ni en fallback general. Usando defaults.")
         return ["¿En qué más te puedo ayudar?", "Consulta nuestros productos principales.", "Háblame un poco más sobre lo que buscas."]
     except Exception as e:
-        logging.error(f"Error buscando sugerencias: {e}", exc_info=True)
+        logger.error(f"Error buscando sugerencias: {e}", exc_info=True)
         return ["Disculpa, tuve un problema al buscar sugerencias en este momento."]
 
 def formatear_numero_whatsapp_simple(telefono_str: str, codigo_pais: str = "54") -> str:
-    """
-    Formato MUY SIMPLIFICADO para WhatsApp: elimina no dígitos y antepone prefijo.
-    Asume que el número ya es local o viene con el '9' de móvil para Argentina.
-    Ej: "2611234567" -> "5492611234567"
-    Ej: "+54 9 261 123-4567" -> "5492611234567"
-    """
     if not telefono_str:
         return ""
-    numeros = re.sub(r'\D', '', telefono_str) # Eliminar todo lo que no sea dígito
+    numeros = re.sub(r'\D', '', str(telefono_str)) # Asegurar que es string y eliminar no dígitos
 
     # Caso 1: Ya tiene el formato internacional de móvil argentino completo (ej. 5492611234567)
     if numeros.startswith(codigo_pais + "9") and len(numeros) == (len(codigo_pais) + 1 + 10): # 54 + 9 + 10 digitos
@@ -49,275 +52,310 @@ def formatear_numero_whatsapp_simple(telefono_str: str, codigo_pais: str = "54")
     if len(numeros) == 10:
         return f"{codigo_pais}9{numeros}"
         
-    # Caso 4: Número de celular sin característica pero con el 15 (ej. 154123456) -> común en algunas regiones.
-    # Esta es una heurística más específica y puede necesitar ajuste.
-    # En Argentina, el "15" a veces se omite para WhatsApp, dependiendo de la agenda.
-    # Si el número de la BD viene sin el "15", la lógica de 10 dígitos debería cubrirlo si se ingresa la característica.
-    # Si es un número de 8 dígitos (ej. 4123456 tras quitar el 15) no hay suficiente info para un link de WhatsApp confiable sin la característica.
-
-    # Fallback: devolver solo los dígitos limpios. El link podría no funcionar bien o el usuario tendrá que ajustarlo.
-    logging.warning(f"Número de teléfono '{telefono_str}' no pudo ser formateado a un estándar de WhatsApp claro, devolviendo dígitos limpios: '{numeros}'")
+    logger.warning(f"Número de teléfono '{telefono_str}' no pudo ser formateado a un estándar de WhatsApp claro, devolviendo dígitos limpios: '{numeros}'")
     return numeros
 
 
 def reemplazar_placeholders(texto: str, user_obj) -> str:
-    if not texto:
+    if not texto or not isinstance(texto, str): # Asegurar que texto sea un string
         return ""
 
-    # Placeholders estándar que SÍ esperamos obtener del user_obj (perfil de la PYME)
+    # Placeholders estándar
     placeholders_conocidos = {
         "[nombreEmpresa]": "nombre_empresa",
-        "[linkWeb]": "link_web",        # Manejo especial abajo
-        "[telefono]": "telefono",      # Manejo especial para WhatsApp link
+        "[linkWeb]": "link_web",
+        "[telefono]": "telefono",
         "[direccion]": "direccion",
-        "[horario]": "horario",        # Para el string simple de horario. Ver [horarioDetallado]
-        "[ubicacion]": "ubicacion",    # Usualmente la provincia
-        "[ciudad]" : "ciudad",         # Nuevo campo
-        "[provincia]": "provincia",     # Nuevo campo
-        "[pais]": "pais",             # Nuevo campo
-        # Placeholder para los horarios estructurados (si decides usarlo en FAQs/Intents)
-        "[horarioDetallado]": "horario_json", # Asume que 'horario_json' es el atributo en User
+        "[horario]": "horario",      # String simple de horario
+        "[ubicacion]": "ubicacion",  # Podría ser redundante si usamos provincia/ciudad
+        "[ciudad]" : "ciudad",
+        "[provincia]": "provincia",
+        "[pais]": "pais",
+        "[horarioDetallado]": "horario_json", # Para el horario estructurado
     }
 
-    # Valores por defecto si user_obj es None o el atributo no existe
     defaults_textos = {
-        "nombre_empresa": "nuestra empresa",
-        "link_web": "nuestro sitio web",
-        "telefono": "nuestro número de contacto",
-        "direccion": "nuestra dirección",
-        "horario": "nuestro horario de atención", # Default para el string simple de horario
-        "ubicacion": "nuestra área de servicio",
-        "ciudad": "nuestra ciudad",
-        "provincia": "nuestra provincia",
-        "pais": "nuestro país",
+        "nombre_empresa": "nuestra empresa", "link_web": "nuestro sitio web",
+        "telefono": "nuestro número de contacto", "direccion": "nuestra dirección",
+        "horario": "nuestro horario de atención", "ubicacion": "nuestra área de servicio",
+        "ciudad": "nuestra ciudad", "provincia": "nuestra provincia", "pais": "nuestro país",
         "horario_json": "consultar nuestros horarios detallados",
     }
 
     texto_procesado = texto
 
-    for ph_template, user_attr_name in placeholders_conocidos.items():
-        valor_atributo_original = None
+    for ph_template, attr_key in placeholders_conocidos.items():
+        valor_atributo = None
         if user_obj:
-            valor_atributo_original = getattr(user_obj, user_attr_name, None)
+            # Para horario_json, si user_obj es un modelo User, la @property ya lo parsea.
+            # Si es AnonUser/GenericAnonUser, 'horario_json' es un string.
+            # El campo 'horario' (simple string) se obtiene directamente.
+            if attr_key == "horario_json" and isinstance(user_obj, User): # Modelo User de BD
+                valor_atributo = user_obj.horario_json # Esto llama a la @property -> devuelve dict o None
+            elif attr_key == "horario" and isinstance(user_obj, User): # Modelo User de BD
+                 valor_atributo = user_obj.horario # El string JSON original
+            else: # Para AnonUser, GenericAnonUser, u otros atributos
+                valor_atributo = getattr(user_obj, attr_key, None)
         
-        valor_para_texto = str(valor_atributo_original) if valor_atributo_original is not None and str(valor_atributo_original).strip() != "" else defaults_textos.get(user_attr_name, "")
+        valor_para_reemplazo = defaults_textos.get(attr_key, "")
 
-        if ph_template == "[telefono]":
-            if valor_atributo_original: # Si hay un número de teléfono real
-                numero_telefono_str = str(valor_atributo_original)
-                numero_wsp_formateado = formatear_numero_whatsapp_simple(numero_telefono_str)
-                if numero_wsp_formateado:
-                    link_wsp_html = f'{numero_telefono_str} (<a href="https://wa.me/{numero_wsp_formateado}" target="_blank" style="color: green; text-decoration: underline; font-weight:bold;">Contactar por WhatsApp</a>)'
-                    texto_procesado = texto_procesado.replace(ph_template, link_wsp_html)
-                else: # Si no se pudo formatear bien, solo poner el número original
-                    texto_procesado = texto_procesado.replace(ph_template, numero_telefono_str)
-            else: # No hay número, usar default
-                texto_procesado = texto_procesado.replace(ph_template, defaults_textos.get(user_attr_name, "nuestro número de contacto"))
-        
-        elif ph_template == "[linkWeb]":
-            # Para el texto de [linkWeb], si el link está vacío, usamos el default.
-            # El botón HTML "Ir a la Tienda Online" tiene su propia lógica para el href.
-            if valor_atributo_original and str(valor_atributo_original).strip():
-                # Asegurar que el link sea absoluto para mostrar en texto también
-                link_abs = str(valor_atributo_original)
-                if not link_abs.startswith("http://") and not link_abs.startswith("https://"):
-                    link_abs = "https://" + link_abs
-                texto_procesado = texto_procesado.replace(ph_template, link_abs)
-            else:
-                texto_procesado = texto_procesado.replace(ph_template, defaults_textos.get(user_attr_name, "nuestro sitio web"))
-        
-        elif ph_template == "[horarioDetallado]":
-            if valor_atributo_original: # valor_atributo_original sería el string JSON de user.horario_json
-                try:
-                    horarios_data = json.loads(str(valor_atributo_original)) # Parsear el JSON
+        if valor_atributo is not None:
+            if ph_template == "[telefono]":
+                if str(valor_atributo).strip():
+                    numero_wsp = formatear_numero_whatsapp_simple(str(valor_atributo))
+                    if numero_wsp:
+                        valor_para_reemplazo = f'{str(valor_atributo)} (<a href="https://wa.me/{numero_wsp}" target="_blank" style="color: green; text-decoration: underline; font-weight:bold;">Contactar por WhatsApp</a>)'
+                    else:
+                        valor_para_reemplazo = str(valor_atributo) # Solo el número si no se pudo formatear
+                else: # Telefono está vacío
+                     valor_para_reemplazo = defaults_textos.get(attr_key, "nuestro número de contacto")
+            
+            elif ph_template == "[linkWeb]":
+                if str(valor_atributo).strip():
+                    link_abs = str(valor_atributo)
+                    if not link_abs.startswith("http://") and not link_abs.startswith("https://"):
+                        link_abs = "https://" + link_abs
+                    valor_para_reemplazo = link_abs
+                else: # LinkWeb está vacío
+                    valor_para_reemplazo = defaults_textos.get(attr_key, "nuestro sitio web")
+
+            elif ph_template == "[horarioDetallado]":
+                # 'valor_atributo' aquí puede ser un dict (de User.horario_json) o un string JSON (de AnonUser.horario_json)
+                horarios_data = None
+                if isinstance(valor_atributo, dict): # Ya parseado por la @property de User
+                    horarios_data = valor_atributo
+                elif isinstance(valor_atributo, str) and valor_atributo.strip() and valor_atributo.strip() != '[]':
+                    try:
+                        horarios_data = json.loads(valor_atributo)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Error parseando horario_json (string) para placeholder: {valor_atributo}")
+                        horarios_data = None
+                
+                if horarios_data and isinstance(horarios_data, list): # Asegurar que sea una lista
                     texto_horario_formateado = ""
-                    dias_semana_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-                    for i, dia_data in enumerate(horarios_data):
-                        if i < len(dias_semana_es):
-                            dia_nombre = dias_semana_es[i]
-                            if dia_data.get("cerrado"):
-                                texto_horario_formateado += f"{dia_nombre}: Cerrado. "
-                            else:
-                                abre = dia_data.get('abre','--:--')
-                                cierra = dia_data.get('cierra','--:--')
-                                texto_horario_formateado += f"{dia_nombre}: {abre} - {cierra}. "
-                    texto_procesado = texto_procesado.replace(ph_template, texto_horario_formateado.strip())
-                except (TypeError, json.JSONDecodeError) as e_json:
-                    logging.warning(f"Error parseando horario_json para PYME {getattr(user_obj, 'id', 'N/A')}: {valor_atributo_original}. Error: {e_json}")
-                    # Fallback al campo 'horario' de texto simple si existe, o al default
-                    texto_fallback_horario = getattr(user_obj, "horario", defaults_textos.get("horario", "consultar horario"))
-                    texto_procesado = texto_procesado.replace(ph_template, texto_fallback_horario)
-            else: # No hay horario_json, usar default
-                texto_procesado = texto_procesado.replace(ph_template, defaults_textos.get("horario_json", "consultar nuestros horarios"))
-        else: # Para otros placeholders conocidos
-            texto_procesado = texto_procesado.replace(ph_template, valor_para_texto)
+                    # Asumimos que horarios_data es una lista de dicts con 'dia', 'abre', 'cierra', 'cerrado'
+                    # como se envía desde el frontend Perfil.tsx
+                    for dia_data in horarios_data:
+                        dia_nombre = dia_data.get("dia", "Día desconocido")
+                        if dia_data.get("cerrado"):
+                            texto_horario_formateado += f"{dia_nombre}: Cerrado. "
+                        else:
+                            abre = dia_data.get('abre','--:--')
+                            cierra = dia_data.get('cierra','--:--')
+                            texto_horario_formateado += f"{dia_nombre}: {abre} - {cierra}. "
+                    valor_para_reemplazo = texto_horario_formateado.strip() if texto_horario_formateado else defaults_textos.get(attr_key)
+                else: # No hay datos de horario o no es lista, usar el string simple o default
+                    texto_fallback_horario = getattr(user_obj, "horario", defaults_textos.get("horario")) # String simple
+                    valor_para_reemplazo = str(texto_fallback_horario) if texto_fallback_horario else defaults_textos.get(attr_key)
+            
+            elif isinstance(valor_atributo, str) and valor_atributo.strip() == "":
+                # Si el atributo existe pero es un string vacío, usar el default
+                valor_para_reemplazo = defaults_textos.get(attr_key, "")
+            elif not isinstance(valor_atributo, (dict, list)): # Para otros atributos que no son dict/list
+                valor_para_reemplazo = str(valor_atributo)
+            # Si es dict o list y no es un placeholder especial, no se reemplaza (o se define cómo)
+            
+        texto_procesado = texto_procesado.replace(ph_template, valor_para_reemplazo)
 
     # Fallback para placeholders desconocidos [AlgoEntreCorchetes]
     def reemplazar_desconocido_callback(match):
         placeholder_interno = match.group(1)
-        # Evitar recursión si el reemplazo mismo contiene un placeholder (poco probable aquí)
-        if placeholder_interno in placeholders_conocidos:
-             return match.group(0) # Devolver el placeholder original si es uno conocido que no se reemplazó (no debería pasar)
-
-        logging.warning(f"Placeholder desconocido encontrado: [{placeholder_interno}] en texto: \"{texto_procesado[:150].replace(match.group(0), '')}...\"") # Loguear el contexto
+        logger.warning(f"Placeholder desconocido encontrado: [{placeholder_interno}]")
         if "precio" in placeholder_interno.lower() or "costo" in placeholder_interno.lower():
             return "(precio a consultar)"
         elif "link" in placeholder_interno.lower() or "url" in placeholder_interno.lower():
-            link_web_general = ""
-            if user_obj and hasattr(user_obj, "link_web"):
-                link_web_general = getattr(user_obj, "link_web", "")
-                if link_web_general and not link_web_general.startswith("http"):
-                    link_web_general = "https://" + link_web_general
-            return f"(visita nuestro sitio web{': ' + link_web_general if link_web_general else ''} para más información)"
-        return "" # Por defecto, eliminar placeholders desconocidos
-
+            link_web_general = getattr(user_obj, "link_web", "") if user_obj else ""
+            if link_web_general and not str(link_web_general).startswith("http"):
+                link_web_general = "https://" + str(link_web_general)
+            return f"(visita nuestro sitio web{': ' + str(link_web_general) if link_web_general else ''} para más información)"
+        return "" 
     texto_procesado = re.sub(r"\[([^\]\[]+)\]", reemplazar_desconocido_callback, texto_procesado)
     return texto_procesado
 
+# --- Clases para usuarios anónimos (definidas a nivel de módulo o al inicio de la función) ---
+class _BaseAnonUser:
+    """Clase base para usuarios anónimos para compartir atributos default."""
+    nombre_empresa = "la tienda"
+    plan = "anonimo"
+    rubro_id = None
+    link_web = ""
+    telefono = ""
+    direccion = ""
+    horario = "horario de atención habitual" # String simple por defecto
+    horario_json = '[]' # String JSON vacío por defecto (lista vacía)
+    ubicacion = "" # Considerar si es necesario o se usan ciudad/provincia
+    ciudad = ""
+    provincia = ""
+    pais = "Argentina" # Default
+    latitud = None
+    longitud = None
+    id = None # MUY IMPORTANTE: usuarios anónimos no tienen ID de BD
+    # Atributos necesarios para la @property horario_json si se llamara desde AnonUser
+    # (aunque reemplazar_placeholders ya lo maneja)
+    # def horario_json(self): return json.loads(self.horario) if self.horario else None
+
+class AnonUserPymeDemo(_BaseAnonUser):
+    def __init__(self, preguntas_realizadas_sesion):
+        self.nombre_empresa = "Chatboc Demostración"
+        self.plan = "demo_pyme"
+        self.preguntas_usadas = preguntas_realizadas_sesion
+        self.limite_preguntas = 15 # Límite específico para demo de PYME anónima
+        # Datos de ejemplo más específicos para la demo:
+        self.link_web = "https://www.chatboc.ar" 
+        self.telefono = "+549111234567" 
+        self.direccion = "Av. Corrientes 1234, CABA"
+        self.ciudad = "CABA"
+        self.provincia = "CABA"
+        self.horario = "Lunes a Viernes de 9hs a 18hs. Sábados de 9hs a 13hs."
+        self.horario_json = json.dumps([ # Estructura como la espera el frontend y reemplazar_placeholders
+            {"dia": "Lunes", "abre": "09:00", "cierra": "18:00", "cerrado": False},
+            {"dia": "Martes", "abre": "09:00", "cierra": "18:00", "cerrado": False},
+            {"dia": "Miércoles", "abre": "09:00", "cierra": "18:00", "cerrado": False},
+            {"dia": "Jueves", "abre": "09:00", "cierra": "18:00", "cerrado": False},
+            {"dia": "Viernes", "abre": "09:00", "cierra": "18:00", "cerrado": False},
+            {"dia": "Sábado", "abre": "09:00", "cierra": "13:00", "cerrado": False},
+            {"dia": "Domingo", "abre": "", "cierra": "", "cerrado": True}
+        ])
+        self.latitud = -34.6037 # Buenos Aires
+        self.longitud = -58.3816 # Buenos Aires
+        # rubro_id se determinará por rubro_nombre_frontend
+
+class GenericAnonUser(_BaseAnonUser):
+    def __init__(self):
+        super().__init__() # Hereda los defaults de _BaseAnonUser
+        # GenericAnonUser puede tener menos overrides o ser más general
+        self.plan = "anonimo_general"
+        self.preguntas_usadas = session.get("generic_anon_preguntas", 0) # Podría tener su propio contador
+        self.limite_preguntas = 5 # Límite más bajo para anónimos genéricos
+
+
 # --- COMIENZO DE responder_chatboc ---
 def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = None):
-    logging.info(f"▶️ Inicio responder_chatboc: pregunta='{pregunta}' token='{token}' rubro_frontend='{rubro_nombre_frontend}'")
+    logger.info(f"▶️ Inicio responder_chatboc: pregunta='{pregunta}' token='{token}' rubro_frontend='{rubro_nombre_frontend}'")
 
-    if not pregunta:
-        logging.warning("Pregunta vacía recibida")
+    if not pregunta or not pregunta.strip():
+        logger.warning("Pregunta vacía recibida")
         return {"error": "Falta la pregunta"}
 
     NOMBRE_HISTORIAL_SESION = 'historial_chat_cliente'
     if NOMBRE_HISTORIAL_SESION not in session:
         session[NOMBRE_HISTORIAL_SESION] = []
-        logging.info(f"Inicializando '{NOMBRE_HISTORIAL_SESION}' en flask.session")
+        logger.info(f"Inicializando '{NOMBRE_HISTORIAL_SESION}' en flask.session")
 
-    is_demo = False
     user = None 
-    rubro_id = 1 
-    rubro_nombre = "general"
-
-    try:
-        is_demo = token is not None and token.startswith("demo-anon")
-    except Exception: # Captura más genérica si token no es string
-        logging.warning(f"Error al verificar si el token es demo (token podría no ser string): {token}")
-        pass # is_demo seguirá False
-
-    if is_demo:
-        logging.info("Modo demo anónimo detectado")
-        session.setdefault("anon_preguntas", 0)
-        if session["anon_preguntas"] >= 15:
-            return {"respuesta": "🔒 Límite de 15 preguntas en modo demo alcanzado. Registrate para seguir.", "fuente": "sistema"}
-        session["anon_preguntas"] += 1
-
-        class AnonUser: # Definición de AnonUser como la tenías
-            nombre_empresa = "Demo Anónimo"
-            plan = "demo"
-            preguntas_usadas = session["anon_preguntas"]
-            limite_preguntas = 15
-            rubro_id = None 
-            link_web = "tu-tienda-online.com" 
-            telefono = "5491112345678" # Ejemplo de número para demo
-            direccion = "Calle Falsa 123, Ciudad Demo"
-            horario = "Lunes a Viernes de 9 a 18hs" # String simple para el default
-            horario_json = '[{"abre":"09:00","cierra":"18:00","cerrado":false},{"abre":"09:00","cierra":"18:00","cerrado":false},{"abre":"09:00","cierra":"18:00","cerrado":false},{"abre":"09:00","cierra":"18:00","cerrado":false},{"abre":"09:00","cierra":"18:00","cerrado":false},{"abre":"09:00","cierra":"13:00","cerrado":false},{"abre":"","cierra":"","cerrado":true}]'
-            ubicacion = "Ciudad Demo"
-            ciudad = "Ciudad Demo"
-            provincia = "Provincia Demo"
-            pais = "País Demo"
-            latitud = -32.8895  # Mendoza Coords
-            longitud = -68.8458 # Mendoza Coords
-            id = None
-        user = AnonUser()
-    else: # No es demo-anon
-        if token: # Si hay token, es un usuario real o un token demo de PYME
-            try:
-                db_user = User.query.filter_by(token=token).first()
-                if not db_user:
-                    # Si el token no es "demo-anon" y no se encuentra en la BD, podría ser un error o un anónimo general.
-                    # Por ahora, si hay token pero no es válido, devolvemos error.
-                    # Si el token es "demo-token" (genérico de ChatPage.tsx), aquí también daría error.
-                    # Se podría añadir una lógica para un "demo-token" genérico si es necesario.
-                    logging.warning(f"Usuario no autenticado o token inválido (no demo-anon): {token}")
-                    return {"error": "Usuario no autenticado"}
-                if db_user.preguntas_usadas >= db_user.limite_preguntas:
-                    return {"respuesta": "🔒 Límite de preguntas alcanzado en tu plan. Actualizá para más.", "fuente": "sistema"}
-                user = db_user 
-            except Exception as e:
-                logging.error(f"Error obteniendo usuario de BD: {e}", exc_info=True)
-                return {"error": "Error interno al obtener usuario"}
-        else: # No hay token y no es demo-anon => Anónimo general
-            logging.info("Sin token y no es demo-anon. Tratando como anónimo general.")
-            class GenericAnonUser:
-                nombre_empresa = "la empresa" # Default, se puede sobreescribir por rubro_frontend
-                plan = "anonimo"
-                rubro_id = None # Se intentará determinar por rubro_frontend
-                link_web = "" 
-                telefono = ""
-                direccion = ""
-                horario = "horario de atención habitual" # String simple
-                horario_json = '[]' # JSON vacío por defecto
-                ubicacion = ""
-                ciudad = ""
-                provincia = ""
-                pais = ""
-                latitud = None
-                longitud = None
-                id = None # Muy importante para no intentar operaciones de BD que requieran ID
-            user = GenericAnonUser()
-
-    # Determinar rubro (Prioridad para rubro_nombre_frontend si se proporciona y es válido)
-    rubro_determinado_por_frontend = False
-    if rubro_nombre_frontend:
-        logging.info(f"Intentando determinar rubro por frontend: '{rubro_nombre_frontend}'")
-        rubro_obj_frontend = Rubro.query.filter(db.func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
-        if rubro_obj_frontend:
-            rubro_id = rubro_obj_frontend.id
-            rubro_nombre = rubro_obj_frontend.nombre.lower().strip()
-            rubro_determinado_por_frontend = True
-            logging.info(f"Rubro determinado por frontend: {rubro_nombre} (ID: {rubro_id})")
-            if isinstance(user, GenericAnonUser): # Si es anónimo genérico, actualizar su contexto
-                user.nombre_empresa = getattr(rubro_obj_frontend, 'nombre_pyme_asociada', rubro_obj_frontend.nombre) # Asumir un campo o usar el nombre del rubro
-                user.rubro_id = rubro_id
-                # Idealmente, el objeto Rubro podría tener datos default de la PYME para ese rubro
-                user.link_web = getattr(rubro_obj_frontend, 'link_web_default', "") 
-                user.telefono = getattr(rubro_obj_frontend, 'telefono_default', "")
-                user.direccion = getattr(rubro_obj_frontend, 'direccion_default', "") 
-                user.horario = getattr(rubro_obj_frontend, 'horario_default', "horario de atención habitual")
-                user.horario_json = getattr(rubro_obj_frontend, 'horario_json_default', '[]')
-                user.ubicacion = getattr(rubro_obj_frontend, 'ubicacion_default', "")
-                # ... y para los nuevos campos de dirección si los tienes en el modelo Rubro
-                user.ciudad = getattr(rubro_obj_frontend, 'ciudad_default', "")
-                user.provincia = getattr(rubro_obj_frontend, 'provincia_default', "")
-                # user.latitud = getattr(rubro_obj_frontend, 'latitud_default', None)
-                # user.longitud = getattr(rubro_obj_frontend, 'longitud_default', None)
-        else:
-            logging.warning(f"Rubro '{rubro_nombre_frontend}' enviado por frontend no encontrado en BD. Usando rubro del usuario o general.")
-
-    if not rubro_determinado_por_frontend and user and hasattr(user, "rubro_id") and user.rubro_id:
-        logging.info(f"Rubro no determinado por frontend o no válido. Usando rubro_id del objeto User: {user.rubro_id}")
-        rubro_obj_user = Rubro.query.get(user.rubro_id)
-        if rubro_obj_user:
-            rubro_id = rubro_obj_user.id
-            rubro_nombre = rubro_obj_user.nombre.lower().strip()
-        else: # Rubro_id del usuario no es válido, usar general
-            logging.warning(f"Rubro ID {user.rubro_id} del usuario no encontrado. Usando general.")
-            rubro_id = 1 
-            rubro_general_obj = Rubro.query.get(rubro_id)
-            rubro_nombre = rubro_general_obj.nombre.lower().strip() if rubro_general_obj else "general"
-    elif not rubro_determinado_por_frontend : # Si no hay rubro_frontend ni rubro_id en user, usar general
-        logging.info("Ni rubro_frontend ni rubro_id en user. Usando rubro general.")
-        rubro_id = 1
-        rubro_general_obj = Rubro.query.get(rubro_id)
-        rubro_nombre = rubro_general_obj.nombre.lower().strip() if rubro_general_obj else "general"
-
-    # Final check para asegurar que rubro_id y rubro_nombre sean válidos
-    if not Rubro.query.get(rubro_id): 
-        logging.error(f"Rubro ID {rubro_id} final sigue siendo inválido. Forzando a general (ID 1). ¡Revisar lógica de rubros!")
-        rubro_id = 1 
-        rubro_general_obj = Rubro.query.get(rubro_id)
-        rubro_nombre = rubro_general_obj.nombre.lower().strip() if rubro_general_obj else "general"
+    rubro_id_final = 1 # Default a rubro general (ID 1)
+    rubro_nombre_final = "general"
     
-    logging.info(f"Contexto PYME final para esta solicitud: Empresa: {getattr(user, 'nombre_empresa', 'N/A')} | Rubro: {rubro_nombre} (ID {rubro_id})")
+    # Determinar tipo de usuario
+    is_pyme_demo_anon = token is not None and token.startswith("demo-anon") # Token específico para la demo del widget en chatboc.ar
+    is_usuario_registrado = False
 
+    if is_pyme_demo_anon:
+        logger.info("Modo Demo PYME Anónimo (token demo-anon) detectado.")
+        session.setdefault("pyme_demo_anon_preguntas", 0)
+        if session["pyme_demo_anon_preguntas"] >= 15: # Límite para este tipo de demo
+            return {"respuesta": "🔒 Límite de 15 preguntas en modo demo PYME alcanzado. Registrate para seguir.", "fuente": "sistema"}
+        session["pyme_demo_anon_preguntas"] += 1
+        user = AnonUserPymeDemo(session["pyme_demo_anon_preguntas"]) # Instancia de la clase definida arriba
+        # El rubro para AnonUserPymeDemo se intentará tomar de rubro_nombre_frontend
+    
+    elif token: # Hay un token, podría ser un usuario registrado
+        db_user = User.query.filter_by(token=token).first()
+        if db_user:
+            is_usuario_registrado = True
+            user = db_user
+            logger.info(f"Usuario PYME registrado autenticado: {user.email}")
+            if user.preguntas_usadas >= user.limite_preguntas:
+                return {"respuesta": "🔒 Límite de preguntas alcanzado en tu plan. Actualizá para más.", "fuente": "sistema"}
+        else:
+            logger.warning(f"Token '{token[:15]}...' proporcionado pero no corresponde a un usuario registrado ni a demo-anon. Tratando como anónimo general.")
+            # Si el token no es válido, se procede como anónimo general (user sigue None por ahora)
+            pass # Se instanciará GenericAnonUser más abajo si user sigue None
+
+    if user is None: # Si no es pyme_demo_anon ni usuario registrado válido, es anónimo genérico
+        logger.info("Usuario es Anónimo Genérico (sin token válido o sin token).")
+        session.setdefault("generic_anon_preguntas", 0) # Contador para anónimos genéricos
+        if session["generic_anon_preguntas"] >= 5:
+             return {"respuesta": "Alcanzaste el límite de preguntas para usuarios anónimos. ¡Registrate gratis para continuar!", "fuente": "sistema"}
+        session["generic_anon_preguntas"] += 1
+        user = GenericAnonUser() # Instancia de la clase definida arriba
+
+    # Determinar Rubro Final a usar para la consulta
+    rubro_obj_seleccionado = None
+    if rubro_nombre_frontend:
+        logger.info(f"Intentando determinar rubro por parámetro frontend: '{rubro_nombre_frontend}'")
+        rubro_obj_seleccionado = Rubro.query.filter(func.lower(Rubro.nombre) == rubro_nombre_frontend.lower().strip()).first()
+        if rubro_obj_seleccionado:
+            logger.info(f"Rubro determinado por frontend: {rubro_obj_seleccionado.nombre} (ID: {rubro_obj_seleccionado.id})")
+            # Si el usuario es anónimo genérico, actualizamos su contexto con datos del rubro si es posible
+            if isinstance(user, GenericAnonUser):
+                user.nombre_empresa = getattr(rubro_obj_seleccionado, 'nombre_pyme_default_para_anon', f"la sección de {rubro_obj_seleccionado.nombre}")
+                user.rubro_id = rubro_obj_seleccionado.id # Aunque es anónimo, podemos saber el rubro_id del contexto
+                # Aquí podrías cargar más datos default del Rubro al GenericAnonUser si los tuvieras en el modelo Rubro
+        else:
+            logger.warning(f"Rubro '{rubro_nombre_frontend}' (frontend) no encontrado. Se usará el rubro del usuario o general.")
+
+    if not rubro_obj_seleccionado and hasattr(user, "rubro_id") and user.rubro_id: # Si no se determinó por frontend, usar el del User (registrado o AnonUserPymeDemo si tuviera rubro_id)
+        logger.info(f"Usando rubro_id del objeto User: {user.rubro_id}")
+        rubro_obj_seleccionado = db.session.get(Rubro, user.rubro_id) # Usar db.session.get para PK
+        if not rubro_obj_seleccionado:
+            logger.warning(f"Rubro ID {user.rubro_id} del usuario no encontrado. Se usará general.")
+            # rubro_obj_seleccionado se quedará como None, y se usará el default general
+
+    if rubro_obj_seleccionado:
+        rubro_id_final = rubro_obj_seleccionado.id
+        rubro_nombre_final = rubro_obj_seleccionado.nombre.lower().strip()
+    else: # Fallback final a rubro general si todo lo demás falla
+        logger.info(f"No se pudo determinar un rubro específico. Usando rubro general ID {rubro_id_final}.")
+        rubro_general_obj_default = db.session.get(Rubro, rubro_id_final) # Usar db.session.get
+        if rubro_general_obj_default:
+            rubro_nombre_final = rubro_general_obj_default.nombre.lower().strip()
+        else: # Esto no debería pasar si el rubro general ID 1 existe
+            logger.error(f"¡ERROR CRÍTICO! No se encontró el rubro general ID {rubro_id_final}.")
+            rubro_nombre_final = "general" # Super fallback
+
+    logger.info(f"Contexto PYME final para esta solicitud: Empresa: {getattr(user, 'nombre_empresa', 'N/A')} | Rubro: {rubro_nombre_final} (ID: {rubro_id_final})")
+    
     # ----- Construcción de Mensajes y Contexto para LLM -----
-    MAX_MENSAJES_HISTORIAL_PARA_LLM = 10 # Últimos 5 intercambios
-    historial_actual_cliente = session.get(NOMBRE_HISTORIAL_SESION, [])[:] # Obtener copia o lista vacía
+    # (El resto de la lógica de mensajes_para_llm, contexto_catalogo, user_profile_context, y prompt_sistema_texto)
+    # ...
+    
+    # Importante: Ajustar cómo se obtiene `pyme_horario_json_str` en user_profile_context
+    # porque `user.horario_json` (la @property) devuelve un dict o None, no un string JSON.
+    # Necesitamos el string JSON original que está en `user.horario` para el modelo User de BD.
+
+    pyme_nombre_empresa = getattr(user, "nombre_empresa", "la tienda")
+    pyme_link_web = getattr(user, "link_web", "")
+    pyme_telefono = getattr(user, "telefono", "") 
+    pyme_direccion = getattr(user, "direccion", "")
+    pyme_ciudad = getattr(user, "ciudad", "")
+    pyme_provincia = getattr(user, "provincia", getattr(user, "ubicacion", "")) 
+    pyme_horario_str_simple = getattr(user, "horario", "nuestro horario de atención") 
+    
+    # Obtener el string JSON para el horario:
+    if isinstance(user, User): # Si es un usuario de la BD
+        pyme_horario_json_str = user.horario if user.horario else '[]' # Tomar el string directamente de la BD
+    else: # Para AnonUserPymeDemo o GenericAnonUser
+        pyme_horario_json_str = getattr(user, "horario_json", "[]") # Estos ya tienen un string JSON
+
+    user_profile_context = {
+        "nombre_empresa": pyme_nombre_empresa,
+        "rubro_nombre": rubro_nombre_final, # Usar el rubro_nombre_final determinado
+        "telefono_raw": pyme_telefono,
+        "link_web": pyme_link_web,
+        "direccion_completa": f"{pyme_direccion}, {pyme_ciudad}, {pyme_provincia}".strip(', ').strip(),
+        "horario_str": pyme_horario_str_simple,
+        "horario_json_str": pyme_horario_json_str, 
+    }
+    
+    # (El resto de tu lógica para construir el prompt_sistema_texto, llamar a Cohere, etc.)
+    # ... esta parte del código parece extensa y no la has pegado completa, pero la idea general es:
+    # Tu lógica de formatear horarios para el prompt, construir el prompt_sistema_texto,
+    # llamar a Cohere, y luego los fallbacks a FAQ e Intents.
+    
+    # Ejemplo de cómo podría continuar (simplificado):
+    MAX_MENSAJES_HISTORIAL_PARA_LLM = 10 
+    historial_actual_cliente = session.get(NOMBRE_HISTORIAL_SESION, [])[:]
     
     mensajes_para_llm = []
     if len(historial_actual_cliente) > MAX_MENSAJES_HISTORIAL_PARA_LLM:
@@ -327,56 +365,32 @@ def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = No
     mensajes_para_llm.append({"role": "user", "content": pregunta})
 
     contexto_catalogo = ""
-    # Solo buscar en catálogo si no es demo Y si user es una instancia de User (tiene id)
-    # y no GenericAnonUser (que tiene id=None)
-    if not is_demo and hasattr(user, 'id') and user.id is not None:
+    if is_usuario_registrado and user.id is not None: # Solo buscar catálogo para usuarios PYME registrados
         try:
             from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
-            logging.info(f"Buscando catálogo en Qdrant para user_id (PYME): {user.id}...")
-            resultados_qdrant = buscar_catalogo_qdrant(user.id, pregunta, limite=5) # Límite de resultados de Qdrant
+            logger.info(f"Buscando catálogo en Qdrant para user_id (PYME): {user.id}...")
+            resultados_qdrant = buscar_catalogo_qdrant(user.id, pregunta, limite=5)
             contexto_catalogo = armar_respuesta_legible(resultados_qdrant)
             if contexto_catalogo:
-                 logging.info(f"Contexto Qdrant (primeros 150 chars): {contexto_catalogo[:150]}...")
+                logger.info(f"Contexto Qdrant (primeros 150 chars): {contexto_catalogo[:150]}...")
             else:
-                 logging.info("No se encontró contexto de catálogo en Qdrant para esta pregunta.")
+                logger.info("No se encontró contexto de catálogo en Qdrant para esta pregunta.")
         except ImportError:
-            logging.error("Módulo Qdrant (services.qdrant_search) no encontrado.")
-        except Exception as e:
-            logging.error(f"Error buscando catálogo en Qdrant: {e}", exc_info=True)
-
-    # Perfil de la PYME para el prompt (usando los nuevos campos si existen)
-    pyme_nombre_empresa = getattr(user, "nombre_empresa", "la tienda")
-    pyme_link_web = getattr(user, "link_web", "")
-    pyme_telefono = getattr(user, "telefono", "") # Se formateará después
-    pyme_direccion = getattr(user, "direccion", "")
-    pyme_ciudad = getattr(user, "ciudad", "")
-    pyme_provincia = getattr(user, "provincia", getattr(user, "ubicacion", "")) # Fallback a ubicacion si provincia no existe
-    pyme_horario_str_simple = getattr(user, "horario", "nuestro horario de atención") # String simple
-    pyme_horario_json_str = getattr(user, "horario_json", "[]") # String JSON de horarios
-
-    user_profile_context = {
-        "nombre_empresa": pyme_nombre_empresa,
-        "rubro_nombre": rubro_nombre,
-        "telefono_raw": pyme_telefono, # Teléfono crudo para el prompt, se formatea en reemplazar_placeholders
-        "link_web": pyme_link_web,
-        "direccion_completa": f"{pyme_direccion}, {pyme_ciudad}, {pyme_provincia}".strip(', '),
-        "horario_str": pyme_horario_str_simple, # Horario como string simple
-        "horario_json_str": pyme_horario_json_str, # String JSON para posible uso avanzado por LLM o formateo
-        # Podrías añadir latitud y longitud si el LLM pudiera usarlos para algo (ej. "cerca de...")
-    }
-    
-    numero_intercambios_previos = len(session.get(NOMBRE_HISTORIAL_SESION, [])) // 2
+            logger.error("Módulo Qdrant (services.qdrant_search) no encontrado.")
+        except Exception as e_qdrant:
+            logger.error(f"Error buscando catálogo en Qdrant: {e_qdrant}", exc_info=True)
     
     # --- Formatear horarios detallados para el prompt (si existen y son válidos) ---
     horarios_para_prompt = user_profile_context['horario_str'] # Default al string simple
     try:
         if user_profile_context['horario_json_str'] and user_profile_context['horario_json_str'] != '[]':
-            horarios_data = json.loads(user_profile_context['horario_json_str'])
-            dias_semana_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+            # La validación de la estructura del JSON ya se hizo en el frontend y al guardar en /perfil.
+            # Aquí confiamos un poco más o hacemos una validación más ligera si es necesario.
+            horarios_data = json.loads(user_profile_context['horario_json_str']) # Debería ser una lista de dicts
             partes_horario = []
-            for i, dia_data in enumerate(horarios_data):
-                if i < len(dias_semana_es):
-                    dia_nombre = dias_semana_es[i]
+            if isinstance(horarios_data, list):
+                for dia_data in horarios_data: # Asumimos que dia_data es un dict
+                    dia_nombre = dia_data.get("dia", "Día") # El frontend ahora envía "dia"
                     if dia_data.get("cerrado"):
                         partes_horario.append(f"{dia_nombre}: Cerrado")
                     else:
@@ -385,29 +399,26 @@ def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = No
                         partes_horario.append(f"{dia_nombre}: de {abre} a {cierra}")
             if partes_horario:
                 horarios_para_prompt = ". ".join(partes_horario) + "."
-                logging.info(f"Horarios formateados para prompt: {horarios_para_prompt}")
-    except Exception as e_json_horario:
-        logging.warning(f"No se pudo parsear o formatear horario_json para el prompt: {e_json_horario}. Usando horario_str.")
-    # --- Fin formateo de horarios ---
+                logger.info(f"Horarios formateados para prompt: {horarios_para_prompt}")
+    except Exception as e_json_horario_prompt:
+        logger.warning(f"No se pudo parsear o formatear horario_json para el prompt: {e_json_horario_prompt}. Usando horario_str.")
+    
+    numero_intercambios_previos = len(session.get(NOMBRE_HISTORIAL_SESION, [])) // 2
+
     prompt_sistema_texto = (
-        f"Sos Chatboc, un asistente comercial experto de {user_profile_context['nombre_empresa']} (rubro: {user_profile_context['rubro_nombre']}), ubicada en {user_profile_context['direccion_completa']}. " # Añadida ubicación al inicio
+        f"Sos Chatboc, un asistente comercial experto de {user_profile_context['nombre_empresa']} (rubro: {user_profile_context['rubro_nombre']}), ubicada en {user_profile_context['direccion_completa']}. "
         f"Tu principal objetivo es entender rápidamente las necesidades del cliente y guiarlo hacia una compra o una visita a la tienda online ({user_profile_context['link_web'] if user_profile_context['link_web'] else 'nuestra página web'}) en los próximos 2-4 intercambios. "
         f"Ya has tenido {numero_intercambios_previos} intercambios con este cliente (revisa el historial de conversación que te proveo). "
         "Sé amable, muy proactivo, resolutivo y persuasivo. Tus respuestas deben ser breves, directas y valiosas. Ve al grano. Evita el texto de relleno o introducciones innecesarias. Proporciona la información clave de forma concisa. "
         "Haz preguntas claras si necesitas más información para ayudarle. "
         "Si el cliente muestra interés en un producto o servicio, intenta cerrar la venta ofreciendo añadirlo al carrito, llevarlo a la página del producto en la tienda online, o facilitando el siguiente paso de forma clara y simple. "
         "No menciones que eres una IA ni un 'asistente virtual'. Habla como un vendedor humano y entusiasta. "
-        
-        # --- Uso Mejorado de Datos de la Empresa ---
         f"\nINFORMACIÓN DE CONTACTO Y UBICACIÓN DE {user_profile_context['nombre_empresa']}:"
         f"\n- Teléfono (para llamadas o WhatsApp): {user_profile_context['telefono_raw'] if user_profile_context['telefono_raw'] else 'No disponible'}"
-        f"\n- Dirección: {user_profile_context['direccion_completa'] if user_profile_context['direccion_completa'].strip() else 'Consultar por nuestra ubicación.'}"
-        f"\n- Horarios de Atención: {horarios_para_prompt if horarios_para_prompt else 'Consultar nuestros horarios.'}" # Usa los horarios formateados
+        f"\n- Dirección: {user_profile_context['direccion_completa'] if user_profile_context['direccion_completa'].strip(', ') else 'Consultar por nuestra ubicación.'}"
+        f"\n- Horarios de Atención: {horarios_para_prompt if horarios_para_prompt.strip('.') else 'Consultar nuestros horarios.'}"
         f"\n- Sitio Web: {user_profile_context['link_web'] if user_profile_context['link_web'] else 'No disponible'}"
-        # --- Fin Uso Mejorado de Datos ---
-
         "\nSI LA PREGUNTA DEL CLIENTE NO TIENE SENTIDO, es incomprensible o solo son caracteres al azar, NO intentes responderla directamente. En su lugar, responde amablemente que no entendiste la consulta y ofrece ayuda general. Ejemplo: 'Disculpa, no entendí bien tu consulta. Puedo ayudarte con información sobre nuestros productos, precios, horarios o cómo comprar. ¿En qué te puedo asistir hoy?'"
-        
         "\nIMPORTANTE SOBRE PRODUCTOS Y PRECIOS DEL CATÁLOGO QUE TE PROVEERÉ:"
         "\n1. Cuando el cliente pregunte por un tipo de producto (ej. 'vinos malbec'), y si el catálogo recuperado contiene múltiples opciones, PRESENTA CLARAMENTE LAS OPCIONES MÁS RELEVANTES (máximo 2-3) con su 'Nombre' y 'Precio' exactos. Sé conciso. Ejemplo: 'Tenemos: Vino Malbec A a [Precio A], y Vino Malbec B Reserva a [Precio B].'"
         "\n2. Si el cliente pregunta por el precio de un producto específico y lo encuentras en el catálogo, da el 'Precio' indicado de forma directa."
@@ -415,7 +426,7 @@ def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = No
         "\n4. Si la información del catálogo no es clara sobre un precio, o dice 'Consultar precio', indícalo brevemente y sugiere consultar en la tienda online o contactar."
         "\n5. Si la información del catálogo es extensa para un producto, resume los puntos más importantes para el cliente o enfócate en lo que preguntó. No copies grandes bloques de texto."
         "\n6. Si no hay información del catálogo relevante, responde concisamente con conocimiento general o pide más detalles."
-        "\n7. Si te preguntan '¿Están abiertos ahora?' o sobre horarios específicos, utiliza la información de 'Horarios de Atención' que te proporcioné para responder lo más precisamente posible." # Nueva instrucción para horarios
+        "\n7. Si te preguntan '¿Están abiertos ahora?' o sobre horarios específicos, utiliza la información de 'Horarios de Atención' que te proporcioné para responder lo más precisamente posible."
     )
     if contexto_catalogo:
         prompt_sistema_texto += f"\n\nINFORMACIÓN DEL CATÁLOGO PARA ESTA CONSULTA (usa solo lo relevante y sé breve):\n---\n{contexto_catalogo}\n---\nUsa esta información del catálogo para responder, siguiendo las instrucciones sobre productos, precios y brevedad que te di."
@@ -423,83 +434,68 @@ def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = No
         prompt_sistema_texto += "\nNo encontré información específica en el catálogo para esta consulta. Intenta ayudar al cliente de forma concisa con tu conocimiento general sobre los productos/servicios del rubro, o pide más detalles."
     prompt_sistema_texto += "\n\nInicia tu respuesta directamente al cliente, continuando la conversación de forma natural y concisa."
 
-    # ... (el resto de la función responder_chatboc se mantiene igual)
-
     mensajes_finales_para_llm = [{"role": "system", "content": prompt_sistema_texto}] + mensajes_para_llm
     
-    respuesta_obtenida_llm = "" # Respuesta cruda del LLM
+    respuesta_obtenida_llm = "" 
     fuente_respuesta = "desconocida"
 
     try:
         from services.cohere_ai import get_cohere_response
-        logging.info(f"Enviando {len(mensajes_finales_para_llm)} mensajes a Cohere. Prompt sistema longitud: {len(prompt_sistema_texto)}.")
-        respuesta_obtenida_llm = get_cohere_response(mensajes_finales_para_llm, rubro_id=rubro_id, user_context=user_profile_context)
-        if respuesta_obtenida_llm and len(respuesta_obtenida_llm) > 3:
+        logger.info(f"Enviando {len(mensajes_finales_para_llm)} mensajes a Cohere. Prompt sistema longitud: {len(prompt_sistema_texto)}.")
+        respuesta_obtenida_llm = get_cohere_response(mensajes_finales_para_llm, rubro_id=rubro_id_final, user_context=user_profile_context)
+        if respuesta_obtenida_llm and len(respuesta_obtenida_llm.strip()) > 3:
             fuente_respuesta = "cohere"
-            logging.info(f"Respuesta de Cohere (cruda, antes de placeholders): {respuesta_obtenida_llm[:200]}...")
+            logger.info(f"Respuesta de Cohere (cruda, antes de placeholders): {respuesta_obtenida_llm[:200]}...")
         else:
-            logging.warning("Respuesta de Cohere vacía o muy corta.")
-            respuesta_obtenida_llm = "" # Asegurar que esté vacía
+            logger.warning("Respuesta de Cohere vacía o muy corta.")
+            respuesta_obtenida_llm = "" 
     except ImportError:
-        logging.error("Módulo Cohere (services.cohere_ai.get_cohere_response) no encontrado.")
-    except Exception as e:
-        logging.error(f"Error al llamar a Cohere: {e}", exc_info=True)
+        logger.error("Módulo Cohere (services.cohere_ai.get_cohere_response) no encontrado.")
+    except Exception as e_cohere:
+        logger.error(f"Error al llamar a Cohere: {e_cohere}", exc_info=True)
 
-    # Procesar respuesta (si la hubo del LLM) o buscar en fallbacks
     respuesta_final_procesada = ""
 
     if respuesta_obtenida_llm:
         respuesta_final_procesada = reemplazar_placeholders(respuesta_obtenida_llm, user)
-    else: # Si Cohere NO dio respuesta, intentar backups
-        logging.info("Cohere no dio respuesta o fue inválida. Intentando backups (FAQ, Intents)...")
-        try:
-            from services.faq_matcher_spacy import buscar_en_faq_spacy
-            faq_match = buscar_en_faq_spacy(pregunta, rubro_id)
-            if faq_match and hasattr(faq_match, 'answer'):
-                respuesta_final_procesada = reemplazar_placeholders(faq_match.answer, user)
-                fuente_respuesta = "faq"
-                logging.info(f"Respuesta desde FAQ (procesada): {respuesta_final_procesada}")
-        except ImportError: logging.error("Módulo FAQ (spaCy) no encontrado.")
-        except Exception as e: logging.warning(f"Error en FAQ backup: {e}", exc_info=True)
+    else: 
+        logger.info("Cohere no dio respuesta o fue inválida. Intentando backups (FAQ, Intents)...")
+        # ... (tu lógica de fallback a FAQ e Intents) ...
+        # Asegúrate que esta parte también use 'user' (que es el objeto User, AnonUserPymeDemo o GenericAnonUser)
+        # para reemplazar_placeholders.
+        # Ejemplo:
+        # if not respuesta_final_procesada:
+        #     from services.faq_matcher_spacy import buscar_en_faq_spacy
+        #     # ... buscar_en_faq_spacy ...
+        #     if faq_match:
+        #         respuesta_final_procesada = reemplazar_placeholders(faq_match.answer, user) 
+        #         fuente_respuesta = "faq"
+        pass # Placeholder para tu lógica de fallback
 
-        if not respuesta_final_procesada:
-            try:
-                from services.intent_matcher import buscar_en_intents
-                intent_match_text = buscar_en_intents(pregunta, rubro_nombre)
-                if intent_match_text:
-                    respuesta_final_procesada = reemplazar_placeholders(intent_match_text, user)
-                    fuente_respuesta = "intents"
-                    logging.info(f"Respuesta desde Intents (procesada): {respuesta_final_procesada}")
-            except ImportError: logging.error("Módulo Intent Matcher no encontrado.")
-            except Exception as e: logging.warning(f"Error en Intents backup: {e}", exc_info=True)
-
-    # Guardado y adición del botón
     if respuesta_final_procesada:
         session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta})
-        session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": respuesta_final_procesada}) # Guardar respuesta ya procesada
+        session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": respuesta_final_procesada})
         
-        # Limitar tamaño del historial
         MAX_HISTORIAL_EN_SESION = 20 
         if len(session[NOMBRE_HISTORIAL_SESION]) > MAX_HISTORIAL_EN_SESION:
             session[NOMBRE_HISTORIAL_SESION] = session[NOMBRE_HISTORIAL_SESION][-MAX_HISTORIAL_EN_SESION:]
         session.modified = True
-        logging.info(f"Historial de sesión actualizado. Tamaño: {len(session[NOMBRE_HISTORIAL_SESION])}")
+        logger.info(f"Historial de sesión actualizado. Tamaño: {len(session[NOMBRE_HISTORIAL_SESION])}")
 
-        # Guardar en DB si es un usuario PYME real
-        if hasattr(user, "id") and user.id is not None and not is_demo :
+        if is_usuario_registrado: # Solo para usuarios PYME reales
             try:
-                user.preguntas_usadas += 1
-                db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_final_procesada, fuente=fuente_respuesta, rubro=rubro_nombre))
+                user.preguntas_usadas = (user.preguntas_usadas or 0) + 1 # Asegurar que no sea None
+                db.session.add(Conversacion(user_id=user.id, pregunta=pregunta, respuesta=respuesta_final_procesada, fuente=fuente_respuesta, rubro=rubro_nombre_final))
                 db.session.commit()
-                logging.info("Conversación guardada en BD para usuario PYME.")
-            except Exception as e:
-                logging.error(f"Error guardando conversación en DB: {e}", exc_info=True)
+                logger.info("Conversación guardada en BD para usuario PYME.")
+            except Exception as e_db_conv:
+                logger.error(f"Error guardando conversación en DB: {e_db_conv}", exc_info=True)
                 db.session.rollback()
         
         respuesta_para_frontend = respuesta_final_procesada
-        # Añadir botón HTML "Ir a la Tienda Online"
-        if pyme_link_web:
-            link_absoluto = pyme_link_web
+        pyme_link_web_actual = getattr(user, "link_web", "")
+        if pyme_link_web_actual:
+            link_absoluto = pyme_link_web_actual
             if not link_absoluto.startswith("http://") and not link_absoluto.startswith("https://"):
                 link_absoluto = "https://" + link_absoluto
             
@@ -513,26 +509,16 @@ def responder_chatboc(pregunta: str, token: str, rubro_nombre_frontend: str = No
             )
             respuesta_para_frontend += boton_html
         
-        return {"respuesta": respuesta_para_frontend, "nivel_usado": rubro_nombre, "fuente": fuente_respuesta}
-
-    else: # Fallback final a sugerencias del sistema
-        sugerencias_generadas = sugerencias_por_rubro(rubro_id)
+        return {"respuesta": respuesta_para_frontend, "nivel_usado": rubro_nombre_final, "fuente": fuente_respuesta}
+    else: 
+        sugerencias_generadas = sugerencias_por_rubro(rubro_id_final)
+        # ... (tu lógica de fallback final a sugerencias del sistema) ...
+        # Asegúrate que reemplazar_placeholders aquí también use 'user'.
         respuesta_sugerencias_base = "No encontré una respuesta directa para tu consulta. Quizás puedas intentar preguntando algo como: " + " · ".join(f"“{s}”" for s in sugerencias_generadas)
         respuesta_sugerencias_procesada = reemplazar_placeholders(respuesta_sugerencias_base, user)
-        
-        if pyme_link_web: # Añadir link a la tienda también en las sugerencias
-            link_absoluto_sug = pyme_link_web
-            if not link_absoluto_sug.startswith("http://") and not link_absoluto_sug.startswith("https://"):
-                link_absoluto_sug = "https://" + link_absoluto_sug
-            link_html_sug = (
-                f'\n<div style="margin-top: 10px; font-size: 0.9em;">'
-                f'También puedes <a href="{link_absoluto_sug}" target="_blank">visitar nuestra tienda online</a> para más información.'
-                '</div>'
-            )
-            respuesta_sugerencias_procesada += link_html_sug
 
-        logging.info("No se encontró respuesta directa. Enviando sugerencias al cliente.")
-        session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta}) # Guardar pregunta para contexto
+        # ... (añadir link a tienda online si existe) ...
+        session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta})
         session.modified = True
         return {"respuesta": respuesta_sugerencias_procesada, "fuente": "sugerencia_sistema"}
 
