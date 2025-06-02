@@ -32,30 +32,32 @@ def embed_textos(textos: List[str], input_type: str = "search_document") -> List
     logger.info(f"✅ [COHERE EMBED] Embeddings totales: {len(all_embeddings)}.")
     return all_embeddings
 
-# ESTA ES LA VERSIÓN DE get_cohere_response QUE DEBES USAR
 def get_cohere_response(message: str, 
-                        chat_history: Optional[List[Dict[str, str]]] = None, # Historial USER/CHATBOT
+                        chat_history: Optional[List[Dict[str, str]]] = None, # Historial USER/CHATBOT de logic.py
                         preamble: Optional[str] = None, # Este es el system_prompt de logic.py
                         model: str = "command-r-plus",
                         temperature: float = 0.3,
-                        # rubro_id y user_context se reciben pero no se usan directamente en co_client.chat aquí
+                        # Los siguientes se reciben pero no se usan directamente por co_client.chat
                         rubro_id: Optional[int] = None, 
                         user_context: Optional[Dict[str, Any]] = None 
                         ) -> str:
     logger.info(f"➡️ [COHERE CHAT] Iniciando get_cohere_response. Pregunta: '{message[:70]}...'")
     
-    # Construir el historial para la API de Cohere.
-    # El 'preamble' (prompt del sistema) se pasa directamente como argumento a co_client.chat().
-    # 'chat_history' debe ser solo la conversación USER/CHATBOT.
-    
-    chat_history_for_api_call = chat_history if chat_history else []
-
-    if preamble:
-        logger.info(f"[COHERE CHAT] Usando Preamble (System Prompt) (primeros 100 chars): {preamble[:100]}...")
+    # --- CONSTRUCCIÓN DEL HISTORIAL PARA LA API ---
+    # El 'preamble' (prompt del sistema) se añade como el primer mensaje con rol "SYSTEM".
+    chat_history_for_api_call: List[Dict[str, str]] = []
+    if preamble and isinstance(preamble, str) and preamble.strip():
+        chat_history_for_api_call.append({"role": "SYSTEM", "message": preamble})
+        logger.info(f"[COHERE CHAT] System prompt (preamble) añadido como primer mensaje al historial para API.")
     else:
-        logger.info("[COHERE CHAT] No se proporcionó Preamble (System Prompt).")
+        logger.info("[COHERE CHAT] No se proporcionó preamble (System Prompt) o estaba vacío.")
+
+    if chat_history: # chat_history ya tiene roles USER/CHATBOT
+        chat_history_for_api_call.extend(chat_history)
+        logger.info(f"[COHERE CHAT] Historial de conversación previo añadido ({len(chat_history)} mensajes).")
     
-    logger.info(f"[COHERE CHAT] Historial de conversación (sin system prompt aquí): {len(chat_history_for_api_call)} mensajes.")
+    logger.info(f"[COHERE CHAT] Total mensajes para API (incl. SYSTEM si existe): {len(chat_history_for_api_call)}")
+    # --- FIN CONSTRUCCIÓN HISTORIAL ---
 
     if not COHERE_API_KEY:
         logger.error("❌ [COHERE CHAT] COHERE_API_KEY no está configurada.")
@@ -71,13 +73,14 @@ def get_cohere_response(message: str,
         return "Error interno: No se pudo inicializar el asistente IA (C02)."
 
     try:
-        logger.info(f"➡️ [COHERE CHAT CALL] Modelo: '{model}'. Temperatura: {temperature}. Mensaje: '{message[:70]}'. Historial: {len(chat_history_for_api_call)}. Preamble usado: {'Sí' if preamble else 'No'}")
+        logger.info(f"➡️ [COHERE CHAT CALL] Modelo: '{model}'. Temperatura: {temperature}. Mensaje: '{message[:70]}'. Historial para API (con SYSTEM): {len(chat_history_for_api_call)}.")
         
-        # --- LLAMADA CORREGIDA Y MÁS COMÚN AL SDK DE COHERE ---
+        # --- LLAMADA A co_client.chat() CORREGIDA ---
+        # NO se usa el argumento 'preamble' aquí.
+        # El prompt del sistema ya está en 'chat_history_for_api_call'.
         response = co_client.chat(
-            message=message,
-            chat_history=chat_history_for_api_call, # Solo el historial USER/CHATBOT
-            preamble=preamble,                     # El prompt del sistema va aquí
+            message=message, # La pregunta actual del usuario
+            chat_history=chat_history_for_api_call if chat_history_for_api_call else None, 
             model=model, 
             temperature=temperature,
         )
@@ -89,11 +92,11 @@ def get_cohere_response(message: str,
 
     except cohere.CohereAPIError as e_api:
         logger.error(f"❌ [COHERE CHAT] Error de API Cohere: Status {getattr(e_api, 'http_status', 'N/A')} - {e_api.message}. Tipo: {e_api.__class__.__name__}", exc_info=False)
-        # ... (resto del manejo de errores de API)
-        if hasattr(e_api, 'http_status') and e_api.http_status == 429: return "Nuestro asistente IA está con alta demanda. Intenta en unos momentos."
-        return "Lo siento, no pude procesar tu solicitud con el asistente IA (E01)."
-    except TypeError as te: # Capturar específicamente TypeError
-        logger.error(f"❌ [COHERE CHAT] TypeError en llamada a co_client.chat(): {te}. SDK de Cohere podría haber cambiado o argumentos incorrectos.", exc_info=True)
+        if hasattr(e_api, 'http_status') and e_api.http_status == 429:
+            return "Nuestro asistente IA está experimentando una alta demanda. Por favor, intenta nuevamente en unos momentos."
+        return "Lo siento, no pude procesar tu solicitud en este momento con el asistente IA (E01)."
+    except TypeError as te: 
+        logger.error(f"❌ [COHERE CHAT] TypeError en llamada a co_client.chat(): {te}. Verifica los argumentos y la versión del SDK de Cohere.", exc_info=True)
         return "Lo siento, hubo un problema técnico con nuestro asistente IA (TE01)."
     except Exception as e_general:
         logger.error(f"❌ [COHERE CHAT] Error genérico durante la llamada a Cohere: {e_general}", exc_info=True)
