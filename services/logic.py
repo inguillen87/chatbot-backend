@@ -216,6 +216,9 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         "\n4. Si el precio dice 'Consultar' o no está claro, indícalo y sugiere alternativas (ver online, contactar)."
         "\n5. Si la descripción del catálogo es muy larga, resume los puntos clave para el cliente."
         "\n6. Si el catálogo no tiene información relevante para la pregunta sobre productos, responde con tu conocimiento general del rubro o pide más detalles."
+        "\n8. MUY IMPORTANTE: Si el cliente pregunta por un producto específico y NO encuentras información relevante en el catálogo que te proporcioné para esta consulta, NO INVENTES DETALLES COMO PRECIOS O CARACTERÍSTICAS ESPECÍFICAS. En su lugar, puedes decir algo como: 'No tengo el detalle o precio exacto de [producto consultado] en este momento. ¿Podrías darme más detalles o te gustaría ver otras opciones que sí tengo disponibles?' O bien, 'Para ese producto específico, te recomiendo visitar nuestra tienda online ([linkWeb]) o contactarnos al [telefono] para darte la información más actualizada.'"
+        "\n9. MONEDA: Si el catálogo recuperado indica una moneda (ej. USD o ARS junto al precio), usa esa moneda en tu respuesta. Si no se especifica moneda en el catálogo y das un precio, asume que es en Pesos Argentinos (ARS) y menciónalo si es relevante (ej. 'El precio es $XXXX ARS'). NO inventes el tipo de moneda."
+        
     )
     
     contexto_catalogo = ""; 

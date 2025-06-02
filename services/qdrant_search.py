@@ -8,7 +8,7 @@ from .utils import limpiar_texto_base
 
 logger = logging.getLogger(__name__)
 
-def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_min: float = 0.65) -> List[qdrant_models.ScoredPoint]:
+def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_min: float = 0.60) -> List[qdrant_models.ScoredPoint]:
     qdrant_cli = get_qdrant_client() 
     if not qdrant_cli:
         logger.error("[QDRANT SEARCH] No se pudo obtener cliente Qdrant.")
