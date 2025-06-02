@@ -3,12 +3,12 @@ import json
 import os
 import spacy
 import logging
-from typing import Optional, Dict, List, Any # Para tipado
+from typing import Optional, Dict, List, Any
 from .utils import limpiar_texto_base # <--- IMPORTACIÓN AÑADIDA
 
 logger = logging.getLogger(__name__)
 NLP_SPACY_INTENT = None
-INTENTS_DATA: Dict[str, List[Dict[str, Any]]] = {} # Tipado más específico para INTENTS_DATA
+INTENTS_DATA: Dict[str, List[Dict[str, Any]]] = {} 
 
 def _cargar_recursos_intent():
     global NLP_SPACY_INTENT, INTENTS_DATA
@@ -21,11 +21,11 @@ def _cargar_recursos_intent():
             if NLP_SPACY_INTENT.vocab.vectors.shape[0] == 0: # CORREGIDO
                  logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (Intent) se cargó pero no tiene vectores.")
         except OSError:
-            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (Intent): Modelo no encontrado. Descárgalo: python -m spacy download es_core_news_md")
+            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (Intent): Modelo no encontrado.")
         except Exception as e:
             logger.error(f"❌ Error inesperado al cargar spaCy (Intent): {e}", exc_info=True)
 
-    if not INTENTS_DATA: # Cargar solo si está vacío
+    if not INTENTS_DATA:
         try:
             current_dir = os.path.dirname(os.path.abspath(__file__))
             project_root = os.path.abspath(os.path.join(current_dir, "..")) 
@@ -39,14 +39,8 @@ def _cargar_recursos_intent():
             with open(file_path, "r", encoding="utf-8") as f:
                 INTENTS_DATA = json.load(f)
             logger.info(f"✅ Archivo intents.json cargado ({len(INTENTS_DATA)} rubros) desde {file_path}.")
-        except FileNotFoundError: 
-            logger.error(f"❌ Archivo intents.json no encontrado en {file_path} (FileNotFoundError).")
-            INTENTS_DATA = {}
-        except json.JSONDecodeError as e_json:
-            logger.error(f"❌ Error al parsear intents.json desde {file_path}: {e_json}")
-            INTENTS_DATA = {}
         except Exception as e_load:
-            logger.error(f"❌ No se pudo cargar intents.json desde {file_path}: {e_load}", exc_info=True)
+            logger.error(f"❌ No se pudo cargar o parsear intents.json desde {file_path}: {e_load}", exc_info=True)
             INTENTS_DATA = {}
 
 def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.75) -> Optional[str]:
@@ -102,10 +96,8 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
             
             try:
                 score = doc_user.similarity(doc_ejemplo)
-                # logger.debug(f"[INTENT] Comparando '{pregunta_limpia}' con Ejemplo '{ejemplo[:50]}...' (Rubro '{rubro_key}'): Score {score:.3f}")
                 if score > mejor_score:
                     mejor_score = score
-                    # Asegurarse que la respuesta sea un string o una lista de strings que se pueda unir
                     raw_respuesta = intent_obj["respuesta"]
                     if isinstance(raw_respuesta, list):
                         mejor_intent_respuesta = random.choice(raw_respuesta) if raw_respuesta else None
@@ -114,7 +106,6 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
                     else:
                         logger.warning(f"[INTENT] Respuesta de intent no es string ni lista de strings: {raw_respuesta}")
                         mejor_intent_respuesta = None
-
             except Exception as e_sim_intent:
                  logger.error(f"[INTENT] Error calculando similitud para Ejemplo Intent '{ejemplo[:50]}...': {e_sim_intent}", exc_info=True)
                  continue
