@@ -12,6 +12,7 @@ INTENTS_DATA: Dict[str, List[Dict[str, Any]]] = {}
 
 def _cargar_recursos_intent():
     global NLP_SPACY_INTENT, INTENTS_DATA
+    
     if NLP_SPACY_INTENT is None:
         try:
             logger.info("Cargando modelo spaCy 'es_core_news_md' para Intent Matcher...")
@@ -21,6 +22,7 @@ def _cargar_recursos_intent():
                  logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (Intent) se cargó pero no tiene vectores.")
         except OSError: logger.error("❌ Error al cargar spaCy 'es_core_news_md' (Intent): Modelo no encontrado.")
         except Exception as e: logger.error(f"❌ Error inesperado al cargar spaCy (Intent): {e}", exc_info=True)
+
     if not INTENTS_DATA:
         try:
             current_dir = os.path.dirname(os.path.abspath(__file__)); project_root = os.path.abspath(os.path.join(current_dir, "..")) 
@@ -33,17 +35,19 @@ def _cargar_recursos_intent():
 def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.75) -> Optional[str]:
     _cargar_recursos_intent()
     if NLP_SPACY_INTENT is None or not INTENTS_DATA: logger.error("[INTENT] Imposible buscar: spaCy o datos no cargados."); return None
-    # ... (resto de la función como te la pasé en @‶gANVneHZLGZv..., pero usando la importada limpiar_texto_base)
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip(): logger.warning("[INTENT] Pregunta vacía."); return None
     if not rubro_nombre or not isinstance(rubro_nombre, str) or not rubro_nombre.strip(): logger.warning(f"[INTENT] Rubro vacío ('{rubro_nombre}')."); return None
+    
     pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO
     doc_user = NLP_SPACY_INTENT(pregunta_limpia)
     if not doc_user.has_vector or not doc_user.vector_norm: logger.warning(f"[INTENT] No vector para pregunta (Intent): '{pregunta_limpia}'."); return None
+    
     rubro_key = rubro_nombre.lower().strip(); rubro_intent_data = INTENTS_DATA.get(rubro_key)
     if not rubro_intent_data:
         if rubro_key != "general": logger.info(f"[INTENT] No intents para '{rubro_key}'. Fallback a 'general'."); rubro_intent_data = INTENTS_DATA.get("general")
         if not rubro_intent_data: logger.info(f"[INTENT] No intents para '{rubro_key}' ni 'general'."); return None
     if not isinstance(rubro_intent_data, list): logger.warning(f"[INTENT] Datos para rubro '{rubro_key}' no es lista: {type(rubro_intent_data)}"); return None
+    
     mejor_intent_respuesta: Optional[str] = None; mejor_score: float = -1.0
     for intent_obj in rubro_intent_data:
         if not isinstance(intent_obj, dict) or "ejemplos" not in intent_obj or "respuesta" not in intent_obj: logger.warning(f"[INTENT] Formato incorrecto en '{rubro_key}': {str(intent_obj)[:100]}"); continue
@@ -53,11 +57,13 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
             if not doc_ejemplo.has_vector or not doc_ejemplo.vector_norm: continue
             try:
                 score = doc_user.similarity(doc_ejemplo)
-                if score > mejor_score: mejor_score = score; raw_respuesta = intent_obj["respuesta"]
-                if isinstance(raw_respuesta, list): mejor_intent_respuesta = random.choice(raw_respuesta) if raw_respuesta else None
-                elif isinstance(raw_respuesta, str): mejor_intent_respuesta = raw_respuesta
-                else: logger.warning(f"[INTENT] Respuesta no es string/lista: {raw_respuesta}"); mejor_intent_respuesta = None
+                if score > mejor_score: 
+                    mejor_score = score; raw_respuesta = intent_obj["respuesta"]
+                    if isinstance(raw_respuesta, list): mejor_intent_respuesta = random.choice(raw_respuesta) if raw_respuesta else None
+                    elif isinstance(raw_respuesta, str): mejor_intent_respuesta = raw_respuesta
+                    else: logger.warning(f"[INTENT] Respuesta no es string/lista: {raw_respuesta}"); mejor_intent_respuesta = None
             except Exception as e_sim: logger.error(f"[INTENT] Error similitud para '{ejemplo[:50]}...': {e_sim}", exc_info=True); continue
+    
     if mejor_intent_respuesta and mejor_score >= threshold:
         logger.info(f"✅ [INTENT] Match para '{pregunta_limpia}' (Rubro '{rubro_key}'): Respuesta (parcial) '{str(mejor_intent_respuesta)[:50]}...' score {mejor_score:.3f}")
         return str(mejor_intent_respuesta)

@@ -2,7 +2,7 @@
 import os
 import logging
 import cohere
-from time import sleep # Solo si usas sleep en embed_textos
+from time import sleep
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -11,9 +11,7 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 COHERE_EMBED_BATCH_SIZE = 90 
 
 def embed_textos(textos: List[str], input_type: str = "search_document") -> List[List[float]]:
-    # ... (Mantener la versión completa y funcional de embed_textos que te pasé 
-    #      en la respuesta @‶gANVneHZLGZv..., ya que esa parte no dio error en estos logs.
-    #      Asegúrate de que los logs aquí usen logger.info o logger.debug según tu preferencia)
+    # ... (Misma función embed_textos que te pasé en la respuesta @‶gANVneHZLGZv...")
     if not COHERE_API_KEY: logger.error("[COHERE EMBED] COHERE_API_KEY no configurada."); return []
     if not textos or not isinstance(textos, list) or not all(isinstance(t, str) for t in textos): logger.error("❌ [COHERE EMBED] Lista de textos vacía o inválida."); return []
     all_embeddings: List[List[float]] = []; model = "embed-multilingual-v3.0"
@@ -35,30 +33,30 @@ def embed_textos(textos: List[str], input_type: str = "search_document") -> List
     logger.info(f"✅ [COHERE EMBED] Embeddings totales: {len(all_embeddings)}.")
     return all_embeddings
 
+
 def get_cohere_response(message: str, 
                         chat_history: Optional[List[Dict[str, str]]] = None, 
-                        preamble: Optional[str] = None, # 'preamble' es el system_prompt
+                        preamble: Optional[str] = None, # Este es el system_prompt
                         model: str = "command-r-plus",
                         temperature: float = 0.3,
+                        # Estos se reciben de logic.py pero no se usan directamente por co_client.chat
                         rubro_id: Optional[int] = None, 
                         user_context: Optional[Dict[str, Any]] = None 
                         ) -> str:
     logger.info(f"➡️ [COHERE CHAT] Iniciando get_cohere_response. Pregunta: '{message[:70]}...'")
     
-    # Construir el historial para la API de Cohere, incluyendo el system_prompt (preamble)
-    # como el primer mensaje con rol "SYSTEM" si está presente.
-    chat_history_for_api: List[Dict[str, str]] = []
-    if preamble and isinstance(preamble, str) and preamble.strip():
-        chat_history_for_api.append({"role": "SYSTEM", "message": preamble})
-        logger.info(f"[COHERE CHAT] System prompt (preamble) añadido al inicio del historial para API (primeros 100 chars): {preamble[:100]}...")
-    else:
-        logger.info("[COHERE CHAT] No se proporcionó preamble (System Prompt) o estaba vacío.")
-
-    if chat_history: # chat_history ya viene en formato USER/CHATBOT desde logic.py
-        chat_history_for_api.extend(chat_history)
+    # Construir el historial para la API, incluyendo el preamble como mensaje SYSTEM al inicio
+    chat_history_for_api_call: List[Dict[str, str]] = []
+    if preamble:
+        chat_history_for_api_call.append({"role": "SYSTEM", "message": preamble})
+        logger.info(f"[COHERE CHAT] Preamble (System Prompt) añadido como primer mensaje al historial para API (primeros 100 chars): {preamble[:100]}...")
+    
+    if chat_history: # chat_history ya debería tener roles USER/CHATBOT
+        chat_history_for_api_call.extend(chat_history)
         logger.info(f"[COHERE CHAT] Historial de conversación previo añadido ({len(chat_history)} mensajes).")
     else:
         logger.info("[COHERE CHAT] No hay historial de conversación previo.")
+
 
     if not COHERE_API_KEY:
         logger.error("❌ [COHERE CHAT] COHERE_API_KEY no está configurada.")
@@ -74,13 +72,14 @@ def get_cohere_response(message: str,
         return "Error interno: No se pudo inicializar el asistente IA (C02)."
 
     try:
-        logger.info(f"➡️ [COHERE CHAT CALL] Modelo: '{model}'. Temperatura: {temperature}. Mensaje: '{message[:70]}'. Historial para API (incl. system): {len(chat_history_for_api)}.")
+        logger.info(f"➡️ [COHERE CHAT CALL] Modelo: '{model}'. Temperatura: {temperature}. Mensaje: '{message[:70]}'. Historial completo para API (incl. system): {len(chat_history_for_api_call)}.")
         
-        # LLAMADA CORREGIDA: ya no se usa 'preamble' como argumento directo.
-        # El prompt del sistema está ahora en chat_history_for_api si fue provisto.
+        # LLAMADA CORREGIDA:
+        # - El prompt del sistema (preamble) ahora va dentro de chat_history_for_api_call.
+        # - 'preamble' como argumento directo a co_client.chat() se elimina.
         response = co_client.chat(
             message=message,
-            chat_history=chat_history_for_api if chat_history_for_api else None, # Pasar el historial que PUEDE incluir el SYSTEM prompt
+            chat_history=chat_history_for_api_call if chat_history_for_api_call else None, 
             model=model, 
             temperature=temperature,
         )
