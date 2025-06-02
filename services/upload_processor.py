@@ -2,40 +2,34 @@
 import os
 import uuid
 import logging
-import traceback 
+# traceback no es necesario importarlo explícitamente si usas logger.error con exc_info=True
+# from collections import Counter # No se usa, se puede quitar
 import re 
-# import json # No se usa directamente json aquí
+# import json # No se usa json directamente aquí
 
-# NO import current_app aquí arriba
-from flask import Blueprint, request, jsonify # current_app se usará dentro de funciones si es necesario
+# NO importes current_app aquí arriba si no lo vas a usar a nivel de módulo
+from flask import Blueprint, request, jsonify 
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro 
 from services.cohere_ai import embed_textos
-
-# Importar las funciones de procesamiento de catálogo
 from services.google_docai import procesar_catalogo_pdf_google 
 from services.procesar_catalogo_excel import procesar_catalogo_excel 
-
-# Importar limpiar_texto_base de utils
 from .utils import limpiar_texto_base 
-
 from services.qdrant_utils import get_qdrant_client
 from qdrant_client import models as qdrant_models
-from typing import List, Dict, Any, Optional # Asegurar Optional
+from typing import List, Dict, Any, Optional # Asegurar que Optional y otros estén aquí
 
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__) 
 
-
-# Opción 2 (Más simple y generalmente funciona bien para scripts que corren desde la raíz del proyecto):
-# Usar el directorio de trabajo actual. Gunicorn usualmente corre desde la raíz del proyecto.
+# --- CORRECCIÓN DEFINITIVA PARA UPLOAD_FOLDER ---
+# Esta es la forma que NO da error al iniciar la app.
+# os.getcwd() te da el directorio desde donde se corre Gunicorn (usualmente la raíz de tu proyecto).
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
-# La creación del directorio (os.makedirs) se hará DENTRO del endpoint subir_catalogo.
 # --- FIN CORRECCIÓN ---
 
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
-
 # ... EL RESTO DE TU ARCHIVO upload_processor.py (las funciones extension_valida, guardar_en_qdrant, 
 #     procesar_y_embedear_catalogo, y el endpoint subir_catalogo) SE MANTIENE IGUAL
 #     a la última versión completa que te pasé en la respuesta @‶gANVneHZLGe...
