@@ -4,6 +4,8 @@ import uuid
 import logging
 import traceback 
 import re 
+from flask import current_app
+
 # import json # No se usa directamente json aquí
 
 # NO import current_app aquí arriba
@@ -33,8 +35,6 @@ logger = logging.getLogger(__name__)
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
 # La creación del directorio (os.makedirs) se hará DENTRO del endpoint subir_catalogo.
 # --- FIN CORRECCIÓN ---
-
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
 
 # ... EL RESTO DE TU ARCHIVO upload_processor.py (las funciones extension_valida, guardar_en_qdrant, 
 #     procesar_y_embedear_catalogo, y el endpoint subir_catalogo) SE MANTIENE IGUAL
