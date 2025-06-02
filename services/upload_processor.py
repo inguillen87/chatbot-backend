@@ -6,7 +6,8 @@ import traceback
 import re 
 # import json # No se usa directamente json aquí
 
-from flask import Blueprint, request, jsonify, current_app
+# NO import current_app aquí arriba
+from flask import Blueprint, request, jsonify # current_app se usará dentro de funciones si es necesario
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro 
@@ -20,11 +21,25 @@ from services.procesar_catalogo_excel import procesar_catalogo_excel
 from .utils import limpiar_texto_base 
 
 from services.qdrant_utils import get_qdrant_client
-# Asegúrate de importar qdrant_models para crear PointStruct y para el FilterSelector
 from qdrant_client import models as qdrant_models
+from typing import List, Dict, Any, Optional # Asegurar Optional
 
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__) 
+
+
+# Opción 2 (Más simple y generalmente funciona bien para scripts que corren desde la raíz del proyecto):
+# Usar el directorio de trabajo actual. Gunicorn usualmente corre desde la raíz del proyecto.
+UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
+# La creación del directorio (os.makedirs) se hará DENTRO del endpoint subir_catalogo.
+# --- FIN CORRECCIÓN ---
+
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
+
+# ... EL RESTO DE TU ARCHIVO upload_processor.py (las funciones extension_valida, guardar_en_qdrant, 
+#     procesar_y_embedear_catalogo, y el endpoint subir_catalogo) SE MANTIENE IGUAL
+#     a la última versión completa que te pasé en la respuesta @‶gANVneHZLGe...
+#     Solo asegúrate de que la creación de UPLOAD_FOLDER con os.makedirs esté DENTRO de subir_catalogo().
 
 # Usar una carpeta temporal dentro de la instancia de la app o una carpeta designada
 # Esto es más seguro y estándar para Flask. 'temp_uploads' en la raíz del proyecto.
