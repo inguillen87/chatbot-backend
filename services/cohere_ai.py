@@ -11,45 +11,65 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 COHERE_EMBED_BATCH_SIZE = 90 
 
 def embed_textos(textos: List[str], input_type: str = "search_document") -> List[List[float]]:
-    if not COHERE_API_KEY: logger.error("[COHERE EMBED] COHERE_API_KEY no configurada."); return []
-    if not textos or not isinstance(textos, list) or not all(isinstance(t, str) for t in textos): logger.error("❌ [COHERE EMBED] Lista de textos vacía o inválida."); return []
-    all_embeddings: List[List[float]] = []; model_embed = "embed-multilingual-v3.0"
+    if not COHERE_API_KEY: 
+        logger.error("[COHERE EMBED] COHERE_API_KEY no está configurada.")
+        return []
+    if not textos or not isinstance(textos, list) or not all(isinstance(t, str) for t in textos): 
+        logger.error("❌ [COHERE EMBED] Lista de textos vacía o inválida.")
+        return []
+    
+    all_embeddings: List[List[float]] = []
+    model_embed = "embed-multilingual-v3.0"
     logger.info(f"➡️ [COHERE EMBED] Solicitando embeddings para {len(textos)} textos. Modelo: {model_embed}, Tipo input: {input_type}, Batch: {COHERE_EMBED_BATCH_SIZE}")
+    
     try:
         co_client = cohere.Client(COHERE_API_KEY, timeout=30)
         for i in range(0, len(textos), COHERE_EMBED_BATCH_SIZE):
-            batch = textos[i:i + COHERE_EMBED_BATCH_SIZE]; logger.info(f"➡️ [COHERE EMBED] Batch {i//COHERE_EMBED_BATCH_SIZE + 1} ({len(batch)} textos).")
+            batch = textos[i:i + COHERE_EMBED_BATCH_SIZE]
+            logger.info(f"➡️ [COHERE EMBED] Batch {i//COHERE_EMBED_BATCH_SIZE + 1} / { (len(textos) -1)//COHERE_EMBED_BATCH_SIZE + 1 } ({len(batch)} textos).")
             response = co_client.embed(texts=batch, model=model_embed, input_type=input_type, truncate="END")
+            
             if response.embeddings and isinstance(response.embeddings, list):
                 valid_embs = [e for e in response.embeddings if isinstance(e, list) and all(isinstance(n, (float, int)) for n in e)]
-                all_embeddings.extend(valid_embs); logger.info(f"⬅️ [COHERE EMBED] Embeddings válidos batch: {len(valid_embs)}")
-                if len(valid_embs) != len(batch): logger.warning(f"⚠️ [COHERE EMBED] Discrepancia batch: {len(batch)} textos, {len(valid_embs)} embeddings.")
-            else: logger.error(f"❌ [COHERE EMBED] Batch no devolvió embeddings o no es una lista.")
-            if len(textos) > COHERE_EMBED_BATCH_SIZE and i + COHERE_EMBED_BATCH_SIZE < len(textos): sleep(0.3) 
-    except cohere.CohereAPIError as e_api: logger.error(f"❌ [COHERE EMBED] API Error: Status {getattr(e_api, 'http_status', 'N/A')} - {e_api.message}. Tipo: {e_api.__class__.__name__}", exc_info=False)
-    except Exception as e_general: logger.error(f"❌ [COHERE EMBED] Error genérico embeddings: {e_general}", exc_info=True); return [] 
-    if len(all_embeddings) != len(textos): logger.warning(f"⚠️ [COHERE EMBED] Discrepancia final: {len(textos)} textos, {len(all_embeddings)} embeddings.")
-    logger.info(f"✅ [COHERE EMBED] Embeddings totales: {len(all_embeddings)}.")
+                all_embeddings.extend(valid_embs)
+                logger.info(f"⬅️ [COHERE EMBED] Embeddings válidos recibidos para batch: {len(valid_embs)}")
+                if len(valid_embs) != len(batch): 
+                    logger.warning(f"⚠️ [COHERE EMBED] Discrepancia en batch: {len(batch)} textos, {len(valid_embs)} embeddings.")
+            else: 
+                logger.error(f"❌ [COHERE EMBED] Batch {i//COHERE_EMBED_BATCH_SIZE + 1} no devolvió embeddings o no es una lista.")
+            
+            if len(textos) > COHERE_EMBED_BATCH_SIZE and (i + COHERE_EMBED_BATCH_SIZE) < len(textos): 
+                sleep(0.3) 
+    except cohere.CohereAPIError as e_api: 
+        logger.error(f"❌ [COHERE EMBED] Error de API Cohere: Status {getattr(e_api, 'http_status', 'N/A')} - {e_api.message}. Tipo: {e_api.__class__.__name__}", exc_info=False)
+    except Exception as e_general: 
+        logger.error(f"❌ [COHERE EMBED] Error genérico generando embeddings: {e_general}", exc_info=True)
+        return [] 
+    
+    if len(all_embeddings) != len(textos): 
+        logger.warning(f"⚠️ [COHERE EMBED] Discrepancia final: {len(textos)} textos enviados, {len(all_embeddings)} embeddings generados.")
+    logger.info(f"✅ [COHERE EMBED] Embeddings totales generados: {len(all_embeddings)}.")
     return all_embeddings
 
 def get_cohere_response(message: str, 
-                        chat_history: Optional[List[Dict[str, str]]] = None, # Historial USER/CHATBOT de logic.py
-                        preamble: Optional[str] = None, # Este es el system_prompt de logic.py
+                        chat_history: Optional[List[Dict[str, str]]] = None, 
+                        preamble: Optional[str] = None, # Este es el system_prompt
                         model: str = "command-r-plus",
                         temperature: float = 0.3,
-                        # Los siguientes se reciben pero no se usan directamente por co_client.chat aquí
+                        # Estos se reciben pero no se usan directamente por co_client.chat en esta versión
                         rubro_id: Optional[int] = None, 
                         user_context: Optional[Dict[str, Any]] = None 
                         ) -> str:
     logger.info(f"➡️ [COHERE CHAT] Iniciando get_cohere_response. Pregunta: '{message[:70]}...'")
     
-    # --- CONSTRUCCIÓN DEL HISTORIAL PARA LA API ---
-    # El 'preamble' (prompt del sistema) se añade como el primer mensaje con rol "SYSTEM".
+    # --- CONSTRUCCIÓN DEL HISTORIAL PARA LA API (SOLUCIÓN DEFINITIVA) ---
     chat_history_for_api_call: List[Dict[str, str]] = []
     if preamble and isinstance(preamble, str) and preamble.strip():
-        chat_history_for_api_call.append({"role": "SYSTEM", "message": preamble}) # <--- AQUÍ SE AÑADE EL PREAMBLE
+        chat_history_for_api_call.append({"role": "SYSTEM", "message": preamble})
         logger.info(f"[COHERE CHAT] System prompt (preamble) añadido como primer mensaje al historial para API.")
-    
+    else:
+        logger.info("[COHERE CHAT] No se proporcionó preamble (System Prompt) o estaba vacío.")
+
     if chat_history: # chat_history ya tiene roles USER/CHATBOT
         chat_history_for_api_call.extend(chat_history)
         logger.info(f"[COHERE CHAT] Historial de conversación previo añadido ({len(chat_history)} mensajes).")
@@ -79,9 +99,6 @@ def get_cohere_response(message: str,
             chat_history=chat_history_for_api_call if chat_history_for_api_call else None, 
             model=model, 
             temperature=temperature,
-            # Si tu SDK es muy reciente y necesitas pasar el system prompt de otra forma,
-            # podrías probar `system_message=preamble` en lugar de meterlo en chat_history,
-            # pero la forma de `chat_history` con rol SYSTEM es más universalmente compatible.
         )
 
         respuesta_texto = response.text.strip() if response and response.text else ""
@@ -93,8 +110,8 @@ def get_cohere_response(message: str,
         if hasattr(e_api, 'http_status') and e_api.http_status == 429:
             return "Nuestro asistente IA está experimentando una alta demanda. Por favor, intenta nuevamente en unos momentos."
         return "Lo siento, no pude procesar tu solicitud en este momento con el asistente IA (E01)."
-    except TypeError as te: # Para capturar errores de argumentos inesperados
-        logger.error(f"❌ [COHERE CHAT] TypeError en la llamada a co_client.chat(): {te}. Esto usualmente indica que los argumentos no coinciden con la versión del SDK de Cohere.", exc_info=True)
+    except TypeError as te: # Capturar específicamente si la firma de co_client.chat() es inesperada
+        logger.error(f"❌ [COHERE CHAT] TypeError en la llamada a co_client.chat(): {te}. Verifica los argumentos y la versión del SDK de Cohere.", exc_info=True)
         return "Lo siento, hubo un problema técnico con nuestro asistente IA (TE01)." # Mensaje específico
     except Exception as e_general:
         logger.error(f"❌ [COHERE CHAT] Error genérico durante la llamada a Cohere: {e_general}", exc_info=True)
