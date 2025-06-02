@@ -75,6 +75,7 @@ def create_app(config_class=Config):
         "https://chatboc.ar",
         "https://www.chatboc.ar",
         "http://localhost:5173", 
+        "http://localhost:8080",   # <- AGREGALO SI USÁS ESTE PUERTO EN LOCAL
         "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app" # Tu URL de Vercel
         # Considera añadir una variable de entorno para más URLs de Vercel si es necesario
         # ej. os.getenv("VERCEL_PREVIEW_URL")

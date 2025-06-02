@@ -4,34 +4,36 @@ import logging
 import os
 import re 
 from typing import List, Dict, Any, Optional
-from .utils import limpiar_texto_base, parse_precio_flexible # Asegúrate que extraer_unidades_y_tipos_precio esté en utils si lo usas aquí
+from .utils import limpiar_texto_base, parse_precio_flexible
 
 logger = logging.getLogger(__name__)
 
 # --- PALABRAS CLAVE PARA DETECTAR LA FILA DE ENCABEZADOS ---
-# Ajustadas para tu archivo "FCA MZA..."
+# Ajustadas para tu archivo "FCA MZA..." y otros formatos comunes
 PALABRAS_CLAVE_ENCABEZADOS_PRIORITARIAS = [
-    "codigo", "código", "cod.", "sku", "art.", "articulo", "ref", 
-    "producto", "nombre", "descripción", "descripcion", "detalle", "varietal", "designacion", 
-    "precio", "lista", "pvp", "valor", "importe", "$", "contado", "tarifa", "unitario",
-    "marca", "linea", "línea", "categoria", "categoría", "rubro", "tipo"
+    "codigo", "código", "cod.", "sku", "art.", "articulo", "ref", "id",
+    "producto", "nombre", "descripción", "descripcion", "detalle", "variedad", "designacion", 
+    "precio", "lista", "pvp", "valor", "importe", "$", "contado", "oferta", "sugerido", # Añadido "sugerido"
+    "marca", "linea", "línea"
 ]
 PALABRAS_CLAVE_ENCABEZADOS_SECUNDARIAS = [
-    "unidad", "presentacion", "presentación", "empaque", "formato", "unidades", "unid", "u/m", "un.caja", "un/caja", "caja x", "cajas",
+    "categoria", "categoría", "rubro", "tipo", "familia", "clase",
+    "unidad", "unidades", "unid", "u/m", "un.caja", "un/caja", "caja x", "cajas", "presentacion", "presentación", "empaque", "formato", "envase",
     "stock", "cantidad", "disponible", "existencias", "cant.", 
     "moneda", "currency", "divisa", "iva", "observaciones", "notas", "ean", "caja/pallet", "empaquetado", "talle",
-    "envase", "cc", "ml", "lts", "kg", "grs", "color", "origen", "bodega" # Añadidas algunas más genéricas
+    "cc", "ml", "lts", "kg", "grs", "color", "origen", "bodega"
 ]
 
 def encontrar_fila_encabezados_excel(
     df_check: pd.DataFrame, 
     keywords_prioritarias: List[str], 
     keywords_secundarias: List[str],
-    min_prioritarias_req: int = 2, 
-    min_totales_req: int = 4, # Aumentado un poco para mayor seguridad
-    max_filas_a_revisar: int = 20 
+    min_prioritarias_req: int = 2, # Mínimo de keywords prioritarias
+    min_totales_req: int = 3,    # Mínimo de keywords totales
+    max_filas_a_revisar: int = 20 # Revisar hasta 20 filas para encontrar encabezados
 ) -> Optional[int]:
     logger.info(f"[EXCEL_PROC_HEADER] Buscando encabezados en primeras {min(len(df_check), max_filas_a_revisar)} filas (min_prioritarias={min_prioritarias_req}, min_totales={min_totales_req}).")
+    
     best_header_row_index: Optional[int] = None
     highest_score: float = -1.0
 
@@ -44,16 +46,25 @@ def encontrar_fila_encabezados_excel(
         found_prioritarias = set(); found_secundarias = set()
 
         for cell_text_lower in celdas_limpias_lower:
+            # Prioritarias primero
+            matched_priority = False
             for kw in keywords_prioritarias:
-                if re.search(r'\b' + re.escape(kw) + r'\b', cell_text_lower): found_prioritarias.add(kw); break 
+                if re.search(r'\b' + re.escape(kw) + r'\b', cell_text_lower): 
+                    found_prioritarias.add(kw)
+                    matched_priority = True
+                    break 
+            if matched_priority: continue # Si ya matcheó con prioritaria, no contarla como secundaria
+
             for kw in keywords_secundarias:
-                if re.search(r'\b' + re.escape(kw) + r'\b', cell_text_lower): found_secundarias.add(kw); break
+                if re.search(r'\b' + re.escape(kw) + r'\b', cell_text_lower): 
+                    found_secundarias.add(kw)
+                    break
         
         num_coincidencias_prioritarias = len(found_prioritarias)
         num_coincidencias_secundarias = len(found_secundarias)
         total_coincidencias_distintas = num_coincidencias_prioritarias + num_coincidencias_secundarias
         
-        score_actual = (num_coincidencias_prioritarias * 2.5) + (num_coincidencias_secundarias * 1.0)
+        score_actual = (num_coincidencias_prioritarias * 3.0) + (num_coincidencias_secundarias * 1.0) # Más peso a prioritarias
         if len(row_values_str) > 0 : score_actual *= (total_coincidencias_distintas / len(row_values_str)) 
         
         logger.debug(f"[EXCEL_PROC_HEADER] Fila Excel {i}: {row_values_str} -> Prioritarias: {num_coincidencias_prioritarias}, Secundarias: {num_coincidencias_secundarias}, Score: {score_actual:.2f}")
@@ -82,20 +93,22 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
         if ext == ".csv":
             for enc in encodings_to_try:
                 try:
-                    df_preliminar = pd.read_csv(path, sep=None, engine='python', header=None, on_bad_lines='skip', encoding=enc, skip_blank_lines=False, low_memory=False, keep_default_na=False, na_filter=False, dtype=str)
-                    df_preliminar.attrs['encoding'] = enc; logger.info(f"[EXCEL_PROC] CSV '{base_filename}' leído preliminarmente con encoding '{enc}'."); break 
+                    # Para CSV, intentar detectar el separador también
+                    df_preliminar = pd.read_csv(path, sep=None, engine='python', header=None, on_bad_lines='skip', encoding=enc, skip_blank_lines=False, low_memory=False, keep_default_na=False, na_filter=False, dtype=str, nrows=30) # Leer solo primeras 30 filas para detectar header
+                    df_preliminar.attrs['encoding'] = enc; logger.info(f"[EXCEL_PROC] CSV '{base_filename}' leído preliminarmente (primeras 30 filas) con encoding '{enc}'."); break 
                 except UnicodeDecodeError: logger.debug(f"[EXCEL_PROC] Falló CSV '{base_filename}' con encoding '{enc}'.")
                 except Exception as e_csv_prelim: logger.warning(f"[EXCEL_PROC] Error inesperado leyendo CSV '{base_filename}' con '{enc}': {e_csv_prelim}"); df_preliminar = None; break 
             if df_preliminar is None: logger.error(f"[EXCEL_PROC] No se pudo leer CSV '{base_filename}'."); return []
         elif ext in [".xlsx", ".xls"]:
             try: 
-                df_preliminar = pd.read_excel(path, engine=None, header=None, sheet_name=0, keep_default_na=False, na_filter=False, dtype=str)
+                # Leer solo primeras 30 filas para detectar header
+                df_preliminar = pd.read_excel(path, engine=None, header=None, sheet_name=0, keep_default_na=False, na_filter=False, dtype=str, nrows=30) 
                 df_preliminar.attrs['encoding'] = 'excel'
-                logger.info(f"[EXCEL_PROC] Excel '{base_filename}' leído preliminarmente. Filas: {len(df_preliminar)}")
+                logger.info(f"[EXCEL_PROC] Excel '{base_filename}' leído preliminarmente (primeras 30 filas). Filas: {len(df_preliminar)}")
             except Exception as e_excel_read: logger.error(f"[EXCEL_PROC] Error leyendo archivo Excel '{base_filename}': {e_excel_read}", exc_info=True); return []
         else: logger.error(f"[EXCEL_PROC] Extensión no soportada '{ext}' para '{base_filename}'."); return []
         
-        if df_preliminar is None or df_preliminar.empty: logger.warning(f"⚠️ [EXCEL_PROC] Archivo '{base_filename}' vacío o no leído."); return []
+        if df_preliminar is None or df_preliminar.empty: logger.warning(f"⚠️ [EXCEL_PROC] Archivo '{base_filename}' vacío o no leído preliminarmente."); return []
         
         idx_fila_encabezados = encontrar_fila_encabezados_excel(
             df_preliminar, PALABRAS_CLAVE_ENCABEZADOS_PRIORITARIAS, PALABRAS_CLAVE_ENCABEZADOS_SECUNDARIAS
@@ -103,12 +116,11 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
         
         df: Optional[pd.DataFrame] = None
         if idx_fila_encabezados is not None:
-            logger.info(f"[EXCEL_PROC] Usando fila en índice {idx_fila_encabezados} como encabezados para leer DataFrame principal.")
+            logger.info(f"[EXCEL_PROC] Usando fila en índice {idx_fila_encabezados} como encabezados para leer el DataFrame principal.")
             try:
                 current_encoding = df_preliminar.attrs.get('encoding', 'utf-8')
-                # El argumento 'header' en read_csv/read_excel es el índice de la fila a usar como nombres de columna.
-                # Las filas ANTERIORES a esta se saltan.
                 if ext == ".csv": 
+                    # Ahora leer el archivo completo usando el header detectado
                     df = pd.read_csv(path, sep=None, engine='python', header=idx_fila_encabezados, on_bad_lines='skip', encoding=current_encoding, skip_blank_lines=True, low_memory=False, keep_default_na=False, na_filter=False, dtype=str)
                 else: 
                     df = pd.read_excel(path, engine=None, header=idx_fila_encabezados, sheet_name=0, keep_default_na=False, na_filter=False, dtype=str)
@@ -122,26 +134,36 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
                 else: logger.warning(f"[EXCEL_PROC] DataFrame None o vacío después de intentar leer con encabezados en fila {idx_fila_encabezados}.")
             except Exception as e_read_main: 
                 logger.error(f"[EXCEL_PROC] Error leyendo '{base_filename}' con encabezados en fila {idx_fila_encabezados}: {e_read_main}", exc_info=True)
-                df = None
+                df = None 
         
-        if df is None or df.empty: # Si la detección de encabezados falló o resultó en un df vacío
-            logger.warning(f"[EXCEL_PROC] No se pudo usar fila de encabezados detectada. Intentando leer sin encabezados específicos (Pandas infiere o usa índices).")
-            try:
-                if ext == ".csv": df = pd.read_csv(path, sep=None, engine='python', header=0, on_bad_lines='skip', encoding=df_preliminar.attrs.get('encoding', 'utf-8'), skip_blank_lines=True, low_memory=False, keep_default_na=False, na_filter=False, dtype=str)
-                else: df = pd.read_excel(path, engine=None, header=0, sheet_name=0, keep_default_na=False, na_filter=False, dtype=str)
-                df.columns = [limpiar_texto_base(str(col)) for col in df.columns] # Limpiar los headers inferidos por Pandas
-                df.dropna(how='all', inplace=True)
+        if df is None or df.empty:
+            logger.warning(f"[EXCEL_PROC] No se pudo usar fila de encabezados detectada. Usando df_preliminar y asumiendo primera fila es encabezado (o datos si no hay).")
+            # Volver a leer el df_preliminar COMPLETO si no se usó antes para el df principal
+            if ext == ".csv": df = pd.read_csv(path, sep=None, engine='python', header=None, on_bad_lines='skip', encoding=df_preliminar.attrs.get('encoding', 'utf-8'), skip_blank_lines=False, low_memory=False, keep_default_na=False, na_filter=False, dtype=str)
+            else: df = pd.read_excel(path, engine=None, header=None, sheet_name=0, keep_default_na=False, na_filter=False, dtype=str)
+            
+            if not df.empty:
+                potential_headers = [limpiar_texto_base(str(h)) for h in df.iloc[0].tolist()]
+                valid_header_texts = [h for h in potential_headers if h and h != 'nan' and len(h) > 1]
+                if len(valid_header_texts) >= 2: 
+                    df.columns = potential_headers
+                    df = df.iloc[1:].reset_index(drop=True) # Empezar desde la segunda fila como datos
+                    logger.info(f"[EXCEL_PROC] Usando primera fila como encabezados (fallback). Columnas: {df.columns.tolist()}")
+                else: 
+                    df.columns = [str(i) for i in range(len(df.columns))] # Usar índices numéricos como nombres de columna
+                    logger.info(f"[EXCEL_PROC] Primera fila no parece encabezado. Usando índices numéricos para columnas: {df.columns.tolist()}")
+                df.columns = [limpiar_texto_base(str(col)) for col in df.columns]
                 df = df.loc[:, [col for col in df.columns if col and col != 'nan' and col.strip() != '']]
-                if df.empty: logger.error(f"[EXCEL_PROC] DataFrame vacío incluso leyendo con header=0."); return []
-                logger.info(f"[EXCEL_PROC] DataFrame cargado usando primera fila como encabezados (o inferidos por Pandas). Columnas: {df.columns.tolist()}. {len(df)} filas.")
-            except Exception as e_fallback_read:
-                logger.error(f"[EXCEL_PROC] Error fatal en lectura de fallback para '{base_filename}': {e_fallback_read}", exc_info=True); return []
+                df.dropna(how='all', inplace=True)
+                if df.empty: logger.error(f"[EXCEL_PROC] DataFrame vacío después de procesar encabezados de fallback."); return []
+                logger.info(f"[EXCEL_PROC] DataFrame de fallback con columnas: {df.columns.tolist()}. {len(df)} filas.")
+            else: logger.error(f"[EXCEL_PROC] df_preliminar vacío."); return []
 
         if df.empty: logger.warning(f"[EXCEL_PROC] DataFrame final vacío para '{base_filename}'."); return []
             
         df_column_list = df.columns.astype(str).tolist()
 
-        # --- MAPEO DE COLUMNAS (Mantenemos tus listas map_nombre, etc.) ---
+        # --- MAPEO DE COLUMNAS ---
         map_nombre = ["nombre", "producto", "articulo", "descripción producto", "designacion", "denominacion", "name", "item", "descripción", "varietal", "título"]
         map_descripcion = ["descripcion", "descripción adicional", "info adicional", "caracteristicas", "observaciones", "notas", "description"]
         map_precio = [ "precio", "valor", "importe", "price", "venta", "final", "lista", "sugerido", "pvp", "$ botella", "$ caja", "precio unitario", "contado", "tarifa", "precio distribuidor", "precio publico"]
@@ -153,16 +175,16 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
         map_moneda = ["moneda", "currency", "divisa"]
         
         def encontrar_col_flexible_excel(cols_disponibles, posibles_nombres_map, field_debug_name=""):
-            for nombre_map_exacto in posibles_nombres_map: # Primero búsqueda exacta (case-insensitive ya hecho)
+            for nombre_map_exacto in posibles_nombres_map:
                 if nombre_map_exacto in cols_disponibles: 
                     logger.info(f"[EXCEL_PROC_MAP] Columna EXACTA para '{field_debug_name}': '{nombre_map_exacto}'")
                     return nombre_map_exacto
-            for nombre_map_parcial in posibles_nombres_map: # Luego búsqueda parcial
+            for nombre_map_parcial in posibles_nombres_map:
                 for col_df_actual in cols_disponibles:
                     if nombre_map_parcial in col_df_actual: 
                         logger.info(f"[EXCEL_PROC_MAP] Columna PARCIAL para '{field_debug_name}': '{col_df_actual}' (buscando '{nombre_map_parcial}')")
                         return col_df_actual
-            logger.info(f"[EXCEL_PROC_MAP] No se encontró columna para '{field_debug_name}' con términos: {posibles_nombres_map}")
+            logger.info(f"[EXCEL_PROC_MAP] No se encontró columna para {field_debug_name} con términos: {posibles_nombres_map}")
             return None
         
         col_nombre = encontrar_col_flexible_excel(df_column_list, map_nombre, "Nombre")
@@ -178,62 +200,59 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
         logger.info(f"[EXCEL_PROC] Mapeo final: Nombre='{col_nombre}', Desc='{col_descripcion}', Precio='{col_precio}', Unidad='{col_unidad}', Categ='{col_categoria}', SKU='{col_sku}', Marca='{col_marca}', Stock='{col_stock}', MonedaCol='{col_moneda_explicita}'")
 
         if not col_nombre and not col_sku: 
-            # Si después de todo el mapeo, no tenemos ni nombre ni SKU, usar la primera columna disponible como nombre.
-            # Esto es un último recurso si los encabezados son completamente irreconocibles o están ausentes.
-            if df.columns.tolist(): # Chequear si df.columns no está vacío
-                col_nombre = df.columns[0] # df.columns ya son strings limpios (o índices como strings)
-                logger.warning(f"[EXCEL_PROC] No se mapeó Nombre ni SKU. Usando primera columna disponible '{col_nombre}' como Nombre por defecto.")
+            if df_column_list: # Chequear si df.columns no está vacío
+                logger.warning(f"[EXCEL_PROC] No se mapeó Nombre ni SKU. Usando primera columna '{df_column_list[0]}' como Nombre por defecto.")
+                col_nombre = df_column_list[0] 
             else:
                  logger.error(f"[EXCEL_PROC] No hay columnas disponibles en el DataFrame después de la limpieza. No se pueden extraer productos de '{base_filename}'.")
                  return []
         
         for index, row_data_series in df.iterrows():
             try:
-                row = row_data_series.to_dict() # Clave para evitar "ValueError: The truth value of a Series is ambiguous"
+                row = row_data_series.to_dict()
                 
-                nombre_prod_construido = ""; marca_val_str = str(row.get(col_marca, "")).strip() if col_marca else ""
+                nombre_prod_construido = ""; marca_val_str = str(row.get(col_marca, "")).strip() if col_marca and col_marca in row else ""
                 if marca_val_str: nombre_prod_construido += marca_val_str
                 
-                nombre_generico_val_str = str(row.get(col_nombre, "")).strip() if col_nombre else ""
+                nombre_generico_val_str = str(row.get(col_nombre, "")).strip() if col_nombre and col_nombre in row else ""
                 if nombre_generico_val_str: nombre_prod_construido = (nombre_prod_construido + " " + nombre_generico_val_str).strip()
                 
                 if not nombre_prod_construido.strip(): continue
 
-                nombre_final = limpiar_texto_base(nombre_prod_construido); sku_val_str = str(row.get(col_sku, "")).strip() if col_sku else ""; sku_final = limpiar_texto_base(sku_val_str)
+                nombre_final = limpiar_texto_base(nombre_prod_construido); sku_val_str = str(row.get(col_sku, "")).strip() if col_sku and col_sku in row else ""; sku_final = limpiar_texto_base(sku_val_str)
                 if not nombre_final and not sku_final: continue
                 if not nombre_final and sku_final: nombre_final = sku_final
                 
-                desc_val_str = str(row.get(col_descripcion, "")).strip() if col_descripcion else ""; descripcion_final = limpiar_texto_base(desc_val_str)
+                desc_val_str = str(row.get(col_descripcion, "")).strip() if col_descripcion and col_descripcion in row else ""; descripcion_final = limpiar_texto_base(desc_val_str)
                 if descripcion_final == nombre_final: descripcion_final = ""
                 
-                precio_crudo_val_str = str(row.get(col_precio, "")).strip() if col_precio else ""
+                precio_crudo_val_str = str(row.get(col_precio, "")).strip() if col_precio and col_precio in row else ""
                 precio_s, precio_f, mon_p = parse_precio_flexible(precio_crudo_val_str)
                 moneda_final = mon_p if mon_p else "ARS"
-                if col_moneda_explicita and pd.notna(row.get(col_moneda_explicita)):
+                if col_moneda_explicita and col_moneda_explicita in row and pd.notna(row.get(col_moneda_explicita)):
                     moneda_de_col = str(row.get(col_moneda_explicita)).strip().upper()
                     if moneda_de_col in ["USD", "ARS", "EUR"]: moneda_final = moneda_de_col
                 
-                unidad_val_str = str(row.get(col_unidad, "")).strip() if col_unidad else ""; unidad_final = limpiar_texto_base(unidad_val_str) if unidad_val_str else "unidad"
-                categoria_val_str = str(row.get(col_categoria, "")).strip() if col_categoria else ""; categoria_final = limpiar_texto_base(categoria_val_str) if categoria_val_str else pyme_rubro_nombre 
-                stock_val_str = str(row.get(col_stock, "1")).strip() if col_stock else "1"; cantidad_final = limpiar_texto_base(stock_val_str) if stock_val_str else "1"
+                unidad_val_str = str(row.get(col_unidad, "")).strip() if col_unidad and col_unidad in row else ""; unidad_final = limpiar_texto_base(unidad_val_str) if unidad_val_str else "unidad"
+                categoria_val_str = str(row.get(col_categoria, "")).strip() if col_categoria and col_categoria in row else ""; categoria_final = limpiar_texto_base(categoria_val_str) if categoria_val_str else pyme_rubro_nombre 
+                stock_val_str = str(row.get(col_stock, "1")).strip() if col_stock and col_stock in row else "1"; cantidad_final = limpiar_texto_base(stock_val_str) if stock_val_str else "1"
 
-                if len(nombre_final) < 2: # Nombre muy corto, probablemente no es un producto
-                    logger.debug(f"[EXCEL_PROC] Fila {index} omitida: nombre '{nombre_final}' demasiado corto."); continue
+                if len(nombre_final) < 2: logger.debug(f"[EXCEL_PROC] Fila {index} omitida: nombre '{nombre_final}' demasiado corto."); continue
                 
-                # Considerar un producto válido si tiene nombre Y (precio o descripción o sku)
-                if not ( (precio_f is not None or re.search(r'(?i)consultar', precio_s or "")) or descripcion_final or sku_final ):
-                     logger.debug(f"[EXCEL_PROC] Fila {index} omitida: '{nombre_final}' no tiene precio, ni descripción, ni SKU significativos.")
-                     continue
+                if precio_f is None and not re.search(r'(?i)consultar|s/p', precio_s or ""): # s/p = sin precio
+                    logger.debug(f"[EXCEL_PROC] Fila {index} omitida: precio no parseable y no es 'consultar' ni 's/p' ('{nombre_final}', precio_crudo: '{precio_crudo_val_str}')."); 
+                    continue
 
                 producto_dict = {
                     "user_id": pyme_user_id, "nombre": nombre_final[:250], "descripcion": descripcion_final[:1000], 
-                    "precio_str": precio_s if precio_s else "", "precio_float": precio_f, "moneda": moneda_final, 
+                    "precio_str": precio_s if precio_s else "Consultar", "precio_float": precio_f, "moneda": moneda_final, 
                     "unidad": unidad_final[:50], "cantidad_disponible": cantidad_final[:50], 
                     "categoria_qdrant": categoria_final[:100], "sku": sku_final[:100], "marca": marca_val_str[:100]
                 }
                 productos_extraidos.append(producto_dict)
             except Exception as e_row:
-                fila_real_excel = index + (idx_fila_encabezados + 1 if idx_fila_encabezados is not None else 0) +1 
+                # Ajustar cálculo de fila real para logs
+                fila_real_excel = index + (idx_fila_encabezados + 1 if idx_fila_encabezados is not None else 0) + 1 
                 logger.error(f"[EXCEL_PROC] Error procesando fila Excel {fila_real_excel} de '{base_filename}': {e_row}", exc_info=True)
         
         logger.info(f"[EXCEL_PROC] Total productos extraídos de '{base_filename}': {len(productos_extraidos)}")
