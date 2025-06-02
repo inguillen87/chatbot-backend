@@ -1,12 +1,14 @@
 # services/qdrant_search.py
+import logging
+from typing import List, Optional # Para tipado
 from .qdrant_utils import get_qdrant_client
 from .cohere_ai import embed_textos 
-import logging
 # IMPORTACIÓN CORREGIDA/AÑADIDA:
 from qdrant_client.http import models as qdrant_models 
-# O si tu versión de qdrant-client es diferente, podría ser:
+# Si lo anterior da error de importación con tu versión de qdrant-client, prueba:
 # from qdrant_client import models as qdrant_models
-# O específicamente: from qdrant_client.models import Filter, FieldCondition, PointStruct, MatchValue
+# o importar directamente:
+# from qdrant_client.http.models import Filter, FieldCondition, MatchValue, ScoredPoint (si usas ScoredPoint en tipado)
 
 from .utils import limpiar_texto_base 
 
@@ -24,7 +26,7 @@ def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_m
             logger.warning("[QDRANT SEARCH] La pregunta para búsqueda semántica está vacía después de limpiar.")
             return []
 
-        vector_pregunta_lista = embed_textos([pregunta_limpia], input_type="search_query") # Usar search_query para la pregunta
+        vector_pregunta_lista = embed_textos([pregunta_limpia], input_type="search_query")
         if not vector_pregunta_lista or not vector_pregunta_lista[0] or not isinstance(vector_pregunta_lista[0], list):
             logger.error(f"[QDRANT SEARCH] No se pudo generar vector para la pregunta: '{pregunta_limpia}'")
             return []
@@ -54,33 +56,60 @@ def buscar_catalogo_qdrant(user_id: int, pregunta: str, limite: int = 3, score_m
         )
         logger.info(f"[QDRANT SEARCH] Búsqueda para user_id {user_id}, pregunta '{pregunta_limpia}': {len(resultados)} hits con score >= {score_min}.")
         return resultados
-    except Exception as e_qdrant: # Captura más general, el NameError debería estar resuelto por el import
+    except Exception as e_qdrant:
         logger.error(f"[QDRANT SEARCH] Error buscando en Qdrant para user_id {user_id}, pregunta '{pregunta_limpia}': {e_qdrant}", exc_info=True)
         return []
 
 def armar_respuesta_legible(resultados_qdrant: List[qdrant_models.ScoredPoint]) -> str:
-    # ... (Tu función armar_respuesta_legible como la tenías, ya estaba bien) ...
     if not resultados_qdrant: 
         logger.info("[QDRANT FORMAT] No hay resultados de Qdrant para formatear.")
         return "" 
+    
     contexto_items = []
     logger.info(f"[QDRANT FORMAT] Formateando {len(resultados_qdrant)} resultados de Qdrant.")
+
     for hit_idx, hit in enumerate(resultados_qdrant):
         if not hasattr(hit, 'payload') or not isinstance(hit.payload, dict):
             logger.warning(f"[QDRANT FORMAT] Hit {hit_idx} (ID: {getattr(hit, 'id', 'N/A')}) no tiene payload o no es dict.")
             continue
-        payload = hit.payload; nombre = payload.get('nombre', 'Producto'); precio_str = payload.get('precio_str', ''); descripcion = payload.get('descripcion', ''); categoria = payload.get('categoria_qdrant', ''); unidad = payload.get('unidad', ''); moneda = payload.get('moneda', '')
+            
+        payload = hit.payload
+        nombre = payload.get('nombre', 'Producto') 
+        precio_str = payload.get('precio_str', '') 
+        descripcion = payload.get('descripcion', '')
+        categoria = payload.get('categoria_qdrant', '') # Este es el campo que guardaste en Qdrant
+        unidad = payload.get('unidad', '')
+        moneda = payload.get('moneda', '') 
+        
         item_info_parts = [f"Nombre: {nombre}"]
         if categoria: item_info_parts.append(f"Categoría: {categoria}")
-        if precio_str: precio_display = f"{moneda} {precio_str}".strip() if moneda else precio_str; item_info_parts.append(f"Precio: {precio_display}")
-        else: item_info_parts.append("Precio: Consultar")
+        
+        if precio_str:
+            precio_display = f"{moneda} {precio_str}".strip() if moneda else precio_str
+            item_info_parts.append(f"Precio: {precio_display}")
+        elif payload.get("precio_float") is not None: # Fallback si precio_str está vacío pero precio_float existe
+             precio_display = f"{moneda} {payload.get('precio_float'):.2f}".strip() if moneda else f"{payload.get('precio_float'):.2f}"
+             item_info_parts.append(f"Precio: {precio_display}")
+        else: 
+            item_info_parts.append("Precio: Consultar")
+        
         if unidad: item_info_parts.append(f"Presentación/Unidad: {unidad}")
-        desc_limpia_para_comparar = limpiar_texto_base(descripcion); nombre_limpio_para_comparar = limpiar_texto_base(nombre)
+        
+        desc_limpia_para_comparar = limpiar_texto_base(descripcion)
+        nombre_limpio_para_comparar = limpiar_texto_base(nombre)
         if desc_limpia_para_comparar and desc_limpia_para_comparar != nombre_limpio_para_comparar:
             desc_corta = (descripcion[:100] + '...') if len(descripcion) > 100 else descripcion
             item_info_parts.append(f"Descripción: {desc_corta}")
+        
+        # Añadir el score para debugging/evaluación, opcional para el LLM
+        # item_info_parts.append(f"(Relevancia: {hit.score:.2f})") 
+
         contexto_items.append("- " + "\n  - ".join(item_info_parts)) 
-    if not contexto_items: logger.info("[QDRANT FORMAT] Ningún ítem de Qdrant formateado."); return "" 
+    
+    if not contexto_items:
+        logger.info("[QDRANT FORMAT] Ningún ítem de Qdrant fue formateado válidamente para el contexto.")
+        return "" 
+        
     contexto_final = "Según nuestro catálogo, esto podría interesarte:\n" + "\n\n".join(contexto_items)
     logger.info(f"[QDRANT FORMAT] Contexto para LLM (parcial): {contexto_final[:300]}...")
     return contexto_final

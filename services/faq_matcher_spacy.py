@@ -1,8 +1,8 @@
 # services/faq_matcher_spacy.py
 import spacy
 import logging
+from typing import Optional
 from models import QA
-from typing import Optional # Para tipado
 from .utils import limpiar_texto_base # <--- IMPORTACIÓN AÑADIDA
 
 logger = logging.getLogger(__name__)
@@ -12,12 +12,14 @@ def _cargar_spacy_modelo_faq():
     global NLP_SPACY_FAQ
     if NLP_SPACY_FAQ is None:
         try:
+            logger.info("Cargando modelo spaCy 'es_core_news_md' para FAQ Matcher...")
             NLP_SPACY_FAQ = spacy.load("es_core_news_md")
-            logger.info("✅ Modelo spaCy 'es_core_news_md' cargado para FAQ Matcher.")
+            logger.info("✅ Modelo spaCy 'es_core_news_md' cargado exitosamente para FAQ Matcher.")
             if NLP_SPACY_FAQ.vocab.vectors.shape[0] == 0: # CORREGIDO
-                 logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (FAQ) se cargó pero no tiene vectores.")
+                 logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (FAQ) se cargó pero no tiene vectores. La similitud podría no funcionar como se espera.")
         except OSError:
-            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado. Descárgalo: python -m spacy download es_core_news_md")
+            logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado. "
+                         "Asegúrate de haberlo descargado (python -m spacy download es_core_news_md).")
         except Exception as e:
             logger.error(f"❌ Error inesperado al cargar spaCy (FAQ): {e}", exc_info=True)
 
@@ -30,25 +32,25 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip():
         logger.warning("[FAQ] Pregunta de usuario vacía o inválida para búsqueda en FAQ.")
         return None
-    if not isinstance(rubro_id, int):
+    if not isinstance(rubro_id, int): 
         logger.warning(f"[FAQ] Rubro ID inválido ({rubro_id}, tipo: {type(rubro_id)}) para búsqueda en FAQ.")
         return None
 
     try:
         faqs = QA.query.filter_by(rubro_id=rubro_id).all()
     except Exception as e_db:
-        logger.error(f"[FAQ] Error al consultar FAQs de BD para rubro {rubro_id}: {e_db}", exc_info=True)
+        logger.error(f"[FAQ] Error al consultar FAQs de la base de datos para rubro_id {rubro_id}: {e_db}", exc_info=True)
         return None
 
     if not faqs:
-        logger.info(f"[FAQ] No se encontraron FAQs en BD para rubro ID {rubro_id}.")
+        logger.info(f"[FAQ] No se encontraron FAQs en la base de datos para el rubro ID {rubro_id}.")
         return None
 
-    pregunta_limpia = limpiar_texto_base(pregunta_usuario) 
+    pregunta_limpia = limpiar_texto_base(pregunta_usuario) # CORREGIDO: Usa la función importada
     doc_user = NLP_SPACY_FAQ(pregunta_limpia)
 
     if not doc_user.has_vector or not doc_user.vector_norm: 
-        logger.warning(f"[FAQ] No se pudo generar vector para pregunta: '{pregunta_limpia}'.")
+        logger.warning(f"[FAQ] No se pudo generar un vector para la pregunta del usuario: '{pregunta_limpia}'. No se puede calcular similitud.")
         return None
 
     mejor_match: Optional[QA] = None
@@ -64,6 +66,7 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
         
         try:
             score = doc_user.similarity(doc_faq)
+            # logger.debug(f"[FAQ] Comparando '{pregunta_limpia}' con FAQ ID {faq_item.id} ('{faq_item.question[:50]}...'): Score {score:.3f}")
             if score > mejor_score:
                 mejor_score = score
                 mejor_match = faq_item

@@ -4,14 +4,14 @@ import random
 from flask import session
 from sqlalchemy import func
 from models import User, Rubro, Sugerencia, Conversacion, db 
-# from extensions import db # Decide cuál 'db' usar. Si el de models.py está bien configurado, es suficiente.
+# from extensions import db # Si usas el db de extensions, asegúrate que esté bien inicializado.
 import re 
 import json 
 from typing import Any, Optional, Dict, List
 
 logger = logging.getLogger(__name__)
 
-# --- Clases Anónimas (como estaban, ya corregidas) ---
+# --- Clases Anónimas (como las tenías, ya corregidas para el UnboundLocalError) ---
 class _BaseAnonUser:
     nombre_empresa: str = "la tienda"; plan: str = "anonimo"; rubro_id: Optional[int] = None; link_web: str = ""; telefono: str = ""; direccion: str = ""; horario: str = "horario de atención habitual"; horario_json: str = '[]'; ciudad: str = ""; provincia: str = ""; pais: str = "Argentina"; latitud: Optional[float] = None; longitud: Optional[float] = None; id: Optional[int] = None 
 class AnonUserPymeDemo(_BaseAnonUser):
@@ -22,9 +22,11 @@ class GenericAnonUser(_BaseAnonUser):
         super().__init__(); self.plan = "anonimo_general"; self.preguntas_usadas = session.get("generic_anon_preguntas", 0); self.limite_preguntas = 5
 # --- Fin Clases Anónimas ---
 
-# --- Funciones Auxiliares (como estaban, ya corregidas) ---
-def sugerencias_por_rubro(rubro_id: int) -> list:
-    # ... (tu código de sugerencias_por_rubro) ...
+# --- Funciones Auxiliares (Asegúrate que estas definiciones estén aquí o importadas correctamente de utils.py) ---
+from .utils import limpiar_texto_base, parse_precio_flexible, extraer_unidades_y_tipos_precio # Asumiendo que utils.py está en services
+
+def sugerencias_por_rubro(rubro_id: int) -> List[str]: # Cambiado a List[str]
+    # ... (tu código como lo tenías, usando logger.info)
     try:
         sugerencias_obj = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
         if sugerencias_obj:
@@ -42,8 +44,8 @@ def sugerencias_por_rubro(rubro_id: int) -> list:
         logger.error(f"[LOGIC-SUG] Error buscando sugerencias para rubro_id {rubro_id}: {e}", exc_info=True)
         return ["Disculpa, tuve un problema al buscar sugerencias en este momento."]
 
-def formatear_numero_whatsapp_simple(telefono_str: str, codigo_pais: str = "54") -> str:
-    # ... (tu código de formatear_numero_whatsapp_simple) ...
+
+def formatear_numero_whatsapp_simple(telefono_str: Optional[str], codigo_pais: str = "54") -> str:
     if not telefono_str: return ""
     numeros = re.sub(r'\D', '', str(telefono_str))
     if numeros.startswith(codigo_pais + "9") and len(numeros) == (len(codigo_pais) + 1 + 10): return numeros
@@ -52,9 +54,9 @@ def formatear_numero_whatsapp_simple(telefono_str: str, codigo_pais: str = "54")
     logger.info(f"[LOGIC-WSP] Número '{telefono_str}' no formateado claramente a WhatsApp, devolviendo solo dígitos: '{numeros}'")
     return numeros
 
-def reemplazar_placeholders(texto: str, user_obj: Any) -> str:
-    # ... (tu código de reemplazar_placeholders, la versión completa y corregida que te pasé antes) ...
+def reemplazar_placeholders(texto: Optional[str], user_obj: Any) -> str:
     if not texto or not isinstance(texto, str): return ""
+    # ... (tu función reemplazar_placeholders COMPLETA y corregida como la tenías en tu último logic.py, usando logger.info)
     placeholders_conocidos = {
         "[nombreEmpresa]": "nombre_empresa", "[linkWeb]": "link_web", "[telefono]": "telefono",
         "[direccion]": "direccion", "[horario]": "horario", "[ciudad]" : "ciudad",
@@ -178,38 +180,70 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             partes_horario = [f"{h.get('dia','')}: " + (f"de {h.get('abre','--:--')} a {h.get('cierra','--:--')}" if not h.get('cerrado') else "Cerrado") for h in horarios_data if isinstance(h,dict) and h.get('dia')]
             if partes_horario: horarios_para_prompt = ". ".join(partes_horario) + "."
         logger.info(f"[LOGIC] ==> Horarios formateados para prompt: {horarios_para_prompt}")
-    except Exception as e_json_h_prompt: logger.warning(f"[LOGIC] Error parseando horario_json_str para prompt: {e_json_h_prompt}.")
+    except Exception as e_json_h_p: logger.warning(f"[LOGIC] Error parseando horario_json_str para prompt: {e_json_h_p}.")
     
     numero_intercambios_previos = len(session.get(NOMBRE_HISTORIAL_SESION, [])) // 2
     prompt_sistema_texto = ( f"Sos Chatboc, un asistente comercial experto de {user_profile_context['nombre_empresa']} (rubro: {user_profile_context['rubro_nombre']}), ubicada en {user_profile_context['direccion_completa']}. "
-        # ... (resto de tu prompt_sistema_texto completo) ...
-        f"\n- Horarios de Atención: {horarios_para_prompt if horarios_para_prompt and horarios_para_prompt.strip('.') else 'Consultar nuestros horarios.'}"
-        # ...
+        f"Tu principal objetivo es entender las necesidades del cliente y guiarlo a una compra o visita a la tienda online ({user_profile_context['link_web'] if user_profile_context['link_web'] else 'nuestra página web'}) en 2-4 intercambios. "
+        f"Historial de conversación previo (ultimos {numero_intercambios_previos} intercambios): {session.get(NOMBRE_HISTORIAL_SESION, [])[-(numero_intercambios_previos*2):]}. " # Añadir historial al prompt
+        "Sé amable, proactivo, resolutivo y persuasivo. Respuestas breves, directas y valiosas. Ve al grano. "
+        "No menciones que eres IA. Habla como vendedor humano. "
+        f"\nINFO DE {user_profile_context['nombre_empresa']}:"
+        f"\n- Teléfono: {user_profile_context['telefono_raw'] if user_profile_context['telefono_raw'] else 'No disponible'}"
+        f"\n- Dirección: {user_profile_context['direccion_completa'] if user_profile_context['direccion_completa'].strip(', ') else 'Consultar.'}"
+        f"\n- Horarios: {horarios_para_prompt if horarios_para_prompt and horarios_para_prompt.strip('.') else 'Consultar.'}"
+        f"\n- Web: {user_profile_context['link_web'] if user_profile_context['link_web'] else 'No disponible'}"
+        "\nSI PREGUNTA ALGO SIN SENTIDO: responde amablemente que no entendiste y ofrece ayuda general."
+        "\nSOBRE CATÁLOGO:"
+        "\n1. Si preguntan por productos y hay info del catálogo, presenta max 2-3 opciones relevantes con Nombre y Precio."
+        "\n2. Si piden precio de algo específico, da el Precio del catálogo."
+        "\n3. Si piden varias unidades, calcula el total si el precio es numérico."
+        "\n4. Si precio es 'Consultar', indícalo y sugiere ver online o contactar."
+        "\n5. Si info de catálogo es extensa, resume lo importante."
+        "\n6. Si no hay info relevante del catálogo, usa conocimiento general o pide detalles."
+        "\n7. Para preguntas de horarios (ej. '¿Están abiertos?'), usa la info de 'Horarios de Atención'."
     )
-    contexto_catalogo = ""; # ... (Lógica Qdrant como antes) ...
+    
+    contexto_catalogo = ""; 
     if is_usuario_registrado_real and user_obj.id is not None:
         try:
             from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible 
-            resultados_qdrant = buscar_catalogo_qdrant(user_obj.id, pregunta, limite=3); contexto_catalogo = armar_respuesta_legible(resultados_qdrant)
-            if contexto_catalogo: logger.info(f"[LOGIC] Contexto Qdrant: {contexto_catalogo[:100]}..."); prompt_sistema_texto += f"\n\nINFO DEL CATÁLOGO:\n{contexto_catalogo}"
-            else: logger.info("[LOGIC] Sin contexto Qdrant."); prompt_sistema_texto += "\nINFO DEL CATÁLOGO: No se encontró información específica del catálogo para esta consulta."
+            resultados_qdrant = buscar_catalogo_qdrant(user_obj.id, pregunta, limite=3); 
+            contexto_catalogo = armar_respuesta_legible(resultados_qdrant)
+            if contexto_catalogo: 
+                logger.info(f"[LOGIC] Contexto Qdrant: {contexto_catalogo[:100]}...")
+                prompt_sistema_texto += f"\n\nINFO DEL CATÁLOGO:\n{contexto_catalogo}"
+            else: 
+                logger.info("[LOGIC] Sin contexto Qdrant."); 
+                prompt_sistema_texto += "\nINFO DEL CATÁLOGO: No se encontró información específica del catálogo."
         except Exception as e_q: logger.error(f"[LOGIC] Error Qdrant: {e_q}"); prompt_sistema_texto += "\nINFO DEL CATÁLOGO: (Error al consultar catálogo)"
-    else: prompt_sistema_texto += "\nINFO DEL CATÁLOGO: No hay catálogo específico para este modo."
+    else:
+        logger.info("[LOGIC] Sin búsqueda Qdrant (usuario no PYME o sin ID).")
+        prompt_sistema_texto += "\nINFO DEL CATÁLOGO: No hay catálogo específico para este modo."
+
     prompt_sistema_texto += "\n\nResponde directamente al cliente:"
-    logger.info(f"[LOGIC] ==> Prompt Sistema FINAL para Cohere (longitud: {len(prompt_sistema_texto)}): {prompt_sistema_texto[:300]}...")
+    logger.info(f"[LOGIC] ==> Prompt Sistema FINAL para Cohere (longitud: {len(prompt_sistema_texto)}): {prompt_sistema_texto[:400]}...")
 
     respuesta_obtenida_llm = ""; fuente_respuesta = "no_especificada"
     try:
         from services.cohere_ai import get_cohere_response 
-        historial_llm_raw = session.get(NOMBRE_HISTORIAL_SESION, [])
-        historial_para_api = [{"role": "USER" if msg.get("role") == "user" else "CHATBOT", "message": msg.get("content","")} for msg in historial_llm_raw[-(6*2):]]
+        historial_para_api = [{"role": "USER" if msg.get("role") == "user" else "CHATBOT", "message": msg.get("content","")} for msg in session.get(NOMBRE_HISTORIAL_SESION, [])[-(6*2):]]
         logger.info(f"[LOGIC] Enviando a Cohere: Pregunta='{pregunta[:50]}...'. Historial API: {len(historial_para_api)}.")
-        respuesta_obtenida_llm = get_cohere_response(message=pregunta, chat_history=historial_para_api, preamble=prompt_sistema_texto)
+        
+        respuesta_obtenida_llm = get_cohere_response(
+            message=pregunta,
+            chat_history=historial_para_api,
+            preamble=prompt_sistema_texto, # Correcto para la firma de cohere_ai.py corregida
+            rubro_id=rubro_id_final, 
+            user_context=user_profile_context
+        )
         logger.info(f"[LOGIC] Respuesta CRUDA de Cohere: '{respuesta_obtenida_llm}'")
         if respuesta_obtenida_llm and isinstance(respuesta_obtenida_llm, str) and len(respuesta_obtenida_llm.strip()) > 2:
             fuente_respuesta = "cohere"; logger.info(f"[LOGIC] Cohere dio respuesta válida.")
-        else: logger.warning(f"[LOGIC] Respuesta Cohere vacía/corta: '{respuesta_obtenida_llm}'."); respuesta_obtenida_llm = "" 
-    except Exception as e_cohere: logger.error(f"[LOGIC] Error llamando a Cohere: {e_cohere}", exc_info=True); respuesta_obtenida_llm = ""
+        else: 
+            logger.warning(f"[LOGIC] Respuesta Cohere vacía/corta: '{respuesta_obtenida_llm}'."); respuesta_obtenida_llm = "" 
+    except Exception as e_cohere: 
+        logger.error(f"[LOGIC] Error llamando a Cohere: {e_cohere}", exc_info=True); respuesta_obtenida_llm = ""
 
     respuesta_final_procesada = ""
     if respuesta_obtenida_llm:
@@ -231,7 +265,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
 
     if respuesta_final_procesada and respuesta_final_procesada.strip():
         session[NOMBRE_HISTORIAL_SESION].extend([{"role": "user", "content": pregunta}, {"role": "assistant", "content": respuesta_final_procesada}])
-        session.modified = True; logger.info(f"[LOGIC] Historial actualizado. Nuevo tamaño: {len(session[NOMBRE_HISTORIAL_SESION])}")
+        session.modified = True; logger.info(f"[LOGIC] Historial actualizado. Tamaño: {len(session[NOMBRE_HISTORIAL_SESION])}")
         if is_usuario_registrado_real and user_obj.id:
             try:
                 user_obj.preguntas_usadas = (user_obj.preguntas_usadas or 0) + 1; db.session.add(Conversacion(user_id=user_obj.id, pregunta=pregunta, respuesta=respuesta_final_procesada, fuente=fuente_respuesta, rubro=rubro_nombre_final)); db.session.commit()
@@ -243,7 +277,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         logger.info(f"✅ [LOGIC] Respuesta final (fuente: {fuente_respuesta}): '{respuesta_para_frontend[:100]}...'")
         return {"respuesta": respuesta_para_frontend, "nivel_usado": rubro_nombre_final, "fuente": fuente_respuesta}
     else: 
-        logger.info("[LOGIC] Fallback final. Usando sugerencias.")
+        logger.info("[LOGIC] Fallback final: Usando sugerencias.")
         sugs = sugerencias_por_rubro(rubro_id_final)
         resp_sug = ("No encontré una respuesta directa. Quizás puedas intentar: " + " · ".join(f"“{s}”" for s in sugs if s)) if sugs else "Lo siento, no entendí bien. ¿Podrías reformularlo?"
         resp_final_sug = reemplazar_placeholders(resp_sug, user_obj)
