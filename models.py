@@ -110,6 +110,8 @@ class CatalogoItem(db.Model):
     descripcion = db.Column(db.String(1024))
     precio = db.Column(db.String(50))
     cantidad = db.Column(db.String(50))
+    sku = db.Column(db.String(100), nullable=True, index=True) # Nuevo
+    marca = db.Column(db.String(100), nullable=True, index=True) # Nuevo
     categoria = db.Column(db.String(100))
     unidad = db.Column(db.String(50))
     texto = db.Column(db.Text, nullable=True)  # opcional
