@@ -11,7 +11,6 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 COHERE_EMBED_BATCH_SIZE = 90 
 
 def embed_textos(textos: List[str], input_type: str = "search_document") -> List[List[float]]:
-    # ... (Mantener la versión completa y funcional de embed_textos que te pasé)
     if not COHERE_API_KEY: logger.error("[COHERE EMBED] COHERE_API_KEY no configurada."); return []
     if not textos or not isinstance(textos, list) or not all(isinstance(t, str) for t in textos): logger.error("❌ [COHERE EMBED] Lista de textos vacía o inválida."); return []
     all_embeddings: List[List[float]] = []; model_embed = "embed-multilingual-v3.0"
@@ -35,7 +34,7 @@ def embed_textos(textos: List[str], input_type: str = "search_document") -> List
 
 def get_cohere_response(message: str, 
                         chat_history: Optional[List[Dict[str, str]]] = None, 
-                        preamble: Optional[str] = None, # Este es el system_prompt
+                        preamble: Optional[str] = None, 
                         model: str = "command-r-plus",
                         temperature: float = 0.3,
                         rubro_id: Optional[int] = None, 
@@ -47,15 +46,15 @@ def get_cohere_response(message: str,
     if preamble: logger.info(f"[COHERE CHAT] Preamble (System Prompt) (primeros 100 chars): {preamble[:100]}...")
     else: logger.info("[COHERE CHAT] No se proporcionó Preamble (System Prompt).")
 
-    if not COHERE_API_KEY: # ... (manejo de error API Key)
+    if not COHERE_API_KEY:
         logger.error("❌ [COHERE CHAT] COHERE_API_KEY no está configurada.")
         return "Error interno: Asistente IA no disponible en este momento (C01)."
-    if not message or not isinstance(message, str) or not message.strip(): # ... (manejo de error mensaje vacío)
+    if not message or not isinstance(message, str) or not message.strip():
         logger.error("❌ [COHERE CHAT] Mensaje actual del usuario está vacío o no es string.")
         return "Por favor, escribe una pregunta o consulta más clara."
     try:
         co_client = cohere.Client(COHERE_API_KEY, timeout=60)
-    except Exception as e_client: # ... (manejo de error inicialización cliente)
+    except Exception as e_client:
         logger.error(f"❌ [COHERE CHAT] Error al inicializar cliente Cohere: {e_client}", exc_info=True)
         return "Error interno: No se pudo inicializar el asistente IA (C02)."
     try:
@@ -63,20 +62,20 @@ def get_cohere_response(message: str,
         response = co_client.chat(
             message=message,
             chat_history=chat_history if chat_history else [], 
-            preamble=preamble if preamble else None, # Pasar el preamble aquí
+            preamble=preamble if preamble else None, # Usar el parámetro preamble
             model=model, 
             temperature=temperature,
         )
         respuesta_texto = response.text.strip() if response and response.text else ""
         logger.info(f"⬅️ [COHERE CHAT] Respuesta API (primeros 200 chars): '{respuesta_texto[:200]}'")
         return respuesta_texto
-    except cohere.CohereAPIError as e_api: # ... (manejo de errores API Cohere)
+    except cohere.CohereAPIError as e_api:
          logger.error(f"❌ [COHERE CHAT] Error de API Cohere: Status {getattr(e_api, 'http_status', 'N/A')} - {e_api.message}. Tipo: {e_api.__class__.__name__}", exc_info=False)
          if hasattr(e_api, 'http_status') and e_api.http_status == 429: return "Nuestro asistente IA está experimentando una alta demanda. Por favor, intenta nuevamente en unos momentos."
          return "Lo siento, no pude procesar tu solicitud en este momento con el asistente IA (E01)."
     except TypeError as te: 
         logger.error(f"❌ [COHERE CHAT] TypeError en llamada a co_client.chat(): {te}. Revisar argumentos.", exc_info=True)
         return "Lo siento, hubo un problema técnico con nuestro asistente IA (TE01)."
-    except Exception as e_general: # ... (manejo de error genérico)
+    except Exception as e_general:
         logger.error(f"❌ [COHERE CHAT] Error genérico durante la llamada a Cohere: {e_general}", exc_info=True)
         return "Lo siento, tuve un problema inesperado al intentar generar una respuesta (E02)."

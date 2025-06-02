@@ -4,6 +4,7 @@ import os
 import spacy
 import logging
 from typing import Optional, Dict, List, Any
+import random # Para elegir una respuesta de una lista
 from .utils import limpiar_texto_base
 
 logger = logging.getLogger(__name__)

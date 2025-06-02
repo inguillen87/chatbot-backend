@@ -1,7 +1,7 @@
 # services/faq_matcher_spacy.py
 import spacy
 import logging
-from typing import Optional
+from typing import Optional, List # Añadido List
 from models import QA
 from .utils import limpiar_texto_base
 
@@ -25,7 +25,7 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
     if NLP_SPACY_FAQ is None: logger.error("[FAQ] Imposible buscar: modelo spaCy no cargado."); return None
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip(): logger.warning("[FAQ] Pregunta vacía."); return None
     if not isinstance(rubro_id, int): logger.warning(f"[FAQ] Rubro ID inválido ({rubro_id})."); return None
-    try: faqs = QA.query.filter_by(rubro_id=rubro_id).all()
+    try: faqs: List[QA] = QA.query.filter_by(rubro_id=rubro_id).all() # Tipado
     except Exception as e_db: logger.error(f"[FAQ] Error consultando FAQs BD para rubro {rubro_id}: {e_db}", exc_info=True); return None
     if not faqs: logger.info(f"[FAQ] No FAQs en BD para rubro ID {rubro_id}."); return None
     pregunta_limpia = limpiar_texto_base(pregunta_usuario); doc_user = NLP_SPACY_FAQ(pregunta_limpia)
