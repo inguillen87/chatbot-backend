@@ -4,46 +4,51 @@ import random
 from flask import session
 from sqlalchemy import func
 from models import User, Rubro, Sugerencia, Conversacion, db 
-# from extensions import db # Si usas el db de extensions, asegúrate que esté bien inicializado.
 import re 
 import json 
 from typing import Any, Optional, Dict, List
 
+# Asegúrate de que utils.py esté en el mismo directorio 'services' o ajusta la ruta
+from .utils import limpiar_texto_base, parse_precio_flexible 
+# extraer_unidades_y_tipos_precio se usa en google_docai.py y procesar_catalogo_excel.py,
+# no directamente aquí en logic.py, pero es bueno tenerlo en utils.py
+
 logger = logging.getLogger(__name__)
 
-# --- Clases Anónimas (como las tenías, ya corregidas para el UnboundLocalError) ---
+# --- Clases para usuarios anónimos (definidas a nivel de módulo) ---
 class _BaseAnonUser:
     nombre_empresa: str = "la tienda"; plan: str = "anonimo"; rubro_id: Optional[int] = None; link_web: str = ""; telefono: str = ""; direccion: str = ""; horario: str = "horario de atención habitual"; horario_json: str = '[]'; ciudad: str = ""; provincia: str = ""; pais: str = "Argentina"; latitud: Optional[float] = None; longitud: Optional[float] = None; id: Optional[int] = None 
+
 class AnonUserPymeDemo(_BaseAnonUser):
     def __init__(self, preguntas_realizadas_sesion: int):
         super().__init__(); self.nombre_empresa = "Chatboc Demostración"; self.plan = "demo_pyme"; self.preguntas_usadas = preguntas_realizadas_sesion; self.limite_preguntas = 15; self.link_web = "https://www.chatboc.ar"; self.telefono = "+549111234567"; self.direccion = "Av. Corrientes 1234, CABA"; self.ciudad = "CABA"; self.provincia = "CABA"; self.horario = "Lunes a Viernes de 9hs a 18hs. Sábados de 9hs a 13hs."; self.horario_json = json.dumps([{"dia": "Lunes", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Martes", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Miércoles", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Jueves", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Viernes", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Sábado", "abre": "09:00", "cierra": "13:00", "cerrado": False},{"dia": "Domingo", "abre": "", "cierra": "", "cerrado": True}]); self.latitud = -34.6037; self.longitud = -58.3816 
+
 class GenericAnonUser(_BaseAnonUser):
     def __init__(self):
         super().__init__(); self.plan = "anonimo_general"; self.preguntas_usadas = session.get("generic_anon_preguntas", 0); self.limite_preguntas = 5
 # --- Fin Clases Anónimas ---
 
-# --- Funciones Auxiliares (Asegúrate que estas definiciones estén aquí o importadas correctamente de utils.py) ---
-from .utils import limpiar_texto_base, parse_precio_flexible, extraer_unidades_y_tipos_precio # Asumiendo que utils.py está en services
-
-def sugerencias_por_rubro(rubro_id: int) -> List[str]: # Cambiado a List[str]
-    # ... (tu código como lo tenías, usando logger.info)
+# --- Funciones Auxiliares ---
+def sugerencias_por_rubro(rubro_id: int) -> List[str]:
     try:
         sugerencias_obj = Sugerencia.query.filter_by(rubro_id=rubro_id).all()
         if sugerencias_obj:
-            todas = [s.texto for s in sugerencias_obj]
-            logger.info(f"[LOGIC-SUG] Sugerencias para rubro {rubro_id} (total: {len(todas)}): {todas[:3]}") 
-            return random.sample(todas, min(3, len(todas)))
+            todas = [s.texto for s in sugerencias_obj if s.texto and s.texto.strip()] # Filtrar vacías
+            if todas:
+                logger.info(f"[LOGIC-SUG] Sugerencias para rubro {rubro_id} (total: {len(todas)}): {todas[:3]}") 
+                return random.sample(todas, min(3, len(todas)))
         if rubro_id != 1: 
             fallback_obj = Sugerencia.query.filter_by(rubro_id=1).all()
             if fallback_obj:
-                logger.info(f"[LOGIC-SUG] No se encontraron sugerencias para rubro {rubro_id}, usando fallback general.")
-                return random.sample([s.texto for s in fallback_obj], min(3, len(fallback_obj)))
-        logger.info(f"[LOGIC-SUG] No se encontraron sugerencias para rubro {rubro_id} ni en fallback. Usando defaults.")
+                todas_fallback = [s.texto for s in fallback_obj if s.texto and s.texto.strip()]
+                if todas_fallback:
+                    logger.info(f"[LOGIC-SUG] No se encontraron sugerencias para rubro {rubro_id}, usando fallback general.")
+                    return random.sample(todas_fallback, min(3, len(todas_fallback)))
+        logger.info(f"[LOGIC-SUG] No se encontraron sugerencias válidas para rubro {rubro_id} ni en fallback. Usando defaults.")
         return ["¿Cuáles son sus horarios de atención?", "¿Qué productos ofrecen?", "¿Cómo puedo realizar una compra?"]
     except Exception as e:
         logger.error(f"[LOGIC-SUG] Error buscando sugerencias para rubro_id {rubro_id}: {e}", exc_info=True)
         return ["Disculpa, tuve un problema al buscar sugerencias en este momento."]
-
 
 def formatear_numero_whatsapp_simple(telefono_str: Optional[str], codigo_pais: str = "54") -> str:
     if not telefono_str: return ""
@@ -56,7 +61,6 @@ def formatear_numero_whatsapp_simple(telefono_str: Optional[str], codigo_pais: s
 
 def reemplazar_placeholders(texto: Optional[str], user_obj: Any) -> str:
     if not texto or not isinstance(texto, str): return ""
-    # ... (tu función reemplazar_placeholders COMPLETA y corregida como la tenías en tu último logic.py, usando logger.info)
     placeholders_conocidos = {
         "[nombreEmpresa]": "nombre_empresa", "[linkWeb]": "link_web", "[telefono]": "telefono",
         "[direccion]": "direccion", "[horario]": "horario", "[ciudad]" : "ciudad",
@@ -162,105 +166,139 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
     else: logger.error(f"[LOGIC] ¡ERROR CRÍTICO! Rubro general ID 1 no encontrado.")
     logger.info(f"[LOGIC] ==> Rubro Final: '{rubro_nombre_final}' (ID: {rubro_id_final})")
 
-    horario_json_str_ctx = user_obj.horario if isinstance(user_obj, User) and user_obj.horario else getattr(user_obj, 'horario_json', '[]')
+    horario_json_str_ctx = getattr(user_obj, 'horario', '[]') if isinstance(user_obj, User) else getattr(user_obj, 'horario_json', '[]')
     if not horario_json_str_ctx or not horario_json_str_ctx.strip(): horario_json_str_ctx = '[]'
     
     user_profile_context = {
         "nombre_empresa": getattr(user_obj, "nombre_empresa", ""), "rubro_nombre": rubro_nombre_final,
         "telefono_raw": getattr(user_obj, "telefono", ""), "link_web": getattr(user_obj, "link_web", ""),
         "direccion_completa": f"{getattr(user_obj, 'direccion', '')}, {getattr(user_obj, 'ciudad', '')}, {getattr(user_obj, 'provincia', '')}".replace(" ,", "").strip(', '),
-        "horario_str": getattr(user_obj, "horario", "Consultar horario"), "horario_json_str": horario_json_str_ctx, 
+        "horario_str": getattr(user_obj, "horario", "Consultar horario"), # Para el placeholder [horario]
+        "horario_json_str": horario_json_str_ctx, # Para el prompt y [horarioDetallado]
     }
-    logger.info(f"[LOGIC] ==> User Profile Context para LLM: {json.dumps(user_profile_context, ensure_ascii=False, indent=2)}")
+    logger.info(f"[LOGIC] ==> User Profile Context para LLM (previo a formatear horario para prompt): {json.dumps(user_profile_context, ensure_ascii=False, indent=2)}")
 
-    horarios_para_prompt = user_profile_context['horario_str'] 
+    horarios_para_prompt = user_profile_context['horario_str'] # Default al string simple o JSON string de User.horario
     try:
-        if user_profile_context['horario_json_str'] and user_profile_context['horario_json_str'].strip() not in ['[]', '{}', 'null', '']:
+        # Solo intentar parsear y formatear si horario_json_str es un string JSON válido y no vacío
+        if user_profile_context['horario_json_str'] and user_profile_context['horario_json_str'].strip().startswith('['):
             horarios_data = json.loads(user_profile_context['horario_json_str'])
-            partes_horario = [f"{h.get('dia','')}: " + (f"de {h.get('abre','--:--')} a {h.get('cierra','--:--')}" if not h.get('cerrado') else "Cerrado") for h in horarios_data if isinstance(h,dict) and h.get('dia')]
+            partes_horario = []
+            if isinstance(horarios_data, list) and all(isinstance(h, dict) for h in horarios_data):
+                for h_dict in horarios_data:
+                    dia = h_dict.get("dia", "")
+                    if not dia: continue 
+                    if h_dict.get("cerrado"): partes_horario.append(f"{dia}: Cerrado")
+                    else: partes_horario.append(f"{dia}: de {h_dict.get('abre','--:--')} a {h_dict.get('cierra','--:--')}")
             if partes_horario: horarios_para_prompt = ". ".join(partes_horario) + "."
-        logger.info(f"[LOGIC] ==> Horarios formateados para prompt: {horarios_para_prompt}")
-    except Exception as e_json_h_p: logger.warning(f"[LOGIC] Error parseando horario_json_str para prompt: {e_json_h_p}.")
+        logger.info(f"[LOGIC] ==> Horarios formateados para prompt (usado en system_prompt): {horarios_para_prompt}")
+    except Exception as e_json_h_p: logger.warning(f"[LOGIC] Error parseando horario_json_str para prompt: {e_json_h_p}. Se usará horario_str original.")
     
     numero_intercambios_previos = len(session.get(NOMBRE_HISTORIAL_SESION, [])) // 2
-    prompt_sistema_texto = ( f"Sos Chatboc, un asistente comercial experto de {user_profile_context['nombre_empresa']} (rubro: {user_profile_context['rubro_nombre']}), ubicada en {user_profile_context['direccion_completa']}. "
-        f"Tu principal objetivo es entender las necesidades del cliente y guiarlo a una compra o visita a la tienda online ({user_profile_context['link_web'] if user_profile_context['link_web'] else 'nuestra página web'}) en 2-4 intercambios. "
-        f"Historial de conversación previo (ultimos {numero_intercambios_previos} intercambios): {session.get(NOMBRE_HISTORIAL_SESION, [])[-(numero_intercambios_previos*2):]}. " # Añadir historial al prompt
-        "Sé amable, proactivo, resolutivo y persuasivo. Respuestas breves, directas y valiosas. Ve al grano. "
-        "No menciones que eres IA. Habla como vendedor humano. "
-        f"\nINFO DE {user_profile_context['nombre_empresa']}:"
-        f"\n- Teléfono: {user_profile_context['telefono_raw'] if user_profile_context['telefono_raw'] else 'No disponible'}"
-        f"\n- Dirección: {user_profile_context['direccion_completa'] if user_profile_context['direccion_completa'].strip(', ') else 'Consultar.'}"
-        f"\n- Horarios: {horarios_para_prompt if horarios_para_prompt and horarios_para_prompt.strip('.') else 'Consultar.'}"
-        f"\n- Web: {user_profile_context['link_web'] if user_profile_context['link_web'] else 'No disponible'}"
-        "\nSI PREGUNTA ALGO SIN SENTIDO: responde amablemente que no entendiste y ofrece ayuda general."
-        "\nSOBRE CATÁLOGO:"
-        "\n1. Si preguntan por productos y hay info del catálogo, presenta max 2-3 opciones relevantes con Nombre y Precio."
-        "\n2. Si piden precio de algo específico, da el Precio del catálogo."
-        "\n3. Si piden varias unidades, calcula el total si el precio es numérico."
-        "\n4. Si precio es 'Consultar', indícalo y sugiere ver online o contactar."
-        "\n5. Si info de catálogo es extensa, resume lo importante."
-        "\n6. Si no hay info relevante del catálogo, usa conocimiento general o pide detalles."
-        "\n7. Para preguntas de horarios (ej. '¿Están abiertos?'), usa la info de 'Horarios de Atención'."
+    
+    # --- CONSTRUCCIÓN DEL PROMPT DEL SISTEMA ---
+    prompt_sistema_texto = (
+        f"Sos Chatboc, un asistente comercial experto de {user_profile_context['nombre_empresa']} (rubro: {user_profile_context['rubro_nombre']}), ubicada en {user_profile_context['direccion_completa']}. "
+        f"Tu principal objetivo es entender rápidamente las necesidades del cliente y guiarlo hacia una compra o una visita a la tienda online ({user_profile_context['link_web'] if user_profile_context['link_web'] else 'nuestra página web'}) en los próximos 2-4 intercambios. "
+        f"Ya has tenido {numero_intercambios_previos} intercambios con este cliente (revisa el historial de conversación que te proveo más abajo si es necesario). "
+        "Sé amable, muy proactivo, resolutivo y persuasivo. Tus respuestas deben ser breves (máximo 2-3 frases), directas y valiosas. Ve al grano. Evita el texto de relleno o introducciones innecesarias. Proporciona la información clave de forma concisa. "
+        "Haz preguntas claras si necesitas más información para ayudarle. "
+        "Si el cliente muestra interés en un producto o servicio, intenta cerrar la venta ofreciendo añadirlo al carrito, llevarlo a la página del producto en la tienda online, o facilitando el siguiente paso de forma clara y simple. "
+        "No menciones que eres una IA ni un 'asistente virtual'. Habla como un vendedor humano y entusiasta. "
+        f"\nINFORMACIÓN CLAVE DE {user_profile_context['nombre_empresa']}:"
+        f"\n- Teléfono de Contacto: {user_profile_context['telefono_raw'] if user_profile_context['telefono_raw'] else 'No disponible en este momento.'}"
+        f"\n- Dirección Física: {user_profile_context['direccion_completa'] if user_profile_context['direccion_completa'].strip(', ') else 'Consultar por nuestra ubicación.'}"
+        f"\n- Horarios de Atención: {horarios_para_prompt if horarios_para_prompt and horarios_para_prompt.strip('.') and 'consultar' not in horarios_para_prompt.lower() else 'Por favor, consulta nuestros horarios.'}"
+        f"\n- Sitio Web / Tienda Online: {user_profile_context['link_web'] if user_profile_context['link_web'] else 'No disponible en este momento.'}"
+        "\nINSTRUCCIONES ADICIONALES:"
+        "\n- Si la pregunta del cliente es incomprensible o solo son caracteres al azar, responde amablemente que no entendiste la consulta y ofrece ayuda general. Ejemplo: 'Disculpa, no entendí bien tu consulta. Puedo ayudarte con información sobre nuestros productos, precios, horarios o cómo comprar. ¿En qué te puedo asistir hoy?'"
+        "\n- Si te preguntan '¿Están abiertos ahora?' o sobre horarios específicos, BASA tu respuesta ÚNICAMENTE en la información de 'Horarios de Atención' proporcionada arriba. Calcula si está abierto o cerrado según la hora actual si es necesario (asume zona horaria local de Argentina, GMT-3)."
+        "\n- Si se te pide información que NO está en este prompt (ej. detalles muy específicos de un producto no listado en el catálogo o historia de la empresa), indica amablemente que no tienes esa información específica pero puedes ayudar con otros temas o dirigirlos al sitio web."
     )
     
     contexto_catalogo = ""; 
     if is_usuario_registrado_real and user_obj.id is not None:
+        logger.info(f"[LOGIC] Usuario PYME {user_obj.id}. Intentando búsqueda en Qdrant para pregunta: '{pregunta[:50]}...'")
         try:
             from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible 
-            resultados_qdrant = buscar_catalogo_qdrant(user_obj.id, pregunta, limite=3); 
+            resultados_qdrant = buscar_catalogo_qdrant(user_obj.id, pregunta, limite=3, score_min=0.65) # Ajustado score_min
             contexto_catalogo = armar_respuesta_legible(resultados_qdrant)
             if contexto_catalogo: 
-                logger.info(f"[LOGIC] Contexto Qdrant: {contexto_catalogo[:100]}...")
-                prompt_sistema_texto += f"\n\nINFO DEL CATÁLOGO:\n{contexto_catalogo}"
+                logger.info(f"[LOGIC] Contexto Qdrant encontrado: {contexto_catalogo[:100]}...")
+                prompt_sistema_texto += f"\n\nINFORMACIÓN DE NUESTRO CATÁLOGO QUE PODRÍA SER RELEVANTE (USA ESTO SI CORRESPONDE A LA PREGUNTA DEL CLIENTE):\n{contexto_catalogo}"
             else: 
-                logger.info("[LOGIC] Sin contexto Qdrant."); 
-                prompt_sistema_texto += "\nINFO DEL CATÁLOGO: No se encontró información específica del catálogo."
-        except Exception as e_q: logger.error(f"[LOGIC] Error Qdrant: {e_q}"); prompt_sistema_texto += "\nINFO DEL CATÁLOGO: (Error al consultar catálogo)"
+                logger.info("[LOGIC] Sin contexto relevante de catálogo Qdrant para esta pregunta (o score bajo).")
+                prompt_sistema_texto += "\n(No se encontró información de productos específicos en el catálogo para esta consulta. Responde basándote en la información general de la empresa o pide más detalles al cliente si es sobre un producto)."
+        except Exception as e_q: 
+            logger.error(f"[LOGIC] Error buscando o armando contexto de Qdrant: {e_q}", exc_info=True)
+            prompt_sistema_texto += "\n(Hubo un problema técnico al intentar buscar en nuestro catálogo de productos en este momento)."
     else:
-        logger.info("[LOGIC] Sin búsqueda Qdrant (usuario no PYME o sin ID).")
-        prompt_sistema_texto += "\nINFO DEL CATÁLOGO: No hay catálogo específico para este modo."
+        logger.info("[LOGIC] Sin búsqueda en catálogo Qdrant (usuario anónimo, demo, o sin ID).")
+        prompt_sistema_texto += "\n(No hay un catálogo de productos específico para este modo de chat. Responde con conocimiento general del rubro y la información de la empresa ya proporcionada)."
 
-    prompt_sistema_texto += "\n\nResponde directamente al cliente:"
-    logger.info(f"[LOGIC] ==> Prompt Sistema FINAL para Cohere (longitud: {len(prompt_sistema_texto)}): {prompt_sistema_texto[:400]}...")
+    prompt_sistema_texto += "\n\nTU RESPUESTA DIRECTA AL CLIENTE (sé breve y ve al grano):"
+    logger.info(f"[LOGIC] ==> Prompt Sistema FINAL para Cohere (longitud: {len(prompt_sistema_texto)}). Primeros 400 chars: {prompt_sistema_texto[:400]}...")
+    logger.info(f"[LOGIC] ... Últimos 300 chars del prompt: ...{prompt_sistema_texto[-300:]}")
+
 
     respuesta_obtenida_llm = ""; fuente_respuesta = "no_especificada"
     try:
         from services.cohere_ai import get_cohere_response 
-        historial_para_api = [{"role": "USER" if msg.get("role") == "user" else "CHATBOT", "message": msg.get("content","")} for msg in session.get(NOMBRE_HISTORIAL_SESION, [])[-(6*2):]]
+        historial_para_api = [{"role": "USER" if msg.get("role") == "user" else "CHATBOT", "message": msg.get("content","")} for msg in session.get(NOMBRE_HISTORIAL_SESION, [])[-(6*2):]] # Últimos 6 intercambios
+        
         logger.info(f"[LOGIC] Enviando a Cohere: Pregunta='{pregunta[:50]}...'. Historial API: {len(historial_para_api)}.")
         
         respuesta_obtenida_llm = get_cohere_response(
             message=pregunta,
             chat_history=historial_para_api,
-            preamble=prompt_sistema_texto, # Correcto para la firma de cohere_ai.py corregida
+            preamble=prompt_sistema_texto, # Este es el system_prompt
+            # rubro_id y user_context se pasan para que get_cohere_response los tenga disponibles si los usa internamente
             rubro_id=rubro_id_final, 
-            user_context=user_profile_context
+            user_context=user_profile_context 
         )
         logger.info(f"[LOGIC] Respuesta CRUDA de Cohere: '{respuesta_obtenida_llm}'")
-        if respuesta_obtenida_llm and isinstance(respuesta_obtenida_llm, str) and len(respuesta_obtenida_llm.strip()) > 2:
-            fuente_respuesta = "cohere"; logger.info(f"[LOGIC] Cohere dio respuesta válida.")
+
+        # MEJORA: Verificar si la respuesta de Cohere es uno de nuestros mensajes de error internos
+        mensajes_error_cohere_interno = [
+            "Error interno: Asistente IA no disponible en este momento (C01).",
+            "Error: Mensaje de usuario inválido para el asistente IA.",
+            "Error interno: No se pudo inicializar el asistente IA (C02).",
+            "Lo siento, no pude procesar tu solicitud en este momento con el asistente IA (E01).",
+            "Lo siento, tuve un problema inesperado al intentar generar una respuesta (E02)."
+        ]
+        if respuesta_obtenida_llm in mensajes_error_cohere_interno:
+            logger.error(f"[LOGIC] Cohere devolvió un mensaje de error interno: '{respuesta_obtenida_llm}'")
+            respuesta_obtenida_llm = "" # Forzar a vacío para que no se muestre al usuario y se usen fallbacks
+        elif respuesta_obtenida_llm and isinstance(respuesta_obtenida_llm, str) and len(respuesta_obtenida_llm.strip()) > 2:
+            fuente_respuesta = "cohere"; logger.info(f"[LOGIC] Cohere dio respuesta aparentemente válida.")
         else: 
-            logger.warning(f"[LOGIC] Respuesta Cohere vacía/corta: '{respuesta_obtenida_llm}'."); respuesta_obtenida_llm = "" 
+            logger.warning(f"[LOGIC] Respuesta Cohere vacía/corta tras chequeo de errores: '{respuesta_obtenida_llm}'."); respuesta_obtenida_llm = "" 
     except Exception as e_cohere: 
-        logger.error(f"[LOGIC] Error llamando a Cohere: {e_cohere}", exc_info=True); respuesta_obtenida_llm = ""
+        logger.error(f"[LOGIC] Error crítico al llamar o procesar respuesta de Cohere: {e_cohere}", exc_info=True); respuesta_obtenida_llm = ""
 
     respuesta_final_procesada = ""
     if respuesta_obtenida_llm:
         respuesta_final_procesada = reemplazar_placeholders(respuesta_obtenida_llm, user_obj)
     else: 
-        logger.info("[LOGIC] Cohere no dio respuesta. Intentando FAQ...")
+        logger.info("[LOGIC] Cohere no dio respuesta útil. Intentando FAQ...")
         try:
             from services.faq_matcher_spacy import buscar_en_faq_spacy
             faq = buscar_en_faq_spacy(pregunta, rubro_id_final) 
-            if faq and faq.answer: respuesta_final_procesada = reemplazar_placeholders(faq.answer, user_obj); fuente_respuesta = "faq"; logger.info(f"[LOGIC] Respuesta FAQ: {respuesta_final_procesada[:100]}...")
+            if faq and faq.answer: 
+                respuesta_final_procesada = reemplazar_placeholders(faq.answer, user_obj)
+                fuente_respuesta = "faq"; 
+                logger.info(f"[LOGIC] Respuesta FAQ: {respuesta_final_procesada[:100]}...")
         except Exception as e_faq: logger.warning(f"[LOGIC] Error FAQ: {e_faq}", exc_info=True)
+        
         if not respuesta_final_procesada:
             logger.info("[LOGIC] FAQ no dio respuesta. Intentando Intents...")
             try:
                 from services.intent_matcher import buscar_en_intents
                 intent_resp = buscar_en_intents(pregunta, rubro_nombre_final) 
-                if intent_resp: respuesta_final_procesada = reemplazar_placeholders(intent_resp, user_obj); fuente_respuesta = "intent"; logger.info(f"[LOGIC] Respuesta Intent: {respuesta_final_procesada[:100]}...")
+                if intent_resp: 
+                    respuesta_final_procesada = reemplazar_placeholders(intent_resp, user_obj)
+                    fuente_respuesta = "intent"; 
+                    logger.info(f"[LOGIC] Respuesta Intent: {respuesta_final_procesada[:100]}...")
             except Exception as e_intent: logger.warning(f"[LOGIC] Error Intents: {e_intent}", exc_info=True)
 
     if respuesta_final_procesada and respuesta_final_procesada.strip():
@@ -268,21 +306,71 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         session.modified = True; logger.info(f"[LOGIC] Historial actualizado. Tamaño: {len(session[NOMBRE_HISTORIAL_SESION])}")
         if is_usuario_registrado_real and user_obj.id:
             try:
-                user_obj.preguntas_usadas = (user_obj.preguntas_usadas or 0) + 1; db.session.add(Conversacion(user_id=user_obj.id, pregunta=pregunta, respuesta=respuesta_final_procesada, fuente=fuente_respuesta, rubro=rubro_nombre_final)); db.session.commit()
-                logger.info(f"[LOGIC] Conversación guardada para user {user_obj.id}.")
-            except Exception as e_db: logger.error(f"[LOGIC] Error guardando conversación: {e_db}", exc_info=True); db.session.rollback()
+                # Asegurarse que user_obj sea la instancia de la BD para actualizar
+                db_user_to_update = db.session.get(User, user_obj.id)
+                if db_user_to_update:
+                    db_user_to_update.preguntas_usadas = (db_user_to_update.preguntas_usadas or 0) + 1
+                    db.session.add(Conversacion(user_id=user_obj.id, pregunta=pregunta, respuesta=respuesta_final_procesada, fuente=fuente_respuesta, rubro=rubro_nombre_final))
+                    db.session.commit()
+                    logger.info(f"[LOGIC] Conversación y contador de preguntas guardado para user {user_obj.id}.")
+                else:
+                    logger.error(f"[LOGIC] No se pudo encontrar al usuario {user_obj.id} en la BD para actualizar preguntas_usadas.")
+            except Exception as e_db: logger.error(f"[LOGIC] Error guardando conversación/actualizando user: {e_db}", exc_info=True); db.session.rollback()
         
         respuesta_para_frontend = respuesta_final_procesada
-        # ... (lógica botón HTML) ...
+        # --- LÓGICA DE BOTONES "INTELIGENTE" ---
+        pyme_link_web_actual = getattr(user_obj, "link_web", "")
+        # Añadir botón de tienda online si la respuesta NO es de FAQ (que podría tener sus propios links),
+        # NO es una sugerencia del sistema (que podría tener su propio link),
+        # Y si la respuesta de Cohere parece orientada a la venta o información de productos.
+        deberia_anadir_boton_tienda = False
+        if fuente_respuesta == "cohere":
+            # Palabras clave que sugieren que un botón de tienda sería útil
+            keywords_venta = ["comprar", "pedido", "tienda online", "ver más", "catálogo", "productos", "opciones", "precio de"]
+            if any(kw in respuesta_obtenida_llm.lower() for kw in keywords_venta) or \
+               any(kw in pregunta.lower() for kw in keywords_venta): # También si la pregunta original lo sugiere
+                deberia_anadir_boton_tienda = True
+        
+        if pyme_link_web_actual and deberia_anadir_boton_tienda:
+            link_absoluto = pyme_link_web_actual
+            if not link_absoluto.startswith("http"): link_absoluto = "https://" + link_absoluto
+            boton_html = (
+                f'\n<div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee;">'
+                f'<a href="{link_absoluto}" target="_blank" '
+                f'style="display: inline-block; background-color: #007bff; color: white; padding: 10px 20px; '
+                f'text-align: center; text-decoration: none; border-radius: 5px; font-size: 16px; font-weight: bold;">'
+                'Visitar Tienda Online' # Texto del botón
+                '</a></div>'
+            )
+            respuesta_para_frontend += boton_html
+            logger.info("[LOGIC] Botón de Tienda Online añadido a la respuesta.")
+        # El botón de WhatsApp se añade a través del placeholder [telefono] si está en la respuesta.
+
         logger.info(f"✅ [LOGIC] Respuesta final (fuente: {fuente_respuesta}): '{respuesta_para_frontend[:100]}...'")
         return {"respuesta": respuesta_para_frontend, "nivel_usado": rubro_nombre_final, "fuente": fuente_respuesta}
     else: 
-        logger.info("[LOGIC] Fallback final: Usando sugerencias.")
+        logger.info("[LOGIC] Fallback final: Todos los sistemas no dieron respuesta útil. Usando sugerencias del rubro.")
         sugs = sugerencias_por_rubro(rubro_id_final)
-        resp_sug = ("No encontré una respuesta directa. Quizás puedas intentar: " + " · ".join(f"“{s}”" for s in sugs if s)) if sugs else "Lo siento, no entendí bien. ¿Podrías reformularlo?"
-        resp_final_sug = reemplazar_placeholders(resp_sug, user_obj)
-        # ... (lógica botón HTML para sugerencias) ...
+        if sugs:
+            respuesta_sugerencias_base = "No encontré una respuesta directa para tu consulta. Quizás puedas intentar preguntando algo como: " + " · ".join(f"“{s}”" for s in sugs if s)
+        else: 
+            respuesta_sugerencias_base = "Lo siento, no pude entender bien tu pregunta. ¿Podrías intentar reformularla o preguntar sobre nuestros productos y servicios?"
+        
+        respuesta_final_procesada = reemplazar_placeholders(respuesta_sugerencias_base, user_obj)
+        
+        pyme_link_web_actual_fallback = getattr(user_obj, "link_web", "")
+        if pyme_link_web_actual_fallback: # Añadir siempre el link a la tienda en el fallback si existe
+            link_absoluto_sug = pyme_link_web_actual_fallback
+            if not link_absoluto_sug.startswith("http"): link_absoluto_sug = "https://" + link_absoluto_sug
+            link_html_sug = (
+                f'\n<div style="margin-top: 10px; font-size: 0.9em;">'
+                f'También puedes <a href="{link_absoluto_sug}" target="_blank" style="color: #60a5fa; text-decoration: underline;">visitar nuestra tienda online</a> para más información.'
+                '</div>'
+            )
+            respuesta_final_procesada += link_html_sug
+
         session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta}); session.modified = True
-        logger.info(f"[LOGIC] Enviando fallback con sugerencias: '{resp_final_sug[:100]}...'")
-        return {"respuesta": resp_final_sug, "fuente": "sugerencia_sistema"}
+        logger.info(f"[LOGIC] Enviando respuesta de fallback con sugerencias: '{respuesta_final_procesada[:100]}...'")
+        return {"respuesta": respuesta_final_procesada, "fuente": "sugerencia_sistema"}
+
 # --- FIN DE responder_chatboc ---
