@@ -171,7 +171,7 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
                     unidad=str(prod_dict_final.get("unidad", ""))[:50],
                     sku=str(prod_dict_final.get("sku", ""))[:100],
                     marca=str(prod_dict_final.get("marca", ""))[:100],
-                    texto_embedding=prod_dict_final.get("texto_para_embedding", "")
+                    texto=prod_dict_final.get("texto_para_embedding", "")
                 )
             )
 
