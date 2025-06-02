@@ -52,20 +52,21 @@ def embed_textos(textos: List[str], input_type: str = "search_document") -> List
     return all_embeddings
 
 def get_cohere_response(message: str, 
-                        chat_history: Optional[List[Dict[str, str]]] = None, 
-                        preamble: Optional[str] = None, # Este es el system_prompt
+                        chat_history: Optional[List[Dict[str, str]]] = None, # Historial USER/CHATBOT de logic.py
+                        preamble: Optional[str] = None, # Este es el system_prompt de logic.py
                         model: str = "command-r-plus",
                         temperature: float = 0.3,
-                        # Estos se reciben pero no se usan directamente por co_client.chat en esta versión
+                        # Estos se reciben pero no se usan directamente por co_client.chat aquí
                         rubro_id: Optional[int] = None, 
                         user_context: Optional[Dict[str, Any]] = None 
                         ) -> str:
     logger.info(f"➡️ [COHERE CHAT] Iniciando get_cohere_response. Pregunta: '{message[:70]}...'")
     
     # --- CONSTRUCCIÓN DEL HISTORIAL PARA LA API (SOLUCIÓN DEFINITIVA) ---
+    # El 'preamble' (prompt del sistema) se añade como el primer mensaje con rol "SYSTEM".
     chat_history_for_api_call: List[Dict[str, str]] = []
     if preamble and isinstance(preamble, str) and preamble.strip():
-        chat_history_for_api_call.append({"role": "SYSTEM", "message": preamble})
+        chat_history_for_api_call.append({"role": "SYSTEM", "message": preamble}) # <--- AQUÍ SE AÑADE EL PREAMBLE AL HISTORIAL
         logger.info(f"[COHERE CHAT] System prompt (preamble) añadido como primer mensaje al historial para API.")
     else:
         logger.info("[COHERE CHAT] No se proporcionó preamble (System Prompt) o estaba vacío.")
@@ -85,7 +86,7 @@ def get_cohere_response(message: str,
         return "Por favor, escribe una pregunta o consulta más clara."
 
     try:
-        co_client = cohere.Client(COHERE_API_KEY, timeout=120) # Timeout aumentado a 120s
+        co_client = cohere.Client(COHERE_API_KEY, timeout=120) # Timeout aumentado
     except Exception as e_client:
         logger.error(f"❌ [COHERE CHAT] Error al inicializar cliente Cohere: {e_client}", exc_info=True)
         return "Error interno: No se pudo inicializar el asistente IA (C02)."
@@ -93,9 +94,9 @@ def get_cohere_response(message: str,
     try:
         logger.info(f"➡️ [COHERE CHAT CALL] Modelo: '{model}'. Temperatura: {temperature}. Mensaje: '{message[:70]}'. Historial para API (con SYSTEM): {len(chat_history_for_api_call)}.")
         
-        # LLAMADA A co_client.chat() SIN el argumento 'preamble'
+        # LLAMADA A co_client.chat() SIN el argumento 'preamble' directo
         response = co_client.chat(
-            message=message, # La pregunta actual del usuario
+            message=message, 
             chat_history=chat_history_for_api_call if chat_history_for_api_call else None, 
             model=model, 
             temperature=temperature,
@@ -110,9 +111,9 @@ def get_cohere_response(message: str,
         if hasattr(e_api, 'http_status') and e_api.http_status == 429:
             return "Nuestro asistente IA está experimentando una alta demanda. Por favor, intenta nuevamente en unos momentos."
         return "Lo siento, no pude procesar tu solicitud en este momento con el asistente IA (E01)."
-    except TypeError as te: # Capturar específicamente si la firma de co_client.chat() es inesperada
-        logger.error(f"❌ [COHERE CHAT] TypeError en la llamada a co_client.chat(): {te}. Verifica los argumentos y la versión del SDK de Cohere.", exc_info=True)
-        return "Lo siento, hubo un problema técnico con nuestro asistente IA (TE01)." # Mensaje específico
+    except TypeError as te: 
+        logger.error(f"❌ [COHERE CHAT] TypeError en la llamada a co_client.chat(): {te}. Esto usualmente indica que los argumentos no coinciden con la versión del SDK de Cohere.", exc_info=True)
+        return "Lo siento, hubo un problema técnico con nuestro asistente IA (TE01)." 
     except Exception as e_general:
         logger.error(f"❌ [COHERE CHAT] Error genérico durante la llamada a Cohere: {e_general}", exc_info=True)
         return "Lo siento, tuve un problema inesperado al intentar generar una respuesta (E02)."
