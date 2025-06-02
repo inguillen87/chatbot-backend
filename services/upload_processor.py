@@ -1,223 +1,234 @@
-# upload_processor.py
+# services/upload_processor.py
 import os
 import uuid
 import logging
-import traceback # Aunque no se use explícitamente traceback.print_exc(), logging.error con exc_info=True lo hace.
-from collections import Counter # No se usa actualmente, se podría quitar si no es necesario.
+import traceback 
 import re 
-import json # Importado para el placeholder, pero no se usa directamente en este archivo.
+# import json # No se usa directamente json aquí
 
 from flask import Blueprint, request, jsonify, current_app
 from werkzeug.utils import secure_filename
 from extensions import db
-from models import CatalogoItem, User, Rubro # Asegúrate que Rubro esté importado si se usa aquí
+from models import CatalogoItem, User, Rubro 
 from services.cohere_ai import embed_textos
 
-# Estas son TUS funciones que deben existir y funcionar correctamente:
+# Importar las funciones de procesamiento de catálogo
 from services.google_docai import procesar_catalogo_pdf_google 
 from services.procesar_catalogo_excel import procesar_catalogo_excel 
 
-# DEBES ASEGURARTE DE TENER ESTA FUNCIÓN EN ALGÚN LADO E IMPORTARLA CORRECTAMENTE:
-# Ejemplo: from services.utils import limpiar_texto_base 
-# Si no la tienes, esta función placeholder básica se usará:
-def limpiar_texto_base(texto: str) -> str:
-    """
-    Placeholder para limpiar_texto_base. Reemplaza con tu import real si tienes una mejor.
-    Limpia y normaliza el texto.
-    """
-    if not texto:
-        return ""
-    texto_limpio = str(texto).lower() # Asegurar que sea string
-    texto_limpio = re.sub(r'\s+', ' ', texto_limpio) 
-    texto_limpio = texto_limpio.strip()
-    return texto_limpio
-# FIN PLACEHOLDER limpiar_texto_base
+# Importar limpiar_texto_base de utils
+from .utils import limpiar_texto_base 
 
 from services.qdrant_utils import get_qdrant_client
+# Asegúrate de importar qdrant_models para crear PointStruct y para el FilterSelector
 from qdrant_client import models as qdrant_models
 
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__) 
 
-UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads") # Guardar en un directorio temporal en la raíz del proyecto
+# Usar una carpeta temporal dentro de la instancia de la app o una carpeta designada
+# Esto es más seguro y estándar para Flask. 'temp_uploads' en la raíz del proyecto.
+UPLOAD_FOLDER = os.path.join(current_app.root_path, "temp_uploads") 
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
 
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
 
-def guardar_en_qdrant(user_id: int, productos_estructurados: list, vectores: list):
-    qdrant_client = get_qdrant_client()
-    puntos = []
+def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]]):
+    qdrant_cli = get_qdrant_client()
+    if not qdrant_cli:
+        logger.error(f"[QDRANT_SAVE] No se pudo obtener cliente Qdrant para user_id={user_id}.")
+        # Considerar no levantar ValueError aquí, sino loguear y continuar (quizás solo guardar en DB relacional)
+        # o devolver un estado para que el endpoint principal lo maneje.
+        # Por ahora, mantenemos el raise para indicar un fallo crítico en esta etapa.
+        raise ConnectionError("No se pudo conectar a Qdrant para guardar los datos.")
+
+    puntos_para_insertar: List[qdrant_models.PointStruct] = []
+    
     if len(productos_estructurados) != len(vectores):
-        logger.error(f"Error Qdrant: Discrepancia en cantidad - Productos ({len(productos_estructurados)}) vs Vectores ({len(vectores)}) para user_id={user_id}.")
+        logger.error(f"[QDRANT_SAVE] Discrepancia crítica: {len(productos_estructurados)} productos vs {len(vectores)} vectores para user_id={user_id}.")
+        # Esto es un error grave de lógica interna, debería detener el proceso.
         raise ValueError("Discrepancia crítica entre número de productos y vectores al preparar datos para Qdrant.")
 
     for producto_dict, vector in zip(productos_estructurados, vectores):
+        # Construir el payload para Qdrant con los campos que quieres que sean buscables o filtrables
+        # y que se devuelvan en los resultados de búsqueda.
         payload = {
-            "user_id": user_id,
+            "user_id": user_id, # Esencial para filtrar por usuario
             "nombre": producto_dict.get("nombre", "Producto Sin Nombre"),
             "descripcion": producto_dict.get("descripcion", ""),
-            "precio_str": str(producto_dict.get("precio_str", "")),
-            "precio_float": producto_dict.get("precio_float"),
+            "precio_str": str(producto_dict.get("precio_str", "")), # Asegurar que sea string
+            "precio_float": producto_dict.get("precio_float"), # Puede ser None
             "moneda": producto_dict.get("moneda", "ARS"),
-            "categoria_qdrant": producto_dict.get("categoria", ""),
+            "categoria_qdrant": producto_dict.get("categoria_qdrant", producto_dict.get("categoria", "")), # Usar categoria_qdrant si existe
             "unidad": producto_dict.get("unidad", ""),
-            "texto_original_para_embedding": producto_dict.get("texto_para_embedding", "")
+            "marca": producto_dict.get("marca", ""),
+            "sku": producto_dict.get("sku", ""),
+            "texto_original_para_embedding": producto_dict.get("texto_para_embedding", "") # Guardar el texto que se usó
         }
+        # Eliminar claves con valores None o string vacío del payload para Qdrant
         payload_limpio = {k: v for k, v in payload.items() if v is not None and (not isinstance(v, str) or v.strip() != "")}
         
-        if not vector or not hasattr(vector, '__iter__') or not all(isinstance(num, (int, float)) for num in vector):
-            logger.warning(f"Vector inválido o vacío para producto '{payload.get('nombre')}', user_id={user_id}. Saltando este punto.")
-            continue
+        # Validar el vector
+        if not vector or not isinstance(vector, list) or not all(isinstance(num, (int, float)) for num in vector):
+            logger.warning(f"[QDRANT_SAVE] Vector inválido o vacío para producto '{payload.get('nombre')}', user_id={user_id}. Saltando este punto.")
+            continue # Saltar este producto si el vector no es válido
 
-        puntos.append(qdrant_models.PointStruct(
-            id=str(uuid.uuid4()), 
+        puntos_para_insertar.append(qdrant_models.PointStruct(
+            id=str(uuid.uuid4()), # Generar un ID único para cada punto
             vector=vector, 
             payload=payload_limpio
         ))
 
-    if puntos:
+    if puntos_para_insertar:
         try:
-            qdrant_client.upsert(collection_name="catalogos", points=puntos, wait=True)
-            logger.info(f"✅ {len(puntos)} ítems guardados/actualizados en Qdrant para user_id={user_id}")
+            logger.info(f"[QDRANT_SAVE] Intentando upsert de {len(puntos_para_insertar)} puntos para user_id={user_id}...")
+            qdrant_cli.upsert(collection_name="catalogos", points=puntos_para_insertar, wait=True)
+            logger.info(f"✅ {len(puntos_para_insertar)} ítems guardados/actualizados en Qdrant para user_id={user_id}")
         except Exception as e_qdrant_upsert:
             logger.error(f"❌ Error durante upsert a Qdrant para user_id={user_id}: {e_qdrant_upsert}", exc_info=True)
-            raise ValueError(f"Fallo al guardar datos en Qdrant: {str(e_qdrant_upsert)}")
+            raise ValueError(f"Fallo al guardar datos en Qdrant: {str(e_qdrant_upsert)}") # Relanzar para que el endpoint lo maneje
     else:
-        logger.warning(f"No se prepararon puntos válidos para Qdrant para user_id={user_id}")
+        logger.warning(f"[QDRANT_SAVE] No se prepararon puntos válidos para Qdrant para user_id={user_id}. Ningún ítem fue enviado.")
 
 
-def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nombre: str = "generico"):
-    logger.info(f"Iniciando procesamiento de catálogo: '{os.path.basename(path_archivo)}' para user_id={user_id}, rubro Pyme='{pyme_rubro_nombre}'")
-    registros_estructurados = [] # Inicializar para asegurar que siempre esté definida
+def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nombre: str = "generico") -> int:
+    logger.info(f"[UPLOAD_PROC] Iniciando procesamiento y embedding de catálogo: '{os.path.basename(path_archivo)}' para user_id={user_id}, rubro Pyme='{pyme_rubro_nombre}'")
+    registros_estructurados: List[Dict[str, Any]] = []
 
     try:
         _, extension_archivo = os.path.splitext(path_archivo)
         extension_archivo = extension_archivo.lower()
 
-        # --- Llamadas a TUS funciones de procesamiento ---
         if extension_archivo == ".pdf":
-            logger.info(f"Procesando PDF con Google DocAI: {os.path.basename(path_archivo)}")
-            # Esta es TU función. Debe devolver: list[dict]
-            registros_estructurados = procesar_catalogo_pdf_google(path_archivo, pyme_rubro_nombre) 
+            logger.info(f"[UPLOAD_PROC] Procesando PDF con Google DocAI: {os.path.basename(path_archivo)}")
+            # Pasar user_id y pyme_rubro_nombre a la función de procesamiento
+            registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id, pyme_rubro_nombre) 
         elif extension_archivo in [".xlsx", ".xls", ".csv"]:
-            logger.info(f"Procesando EXCEL/CSV: {os.path.basename(path_archivo)}")
-            # Esta es TU función. Debe devolver: list[dict]
-            registros_estructurados = procesar_catalogo_excel(path_archivo, pyme_rubro_nombre)
+            logger.info(f"[UPLOAD_PROC] Procesando EXCEL/CSV: {os.path.basename(path_archivo)}")
+            registros_estructurados = procesar_catalogo_excel(path_archivo, user_id, pyme_rubro_nombre)
         else:
-            raise ValueError(f"Tipo de archivo no soportado internamente: {extension_archivo}")
-        # --- Fin llamadas ---
+            logger.error(f"[UPLOAD_PROC] Tipo de archivo no soportado: {extension_archivo}")
+            raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
 
         if not isinstance(registros_estructurados, list):
-             logger.error(f"El procesador de archivos no devolvió una lista para '{os.path.basename(path_archivo)}'. Devolvió: {type(registros_estructurados)}")
-             registros_estructurados = [] # Forzar a lista vacía para evitar más errores
+             logger.error(f"[UPLOAD_PROC] El procesador de archivos no devolvió una lista para '{os.path.basename(path_archivo)}'. Devolvió: {type(registros_estructurados)}")
+             registros_estructurados = [] 
 
         if not registros_estructurados:
-            logger.warning(f"El procesamiento del archivo '{os.path.basename(path_archivo)}' no devolvió registros estructurados o la lista está vacía.")
+            logger.warning(f"[UPLOAD_PROC] El procesamiento del archivo '{os.path.basename(path_archivo)}' no devolvió registros estructurados o la lista está vacía.")
             return 0 
 
         logger.info(f"📄 {len(registros_estructurados)} registros extraídos del archivo. Ejemplo primer registro (si existe): {registros_estructurados[0] if registros_estructurados else 'N/A'}")
 
-        textos_para_embedding = []
-        productos_finales_para_qdrant = []
+        textos_para_embedding: List[str] = []
+        productos_finales_para_qdrant_y_db: List[Dict[str, Any]] = [] # Productos que tienen texto válido para embedding
 
         for i, prod_dict in enumerate(registros_estructurados):
             if not isinstance(prod_dict, dict):
-                logger.warning(f"Item {i} en registros_estructurados no es un diccionario, saltando: {prod_dict}")
+                logger.warning(f"[UPLOAD_PROC] Ítem {i} no es un diccionario, saltando: {prod_dict}")
                 continue
 
+            # --- Construcción Mejorada del Texto para Embedding ---
             nombre = str(prod_dict.get("nombre", "")).strip()
             descripcion = str(prod_dict.get("descripcion", "")).strip()
-            precio_str = str(prod_dict.get("precio_str", prod_dict.get("precio", ""))).strip()
-            categoria = str(prod_dict.get("categoria", "")).strip()
+            # Usar categoria_qdrant si está, sino categoria, sino el rubro de la pyme
+            categoria = str(prod_dict.get("categoria_qdrant", prod_dict.get("categoria", pyme_rubro_nombre))).strip()
+            marca = str(prod_dict.get("marca", "")).strip()
+            sku = str(prod_dict.get("sku", "")).strip()
             unidad = str(prod_dict.get("unidad", "")).strip()
-
+            # No incluir precio en el embedding por defecto, ya que puede cambiar frecuentemente
+            # y la búsqueda semántica se basa más en descripción/nombre/categoría.
+            
             partes_texto_embed = []
             if nombre: partes_texto_embed.append(f"Producto: {nombre}")
-            else: partes_texto_embed.append("Producto") 
-
-            if categoria: partes_texto_embed.append(f"Categoría: {categoria}")
+            else: continue # Si no hay nombre, es difícil hacer un embedding útil
             
+            if marca: partes_texto_embed.append(f"Marca: {marca}")
+            if categoria: partes_texto_embed.append(f"Categoría: {categoria}")
+            if unidad: partes_texto_embed.append(f"Presentación: {unidad}")
+            if sku: partes_texto_embed.append(f"Código/SKU: {sku}")
+            
+            # Añadir descripción solo si es informativa y diferente del nombre
             descripcion_limpia = limpiar_texto_base(descripcion)
             nombre_limpio = limpiar_texto_base(nombre)
             if descripcion_limpia and descripcion_limpia != nombre_limpio: 
                 partes_texto_embed.append(f"Detalles: {descripcion}") # Usar descripción original para el embedding
             
-            if precio_str: partes_texto_embed.append(f"Precio: {precio_str}")
-            if unidad: partes_texto_embed.append(f"Presentación: {unidad}")
+            texto_combinado = " | ".join(filter(None, partes_texto_embed)).strip()
             
-            texto_combinado = " | ".join(partes_texto_embed)
-            texto_embed_limpio = limpiar_texto_base(texto_combinado) # Limpiar el texto combinado final
-
-            if texto_embed_limpio and len(texto_embed_limpio) >= 10:
-                textos_para_embedding.append(texto_embed_limpio)
-                prod_dict_qdrant = prod_dict.copy()
-                prod_dict_qdrant["texto_para_embedding"] = texto_embed_limpio
-                productos_finales_para_qdrant.append(prod_dict_qdrant)
+            if texto_combinado and len(texto_combinado) >= 10: # Umbral mínimo para un texto útil
+                textos_para_embedding.append(texto_combinado)
+                # Guardar el texto exacto que se usó para el embedding en el diccionario del producto
+                prod_dict["texto_para_embedding"] = texto_combinado 
+                productos_finales_para_qdrant_y_db.append(prod_dict)
             else:
-                logger.warning(f"Texto para embedding demasiado corto o vacío para producto '{nombre}' (Índice: {i}), saltando. Texto generado: '{texto_embed_limpio}'")
+                logger.warning(f"[UPLOAD_PROC] Texto para embedding demasiado corto o vacío para producto '{nombre}' (Índice: {i}), saltando. Texto generado: '{texto_combinado}'")
         
-        if not textos_para_embedding:
-            logger.warning("No se generaron textos válidos para embedding después de procesar todos los registros.")
+        if not productos_finales_para_qdrant_y_db: # Si después de filtrar, no queda nada
+            logger.warning("[UPLOAD_PROC] No se generaron textos válidos para embedding después de procesar todos los registros.")
             return 0
 
-        logger.info(f"🧠 Textos para embedding preparados (Total: {len(textos_para_embedding)}). Primeros 3: {textos_para_embedding[:3]}")
+        logger.info(f"🧠 Textos para embedding preparados (Total: {len(textos_para_embedding)}). Primeros 3 (si hay): {textos_para_embedding[:3]}")
         logger.info("🧬 Generando vectores con Cohere...")
-        vectores = embed_textos(textos_para_embedding) 
+        vectores = embed_textos(textos_para_embedding, input_type="search_document") # input_type para documentos del catálogo
         
-        if not vectores:
-            logger.error("La función embed_textos no devolvió vectores.")
-            raise ValueError("Fallo en la generación de vectores: no se obtuvieron resultados.")
+        if not vectores or len(vectores) != len(productos_finales_para_qdrant_y_db):
+            logger.error(f"[UPLOAD_PROC] Error en generación de vectores. Se esperaban {len(productos_finales_para_qdrant_y_db)} vectores, se obtuvieron {len(vectores if vectores else [])}.")
+            raise ValueError("Fallo en la generación de vectores o desajuste con productos.")
         
-        logger.info(f"🧬 Vectores generados: {len(vectores)}. Dimensión del primer vector: {len(vectores[0]) if vectores and isinstance(vectores[0], list) else 'N/A'}")
+        logger.info(f"🧬 Vectores generados: {len(vectores)}. Dimensión del primer vector (si existe): {len(vectores[0]) if vectores and isinstance(vectores[0], list) else 'N/A'}")
 
-        if len(vectores) != len(productos_finales_para_qdrant):
-            logger.error(f"Error crítico: Desajuste en cantidad de Vectores ({len(vectores)}) vs Productos para Qdrant ({len(productos_finales_para_qdrant)})")
-            raise ValueError("Desajuste entre número de productos y vectores generados.")
-
-        guardar_en_qdrant(user_id, productos_finales_para_qdrant, vectores)
+        # Guardar en Qdrant
+        guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores)
         
-        items_para_db = []
-        for prod_dict_final in productos_finales_para_qdrant:
-            items_para_db.append(
+        # Guardar en Base de Datos Relacional (SQLAlchemy)
+        items_para_db_sql: List[CatalogoItem] = []
+        for prod_dict_final in productos_finales_para_qdrant_y_db:
+            items_para_db_sql.append(
                 CatalogoItem(
                     user_id=user_id,
-                    nombre=str(prod_dict_final.get("nombre", "S/N"))[:255],
+                    nombre=str(prod_dict_final.get("nombre", "S/N"))[:255], # S/N = Sin Nombre
                     descripcion=str(prod_dict_final.get("descripcion", ""))[:1024],
-                    precio=str(prod_dict_final.get("precio_str", prod_dict_final.get("precio", "")))[:50],
-                    cantidad=str(prod_dict_final.get("cantidad", "1"))[:50],
-                    categoria=str(prod_dict_final.get("categoria", ""))[:100],
+                    precio=str(prod_dict_final.get("precio_str", ""))[:50], # Guardar el string del precio
+                    # podrías añadir precio_float y moneda a CatalogoItem si lo necesitas
+                    cantidad=str(prod_dict_final.get("cantidad_disponible", "1"))[:50], # Usar cantidad_disponible
+                    categoria=str(prod_dict_final.get("categoria_qdrant", prod_dict_final.get("categoria", "")))[:100],
                     unidad=str(prod_dict_final.get("unidad", ""))[:50],
-                    texto=prod_dict_final.get("texto_para_embedding", "")
+                    sku=str(prod_dict_final.get("sku", ""))[:100],
+                    marca=str(prod_dict_final.get("marca", ""))[:100],
+                    texto_embedding=prod_dict_final.get("texto_para_embedding", "") # Guardar el texto usado para el embedding
                 )
             )
         
-        if items_para_db:
+        if items_para_db_sql:
             try:
+                # Borrar ítems anteriores del catálogo para este usuario en la DB relacional
                 CatalogoItem.query.filter_by(user_id=user_id).delete()
-                db.session.bulk_save_objects(items_para_db)
+                db.session.bulk_save_objects(items_para_db_sql)
                 db.session.commit()
-                logger.info(f"✅ {len(items_para_db)} ítems guardados en DB relacional para user_id={user_id}")
+                logger.info(f"✅ {len(items_para_db_sql)} ítems guardados en DB relacional para user_id={user_id}")
             except Exception as e_db_relacional:
                 db.session.rollback()
                 logger.error(f"❌ Error guardando en DB relacional para user_id={user_id}: {e_db_relacional}", exc_info=True)
                 raise ValueError(f"Error al guardar el catálogo en la base de datos principal: {str(e_db_relacional)}")
 
-        logger.info(f"🎉 Proceso de catálogo completado: {len(productos_finales_para_qdrant)} ítems procesados y guardados para user_id={user_id}")
-        return len(productos_finales_para_qdrant)
+        logger.info(f"🎉 Proceso de catálogo completado: {len(productos_finales_para_qdrant_y_db)} ítems procesados y guardados para user_id={user_id}")
+        return len(productos_finales_para_qdrant_y_db)
 
-    except ValueError as ve:
-        logger.error(f"❌ Error de Valor en procesar_y_embedear_catalogo para user_id={user_id} (archivo: {os.path.basename(path_archivo)}): {str(ve)}", exc_info=True)
-        raise 
-    except Exception as e_inesperado:
-        logger.error(f"❌ Excepción Genérica Severa en procesar_y_embedear_catalogo para user_id={user_id} (archivo: {os.path.basename(path_archivo)}): {str(e_inesperado)}", exc_info=True)
-        raise ValueError(f"Error interno grave al procesar el catálogo: {str(e_inesperado)}")
+    except ValueError as ve: # Errores controlados que queremos mostrar al usuario
+        logger.warning(f"[UPLOAD_PROC] Error de Valor en procesar_y_embedear_catalogo para user_id={user_id} (archivo: {os.path.basename(path_archivo)}): {str(ve)}")
+        raise # Relanzar para que el endpoint lo capture y devuelva el mensaje de error al usuario
+    except Exception as e_inesperado: # Otros errores no esperados
+        logger.error(f"❌ [UPLOAD_PROC] Excepción Genérica Severa en procesar_y_embedear_catalogo para user_id={user_id} (archivo: {os.path.basename(path_archivo)}): {str(e_inesperado)}", exc_info=True)
+        # Para errores muy inesperados, es mejor dar un mensaje genérico al usuario y loguear el detalle.
+        raise ValueError(f"Error interno grave al procesar el catálogo. Por favor, contacta a soporte si el problema persiste.")
 
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
 def subir_catalogo():
-    user = None 
-    ruta_guardado_temporal = None 
+    user: Optional[User] = None 
+    ruta_guardado_temporal: Optional[str] = None 
 
     try:
         token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -238,59 +249,58 @@ def subir_catalogo():
         if not extension_valida(archivo.filename): 
             return jsonify({"error": "Formato de archivo no permitido. Solo se aceptan: " + ", ".join(ALLOWED_EXTENSIONS)}), 400
         
-        nombre_empresa_seguro = re.sub(r'[\W_]+', '_', user.nombre_empresa) if user.nombre_empresa else "empresa_desconocida"
+        # Usar una forma más segura de generar el nombre de empresa para el archivo
+        nombre_empresa_seguro = limpiar_texto_base(user.nombre_empresa if user.nombre_empresa else "pyme").replace(" ", "_")
         nombre_base_seguro, extension_archivo_segura = os.path.splitext(secure_filename(archivo.filename))
-        nombre_archivo_unico = f"user_{user.id}_{nombre_empresa_seguro}_{uuid.uuid4().hex[:8]}{extension_archivo_segura}"
+        # Crear un nombre de archivo único más corto
+        nombre_archivo_unico = f"user_{user.id}_{nombre_empresa_seguro[:15]}_{uuid.uuid4().hex[:6]}{extension_archivo_segura}"
         
-        # Crear UPLOAD_FOLDER si no existe
-        os.makedirs(UPLOAD_FOLDER, exist_ok=True) # Se crea en la raíz del proyecto ahora
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
         ruta_guardado_temporal = os.path.join(UPLOAD_FOLDER, nombre_archivo_unico)
         
         archivo.save(ruta_guardado_temporal)
         logger.info(f"📂 Archivo '{archivo.filename}' (guardado como '{nombre_archivo_unico}') en: {ruta_guardado_temporal} para User ID: {user.id}")
 
-        pyme_rubro_nombre = "generico"
+        pyme_rubro_nombre = "generico" # Default
         if user.rubro_id:
             rubro_obj = db.session.get(Rubro, user.rubro_id)
-            if rubro_obj: 
+            if rubro_obj and rubro_obj.nombre: 
                 pyme_rubro_nombre = rubro_obj.nombre.lower().strip()
+        logger.info(f"[UPLOAD_PROC] Rubro de la Pyme para procesamiento: {pyme_rubro_nombre}")
 
         logger.info(f"Intentando eliminar catálogo anterior en Qdrant para user_id={user.id}...")
         try:
-            qdrant_client = get_qdrant_client()
-            qdrant_client.delete(
-                collection_name="catalogos",
-                points_selector=qdrant_models.FilterSelector(
-                    filter=qdrant_models.Filter(
-                        must=[
-                            qdrant_models.FieldCondition(
-                                key="user_id", 
-                                match=qdrant_models.MatchValue(value=user.id)
-                            )
-                        ]
-                    )
-                ),
-                wait=True
-            )
-            logger.info(f"✅ Intento de eliminación de catálogo anterior en Qdrant para user_id={user.id} completado.")
+            qdrant_cli = get_qdrant_client()
+            if qdrant_cli: # Solo intentar si el cliente se obtuvo correctamente
+                qdrant_cli.delete(
+                    collection_name="catalogos",
+                    points_selector=qdrant_models.FilterSelector(
+                        filter=qdrant_models.Filter(
+                            must=[qdrant_models.FieldCondition(key="user_id", match=qdrant_models.MatchValue(value=user.id))]
+                        )
+                    ),
+                    wait=True # Esperar a que la operación se complete
+                )
+                logger.info(f"✅ Intento de eliminación de catálogo anterior en Qdrant para user_id={user.id} completado.")
+            else:
+                logger.error(f"⚠️ No se pudo obtener cliente Qdrant para eliminar puntos de user_id={user.id}.")
         except Exception as e_delete_qdrant:
             logger.error(f"⚠️ Error al intentar eliminar catálogo anterior en Qdrant para user_id={user.id}: {e_delete_qdrant}", exc_info=True)
         
         cantidad_procesada = procesar_y_embedear_catalogo(ruta_guardado_temporal, user.id, pyme_rubro_nombre=pyme_rubro_nombre)
         
-        mensaje_exito = f"✅ Catálogo procesado exitosamente. Se { 'han' if cantidad_procesada != 1 else 'ha'} encontrado e indexado {cantidad_procesada} { 'ítem' if cantidad_procesada == 1 else 'ítems'}."
+        mensaje_exito = f"✅ Catálogo procesado. Se { 'han' if cantidad_procesada != 1 else 'ha'} encontrado e indexado {cantidad_procesada} { 'producto' if cantidad_procesada == 1 else 'productos'}."
         if cantidad_procesada == 0:
-            mensaje_exito = "⚠️ El archivo fue procesado, pero no se encontraron ítems válidos para añadir al catálogo. Revisa el formato y contenido de tu archivo, o asegúrate de que contenga al menos un producto con nombre."
+            mensaje_exito = "⚠️ El archivo fue procesado, pero no se encontraron productos válidos. Revisa el formato y contenido de tu archivo. Asegúrate que tenga encabezados claros como 'Nombre', 'Precio', 'Descripción', etc., y que los productos tengan nombre."
         
-        return jsonify({"mensaje": mensaje_exito}), 200
+        return jsonify({"mensaje": mensaje_exito, "items_procesados": cantidad_procesada}), 200
 
-    except ValueError as ve: 
-        logger.warning(f"Error de Valor en /subir_catalogo para user {getattr(user, 'id', 'N/A')}: {str(ve)}")
-        # Devolver el mensaje de error específico de la excepción ValueError
+    except ValueError as ve: # Capturar ValueErrors que se relanzan desde procesar_y_embedear_catalogo
+        logger.warning(f"[UPLOAD_PROC] Error de Valor en /subir_catalogo para user {getattr(user, 'id', 'N/A')}: {str(ve)}")
         return jsonify({"error": f"Error al procesar el catálogo: {str(ve)}"}), 400
     except Exception as e_global: 
-        logger.error(f"❌ Error inesperado severo en /subir_catalogo para user {getattr(user, 'id', 'N/A')}: {str(e_global)}", exc_info=True)
-        return jsonify({"error": "Error interno inesperado al procesar el catálogo. Por favor, intenta más tarde."}), 500
+        logger.error(f"❌ [UPLOAD_PROC] Error inesperado severo en /subir_catalogo para user {getattr(user, 'id', 'N/A')}: {str(e_global)}", exc_info=True)
+        return jsonify({"error": "Error interno inesperado al procesar el catálogo. Por favor, intenta más tarde o contacta a soporte."}), 500
     finally:
         if ruta_guardado_temporal and os.path.exists(ruta_guardado_temporal):
             try:
