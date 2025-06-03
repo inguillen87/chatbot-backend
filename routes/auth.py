@@ -260,3 +260,31 @@ def crear_base():
     # db.drop_all() # Podrías necesitar esto si quieres recrear todo limpiamente
     db.create_all()
     print("✅ Base creada directamente desde los modelos (¡solo para desarrollo!).")
+
+@auth_bp.route('/login', methods=['POST', 'OPTIONS'])
+def login():
+    if request.method == 'OPTIONS':
+        return '', 204  # Opcional, Flask-CORS debería manejarlo, pero así seguro no da 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Solicitud JSON inválida o vacía."}), 400
+
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "").strip()
+
+    if not email or not password:
+        return jsonify({"error": "Email y contraseña requeridos."}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user or not user.check_password(password):
+        return jsonify({"error": "Email o contraseña incorrectos."}), 401
+
+    return jsonify({
+        "token": user.token,
+        "email": user.email,
+        "name": user.name,
+        "plan": user.plan,
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas
+    })
