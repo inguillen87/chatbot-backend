@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # --- Clases Anónimas (como las tenías) ---
 class _BaseAnonUser:
-    nombre_empresa: str = "la tienda"; plan: str = "anonimo"; rubro_id: Optional[int] = None; link_web: str = ""; telefono: str = ""; direccion: str = ""; horario: str = "horario de atención habitual"; horario_json: str = '[]'; ciudad: str = ""; provincia: str = ""; pais: str = "Argentina"; latitud: Optional[float] = None; longitud: Optional[float] = None; id: Optional[int] = None 
+    nombre_empresa: str = "la tienda"; plan: str = "anonimo"; rubro_id: Optional[int] = None; link_web: str = ""; telefono: str = ""; direccion: str = "horario de atención habitual"; horario_json: str = '[]'; ciudad: str = ""; provincia: str = ""; pais: str = "Argentina"; latitud: Optional[float] = None; longitud: Optional[float] = None; id: Optional[int] = None 
 class AnonUserPymeDemo(_BaseAnonUser):
     def __init__(self, preguntas_realizadas_sesion: int):
         super().__init__(); self.nombre_empresa = "Chatboc Demostración"; self.plan = "demo_pyme"; self.preguntas_usadas = preguntas_realizadas_sesion; self.limite_preguntas = 15; self.link_web = "https://www.chatboc.ar"; self.telefono = "+549111234567"; self.direccion = "Av. Corrientes 1234, CABA"; self.ciudad = "CABA"; self.provincia = "CABA"; self.horario = "Lunes a Viernes de 9hs a 18hs. Sábados de 9hs a 13hs."; self.horario_json = json.dumps([{"dia": "Lunes", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Martes", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Miércoles", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Jueves", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Viernes", "abre": "09:00", "cierra": "18:00", "cerrado": False},{"dia": "Sábado", "abre": "09:00", "cierra": "13:00", "cerrado": False},{"dia": "Domingo", "abre": "", "cierra": "", "cerrado": True}]); self.latitud = -34.6037; self.longitud = -58.3816 
@@ -38,8 +38,6 @@ def es_pregunta_insolita(pregunta: str) -> bool:
     palabras_clave = ["precio", "comprar", "producto", "catálogo", "horario", "envío", "pago", "promoción"]
     return not any(palabra in pregunta.lower() for palabra in palabras_clave) and len(pregunta.strip()) > 4
 
-
-
 # --- Funciones Auxiliares ---
 def sugerencias_por_rubro(rubro_id: int) -> List[str]:
     try:
@@ -60,7 +58,6 @@ def sugerencias_por_rubro(rubro_id: int) -> List[str]:
         return ["Disculpa, tuve un problema al buscar sugerencias."]
 
 def formatear_numero_whatsapp_simple(telefono_str: Optional[str], codigo_pais: str = "54") -> str:
-    # ... (tu función como estaba)
     if not telefono_str: return ""
     numeros = re.sub(r'\D', '', str(telefono_str))
     if numeros.startswith(codigo_pais + "9") and len(numeros) == (len(codigo_pais) + 1 + 10): return numeros
@@ -70,7 +67,6 @@ def formatear_numero_whatsapp_simple(telefono_str: Optional[str], codigo_pais: s
     return numeros
 
 def reemplazar_placeholders(texto: Optional[str], user_obj: Any) -> str:
-    # ... (tu función como estaba, con los logs)
     if not texto or not isinstance(texto, str): return ""
     placeholders_conocidos = {
         "[nombreEmpresa]": "nombre_empresa", "[linkWeb]": "link_web", "[telefono]": "telefono",
@@ -88,7 +84,7 @@ def reemplazar_placeholders(texto: Optional[str], user_obj: Any) -> str:
             elif attr_key == "horario" and isinstance(user_obj, User): valor_atributo = user_obj.horario 
             else: valor_atributo = getattr(user_obj, attr_key, None)
         if valor_atributo is not None:
-            if ph_template == "[telefono]": # El botón se añade en responder_chatboc, aquí solo el número
+            if ph_template == "[telefono]": 
                 valor_para_reemplazo = str(valor_atributo).strip() if str(valor_atributo).strip() else defaults_textos.get(attr_key, "")
             elif ph_template == "[linkWeb]":
                 link_str = str(valor_atributo).strip()
@@ -207,39 +203,43 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
     
     numero_intercambios_previos = len(session[NOMBRE_HISTORIAL_SESION]) // 2
     
-    # --- CONSTRUCCIÓN DEL PROMPT DEL SISTEMA ---
+    # --- PROMPT DEL SISTEMA (igual que antes) ---
     prompt_sistema_texto = (
         f"Sos Chatboc, un asistente de ventas experto para {user_profile_context['nombre_empresa']} (rubro: {user_profile_context['rubro_nombre']}), ubicada en {user_profile_context['direccion_completa']}. "
         f"Tu principal objetivo es entender las necesidades del cliente y guiarlo hacia una compra o una acción concreta (como visitar la tienda online: {user_profile_context['link_web'] if user_profile_context['link_web'] else 'nuestro sitio web'}) en pocos intercambios (idealmente 2-4). "
-        f"Ya has tenido {numero_intercambios_previos} interacciones previas con este cliente en esta sesión (revisa el historial de conversación que te proveo para mantener el contexto). "
-        "Actúa como un vendedor humano: sé amable, muy proactivo, resolutivo y persuasivo. Tus respuestas deben ser concisas, directas al grano y siempre aportando valor. Evita rellenos o introducciones innecesarias. "
+        f"Ya has tenido {numero_intercambios_previos} interacciones previas con este cliente en esta sesión (revisa el historial de conversación que te proveo para mantener el contexto y evitar repetir información). "
+        "Actúa como un vendedor humano profesional: sé amable, muy proactivo, resolutivo y persuasivo. Tus respuestas deben ser concisas, directas al grano y siempre aportando valor. Evita rellenos o introducciones innecesarias. "
         "Si necesitas clarificar, haz preguntas puntuales y claras. "
         "Si el cliente muestra interés en un producto o servicio, intenta facilitar el siguiente paso: ofrece añadir al carrito, llévalo a la página del producto en la tienda online, o describe cómo proceder. "
-        "No te presentes como una IA o 'asistente virtual'. Eres un experto de la tienda. "
+        "No te presentes como una IA o 'asistente virtual'. Eres un experto de {user_profile_context['nombre_empresa']}. "
         f"\nINFORMACIÓN CLAVE DE {user_profile_context['nombre_empresa']} (Usa esta información para responder preguntas relacionadas):"
-        f"\n- Teléfono de Contacto: {user_profile_context['telefono_raw'] if user_profile_context['telefono_raw'] else 'No especificado. Pregunta si puedo ayudarte de otra manera.'}"
-        f"\n- Dirección de la Tienda: {user_profile_context['direccion_completa'] if user_profile_context['direccion_completa'].strip(', ') else 'Por favor, consulta nuestra ubicación específica.'}"
-        f"\n- Horarios de Atención: {horarios_para_prompt if horarios_para_prompt and horarios_para_prompt.strip('.') and 'consultar' not in horarios_para_prompt.lower() else 'Por favor, consulta nuestros horarios de atención.'}"
-        f"\n- Sitio Web / Tienda Online: {user_profile_context['link_web'] if user_profile_context['link_web'] else 'No tenemos un sitio web especificado en este momento.'}"
-        "\nINSTRUCCIONES DE COMPORTAMIENTO:"
-        "\n- Si la pregunta del cliente es confusa, incomprensible o aleatoria (ej. 'asdfgh'), responde amablemente que no entendiste y reorienta ofreciendo ayuda sobre productos, horarios, o cómo comprar. Ejemplo: 'Disculpa, no entendí bien tu consulta. ¿Podrías reformularla? Te puedo ayudar con información sobre nuestros productos, precios, horarios o cómo comprar.'"
-        "\n- Si te preguntan '¿Están abiertos ahora?' o sobre horarios para un día específico, usa la información de 'Horarios de Atención' para dar la respuesta más precisa posible. Si es necesario, indica si está abierto o cerrado en el momento de la consulta (asume zona horaria Argentina, GMT-3)."
-        "\n- Si se te pide información que NO tienes (no está en este prompt ni en el catálogo), indica amablemente que no dispones de ese detalle específico pero puedes ayudar con otros temas o dirigir al sitio web o teléfono."
-        "\n. Si el cliente plantea dudas de precio o indecisión (ejemplo: 'es caro', 'lo voy a pensar'), respondé resaltando la calidad, el valor agregado o una posible oferta/promo. Mantené siempre una actitud proactiva para persuadir y facilitar el cierre."
-        "\nINSTRUCCIONES PARA EL CATÁLOGO DE PRODUCTOS (si se provee información abajo):"
-        "\n1. Si el cliente pregunta por un tipo de producto (ej. 'vinos malbec') y el catálogo recuperado tiene opciones, presenta CLARAMENTE las más relevantes (máximo 2-3) con 'Nombre' y 'Precio'. Sé conciso. Ejemplo: 'Claro, tenemos: Vino Malbec Clásico a [Precio A], y Vino Malbec Reserva Especial a [Precio B]. ¿Te interesa alguno en particular?'"
-        "\n2. Si el cliente pregunta por el precio de un producto específico y lo encuentras, da el 'Precio' directamente."
-        "\n3. Si piden varias unidades de un producto con precio numérico, calcula el total. Ejemplo: 'Perfecto, 3 unidades de [Producto X] serían $[Total].'"
-        "\n4. Si el precio dice 'Consultar' o no está claro, indícalo y sugiere alternativas (ver online, contactar)."
-        "\n5. Si la descripción del catálogo es muy larga, resume los puntos clave para el cliente."
-        "\n6. Si el catálogo no tiene información relevante para la pregunta sobre productos, responde con tu conocimiento general del rubro o pide más detalles."
-        "\n8. MUY IMPORTANTE: Si el cliente pregunta por un producto específico y NO encuentras información relevante en el catálogo que te proporcioné para esta consulta, NO INVENTES DETALLES COMO PRECIOS O CARACTERÍSTICAS ESPECÍFICAS. En su lugar, puedes decir algo como: 'No tengo el detalle o precio exacto de [producto consultado] en este momento. ¿Podrías darme más detalles o te gustaría ver otras opciones que sí tengo disponibles?' O bien, 'Para ese producto específico, te recomiendo visitar nuestra tienda online ([linkWeb]) o contactarnos al [telefono] para darte la información más actualizada.'"
-        "\n9. MONEDA: Si el catálogo recuperado indica una moneda (ej. USD o ARS junto al precio), usa esa moneda en tu respuesta. Si no se especifica moneda en el catálogo y das un precio, asume que es en Pesos Argentinos (ARS) y menciónalo si es relevante (ej. 'El precio es $XXXX ARS'). NO inventes el tipo de moneda."
-        "\n9.  Si el catálogo recuperado indica una moneda (ej. USD o ARS junto al precio), usa esa moneda en tu respuesta. Si no se especifica moneda en el catálogo y das un precio, asume que es en Pesos Argentinos (ARS) y menciónalo si es relevante (ej. 'El precio es $XXXX ARS'). NO inventes el tipo de moneda."
-
-
+        f"\n- Teléfono de Contacto: {user_profile_context['telefono_raw'] if user_profile_context['telefono_raw'] else 'No especificado. Sugiere contactar por otros medios o visitar la web.'}"
+        f"\n- Dirección de la Tienda: {user_profile_context['direccion_completa'] if user_profile_context['direccion_completa'].strip(', ') else 'Consulta nuestra ubicación en la web o redes sociales.'}"
+        f"\n- Horarios de Atención: {horarios_para_prompt if horarios_para_prompt and horarios_para_prompt.strip('.') and 'consultar' not in horarios_para_prompt.lower() else 'Por favor, consulta nuestros horarios actualizados en la web o redes sociales.'}"
+        f"\n- Sitio Web / Tienda Online: {user_profile_context['link_web'] if user_profile_context['link_web'] else 'Puedes encontrar más información en nuestras redes sociales.'}"
+        "\nINSTRUCCIONES DE COMPORTAMIENTO Y RESPUESTA:"
+        "\n1. Saludo Inicial: Si es el primer mensaje del cliente y es un saludo, responde amablemente y pregunta en qué puedes ayudarlo sobre los productos o servicios de la empresa."
+        "\n2. Preguntas Confusas/Spam: Si la pregunta del cliente es confusa, incomprensible, aleatoria (ej. 'asdfgh') o claramente no relacionada con el negocio, responde amablemente: 'Disculpa, no entendí bien tu consulta. Te puedo ayudar con información sobre nuestros productos, precios, horarios o cómo realizar una compra. ¿En qué te puedo asistir hoy?'"
+        "\n3. Horarios: Si te preguntan '¿Están abiertos ahora?' o sobre horarios para un día específico, usa la información de 'Horarios de Atención' para dar la respuesta más precisa posible. Si es necesario, indica si está abierto o cerrado en el momento de la consulta (asume zona horaria Argentina, GMT-3). Si la información de horarios no es clara, dirige al cliente a la web o teléfono."
+        "\n4. Información No Disponible: Si te piden información que NO tienes (no está en este prompt ni en el catálogo), indica amablemente: 'No dispongo de ese detalle específico en este momento, pero puedo ayudarte con otros temas. También puedes visitar nuestra tienda online en [linkWeb] o contactarnos al [telefono] para más información.'"
+        "\nINSTRUCCIONES PARA USAR EL CATÁLOGO DE PRODUCTOS (si se provee información abajo):"
+        "\n5. Presentación de Productos: Si el cliente pregunta por un tipo de producto (ej. 'vinos malbec') y el catálogo recuperado tiene opciones, presenta CLARAMENTE las más relevantes (máximo 2-3) con 'Nombre', 'Precio EXACTO del catálogo', 'Moneda' (ej. ARS o USD) y 'Presentación/Unidad' (ej. 'caja x6', '750ml'). Sé conciso. Ejemplo: 'Claro, tenemos: [Nombre Producto A] a [Moneda] [Precio A] (Presentación: [Unidad A]), y [Nombre Producto B] a [Moneda] [Precio B] (Presentación: [Unidad B]). ¿Te interesa alguno en particular?'"
+        "\n6. Precio Específico: Si el cliente pregunta por el precio de un producto específico y lo encuentras, da el 'Precio EXACTO del catálogo' y la 'Moneda'."
+        "\n7. Cálculo de Totales: Si el cliente pide varias unidades de un producto y el catálogo tiene un precio numérico claro, calcula el total y preséntalo. Ejemplo: 'Perfecto, 3 unidades de [Producto X] serían [Moneda] [Total Calculado].'"
+        "\n8. Precio 'Consultar': Si el precio en el catálogo dice 'Consultar' o no está claro, indícalo y sugiere alternativas (ver online, contactar)."
+        "\n9. Descripción del Catálogo: Si la descripción del catálogo es muy larga, resume los puntos clave para el cliente."
+        "\n10. MUY IMPORTANTE (No Inventar): Si el cliente pregunta por un producto específico y NO encuentras información relevante en el catálogo que te proporcioné para esta consulta, NO INVENTES DETALLES COMO PRECIOS O CARACTERÍSTICAS ESPECÍFICAS. En su lugar, puedes decir algo como: 'No tengo el detalle o precio exacto de [producto consultado] en este momento, pero tenemos una amplia variedad de [categoría general del producto, ej: medias deportivas]. Puedes ver todas nuestras opciones en la tienda online en [linkWeb] o puedo ayudarte con otro tipo de producto.' O bien, 'Para ese producto específico, te recomiendo visitar nuestra tienda online ([linkWeb]) o contactarnos al [telefono] para darte la información más actualizada.'"
+        "\n11. MONEDA: Si el catálogo recuperado indica una moneda (ej. USD o ARS junto al precio), USA ESA MONEDA en tu respuesta. Si no se especifica moneda en el catálogo y das un precio, asume que es en Pesos Argentinos (ARS) y menciónalo si es relevante (ej. 'El precio es $XXXX ARS'). NO inventes el tipo de moneda."
+        "\n12. Cierre de Venta / Siguiente Paso: Siempre intenta facilitar el siguiente paso. Si el cliente muestra interés, pregunta si quiere añadir al carrito, visitar la página del producto, o cómo prefiere proceder."
+        "\nREGLAS DE VENDEDOR EXPERTO Y SEGUIMIENTO:"
+        "\n- No te presentes nunca como asistente virtual ni como inteligencia artificial. Sos un vendedor real y experto de la empresa."
+        "\n- Si el cliente objeta el precio ('muy caro', 'vi más barato', 'caro', 'me parece caro'), destaca la calidad, el valor agregado, el servicio postventa o promociones. Ejemplo: 'Entiendo tu observación sobre el precio. Nuestros productos son de alta calidad y ofrecemos [menciona un beneficio, ej: envío rápido, garantía, atención personalizada]. ¿Te gustaría que exploremos alguna opción que se ajuste mejor o alguna promoción vigente?'"
+        "\n- Siempre terminá tu respuesta con una pregunta de seguimiento o una propuesta concreta que invite a la acción: '¿Te gustaría avanzar con la compra?', '¿Querés que te contacte un asesor?', '¿Te puedo ayudar con algo más para completar tu pedido?'"
+        "\n- Si el cliente dice frases tipo 'lo voy a pensar', 'más tarde', 'después veo', responde: '¡Entendido! Tómate tu tiempo. Si más adelante tienes alguna duda o necesitas una oferta especial, no dudes en consultarme por aquí o por WhatsApp. ¿Hay algo más en lo que te pueda asistir hoy?'"
+        "\n- Nunca respondas 'depende' de forma vaga. Sé concreto o sugerí alternativas claras."
+        "\n- Si el cliente pide algo similar a lo anterior ('¿tenés algo parecido?', 'otras opciones'), sugerí productos relacionados del catálogo o del mismo rubro si tienes esa información."
     )
-    
+
     contexto_catalogo = ""; 
     if is_usuario_registrado_real and user_obj.id is not None:
         logger.info(f"[LOGIC] Usuario PYME {user_obj.id}. Intentando búsqueda en Qdrant para pregunta: '{pregunta[:50]}...'")
@@ -279,7 +279,6 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             user_context=user_profile_context
         )
         logger.info(f"[LOGIC] Respuesta CRUDA de Cohere: '{respuesta_obtenida_llm}'")
-        # --- MICRO-PERSUASIÓN y OBJECIONES ---
         mensaje_persuasion = detectar_objecion(pregunta)
         if mensaje_persuasion and respuesta_obtenida_llm:
             respuesta_obtenida_llm += f"\n\n{mensaje_persuasion}"
@@ -331,7 +330,8 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             except Exception as e_intent: logger.warning(f"[LOGIC] Error Intents: {e_intent}", exc_info=True)
 
     respuesta_para_frontend = respuesta_final_procesada
-    # --- LÓGICA DE BOTONES "INTELIGENTE" ---
+
+    # --- LÓGICA DE BOTONES "INTELIGENTE" MEJORADA VISUAL ---
     pyme_link_web = getattr(user_obj, "link_web", "")
     pyme_telefono = getattr(user_obj, "telefono", "")
 
@@ -342,18 +342,38 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         if (fuente_respuesta == "cohere" and any(kw in respuesta_obtenida_llm.lower() for kw in keywords_venta_producto)) or \
            any(kw in pregunta.lower() for kw in keywords_venta_producto):
             anadir_boton_tienda = True
-    
+
     if anadir_boton_tienda:
         link_absoluto_tienda = pyme_link_web
         if not link_absoluto_tienda.startswith("http"): link_absoluto_tienda = "https://" + link_absoluto_tienda
         boton_tienda_html = (
-            f'\n<div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; text-align: center;">'
-            f'<a href="{link_absoluto_tienda}" target="_blank" '
-            f'style="display: inline-block; background-color: #007bff; color: white; padding: 10px 20px; '
-            f'text-align: center; text-decoration: none; border-radius: 5px; font-size: 15px; font-weight: bold;">'
-            'Visitar Tienda Online'
-            '</a></div>'
-        )
+            f'''
+<div style="margin-top: 22px; padding-top: 12px; border-top: 1px solid #eaeaea; text-align: center;">
+  <a href="{link_absoluto_tienda}" target="_blank"
+     style="
+        display: inline-block;
+        background: linear-gradient(90deg, #2980f3 60%, #7dd3fc 100%);
+        color: #fff;
+        padding: 14px 32px;
+        text-align: center;
+        text-decoration: none;
+        border-radius: 12px;
+        font-size: 1.07em;
+        font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+        font-weight: 700;
+        box-shadow: 0 4px 18px 0 rgba(0,50,255,0.08), 0 1.5px 7px 0 rgba(0,0,0,0.04);
+        transition: background 0.2s, box-shadow 0.2s;
+        margin: 0 auto;
+        min-width: 200px;
+     "
+     onmouseover="this.style.background='linear-gradient(90deg,#005acb 70%,#3ab3fc 100%)'; this.style.boxShadow='0 6px 22px 0 rgba(10,60,200,0.16)';"
+     onmouseout="this.style.background='linear-gradient(90deg,#2980f3 60%,#7dd3fc 100%)'; this.style.boxShadow='0 4px 18px 0 rgba(0,50,255,0.08), 0 1.5px 7px 0 rgba(0,0,0,0.04)';"
+     >
+    <span style="display:inline-block;vertical-align:middle;margin-right:7px;font-size:1.15em;">🛒</span>
+    Visitar Tienda Online
+  </a>
+</div>
+''')
         respuesta_para_frontend += boton_tienda_html
         logger.info("[LOGIC] Botón de Tienda Online añadido.")
 
@@ -364,30 +384,48 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         if any(kw in pregunta.lower() for kw in keywords_contacto_pedido) or \
            (fuente_respuesta == "cohere" and any(kw in respuesta_obtenida_llm.lower() for kw in keywords_contacto_pedido)):
             anadir_boton_whatsapp = True
-    
+
     if anadir_boton_whatsapp:
         numero_wsp = formatear_numero_whatsapp_simple(pyme_telefono)
         if numero_wsp:
-            # Mensaje predefinido más inteligente
             mensaje_whatsapp_predefinido = f"Hola {user_profile_context['nombre_empresa']}, tengo una consulta sobre: \"{pregunta}\". La respuesta que me dieron fue: \"{respuesta_final_procesada[:70]}...\" ¿Podrían ayudarme?"
             if "comprar" in pregunta.lower() or "pedido" in pregunta.lower():
                  mensaje_whatsapp_predefinido = f"Hola {user_profile_context['nombre_empresa']}, quisiera hacer un pedido o consulta sobre: \"{pregunta}\". El bot me dijo: \"{respuesta_final_procesada[:70]}...\""
             
             mensaje_whatsapp_encoded = urllib.parse.quote(mensaje_whatsapp_predefinido)
             boton_wsp_html = (
-                f'\n<div style="margin-top: 10px; text-align: center;">'
-                f'<a href="https://wa.me/{numero_wsp}?text={mensaje_whatsapp_encoded}" target="_blank" '
-                f'style="display: inline-block; background-color: #25D366; color: white; padding: 10px 20px; '
-                f'text-align: center; text-decoration: none; border-radius: 5px; font-size: 15px; font-weight: bold;">'
-                'Contactar por WhatsApp'
-                '</a></div>'
-            )
+                f'''
+<div style="margin-top: 14px; text-align: center;">
+  <a href="https://wa.me/{numero_wsp}?text={mensaje_whatsapp_encoded}" target="_blank"
+     style="
+        display: inline-block;
+        background: linear-gradient(90deg, #25d366 85%, #059669 100%);
+        color: #fff;
+        padding: 14px 32px;
+        text-align: center;
+        text-decoration: none;
+        border-radius: 12px;
+        font-size: 1.07em;
+        font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+        font-weight: 700;
+        box-shadow: 0 4px 18px 0 rgba(27,205,96,0.09), 0 1.5px 7px 0 rgba(0,0,0,0.05);
+        transition: background 0.2s, box-shadow 0.2s;
+        margin: 0 auto;
+        min-width: 200px;
+     "
+     onmouseover="this.style.background='linear-gradient(90deg,#15ad42 90%,#0dd9a7 100%)'; this.style.boxShadow='0 6px 22px 0 rgba(27,205,96,0.15)';"
+     onmouseout="this.style.background='linear-gradient(90deg,#25d366 85%,#059669 100%)'; this.style.boxShadow='0 4px 18px 0 rgba(27,205,96,0.09), 0 1.5px 7px 0 rgba(0,0,0,0.05)';"
+     >
+    <span style="display:inline-block;vertical-align:middle;margin-right:7px;font-size:1.22em;">💬</span>
+    Contactar por WhatsApp
+  </a>
+</div>
+''')
             respuesta_para_frontend += boton_wsp_html
             logger.info(f"[LOGIC] Botón de WhatsApp añadido. Mensaje predefinido (parcial): {mensaje_whatsapp_predefinido[:70]}...")
 
-
-    if respuesta_final_procesada and respuesta_final_procesada.strip(): # Si hay alguna respuesta válida
-        session[NOMBRE_HISTORIAL_SESION].extend([{"role": "user", "content": pregunta}, {"role": "assistant", "content": respuesta_final_procesada}]) # Guardar respuesta SIN botones HTML
+    if respuesta_final_procesada and respuesta_final_procesada.strip(): 
+        session[NOMBRE_HISTORIAL_SESION].extend([{"role": "user", "content": pregunta}, {"role": "assistant", "content": respuesta_final_procesada}])
         session.modified = True; logger.info(f"[LOGIC] Historial actualizado. Tamaño: {len(session[NOMBRE_HISTORIAL_SESION])}")
         if is_usuario_registrado_real and user_obj.id:
             try:
@@ -401,7 +439,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         
         logger.info(f"✅ [LOGIC] Respuesta final (fuente: {fuente_respuesta}): '{respuesta_para_frontend[:100]}...'")
         return {"respuesta": respuesta_para_frontend, "nivel_usado": rubro_nombre_final, "fuente": fuente_respuesta}
-    else: # Fallback final si respuesta_final_procesada sigue vacía
+    else: 
         logger.info("[LOGIC] Fallback final definitivo: Todos los sistemas no dieron respuesta útil. Usando sugerencias.")
         sugs = sugerencias_por_rubro(rubro_id_final)
         if sugs: resp_sug_base = "No encontré una respuesta directa. Quizás puedas intentar: " + " · ".join(f"“{s}”" for s in sugs if s)
@@ -413,10 +451,11 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             link_abs_sug = pyme_link_web_fallback
             if not link_abs_sug.startswith("http"): link_abs_sug = "https://" + link_abs_sug
             resp_final_sug += (
-                f'\n<div style="margin-top: 10px; font-size: 0.9em; text-align: center;">'
-                f'También puedes <a href="{link_abs_sug}" target="_blank" style="color: #60a5fa; text-decoration: underline;">visitar nuestra tienda online</a>.'
-                '</div>'
-            )
+                f'''
+<div style="margin-top: 10px; font-size: 0.97em; text-align: center;">
+  También puedes <a href="{link_abs_sug}" target="_blank" style="color: #2980f3; text-decoration: underline; font-weight: 600;">visitar nuestra tienda online</a>.
+</div>
+''')
         session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta}); session.modified = True
         logger.info(f"[LOGIC] Enviando fallback con sugerencias: '{resp_final_sug[:100]}...'")
         return {"respuesta": resp_final_sug, "fuente": "sugerencia_sistema"}
