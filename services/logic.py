@@ -24,6 +24,22 @@ class GenericAnonUser(_BaseAnonUser):
         super().__init__(); self.plan = "anonimo_general"; self.preguntas_usadas = session.get("generic_anon_preguntas", 0); self.limite_preguntas = 5
 # --- Fin Clases Anónimas ---
 
+def detectar_objecion(pregunta: str) -> Optional[str]:
+    objeciones_precio = ["caro", "muy caro", "más barato", "barato", "precio alto", "está elevado", "no tengo tanto presupuesto"]
+    indecision = ["lo voy a pensar", "más tarde", "después veo", "no sé", "tengo que ver", "no estoy seguro", "voy a consultar"]
+    texto = pregunta.lower()
+    if any(o in texto for o in objeciones_precio):
+        return "Entiendo, trabajamos solo con productos de máxima calidad. ¿Querés que te pase una promo exclusiva por WhatsApp?"
+    if any(i in texto for i in indecision):
+        return "¡Perfecto! Si más adelante necesitás una oferta especial, avisame. ¿Te mando promos por WhatsApp?"
+    return None
+
+def es_pregunta_insolita(pregunta: str) -> bool:
+    palabras_clave = ["precio", "comprar", "producto", "catálogo", "horario", "envío", "pago", "promoción"]
+    return not any(palabra in pregunta.lower() for palabra in palabras_clave) and len(pregunta.strip()) > 4
+
+
+
 # --- Funciones Auxiliares ---
 def sugerencias_por_rubro(rubro_id: int) -> List[str]:
     try:
@@ -209,6 +225,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         "\n- Si la pregunta del cliente es confusa, incomprensible o aleatoria (ej. 'asdfgh'), responde amablemente que no entendiste y reorienta ofreciendo ayuda sobre productos, horarios, o cómo comprar. Ejemplo: 'Disculpa, no entendí bien tu consulta. ¿Podrías reformularla? Te puedo ayudar con información sobre nuestros productos, precios, horarios o cómo comprar.'"
         "\n- Si te preguntan '¿Están abiertos ahora?' o sobre horarios para un día específico, usa la información de 'Horarios de Atención' para dar la respuesta más precisa posible. Si es necesario, indica si está abierto o cerrado en el momento de la consulta (asume zona horaria Argentina, GMT-3)."
         "\n- Si se te pide información que NO tienes (no está en este prompt ni en el catálogo), indica amablemente que no dispones de ese detalle específico pero puedes ayudar con otros temas o dirigir al sitio web o teléfono."
+        "\n. Si el cliente plantea dudas de precio o indecisión (ejemplo: 'es caro', 'lo voy a pensar'), respondé resaltando la calidad, el valor agregado o una posible oferta/promo. Mantené siempre una actitud proactiva para persuadir y facilitar el cierre."
         "\nINSTRUCCIONES PARA EL CATÁLOGO DE PRODUCTOS (si se provee información abajo):"
         "\n1. Si el cliente pregunta por un tipo de producto (ej. 'vinos malbec') y el catálogo recuperado tiene opciones, presenta CLARAMENTE las más relevantes (máximo 2-3) con 'Nombre' y 'Precio'. Sé conciso. Ejemplo: 'Claro, tenemos: Vino Malbec Clásico a [Precio A], y Vino Malbec Reserva Especial a [Precio B]. ¿Te interesa alguno en particular?'"
         "\n2. Si el cliente pregunta por el precio de un producto específico y lo encuentras, da el 'Precio' directamente."
@@ -218,7 +235,9 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         "\n6. Si el catálogo no tiene información relevante para la pregunta sobre productos, responde con tu conocimiento general del rubro o pide más detalles."
         "\n8. MUY IMPORTANTE: Si el cliente pregunta por un producto específico y NO encuentras información relevante en el catálogo que te proporcioné para esta consulta, NO INVENTES DETALLES COMO PRECIOS O CARACTERÍSTICAS ESPECÍFICAS. En su lugar, puedes decir algo como: 'No tengo el detalle o precio exacto de [producto consultado] en este momento. ¿Podrías darme más detalles o te gustaría ver otras opciones que sí tengo disponibles?' O bien, 'Para ese producto específico, te recomiendo visitar nuestra tienda online ([linkWeb]) o contactarnos al [telefono] para darte la información más actualizada.'"
         "\n9. MONEDA: Si el catálogo recuperado indica una moneda (ej. USD o ARS junto al precio), usa esa moneda en tu respuesta. Si no se especifica moneda en el catálogo y das un precio, asume que es en Pesos Argentinos (ARS) y menciónalo si es relevante (ej. 'El precio es $XXXX ARS'). NO inventes el tipo de moneda."
-        
+        "\n9.  Si el catálogo recuperado indica una moneda (ej. USD o ARS junto al precio), usa esa moneda en tu respuesta. Si no se especifica moneda en el catálogo y das un precio, asume que es en Pesos Argentinos (ARS) y menciónalo si es relevante (ej. 'El precio es $XXXX ARS'). NO inventes el tipo de moneda."
+
+
     )
     
     contexto_catalogo = ""; 
@@ -260,6 +279,10 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             user_context=user_profile_context
         )
         logger.info(f"[LOGIC] Respuesta CRUDA de Cohere: '{respuesta_obtenida_llm}'")
+        # --- MICRO-PERSUASIÓN y OBJECIONES ---
+        mensaje_persuasion = detectar_objecion(pregunta)
+        if mensaje_persuasion and respuesta_obtenida_llm:
+            respuesta_obtenida_llm += f"\n\n{mensaje_persuasion}"
 
         mensajes_error_cohere_conocidos = [
             "Error interno: Asistente IA no disponible en este momento (C01).",
