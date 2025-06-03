@@ -58,6 +58,8 @@ class User(db.Model, UserMixin):
     longitud = db.Column(db.Float, nullable=True)
     telefono = db.Column(db.String(20), nullable=True)
     link_web = db.Column(db.String(255), nullable=True)
+    acepto_terminos = db.Column(Boolean, default=False)
+    fecha_aceptacion_terminos = db.Column(DateTime, nullable=True)
     
     # Este es el campo que guarda el string JSON en la base de datos
     horario = db.Column(db.String(100), nullable=True) 

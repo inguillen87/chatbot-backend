@@ -117,9 +117,11 @@ def register():
         password = data.get("password", "").strip()
         nombre_empresa = data.get("nombre_empresa", "").strip()
         rubro_nombre = data.get("rubro", "").strip()
+        acepto_terminos = bool(data.get("acepto_terminos", False))
+        fecha_aceptacion_terminos = data.get("fecha_aceptacion_terminos")
 
-        if not all([name, email, password, nombre_empresa, rubro_nombre]):
-            return jsonify({"error": "Todos los campos son obligatorios: nombre, email, contraseña, nombre de empresa y rubro."}), 400
+        if not all([name, email, password, nombre_empresa, rubro_nombre, acepto_terminos]):
+            return jsonify({"error": "Todos los campos son obligatorios y es necesario aceptar los términos."}), 400
 
         if User.query.filter_by(email=email).first():
             return jsonify({"error": "Ya existe un usuario con ese correo electrónico."}), 409
@@ -128,17 +130,25 @@ def register():
         if not rubro:
             return jsonify({"error": f"El rubro '{rubro_nombre}' no es válido o no se encontró."}), 400
 
+        # Si no viene fecha explícita, se pone ahora
+        if not fecha_aceptacion_terminos:
+            fecha_aceptacion_terminos = datetime.utcnow()
+        else:
+            fecha_aceptacion_terminos = datetime.fromisoformat(fecha_aceptacion_terminos)
+
         user = User(
             name=name,
             email=email,
             token=str(uuid.uuid4()),
             nombre_empresa=nombre_empresa,
             rubro_id=rubro.id,
-            plan="gratis", 
+            plan="gratis",
             preguntas_usadas=0,
-            limite_preguntas=50 
+            limite_preguntas=50,
+            acepto_terminos=acepto_terminos,
+            fecha_aceptacion_terminos=fecha_aceptacion_terminos
         )
-        user.set_password(password) # Usar el método para hashear la contraseña
+        user.set_password(password)
 
         db.session.add(user)
         db.session.commit()
@@ -160,40 +170,7 @@ def register():
     except Exception as e:
         logging.error(f"❌ Error en /register:\n{traceback.format_exc()}")
         return jsonify({"error": "Error interno al registrar el usuario."}), 500
-
-# Login de usuario
-@auth_bp.route('/login', methods=['POST'])
-def login():
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Solicitud JSON inválida o vacía."}), 400
-            
-        email = data.get("email", "").strip().lower()
-        password = data.get("password", "").strip()
-
-        if not email or not password:
-            return jsonify({"error": "Correo electrónico y contraseña son requeridos."}), 400
-
-        user = User.query.filter_by(email=email).first()
-        if not user or not user.check_password(password):
-            logging.warning(f"❌ Intento fallido de login para email: {email}")
-            return jsonify({"error": "Credenciales inválidas."}), 401
-
-        logging.info(f"✅ Usuario logueado: {email}")
-        return jsonify({
-            "token": user.token,
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "plan": user.plan,
-            "preguntas_usadas": user.preguntas_usadas or 0,
-            "limite_preguntas": user.limite_preguntas or 0
-        })
-    except Exception as e:
-        logging.error(f"❌ Error en /login:\n{traceback.format_exc()}")
-        return jsonify({"error": "Error interno al iniciar sesión."}), 500
-
+    
 # Actualizar perfil del usuario
 @auth_bp.route('/perfil', methods=['PUT'])
 @token_requerido
