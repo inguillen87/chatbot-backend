@@ -31,7 +31,7 @@ def _cargar_recursos_intent():
             logger.info(f"✅ intents.json cargado ({len(INTENTS_DATA)} rubros) desde {file_path}.")
         except Exception as e_load: logger.error(f"❌ No se pudo cargar intents.json: {e_load}", exc_info=True); INTENTS_DATA = {}
 
-def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.75) -> Optional[str]:
+def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.70) -> Optional[str]:
     _cargar_recursos_intent()
     if NLP_SPACY_INTENT is None or not INTENTS_DATA: logger.error("[INTENT] Imposible buscar: spaCy o datos no cargados."); return None
     if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip(): logger.warning("[INTENT] Pregunta vacía."); return None

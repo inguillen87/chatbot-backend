@@ -245,7 +245,7 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         logger.info(f"[LOGIC] Usuario PYME {user_obj.id}. Intentando búsqueda en Qdrant para pregunta: '{pregunta[:50]}...'")
         try:
             from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible 
-            resultados_qdrant = buscar_catalogo_qdrant(user_obj.id, pregunta, limite=3, score_min=0.65)
+            resultados_qdrant = buscar_catalogo_qdrant(user_obj.id, pregunta, limite=3, score_min=0.60)
             contexto_catalogo = armar_respuesta_legible(resultados_qdrant)
             if contexto_catalogo: 
                 logger.info(f"[LOGIC] Contexto Qdrant encontrado: {contexto_catalogo[:100]}...")

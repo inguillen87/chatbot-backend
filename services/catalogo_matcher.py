@@ -32,7 +32,7 @@ def detectar_cantidad_generica(texto: str) -> int:
             pass
     return 1 # Default a 1 si no se detecta cantidad
 
-def buscar_en_catalogo_semantico(pregunta_usuario: str, user_id: int, threshold: float = 0.70, top_n: int = 3) -> str | None:
+def buscar_en_catalogo_semantico(pregunta_usuario: str, user_id: int, threshold: float = 0.60, top_n: int = 3) -> str | None:
     """
     Busca en el catálogo semántico (modelo CatalogoEmbedding) para un user_id dado.
     Devuelve una cadena formateada con los mejores N resultados o None.
