@@ -1,8 +1,10 @@
 def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
     import datetime
     import json
+    import urllib.parse
     from flask import session
-
+    # Importá tu función universal
+    from services.ticket import crear_ticket_universal
     from services.cohere_ai import get_cohere_response
     from services.logic import reemplazar_placeholders
 
@@ -61,18 +63,23 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
 
     # --- Detección de reclamos ---
     def contiene_reclamo(texto):
-        claves = ["bache", "reclamo", "denuncia", "luminaria", "basura", "ruido", "inseguridad", "robo", "perro suelto", "poda", "árbol", "corte de agua", "vereda rota", "servicio no funciona"]
+        claves = [
+            "bache", "reclamo", "denuncia", "luminaria", "basura", "ruido", "inseguridad",
+            "robo", "perro suelto", "poda", "árbol", "corte de agua", "vereda rota", "servicio no funciona"
+        ]
         return any(k in texto.lower() for k in claves)
 
-    def generar_ticket_db(pregunta, user_obj):
-        import random
-        nro_ticket = random.randint(10000, 99999)
-        # Guardar en DB real si hace falta
-        return nro_ticket
-
-    # --- Respuesta automática de ticket ---
+    # --- Respuesta automática de ticket real (DB robusta) ---
     if contiene_reclamo(pregunta):
-        nro_ticket = generar_ticket_db(pregunta, user_obj)
+        # Crea el ticket en la base con todos los datos posibles
+        nro_ticket = crear_ticket_universal(
+            tipo="municipio",
+            pregunta=pregunta,
+            user_id=getattr(user_obj, "id", None),
+            telefono=getattr(user_obj, "telefono", None),
+            email=getattr(user_obj, "email", None),
+            comentario="Creado automáticamente desde el chat"
+        )
         respuesta_ticket = (
             f"Tu reclamo fue registrado con el número #{nro_ticket}. "
             "Nuestro equipo lo revisará a la brevedad. ¿Te gustaría gestionar otro trámite o consulta?"
@@ -82,7 +89,10 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
             {"role": "assistant", "content": respuesta_ticket}
         ])
         session.modified = True
-        return {"respuesta": respuesta_ticket + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "municipio_ticket"}
+        return {
+            "respuesta": respuesta_ticket + render_botones_municipio(web_oficial, telefono_wsp, pregunta),
+            "fuente": "municipio_ticket"
+        }
 
     # --- LLM principal ---
     try:
@@ -118,10 +128,8 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
 
 def render_botones_municipio(link_web, telefono, pregunta):
     import urllib.parse
-    # Teléfono debe ser solo dígitos para wa.me
     telefono_wsp = telefono if telefono and len(telefono) >= 10 else ""
 
-    # Botón Web Oficial
     boton_web = f'''
     <a href="{link_web}" target="_blank"
        style="
@@ -148,7 +156,6 @@ def render_botones_municipio(link_web, telefono, pregunta):
     </a>
     '''
 
-    # Botón WhatsApp Oficial (solo si hay número válido)
     boton_wsp = ""
     if telefono_wsp:
         mensaje_whatsapp = f"Hola, soy vecino y tengo una consulta sobre: '{pregunta}'."
@@ -178,7 +185,6 @@ def render_botones_municipio(link_web, telefono, pregunta):
         </a>
         '''
 
-    # Contenedor central flexible
     return f'''
     <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:4px;margin-top:16px;">
       {boton_web}

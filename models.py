@@ -30,6 +30,9 @@ class MunicipioTicket(db.Model):
     estado = db.Column(db.String(30), default="nuevo")
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime, default=db.func.now())
+    comentarios = db.relationship('TicketComentario', primaryjoin="and_(MunicipioTicket.id==TicketComentario.ticket_id, TicketComentario.tipo=='municipio')", backref='municipio_ticket', lazy='dynamic')
+    archivo_url = db.Column(db.String(255), nullable=True)
+
 
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -114,6 +117,35 @@ class User(db.Model, UserMixin):
 
     def __repr__(self):
         return f"<User {self.email}>"
+class TicketComentario(db.Model):
+    __tablename__ = "ticket_comentario"
+    id = db.Column(db.Integer, primary_key=True)
+    ticket_id = db.Column(db.Integer, nullable=False)
+    tipo = db.Column(db.String(20), default="municipio") # 'pyme' o 'municipio'
+    comentario = db.Column(db.Text, nullable=False)
+    fecha = db.Column(db.DateTime, default=db.func.now())
+    user_id = db.Column(db.Integer, nullable=True)  # quien agregó el comentario (opcional)
+    telefono = db.Column(db.String(30), nullable=True)
+    email = db.Column(db.String(120), nullable=True)
+    dni = db.Column(db.String(20), nullable=True)
+    estado_cliente = db.Column(db.String(30), default="no_definido")  # 'frio', 'tibio', 'caliente', 'satisfecho', 'enojado'
+
+class PymeTicket(db.Model):
+    __tablename__ = "pyme_ticket"
+    id = db.Column(db.Integer, primary_key=True)
+    pregunta = db.Column(db.Text, nullable=False)
+    user_id = db.Column(db.Integer, nullable=True)
+    estado = db.Column(db.String(30), default="nuevo")  # 'nuevo', 'en_proceso', 'resuelto'
+    nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
+    fecha = db.Column(db.DateTime, default=db.func.now())
+    rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
+    comentarios = db.relationship('TicketComentario', primaryjoin="and_(PymeTicket.id==TicketComentario.ticket_id, TicketComentario.tipo=='pyme')", backref='pyme_ticket', lazy='dynamic')
+    # Dejá preparado para adjuntar archivos en el futuro
+    archivo_url = db.Column(db.String(255), nullable=True)
+    telefono = db.Column(db.String(30), nullable=True)
+    email = db.Column(db.String(120), nullable=True)
+    dni = db.Column(db.String(20), nullable=True)
+    estado_cliente = db.Column(db.String(30), default="no_definido")  # 'frio', 'tibio', 'caliente', 'satisfecho', 'enojado'
 
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
