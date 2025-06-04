@@ -21,19 +21,6 @@ class Rubro(db.Model):
 
     def __repr__(self):
         return f"<Rubro {self.nombre}>"
-
-class MunicipioTicket(db.Model):
-    __tablename__ = "municipio_ticket"
-    id = db.Column(db.Integer, primary_key=True)
-    pregunta = db.Column(db.Text, nullable=False)
-    user_id = db.Column(db.Integer, nullable=True)
-    estado = db.Column(db.String(30), default="nuevo")
-    nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
-    fecha = db.Column(db.DateTime, default=db.func.now())
-    comentarios = db.relationship('TicketComentario', primaryjoin="and_(MunicipioTicket.id==TicketComentario.ticket_id, TicketComentario.tipo=='municipio')", backref='municipio_ticket', lazy='dynamic')
-    archivo_url = db.Column(db.String(255), nullable=True)
-
-
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=True)
@@ -121,31 +108,55 @@ class TicketComentario(db.Model):
     __tablename__ = "ticket_comentario"
     id = db.Column(db.Integer, primary_key=True)
     ticket_id = db.Column(db.Integer, nullable=False)
-    tipo = db.Column(db.String(20), default="municipio") # 'pyme' o 'municipio'
+    tipo_ticket = db.Column(db.String(20), nullable=False)  # 'pyme' o 'municipio'
     comentario = db.Column(db.Text, nullable=False)
     fecha = db.Column(db.DateTime, default=db.func.now())
-    user_id = db.Column(db.Integer, nullable=True)  # quien agregó el comentario (opcional)
+    user_id = db.Column(db.Integer, nullable=True)
     telefono = db.Column(db.String(30), nullable=True)
     email = db.Column(db.String(120), nullable=True)
     dni = db.Column(db.String(20), nullable=True)
-    estado_cliente = db.Column(db.String(30), default="no_definido")  # 'frio', 'tibio', 'caliente', 'satisfecho', 'enojado'
+    estado_cliente = db.Column(db.String(30), default="no_definido")  # 'frio', 'tibio', etc.
 
+# MunicipioTicket con relación filtrada
+class MunicipioTicket(db.Model):
+    __tablename__ = "municipio_ticket"
+    id = db.Column(db.Integer, primary_key=True)
+    pregunta = db.Column(db.Text, nullable=False)
+    user_id = db.Column(db.Integer, nullable=True)
+    estado = db.Column(db.String(30), default="nuevo")
+    nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
+    fecha = db.Column(db.DateTime, default=db.func.now())
+    archivo_url = db.Column(db.String(255), nullable=True)
+
+    comentarios = db.relationship(
+        'TicketComentario',
+        primaryjoin="and_(MunicipioTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='municipio')",
+        viewonly=True,  # Para que no intente hacer backref, se recomienda así con polimorfismo
+        lazy='dynamic'
+    )
+
+# PymeTicket igual
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"
     id = db.Column(db.Integer, primary_key=True)
     pregunta = db.Column(db.Text, nullable=False)
     user_id = db.Column(db.Integer, nullable=True)
-    estado = db.Column(db.String(30), default="nuevo")  # 'nuevo', 'en_proceso', 'resuelto'
+    estado = db.Column(db.String(30), default="nuevo")
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime, default=db.func.now())
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
-    comentarios = db.relationship('TicketComentario', primaryjoin="and_(PymeTicket.id==TicketComentario.ticket_id, TicketComentario.tipo=='pyme')", backref='pyme_ticket', lazy='dynamic')
-    # Dejá preparado para adjuntar archivos en el futuro
     archivo_url = db.Column(db.String(255), nullable=True)
     telefono = db.Column(db.String(30), nullable=True)
     email = db.Column(db.String(120), nullable=True)
     dni = db.Column(db.String(20), nullable=True)
-    estado_cliente = db.Column(db.String(30), default="no_definido")  # 'frio', 'tibio', 'caliente', 'satisfecho', 'enojado'
+    estado_cliente = db.Column(db.String(30), default="no_definido")
+
+    comentarios = db.relationship(
+        'TicketComentario',
+        primaryjoin="and_(PymeTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='pyme')",
+        viewonly=True,
+        lazy='dynamic'
+    )
 
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
