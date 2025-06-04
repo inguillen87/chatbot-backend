@@ -10,7 +10,7 @@ import json
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     clave = db.Column(db.String(50), unique=True, nullable=False)
-    s = db.Column(db.String(100), nullable=True)
+    nombre = db.Column(db.String(100), nullable=True)
     descripcion = db.Column(db.Text, nullable=True)
 
     padre_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)

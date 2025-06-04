@@ -124,5 +124,103 @@
       ],
       "respuesta": "Podés realizar cambios en [nombreEmpresa] dentro del plazo establecido en nuestra política, la cual puedes consultar en [linkWeb] o en nuestro local en [direccion]. Es necesario presentar el ticket de compra y que el producto esté en perfectas condiciones. Todos nuestros productos cuentan con garantía por defectos de fabricación. Ante cualquier inconveniente, contáctanos directamente por WhatsApp al [telefono] o acércate al local. ¿Tienes algún producto que necesites cambiar o consultar por su garantía?"
     }
-  ]
+  ],
+  "municipios": [
+  {
+    "categoria": "tramites_documentacion",
+    "ejemplos": [
+      "¿Dónde tramito el carnet de conducir?",
+      "¿Qué requisitos necesito para renovar el registro?",
+      "¿Dónde saco turno para el DNI?",
+      "¿Cuáles son los pasos para habilitar un comercio?",
+      "¿Dónde se gestiona la licencia de taxi?",
+      "¿Cómo tramito el certificado de residencia?",
+      "¿Qué documentos necesito para abrir un local?",
+      "¿Dónde hago el cambio de domicilio?"
+    ],
+    "respuesta": "Los principales trámites municipales, como registro de conducir, habilitación de comercios o trámites de documentación, pueden iniciarse en el municipio o a través de nuestra web oficial [linkWeb]. Para atención presencial, te recomendamos solicitar turno previo llamando al [telefono] o consultando el horario en [horario]. ¿Sobre qué trámite específico te gustaría recibir más información?"
+  },
+  {
+    "categoria": "reclamos_servicios_urbanos",
+    "ejemplos": [
+      "Quiero hacer un reclamo por luminaria rota",
+      "¿Cómo denuncio un bache en la calle?",
+      "¿Dónde informo sobre falta de recolección de residuos?",
+      "¿Qué hago si un árbol está a punto de caerse?",
+      "Hay ramas obstruyendo la vereda",
+      "¿Cómo reclamo por problemas con el agua?",
+      "¿Puedo informar un semáforo que no funciona?",
+      "¿Dónde reclamo por basurales ilegales?"
+    ],
+    "respuesta": "Para reclamos de servicios municipales (luminarias, baches, residuos, arbolado, etc.), podés comunicarte directamente por WhatsApp al [telefono], llamar al municipio o ingresar tu reclamo desde nuestra web [linkWeb]. En muchos casos generamos un número de ticket para seguimiento. ¿Querés que te explique cómo hacer tu reclamo o te gustaría registrar uno ahora?"
+  },
+  {
+    "categoria": "informacion_pagos_tasas",
+    "ejemplos": [
+      "¿Dónde pago las tasas municipales?",
+      "¿Hasta cuándo tengo tiempo para pagar el impuesto automotor?",
+      "¿Qué medios de pago aceptan para tasas?",
+      "¿Puedo pagar online los impuestos municipales?",
+      "¿Dónde consulto mis deudas municipales?",
+      "¿Dan descuento por pago anticipado?",
+      "¿Qué pasa si pago fuera de término?",
+      "¿Dónde obtengo el comprobante de pago de tasas?"
+    ],
+    "respuesta": "Podés abonar tasas e impuestos municipales en los centros habilitados, cajeros automáticos, plataformas online o a través de nuestra web oficial [linkWeb]. Para consultar tu deuda, imprimir boletas o acceder a medios de pago, también podés comunicarte al [telefono]. ¿Querés saber cómo pagar una tasa en particular o consultar tu estado de cuenta?"
+  },
+  {
+    "categoria": "recoleccion_residuos_ambiente",
+    "ejemplos": [
+      "¿Cuáles son los días de recolección de residuos?",
+      "¿Dónde llevo los reciclables?",
+      "¿Qué hago con los residuos electrónicos?",
+      "¿Hay recolección diferenciada en mi barrio?",
+      "¿A qué hora pasa el camión de basura?",
+      "¿Dónde pido un contenedor para escombros?",
+      "¿Hay campañas de limpieza en plazas?"
+    ],
+    "respuesta": "La recolección de residuos en nuestro municipio sigue un cronograma específico según zona. Puedes consultarlo en la web oficial [linkWeb] o llamando al [telefono]. Para reciclaje, residuos especiales y campañas ambientales, también publicamos información en nuestras redes y oficinas de ambiente. ¿Buscás datos para tu barrio o un tipo de residuo en particular?"
+  },
+  {
+    "categoria": "eventos_cultura_actividades",
+    "ejemplos": [
+      "¿Qué eventos culturales hay este mes?",
+      "¿Dónde me inscribo a la colonia de vacaciones municipal?",
+      "¿Cuándo es la próxima feria de artesanos?",
+      "¿Tienen actividades para niños en vacaciones?",
+      "¿Dónde veo la agenda de eventos del municipio?",
+      "¿Cómo participo de los talleres municipales?",
+      "¿Hay visitas guiadas en la ciudad?"
+    ],
+    "respuesta": "Podés consultar la agenda de eventos, actividades y talleres culturales de la municipalidad en nuestra web [linkWeb], redes sociales oficiales, o llamando a la Secretaría de Cultura al [telefono]. ¿Te interesa anotarte en alguna actividad o recibir el cronograma por WhatsApp?"
+  },
+  {
+    "categoria": "seguridad_denuncias_defensa_civil",
+    "ejemplos": [
+      "¿Dónde denuncio un robo o hecho de inseguridad?",
+      "¿Cuál es el teléfono de Defensa Civil?",
+      "¿Dónde informo situaciones de riesgo?",
+      "¿A quién llamo por emergencias municipales?",
+      "¿Dónde hago una denuncia anónima?",
+      "¿Qué hago en caso de incendio?",
+      "¿Dónde están las cámaras de seguridad?"
+    ],
+    "respuesta": "En casos de emergencias, defensa civil o seguridad ciudadana, comunicate de inmediato al número oficial [telefono] o dirigite a la comisaría/centro de seguridad municipal más cercano. Si tu denuncia es anónima o requiere seguimiento, podés informarla también desde la web [linkWeb] o por WhatsApp. ¿Necesitás el número de guardia o ayuda para iniciar una denuncia?"
+  },
+  {
+    "categoria": "consultas_generales_municipio",
+    "ejemplos": [
+      "¿Dónde está ubicada la municipalidad?",
+      "¿Cuáles son los horarios de atención?",
+      "¿Atienden los fines de semana?",
+      "¿Cómo contacto a Acción Social?",
+      "¿Dónde queda Rentas municipales?",
+      "¿Puedo hacer consultas por WhatsApp?",
+      "¿Dónde puedo pedir información general del municipio?",
+      "¿Dónde saco turno para atención presencial?"
+    ],
+    "respuesta": "La municipalidad atiende en [direccion], de lunes a viernes en el horario [horario]. Podés contactarnos por WhatsApp al [telefono], llamar al número oficial o escribirnos desde la web [linkWeb]. Si buscás un área o trámite puntual, decime cuál y te oriento con el canal correcto. ¿Hay algo en particular que quisieras consultar?"
+  }
+]
+
 }
