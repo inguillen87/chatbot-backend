@@ -179,6 +179,17 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
         logger.error(f"[LOGIC] ¡ERROR CRÍTICO! Rubro general ID 1 no encontrado."); rubro_id_final = 1; rubro_nombre_final = "general"
     logger.info(f"[LOGIC] ==> Rubro Final: '{rubro_nombre_final}' (ID: {rubro_id_final})")
 
+  # --- LÓGICA ESPECIAL PARA MUNICIPIOS ---
+    if rubro_nombre_final == "municipios":
+        logger.info("[LOGIC] 🚦 Derivando flujo a services.municipios (modo MUNICIPIO).")
+        from services.municipios import responder_municipio
+        return responder_municipio(
+            pregunta=pregunta,
+            user_obj=user_obj,
+            rubro_obj=rubro_obj_final,
+            session_obj=session
+        )
+    
     horario_json_str_ctx = getattr(user_obj, 'horario', '[]') if isinstance(user_obj, User) else getattr(user_obj, 'horario_json', '[]')
     if not horario_json_str_ctx or not isinstance(horario_json_str_ctx, str) or not horario_json_str_ctx.strip(): horario_json_str_ctx = '[]'
     

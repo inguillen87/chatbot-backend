@@ -245,5 +245,91 @@ faq_data = {
                 ["¿Hasta qué hora puedo ir al local para hacer un cambio?", "Puedes realizar cambios durante todo nuestro [horario] de atención en nuestro local de [direccion]."]
             ]
         }
+    },
+      "municipios":{
+    "nombre": "Municipios",  # <-- Agregá esta línea
+    "descripcion": "Consultas, trámites y servicios municipales para vecinos.",
+    "categorias": {
+        "Trámites y documentación": [
+            ["¿Dónde tramito el carnet de conducir?", "Podés gestionar tu carnet en [nombreEmpresa], ubicada en [direccion], de lunes a viernes de 8 a 13 hs. Consultá los requisitos en [linkWeb] o llamando al [telefono]."],
+            ["¿Qué documentos necesito para renovar el DNI?", "Para renovar el DNI, presentate con tu documento actual y un servicio a tu nombre en [nombreEmpresa], en [direccion]. Consultá horarios en [linkWeb] o al [telefono]."],
+            ["¿Dónde saco turno para atención en el municipio?", "Solicitá turno online en [linkWeb] o presencialmente en [direccion], de lunes a viernes durante el [horario]."],
+            ["¿Cómo obtengo mi partida de nacimiento?", "Podés solicitar la partida en [direccion], sección Registro Civil, o iniciar el trámite online desde [linkWeb]."],
+            ["¿Dónde gestiono el certificado de domicilio?", "El certificado de domicilio se tramita en la oficina de [nombreEmpresa], en [direccion], o consultá el procedimiento en [linkWeb]."],
+            ["¿Cómo obtengo el libre deuda municipal?", "Tramitá el libre deuda en el área de recaudación municipal, en [direccion], o a través del formulario de [linkWeb]."],
+            ["¿Dónde tramito el certificado de convivencia?", "Se gestiona en el Registro Civil municipal en [direccion] o podés consultar requisitos en [linkWeb]."],
+            ["¿Qué trámites puedo realizar online?", "Muchos trámites se pueden hacer en línea accediendo a [linkWeb] o consultando telefónicamente al [telefono]."],
+            ["¿Puedo consultar el estado de mi expediente online?", "Sí, ingresá a [linkWeb] y seleccioná la opción 'Seguimiento de expedientes' con tu número de trámite."]
+        ],
+        "Impuestos y tasas": [
+            ["¿Cuándo vence la tasa municipal?", "La tasa municipal vence el 10 de cada mes. Consultá tu calendario o recibo en [linkWeb]."],
+            ["¿Dónde pago las tasas municipales?", "Podés abonar tasas en [nombreEmpresa], en [direccion], o online en [linkWeb]. Consultas al [telefono]."],
+            ["¿Cómo obtengo mi boleta municipal?", "Descargá tu boleta desde [linkWeb] o retirala personalmente en [direccion]."],
+            ["¿Qué medios de pago aceptan?", "Aceptamos pagos en efectivo, tarjetas y transferencias bancarias en [direccion], y pagos online en [linkWeb]."],
+            ["¿Cómo consulto mi deuda municipal?", "Ingresá con tu número de cuenta en [linkWeb] o llamá al [telefono] para verificar tu deuda."],
+            ["¿Puedo pagar tasas vencidas?", "Sí, acercate a [direccion] para calcular intereses o generá una nueva boleta en [linkWeb]."],
+            ["¿Dónde consulto los planes de pago vigentes?", "Toda la información sobre planes de pago está disponible en [linkWeb] o en la oficina de recaudación en [direccion]."],
+            ["¿Ofrecen descuentos por pago anticipado?", "Sí, revisá los beneficios vigentes en [linkWeb] o consultá al [telefono]."],
+            ["¿Cómo obtengo un comprobante de pago?", "El comprobante te lo entregan en el momento en [direccion] o lo podés descargar desde [linkWeb]."]
+        ],
+        "Reclamos y servicios urbanos": [
+            ["¿Cómo hago un reclamo por luminaria?", "Completá el formulario en [linkWeb], llamá al [telefono] o acercate a [direccion]."],
+            ["¿Cómo denuncio un bache?", "Ingresá el reclamo en [linkWeb], o comunicate con atención al vecino en [telefono]."],
+            ["¿Dónde denuncio ruido molesto?", "Podés denunciar en [nombreEmpresa] en [direccion] o completar el formulario en [linkWeb]."],
+            ["¿Dónde solicito poda de árboles?", "Presentá tu pedido en [linkWeb] o personalmente en [direccion] durante el [horario]."],
+            ["¿Qué hago si no pasa el recolector de residuos?", "Reportá la situación al [telefono] o desde [linkWeb]."],
+            ["¿Cómo hago un reclamo por cloacas o agua?", "Contactá a [nombreEmpresa] en [telefono] o acercate a [direccion]."],
+            ["¿Dónde pido reparación de calles?", "El reclamo se ingresa en [linkWeb] o en la mesa de entradas en [direccion]."],
+            ["¿Puedo hacer reclamos por WhatsApp?", "Sí, enviá tu reclamo al WhatsApp oficial de [nombreEmpresa]: [telefono]."],
+            ["¿Cómo hago seguimiento de un reclamo?", "Con tu número de trámite consultá el estado en [linkWeb] o al [telefono]."]
+        ],
+        "Salud y asistencia social": [
+            ["¿Dónde queda el centro de salud municipal?", "Encontrá la ubicación del centro de salud más cercano en [linkWeb] o consultá en [direccion]."],
+            ["¿Cómo saco turno para atención médica?", "Pedí turno en [linkWeb], llamando al [telefono] o acercate a [direccion]."],
+            ["¿Ofrecen vacunación gratuita?", "Sí, consultá días y horarios de vacunación en [linkWeb] o llamá al [telefono]."],
+            ["¿Dónde solicito asistencia social?", "Acercate a Desarrollo Social en [direccion] o informate en [linkWeb]."],
+            ["¿Puedo obtener ayuda alimentaria?", "Sí, consultá los requisitos en [nombreEmpresa] o llamá al [telefono]."],
+            ["¿Dónde funciona el área de discapacidad?", "El área de discapacidad atiende en [direccion]. Más información en [linkWeb]."],
+            ["¿Cómo accedo a programas de empleo?", "Revisá los programas activos en [linkWeb] o acercate a la oficina de empleo en [direccion]."],
+            ["¿Dónde pido turnos para vacunación?", "Los turnos se solicitan en [linkWeb] o telefónicamente al [telefono]."],
+            ["¿Dónde denunciar violencia de género?", "Podés comunicarte al [telefono] o acercarte a [direccion] (área de Género y Diversidad)."]
+        ],
+        "Educación y cultura": [
+            ["¿Dónde me inscribo en talleres municipales?", "Las inscripciones se realizan en [linkWeb] o personalmente en [direccion]."],
+            ["¿Qué actividades culturales ofrece el municipio?", "El calendario de eventos y actividades está en [linkWeb] y en las redes sociales de [nombreEmpresa]."],
+            ["¿Dónde queda la biblioteca municipal?", "La biblioteca se encuentra en [direccion]. Consultá horarios y servicios en [linkWeb]."],
+            ["¿Hay cursos gratuitos para jóvenes?", "Sí, consultá la oferta educativa y cultural vigente en [linkWeb] o llamá al [telefono]."],
+            ["¿Dónde puedo inscribirme a deportes municipales?", "La inscripción se realiza en [direccion] o desde [linkWeb]."],
+            ["¿Dónde están los polideportivos?", "Consultá la ubicación y horarios en [linkWeb] o llamá al [telefono]."],
+            ["¿Cómo participo en actividades artísticas?", "Sumate consultando la agenda cultural en [linkWeb] o en [direccion]."],
+            ["¿Se dictan cursos de computación?", "Sí, revisá las fechas y horarios disponibles en [linkWeb] o consultá al [telefono]."]
+        ],
+        "Información general": [
+            ["¿Cuál es el horario de atención del municipio?", "El horario de atención es de lunes a viernes de 8 a 13 hs. Más info en [linkWeb]."],
+            ["¿Dónde queda el municipio?", "La municipalidad está en [direccion]. Consultá el mapa en [linkWeb]."],
+            ["¿Cómo contacto al municipio?", "Llamá al [telefono], escribí por WhatsApp o completá el formulario en [linkWeb]."],
+            ["¿El municipio tiene redes sociales?", "Sí, seguinos en nuestras redes sociales oficiales. En [linkWeb] están todos los enlaces."],
+            ["¿Cómo accedo a noticias municipales?", "Las noticias y novedades se publican en [linkWeb] y nuestras redes."],
+            ["¿Dónde encuentro el calendario de recolección de residuos?", "Descargá el calendario en [linkWeb] o retiralo en mesa de entradas en [direccion]."],
+            ["¿Dónde consulto licitaciones públicas?", "Las licitaciones activas están en [linkWeb] o consultá en la oficina de Compras en [direccion]."],
+            ["¿Cómo hago un pedido de informes?", "Presentá tu solicitud en mesa de entradas en [direccion] o por [linkWeb]."],
+            ["¿El municipio brinda atención los sábados?", "Generalmente no, pero consultá horarios especiales en [linkWeb] o llamando al [telefono]."]
+        ],
+        "Turnos y contacto": [
+            ["¿Cómo saco turno para trámites?", "Solicitá tu turno online en [linkWeb] o telefónicamente al [telefono]."],
+            ["¿Puedo hacer consultas por WhatsApp?", "Sí, podés enviar consultas o reclamos al WhatsApp de [nombreEmpresa] al [telefono]."],
+            ["¿Dónde hago reclamos fuera del horario de atención?", "Podés ingresar tu reclamo online en [linkWeb] o dejar un mensaje al [telefono]."],
+            ["¿Cómo obtengo información sobre trámites urgentes?", "Consultá el procedimiento especial para urgencias en [linkWeb] o llamá al [telefono]."],
+            ["¿Puedo recibir notificaciones por mail o SMS?", "Sí, podés suscribirte a los avisos en [linkWeb] o solicitándolo en [direccion]."]
+        ],
+        "Emergencias y seguridad": [
+            ["¿Dónde llamo ante una emergencia?", "Ante emergencias comunicate con Defensa Civil al [telefono] o concurrí a [direccion]."],
+            ["¿El municipio tiene número de emergencia?", "Sí, el número es [telefono]. Consultá [linkWeb] para más líneas directas."],
+            ["¿Dónde está la comisaría más cercana?", "Consultá el mapa de dependencias en [linkWeb] o preguntá en mesa de entradas de [nombreEmpresa], en [direccion]."],
+            ["¿A quién aviso en caso de animales sueltos?", "Llamá al área de Zoonosis al [telefono] o hacé el reclamo en [linkWeb]."],
+            ["¿Dónde denunciar incendios o quemas?", "Comunicá la situación inmediatamente a Defensa Civil al [telefono] o al cuerpo de bomberos."]
+        ]
     }
+}
+
 }

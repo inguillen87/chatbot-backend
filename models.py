@@ -10,7 +10,7 @@ import json
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     clave = db.Column(db.String(50), unique=True, nullable=False)
-    nombre = db.Column(db.String(100), nullable=False)
+    s = db.Column(db.String(100), nullable=True)
     descripcion = db.Column(db.Text, nullable=True)
 
     padre_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
@@ -21,6 +21,15 @@ class Rubro(db.Model):
 
     def __repr__(self):
         return f"<Rubro {self.nombre}>"
+
+class MunicipioTicket(db.Model):
+    __tablename__ = "municipio_ticket"
+    id = db.Column(db.Integer, primary_key=True)
+    pregunta = db.Column(db.Text, nullable=False)
+    user_id = db.Column(db.Integer, nullable=True)
+    estado = db.Column(db.String(30), default="nuevo")
+    nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
+    fecha = db.Column(db.DateTime, default=db.func.now())
 
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
