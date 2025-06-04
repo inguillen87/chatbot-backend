@@ -1,16 +1,13 @@
 def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
     import datetime
     import json
-    import urllib.parse
     from flask import session
-    # Importá tu función universal
-    from services.ticket import crear_ticket_universal
     from services.cohere_ai import get_cohere_response
     from services.logic import reemplazar_placeholders
+    from models import Conversacion, MunicipioTicket, db  # <--- importa modelos y db
 
     session = session_obj if session_obj is not None else __import__("flask").session
 
-    # --- Contexto ---
     NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
     session.setdefault(NOMBRE_HISTORIAL_SESION, [])
     mensajes_previos = session[NOMBRE_HISTORIAL_SESION][-8:]
@@ -35,6 +32,31 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
                 horarios_para_prompt = ". ".join(partes) + "."
     except Exception:
         horarios_para_prompt = horario
+
+    # --- Lógica para pedir datos de contacto si faltan ---
+    datos_faltantes = []
+    if not user_obj.telefono or user_obj.telefono.strip() == "":
+        datos_faltantes.append("teléfono")
+    if not user_obj.email or user_obj.email.strip() == "":
+        datos_faltantes.append("email")
+    # Si después querés pedir DNI u otros, agregalos acá
+
+    if datos_faltantes:
+        mensaje = "Antes de continuar, por favor brindá tu " + " y ".join(datos_faltantes) + " para que podamos ayudarte mejor."
+        # Guardá conversación
+        conv = Conversacion(
+            user_id=user_obj.id if user_obj else None,
+            pregunta=pregunta,
+            respuesta=mensaje,
+            fuente="falta_dato_contacto",
+            rubro="municipio"
+        )
+        db.session.add(conv)
+        db.session.commit()
+        # También guardalo en historial de sesión para el contexto del LLM
+        session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": mensaje})
+        session.modified = True
+        return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "falta_dato_contacto"}
 
     # --- Prompt Mejorado ---
     prompt = (
@@ -63,38 +85,44 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
 
     # --- Detección de reclamos ---
     def contiene_reclamo(texto):
-        claves = [
-            "bache", "reclamo", "denuncia", "luminaria", "basura", "ruido", "inseguridad",
-            "robo", "perro suelto", "poda", "árbol", "corte de agua", "vereda rota", "servicio no funciona"
-        ]
+        claves = ["bache", "reclamo", "denuncia", "luminaria", "basura", "ruido", "inseguridad", "robo", "perro suelto", "poda", "árbol", "corte de agua", "vereda rota", "servicio no funciona", "corte de luz"]
         return any(k in texto.lower() for k in claves)
 
-    # --- Respuesta automática de ticket real (DB robusta) ---
+    # --- Si hay reclamo, genera y guarda ticket ---
     if contiene_reclamo(pregunta):
-        # Crea el ticket en la base con todos los datos posibles
-        nro_ticket = crear_ticket_universal(
-            tipo="municipio",
+        import random
+        nro_ticket = random.randint(10000, 99999)
+        ticket = MunicipioTicket(
             pregunta=pregunta,
-            user_id=getattr(user_obj, "id", None),
-            telefono=getattr(user_obj, "telefono", None),
-            email=getattr(user_obj, "email", None),
-            comentario="Creado automáticamente desde el chat"
+            user_id=user_obj.id if user_obj else None,
+            estado="nuevo",
+            nro_ticket=nro_ticket,
+            fecha=datetime.datetime.utcnow()
         )
+        db.session.add(ticket)
+        db.session.commit()
         respuesta_ticket = (
             f"Tu reclamo fue registrado con el número #{nro_ticket}. "
             "Nuestro equipo lo revisará a la brevedad. ¿Te gustaría gestionar otro trámite o consulta?"
         )
+        # Guardá conversación
+        conv = Conversacion(
+            user_id=user_obj.id if user_obj else None,
+            pregunta=pregunta,
+            respuesta=respuesta_ticket,
+            fuente="municipio_ticket",
+            rubro="municipio"
+        )
+        db.session.add(conv)
+        db.session.commit()
         session[NOMBRE_HISTORIAL_SESION].extend([
             {"role": "user", "content": pregunta},
             {"role": "assistant", "content": respuesta_ticket}
         ])
         session.modified = True
-        return {
-            "respuesta": respuesta_ticket + render_botones_municipio(web_oficial, telefono_wsp, pregunta),
-            "fuente": "municipio_ticket"
-        }
+        return {"respuesta": respuesta_ticket + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "municipio_ticket"}
 
-    # --- LLM principal ---
+    # --- LLM principal (Cohere/GPT) ---
     try:
         respuesta_llm = get_cohere_response(
             message=pregunta,
@@ -113,81 +141,24 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
     except Exception:
         respuesta_llm = "Lo siento, hubo un problema técnico al procesar tu consulta. Podés comunicarte telefónicamente o por la web oficial."
 
+    # Guarda conversación (todo)
+    conv = Conversacion(
+        user_id=user_obj.id if user_obj else None,
+        pregunta=pregunta,
+        respuesta=respuesta_llm,
+        fuente="cohere",
+        rubro="municipio"
+    )
+    db.session.add(conv)
+    db.session.commit()
+
     session[NOMBRE_HISTORIAL_SESION].extend([
         {"role": "user", "content": pregunta},
         {"role": "assistant", "content": respuesta_llm}
     ])
     session.modified = True
 
-    # --- Botones institucionales PRO ---
     return {
         "respuesta": respuesta_llm + render_botones_municipio(web_oficial, telefono_wsp, pregunta),
         "fuente": "cohere"
     }
-
-
-def render_botones_municipio(link_web, telefono, pregunta):
-    import urllib.parse
-    telefono_wsp = telefono if telefono and len(telefono) >= 10 else ""
-
-    boton_web = f'''
-    <a href="{link_web}" target="_blank"
-       style="
-          background: linear-gradient(90deg, #1769aa 85%, #3fa7d6 100%);
-          color: #fff;
-          padding: 10px 22px;
-          border-radius: 9px;
-          font-size: 1em;
-          font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
-          font-weight: 600;
-          box-shadow: 0 3px 9px 0 rgba(24,103,192,0.08);
-          text-decoration: none;
-          display: inline-flex;
-          align-items: center;
-          gap: 7px;
-          margin: 4px;
-          transition: background 0.18s;
-       "
-       onmouseover="this.style.background='linear-gradient(90deg,#144e75 85%,#227ca9 100%)';"
-       onmouseout="this.style.background='linear-gradient(90deg,#1769aa 85%,#3fa7d6 100%)';"
-    >
-      <span style="font-size:1.22em;vertical-align:middle;">🏛️</span>
-      Web Oficial
-    </a>
-    '''
-
-    boton_wsp = ""
-    if telefono_wsp:
-        mensaje_whatsapp = f"Hola, soy vecino y tengo una consulta sobre: '{pregunta}'."
-        boton_wsp = f'''
-        <a href="https://wa.me/{telefono_wsp}?text={urllib.parse.quote(mensaje_whatsapp)}" target="_blank"
-           style="
-              background: linear-gradient(90deg, #158442 88%, #44c97c 100%);
-              color: #fff;
-              padding: 10px 22px;
-              border-radius: 9px;
-              font-size: 1em;
-              font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
-              font-weight: 600;
-              box-shadow: 0 3px 9px 0 rgba(27,205,96,0.09);
-              text-decoration: none;
-              display: inline-flex;
-              align-items: center;
-              gap: 7px;
-              margin: 4px;
-              transition: background 0.18s;
-           "
-           onmouseover="this.style.background='linear-gradient(90deg,#105e2e 88%,#26a77d 100%)';"
-           onmouseout="this.style.background='linear-gradient(90deg,#158442 88%,#44c97c 100%)';"
-        >
-          <span style="font-size:1.18em;vertical-align:middle;">📲</span>
-          WhatsApp Oficial
-        </a>
-        '''
-
-    return f'''
-    <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:4px;margin-top:16px;">
-      {boton_web}
-      {boton_wsp}
-    </div>
-    '''
