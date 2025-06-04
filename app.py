@@ -24,6 +24,7 @@ from routes.rubros import rubros_bp
 from routes.metricas import metricas_bp
 from services.upload_processor import upload_bp # Asumo que está en services
 from routes.uala_webhook import uala_bp
+from routes.ticket import ticket_bp
 
 load_dotenv()
 
@@ -106,6 +107,8 @@ def create_app(config_class=Config):
     app.register_blueprint(metricas_bp)
     app.register_blueprint(upload_bp) 
     app.register_blueprint(uala_bp)
+    app.register_blueprint(ticket_bp)
+
 
     for bp_name_key in app.blueprints:
         app_module_logger.info(f"Blueprint '{bp_name_key}' registrado.")

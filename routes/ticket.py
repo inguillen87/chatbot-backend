@@ -1,10 +1,10 @@
 from flask import Blueprint, request, jsonify
 from models import MunicipioTicket, PymeTicket, TicketComentario
-from services.tickets import crear_comentario_ticket
+from services.ticket import crear_comentario_ticket
 
-tickets_bp = Blueprint("tickets_bp", __name__)
+ticket_bp = Blueprint("ticket_bp", __name__)
 
-@tickets_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['POST'])
+@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['POST'])
 def agregar_comentario(tipo_ticket, ticket_id):
     try:
         data = request.get_json() or {}
@@ -28,7 +28,7 @@ def agregar_comentario(tipo_ticket, ticket_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@tickets_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['GET'])
+@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['GET'])
 def listar_comentarios(tipo_ticket, ticket_id):
     if tipo_ticket == "municipio":
         ticket = MunicipioTicket.query.get(ticket_id)
