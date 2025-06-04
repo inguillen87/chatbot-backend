@@ -1,33 +1,22 @@
 def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
-    """
-    Lógica ultra robusta de atención municipal inteligente:
-    - Prompt contextual y completo.
-    - Responde como agente humano, no IA.
-    - Memoria/historial del vecino.
-    - Tickets automáticos para reclamos.
-    - Botones de WhatsApp y Web oficial si corresponde.
-    - Maneja errores y placeholders.
-    """
     import datetime
-    import random
     import json
-    import urllib.parse
     from flask import session
 
     from services.cohere_ai import get_cohere_response
     from services.logic import reemplazar_placeholders
 
-    # Usa session_obj si viene, sino usa el global de flask
-    session = session_obj if session_obj is not None else session
+    session = session_obj if session_obj is not None else __import__("flask").session
 
-    # ---- Contexto clave ----
+    # --- Contexto ---
     NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
     session.setdefault(NOMBRE_HISTORIAL_SESION, [])
     mensajes_previos = session[NOMBRE_HISTORIAL_SESION][-8:]
 
     nombre_municipio = user_obj.nombre_empresa or rubro_obj.nombre or "el municipio"
-    telefono = getattr(user_obj, "telefono", "") or "No especificado. Consultá la web oficial."
-    web_oficial = getattr(user_obj, "link_web", "") or "https://www.argentina.gob.ar"
+    telefono = user_obj.telefono or ""
+    telefono_wsp = ''.join(filter(str.isdigit, telefono))
+    web_oficial = user_obj.link_web or "https://www.argentina.gob.ar"
     direccion = getattr(user_obj, "direccion", "") or "Consultar en la web"
     ciudad = getattr(user_obj, "ciudad", "") or ""
     provincia = getattr(user_obj, "provincia", "") or ""
@@ -38,36 +27,33 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
     try:
         if horario_json_str and isinstance(horario_json_str, str) and horario_json_str.startswith("["):
             horarios_data = json.loads(horario_json_str)
-            partes = [
-                f"{h.get('dia','')}: de {h.get('abre','--:--')} a {h.get('cierra','--:--')}" if not h.get('cerrado')
-                else f"{h.get('dia','')}: Cerrado"
-                for h in horarios_data if isinstance(h, dict) and h.get('dia')
-            ]
+            partes = [f"{h.get('dia','')}: de {h.get('abre','--:--')} a {h.get('cierra','--:--')}" if not h.get('cerrado') else f"{h.get('dia','')}: Cerrado"
+                      for h in horarios_data if isinstance(h, dict) and h.get('dia')]
             if partes:
                 horarios_para_prompt = ". ".join(partes) + "."
     except Exception:
         horarios_para_prompt = horario
 
-    # ---- Prompt de sistema ----
+    # --- Prompt Mejorado ---
     prompt = (
-        f"Sos Chatboc, un agente municipal experto en atención ciudadana para {nombre_municipio}, ubicado en {direccion_completa}. "
-        "Tu objetivo principal es ayudar al vecino a resolver su consulta, guiarlo en trámites, reclamos y acceso a servicios municipales en el menor número de pasos posibles (idealmente 2-4). "
-        f"Ya tuviste {len(mensajes_previos)//2} interacciones previas en esta sesión. Revisá el historial para no repetir info y mantener contexto."
-        "\nActuá siempre como un empleado real del municipio: profesional, cálido, directo, resolutivo y paciente. Usá lenguaje sencillo, nunca técnico ni robotizado. No uses palabras de IA, chatbot ni te presentes como asistente virtual."
-        "\nINFORMACIÓN OFICIAL DEL MUNICIPIO:"
-        f"\n- Teléfono: {telefono}"
-        f"\n- Dirección: {direccion_completa}"
-        f"\n- Horarios de atención: {horarios_para_prompt}"
-        f"\n- Web oficial: {web_oficial}"
-        "\nINSTRUCCIONES DE RESPUESTA:"
-        "\n1. Si es un reclamo o denuncia (bache, luminaria, basura, ruidos, seguridad, etc), generá ticket y devolvé el número único: 'Tu reclamo fue registrado con el número #[ticket]. Nuestro equipo lo revisará a la brevedad. ¿Querés realizar otra gestión?'"
-        "\n2. Si la consulta es sobre trámites (licencias, habilitaciones, tasas, turnos, partidas), explicá paso a paso cómo hacerlo y guiá con link, teléfono o dirección. Si el trámite es solo presencial, aclaralo con horarios."
-        "\n3. Si preguntan por horarios, usá la información que tenés. Si falta, derivá a la web oficial."
-        "\n4. Si no tenés el dato exacto, nunca inventes: decí 'No tengo ese dato exacto ahora, pero podés consultar en nuestra web oficial o llamarnos al teléfono informado arriba. ¿Te ayudo con otra gestión?'"
-        "\n5. Jamás hables de productos, ventas, carrito, precios ni promociones. No sos vendedor."
-        "\n6. Si la consulta es confusa o ajena (ej: 'asdfgh'), decí: 'Disculpá, no entendí la consulta. Te puedo ayudar con trámites, reclamos, turnos o servicios municipales. ¿Con qué tema necesitás ayuda hoy?'"
-        "\n7. Siempre cerrá tu respuesta con una pregunta o propuesta concreta para el vecino: '¿Querés que te pase el link?', '¿Te ayudo con otro trámite?', '¿Necesitás recibir info sobre servicios digitales?'"
-        "\n---\nHISTORIAL DE LA CONVERSACIÓN:"
+        f"Sos Chatboc, un agente de atención ciudadana para {nombre_municipio}, ubicado en {direccion_completa}."
+        " Atendés consultas, reclamos y trámites de vecinos, de manera profesional, clara y amable, como lo haría un empleado municipal real."
+        "\n\n- No sos un chatbot ni una IA. Usá lenguaje institucional pero humano, sencillo y cercano. Evitá tecnicismos y nunca te presentes como asistente virtual."
+        "\n- No vendas productos ni promociones, jamás menciones compras, carrito o precios."
+        "\n- Si recibís un reclamo (ej: bache, luminaria, basura, ruidos, seguridad), generá ticket y devolvé el número único."
+        "\n- Para trámites y servicios (licencias, turnos, habilitaciones, tasas, partidas), explicá paso a paso cómo se hacen, ofreciendo link, teléfono, dirección y horarios cuando corresponda. Si solo es presencial, aclaralo."
+        "\n- Si preguntan por horarios, usá la info oficial. Si falta, derivá a la web o teléfono."
+        "\n- Si no sabés algo, decí 'No tengo ese dato exacto ahora, podés consultarlo en la web oficial o al teléfono informado arriba.'"
+        "\n- Si la pregunta es confusa, contestá: 'Disculpá, no entendí la consulta. Puedo ayudarte con trámites, reclamos, turnos o servicios municipales. ¿Con qué tema necesitas ayuda hoy?'"
+        "\n- Al final de cada respuesta, preguntá amablemente si necesitás gestionar algo más, por ejemplo: '¿Querés que te pase el link?', '¿Te ayudo con otro trámite?', '¿Necesitás info de servicios digitales?'"
+        "\n- Mantené siempre el contexto de la charla. Si hay reclamos repetidos, empatizá y explicá el seguimiento."
+        "\n\nDATOS OFICIALES DEL MUNICIPIO:"
+        f"\n🏛️ Municipio: {nombre_municipio}"
+        f"\n📞 Teléfono: {telefono if telefono else 'No especificado. Consultá la web oficial.'}"
+        f"\n📍 Dirección: {direccion_completa}"
+        f"\n🕐 Horarios: {horarios_para_prompt}"
+        f"\n🌐 Web oficial: {web_oficial}"
+        "\n\n---\nHISTORIAL DE LA CONVERSACIÓN:"
     )
     for msg in mensajes_previos:
         prompt += f"\n- {msg.get('role', 'user')}: {msg.get('content','')}"
@@ -75,36 +61,30 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
 
     # --- Detección de reclamos ---
     def contiene_reclamo(texto):
-        claves = [
-            "bache", "reclamo", "denuncia", "luminaria", "basura", "ruido", "inseguridad", "robo",
-            "perro suelto", "poda", "árbol", "corte de agua", "vereda rota", "servicio no funciona", "vandalismo"
-        ]
+        claves = ["bache", "reclamo", "denuncia", "luminaria", "basura", "ruido", "inseguridad", "robo", "perro suelto", "poda", "árbol", "corte de agua", "vereda rota", "servicio no funciona"]
         return any(k in texto.lower() for k in claves)
 
     def generar_ticket_db(pregunta, user_obj):
-        # Tu lógica real de ticket, si tenés una tabla municipio_ticket, usala aquí:
         import random
         nro_ticket = random.randint(10000, 99999)
-        # Ejemplo: guardá el ticket real en la DB acá
-        # ticket = MunicipioTicket(user_id=getattr(user_obj, "id", None), pregunta=pregunta, estado="nuevo", ...)
-        # db.session.add(ticket); db.session.commit(); return ticket.id
+        # Guardar en DB real si hace falta
         return nro_ticket
 
-    # 1. Ticket automático si es reclamo
+    # --- Respuesta automática de ticket ---
     if contiene_reclamo(pregunta):
         nro_ticket = generar_ticket_db(pregunta, user_obj)
         respuesta_ticket = (
             f"Tu reclamo fue registrado con el número #{nro_ticket}. "
-            "Nuestro equipo lo revisará a la brevedad. ¿Te gustaría realizar otro trámite o consulta?"
+            "Nuestro equipo lo revisará a la brevedad. ¿Te gustaría gestionar otro trámite o consulta?"
         )
         session[NOMBRE_HISTORIAL_SESION].extend([
             {"role": "user", "content": pregunta},
             {"role": "assistant", "content": respuesta_ticket}
         ])
         session.modified = True
-        return {"respuesta": respuesta_ticket, "fuente": "municipio_ticket"}
+        return {"respuesta": respuesta_ticket + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "municipio_ticket"}
 
-    # 2. LLM (Cohere, Gemini, etc)
+    # --- LLM principal ---
     try:
         respuesta_llm = get_cohere_response(
             message=pregunta,
@@ -120,72 +100,88 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
             }
         )
         respuesta_llm = reemplazar_placeholders(respuesta_llm, user_obj)
-    except Exception as e:
-        respuesta_llm = (
-            "Lo siento, hubo un problema técnico al procesar tu consulta. "
-            "Podés comunicarte telefónicamente o por la web oficial."
-        )
+    except Exception:
+        respuesta_llm = "Lo siento, hubo un problema técnico al procesar tu consulta. Podés comunicarte telefónicamente o por la web oficial."
 
-    # Memoria/Historial
     session[NOMBRE_HISTORIAL_SESION].extend([
         {"role": "user", "content": pregunta},
         {"role": "assistant", "content": respuesta_llm}
     ])
     session.modified = True
 
-    # --- BOTONES ---
-    respuesta_final = respuesta_llm
+    # --- Botones institucionales PRO ---
+    return {
+        "respuesta": respuesta_llm + render_botones_municipio(web_oficial, telefono_wsp, pregunta),
+        "fuente": "cohere"
+    }
 
-    # Botón WhatsApp si hay teléfono válido
-    def formatear_numero_whatsapp_simple(telefono_str, codigo_pais="54"):
-        import re
-        if not telefono_str:
-            return ""
-        numeros = re.sub(r'\D', '', str(telefono_str))
-        if numeros.startswith(codigo_pais + "9") and len(numeros) == (len(codigo_pais) + 1 + 10):
-            return numeros
-        if numeros.startswith(codigo_pais) and not numeros.startswith(codigo_pais + "9") and len(numeros) == (len(codigo_pais) + 10):
-            return codigo_pais + "9" + numeros[len(codigo_pais):]
-        if len(numeros) == 10:
-            return f"{codigo_pais}9{numeros}"
-        return numeros
 
-    # WhatsApp
-    numero_wsp = formatear_numero_whatsapp_simple(telefono)
-    if numero_wsp and "No especificado" not in telefono:
-        mensaje_whatsapp = f"Hola {nombre_municipio}, tengo una consulta sobre trámites municipales."
-        mensaje_whatsapp_encoded = urllib.parse.quote(mensaje_whatsapp)
-        boton_wsp_html = (
-            f'''
-<div style="margin-top:14px;text-align:center;">
-  <a href="https://wa.me/{numero_wsp}?text={mensaje_whatsapp_encoded}" target="_blank"
-     style="
-        display:inline-block;background:linear-gradient(90deg,#25d366 85%,#059669 100%);
-        color:#fff;padding:14px 32px;text-align:center;text-decoration:none;
-        border-radius:12px;font-size:1.07em;font-family:'Inter','Segoe UI',Arial,sans-serif;
-        font-weight:700;box-shadow:0 4px 18px 0 rgba(27,205,96,0.09),0 1.5px 7px 0 rgba(0,0,0,0.05);
-        transition:background 0.2s,box-shadow 0.2s;margin:0 auto;min-width:200px;"
-     onmouseover="this.style.background='linear-gradient(90deg,#15ad42 90%,#0dd9a7 100%)';this.style.boxShadow='0 6px 22px 0 rgba(27,205,96,0.15)';"
-     onmouseout="this.style.background='linear-gradient(90deg,#25d366 85%,#059669 100%)';this.style.boxShadow='0 4px 18px 0 rgba(27,205,96,0.09),0 1.5px 7px 0 rgba(0,0,0,0.05)';"
-  >
-    <span style="display:inline-block;vertical-align:middle;margin-right:7px;font-size:1.22em;">💬</span>
-    Contactar por WhatsApp
-  </a>
-</div>
-''')
-        respuesta_final += boton_wsp_html
+def render_botones_municipio(link_web, telefono, pregunta):
+    import urllib.parse
+    # Teléfono debe ser solo dígitos para wa.me
+    telefono_wsp = telefono if telefono and len(telefono) >= 10 else ""
 
-    # Botón Web oficial si hay link válido
-    if web_oficial and web_oficial.startswith("http"):
-        boton_web_html = (
-            f'''
-<div style="margin-top:10px;font-size:0.97em;text-align:center;">
-  <a href="{web_oficial}" target="_blank"
-     style="color:#2980f3;text-decoration:underline;font-weight:600;font-size:1.1em;">
-    🌐 Ir a la web oficial del municipio
-  </a>
-</div>
-''')
-        respuesta_final += boton_web_html
+    # Botón Web Oficial
+    boton_web = f'''
+    <a href="{link_web}" target="_blank"
+       style="
+          background: linear-gradient(90deg, #1769aa 85%, #3fa7d6 100%);
+          color: #fff;
+          padding: 10px 22px;
+          border-radius: 9px;
+          font-size: 1em;
+          font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+          font-weight: 600;
+          box-shadow: 0 3px 9px 0 rgba(24,103,192,0.08);
+          text-decoration: none;
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          margin: 4px;
+          transition: background 0.18s;
+       "
+       onmouseover="this.style.background='linear-gradient(90deg,#144e75 85%,#227ca9 100%)';"
+       onmouseout="this.style.background='linear-gradient(90deg,#1769aa 85%,#3fa7d6 100%)';"
+    >
+      <span style="font-size:1.22em;vertical-align:middle;">🏛️</span>
+      Web Oficial
+    </a>
+    '''
 
-    return {"respuesta": respuesta_final, "fuente": "cohere"}
+    # Botón WhatsApp Oficial (solo si hay número válido)
+    boton_wsp = ""
+    if telefono_wsp:
+        mensaje_whatsapp = f"Hola, soy vecino y tengo una consulta sobre: '{pregunta}'."
+        boton_wsp = f'''
+        <a href="https://wa.me/{telefono_wsp}?text={urllib.parse.quote(mensaje_whatsapp)}" target="_blank"
+           style="
+              background: linear-gradient(90deg, #158442 88%, #44c97c 100%);
+              color: #fff;
+              padding: 10px 22px;
+              border-radius: 9px;
+              font-size: 1em;
+              font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+              font-weight: 600;
+              box-shadow: 0 3px 9px 0 rgba(27,205,96,0.09);
+              text-decoration: none;
+              display: inline-flex;
+              align-items: center;
+              gap: 7px;
+              margin: 4px;
+              transition: background 0.18s;
+           "
+           onmouseover="this.style.background='linear-gradient(90deg,#105e2e 88%,#26a77d 100%)';"
+           onmouseout="this.style.background='linear-gradient(90deg,#158442 88%,#44c97c 100%)';"
+        >
+          <span style="font-size:1.18em;vertical-align:middle;">📲</span>
+          WhatsApp Oficial
+        </a>
+        '''
+
+    # Contenedor central flexible
+    return f'''
+    <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:4px;margin-top:16px;">
+      {boton_web}
+      {boton_wsp}
+    </div>
+    '''
