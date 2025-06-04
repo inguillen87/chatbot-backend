@@ -1,4 +1,5 @@
-def responder_municipio(pregunta, user_obj, rubro_obj, session, otros_args=None):
+def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
+
     """
     Lógica específica para municipios: prompt especial, memoria (historial con el vecino), tickets, etc.
     """
