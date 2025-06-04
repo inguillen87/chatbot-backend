@@ -162,3 +162,45 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         "respuesta": respuesta_llm + render_botones_municipio(web_oficial, telefono_wsp, pregunta),
         "fuente": "cohere"
     }
+def render_botones_municipio(web_oficial, telefono_wsp, pregunta):
+    """
+    Renderiza botones de acceso rápido para la respuesta del bot de municipio.
+    """
+    botones = ""
+    if web_oficial:
+        botones += f'''
+<div style="margin-top: 14px; text-align: center;">
+  <a href="{web_oficial}" target="_blank" style="
+        display: inline-block;
+        background: #2980f3;
+        color: #fff;
+        padding: 13px 30px;
+        text-decoration: none;
+        border-radius: 10px;
+        font-size: 1.08em;
+        font-weight: 700;
+        margin: 0 6px;">
+    🌐 Web Oficial
+  </a>
+</div>
+'''
+    if telefono_wsp and len(str(telefono_wsp)) >= 9:
+        from urllib.parse import quote
+        msg = quote(f"Hola, tengo una consulta sobre: '{pregunta}'")
+        botones += f'''
+<div style="margin-top: 10px; text-align: center;">
+  <a href="https://wa.me/{telefono_wsp}?text={msg}" target="_blank" style="
+        display: inline-block;
+        background: #25d366;
+        color: #fff;
+        padding: 13px 30px;
+        text-decoration: none;
+        border-radius: 10px;
+        font-size: 1.08em;
+        font-weight: 700;
+        margin: 0 6px;">
+    💬 WhatsApp
+  </a>
+</div>
+'''
+    return botones
