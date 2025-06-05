@@ -220,7 +220,123 @@
       "¿Dónde saco turno para atención presencial?"
     ],
     "respuesta": "La municipalidad atiende en [direccion], de lunes a viernes en el horario [horario]. Podés contactarnos por WhatsApp al [telefono], llamar al número oficial o escribirnos desde la web [linkWeb]. Si buscás un área o trámite puntual, decime cuál y te oriento con el canal correcto. ¿Hay algo en particular que quisieras consultar?"
-  }
+  },
+  {
+  "categoria": "arbol_caido",
+  "ejemplos": [
+    "Se cayó un árbol en mi cuadra",
+    "Hay ramas caídas obstruyendo la calle",
+    "¿Dónde denuncio un árbol caído?",
+    "Necesito reclamar por un árbol caído",
+    "¿Pueden venir a retirar un árbol que se cayó?",
+    "Ramas peligrosas tras la tormenta",
+    "¿Qué hago si hay un árbol a punto de caerse?"
+  ],
+  "respuesta": "Si hay un árbol caído o con riesgo de caída, podés registrar tu reclamo desde nuestra web [linkWeb], comunicarte por WhatsApp al [telefono], o llamar directamente al municipio. Un equipo de ambiente o servicios urbanos evaluará la situación. ¿Querés que te ayude a registrar el reclamo ahora?"
+},
+{
+  "categoria": "luminaria",
+  "ejemplos": [
+    "Hay una luminaria rota",
+    "El alumbrado público no funciona",
+    "Quiero reclamar por una luz apagada en la calle",
+    "Foco quemado en la esquina",
+    "No prende la farola de mi vereda",
+    "¿Cómo hago para arreglar una luminaria?"
+  ],
+  "respuesta": "Para reclamos sobre luminarias o alumbrado público, registrá tu reclamo desde la web oficial [linkWeb] o enviá un mensaje de WhatsApp al [telefono] indicando la ubicación exacta. Nuestro equipo de servicios urbanos lo atenderá a la brevedad. ¿Querés que te ayude a registrar el reclamo?"
+},
+{
+  "categoria": "limpieza",
+  "ejemplos": [
+    "La calle está muy sucia",
+    "Falta limpieza en mi barrio",
+    "¿Dónde denuncio acumulación de basura?",
+    "Necesito reclamar por residuos en la vereda",
+    "No pasan a limpiar",
+    "Problemas de limpieza urbana"
+  ],
+  "respuesta": "Los reclamos sobre limpieza o acumulación de residuos pueden hacerse por la web [linkWeb] o vía WhatsApp al [telefono]. Detallá la dirección para una atención más rápida. ¿Querés registrar el reclamo ahora o consultar el cronograma de limpieza?"
+},
+{
+  "categoria": "arreglo_calle",
+  "ejemplos": [
+    "La calle tiene baches",
+    "Necesito reclamar por un bache",
+    "El asfalto está roto",
+    "Arreglo de calle pendiente",
+    "¿Dónde reclamo por la calle en mal estado?",
+    "¿Cómo informo un pozo en la calle?"
+  ],
+  "respuesta": "Podés reclamar por baches, pozos o problemas en la calzada ingresando tu solicitud en [linkWeb] o por WhatsApp al [telefono] con la ubicación exacta. ¿Querés iniciar el reclamo ahora?"
+},
+{
+  "categoria": "agua_rotura_cano",
+  "ejemplos": [
+    "Hay una pérdida de agua",
+    "Se rompió un caño en la calle",
+    "Falta de agua en mi barrio",
+    "¿Dónde reclamo por rotura de caño?",
+    "El agua sale con poca presión",
+    "¿Cómo denuncio una fuga de agua?"
+  ],
+  "respuesta": "Para reclamos de agua o rotura de caños, hacé tu denuncia desde la web [linkWeb] o comunicate al [telefono] detallando dirección y tipo de problema. ¿Te ayudo a registrar el reclamo ahora?"
+},
+{
+  "categoria": "inspeccion_comercio",
+  "ejemplos": [
+    "Solicitar inspección de comercio",
+    "Denunciar un comercio irregular",
+    "¿Cómo pido una inspección municipal?",
+    "Hay un local que no cumple normas",
+    "Necesito inspección de la municipalidad"
+  ],
+  "respuesta": "Para solicitar inspecciones comerciales o denunciar irregularidades, comunicate con el área correspondiente al [telefono] o desde la web [linkWeb]. ¿Querés que te oriente para iniciar el trámite?"
+},
+{
+  "categoria": "rotura_semaforo",
+  "ejemplos": [
+    "El semáforo no funciona",
+    "Quiero denunciar un semáforo roto",
+    "¿Dónde reclamo por el semáforo?",
+    "Semáforo fuera de servicio",
+    "Semáforo apagado"
+  ],
+  "respuesta": "Para reportar un semáforo roto, informá el cruce exacto desde la web [linkWeb] o vía WhatsApp al [telefono]. ¿Te ayudo a iniciar el reclamo ahora?"
+},
+{
+  "categoria": "riego_calle",
+  "ejemplos": [
+    "No pasan a regar la calle",
+    "¿Cuándo riegan mi cuadra?",
+    "Riego de calles faltante",
+    "Solicito riego para mi barrio"
+  ],
+  "respuesta": "Los pedidos de riego de calles pueden solicitarse por la web [linkWeb] o llamando al municipio al [telefono]. ¿Te gustaría registrar la solicitud de riego?"
+},
+{
+  "categoria": "obras_privadas",
+  "ejemplos": [
+    "Necesito trámite de obras privadas",
+    "¿Cómo gestiono una obra privada?",
+    "Trámite de construcción",
+    "Permiso para refacciones",
+    "¿Dónde habilito una obra privada?"
+  ],
+  "respuesta": "Los trámites de obras privadas, permisos de construcción o refacciones se inician presencialmente en el municipio o vía web [linkWeb]. Comunicate para asesoría personalizada al [telefono]. ¿Querés iniciar el trámite?"
+},
+{
+  "categoria": "fumigacion",
+  "ejemplos": [
+    "Solicito fumigación en mi casa",
+    "¿Cómo pido fumigación municipal?",
+    "Problemas con insectos en el barrio",
+    "Fumigación de terrenos baldíos"
+  ],
+  "respuesta": "Las solicitudes de fumigación se reciben por la web [linkWeb] o llamando al [telefono]. Detallá la ubicación para coordinar el servicio. ¿Querés que te ayude con el trámite?"
+}
+
+  
 ]
 
 }
