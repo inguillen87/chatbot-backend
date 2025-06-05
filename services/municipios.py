@@ -1,22 +1,12 @@
 import datetime
 import json
 import random
-import re
 import logging
+import re
 from flask import session as flask_session
 from models import Conversacion, MunicipioTicket, TicketComentario, db
 from services.cohere_ai import get_cohere_response
 from services.logic import reemplazar_placeholders
-
-# Intenta importar los matchers (si no existen, no rompe)
-try:
-    from services.faq_matcher_spacy import buscar_en_faq_spacy
-except ImportError:
-    buscar_en_faq_spacy = None
-try:
-    from services.intent_matcher import buscar_en_intents
-except ImportError:
-    buscar_en_intents = None
 
 NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
 PALABRAS_CLAVE_HUMANO = [
@@ -183,33 +173,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "falta_dato_contacto"}
 
-    # --- 3. FAQ: Primero busca en FAQ semántica
-    if buscar_en_faq_spacy:
-        try:
-            faq = buscar_en_faq_spacy(pregunta, rubro_obj.id)
-            if faq and getattr(faq, 'answer', None):
-                mensaje = reemplazar_placeholders(faq.answer, user_obj)
-                guardar_conversacion(user_id, pregunta, mensaje, "faq", "municipio")
-                session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": mensaje})
-                session.modified = True
-                return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "faq"}
-        except Exception as e:
-            logging.warning(f"FAQ municipio falló: {e}")
-
-    # --- 4. INTENT: Busca en INTENTS por spaCy o similar
-    if buscar_en_intents:
-        try:
-            intent_resp = buscar_en_intents(pregunta, "municipios")
-            if intent_resp:
-                mensaje = reemplazar_placeholders(intent_resp, user_obj)
-                guardar_conversacion(user_id, pregunta, mensaje, "intent", "municipio")
-                session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": mensaje})
-                session.modified = True
-                return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "intent"}
-        except Exception as e:
-            logging.warning(f"Intent municipio falló: {e}")
-
-    # --- 5. CONSULTA ESTADO DE TICKET (igual que antes)
+    # --- 3. CONSULTA DE ESTADO DE TICKET
     ticket_match = re.search(r"(ticket|reclamo)[\s#]*([0-9]{4,7})", pregunta, re.IGNORECASE)
     if ticket_match:
         nro = ticket_match.group(2)
@@ -225,8 +189,13 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         else:
             return {"respuesta": f"No encontramos un ticket con el número {nro}. Revisá que esté bien escrito.", "fuente": "consulta_estado_ticket"}
 
-    # --- 6. PROMPT IA (Cohere, OpenAI, Gemini, lo que tengas)
-    # --- PROMPT DEL SISTEMA (Municipios) ---
+    # --- 4. (ENCHUFE QDRANT/FUTURO DOCS) ---
+    # Si mañana querés buscar info en Qdrant, PDF, Excel, etc, podés hacer:
+    # result_qdrant = buscar_en_qdrant(pregunta, municipio_id=xxx)  # <-- ENCHUFE ACÁ!
+    # if result_qdrant:
+    #     return {"respuesta": result_qdrant, "fuente": "qdrant"}
+
+    # --- 5. LLM (Cohere/GPT/lo que uses)
     prompt_municipio = (
         f"Sos Chatboc, un agente de atención ciudadana para el municipio de {nombre_municipio}, ubicado en {direccion_completa}. "
         f"Tu función es resolver consultas, reclamos y trámites de vecinos de forma amable, clara y eficiente, como un agente municipal real. "
@@ -275,6 +244,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
                 "link_web": web_oficial,
                 "direccion": direccion_completa,
                 "horario": horarios_para_prompt
+                # Más campos: barrios, zonas, PDF procesados, etc. cuando los tengas
             }
         )
         respuesta_llm = reemplazar_placeholders(respuesta_llm, user_obj)
@@ -282,7 +252,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
             raise Exception("La IA no devolvió respuesta válida.")
     except Exception as e:
         logging.exception("Error en LLM municipio: %s", e)
-        # --- Deriva a humano y crea ticket SOLO si todo lo anterior falla ---
         ticket = buscar_ticket_activo(user_id)
         if not ticket:
             ticket = guardar_ticket(pregunta, user_id, estado="derivado")
@@ -300,7 +269,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "derivar_humano_auto"}
 
-    # --- fuera del except, y fuera del try ---
     guardar_conversacion(user_id, pregunta, respuesta_llm, "cohere", "municipio")
     session[NOMBRE_HISTORIAL_SESION].extend([
         {"role": "user", "content": pregunta},
