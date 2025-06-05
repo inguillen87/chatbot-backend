@@ -110,6 +110,7 @@ def create_app(config_class=Config):
     app.register_blueprint(ticket_bp)
 
 
+
     for bp_name_key in app.blueprints:
         app_module_logger.info(f"Blueprint '{bp_name_key}' registrado.")
         
