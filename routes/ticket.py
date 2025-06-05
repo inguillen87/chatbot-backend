@@ -149,31 +149,44 @@ def agregar_comentario(tipo_ticket, ticket_id):
     db.session.commit()
     return jsonify({"ok": True, "comentario": nuevo_com.id}), 201
 
-# Listar comentarios (solo admin o vecino)
 @ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['GET'])
 def listar_comentarios(tipo_ticket, ticket_id):
     user_id = request.args.get("user_id", type=int)
     if tipo_ticket not in ("municipio", "pyme"):
         return jsonify({"ok": False, "error": "Tipo de ticket inválido"}), 400
+
     ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
     if not ticket:
         return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
     if ticket.user_id != user_id:
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
-    comentarios = TicketComentario.query.filter_by(ticket_id=ticket_id, tipo_ticket=tipo_ticket).order_by(TicketComentario.fecha.asc()).all()
-    data = [
-        {
-            "id": c.id,
-            "comentario": getattr(c, "comentario", getattr(c, "mensaje", "")),
-            "fecha": c.fecha.isoformat() if c.fecha else None,
-            "user_id": c.user_id,
-            "telefono": c.telefono,
-            "email": c.email,
-            "dni": c.dni,
-            "estado_cliente": c.estado_cliente,
-            "es_admin": getattr(c, "es_admin", False),
-        }
-        for c in comentarios
-    ]
-    return jsonify({"ok": True, "comentarios": data})
+    try:
+        # Consulta robusta y clara
+        comentarios = (
+            TicketComentario.query
+            .filter_by(ticket_id=ticket_id, tipo_ticket=tipo_ticket)
+            .order_by(TicketComentario.fecha.asc())
+            .all()
+        )
+
+        data = [
+            {
+                "id": c.id,
+                "comentario": getattr(c, "comentario", getattr(c, "mensaje", "")),
+                "fecha": c.fecha.isoformat() if c.fecha else None,
+                "user_id": c.user_id,
+                "telefono": c.telefono,
+                "email": c.email,
+                "dni": c.dni,
+                "estado_cliente": c.estado_cliente,
+                "es_admin": getattr(c, "es_admin", False),
+            }
+            for c in comentarios
+        ]
+        return jsonify({"ok": True, "comentarios": data})
+
+    except Exception as e:
+        # Logueá el error en consola para debug
+        import traceback; traceback.print_exc()
+        return jsonify({"ok": False, "error": f"Error interno: {e}"}), 500
