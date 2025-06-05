@@ -33,7 +33,11 @@ def ask():
             return jsonify({"error": "Falta la pregunta"}), 400
 
         logger.info(f"Procesando /ask para pregunta: '{pregunta[:50]}...' (Token presente: {'Sí' if token else 'No'})")
-        resultado = responder_chatboc(pregunta, token, rubro_nombre_frontend=rubro_nombre)
+        # 1. Traé el rubro_obj real antes de llamar a responder_chatboc
+        rubro_obj = Rubro.query.filter_by(nombre=rubro_nombre).first() if rubro_nombre else None
+
+        # 2. Llamá correctamente a la función
+        resultado = responder_chatboc(pregunta, token, rubro_nombre_frontend=rubro_nombre, rubro_obj=rubro_obj)
         return jsonify(resultado), 200
 
     except Exception as e:
