@@ -23,6 +23,38 @@ class GenericAnonUser(_BaseAnonUser):
     def __init__(self):
         super().__init__(); self.plan = "anonimo_general"; self.preguntas_usadas = session.get("generic_anon_preguntas", 0); self.limite_preguntas = 5
 # --- Fin Clases Anónimas ---
+MAX_HISTORIAL_CHAT = 12  # Solo guarda los últimos 12 mensajes de la sesión
+
+def guardar_conversacion_y_contador(user_obj, pregunta, respuesta, fuente, rubro_nombre_final):
+    """Guarda la conversación y suma pregunta al contador de usuario."""
+    if not user_obj or not hasattr(user_obj, "id") or not user_obj.id:
+        return
+    try:
+        db_user_to_update = db.session.get(User, user_obj.id)
+        if db_user_to_update:
+            db_user_to_update.preguntas_usadas = (db_user_to_update.preguntas_usadas or 0) + 1
+            db.session.add(Conversacion(
+                user_id=user_obj.id,
+                pregunta=pregunta,
+                respuesta=respuesta,
+                fuente=fuente,
+                rubro=rubro_nombre_final
+            ))
+            db.session.commit()
+            logger.info(f"[LOGIC] Conversación y contador actualizados para user {user_obj.id}.")
+    except Exception as e_db:
+        logger.error(f"[LOGIC] Error guardando conversación: {e_db}", exc_info=True)
+        db.session.rollback()
+
+def limpiar_historial_sesion(nombre_historial='historial_chat_cliente'):
+    """Mantiene el historial de la sesión con máximo X mensajes."""
+    try:
+        if len(session[nombre_historial]) > MAX_HISTORIAL_CHAT:
+            session[nombre_historial] = session[nombre_historial][-MAX_HISTORIAL_CHAT:]
+            session.modified = True
+            logger.debug(f"[LOGIC] Historial cortado a {MAX_HISTORIAL_CHAT} mensajes.")
+    except Exception as e:
+        logger.warning(f"[LOGIC] Error limpiando historial: {e}")
 
 def detectar_objecion(pregunta: str) -> Optional[str]:
     objeciones_precio = ["caro", "muy caro", "más barato", "barato", "precio alto", "está elevado", "no tengo tanto presupuesto"]
@@ -435,21 +467,20 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
             respuesta_para_frontend += boton_wsp_html
             logger.info(f"[LOGIC] Botón de WhatsApp añadido. Mensaje predefinido (parcial): {mensaje_whatsapp_predefinido[:70]}...")
 
-    if respuesta_final_procesada and respuesta_final_procesada.strip(): 
-        session[NOMBRE_HISTORIAL_SESION].extend([{"role": "user", "content": pregunta}, {"role": "assistant", "content": respuesta_final_procesada}])
-        session.modified = True; logger.info(f"[LOGIC] Historial actualizado. Tamaño: {len(session[NOMBRE_HISTORIAL_SESION])}")
+    if respuesta_final_procesada and respuesta_final_procesada.strip():
+        session[NOMBRE_HISTORIAL_SESION].extend([
+            {"role": "user", "content": pregunta},
+            {"role": "assistant", "content": respuesta_final_procesada}
+        ])
+        limpiar_historial_sesion(NOMBRE_HISTORIAL_SESION)
+        session.modified = True
         if is_usuario_registrado_real and user_obj.id:
-            try:
-                db_user_to_update = db.session.get(User, user_obj.id)
-                if db_user_to_update:
-                    db_user_to_update.preguntas_usadas = (db_user_to_update.preguntas_usadas or 0) + 1
-                    db.session.add(Conversacion(user_id=user_obj.id, pregunta=pregunta, respuesta=respuesta_final_procesada, fuente=fuente_respuesta, rubro=rubro_nombre_final))
-                    db.session.commit()
-                    logger.info(f"[LOGIC] Conversación y contador de preguntas guardado para user {user_obj.id}.")
-            except Exception as e_db: logger.error(f"[LOGIC] Error guardando conversación: {e_db}", exc_info=True); db.session.rollback()
-        
+            guardar_conversacion_y_contador(
+                user_obj, pregunta, respuesta_final_procesada, fuente_respuesta, rubro_nombre_final
+            )
         logger.info(f"✅ [LOGIC] Respuesta final (fuente: {fuente_respuesta}): '{respuesta_para_frontend[:100]}...'")
         return {"respuesta": respuesta_para_frontend, "nivel_usado": rubro_nombre_final, "fuente": fuente_respuesta}
+
     else: 
         logger.info("[LOGIC] Fallback final definitivo: Todos los sistemas no dieron respuesta útil. Usando sugerencias.")
         sugs = sugerencias_por_rubro(rubro_id_final)
@@ -467,7 +498,9 @@ def responder_chatboc(pregunta: str, token: str | None, rubro_nombre_frontend: s
   También puedes <a href="{link_abs_sug}" target="_blank" style="color: #2980f3; text-decoration: underline; font-weight: 600;">visitar nuestra tienda online</a>.
 </div>
 ''')
-        session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta}); session.modified = True
+        session[NOMBRE_HISTORIAL_SESION].append({"role": "user", "content": pregunta})
+        limpiar_historial_sesion(NOMBRE_HISTORIAL_SESION)
+        session.modified = True
         logger.info(f"[LOGIC] Enviando fallback con sugerencias: '{resp_final_sug[:100]}...'")
         return {"respuesta": resp_final_sug, "fuente": "sugerencia_sistema"}
 # --- FIN DE responder_chatboc ---
