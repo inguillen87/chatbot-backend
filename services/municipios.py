@@ -15,44 +15,20 @@ PALABRAS_CLAVE_HUMANO = [
 ]
 
 def render_botones_municipio(web_oficial, telefono_wsp, pregunta):
+    estilo_btn = (
+        "display:inline-block;background:#2980f3;color:#fff;padding:6px 14px;"
+        "text-decoration:none;border-radius:5px;font-size:0.95em;font-weight:500;margin:0 2px;"
+    )
     botones = ""
     if web_oficial:
-        botones += f'''
-<div style="margin-top: 14px; text-align: center;">
-  <a href="{web_oficial}" target="_blank" style="
-        display: inline-block;
-        background: #2980f3;
-        color: #fff;
-        padding: 13px 30px;
-        text-decoration: none;
-        border-radius: 10px;
-        font-size: 1.08em;
-        font-weight: 700;
-        margin: 0 6px;">
-    🌐 Web Oficial
-  </a>
-</div>
-'''
+        botones += f'<a href="{web_oficial}" target="_blank" style="{estilo_btn}">🌐 Web</a>'
     if telefono_wsp and len(str(telefono_wsp)) >= 9:
         from urllib.parse import quote
         msg = quote(f"Hola, tengo una consulta sobre: '{pregunta}'")
-        botones += f'''
-<div style="margin-top: 10px; text-align: center;">
-  <a href="https://wa.me/{telefono_wsp}?text={msg}" target="_blank" style="
-        display: inline-block;
-        background: #25d366;
-        color: #fff;
-        padding: 13px 30px;
-        text-decoration: none;
-        border-radius: 10px;
-        font-size: 1.08em;
-        font-weight: 700;
-        margin: 0 6px;">
-    💬 WhatsApp
-  </a>
-</div>
-'''
-    return botones
+        botones += f'<a href="https://wa.me/{telefono_wsp}?text={msg}" target="_blank" style="{estilo_btn.replace("#2980f3","#25d366")}">💬 WhatsApp</a>'
+    if botones:
+        return f'<div style="margin-top:7px;text-align:center;">{botones}</div>'
+    return ""
 
 def detectar_palabra_humano(texto):
     texto = texto.lower()
@@ -142,10 +118,9 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
     mensajes_previos = session[NOMBRE_HISTORIAL_SESION][-8:]
     user_id = user_obj.id if user_obj else None
 
-    # --- DATOS MUNICIPIO (siempre arriba)
     nombre_municipio, telefono, telefono_wsp, web_oficial, direccion_completa, horarios_para_prompt = get_datos_municipio(user_obj, rubro_obj)
 
-    # --- 1. DERIVAR A HUMANO
+    # --- 1. DERIVACIÓN A HUMANO (con botones)
     if detectar_palabra_humano(pregunta):
         ticket = buscar_ticket_activo(user_id)
         if not ticket:
@@ -164,7 +139,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "derivar_humano"}
 
-    # --- 2. DATOS DE CONTACTO FALTANTES
+    # --- 2. DATOS DE CONTACTO FALTANTES (con botones)
     faltantes = datos_faltantes_usuario(user_obj)
     if faltantes:
         mensaje = "Antes de continuar, por favor brindá tu " + " y ".join(faltantes) + " para que podamos ayudarte mejor."
@@ -173,7 +148,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "falta_dato_contacto"}
 
-    # --- 3. CONSULTA DE ESTADO DE TICKET
+    # --- 3. CONSULTA DE ESTADO DE TICKET (sin botones)
     ticket_match = re.search(r"(ticket|reclamo)[\s#]*([0-9]{4,7})", pregunta, re.IGNORECASE)
     if ticket_match:
         nro = ticket_match.group(2)
@@ -189,13 +164,12 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         else:
             return {"respuesta": f"No encontramos un ticket con el número {nro}. Revisá que esté bien escrito.", "fuente": "consulta_estado_ticket"}
 
-    # --- 4. (ENCHUFE QDRANT/FUTURO DOCS) ---
-    # Si mañana querés buscar info en Qdrant, PDF, Excel, etc, podés hacer:
-    # result_qdrant = buscar_en_qdrant(pregunta, municipio_id=xxx)  # <-- ENCHUFE ACÁ!
+    # --- 4. QDRANT, DOCS, ETC (future enchufe)
+    # result_qdrant = buscar_en_qdrant(pregunta, municipio_id=xxx)
     # if result_qdrant:
     #     return {"respuesta": result_qdrant, "fuente": "qdrant"}
 
-    # --- 5. LLM (Cohere/GPT/lo que uses)
+    # --- 5. LLM (Cohere/GPT) SOLO TEXTO. NO BOTONES.
     prompt_municipio = (
         f"Sos Chatboc, un agente de atención ciudadana para el municipio de {nombre_municipio}, ubicado en {direccion_completa}. "
         f"Tu función es resolver consultas, reclamos y trámites de vecinos de forma amable, clara y eficiente, como un agente municipal real. "
@@ -244,7 +218,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
                 "link_web": web_oficial,
                 "direccion": direccion_completa,
                 "horario": horarios_para_prompt
-                # Más campos: barrios, zonas, PDF procesados, etc. cuando los tengas
             }
         )
         respuesta_llm = reemplazar_placeholders(respuesta_llm, user_obj)
@@ -277,6 +250,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
     session.modified = True
 
     return {
-        "respuesta": respuesta_llm + render_botones_municipio(web_oficial, telefono_wsp, pregunta),
+        "respuesta": respuesta_llm,  # SOLO TEXTO, sin botones salvo casos de arriba
         "fuente": "cohere"
     }
