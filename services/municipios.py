@@ -261,3 +261,21 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         "respuesta": respuesta_llm + render_botones_municipio(web_oficial, telefono_wsp, pregunta),
         "fuente": "cohere"
     }
+# services/municipios.py
+
+from models import MunicipioTicket
+
+def buscar_estado_ticket(nro_ticket, user_id=None):
+    # Buscar por número de ticket, opcionalmente filtrar por usuario
+    q = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket)
+    if user_id:
+        q = q.filter_by(user_id=user_id)
+    ticket = q.first()
+    if not ticket:
+        return None
+    return {
+        "estado": ticket.estado,
+        "pregunta": ticket.pregunta,
+        "fecha": ticket.fecha,
+        "nro_ticket": ticket.nro_ticket,
+    }
