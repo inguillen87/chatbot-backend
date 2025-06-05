@@ -9,6 +9,7 @@ from services.cohere_ai import get_cohere_response
 from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro  # <--- AGREGADO
 
+fuente = "desconocida"
 NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
 PALABRAS_CLAVE_HUMANO = [
     "representante", "humano", "persona", "agente", "encargado",
