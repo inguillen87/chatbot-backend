@@ -7,11 +7,7 @@ import json
 import urllib.parse
 from flask import session as flask_session
 from models import Conversacion, User, Rubro, Sugerencia, db
-from services.utils import (
-    reemplazar_placeholders,
-    formatear_numero_whatsapp_simple,
-    sugerencias_por_rubro
-)
+from services.utils_placeholders import reemplazar_placeholders
 
 logger = logging.getLogger(__name__)
 
