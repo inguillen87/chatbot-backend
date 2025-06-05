@@ -161,7 +161,7 @@ def listar_comentarios(tipo_ticket, ticket_id):
     if ticket.user_id != user_id:
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
-    comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+    comentarios = TicketComentario.query.filter_by(ticket_id=ticket_id, tipo_ticket=tipo_ticket).order_by(TicketComentario.fecha.asc()).all()
     data = [
         {
             "id": c.id,
