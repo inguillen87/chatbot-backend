@@ -76,3 +76,47 @@ def extraer_unidades_y_tipos_precio(texto_linea: str, pyme_rubro_nombre: str = "
             if re.search(r'\b' + re.escape(kw.replace("?", "\\w?")) + r'\b', texto_linea_lower): tipo_precio = tipo; break
         if tipo_precio: break
     return unidad, tipo_precio
+
+def sugerencias_por_rubro(rubro):
+    """
+    Devuelve una lista de sugerencias de preguntas para el rubro desde /data/sugerencias.json.
+    - rubro puede ser nombre (str) o id (int).
+    - Si no encuentra, devuelve sugerencias genéricas.
+    """
+    # Ubicación absoluta (ajustá si tu path de proyecto es distinto)
+    SUGERENCIAS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'sugerencias.json')
+    try:
+        with open(SUGERENCIAS_PATH, encoding='utf-8') as f:
+            sugerencias_data = json.load(f)
+    except Exception as e:
+        logging.warning(f"[PYMES] No se pudo leer sugerencias.json: {e}")
+        sugerencias_data = {}
+
+    # Detección de nombre de rubro
+    rubro_nombre = None
+    if isinstance(rubro, str):
+        rubro_nombre = rubro.lower().replace(" ", "_")
+    elif hasattr(rubro, 'nombre'):
+        rubro_nombre = str(rubro.nombre).lower().replace(" ", "_")
+    elif isinstance(rubro, int):
+        # Mapeo simple (completar con tus IDs si tenés otra lógica)
+        id_map = {
+            1: "bodega",
+            2: "almacen",
+            3: "medico",
+            4: "local_comercial",
+            5: "municipios",
+        }
+        rubro_nombre = id_map.get(rubro)
+    if not rubro_nombre:
+        rubro_nombre = "bodega"  # Fallback seguro
+
+    sugerencias = sugerencias_data.get(rubro_nombre, [])
+    if not sugerencias:
+        # Devuelve unas sugerencias por defecto si no hay
+        sugerencias = [
+            "Consultá nuestro catálogo",
+            "Contactá a un asesor",
+            "Visitá nuestra web para más info"
+        ]
+    return sugerencias

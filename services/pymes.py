@@ -9,6 +9,7 @@ import urllib.parse
 from flask import session as flask_session
 from models import Conversacion, User, Rubro, Sugerencia, db
 from services.utils_placeholders import reemplazar_placeholders
+from services.utils import sugerencias_por_rubro
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +126,20 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
         except Exception as e:
             logger.warning(f"[PYMES] Error en Intents: {e}")
 
-    # --- Fallback: sugerencias
+        # --- Fallback: sugerencias
     if not respuesta_llm:
-        sugs = sugerencias_por_rubro(getattr(rubro_obj, "id", 1))
+        # Detectar rubro
+        rubro_nombre = None
+        if rubro_obj and hasattr(rubro_obj, "nombre"):
+            rubro_nombre = rubro_obj.nombre.lower().replace(" ", "_")
+        elif isinstance(rubro_obj, str):
+            rubro_nombre = rubro_obj.lower().replace(" ", "_")
+        elif isinstance(rubro_obj, int):
+            rubro_nombre = rubro_obj
+        else:
+            rubro_nombre = "bodega"  # O el default que prefieras
+
+        sugs = sugerencias_por_rubro(rubro_nombre)
         respuesta_llm = "No encontré una respuesta directa. Probá con: " + " · ".join(f"“{s}”" for s in sugs if s)
         fuente = "sugerencia_sistema"
 
@@ -148,48 +160,4 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
         "respuesta": respuesta_llm,
         "fuente": fuente
     }
-import os
 
-def sugerencias_por_rubro(rubro):
-    """
-    Devuelve una lista de sugerencias de preguntas para el rubro desde /data/sugerencias.json.
-    - rubro puede ser nombre (str) o id (int).
-    - Si no encuentra, devuelve sugerencias genéricas.
-    """
-    # Ubicación absoluta (ajustá si tu path de proyecto es distinto)
-    SUGERENCIAS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'sugerencias.json')
-    try:
-        with open(SUGERENCIAS_PATH, encoding='utf-8') as f:
-            sugerencias_data = json.load(f)
-    except Exception as e:
-        logging.warning(f"[PYMES] No se pudo leer sugerencias.json: {e}")
-        sugerencias_data = {}
-
-    # Detección de nombre de rubro
-    rubro_nombre = None
-    if isinstance(rubro, str):
-        rubro_nombre = rubro.lower().replace(" ", "_")
-    elif hasattr(rubro, 'nombre'):
-        rubro_nombre = str(rubro.nombre).lower().replace(" ", "_")
-    elif isinstance(rubro, int):
-        # Mapeo simple (completar con tus IDs si tenés otra lógica)
-        id_map = {
-            1: "bodega",
-            2: "almacen",
-            3: "medico",
-            4: "local_comercial",
-            5: "municipios",
-        }
-        rubro_nombre = id_map.get(rubro)
-    if not rubro_nombre:
-        rubro_nombre = "bodega"  # Fallback seguro
-
-    sugerencias = sugerencias_data.get(rubro_nombre, [])
-    if not sugerencias:
-        # Devuelve unas sugerencias por defecto si no hay
-        sugerencias = [
-            "Consultá nuestro catálogo",
-            "Contactá a un asesor",
-            "Visitá nuestra web para más info"
-        ]
-    return sugerencias

@@ -6,7 +6,8 @@ import re
 from flask import session as flask_session
 from models import Conversacion, MunicipioTicket, TicketComentario, db
 from services.cohere_ai import get_cohere_response
-from services.logic import reemplazar_placeholders
+from services.utils_placeholders import reemplazar_placeholders
+from services.utils import sugerencias_por_rubro  # <--- AGREGADO
 
 NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
 PALABRAS_CLAVE_HUMANO = [
@@ -255,6 +256,12 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": mensaje})
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "derivar_humano_auto"}
+
+    # --- Fallback: sugerencias por rubro "municipios"
+    if not respuesta_llm:
+        sugs = sugerencias_por_rubro("municipios")
+        respuesta_llm = "No encontré una respuesta directa. Probá con: " + " · ".join(f"“{s}”" for s in sugs if s)
+        fuente = "sugerencia_sistema"
 
     guardar_conversacion(user_id, pregunta, respuesta_llm, "cohere", "municipio")
     session[NOMBRE_HISTORIAL_SESION].extend([
