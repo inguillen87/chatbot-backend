@@ -222,19 +222,21 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
     prompt_llm += f"\n- Vecino: {pregunta}\n- Agente:"
 
     try:
+        rubro_id = getattr(rubro_obj, "id", 5)  # Usa 5 como ID por defecto para 'municipios' si no viene nada
         respuesta_llm = get_cohere_response(
-            message=pregunta,
-            chat_history=[{"role": m.get("role", "user"), "message": m.get("content", "")} for m in mensajes_previos],
-            preamble=prompt_llm,
-            rubro_id=rubro_obj.id,
-            user_context={
-                "nombre_empresa": nombre_municipio,
-                "telefono": telefono,
-                "link_web": web_oficial,
-                "direccion": direccion_completa,
-                "horario": horarios_para_prompt
-            }
-        )
+    message=pregunta,
+    chat_history=[{"role": m.get("role", "user"), "message": m.get("content", "")} for m in mensajes_previos],
+    preamble=prompt_llm,
+    rubro_id=rubro_id,
+    user_context={
+    "nombre_empresa": nombre_municipio,
+    "telefono": telefono,
+    "link_web": web_oficial,
+    "direccion": direccion_completa,
+    "horario": horarios_para_prompt
+}
+)
+
         respuesta_llm = reemplazar_placeholders(respuesta_llm, user_obj)
         if not respuesta_llm or "no puedo responder" in respuesta_llm.lower():
             raise Exception("La IA no devolvió respuesta válida.")
@@ -257,13 +259,13 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "derivar_humano_auto"}
 
-    # --- Fallback: sugerencias por rubro "municipios"
+     # --- Fallback: sugerencias por rubro "municipios"
     if not respuesta_llm:
         sugs = sugerencias_por_rubro("municipios")
         respuesta_llm = "No encontré una respuesta directa. Probá con: " + " · ".join(f"“{s}”" for s in sugs if s)
         fuente = "sugerencia_sistema"
 
-    guardar_conversacion(user_id, pregunta, respuesta_llm, "cohere", "municipio")
+    guardar_conversacion(user_id, pregunta, respuesta_llm, fuente, "municipio")
     session[NOMBRE_HISTORIAL_SESION].extend([
         {"role": "user", "content": pregunta},
         {"role": "assistant", "content": respuesta_llm}
@@ -272,5 +274,5 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
 
     return {
         "respuesta": respuesta_llm,
-        "fuente": "cohere"
+        "fuente": fuente
     }
