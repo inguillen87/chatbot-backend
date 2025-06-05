@@ -200,7 +200,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
 
     # 5. Si nada de lo anterior, usa Cohere/GPT para responder preguntas generales
     prompt_municipio = (
-        f"Sos Chatboc, un agente de atención ciudadana para el municipio de {nombre_municipio}, ubicado en {direccion_completa}. "
+        f"Chatboc, un agente de atención ciudadana para el municipio de {nombre_municipio}, ubicado en {direccion_completa}. "
         f"Tu función es resolver consultas, reclamos y trámites de vecinos de forma amable, clara y eficiente, como un agente municipal real. "
         "Tu objetivo es responder con información precisa y llevar al vecino a la acción concreta que necesita (registrar un reclamo, iniciar un trámite, consultar estado, etc.), en el menor número de intercambios posible (idealmente 2-3). "
         f"Ya tuviste {len(mensajes_previos)} intercambios en esta sesión, usá el historial de conversación para no repetir datos y mantener coherencia. "
