@@ -112,6 +112,23 @@ def get_datos_municipio(user_obj, rubro_obj):
         pass
     return nombre_municipio, telefono, telefono_wsp, web_oficial, direccion_completa, horarios_para_prompt
 
+def es_reclamo_municipal(pregunta):
+    palabras_reclamo = [
+        "basura", "residuos", "luminaria", "luz", "foco", "bache", "calle", "agua",
+        "riego", "árbol", "arbol", "semáforo", "semáforo", "pozo", "acumulación"
+    ]
+    return any(p in pregunta.lower() for p in palabras_reclamo)
+
+def datos_faltantes_para_ticket(user_obj):
+    faltan = []
+    if not getattr(user_obj, "direccion", None) or not user_obj.direccion.strip():
+        faltan.append("dirección")
+    if not user_obj.telefono or not user_obj.telefono.strip():
+        faltan.append("teléfono")
+    if not user_obj.email or not user_obj.email.strip():
+        faltan.append("email")
+    return faltan
+
 def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
     session = session_obj if session_obj is not None else flask_session
     session.setdefault(NOMBRE_HISTORIAL_SESION, [])
@@ -120,7 +137,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
 
     nombre_municipio, telefono, telefono_wsp, web_oficial, direccion_completa, horarios_para_prompt = get_datos_municipio(user_obj, rubro_obj)
 
-    # --- 1. DERIVACIÓN A HUMANO (con botones)
+    # 1. Derivación a humano (igual que antes)
     if detectar_palabra_humano(pregunta):
         ticket = buscar_ticket_activo(user_id)
         if not ticket:
@@ -139,16 +156,16 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "derivar_humano"}
 
-    # --- 2. DATOS DE CONTACTO FALTANTES (con botones)
-    faltantes = datos_faltantes_usuario(user_obj)
+    # 2. Datos de contacto faltantes
+    faltantes = datos_faltantes_para_ticket(user_obj)
     if faltantes:
-        mensaje = "Antes de continuar, por favor brindá tu " + " y ".join(faltantes) + " para que podamos ayudarte mejor."
+        mensaje = "Para registrar tu reclamo necesito tu " + " y ".join(faltantes) + ". Por favor, completá esos datos y volvé a consultar."
         guardar_conversacion(user_id, pregunta, mensaje, "falta_dato_contacto", "municipio")
         session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": mensaje})
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": "falta_dato_contacto"}
 
-    # --- 3. CONSULTA DE ESTADO DE TICKET (sin botones)
+    # 3. Consulta estado de ticket
     ticket_match = re.search(r"(ticket|reclamo)[\s#]*([0-9]{4,7})", pregunta, re.IGNORECASE)
     if ticket_match:
         nro = ticket_match.group(2)
@@ -164,12 +181,23 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         else:
             return {"respuesta": f"No encontramos un ticket con el número {nro}. Revisá que esté bien escrito.", "fuente": "consulta_estado_ticket"}
 
-    # --- 4. QDRANT, DOCS, ETC (future enchufe)
-    # result_qdrant = buscar_en_qdrant(pregunta, municipio_id=xxx)
-    # if result_qdrant:
-    #     return {"respuesta": result_qdrant, "fuente": "qdrant"}
+    # 🚨 4. Si es un reclamo municipal típico, lo guarda como ticket automático
+    if es_reclamo_municipal(pregunta):
+        ticket = buscar_ticket_activo(user_id)
+        if not ticket:
+            ticket = guardar_ticket(pregunta, user_id, estado="nuevo")
+        guardar_comentario(ticket.id, user_id, pregunta)
+        respuesta = (
+            f"Listo, tu reclamo fue registrado con el número {ticket.nro_ticket}. "
+            "Vas a recibir novedades cuando el equipo municipal lo procese. "
+            "¿Querés agregar algún comentario o detalle más?"
+        )
+        guardar_conversacion(user_id, pregunta, respuesta, "registro_reclamo", "municipio")
+        session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": respuesta})
+        session.modified = True
+        return {"respuesta": respuesta, "fuente": "registro_reclamo"}
 
-    # --- 5. LLM (Cohere/GPT) SOLO TEXTO. NO BOTONES.
+    # 5. Si nada de lo anterior, usa Cohere/GPT para responder preguntas generales
     prompt_municipio = (
         f"Sos Chatboc, un agente de atención ciudadana para el municipio de {nombre_municipio}, ubicado en {direccion_completa}. "
         f"Tu función es resolver consultas, reclamos y trámites de vecinos de forma amable, clara y eficiente, como un agente municipal real. "
@@ -178,27 +206,13 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         "Siempre que la consulta corresponda a un reclamo (luminaria, árbol caído, basura, semáforo, etc.), ofrece iniciar el trámite/ticket automáticamente y da el número de seguimiento si aplica. "
         "No te presentes como asistente virtual ni como bot ni digas que sos inteligencia artificial. Eres un agente municipal real. "
         "Si el vecino pregunta algo confuso, poco claro, irrelevante o fuera de competencia municipal, responde amable pero firme y reorienta la consulta a temas de servicios municipales o trámites. "
-        "Si se detectan palabras clave de 'quiero hablar con humano', 'agente', o se repite la consulta varias veces sin solución, deriva al representante municipal y explica el proceso (vas a ser contactado por el equipo real, etc). "
         "Nunca inventes información: si no disponés del dato, orienta al vecino a consultar la web oficial, WhatsApp, o llamar al teléfono de contacto."
         "\n\nINFORMACIÓN DEL MUNICIPIO PARA RESPONDER:"
         f"\n- Teléfono: {telefono}"
         f"\n- Dirección: {direccion_completa}"
         f"\n- Horario de atención: {horarios_para_prompt}"
         f"\n- Web oficial: {web_oficial}"
-        "\nINSTRUCCIONES DE RESPUESTA:"
-        "\n1. Saludo inicial: Si el mensaje es un saludo y es la primera interacción, responde con cordialidad e invita a consultar por trámites o servicios."
-        "\n2. Reclamos y Servicios Urbanos: Si el mensaje menciona luminarias, baches, residuos, árboles, semáforos, riego, agua, limpieza, etc., ofrece registrar el reclamo y explica cómo se hace (o hacelo automático si ya tenés ticket)."
-        "\n3. Consultas por trámites: Brinda la información de requisitos, documentación, horarios y cómo iniciar el trámite, usando los datos del municipio."
-        "\n4. Consultas de estado de reclamo/ticket: Si se menciona un número de ticket, responde con el estado (si lo tenés), o explica cómo consultar su estado."
-        "\n5. Preguntas no municipales: Si preguntan sobre temas fuera del municipio (ej. policía, ANSES, hospitales provinciales), responde que esa información corresponde a otro organismo y sugiere contacto oficial."
-        "\n6. Datos faltantes: Si para avanzar necesitás un dato (ej. teléfono, dirección), pedilo claramente antes de continuar."
-        "\n7. Derivación a humano: Si corresponde, informa que será contactado por un representante municipal real."
-        "\n8. Preguntas confusas/spam: Si no entendés la consulta, responde: 'No entendí bien tu consulta. ¿Podés aclararme qué trámite, servicio o reclamo necesitás hacer?'."
-        "\n9. Cierre: Termina siempre preguntando si necesita ayuda con algo más o quiere iniciar otro trámite."
         "\n---"
-        "\nRecordá usar la información del municipio (teléfono, dirección, horarios, web) en tus respuestas cuando sea relevante."
-        "\nNunca repitas la misma información dos veces en la misma sesión salvo que el vecino lo pida explícitamente."
-        "\nNunca respondas con frases tipo 'como soy una IA', 'no soy humano', 'no tengo información', sino que orientá o derivá a los canales oficiales si te quedás sin respuesta."
     )
 
     prompt_llm = prompt_municipio
@@ -250,6 +264,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
     session.modified = True
 
     return {
-        "respuesta": respuesta_llm,  # SOLO TEXTO, sin botones salvo casos de arriba
+        "respuesta": respuesta_llm,
         "fuente": "cohere"
     }
