@@ -72,9 +72,7 @@ def login():
 # Tu ruta /me ya está bien, porque recibe el 'user' del decorador.
 @auth_bp.route('/me', methods=['GET'])
 @token_requerido
-def get_current_user(user): # user es inyectado por @token_requerido
-    # Tu código actual para serializar la respuesta del usuario es bueno.
-    # Lo puedes mantener como está.
+def get_current_user(user):
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
     return jsonify({
         "id": user.id,
@@ -82,15 +80,73 @@ def get_current_user(user): # user es inyectado por @token_requerido
         "name": user.name,
         "token": user.token,
         "rubro": rubro_nombre,
-        # ... todos los demás campos del perfil
         "nombre_empresa": user.nombre_empresa,
         "telefono": user.telefono,
         "direccion": user.direccion,
-        # etc.
+        "ciudad": user.ciudad,
+        "provincia": user.provincia,
+        "pais": user.pais,
+        "latitud": user.latitud,
+        "longitud": user.longitud,
+        "link_web": user.link_web,
+        "plan": user.plan,
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas,
+        "horario_json": user.horario_json,
+        "logo_url": getattr(user, "logo_url", ""),
+        # Agrega más si tenés nuevos campos
     })
 
-# Tu código para /register y /perfil [PUT] también está bien,
-# ya que usa el decorador @token_requerido de la misma forma.
-# Puedes mantenerlos como están.
 
-# ... (Pega aquí tus rutas de /register, /perfil, /debug/users etc. sin cambios) ...
+@auth_bp.route('/perfil', methods=['PUT'])
+@token_requerido
+def actualizar_perfil(user):
+    data = request.get_json()
+    # Actualizá TODOS los campos relevantes
+    user.nombre_empresa = data.get("nombre_empresa", user.nombre_empresa)
+    user.telefono = data.get("telefono", user.telefono)
+    user.direccion = data.get("direccion", user.direccion)
+    user.ciudad = data.get("ciudad", user.ciudad)
+    user.provincia = data.get("provincia", user.provincia)
+    user.pais = data.get("pais", user.pais)
+    user.latitud = data.get("latitud", user.latitud)
+    user.longitud = data.get("longitud", user.longitud)
+    user.link_web = data.get("link_web", user.link_web)
+    user.logo_url = data.get("logo_url", getattr(user, "logo_url", ""))
+    if "horario_json" in data:
+        user.horario = data["horario_json"]
+    db.session.commit()
+    return jsonify({"mensaje": "Perfil actualizado correctamente."})
+
+@auth_bp.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    email = data.get("email", "").strip().lower()
+    password = data.get("password")
+    name = data.get("name", "")
+    # Agregá los campos que quieras capturar en el registro
+
+    if not email or not password or not name:
+        return jsonify({"error": "Faltan datos"}), 400
+
+    # Chequea si ya existe el mail
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error": "El email ya está registrado"}), 409
+
+    user = User(
+        email=email,
+        name=name,
+        token=str(uuid.uuid4()),  # o tu método generate_token()
+        # podés setear campos opcionales acá
+    )
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify({
+        "mensaje": "Usuario registrado con éxito.",
+        "token": user.token,
+        "email": user.email,
+        "name": user.name,
+        # devolvé lo que quieras
+    }), 201
