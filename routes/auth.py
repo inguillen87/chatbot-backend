@@ -1,7 +1,8 @@
-# Contenido para: routes/auth.py
+# Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func
+from werkzeug.security import check_password_hash # Importación que faltaba
 from models import User, Rubro
 from extensions import db
 from functools import wraps
@@ -58,10 +59,9 @@ def register():
     if not data:
         return jsonify({"error": "Solicitud JSON inválida."}), 400
 
-    # Restauramos toda tu lógica de validación original
     required_fields = ["name", "email", "password", "nombre_empresa", "rubro", "acepto_terminos"]
-    if not all(field in data for field in required_fields):
-        return jsonify({"error": "Faltan campos obligatorios."}), 400
+    if not all(field in data and data[field] for field in required_fields):
+        return jsonify({"error": "Todos los campos son obligatorios."}), 400
 
     if not data["acepto_terminos"]:
         return jsonify({"error": "Es necesario aceptar los términos y condiciones."}), 400
@@ -80,8 +80,6 @@ def register():
         nombre_empresa=data['nombre_empresa'].strip(),
         rubro_id=rubro.id,
         plan="gratis",
-        preguntas_usadas=0,
-        limite_preguntas=50,
         acepto_terminos=True,
         fecha_aceptacion_terminos=datetime.utcnow()
     )
@@ -124,17 +122,14 @@ def actualizar_perfil(user):
     if not data:
         return jsonify({"error": "No se recibieron datos."}), 400
 
-    # Restauramos tu lógica de actualización campo por campo
     for key, value in data.items():
         if hasattr(user, key):
-            # Caso especial para el horario, que se guarda en la columna 'horario'
             if key == "horario_json":
                 setattr(user, "horario", value)
             else:
                 setattr(user, key, value)
     try:
         db.session.commit()
-        current_app.logger.info(f"Perfil actualizado para: {user.email}")
         return jsonify({"mensaje": "Perfil actualizado correctamente."})
     except Exception as e:
         db.session.rollback()
