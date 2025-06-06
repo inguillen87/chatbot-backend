@@ -1,8 +1,24 @@
 import re
 from models import TicketComentario, MunicipioTicket
 from extensions import db  # O tu módulo db real
-from services.municipios import guardar_comentario
-from services.municipios import buscar_ticket_por_nro
+import datetime
+from models import TicketComentario, MunicipioTicket, db
+
+def guardar_comentario(ticket_id, user_id, comentario):
+    comentario_obj = TicketComentario(
+        ticket_id=ticket_id,
+        user_id=user_id,
+        comentario=comentario,
+        fecha=datetime.datetime.utcnow()
+    )
+    db.session.add(comentario_obj)
+    db.session.commit()
+
+def buscar_ticket_por_nro(nro_ticket, user_id=None):
+    q = MunicipioTicket.query.filter_by(nro_ticket=int(nro_ticket))
+    if user_id:
+        q = q.filter_by(user_id=user_id)
+    return q.first()
 
 def procesar_ticket_entidad(pregunta, user_obj):
     """
