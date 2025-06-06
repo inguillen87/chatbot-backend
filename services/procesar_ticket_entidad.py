@@ -2,6 +2,7 @@ import re
 from models import TicketComentario, MunicipioTicket
 from extensions import db  # O tu módulo db real
 from services.municipios import guardar_comentario
+from services.municipios import buscar_ticket_por_nro
 
 def procesar_ticket_entidad(pregunta, user_obj):
     """
