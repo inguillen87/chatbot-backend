@@ -24,7 +24,7 @@ def limpiar_historial_sesion(nombre_historial=NOMBRE_HISTORIAL_SESION):
     except Exception as e:
         logging.warning(f"[PYMES] Error limpiando historial: {e}")
 
-def crear_ticket_pyme(tipo, pregunta, user_id, estado="nuevo", producto=None, cantidad=None, comentario=None):
+def crear_ticket_pyme(pregunta, user_id, estado="nuevo", producto=None, cantidad=None, comentario=None):
     nro_ticket = random.randint(10000, 99999)
     ticket = PymeTicket(
         pregunta=pregunta,
@@ -32,14 +32,13 @@ def crear_ticket_pyme(tipo, pregunta, user_id, estado="nuevo", producto=None, ca
         estado=estado,
         nro_ticket=nro_ticket,
         fecha=datetime.datetime.utcnow(),
-        
+        # producto y cantidad los podés agregar si querés, pero tu modelo PymeTicket NO tiene esos campos ahora
     )
     db.session.add(ticket)
     db.session.commit()
     if comentario:
         guardar_comentario_pyme(ticket.id, user_id, comentario)
     return ticket
-
 
 def guardar_comentario_pyme(ticket_id, user_id, comentario):
     comentario_obj = TicketComentario(
@@ -51,10 +50,9 @@ def guardar_comentario_pyme(ticket_id, user_id, comentario):
     db.session.add(comentario_obj)
     db.session.commit()
 
-def buscar_ticket_activo_pyme(user_id, tipo="pedido"):
+def buscar_ticket_activo_pyme(user_id):
     return PymeTicket.query.filter(
         PymeTicket.user_id == user_id,
-        PymeTicket.tipo == tipo,
         PymeTicket.estado.in_(["nuevo", "en curso"])
     ).order_by(PymeTicket.fecha.desc()).first()
 
@@ -87,7 +85,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
         nro = ticket_match.group(2)
         ticket = buscar_ticket_por_nro_pyme(nro, user_id)
         if ticket:
-            msg_estado = f"El {ticket.tipo} #{nro} está en estado: '{ticket.estado}'."
+            msg_estado = f"El ticket #{nro} está en estado: '{ticket.estado}'."
             if ticket.comentarios.count() > 0:
                 ult_com = ticket.comentarios.order_by(TicketComentario.fecha.desc()).first()
                 msg_estado += f" Último comentario: {ult_com.comentario}"
@@ -98,7 +96,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
     # --- 2. Reclamos
     palabras_reclamo = ["mal servicio", "problema", "no llegó", "demora", "defectuoso", "reclamo", "falló", "devolución", "cancelar"]
     if any(w in pregunta.lower() for w in palabras_reclamo):
-        ticket = crear_ticket_pyme("reclamo", pregunta, user_id, estado="nuevo", comentario=pregunta)
+        ticket = crear_ticket_pyme(pregunta, user_id, estado="nuevo", comentario=pregunta)
         respuesta = (
             f"Tu reclamo fue registrado con el número #{ticket.nro_ticket}. "
             "Vas a recibir novedades por este chat. ¿Querés agregar más detalles?"
@@ -124,7 +122,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
         if respuesta_vector:
             respuesta = f"{respuesta_vector}\n¿Querés hacer un pedido? Te genero el pedido ahora mismo."
             if "quiero comprar" in pregunta.lower() or "hacer pedido" in pregunta.lower():
-                ticket = crear_ticket_pyme("pedido", pregunta, user_id, estado="nuevo", producto=producto, cantidad=cantidad)
+                ticket = crear_ticket_pyme(pregunta, user_id, estado="nuevo")
                 respuesta += f"\nPedido generado. Tu número de pedido es: #{ticket.nro_ticket}"
             session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": respuesta})
             limpiar_historial_sesion()
