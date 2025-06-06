@@ -1,26 +1,24 @@
-# app.py (versión simplificada y mejorada)
 import os
 import logging
 import sys
 from flask import Flask
 
 from config import Config
-# Quitamos login_manager de extensions, ya no lo necesitamos
 from extensions import db, migrate
 from models import User
 
 from routes.auth import auth_bp
 from routes.chat import chat_bp
-# ...otras importaciones de blueprints...
 from routes.ticket import ticket_bp
+from routes.rubros import rubros_bp    # <--- AGREGA ESTA LÍNEA
 from services.upload_processor import upload_bp
-from cli_commands import register_commands # Asumiendo que moviste los comandos
+from cli_commands import register_commands
 
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # --- Logging Profesional ---
+    # Logging profesional
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(
@@ -32,35 +30,32 @@ def create_app(config_class=Config):
     app.logger.setLevel(log_level)
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
 
-    # --- Inicialización de Extensiones ---
+    # Inicialización de extensiones
     db.init_app(app)
     migrate.init_app(app, db)
-    # ¡login_manager.init_app(app) SE FUE! Ya no es necesario.
-
-    # Ya no necesitamos el user_loader, así que lo eliminamos.
 
     try:
         os.makedirs(app.instance_path, exist_ok=True)
     except OSError as e:
         app.logger.error(f"Error creando instance_path: {e}")
-    
+
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
-    # ... tu configuración de CORS se mantiene igual ...
+    # Configuración de CORS
     from flask_cors import CORS
     allowed_origins = [ "https://chatboc.ar", "https://www.chatboc.ar", "http://localhost:5173", "http://localhost:8080", "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app" ]
     CORS(app, origins=allowed_origins, supports_credentials=True, methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
-    # --- Registro de Blueprints ---
+    # Registro de Blueprints
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
-    # ... registra los demás ...
     app.register_blueprint(ticket_bp)
     app.register_blueprint(upload_bp)
-    
-    # --- Registro de Comandos CLI ---
+    app.register_blueprint(rubros_bp)   # <--- AGREGA ESTA LÍNEA
+
+    # Registro de comandos CLI
     register_commands(app)
-        
+
     return app
 
 app = create_app()
