@@ -3,6 +3,8 @@
 from flask import Blueprint, request, jsonify, current_app
 from routes.auth import token_requerido 
 from models import MunicipioTicket, PymeTicket, User # Importamos los dos modelos de Ticket
+from extensions import db
+
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
