@@ -61,11 +61,11 @@ def login():
 
     # En una API de token, solo devolvemos el token. No usamos login_user().
     return jsonify({
-        "mensaje": "Login exitoso",
-        "token": user.token,
-        "email": user.email,
-        "name": user.name,
-        # ... puedes devolver más datos si el frontend los necesita al iniciar sesión
+    "mensaje": "Login exitoso",
+    "id": user.id,            # <--- AGREGÁ ESTA LÍNEA
+    "token": user.token,
+    "email": user.email,
+    "name": user.name,
     })
 
 # --- OTRAS RUTAS (ME, REGISTER, PERFIL) ---
@@ -144,9 +144,10 @@ def register():
     db.session.commit()
 
     return jsonify({
-        "mensaje": "Usuario registrado con éxito.",
-        "token": user.token,
-        "email": user.email,
-        "name": user.name,
-        # devolvé lo que quieras
-    }), 201
+    "mensaje": "Usuario registrado con éxito.",
+    "id": user.id,           # <--- AGREGÁ ESTA LÍNEA
+    "token": user.token,
+    "email": user.email,
+    "name": user.name,
+    # devolvé lo que quieras
+}), 201
