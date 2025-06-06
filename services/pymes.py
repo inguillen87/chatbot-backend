@@ -32,8 +32,7 @@ def crear_ticket_pyme(tipo, pregunta, user_id, estado="nuevo", producto=None, ca
         estado=estado,
         nro_ticket=nro_ticket,
         fecha=datetime.datetime.utcnow(),
-        producto=producto,
-        cantidad=cantidad,
+        
     )
     db.session.add(ticket)
     db.session.commit()
