@@ -164,6 +164,12 @@ class Conversacion(db.Model):
     fuente = db.Column(db.String(50), nullable=False)
     rubro = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    # --- LÍNEAS QUE VAMOS A AGREGAR ---
+    # 1. El nuevo campo para agrupar los chats de una misma conversación
+    session_id = db.Column(UUID(as_uuid=True), default=uuid.uuid4, nullable=False)
+
+    # 2. El nuevo índice para que las búsquedas por sesión sean súper rápidas
+    __table_args__ = (Index('ix_conversacion_session_id', 'session_id'),)
 
 class SitioWebInfo(db.Model):
     __tablename__ = 'sitio_web_info'
