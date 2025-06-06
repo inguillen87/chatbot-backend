@@ -43,9 +43,21 @@ def create_app(config_class=Config):
 
     # Configuración de CORS
     from flask_cors import CORS
-    allowed_origins = [ "https://chatboc.ar", "https://www.chatboc.ar", "http://localhost:5173", "http://localhost:8080", "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app" ]
-    CORS(app, origins=allowed_origins, supports_credentials=True, methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-
+    allowed_origins = [
+    "https://chatboc.ar",
+    "https://www.chatboc.ar",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app"
+]
+    CORS(
+    app,
+    origins=allowed_origins,
+    supports_credentials=True,
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Origin", "Accept"],  # <- AGREGÁ ESTO
+    expose_headers=["Content-Disposition"]  # <- Opcional, si devolvés archivos
+    )
     # Registro de Blueprints
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
