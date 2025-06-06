@@ -1,183 +1,166 @@
-from flask import Blueprint, request, jsonify
-from flask_login import current_user, login_required
+# Reemplaza todo tu archivo de tickets con este código.
+
 from models import MunicipioTicket, PymeTicket, TicketComentario, db
-from services.ticket import crear_comentario_ticket
+from datetime import datetime
+import random
+import logging
+from typing import Dict, Any, Literal
+from sqlalchemy.exc import SQLAlchemyError
 
-ticket_bp = Blueprint("ticket_bp", __name__)
+# Logger para este módulo
+logger = logging.getLogger(__name__)
 
+# --- Clases de Estrategia (La lógica "pro" vive aquí, de forma interna) ---
+# Estas clases no necesitan ser llamadas desde fuera, son ayudantes de nuestra función principal.
 
-@ticket_bp.route('/tickets/<tipo_ticket>', methods=['POST'])
-@login_required
-def crear_ticket(tipo_ticket):
-    data = request.get_json() or {}
-    pregunta = data.get("pregunta", "").strip()
-    estado = data.get("estado", "nuevo")
-    archivo_url = data.get("archivo_url")
-    telefono = data.get("telefono")
-    email = data.get("email")
-    dni = data.get("dni")
-    estado_cliente = data.get("estado_cliente", "no_definido")
+class TicketCreator:
+    """Clase base para los creadores de tickets."""
+    def create(self, ticket_data: Dict[str, Any]) -> PymeTicket | MunicipioTicket:
+        raise NotImplementedError
 
-    if tipo_ticket not in ("municipio", "pyme"):
-        return jsonify({"ok": False, "error": "Tipo de ticket inválido"}), 400
-    if not pregunta:
-        return jsonify({"ok": False, "error": "La pregunta/reclamo es obligatoria"}), 400
-
-    import random
-    nro_ticket = random.randint(10000, 99999)
-
-    if tipo_ticket == "municipio":
-        ticket = MunicipioTicket(
-            pregunta=pregunta,
-            user_id=current_user.id,
-            estado=estado,
-            nro_ticket=nro_ticket,
-            archivo_url=archivo_url
+class MunicipioTicketCreator(TicketCreator):
+    """Crea tickets de tipo Municipio."""
+    def create(self, ticket_data: Dict[str, Any]) -> MunicipioTicket:
+        return MunicipioTicket(
+            pregunta=ticket_data.get("pregunta"),
+            user_id=ticket_data.get("user_id"),
+            estado="nuevo",
+            nro_ticket=ticket_data.get("nro_ticket"),
+            fecha=ticket_data.get("fecha"),
+            archivo_url=ticket_data.get("archivo_url")
         )
+
+class PymeTicketCreator(TicketCreator):
+    """Crea tickets de tipo Pyme."""
+    def create(self, ticket_data: Dict[str, Any]) -> PymeTicket:
+        return PymeTicket(
+            pregunta=ticket_data.get("pregunta"),
+            user_id=ticket_data.get("user_id"),
+            estado="nuevo",
+            nro_ticket=ticket_data.get("nro_ticket"),
+            fecha=ticket_data.get("fecha"),
+            rubro_id=ticket_data.get("rubro_id"),
+            archivo_url=ticket_data.get("archivo_url"),
+            telefono=ticket_data.get("telefono"),
+            email=ticket_data.get("email"),
+            dni=ticket_data.get("dni"),
+            estado_cliente=ticket_data.get("estado_cliente", "no_definido")
+        )
+
+# --- TU FUNCIÓN ORIGINAL, AHORA CON EL MOTOR MEJORADO ---
+def crear_ticket_universal(tipo: Literal["municipio", "pyme"], pregunta: str, user_id=None, rubro_id=None, 
+                           telefono=None, email=None, dni=None, estado_cliente="no_definido", 
+                           archivo_url=None, comentario=None) -> int:
+    """
+    Crea un ticket universal (municipio o pyme) y su comentario inicial
+    en una única transacción atómica y segura.
+    Mantiene la firma original para no romper el resto del código.
+    """
+    creators = {
+        "municipio": MunicipioTicketCreator(),
+        "pyme": PymeTicketCreator()
+    }
+
+    creator = creators.get(tipo)
+    if not creator:
+        logger.error(f"Intento de crear ticket con tipo inválido: {tipo}")
+        raise ValueError("Tipo de ticket inválido. Debe ser 'municipio' o 'pyme'.")
+
+    # Empaquetamos todos los parámetros en un diccionario limpio
+    ticket_data = {
+        "pregunta": pregunta,
+        "user_id": user_id,
+        "rubro_id": rubro_id,
+        "telefono": telefono,
+        "email": email,
+        "dni": dni,
+        "estado_cliente": estado_cliente,
+        "archivo_url": archivo_url,
+        "comentario": comentario,
+        # Datos que generamos internamente
+        "nro_ticket": random.randint(10000, 99999),
+        "fecha": datetime.now()
+    }
+
+    try:
+        # --- INICIO DE TRANSACCIÓN ATÓMICA ---
+        # 1. Crear el objeto ticket usando la estrategia correcta
+        ticket = creator.create(ticket_data)
+        db.session.add(ticket)
+        # Obtenemos el ID del ticket para usarlo en el comentario sin hacer commit
+        db.session.flush()
+
+        # 2. Si hay un comentario, lo creamos y lo asociamos
+        if comentario:
+            ticket_comment = TicketComentario(
+                comentario=comentario,
+                fecha=ticket_data["fecha"],
+                user_id=user_id
+            )
+            # Asociamos el comentario al ticket correcto para evitar problemas de polimorfismo
+            if tipo == "municipio":
+                ticket_comment.municipio_ticket = ticket
+            else: # tipo == "pyme"
+                ticket_comment.pyme_ticket = ticket
+            
+            db.session.add(ticket_comment)
+
+        # 3. Hacemos commit una sola vez al final
+        db.session.commit()
+        
+        logger.info(f"Ticket #{ticket.nro_ticket} (tipo: {tipo}) y comentario inicial creados.")
+        return ticket.nro_ticket
+
+    except SQLAlchemyError as e:
+        # Si cualquier paso falla, revertimos toda la transacción
+        db.session.rollback()
+        logger.error(f"Error de base de datos en crear_ticket_universal (tipo: {tipo}): {e}", exc_info=True)
+        # Relanzamos el error para que la capa superior sepa que algo salió mal
+        raise e
+
+# --- TU OTRA FUNCIÓN, TAMBIÉN MEJORADA ---
+def crear_comentario_ticket(ticket_id: int, tipo_ticket: Literal["municipio", "pyme"], 
+                            comentario: str, user_id=None, telefono=None, email=None, 
+                            dni=None, estado_cliente=None) -> TicketComentario:
+    """
+    Crea un nuevo comentario para un ticket existente de forma segura.
+    Mantiene la firma original.
+    """
+    # Primero, verificamos que el ticket al que se quiere comentar realmente existe.
+    if tipo_ticket == "municipio":
+        ticket = db.session.get(MunicipioTicket, ticket_id)
+    elif tipo_ticket == "pyme":
+        ticket = db.session.get(PymeTicket, ticket_id)
     else:
-        ticket = PymeTicket(
-            pregunta=pregunta,
-            user_id=current_user.id,
-            estado=estado,
-            nro_ticket=nro_ticket,
-            archivo_url=archivo_url,
+        raise ValueError("Tipo de ticket inválido.")
+        
+    if not ticket:
+        raise ValueError(f"No se encontró un ticket de tipo '{tipo_ticket}' con ID {ticket_id}.")
+
+    try:
+        nuevo_comentario = TicketComentario(
+            comentario=comentario,
+            user_id=user_id,
             telefono=telefono,
             email=email,
             dni=dni,
-            estado_cliente=estado_cliente
+            estado_cliente=estado_cliente or "no_definido",
+            fecha=datetime.now()
         )
-    db.session.add(ticket)
-    db.session.commit()
-    return jsonify({"ok": True, "ticket": ticket.id, "nro_ticket": nro_ticket}), 201
+        
+        # Asociamos el comentario al ticket correcto
+        if tipo_ticket == "municipio":
+            nuevo_comentario.municipio_ticket = ticket
+        else: # tipo == "pyme"
+            nuevo_comentario.pyme_ticket = ticket
 
+        db.session.add(nuevo_comentario)
+        db.session.commit()
 
-@ticket_bp.route('/tickets/<tipo_ticket>', methods=['GET'])
-@login_required
-def listar_tickets(tipo_ticket):
-    if tipo_ticket not in ("municipio", "pyme"):
-        return jsonify({"ok": False, "error": "Tipo de ticket inválido"}), 400
+        logger.info(f"Comentario añadido al ticket #{ticket.nro_ticket} (tipo: {tipo_ticket}).")
+        return nuevo_comentario
 
-    query = MunicipioTicket.query if tipo_ticket == "municipio" else PymeTicket.query
-    tickets = query.filter_by(user_id=current_user.id).order_by(query.column_descriptions[0]['entity'].fecha.desc()).all()
-
-    data = []
-    for t in tickets:
-        data.append({
-            "id": t.id,
-            "nro_ticket": t.nro_ticket,
-            "pregunta": t.pregunta,
-            "estado": t.estado,
-            "user_id": t.user_id,
-            "fecha": t.fecha.isoformat() if t.fecha else None,
-            "telefono": getattr(t, "telefono", None),
-            "email": getattr(t, "email", None),
-            "dni": getattr(t, "dni", None),
-            "estado_cliente": getattr(t, "estado_cliente", None),
-        })
-    return jsonify({"ok": True, "tickets": data})
-
-@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/estado', methods=['PUT'])
-@login_required
-def cambiar_estado_ticket(tipo_ticket, ticket_id):
-    data = request.get_json() or {}
-    nuevo_estado = data.get("estado")
-
-    if not nuevo_estado:
-        return jsonify({"ok": False, "error": "Estado es obligatorio"}), 400
-
-    ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
-    if not ticket:
-        return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
-    if ticket.user_id != current_user.id:
-        return jsonify({"ok": False, "error": "No autorizado"}), 403
-
-    ticket.estado = nuevo_estado
-    db.session.commit()
-    return jsonify({"ok": True, "ticket": ticket.id, "nuevo_estado": ticket.estado})
-
-#5. Detalle ticket (solo si es tuyo)
-@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>', methods=['GET'])
-@login_required
-def detalle_ticket(tipo_ticket, ticket_id):
-    ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
-    if not ticket:
-        return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
-    if ticket.user_id != current_user.id:
-        return jsonify({"ok": False, "error": "No autorizado"}), 403
-
-    data = {
-        "id": ticket.id,
-        "nro_ticket": ticket.nro_ticket,
-        "pregunta": ticket.pregunta,
-        "estado": ticket.estado,
-        "user_id": ticket.user_id,
-        "fecha": ticket.fecha.isoformat() if ticket.fecha else None,
-        "telefono": getattr(ticket, "telefono", None),
-        "email": getattr(ticket, "email", None),
-        "dni": getattr(ticket, "dni", None),
-        "estado_cliente": getattr(ticket, "estado_cliente", None),
-    }
-    return jsonify({"ok": True, "ticket": data})
-
-
-# Agregar comentario (admin o vecino)
-@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['POST'])
-@login_required
-def agregar_comentario(tipo_ticket, ticket_id):
-    data = request.get_json() or {}
-    comentario = data.get("comentario", "").strip()
-
-    if tipo_ticket not in ("municipio", "pyme"):
-        return jsonify({"ok": False, "error": "Tipo de ticket inválido"}), 400
-
-    ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
-    if not ticket:
-        return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
-    if ticket.user_id != current_user.id:
-        return jsonify({"ok": False, "error": "No autorizado"}), 403
-    if not comentario:
-        return jsonify({"ok": False, "error": "Comentario vacío"}), 400
-
-    nuevo_com = crear_comentario_ticket(
-        ticket_id, tipo_ticket, comentario, current_user.id, current_user.telefono, current_user.email, None, "cliente"
-    )
-    db.session.commit()
-    return jsonify({"ok": True, "comentario": nuevo_com.id}), 201
-
-
-@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['GET'])
-@login_required
-def listar_comentarios(tipo_ticket, ticket_id):
-    ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
-    if not ticket:
-        return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
-    if ticket.user_id != current_user.id:
-        return jsonify({"ok": False, "error": "No autorizado"}), 403
-
-    try:
-        comentarios = (
-            TicketComentario.query
-            .filter_by(ticket_id=ticket_id, tipo_ticket=tipo_ticket)
-            .order_by(TicketComentario.fecha.asc())
-            .all()
-        )
-
-        data = [
-            {
-                "id": c.id,
-                "comentario": getattr(c, "comentario", getattr(c, "mensaje", "")),
-                "fecha": c.fecha.isoformat() if c.fecha else None,
-                "user_id": c.user_id,
-                "telefono": c.telefono,
-                "email": c.email,
-                "dni": c.dni,
-                "estado_cliente": c.estado_cliente,
-                "es_admin": getattr(c, "es_admin", False),
-            }
-            for c in comentarios
-        ]
-        return jsonify({"ok": True, "comentarios": data})
-
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({"ok": False, "error": f"Error interno: {e}"}), 500
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f"Error de DB al crear comentario para ticket ID {ticket_id} (tipo: {tipo_ticket}): {e}", exc_info=True)
+        raise e

@@ -1,88 +1,126 @@
-# routes/chat.py
-from flask import Blueprint, request, jsonify, session
+# routes/chat.py (Versión Mejorada)
+
+from flask import Blueprint, request, jsonify, session, current_app
 import logging
 
-# Asegúrate de que todas las importaciones de modelos y servicios sean correctas
+# Importamos los modelos y servicios necesarios
 from models import Rubro, User
 from services.logic import responder_chatboc
 from services.municipios import responder_municipio
+# --- PASO 1: IMPORTAMOS NUESTRO NUEVO SERVICIO DE TICKETS ---
+from services.ticket_service import servicio_tickets, SQLAlchemyError
+
 
 chat_bp = Blueprint("chat_bp", __name__)
-logger = logging.getLogger(__name__)
+# Usamos current_app.logger para consistencia con el logging de app.py
+# logger = logging.getLogger(__name__) # Ya no es necesario, usaremos current_app.logger
 
 @chat_bp.route("/ask", methods=["POST"])
 def ask():
     """
     Endpoint principal para procesar todas las preguntas del chat.
     Determina inteligentemente el rubro del usuario y deriva la solicitud
-    a la lógica de backend correspondiente (PyME genérica o Municipio con estado).
+    a la lógica de backend correspondiente.
     """
     try:
-        # 1. EXTRACCIÓN Y VALIDACIÓN DE DATOS DE LA SOLICITUD
         data = request.get_json()
-        if not data:
-            logger.warning("Solicitud a /ask sin datos JSON o JSON vacío.")
-            return jsonify({"error": "Falta el cuerpo de la solicitud o está vacío."}), 400
+        if not data or not data.get("question"):
+            current_app.logger.warning("Solicitud a /ask inválida (sin JSON o sin 'question').")
+            return jsonify({"error": "Falta la pregunta en la solicitud."}), 400
 
-        pregunta = data.get("question") or data.get("pregunta")
-        if not pregunta:
-            logger.warning("Pregunta faltante en la solicitud a /ask.")
-            return jsonify({"error": "Falta la pregunta"}), 400
-
-        # Obtiene el token de autorización de forma segura
+        pregunta = data.get("question")
         auth_header = request.headers.get("Authorization", "")
-        token = auth_header.split(" ")[1].strip() if auth_header.startswith("Bearer ") else None
+        token = auth_header.split(" ")[1] if auth_header.startswith("Bearer ") else None
         
-        # Obtiene el nombre del rubro enviado desde el frontend (si existe)
-        rubro_nombre_frontend = (data.get("rubro") or "").strip().lower()
+        current_app.logger.info(f"▶️  Iniciando /ask para pregunta: '{pregunta[:50]}...' (Token: {str(token)[:15] if token else 'N/A'})")
 
-        logger.info(f"▶️  Iniciando /ask para pregunta: '{pregunta[:50]}...' (Token: {str(token)[:15] if token else 'N/A'}, Rubro Frontend: {rubro_nombre_frontend})")
+        # 1. BÚSQUEDA DE ENTIDADES (se mantiene, está bien hecho)
+        user_obj = User.query.filter_by(token=token).first() if token else None
+        rubro_autoritativo = user_obj.rubro if user_obj and user_obj.rubro else None
 
-        # 2. BÚSQUEDA DE ENTIDADES (USUARIO Y RUBRO)
-        user_obj = User.query.filter_by(token=token).first() if token and not token.startswith("demo") else None
+        if not rubro_autoritativo and data.get("rubro"):
+             rubro_autoritativo = Rubro.query.filter(Rubro.nombre.ilike(data.get("rubro").strip().lower())).first()
+
         if user_obj:
-            logger.info(f"👤 Usuario autenticado encontrado: {user_obj.email} (ID: {user_obj.id})")
+            current_app.logger.info(f"👤 Usuario autenticado: {user_obj.email} (ID: {user_obj.id})")
+        if rubro_autoritativo:
+            current_app.logger.info(f"📚 Rubro determinado: '{rubro_autoritativo.nombre}'")
 
-        # Se determina el rubro autoritativo. La información del usuario en la DB tiene prioridad.
-        rubro_autoritativo = None
-        if user_obj and user_obj.rubro:
-            rubro_autoritativo = user_obj.rubro
-            logger.info(f"📚 Rubro determinado por perfil de usuario: '{rubro_autoritativo.nombre}' (ID: {rubro_autoritativo.id})")
-        elif rubro_nombre_frontend:
-            rubro_autoritativo = Rubro.query.filter(Rubro.nombre.ilike(rubro_nombre_frontend)).first()
-            if rubro_autoritativo:
-                logger.info(f"📚 Rubro determinado por parámetro frontend: '{rubro_autoritativo.nombre}' (ID: {rubro_autoritativo.id})")
-        
-        # 3. ENRUTAMIENTO INTELIGENTE AL BACKEND CORRECTO
-        
-        # Comprobamos si el rubro final es 'municipios' para usar la lógica con memoria
+        # 2. ENRUTAMIENTO INTELIGENTE AL BACKEND CORRECTO
+        # La decisión de a qué servicio llamar se basa en el nombre del rubro.
         if rubro_autoritativo and rubro_autoritativo.nombre.lower().strip() == 'municipios':
-            
-            logger.info(f"🧠 Derivando al flujo de MUNICIPIOS para el usuario.")
-            
-            # Llamamos a la función especializada en municipios, pasando la sesión para la memoria
+            current_app.logger.info("🧠 Derivando al flujo de MUNICIPIOS.")
             resultado = responder_municipio(
                 pregunta=pregunta,
                 user_obj=user_obj,
                 rubro_obj=rubro_autoritativo,
-                session_obj=session  # <-- ¡CRUCIAL! Pasamos el objeto de sesión
+                session_obj=session
             )
         else:
-            # Para cualquier otro caso, usamos la lógica genérica para PyMEs
-            logger.info(f"🧠 Derivando al flujo general (PyME) para el usuario.")
-
+            current_app.logger.info("🧠 Derivando al flujo general (PyME).")
+            # --- MEJORA: Unificamos la firma de la llamada ---
+            # Ahora pasamos los objetos completos, haciendo el servicio más eficiente y limpio.
             resultado = responder_chatboc(
                 pregunta=pregunta,
-                token=token,
-                rubro_nombre_frontend=rubro_nombre_frontend
+                user_obj=user_obj,
+                rubro_obj=rubro_autoritativo,
+                session_obj=session # Pasamos la sesión por si la lógica de PyME también necesita memoria
             )
             
-        logger.info(f"✅ Solicitud /ask procesada exitosamente. Fuente de respuesta: '{resultado.get('fuente', 'desconocida')}'")
+        current_app.logger.info(f"✅ Solicitud /ask procesada. Fuente: '{resultado.get('fuente', 'desconocida')}'")
         return jsonify(resultado), 200
 
     except Exception as e:
-        logger.error(f"❌ Error crítico en el endpoint /ask: {e}", exc_info=True)
+        current_app.logger.error(f"❌ Error crítico en el endpoint /ask: {e}", exc_info=True)
         return jsonify({"error": "Error interno del servidor al procesar tu pregunta."}), 500
+
+
+# --- PASO 2: NUEVO ENDPOINT PARA USAR EL SERVICIO DE TICKETS ---
+@chat_bp.route("/ticket", methods=["POST"])
+def crear_ticket_desde_chat():
+    """
+    Endpoint dedicado para crear un ticket. El frontend llamaría a esta ruta
+    cuando el usuario confirma una acción (ej. 'Confirmar Pedido').
+    """
+    data = request.get_json()
+    if not data or not data.get("tipo_ticket") or not data.get("pregunta"):
+        return jsonify({"error": "Faltan datos requeridos (tipo_ticket, pregunta)."}), 400
+    
+    current_app.logger.info(f"▶️  Recibida solicitud para crear ticket tipo '{data['tipo_ticket']}'")
+
+    try:
+        # Empaquetamos los datos que vienen del frontend en un diccionario
+        ticket_data = {
+            "pregunta": data.get("pregunta"),
+            "comentario": data.get("comentario"),
+            "user_id": data.get("user_id"),
+            "rubro_id": data.get("rubro_id"),
+            "telefono": data.get("telefono"),
+            "email": data.get("email"),
+            "dni": data.get("dni")
+        }
+
+        # Usamos nuestro nuevo y flamante servicio de tickets
+        numero_ticket = servicio_tickets.crear_nuevo_ticket(
+            tipo_ticket=data["tipo_ticket"],
+            ticket_data=ticket_data
+        )
+
+        return jsonify({
+            "mensaje": "Ticket creado exitosamente.", 
+            "numero_ticket": numero_ticket
+        }), 201
+
+    except ValueError as e:
+        # Este error lo lanzamos en el servicio si el tipo de ticket es inválido
+        return jsonify({"error": str(e)}), 400
+    except SQLAlchemyError:
+        # El servicio ya logueó el error detallado, aquí solo devolvemos una respuesta genérica
+        return jsonify({"error": "No se pudo crear el ticket debido a un error en la base de datos."}), 500
+    except Exception as e:
+        current_app.logger.error(f"❌ Error inesperado en /ticket: {e}", exc_info=True)
+        return jsonify({"error": "Error interno del servidor."}), 500
+
 
 @chat_bp.route("/ping", methods=["GET"])
 def ping():
