@@ -84,6 +84,9 @@ class MunicipioTicket(db.Model):
     __tablename__ = "municipio_ticket"
     id = db.Column(db.Integer, primary_key=True)
     pregunta = db.Column(db.Text, nullable=False)
+    asunto = db.Column(db.String(200), nullable=True)
+    categoria = db.Column(db.String(100), nullable=True)
+    # ---------------------
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
@@ -100,6 +103,8 @@ class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"
     id = db.Column(db.Integer, primary_key=True)
     pregunta = db.Column(db.Text, nullable=False)
+    asunto = db.Column(db.String(200), nullable=True)
+    categoria = db.Column(db.String(100), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
