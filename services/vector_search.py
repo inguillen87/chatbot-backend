@@ -1,61 +1,63 @@
-from models import User
-import logging
-import numpy as np
-from models import CatalogoEmbedding
-from services.cohere_ai import embed_textos
+# En tu archivo /services/vector_search.py
 
-def buscar_item_vectorizado(pregunta: str, user: User, umbral: float = 0.6) -> str | None:
+from .qdrant_utils import get_qdrant_client
+from .cohere_ai import embed_textos
+# ... otras importaciones
+
+QDRANT_COLLECTION_NAME = "catalogos"
+
+def buscar_item_vectorizado(pregunta: str, user_id: int):
+    """
+    Busca ítems en el catálogo de un usuario específico usando búsqueda vectorial en Qdrant.
+
+    Args:
+        pregunta (str): La consulta del cliente.
+        user_id (int): El ID del usuario (pyme) al que pertenece el catálogo.
+
+    Returns:
+        list: Una lista de resultados encontrados o None si no hay resultados.
+    """
+    print(f"🔍 [Vector] Buscando coincidencias para: “{pregunta}” | User: {user_id}")
+
     try:
-        logging.info(f"🔍 [Vector] Buscando coincidencias para: “{pregunta}” | User: {user.nombre_empresa} (ID {user.id})")
+        qdrant_client = get_qdrant_client()
 
-        # Cargar catálogo vectorizado del usuario
-        catalogo = CatalogoEmbedding.query.filter_by(user_id=user.id).all()
-        if not catalogo:
-            logging.warning("⚠️ [Vector] No hay embeddings cargados en DB para este usuario.")
+        # 1. Generar el vector para la pregunta del cliente
+        # Usamos 'search_query' como input_type para la búsqueda
+        query_vector = embed_textos([pregunta], input_type='search_query')
+        
+        if not query_vector:
+            print(f"⚠️ [Vector] No se pudo generar el vector para la pregunta.")
             return None
 
-        # Procesar todos los vectores del catálogo
-        vectores = []
-        items_validos = []
-        for item in catalogo:
-            if item.embedding_vector:
-                try:
-                    vectores.append(np.array(item.embedding_vector, dtype=np.float32))
-                    items_validos.append(item)
-                except Exception as e:
-                    logging.warning(f"⚠️ Vector inválido para item ID {item.id}: {e}")
-
-        if not vectores:
-            logging.warning("🚫 [Vector] Todos los vectores estaban vacíos o mal formateados.")
-            return None
-
-        vectores = np.array(vectores)
-        logging.info(f"📦 [Vector] {len(vectores)} vectores cargados correctamente para comparación.")
-
-        # Vectorizar la pregunta
-        pregunta_vector = embed_textos([pregunta])
-        if not pregunta_vector:
-            logging.warning("⚠️ [Vector] Falló el embed de la pregunta con Cohere.")
-            return None
-
-        pregunta_vector = np.array(pregunta_vector[0], dtype=np.float32).reshape(1, -1)
-        similitudes = np.dot(vectores, pregunta_vector.T).flatten()
-
-        idx_mejor = int(np.argmax(similitudes))
-        sim_max = float(similitudes[idx_mejor])
-        logging.info(f"📊 [Vector] Similaridad máxima encontrada: {sim_max:.4f}")
-
-        if sim_max < umbral:
-            logging.info(f"📉 [Vector] Similaridad ({sim_max:.2f}) menor al umbral ({umbral}). No se responde.")
-            return None
-
-        mejor_item = items_validos[idx_mejor]
-        logging.info(f"✅ [Vector] Match con producto ID {mejor_item.id} | Nombre: {mejor_item.nombre}")
-        return (
-            f"{mejor_item.nombre} - {mejor_item.descripcion}. "
-            f"Precio: ${mejor_item.precio}. Stock: {mejor_item.cantidad} unidades."
+        # 2. Construir el filtro para Qdrant para buscar solo en el catálogo de este usuario
+        # ¡Este es el paso más importante que probablemente falta!
+        from qdrant_client.http import models
+        
+        search_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="user_id", # El campo en tus metadatos de Qdrant
+                    match=models.MatchValue(value=user_id)
+                )
+            ]
         )
 
+        # 3. Realizar la búsqueda en Qdrant
+        search_result = qdrant_client.search(
+            collection_name=QDRANT_COLLECTION_NAME,
+            query_vector=query_vector[0],
+            query_filter=search_filter,
+            limit=3 # Traer los 3 mejores resultados
+        )
+
+        if not search_result:
+            print(f"⚠️ [Vector] No se encontraron resultados en Qdrant para el user_id: {user_id}.")
+            return None
+
+        print(f"✅ [Vector] Se encontraron {len(search_result)} coincidencias.")
+        return search_result
+
     except Exception as e:
-        logging.error(f"❌ [Vector] Error al buscar coincidencia vectorial: {e}")
+        print(f"❌ [Vector] Error durante la búsqueda vectorial: {e}")
         return None
