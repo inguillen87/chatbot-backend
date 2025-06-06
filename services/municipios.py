@@ -8,7 +8,7 @@ from models import Conversacion, MunicipioTicket, TicketComentario, db
 from services.cohere_ai import get_cohere_response
 from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro  # <--- AGREGADO
-from services.scraper import scrapear_info_entidad
+from services.procesar_ticket_entidad import procesar_ticket_entidad
 
 NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
 PALABRAS_CLAVE_HUMANO = [
@@ -167,7 +167,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": fuente}
 
     # 2. Lógica de tickets
-    res_ticket = scrapear_info_entidad(pregunta, user_obj)
+    res_ticket = procesar_ticket_entidad(pregunta, user_obj)
     if res_ticket:
         guardar_conversacion(user_id, pregunta, res_ticket["respuesta"], res_ticket["fuente"], "municipio")
         session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": res_ticket["respuesta"]})
