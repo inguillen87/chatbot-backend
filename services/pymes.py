@@ -27,7 +27,6 @@ def limpiar_historial_sesion(nombre_historial=NOMBRE_HISTORIAL_SESION):
 def crear_ticket_pyme(tipo, pregunta, user_id, estado="nuevo", producto=None, cantidad=None, comentario=None):
     nro_ticket = random.randint(10000, 99999)
     ticket = PymeTicket(
-        tipo=tipo,
         pregunta=pregunta,
         user_id=user_id,
         estado=estado,
@@ -41,6 +40,7 @@ def crear_ticket_pyme(tipo, pregunta, user_id, estado="nuevo", producto=None, ca
     if comentario:
         guardar_comentario_pyme(ticket.id, user_id, comentario)
     return ticket
+
 
 def guardar_comentario_pyme(ticket_id, user_id, comentario):
     comentario_obj = TicketComentario(
