@@ -1,29 +1,40 @@
-# Contenido para: routes/ticket.py
+# Contenido COMPLETO y FINAL para: routes/ticket.py
 
 from flask import Blueprint, request, jsonify, current_app
-# 1. Importa nuestro decorador de autenticación unificado
 from routes.auth import token_requerido 
-from models import MunicipioTicket
-from extensions import db
+from models import MunicipioTicket, PymeTicket, User # Importamos los dos modelos de Ticket
 
-# 2. Aquí se define el 'ticket_bp' que app.py necesita importar
-ticket_bp = Blueprint('ticket_bp', __name__)
+ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
-@ticket_bp.route('/tickets/municipio', methods=['GET'])
-@token_requerido # 3. Se usa el decorador correcto
-def get_tickets_municipio(current_user): # 4. La función recibe 'current_user'
+@ticket_bp.route('/', methods=['GET'])
+@token_requerido
+def get_tickets_del_usuario(current_user):
     """
-    Obtiene los tickets para un usuario de tipo Municipio.
-    El usuario 'current_user' es inyectado por el decorador @token_requerido.
+    Endpoint universal para obtener tickets.
+    Detecta automáticamente el rubro del usuario y devuelve los tickets correspondientes.
     """
     user_id_param = request.args.get('user_id', type=int)
-    
-    # Verificación de seguridad (opcional pero recomendada)
-    if not hasattr(current_user, 'es_admin') or (not current_user.es_admin and current_user.id != user_id_param):
+
+    # Verificación de seguridad: solo un admin o el propio usuario pueden ver sus tickets
+    if not getattr(current_user, 'es_admin', False) and current_user.id != user_id_param:
         return jsonify({"error": "No tienes permiso para ver estos tickets."}), 403
 
+    # Buscamos al usuario para saber su rubro
+    usuario_a_consultar = db.session.get(User, user_id_param)
+    if not usuario_a_consultar or not usuario_a_consultar.rubro:
+        return jsonify({"error": "Usuario o rubro no encontrado."}), 404
+
     try:
-        tickets = MunicipioTicket.query.filter_by(user_id=user_id_param).order_by(MunicipioTicket.fecha.desc()).all()
+        # --- LÓGICA INTELIGENTE ---
+        # Decidimos qué tabla consultar basado en el nombre del rubro
+        if usuario_a_consultar.rubro.nombre.lower().strip() == 'municipios':
+            current_app.logger.info(f"Buscando tickets de tipo Municipio para user_id {user_id_param}")
+            TicketModel = MunicipioTicket
+        else:
+            current_app.logger.info(f"Buscando tickets de tipo PyME para user_id {user_id_param}")
+            TicketModel = PymeTicket
+            
+        tickets = TicketModel.query.filter_by(user_id=user_id_param).order_by(TicketModel.fecha.desc()).all()
         
         resultado = []
         for ticket in tickets:
@@ -39,7 +50,7 @@ def get_tickets_municipio(current_user): # 4. La función recibe 'current_user'
         return jsonify(resultado)
 
     except Exception as e:
-        current_app.logger.error(f"Error en get_tickets_municipio para user_id {user_id_param}: {e}", exc_info=True)
+        current_app.logger.error(f"Error en get_tickets_del_usuario para user_id {user_id_param}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
 
-# Agrega aquí tus otras rutas de tickets (ej. para Pymes) siguiendo el mismo patrón.
+# Agrega aquí tus otras rutas, como la de crear comentarios, si es necesario.
