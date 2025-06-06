@@ -1,6 +1,7 @@
 import re
 from models import TicketComentario, MunicipioTicket
 from extensions import db  # O tu módulo db real
+from services.municipios import guardar_comentario
 
 def procesar_ticket_entidad(pregunta, user_obj):
     """
