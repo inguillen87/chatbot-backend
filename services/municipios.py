@@ -8,6 +8,7 @@ from models import Conversacion, MunicipioTicket, TicketComentario, db
 from services.cohere_ai import get_cohere_response
 from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro  # <--- AGREGADO
+from services.scraper import scrapear_info_entidad
 
 NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
 PALABRAS_CLAVE_HUMANO = [
@@ -34,14 +35,6 @@ def render_botones_municipio(web_oficial, telefono_wsp, pregunta):
 def detectar_palabra_humano(texto):
     texto = texto.lower()
     return any(palabra in texto for palabra in PALABRAS_CLAVE_HUMANO)
-
-def datos_faltantes_usuario(user_obj):
-    faltantes = []
-    if not user_obj.telefono or not user_obj.telefono.strip():
-        faltantes.append("teléfono")
-    if not user_obj.email or not user_obj.email.strip():
-        faltantes.append("email")
-    return faltantes
 
 def guardar_conversacion(user_id, pregunta, respuesta, fuente, rubro):
     conv = Conversacion(
@@ -89,17 +82,23 @@ def buscar_ticket_por_nro(nro_ticket, user_id=None):
         q = q.filter_by(user_id=user_id)
     return q.first()
 
+def get_attr(obj, attr, default=""):
+    try:
+        return getattr(obj, attr, default) if obj else default
+    except Exception:
+        return default
+    
 def get_datos_municipio(user_obj, rubro_obj):
-    nombre_municipio = user_obj.nombre_empresa or rubro_obj.nombre or "el municipio"
-    telefono = user_obj.telefono or ""
-    telefono_wsp = ''.join(filter(str.isdigit, telefono))
-    web_oficial = user_obj.link_web or "https://www.argentina.gob.ar"
-    direccion = getattr(user_obj, "direccion", "") or "Consultar en la web"
-    ciudad = getattr(user_obj, "ciudad", "") or ""
-    provincia = getattr(user_obj, "provincia", "") or ""
+    nombre_municipio = get_attr(user_obj, "nombre_empresa") or get_attr(rubro_obj, "nombre") or "el municipio"
+    telefono = get_attr(user_obj, "telefono")
+    telefono_wsp = ''.join(filter(str.isdigit, telefono)) if telefono else ""
+    web_oficial = get_attr(user_obj, "link_web") or "https://www.argentina.gob.ar"
+    direccion = get_attr(user_obj, "direccion") or "Consultar en la web"
+    ciudad = get_attr(user_obj, "ciudad") or ""
+    provincia = get_attr(user_obj, "provincia") or ""
     direccion_completa = f"{direccion}, {ciudad}, {provincia}".replace(" ,", "").strip(", ")
-    horario = getattr(user_obj, "horario", "Consultar en la web oficial")
-    horario_json_str = getattr(user_obj, "horario_json", "[]")
+    horario = get_attr(user_obj, "horario") or "Consultar en la web oficial"
+    horario_json_str = get_attr(user_obj, "horario_json") or "[]"
     horarios_para_prompt = horario
     try:
         if horario_json_str and isinstance(horario_json_str, str) and horario_json_str.startswith("["):
@@ -120,27 +119,34 @@ def es_reclamo_municipal(pregunta):
     ]
     return any(p in pregunta.lower() for p in palabras_reclamo)
 
+def datos_faltantes_usuario(user_obj):
+    faltantes = []
+    if not get_attr(user_obj, "telefono") or not get_attr(user_obj, "telefono").strip():
+        faltantes.append("teléfono")
+    if not get_attr(user_obj, "email") or not get_attr(user_obj, "email").strip():
+        faltantes.append(r"email")
+    return faltantes
+
 def datos_faltantes_para_ticket(user_obj):
     faltan = []
-    if not getattr(user_obj, "direccion", None) or not user_obj.direccion.strip():
+    if not get_attr(user_obj, "direccion") or not get_attr(user_obj, "direccion").strip():
         faltan.append("dirección")
-    if not user_obj.telefono or not user_obj.telefono.strip():
+    if not get_attr(user_obj, "telefono") or not get_attr(user_obj, "telefono").strip():
         faltan.append("teléfono")
-    if not user_obj.email or not user_obj.email.strip():
+    if not get_attr(user_obj, "email") or not get_attr(user_obj, "email").strip():
         faltan.append("email")
     return faltan
 
+
 def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
-    fuente = "desconocida"   # SIEMPRE inicializá localmente
-    
+    fuente = "desconocida"
     session = session_obj if session_obj is not None else flask_session
     session.setdefault(NOMBRE_HISTORIAL_SESION, [])
     mensajes_previos = session[NOMBRE_HISTORIAL_SESION][-8:]
-    user_id = user_obj.id if user_obj else None
-
+    user_id = get_attr(user_obj, "id", None)
     nombre_municipio, telefono, telefono_wsp, web_oficial, direccion_completa, horarios_para_prompt = get_datos_municipio(user_obj, rubro_obj)
 
-    # 1. Derivación a humano
+    # 1. Derivación a humano SIEMPRE va primero
     if detectar_palabra_humano(pregunta):
         ticket = buscar_ticket_activo(user_id)
         if not ticket:
@@ -159,6 +165,20 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": mensaje})
         session.modified = True
         return {"respuesta": mensaje + render_botones_municipio(web_oficial, telefono_wsp, pregunta), "fuente": fuente}
+
+    # 2. Lógica de tickets
+    res_ticket = procesar_ticket_entidad(pregunta, user_obj)
+    if res_ticket:
+        guardar_conversacion(user_id, pregunta, res_ticket["respuesta"], res_ticket["fuente"], "municipio")
+        session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": res_ticket["respuesta"]})
+        session.modified = True
+        return {"respuesta": res_ticket["respuesta"], "fuente": res_ticket["fuente"]}
+
+    # ... resto igual
+    # 3. Datos faltantes, estado de ticket, Cohere, etc.
+
+    # (todo igual que antes)
+
 
     # 2. Datos de contacto faltantes
     faltantes = datos_faltantes_para_ticket(user_obj)
@@ -203,6 +223,33 @@ def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwarg
         session[NOMBRE_HISTORIAL_SESION].append({"role": "assistant", "content": respuesta})
         session.modified = True
         return {"respuesta": respuesta, "fuente": fuente}
+    
+    # === ACÁ VA EL BLOQUE NUEVO ===
+    from services.webinfo import obtener_info_web  # Asegurate de tenerlo arriba
+
+    info_web = obtener_info_web(user_id, web_oficial)
+    prompt_extra = ""
+    if info_web and not info_web.get("error"):
+         prompt_extra = "\n\nInformación extra obtenida automáticamente del sitio web:"
+    if info_web.get('emails'):
+        mails = ', '.join(info_web['emails'])
+        if mails:
+            prompt_extra += f"\n- Emails encontrados: {mails}"
+    if info_web.get('telefonos'):
+        tels = ', '.join(info_web['telefonos'])
+        if tels:
+            prompt_extra += f"\n- Teléfonos encontrados: {tels}"
+    if info_web.get('direcciones'):
+        dirs = ', '.join(info_web['direcciones'])
+        if dirs:
+            prompt_extra += f"\n- Direcciones mencionadas: {dirs}"
+    if info_web.get('noticias'):
+        noticias = '; '.join(info_web['noticias'][:5])  # Solo las 5 más recientes o relevantes
+        if noticias:
+            prompt_extra += f"\n- Noticias destacadas: {noticias}"
+    if info_web.get('scrap_fecha'):
+        prompt_extra += f"\n(Datos extraídos automáticamente el {info_web['scrap_fecha'][:10]})"
+
 
     # 5. Consulta a Cohere
     prompt_municipio = (

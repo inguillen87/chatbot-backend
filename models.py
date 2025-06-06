@@ -165,6 +165,19 @@ class Conversacion(db.Model):
     rubro = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
+class SitioWebInfo(db.Model):
+    __tablename__ = 'sitio_web_info'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)  # Pyme, Municipio, etc.
+    rubro_id = db.Column(db.Integer, db.ForeignKey("rubro.id"), nullable=True)
+    url = db.Column(db.String(255), nullable=False)
+    datos_json = db.Column(db.Text, nullable=False)  # Guarda todo el dict serializado
+    fecha_scraping = db.Column(db.DateTime, default=datetime.utcnow)
+    actualizado = db.Column(db.Boolean, default=False)
+
+    def __repr__(self):
+        return f"<SitioWebInfo id={self.id} url={self.url}>"
+    
 class Log(db.Model):
     __tablename__ = "logs"
     id = db.Column(db.Integer, primary_key=True)
