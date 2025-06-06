@@ -2,6 +2,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Rubros que deben usar la lógica de municipio/ente público
+RUBROS_PUBLICOS = {
+    "municipio",
+    "municipios",
+    "ong",
+    "gobierno",
+    "hospital_publico",
+    "entidad_publica",
+    # Agregá acá los que consideres públicos
+}
+
 def responder_chatboc(
     pregunta,
     user_obj=None,
@@ -10,13 +21,9 @@ def responder_chatboc(
     rubro_nombre_frontend=None,
     **kwargs
 ):
-    """
-    Lógica universal de ruteo por rubro. Nunca revienta si falta rubro.
-    Siempre responde, aunque no exista lógica especial para el rubro.
-    """
+    # 1. Detectar nombre de rubro (universal)
     rubro_nombre = ""
     fuente = ""
-    # 1. Buscamos el rubro en orden de prioridad
     if rubro_obj and getattr(rubro_obj, "nombre", None):
         rubro_nombre = str(rubro_obj.nombre).strip().lower()
         fuente = "rubro_obj.nombre"
@@ -37,11 +44,10 @@ def responder_chatboc(
 
     logger.info(f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(user_obj, 'id', None)})")
 
-    # 2. Ruteo real por tipo de rubro: lógica específica
-    if rubro_nombre in ("municipios", "municipio"):
+    # 2. Ruteo según tipo de rubro
+    if rubro_nombre in RUBROS_PUBLICOS:
         from services.municipios import responder_municipio
         return responder_municipio(pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs)
-
-    # 3. Default para todos los demás rubros (pymes, bodega, heladeria, etc)
-    from services.pymes import responder_pyme
-    return responder_pyme(pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs)
+    else:
+        from services.pymes import responder_pyme
+        return responder_pyme(pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs)
