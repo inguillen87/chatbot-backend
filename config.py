@@ -21,3 +21,5 @@ class Config:
     print(f"--- DEBUG CONFIG: SQLALCHEMY_DATABASE_URI seleccionada en Config: '{SQLALCHEMY_DATABASE_URI}'")
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SESSION_COOKIE_SAMESITE = "None"
+    SESSION_COOKIE_SECURE = True  # Render usa HTTPS, necesario para enviar cookies cross-site
