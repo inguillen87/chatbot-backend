@@ -4,296 +4,281 @@ import random
 import logging
 import re
 from flask import session as flask_session
-from models import Conversacion, MunicipioTicket, TicketComentario, db
+
+# Importaciones de la base de datos y modelos
+from extensions import db
+from models import User, Conversacion, MunicipioTicket, TicketComentario
+
+# Importaciones de servicios (asegúrate que las rutas sean correctas)
 from services.cohere_ai import get_cohere_response
 from services.utils_placeholders import reemplazar_placeholders
-from services.utils import sugerencias_por_rubro  # <--- AGREGADO
-from services.procesar_ticket_entidad import procesar_ticket_entidad
 
+# --- CONFIGURACIÓN Y CONSTANTES ---
+logger = logging.getLogger(__name__)
+
+# Constantes para la máquina de estados en la sesión
 NOMBRE_HISTORIAL_SESION = "historial_chat_municipio"
-PALABRAS_CLAVE_HUMANO = [
-    "representante", "humano", "persona", "agente", "encargado",
-    "no quiero un bot", "atención real", "alguien de verdad", "quiero hablar con", "hablar con", "operador"
-]
+NOMBRE_ESTADO_SESION = "estado_chat_municipio"
+NOMBRE_TICKET_ID_SESION = "ticket_id_activo_municipio"
+NOMBRE_CONTEXTO_RECLAMO_SESION = "contexto_reclamo_pendiente"
+
+
+# --- FUNCIONES AUXILIARES ---
+
+def get_attr(obj, attr, default=""):
+    """Obtiene un atributo de un objeto de forma segura."""
+    return getattr(obj, attr, default) if obj else default
 
 def render_botones_accion(acciones):
-    """
-    Renderiza botones de acción dinámicos para el chat.
-    Ejemplo de acciones: [{"texto": "Crear Ticket", "payload": "crear_ticket"}, ...]
-    """
-    estilo_btn = (
-        "display:inline-block;background:#5a67d8;color:#fff;padding:8px 16px;"
-        "text-decoration:none;border-radius:5px;font-size:0.95em;font-weight:500;margin:4px;"
-        "border:none;cursor:pointer;"
-    )
+    """Renderiza botones de acción dinámicos con estilos mejorados."""
+    if not acciones:
+        return ""
+    
+    estilo_btn_base = "display:inline-block;padding:10px 18px;text-decoration:none;border-radius:8px;font-size:0.98em;font-weight:600;margin:5px 4px;border:1px solid transparent;cursor:pointer;transition:all 0.2s ease;"
+    estilos = {
+        "primario": f"background:#4A55A2;color:#FFF;{estilo_btn_base}",
+        "secundario": f"background:transparent;color:#4A55A2;border-color:#4A55A2;{estilo_btn_base}"
+    }
+    
     botones_html = ""
     for accion in acciones:
-        # Usaremos un postback a través de JavaScript para mantener la conversación en el mismo chat
         payload = accion.get("payload", accion.get("texto"))
-        botones_html += f'<button style="{estilo_btn}" onclick="enviarMensajeAsistente(\'{payload}\')">{accion.get("texto")}</button>'
+        tipo_estilo = accion.get("tipo", "primario")
+        payload_escapado = payload.replace("'", "\\'")
+        botones_html += f'<button style="{estilos.get(tipo_estilo, estilos["primario"])}" onclick="enviarMensajeAsistente(\'{payload_escapado}\')">{accion.get("texto")}</button>'
 
     if botones_html:
-        return f'<div style="margin-top:10px;text-align:center;">{botones_html}</div>'
+        return f'<div style="margin-top:15px;padding-top:10px;border-top:1px solid #e2e8f0;text-align:center;">{botones_html}</div>'
     return ""
 
+def guardar_conversacion_db(user_id, pregunta, respuesta, fuente, rubro="municipio"):
+    """Guarda la interacción en la tabla Conversacion de la base de datos."""
+    try:
+        if user_id:
+            conv = Conversacion(user_id=user_id, pregunta=pregunta, respuesta=respuesta, fuente=fuente, rubro=rubro, timestamp=datetime.datetime.now())
+            db.session.add(conv)
+            db.session.commit()
+    except Exception as e:
+        logger.error(f"Error al guardar conversación en DB para user {user_id}: {e}")
+        db.session.rollback()
+
 def solicitar_datos_faltantes(user_obj):
-    """
-    Verifica si faltan datos del usuario y genera un mensaje para solicitarlos.
-    """
+    """Verifica si faltan datos del usuario en su perfil y genera un mensaje para solicitarlos."""
     faltantes = []
-    # Ampliamos para pedir también el nombre
-    if not get_attr(user_obj, "nombre_completo"):
-        faltantes.append("nombre completo")
+    if not get_attr(user_obj, "name"):
+        faltantes.append("nombre y apellido")
     if not get_attr(user_obj, "email"):
         faltantes.append("email")
     if not get_attr(user_obj, "telefono"):
-        faltantes.append("teléfono de contacto")
+        faltantes.append("teléfono")
 
     if faltantes:
         mensaje = (
-            f"Para poder ayudarte mejor y registrar tus consultas, necesito algunos datos. "
-            f"Por favor, ¿podrías indicarme tu {' y '.join(faltantes)}?<br>"
-            "Puedes escribirlos directamente aquí."
+            f"¡Hola! Para poder asistirte de la mejor manera, necesito que completemos tu perfil. "
+            f"Por favor, ¿podrías indicarme tu **{'**, **'.join(faltantes)}**?<br><br>"
+            "Puedes escribirlos aquí mismo. Tus datos son confidenciales y se usarán solo para gestiones municipales."
         )
-        return {"respuesta": mensaje, "estado_sesion": "pidiendo_datos"}
+        return {"respuesta": mensaje, "estado_sesion": "pidiendo_datos_iniciales"}
     return None
 
-def detectar_palabra_humano(texto):
-    texto = texto.lower()
-    return any(palabra in texto for palabra in PALABRAS_CLAVE_HUMANO)
+def detectar_intencion_reclamo(pregunta):
+    """Detecta la intención y el posible tema de un reclamo para iniciar el flujo conversacional."""
+    temas = {
+        "alumbrado público": ["luminaria", "luz quemada", "foco", "poste sin luz", "calle oscura"],
+        "estado de calles": ["bache", "pozo", "calle rota", "asfalto roto", "hundimiento", "vereda rota"],
+        "recolección de residuos": ["basura", "residuo", "contenedor lleno", "no pasa el basurero", "mugre"],
+        "arbolado público": ["árbol caído", "arbol caido", "rama peligrosa", "poda de arbol", "raíces levantando vereda"],
+        "agua y cloacas": ["pérdida de agua", "caño roto", "cloaca tapada", "agua servida", "falta de agua"],
+        "seguridad ciudadana": ["inseguridad", "vandalismo", "actividad sospechosa", "alarma comunitaria"],
+        "control de plagas": ["plaga", "roedores", "ratas", "desinfección", "fumigación"]
+    }
+    texto = pregunta.lower()
+    for tema, keywords in temas.items():
+        if any(kw in texto for kw in keywords):
+            return tema
+    return None
 
-def guardar_conversacion(user_id, pregunta, respuesta, fuente, rubro):
-    conv = Conversacion(
-        user_id=user_id,
-        pregunta=pregunta,
-        respuesta=respuesta,
-        fuente=fuente,
-        rubro=rubro
-    )
-    db.session.add(conv)
-    db.session.commit()
-
-def guardar_ticket(pregunta, user_id, estado="nuevo"):
-    nro_ticket = random.randint(10000, 99999)
-    ticket = MunicipioTicket(
-        pregunta=pregunta,
-        user_id=user_id,
-        estado=estado,
-        nro_ticket=nro_ticket,
-        fecha=datetime.datetime.utcnow()
-    )
-    db.session.add(ticket)
-    db.session.commit()
-    return ticket
-
-def guardar_comentario(ticket_id, user_id, comentario):
-    comentario_obj = TicketComentario(
-        ticket_id=ticket_id,
-        user_id=user_id,
-        comentario=comentario,
-        fecha=datetime.datetime.utcnow()
-    )
-    db.session.add(comentario_obj)
-    db.session.commit()
-
-def buscar_ticket_activo(user_id):
-    return MunicipioTicket.query.filter(
-        MunicipioTicket.user_id == user_id,
-        MunicipioTicket.estado.in_(["nuevo", "en curso"])
-    ).order_by(MunicipioTicket.fecha.desc()).first()
-
-def buscar_ticket_por_nro(nro_ticket, user_id=None):
-    q = MunicipioTicket.query.filter_by(nro_ticket=int(nro_ticket))
-    if user_id:
-        q = q.filter_by(user_id=user_id)
-    return q.first()
-
-def get_attr(obj, attr, default=""):
+def crear_y_guardar_ticket(user_id, pregunta_inicial, contexto, detalles_adicionales):
+    """Crea, guarda en DB y devuelve un objeto MunicipioTicket (VERSIÓN CORREGIDA)."""
     try:
-        return getattr(obj, attr, default) if obj else default
-    except Exception:
-        return default
-    
-def get_datos_municipio(user_obj, rubro_obj):
-    nombre_municipio = get_attr(user_obj, "nombre_empresa") or get_attr(rubro_obj, "nombre") or "el municipio"
-    telefono = get_attr(user_obj, "telefono")
-    telefono_wsp = ''.join(filter(str.isdigit, telefono)) if telefono else ""
-    web_oficial = get_attr(user_obj, "link_web") or "https://www.argentina.gob.ar"
-    direccion = get_attr(user_obj, "direccion") or "Consultar en la web"
-    ciudad = get_attr(user_obj, "ciudad") or ""
-    provincia = get_attr(user_obj, "provincia") or ""
-    direccion_completa = f"{direccion}, {ciudad}, {provincia}".replace(" ,", "").strip(", ")
-    horario = get_attr(user_obj, "horario") or "Consultar en la web oficial"
-    horario_json_str = get_attr(user_obj, "horario_json") or "[]"
-    horarios_para_prompt = horario
-    try:
-        if horario_json_str and isinstance(horario_json_str, str) and horario_json_str.startswith("["):
-            horarios_data = json.loads(horario_json_str)
-            partes = [
-                f"{h.get('dia','')}: de {h.get('abre','--:--')} a {h.get('cierra','--:--')}" if not h.get('cerrado') else f"{h.get('dia','')}: Cerrado"
-                for h in horarios_data if isinstance(h, dict) and h.get('dia')]
-            if partes:
-                horarios_para_prompt = ". ".join(partes) + "."
-    except Exception:
-        pass
-    return nombre_municipio, telefono, telefono_wsp, web_oficial, direccion_completa, horarios_para_prompt
-
-def es_reclamo_municipal(pregunta):
-    palabras_reclamo = [
-        "basura", "residuos", "luminaria", "luz", "foco", "bache", "calle", "agua",
-        "riego", "árbol", "arbol", "semáforo", "semáforo", "pozo", "acumulación"
-    ]
-    return any(p in pregunta.lower() for p in palabras_reclamo)
-
-def datos_faltantes_usuario(user_obj):
-    faltantes = []
-    if not get_attr(user_obj, "telefono") or not get_attr(user_obj, "telefono").strip():
-        faltantes.append("teléfono")
-    if not get_attr(user_obj, "email") or not get_attr(user_obj, "email").strip():
-        faltantes.append(r"email")
-    return faltantes
-
-def datos_faltantes_para_ticket(user_obj):
-    faltan = []
-    if not get_attr(user_obj, "direccion") or not get_attr(user_obj, "direccion").strip():
-        faltan.append("dirección")
-    if not get_attr(user_obj, "telefono") or not get_attr(user_obj, "telefono").strip():
-        faltan.append("teléfono")
-    if not get_attr(user_obj, "email") or not get_attr(user_obj, "email").strip():
-        faltan.append("email")
-    return faltan
-
+        # Generamos un Nro de Ticket como INTEGER para que coincida con el modelo de la DB
+        nro_ticket_int = random.randint(10000, 99999)
+        # Podríamos verificar si ya existe para asegurar unicidad, aunque es poco probable.
+        
+        descripcion_completa = f"Consulta Original: {pregunta_inicial}\n\nDetalles Adicionales: {detalles_adicionales}"
+        
+        ticket = MunicipioTicket(
+            user_id=user_id,
+            pregunta=descripcion_completa, # Usamos el campo 'pregunta' que es de tipo Texto
+            nro_ticket=nro_ticket_int,      # Guardamos el número entero
+            estado="nuevo",
+            fecha=datetime.datetime.now()
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        logger.info(f"Ticket {ticket.nro_ticket} creado exitosamente para user {user_id}.")
+        return ticket
+    except Exception as e:
+        logger.error(f"Error CRÍTICO al guardar ticket en DB para user {user_id}: {e}")
+        db.session.rollback()
+        return None
+# --- FUNCIÓN PRINCIPAL: AGENTE MUNICIPAL INTELIGENTE ---
 
 def responder_municipio(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
-    fuente = "desconocida"
+    """
+    Gestiona la conversación con el ciudadano a través de una máquina de estados,
+    manejando solicitudes de datos, creación y seguimiento de tickets, y consultas generales con IA.
+    """
     session = session_obj if session_obj is not None else flask_session
-    
-    # Inicializar sesión si no existe
+    user_id = get_attr(user_obj, "id")
+
+    # Inicialización y persistencia de la sesión
     session.setdefault(NOMBRE_HISTORIAL_SESION, [])
     session.setdefault(NOMBRE_ESTADO_SESION, "inicio")
     session.setdefault(NOMBRE_TICKET_ID_SESION, None)
+    session.setdefault(NOMBRE_CONTEXTO_RECLAMO_SESION, None)
 
-    mensajes_previos = session[NOMBRE_HISTORIAL_SESION][-8:]
-    user_id = get_attr(user_obj, "id", None)
     estado_actual = session[NOMBRE_ESTADO_SESION]
+    respuesta_final = ""
+    fuente = "desconocida"
+    botones = ""
+    
+    # --- MÁQUINA DE ESTADOS CONVERSACIONAL ---
 
-    nombre_municipio, telefono, _, web_oficial, _, _ = get_datos_municipio(user_obj, rubro_obj)
-
-    # --- INICIO DEL FLUJO CONVERSACIONAL ---
-
-    # 1. Derivación a humano (prioridad máxima)
-    if detectar_palabra_humano(pregunta):
-        # (La lógica de derivación a humano que ya tienes es correcta, la mantenemos)
-        # ...
-        return {"respuesta": mensaje_derivacion, "fuente": "derivar_humano"}
-
-    # 2. Gestión de estado: ¿Estamos esperando datos del usuario?
-    if estado_actual == "pidiendo_datos":
-        # Aquí iría la lógica para procesar los datos que el usuario envía.
-        # Por simplicidad, asumiremos que los actualiza en su perfil y vuelve a consultar.
-        # Una mejora futura sería parsear la respuesta para extraer nombre, email, etc.
-        session[NOMBRE_ESTADO_SESION] = "inicio" # Reseteamos el estado
-        session.modified = True
-        # Forzamos una nueva verificación de datos después de la posible actualización
-        faltan_datos_msg = solicitar_datos_faltantes(user_obj)
-        if faltan_datos_msg:
-             return {"respuesta": "Gracias. Aún necesito más información: " + faltan_datos_msg["respuesta"], "fuente": "falta_dato_contacto"}
-        else:
-             return {"respuesta": "¡Perfecto! Ya tengo tus datos. Ahora sí, ¿en qué te puedo ayudar?", "fuente": "datos_completados"}
-
-
-    # 3. Gestión de estado: ¿Estamos trabajando sobre un ticket abierto?
-    ticket_activo_id = session.get(NOMBRE_TICKET_ID_SESION)
-    if ticket_activo_id:
-        ticket = MunicipioTicket.query.get(ticket_activo_id)
-        if ticket and ticket.estado in ["nuevo", "en curso"]:
-            # Si el usuario dice que no o algo similar, cerramos el ticket
-            if any(palabra in pregunta.lower() for palabra in ["no", "nada mas", "gracias", "listo"]):
-                ticket.estado = "resuelto"
-                db.session.commit()
-                session[NOMBRE_TICKET_ID_SESION] = None
-                session[NOMBRE_ESTADO_SESION] = "inicio"
-                session.modified = True
-                respuesta = (
-                    "¡Entendido! Doy tu reclamo por finalizado. Si necesitas algo más, no dudes en consultar.<br>"
-                    "¿Te resultó útil mi ayuda?"
-                )
-                botones = render_botones_accion([
-                    {"texto": "👍 Sí, mucho", "payload": "valoracion_positiva"},
-                    {"texto": "👎 Podría mejorar", "payload": "valoracion_negativa"}
-                ])
-                return {"respuesta": respuesta + botones, "fuente": "cierre_ticket"}
-            else:
-                # Cualquier otra cosa es un comentario adicional al ticket
-                guardar_comentario(ticket.id, user_id, pregunta)
-                respuesta = "He añadido tu comentario al ticket. ¿Hay algo más que quieras agregar?"
-                botones = render_botones_accion([
-                    {"texto": "No, eso es todo", "payload": "no"}
-                ])
-                return {"respuesta": respuesta + botones, "fuente": "agrega_comentario_ticket"}
-
-    # 4. Verificación de datos del usuario ANTES de cualquier acción
-    faltan_datos_msg = solicitar_datos_faltantes(user_obj)
-    if faltan_datos_msg:
-        session[NOMBRE_ESTADO_SESION] = faltan_datos_msg["estado_sesion"]
-        session.modified = True
-        return {"respuesta": faltan_datos_msg["respuesta"], "fuente": "falta_dato_contacto"}
-
-    # 5. Lógica de tickets (búsqueda y creación)
-    res_ticket = procesar_ticket_entidad(pregunta, user_obj) # Asumo que esta función crea o busca tickets
-    if res_ticket:
-        # Si se crea un ticket nuevo, lo guardamos en sesión
-        if res_ticket.get("ticket_id"):
-             session[NOMBRE_TICKET_ID_SESION] = res_ticket["ticket_id"]
-             session[NOMBRE_ESTADO_SESION] = "gestionando_ticket"
-             session.modified = True
+    if estado_actual == "pidiendo_datos_iniciales":
+        # En un futuro, aquí se procesarían los datos enviados por el usuario para actualizar su perfil.
+        # Por ahora, se asume que lo hace y se resetea el flujo.
+        session[NOMBRE_ESTADO_SESION] = "inicio"
+        respuesta_final = "¡Muchas gracias por completar tus datos! Ahora sí, ¿en qué puedo ayudarte?"
+        fuente = "datos_completados"
         
-        # Añadir botones de acción si procede
-        if res_ticket.get("accion") == "ticket_creado":
-            res_ticket["respuesta"] += "<br>¿Quieres agregar más detalles, como fotos o una descripción más larga?"
-            botones = render_botones_accion([
-                {"texto": "Sí, agregar detalles", "payload": "si"},
-                {"texto": "No, está bien así", "payload": "no"}
-            ])
-            res_ticket["respuesta"] += botones
+    elif estado_actual == "gestionando_ticket_activo":
+        ticket_id = session.get(NOMBRE_TICKET_ID_SESION)
+        ticket = db.session.get(MunicipioTicket, ticket_id) if ticket_id else None
+        
+        if not ticket:
+            session[NOMBRE_ESTADO_SESION] = "inicio"
+            session[NOMBRE_TICKET_ID_SESION] = None
+            return responder_municipio(pregunta, user_obj, rubro_obj, session_obj, **kwargs)
 
-        guardar_conversacion(user_id, pregunta, res_ticket["respuesta"], res_ticket["fuente"], "municipio")
-        return res_ticket
+        if any(w in pregunta.lower() for w in ["no", "nada mas", "listo", "gracias", "cerrar", "finalizar"]):
+            ticket.estado = "resuelto_ciudadano"
+            db.session.commit()
+            respuesta_final = f"Entendido. Doy por finalizado el seguimiento del ticket **#{ticket.nro_ticket}**. Si necesitas algo más en el futuro, no dudes en consultarme."
+            fuente = "cierre_ticket_usuario"
+            session[NOMBRE_ESTADO_SESION] = "inicio"
+            session[NOMBRE_TICKET_ID_SESION] = None
+        else:
+            comentario = TicketComentario(ticket_id=ticket.id, user_id=user_id, comentario=pregunta, fecha=datetime.datetime.now(), tipo_ticket='municipio')
+            db.session.add(comentario)
+            db.session.commit()
+            respuesta_final = f"He añadido tu comentario al ticket **#{ticket.nro_ticket}**. El equipo a cargo lo revisará. ¿Deseas agregar algo más o podemos finalizar el seguimiento por ahora?"
+            fuente = "agrega_comentario_ticket"
+        
+        botones = render_botones_accion([
+            {"texto": "Finalizar seguimiento", "payload": "no, eso es todo", "tipo": "primario"},
+            {"texto": "Hacer otra consulta", "payload": "quiero hacer otra consulta", "tipo": "secundario"}
+        ])
 
-    # 6. Flujo General con IA (Cohere)
-    # (Tu lógica de consulta a Cohere y fallback se mantiene aquí, es el último recurso)
-    # ...
-    # Simplemente asegúrate de guardar el historial en sesión como ya lo haces.
-    # ...
-    
-    # Al final, si ninguna otra lógica se activó, podrías ofrecer botones genéricos.
-    respuesta_final = "Hola, soy tu asistente municipal. ¿Cómo puedo ayudarte hoy?" # Mensaje por defecto
-    fuente_final = "saludo_inicial"
-    
-    # Ejemplo de lógica para obtener respuesta de Cohere
-    try:
-        # ... tu código para llamar a get_cohere_response ...
-        respuesta_llm = "..." # La respuesta que obtienes de Cohere
-        if respuesta_llm:
-            respuesta_final = respuesta_llm
-            fuente_final = "cohere"
-    except Exception as e:
-        # ... tu manejo de errores ...
-        respuesta_final = "En este momento no puedo procesar tu consulta, por favor intenta más tarde."
-        fuente_final = "error_llm"
+    elif estado_actual == "confirmando_reclamo":
+        contexto_reclamo = session.get(NOMBRE_CONTEXTO_RECLAMO_SESION)
+        if any(w in pregunta.lower() for w in ["si", "sí", "correcto", "afirmativo", "iniciar reclamo"]):
+            respuesta_final = f"Perfecto. Para poder registrar tu reclamo sobre **{contexto_reclamo}**, por favor, indícame la **dirección exacta** (calle y altura, esquina, o puntos de referencia claros) y cualquier otro detalle que consideres importante."
+            session[NOMBRE_ESTADO_SESION] = "pidiendo_datos_reclamo"
+            fuente = "solicita_detalles_reclamo"
+        else:
+            respuesta_final = "Entendido. No hay problema. Entonces, ¿en qué otra cosa puedo ayudarte?"
+            session[NOMBRE_ESTADO_SESION] = "inicio"
+            session[NOMBRE_CONTEXTO_RECLAMO_SESION] = None
+            fuente = "cancela_creacion_reclamo"
 
-    botones = render_botones_accion([
-        {"texto": "Hacer un reclamo", "payload": "Quiero hacer un reclamo de alumbrado"},
-        {"texto": "Consultar estado de ticket", "payload": "Cuál es el estado de mi ticket 12345"},
-        {"texto": "Horarios de atención", "payload": "Me decís los horarios de atención?"}
-    ])
-    
-    # Guardar en conversación y sesión
-    guardar_conversacion(user_id, pregunta, respuesta_final, fuente_final, "municipio")
-    session[NOMBRE_HISTORIAL_SESION].extend([
-        {"role": "user", "content": pregunta},
-        {"role": "assistant", "content": respuesta_final}
-    ])
-    session.modified = True
+    elif estado_actual == "pidiendo_datos_reclamo":
+        contexto = session.get(NOMBRE_CONTEXTO_RECLAMO_SESION, "Varios")
+        pregunta_original = next((msg['content'] for msg in reversed(session[NOMBRE_HISTORIAL_SESION]) if msg['role'] == 'user'), pregunta)
+        ticket = crear_y_guardar_ticket(user_id, pregunta_original, contexto, pregunta)
+        
+        if ticket:
+            respuesta_final = (
+                f"¡Gracias! Tu reclamo ha sido generado con éxito.\n\n"
+                f"**N° de Ticket: {ticket.nro_ticket}**\n\n"
+                "Ya derivamos tu solicitud al área correspondiente. Puedes usar ese número para consultas futuras. "
+                "Ahora estoy atento a este ticket. Si quieres añadir más información (como fotos o videos), puedes indicármelo. ¿Hay algo más que desees agregar por ahora?"
+            )
+            session[NOMBRE_TICKET_ID_SESION] = ticket.id
+            session[NOMBRE_ESTADO_SESION] = "gestionando_ticket_activo"
+            fuente = "ticket_creado_exitosamente"
+        else:
+            respuesta_final = "Lo lamento, hubo un problema técnico y no pude generar tu ticket. Por favor, intenta nuevamente en unos minutos o contacta al municipio por otros medios."
+            session[NOMBRE_ESTADO_SESION] = "inicio"
+            fuente = "error_creando_ticket"
+        
+        session[NOMBRE_CONTEXTO_RECLAMO_SESION] = None
 
-    return {"respuesta": respuesta_final + botones, "fuente": fuente_final}
+    else:  # ESTADO "inicio"
+        datos_faltantes = solicitar_datos_faltantes(user_obj)
+        if datos_faltantes:
+            session[NOMBRE_ESTADO_SESION] = datos_faltantes["estado_sesion"]
+            respuesta_final = datos_faltantes["respuesta"]
+            fuente = "solicitud_datos_perfil"
+        else:
+            tema_reclamo = detectar_intencion_reclamo(pregunta)
+            if tema_reclamo:
+                respuesta_final = f"Detecté que tu consulta podría ser un reclamo sobre **{tema_reclamo}**. ¿Es correcto y deseas que inicie la gestión de un ticket?"
+                session[NOMBRE_ESTADO_SESION] = "confirmando_reclamo"
+                session[NOMBRE_CONTEXTO_RECLAMO_SESION] = tema_reclamo
+                fuente = "confirmacion_intencion_reclamo"
+                botones = render_botones_accion([
+                    {"texto": "Sí, iniciar reclamo", "payload": "si", "tipo": "primario"},
+                    {"texto": "No, es otra cosa", "payload": "no", "tipo": "secundario"}
+                ])
+            else:
+                # --- AQUÍ VA LA CONSULTA A LA INTELIGENCIA ARTIFICIAL (COHERE) ---
+                fuente = "cohere_ia"
+                try:
+                    # Lógica para construir un prompt de alta calidad para Cohere
+                    nombre_municipio = get_attr(user_obj, "nombre_empresa", "este municipio")
+                    prompt_sistema = (
+                        f"Sos un agente de atención ciudadana experto para {nombre_municipio}. Tu identidad es la de un empleado municipal real, amable, eficiente y muy resolutivo. No te presentes como IA o chatbot. "
+                        "Tu objetivo es ayudar a los vecinos con sus consultas sobre trámites, servicios, horarios e información general de forma clara y concisa. Si no sabes algo, derívalo a la web oficial o al teléfono de contacto. "
+                        "No debes gestionar reclamos directamente, esa es una función de otra parte del sistema. Si el usuario insiste en un reclamo, indícale amablemente: 'Para iniciar un reclamo, por favor sé más específico, por ejemplo: `quiero reclamar por un bache en la calle X`.' "
+                        "Siempre finaliza tu respuesta con una pregunta que invite a la acción, como '¿Puedo ayudarte con algo más?'."
+                    )
+                    
+                    historial_para_api = [{"role": "USER" if msg.get("role") == "user" else "CHATBOT", "message": msg.get("content","")} for msg in session.get(NOMBRE_HISTORIAL_SESION, [])[-8:]]
+
+                    respuesta_final = get_cohere_response(
+                        message=pregunta,
+                        chat_history=historial_para_api,
+                        preamble=prompt_sistema,
+                        rubro_id=get_attr(rubro_obj, "id"),
+                        user_context={"nombre_empresa": nombre_municipio}
+                    )
+                    if not respuesta_final or len(respuesta_final) < 10:
+                        raise ValueError("Respuesta de IA vacía o muy corta")
+
+                except Exception as e:
+                    logger.error(f"Error en la llamada a Cohere: {e}")
+                    respuesta_final = "En este momento, no puedo procesar tu consulta. Por favor, intenta reformularla o contacta al municipio por otros medios."
+                    fuente = "error_ia"
+                
+                botones = render_botones_accion([
+                    {"texto": "Hacer un reclamo", "payload": "Quiero hacer un reclamo por un pozo"},
+                    {"texto": "Horarios de atención", "payload": "Cuales son los horarios de atencion"}
+                ])
+
+    # --- FINALIZACIÓN Y GUARDADO ---
+    if respuesta_final:
+        respuesta_con_placeholders = reemplazar_placeholders(respuesta_final, user_obj)
+        respuesta_html_final = respuesta_con_placeholders + botones
+        
+        session[NOMBRE_HISTORIAL_SESION].extend([
+            {"role": "user", "content": pregunta},
+            {"role": "assistant", "content": respuesta_con_placeholders}
+        ])
+        session.modified = True
+        
+        guardar_conversacion_db(user_id, pregunta, respuesta_con_placeholders, fuente)
+        
+        return {"respuesta": respuesta_html_final, "fuente": fuente}
+
+    return {"respuesta": "Lo siento, ocurrió un error inesperado. Por favor, intenta de nuevo.", "fuente": "error_flujo_desconocido"}
