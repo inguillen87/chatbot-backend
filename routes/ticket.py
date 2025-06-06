@@ -1,15 +1,16 @@
 from flask import Blueprint, request, jsonify
+from flask_login import current_user, login_required
 from models import MunicipioTicket, PymeTicket, TicketComentario, db
 from services.ticket import crear_comentario_ticket
 
 ticket_bp = Blueprint("ticket_bp", __name__)
 
-# Crear ticket (opcional manual)
+
 @ticket_bp.route('/tickets/<tipo_ticket>', methods=['POST'])
+@login_required
 def crear_ticket(tipo_ticket):
     data = request.get_json() or {}
     pregunta = data.get("pregunta", "").strip()
-    user_id = data.get("user_id")
     estado = data.get("estado", "nuevo")
     archivo_url = data.get("archivo_url")
     telefono = data.get("telefono")
@@ -28,7 +29,7 @@ def crear_ticket(tipo_ticket):
     if tipo_ticket == "municipio":
         ticket = MunicipioTicket(
             pregunta=pregunta,
-            user_id=user_id,
+            user_id=current_user.id,
             estado=estado,
             nro_ticket=nro_ticket,
             archivo_url=archivo_url
@@ -36,7 +37,7 @@ def crear_ticket(tipo_ticket):
     else:
         ticket = PymeTicket(
             pregunta=pregunta,
-            user_id=user_id,
+            user_id=current_user.id,
             estado=estado,
             nro_ticket=nro_ticket,
             archivo_url=archivo_url,
@@ -49,15 +50,15 @@ def crear_ticket(tipo_ticket):
     db.session.commit()
     return jsonify({"ok": True, "ticket": ticket.id, "nro_ticket": nro_ticket}), 201
 
-# Listar tickets del admin (filtra por user_id)
+
 @ticket_bp.route('/tickets/<tipo_ticket>', methods=['GET'])
+@login_required
 def listar_tickets(tipo_ticket):
-    user_id = request.args.get("user_id", type=int)
-    if not user_id:
-        return jsonify({"ok": False, "error": "Falta user_id para filtrar tickets"}), 400
+    if tipo_ticket not in ("municipio", "pyme"):
+        return jsonify({"ok": False, "error": "Tipo de ticket inválido"}), 400
 
     query = MunicipioTicket.query if tipo_ticket == "municipio" else PymeTicket.query
-    tickets = query.filter_by(user_id=user_id).order_by(query.column_descriptions[0]['entity'].fecha.desc()).all()
+    tickets = query.filter_by(user_id=current_user.id).order_by(query.column_descriptions[0]['entity'].fecha.desc()).all()
 
     data = []
     for t in tickets:
@@ -75,36 +76,33 @@ def listar_tickets(tipo_ticket):
         })
     return jsonify({"ok": True, "tickets": data})
 
-# Cambiar estado (solo admin del ticket)
 @ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/estado', methods=['PUT'])
+@login_required
 def cambiar_estado_ticket(tipo_ticket, ticket_id):
     data = request.get_json() or {}
     nuevo_estado = data.get("estado")
-    user_id = data.get("user_id")
-    if not nuevo_estado or not user_id:
-        return jsonify({"ok": False, "error": "Estado y user_id son obligatorios"}), 400
+
+    if not nuevo_estado:
+        return jsonify({"ok": False, "error": "Estado es obligatorio"}), 400
 
     ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
     if not ticket:
         return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
-    if ticket.user_id != user_id:
+    if ticket.user_id != current_user.id:
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
     ticket.estado = nuevo_estado
     db.session.commit()
     return jsonify({"ok": True, "ticket": ticket.id, "nuevo_estado": ticket.estado})
 
-# Detalle ticket (solo admin)
+#5. Detalle ticket (solo si es tuyo)
 @ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>', methods=['GET'])
+@login_required
 def detalle_ticket(tipo_ticket, ticket_id):
-    user_id = request.args.get("user_id", type=int)
-    if not user_id:
-        return jsonify({"ok": False, "error": "Falta user_id"}), 400
-
     ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
     if not ticket:
         return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
-    if ticket.user_id != user_id:
+    if ticket.user_id != current_user.id:
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
     data = {
@@ -121,48 +119,42 @@ def detalle_ticket(tipo_ticket, ticket_id):
     }
     return jsonify({"ok": True, "ticket": data})
 
+
 # Agregar comentario (admin o vecino)
 @ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['POST'])
+@login_required
 def agregar_comentario(tipo_ticket, ticket_id):
     data = request.get_json() or {}
     comentario = data.get("comentario", "").strip()
-    user_id = data.get("user_id")
-    telefono = data.get("telefono")
-    email = data.get("email")
-    dni = data.get("dni")
-    estado_cliente = data.get("estado_cliente", "no_definido")
 
     if tipo_ticket not in ("municipio", "pyme"):
         return jsonify({"ok": False, "error": "Tipo de ticket inválido"}), 400
+
     ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
     if not ticket:
         return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
+    if ticket.user_id != current_user.id:
+        return jsonify({"ok": False, "error": "No autorizado"}), 403
     if not comentario:
         return jsonify({"ok": False, "error": "Comentario vacío"}), 400
-    if ticket.user_id != user_id and user_id is not None:
-        # Vecino puede comentar si no es admin, si es admin debe ser dueño del ticket
-        pass # aquí puedes agregar lógica para validar vecinos si lo deseas
 
     nuevo_com = crear_comentario_ticket(
-        ticket_id, tipo_ticket, comentario, user_id, telefono, email, dni, estado_cliente
+        ticket_id, tipo_ticket, comentario, current_user.id, current_user.telefono, current_user.email, None, "cliente"
     )
     db.session.commit()
     return jsonify({"ok": True, "comentario": nuevo_com.id}), 201
 
-@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['GET'])
-def listar_comentarios(tipo_ticket, ticket_id):
-    user_id = request.args.get("user_id", type=int)
-    if tipo_ticket not in ("municipio", "pyme"):
-        return jsonify({"ok": False, "error": "Tipo de ticket inválido"}), 400
 
+@ticket_bp.route('/tickets/<tipo_ticket>/<int:ticket_id>/comentarios', methods=['GET'])
+@login_required
+def listar_comentarios(tipo_ticket, ticket_id):
     ticket = MunicipioTicket.query.get(ticket_id) if tipo_ticket == "municipio" else PymeTicket.query.get(ticket_id)
     if not ticket:
         return jsonify({"ok": False, "error": "Ticket no encontrado"}), 404
-    if ticket.user_id != user_id:
+    if ticket.user_id != current_user.id:
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
     try:
-        # Consulta robusta y clara
         comentarios = (
             TicketComentario.query
             .filter_by(ticket_id=ticket_id, tipo_ticket=tipo_ticket)
@@ -187,6 +179,5 @@ def listar_comentarios(tipo_ticket, ticket_id):
         return jsonify({"ok": True, "comentarios": data})
 
     except Exception as e:
-        # Logueá el error en consola para debug
         import traceback; traceback.print_exc()
         return jsonify({"ok": False, "error": f"Error interno: {e}"}), 500
