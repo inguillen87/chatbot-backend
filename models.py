@@ -1,11 +1,13 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey 
+from sqlalchemy import Index
 from sqlalchemy.dialects.sqlite import JSON
 from extensions import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 import uuid
 import json
+import uuid
 
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -157,6 +159,7 @@ class CatalogoEmbedding(db.Model):
     embedding_vector = db.Column(JSON)
 
 class Conversacion(db.Model):
+    # Tus campos existentes...
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     pregunta = db.Column(db.Text, nullable=False)
@@ -164,11 +167,11 @@ class Conversacion(db.Model):
     fuente = db.Column(db.String(50), nullable=False)
     rubro = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    # --- LÍNEAS QUE VAMOS A AGREGAR ---
-    # 1. El nuevo campo para agrupar los chats de una misma conversación
-    session_id = db.Column(UUID(as_uuid=True), default=uuid.uuid4, nullable=False)
 
-    # 2. El nuevo índice para que las búsquedas por sesión sean súper rápidas
+    # --- LA LÍNEA CLAVE, CORREGIDA PARA SQLITE ---
+    session_id = db.Column(db.String(36), default=lambda: str(uuid.uuid4()), nullable=False)
+
+    # El índice (esto está bien)
     __table_args__ = (Index('ix_conversacion_session_id', 'session_id'),)
 
 class SitioWebInfo(db.Model):
