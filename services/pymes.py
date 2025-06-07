@@ -40,6 +40,44 @@ def _generar_asunto_con_llm(pregunta: str) -> str:
 
 # --- PATRÓN DE DISEÑO: ORQUESTADOR CON MANEJADORES (REFINADO) ---
 
+class BrokenProductHandler(BaseHandler):
+    """
+    Handler especialista para reclamos de productos rotos o dañados.
+    Ofrece una solución proactiva inmediata.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        palabras_clave = ["botella rota", "llegó roto", "producto dañado", "está roto", "vino roto"]
+        if any(keyword in pregunta.lower() for keyword in palabras_clave):
+            
+            # 1. Generamos asunto y creamos el ticket con una categoría específica
+            asunto = _generar_asunto_con_llm(pregunta)
+            ticket_id = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="pyme",
+                ticket_data={
+                    "pregunta": pregunta,
+                    "user_id": self.context['user_id'],
+                    "comentario": pregunta,
+                    "asunto": asunto,
+                    "categoria": "Reclamo - Producto Dañado" # Categoría más específica
+                }
+            )
+
+            # 2. Guardamos un contexto específico en la sesión para el seguimiento
+            self.context['session'][CONTEXTO_PYME_SESION] = {'esperando_datos_reclamo_roto': ticket_id}
+            self.context['session'].modified = True
+            
+            # 3. Formulamos la respuesta ideal que definimos
+            nombre_empresa = self.context.get('nombre_pyme', 'nuestra bodega')
+            respuesta = (
+                f"Lamento muchísimo escuchar eso. En {nombre_empresa} nos aseguramos de que recibas todo en perfectas condiciones.\n\n"
+                "No te preocupes, te enviaremos una nueva botella sin ningún costo adicional.\n\n"
+                "Para poder gestionar el envío, por favor, envíame en tu próximo mensaje el número de pedido original y confirmame la dirección de envío. Si podés adjuntar una foto del daño, nos ayudaría a documentar el incidente."
+            )
+            
+            return {"respuesta": respuesta, "fuente": "handler_producto_dañado"}
+            
+        return None
+
 class BaseHandler:
     """Clase base para todos los manejadores. Define la interfaz."""
     def __init__(self, context):
@@ -57,26 +95,38 @@ class LimitHandler(BaseHandler):
         return None
 
 class FollowUpHandler(BaseHandler):
-    """Manejador de seguimiento para conversaciones en curso (ej. agregar detalles a un reclamo)."""
+    """Manejador de seguimiento para conversaciones en curso."""
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context['session'].get(CONTEXTO_PYME_SESION, {})
+        
+        # Flujo para reclamos generales
         if contexto_pyme.get('esperando_detalles_reclamo'):
             ticket_id = contexto_pyme['esperando_detalles_reclamo']
-            # ¡Usamos el servicio de tickets para añadir el comentario!
             servicio_tickets.crear_comentario(
-                ticket_id=ticket_id,
-                tipo_ticket="pyme",
-                comentario_data={
-                    "comentario": pregunta,
-                    "user_id": self.context['user_id']
-                }
+                ticket_id=ticket_id, tipo_ticket="pyme",
+                comentario_data={"comentario": pregunta, "user_id": self.context['user_id']}
             )
             self.context['session'][CONTEXTO_PYME_SESION] = {} # Limpiar contexto
             self.context['session'].modified = True
             return {
-                "respuesta": "Perfecto, he añadido tus comentarios al reclamo. Nuestro equipo lo revisará a la brevedad. ¿Puedo ayudarte con algo más?",
+                "respuesta": "Perfecto, he añadido tus comentarios al reclamo. Nuestro equipo lo revisará a la brevedad.",
                 "fuente": "detalle_reclamo_agregado"
             }
+            
+        # NUEVO FLUJO: Para cuando pedimos datos de un producto roto
+        elif contexto_pyme.get('esperando_datos_reclamo_roto'):
+            ticket_id = contexto_pyme['esperando_datos_reclamo_roto']
+            servicio_tickets.crear_comentario(
+                ticket_id=ticket_id, tipo_ticket="pyme",
+                comentario_data={"comentario": f"Info adicional del cliente: {pregunta}", "user_id": self.context['user_id']}
+            )
+            self.context['session'][CONTEXTO_PYME_SESION] = {} # Limpiar contexto
+            self.context['session'].modified = True
+            return {
+                "respuesta": "Recibido. Gracias por la información. Ya estamos procesando el envío de tu reemplazo.",
+                "fuente": "datos_reemplazo_recibidos"
+            }
+            
         return None
 
 class TicketStatusHandler(BaseHandler):
@@ -228,7 +278,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
     
     # El orden de la cadena es crucial para la eficiencia.
     handler_chain = [
-        LimitHandler, FollowUpHandler, TicketStatusHandler, ClaimHandler,
+        LimitHandler, FollowUpHandler, TicketStatusHandler, BrokenProductHandler, ClaimHandler,
         VectorCatalogHandler, FaqHandler, IntentHandler, LLMHandler
     ]
 
