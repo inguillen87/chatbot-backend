@@ -188,8 +188,7 @@ class VectorCatalogHandler(BaseHandler):
         palabras_pedido = ["comprar", "precio", "pedido", "cotización", "oferta", "disponible", "stock", "quiero"]
         if any(w in pregunta.lower() for w in palabras_pedido):
             try:
-                respuesta_vector = buscar_item_vectorizado(pregunta, self.context['user_obj'])
-                if respuesta_vector:
+                    respuesta_vector = buscar_item_vectorizado(pregunta, self.context['user_id'])                if respuesta_vector:
                     respuesta = f"{respuesta_vector}\n¿Querés que te genere un pedido con esto?"
                     # Aquí podrías añadir lógica para crear un ticket de "Pedido" o "Cotización"
                     return {"respuesta": respuesta, "fuente": "catalogo_vector"}
