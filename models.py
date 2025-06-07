@@ -122,7 +122,7 @@ class PymeTicket(db.Model):
         lazy='dynamic'
     )
     class PymePedido(db.Model): 
-        __tablename__ = "pyme_pedido"
+     __tablename__ = "pyme_pedido"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     # Usamos un string para el número para poder ponerle un prefijo como "P-"
