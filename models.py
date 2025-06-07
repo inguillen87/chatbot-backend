@@ -121,8 +121,11 @@ class PymeTicket(db.Model):
         backref='pyme_ticket',
         lazy='dynamic'
     )
-    class PymePedido(db.Model): 
-     __tablename__ = "pyme_pedido"
+
+# --- La clase PymePedido empieza aquí, AFUERA y al mismo nivel que PymeTicket ---
+
+class PymePedido(db.Model): 
+    __tablename__ = "pyme_pedido"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     # Usamos un string para el número para poder ponerle un prefijo como "P-"
@@ -131,6 +134,9 @@ class PymeTicket(db.Model):
     detalles = db.Column(db.Text, nullable=True) # Guardaremos los productos como un JSON
     monto_total = db.Column(db.Float, nullable=True)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<PymePedido {self.nro_pedido}>"
 
     def __repr__(self):
         return f"<PymePedido {self.nro_pedido}>"
