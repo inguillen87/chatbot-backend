@@ -69,11 +69,11 @@ class BrokenProductHandler(BaseHandler):
             # 3. Formulamos la respuesta ideal que definimos
             nombre_empresa = self.context.get('nombre_pyme', 'nuestra bodega')
             respuesta = (
-                f"Lamento muchísimo escuchar eso. En {nombre_empresa} nos aseguramos de que recibas todo en perfectas condiciones.\n\n"
-                "No te preocupes, te enviaremos una nueva botella sin ningún costo adicional.\n\n"
-                "Para poder gestionar el envío, por favor, envíame en tu próximo mensaje el número de pedido original y confirmame la dirección de envío. Si podés adjuntar una foto del daño, nos ayudaría a documentar el incidente."
-            )
-            
+                        f"Lamento muchísimo escuchar eso. En {nombre_empresa} nos aseguramos de que recibas todo en perfectas condiciones.\n\n"
+                        "No te preocupes, te enviaremos una nueva botella sin ningún costo adicional.\n\n"
+                        "Para gestionar el nuevo envío, por favor, indícame en tu próximo mensaje el **número del pedido original** (el número de tu compra). Si puedes adjuntar una foto del daño, nos sería de gran ayuda para documentar el incidente."
+                        )
+
             return {"respuesta": respuesta, "fuente": "handler_producto_dañado"}
             
         return None
@@ -132,7 +132,7 @@ class FollowUpHandler(BaseHandler):
 class TicketStatusHandler(BaseHandler):
     """Busca el estado de un ticket existente."""
     def handle(self, pregunta: str) -> dict | None:
-        ticket_match = re.search(r"(pedido|ticket|reclamo|consulta)[\s#]*([0-9]{4,7})", pregunta, re.IGNORECASE)
+        ticket_match = re.search(r"(ticket|reclamo|consulta)\s*#?\s*([0-9]{4,7})", pregunta, re.IGNORECASE)
         if ticket_match:
             nro = ticket_match.group(2)
             # Aquí podrías usar un método del servicio de tickets si la búsqueda se vuelve más compleja
@@ -145,8 +145,10 @@ class TicketStatusHandler(BaseHandler):
                 return {"respuesta": msg_estado, "fuente": "consulta_estado_ticket"}
             else:
                 return {"respuesta": f"No se encontró ningún ticket con el número #{nro}.", "fuente": "ticket_no_encontrado"}
+        
+        # Si no hubo match en la expresion regular, devuelve None para pasar al siguiente handler
         return None
-
+    
 class ClaimHandler(BaseHandler):
     """Detecta, clasifica, genera asunto y registra nuevos reclamos."""
     def handle(self, pregunta: str) -> dict | None:
@@ -184,18 +186,116 @@ class ClaimHandler(BaseHandler):
 
 class VectorCatalogHandler(BaseHandler):
     """Busca en el catálogo de productos y ofrece crear un pedido."""
+ def handle(self, pregunta: str) -> dict | None:
+        palabras_pedido = ["comprar", "precio", "pedido", "cotización", "oferta", "disponible", "stock", "quiero"]
+        if any(w in pregunta.lower() for w in palabras_pedido):
+            try:
+                # Asumimos que buscar_item_vectorizado devuelve una lista de resultados
+                resultados = buscar_item_vectorizado(pregunta, self.context['user_id'])
+                if resultados:
+                    # Formateamos la respuesta para que sea clara
+                    respuesta_texto = "¡Claro! Encontré esto en nuestro catálogo:\n"
+                    # Suponemos que cada 'item' tiene .payload con 'nombre' y 'precio'
+                    items_encontrados = []
+                    for item in resultados:
+                        nombre = item.payload.get('nombre', 'Producto sin nombre')
+                        precio = item.payload.get('precio_str', 'Consultar precio')
+                        respuesta_texto += f"- **{nombre}**: ${precio}\n"
+                        items_encontrados.append(item.payload)
+                    
+                    respuesta_texto += "\n¿Te gustaría que genere un pedido con alguno de estos productos?"
+                    
+                    # ¡LA MODIFICACIÓN CLAVE! Guardamos los productos en la sesión
+                    self.context['session'][CONTEXTO_PYME_SESION] = {'confirmando_pedido': items_encontrados}
+                    self.context['session'].modified = True
+
+                    return {"respuesta": respuesta_texto, "fuente": "catalogo_vector"}
+            except Exception as e:
+                logging.warning(f"[PYMES] Error en VectorCatalogHandler: {e}")
+        return None
+# En pymes.py
+import json # Asegúrate de tener esta importación al principio del archivo
+
+class VectorCatalogHandler(BaseHandler):
+    """Busca en el catálogo de productos y ofrece crear un pedido."""
     def handle(self, pregunta: str) -> dict | None:
         palabras_pedido = ["comprar", "precio", "pedido", "cotización", "oferta", "disponible", "stock", "quiero"]
         if any(w in pregunta.lower() for w in palabras_pedido):
             try:
-                    respuesta_vector = buscar_item_vectorizado(pregunta, self.context['user_id'])                if respuesta_vector:
-                    respuesta = f"{respuesta_vector}\n¿Querés que te genere un pedido con esto?"
-                    # Aquí podrías añadir lógica para crear un ticket de "Pedido" o "Cotización"
-                    return {"respuesta": respuesta, "fuente": "catalogo_vector"}
+                # Asumimos que buscar_item_vectorizado devuelve una lista de resultados
+                resultados = buscar_item_vectorizado(pregunta, self.context['user_id'])
+                if resultados:
+                    # Formateamos la respuesta para que sea clara
+                    respuesta_texto = "¡Claro! Encontré esto en nuestro catálogo:\n"
+                    # Suponemos que cada 'item' tiene .payload con 'nombre' y 'precio'
+                    items_encontrados = []
+                    for item in resultados:
+                        nombre = item.payload.get('nombre', 'Producto sin nombre')
+                        precio = item.payload.get('precio_str', 'Consultar precio')
+                        respuesta_texto += f"- **{nombre}**: ${precio}\n"
+                        items_encontrados.append(item.payload)
+                    
+                    respuesta_texto += "\n¿Te gustaría que genere un pedido con alguno de estos productos?"
+                    
+                    # ¡LA MODIFICACIÓN CLAVE! Guardamos los productos en la sesión
+                    self.context['session'][CONTEXTO_PYME_SESION] = {'confirmando_pedido': items_encontrados}
+                    self.context['session'].modified = True
+
+                    return {"respuesta": respuesta_texto, "fuente": "catalogo_vector"}
             except Exception as e:
                 logging.warning(f"[PYMES] Error en VectorCatalogHandler: {e}")
         return None
 
+# En pymes.py
+
+class PedidoHandler(BaseHandler):
+    """
+    Handler especialista que se activa después del VectorCatalogHandler
+    para confirmar y crear un pedido en la base de datos.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        contexto_pyme = self.context['session'].get(CONTEXTO_PYME_SESION, {})
+        productos_a_confirmar = contexto_pyme.get('confirmando_pedido')
+
+        # Se activa solo si hay un pedido por confirmar en la sesión
+        if productos_a_confirmar:
+            palabras_confirmacion = ["sí", "dale", "quiero", "generar pedido", "confirmar", "ok"]
+            if any(palabra in pregunta.lower() for palabra in palabras_confirmacion):
+                
+                try:
+                    # 1. Generar un número de pedido único
+                    nro_pedido = f"P-{random.randint(10000, 99999)}"
+                    
+                    # 2. Crear el objeto PymePedido con los datos
+                    nuevo_pedido = PymePedido(
+                        user_id=self.context['user_id'],
+                        nro_pedido=nro_pedido,
+                        detalles=json.dumps(productos_a_confirmar), # Guardamos los detalles como JSON
+                        estado="pendiente"
+                    )
+                    
+                    # 3. Guardar en la base de datos
+                    db.session.add(nuevo_pedido)
+                    db.session.commit()
+                    
+                    # 4. Limpiar el contexto de la sesión
+                    self.context['session'][CONTEXTO_PYME_SESION] = {}
+                    self.context['session'].modified = True
+                    
+                    # 5. Responder al usuario con la confirmación
+                    respuesta = (
+                        f"¡Excelente! He generado tu pedido con el número **{nro_pedido}**.\n"
+                        "Un representante de ventas se pondrá en contacto contigo a la brevedad para coordinar el pago y el envío. ¡Muchas gracias por tu compra!"
+                    )
+                    
+                    return {"respuesta": respuesta, "fuente": "handler_pedido"}
+
+                except Exception as e:
+                    logging.error(f"[PYMES] Error fatal creando pedido: {e}")
+                    db.session.rollback()
+                    return {"respuesta": "Hubo un problema al generar tu pedido. Un representante te contactará para ayudarte.", "fuente": "error_handler_pedido"}
+        
+        return None
 class FaqHandler(BaseHandler):
     """Busca en las Preguntas Frecuentes (FAQs)."""
     # (Sin cambios, se mantiene igual)

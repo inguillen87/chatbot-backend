@@ -121,6 +121,19 @@ class PymeTicket(db.Model):
         backref='pyme_ticket',
         lazy='dynamic'
     )
+    class PymePedido(db.Model): 
+        __tablename__ = "pyme_pedido"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    # Usamos un string para el número para poder ponerle un prefijo como "P-"
+    nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
+    estado = db.Column(db.String(30), default="pendiente") # pendiente, confirmado, enviado, cancelado
+    detalles = db.Column(db.Text, nullable=True) # Guardaremos los productos como un JSON
+    monto_total = db.Column(db.Float, nullable=True)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<PymePedido {self.nro_pedido}>"
 
 class TicketComentario(db.Model):
     __tablename__ = "ticket_comentario"
