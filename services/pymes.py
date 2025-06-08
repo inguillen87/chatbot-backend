@@ -124,7 +124,6 @@ class FollowUpHandler(BaseHandler):
             
         return None
 
-# En services/pymes.py
 
 class PedidoHandler(BaseHandler):
     """
@@ -275,6 +274,34 @@ class VectorCatalogHandler(BaseHandler):
                 logging.warning(f"[PYMES] Error en VectorCatalogHandler: {e}")
         return None
 
+# En services/pymes.py
+
+class SalesEngageHandler(BaseHandler):
+    """
+    Este handler se activa si el usuario muestra intención de compra, 
+    pero no se encontraron productos en el catálogo vectorial.
+    Su objetivo es guiar al usuario para que cargue su catálogo o contacte a un vendedor.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        palabras_venta = ["comprar", "vender", "precio", "producto", "catalogo", "stock", "vinos", "cajas"]
+        # Se activa si detecta intención de compra
+        if any(palabra in pregunta.lower() for palabra in palabras_venta):
+            
+            # Esta respuesta solo se dará si el VectorCatalogHandler falló antes
+            nombre_pyme = self.context.get('nombre_pyme', 'tu empresa')
+            respuesta = (
+                f"Veo que te interesa consultar sobre productos para {nombre_pyme}, ¡excelente!\n\n"
+                "Para poder darte precios y stock, primero necesito que tu catálogo de productos esté cargado en mi sistema. "
+                "Parece que aún no lo has subido.\n\n"
+                "Podés hacerlo ahora desde tu panel de perfil, en la sección 'Tu Catálogo de Productos'. "
+                "Si preferís, también puedo tomar tus datos para que un representante comercial se ponga en contacto y te asesore personalmente."
+            )
+            
+            # Devolvemos una respuesta útil en lugar de dejar que la conversación muera
+            return {"respuesta": respuesta, "fuente": "handler_sin_catalogo"}
+            
+        return None
+    
 class FaqHandler(BaseHandler):
     """Busca en las Preguntas Frecuentes (FAQs)."""
     def handle(self, pregunta: str) -> dict | None:
@@ -329,7 +356,8 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
         "mensajes_previos": session.setdefault(NOMBRE_HISTORIAL_SESION, [])[-12:]
     }
     
-    # La cadena de especialistas, en el orden correcto de prioridad
+    # En services/pymes.py, dentro de responder_pyme()
+
     handler_chain = [
         LimitHandler, 
         FollowUpHandler, 
@@ -337,10 +365,11 @@ def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
         TicketStatusHandler, 
         BrokenProductHandler,
         ClaimHandler,
-        VectorCatalogHandler,
+        VectorCatalogHandler,      # 1. Primero intenta buscar en el catálogo...
+        SalesEngageHandler,        # 2. ...si falla, este nuevo handler lo atrapa.
         FaqHandler, 
         IntentHandler, 
-        LLMHandler
+        LLMHandler                 # 3. El LLM es el último, último recurso.
     ]
 
     respuesta_final = None
