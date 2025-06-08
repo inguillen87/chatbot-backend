@@ -32,3 +32,4 @@ class Config:
     # Estas dos líneas son las que arreglan el problema de la sesión entre dominios.
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_SAMESITE = 'None'
+    SESSION_COOKIE_DOMAIN = '.chatboc.ar'

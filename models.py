@@ -97,6 +97,8 @@ class MunicipioTicket(db.Model):
         primaryjoin="and_(MunicipioTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='municipio')",
         backref='municipio_ticket',
         lazy='dynamic'
+        overlaps="comentarios,municipio_ticket" # <--- PARÁMETRO AÑADIDO
+
     )
 
 class PymeTicket(db.Model):
@@ -120,6 +122,8 @@ class PymeTicket(db.Model):
         primaryjoin="and_(PymeTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='pyme')",
         backref='pyme_ticket',
         lazy='dynamic'
+        overlaps="comentarios,municipio_ticket" # <--- PARÁMETRO AÑADIDO
+
     )
 
 # --- La clase PymePedido empieza aquí, AFUERA y al mismo nivel que PymeTicket ---
