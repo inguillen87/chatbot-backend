@@ -1,12 +1,17 @@
+# app.py
+
 import os
 import logging
 import sys
 from flask import Flask
+from flask_cors import CORS
+from flask_session import Session  # <-- 1. IMPORTACIÓN AÑADIDA
 
 from config import Config
 from extensions import db, migrate
 from models import User
 
+# Importación de todas tus rutas (Blueprints)
 from routes.auth import auth_bp
 from routes.chat import chat_bp
 from routes.ticket import ticket_bp
@@ -18,16 +23,23 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # 👇👇 AGREGAR ESTAS LÍNEAS DE DIAGNÓSTICO TEMPORALES 👇👇
+    # --- Bloque de Diagnóstico (lo dejamos temporalmente) ---
     print("--- DIAGNÓSTICO DE SESIÓN ---")
     print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
     print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
     print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
+    print(f"SESSION_TYPE: {app.config.get('SESSION_TYPE')}")
     print("-----------------------------")
-    # 👆👆 FIN DEL BLOQUE DE DIAGNÓSTICO 👆👆
 
+    # --- 2. Bloque único y ordenado de Inicialización de Extensiones ---
+    db.init_app(app)
+    migrate.init_app(app, db)
+    
+    # Configuración y activación de Sesiones en el Servidor
+    app.config['SESSION_SQLALCHEMY'] = db
+    Session(app)
 
-    # Logging profesional
+    # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(
@@ -38,40 +50,27 @@ def create_app(config_class=Config):
     app.logger.addHandler(handler)
     app.logger.setLevel(log_level)
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
-
-    # Inicialización de extensiones
-    db.init_app(app)
-    migrate.init_app(app, db)
-
-    try:
-        os.makedirs(app.instance_path, exist_ok=True)
-    except OSError as e:
-        app.logger.error(f"Error creando instance_path: {e}")
-
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
-    # ---- CONFIGURACIÓN DE CORS ----
-    from flask_cors import CORS
-
+    # --- 3. Configuración de CORS ---
     allowed_origins = [
         "https://chatboc.ar",
         "https://www.chatboc.ar",
         "http://localhost:5173",
         "http://localhost:8080",
-        "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app"
+        "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app",
+        "https://chatboc-frontend-git-main-marcelos-projects-c26aa499.vercel.app",
+        # Podrías agregar aquí cualquier otra URL de preview de Vercel si es necesario
     ]
-    # Config global: ¡aplica a todas las rutas y métodos!
     CORS(
         app,
         origins=allowed_origins,
         supports_credentials=True,
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Origin", "Accept"],
-        expose_headers=["Content-Disposition"],
-        max_age=86400   # 1 día para que el preflight se cachee
+        allow_headers=["Authorization", "Content-Type", "Origin", "Accept"]
     )
 
-    # Registro de Blueprints
+    # --- 4. Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
@@ -81,16 +80,11 @@ def create_app(config_class=Config):
     # Registro de comandos CLI
     register_commands(app)
 
-    # --- CORS TEST ROUTE (solo para debug, podés borrarla en prod) ---
-    @app.route('/cors-test', methods=['OPTIONS', 'GET'])
-    def cors_test():
-        return '', 204
-
+    # --- 5. La función devuelve la app al final de todo ---
     return app
 
+# --- Creación de la instancia de la aplicación ---
 app = create_app()
 
 if __name__ == '__main__':
-    app.logger.setLevel(logging.DEBUG)
-    app.logger.info("Iniciando aplicación Flask con el servidor de desarrollo (DEBUG)...")
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))

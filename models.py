@@ -95,10 +95,8 @@ class MunicipioTicket(db.Model):
     comentarios = db.relationship(
         'TicketComentario',
         primaryjoin="and_(MunicipioTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='municipio')",
-        backref='municipio_ticket',
+        backref='municipio_ticket', # <--- ¡COMA AÑADIDA!
         lazy='dynamic'
-        overlaps="comentarios,municipio_ticket" # <--- PARÁMETRO AÑADIDO
-
     )
 
 class PymeTicket(db.Model):
@@ -117,13 +115,13 @@ class PymeTicket(db.Model):
     email = db.Column(db.String(120), nullable=True)
     dni = db.Column(db.String(20), nullable=True)
     estado_cliente = db.Column(db.String(30), default="no_definido")
+   # Dentro de la clase MunicipioTicket
+
     comentarios = db.relationship(
         'TicketComentario',
-        primaryjoin="and_(PymeTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='pyme')",
-        backref='pyme_ticket',
+        primaryjoin="and_(MunicipioTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='municipio')",
+        backref='municipio_ticket', # <--- ¡COMA AÑADIDA!
         lazy='dynamic'
-        overlaps="comentarios,municipio_ticket" # <--- PARÁMETRO AÑADIDO
-
     )
 
 # --- La clase PymePedido empieza aquí, AFUERA y al mismo nivel que PymeTicket ---
