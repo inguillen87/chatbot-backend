@@ -18,6 +18,15 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
+    # 👇👇 AGREGAR ESTAS LÍNEAS DE DIAGNÓSTICO TEMPORALES 👇👇
+    print("--- DIAGNÓSTICO DE SESIÓN ---")
+    print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
+    print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
+    print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
+    print("-----------------------------")
+    # 👆👆 FIN DEL BLOQUE DE DIAGNÓSTICO 👆👆
+
+
     # Logging profesional
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
     handler = logging.StreamHandler(sys.stderr)
