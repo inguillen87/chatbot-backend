@@ -35,6 +35,55 @@ def _generar_asunto_con_llm(pregunta: str) -> str:
         logger.error(f"[PYME] Error generando asunto con LLM: {e}")
         return (pregunta[:75] + '...') if len(pregunta) > 75 else pregunta
 
+def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles: list) -> list:
+    """
+    Usa el LLM para analizar una frase y extraer productos y cantidades en formato JSON.
+    """
+    # Creamos una lista de nombres de productos para darle contexto al LLM
+    nombres_productos = [p.get('nombre', '') for p in productos_disponibles]
+    
+    prompt = f"""
+    Tu tarea es analizar la respuesta de un cliente y extraer los productos y cantidades que solicita, basándote en una lista de productos válidos.
+    Tu respuesta DEBE SER ÚNICAMENTE un objeto JSON en formato de lista, nada más. Cada objeto en la lista debe tener "producto", "cantidad" y "unidad".
+    Si el cliente no especifica una unidad (como 'caja' o 'botella'), asumí que es 'unidad'.
+    Hacé tu mejor esfuerzo por asociar lo que pide el cliente con un producto de la lista de productos válidos.
+
+    **Productos Válidos:** {nombres_productos}
+
+    ---
+    EJEMPLO 1:
+    Respuesta del Cliente: "quiero 2 cajas de cabernet franc y una de blanco"
+    JSON de Salida:
+    [
+        {{"producto": "cabernet franc", "cantidad": 2, "unidad": "caja"}},
+        {{"producto": "blanco dulce", "cantidad": 1, "unidad": "unidad"}}
+    ]
+    ---
+    EJEMPLO 2:
+    Respuesta del Cliente: "mandame 3 del malbec y 6 del sauvignon"
+    JSON de Salida:
+    [
+        {{"producto": "malbec", "cantidad": 3, "unidad": "unidad"}},
+        {{"producto": "cabernet sauvignon", "cantidad": 6, "unidad": "unidad"}}
+    ]
+    ---
+    
+    Ahora, procesá la siguiente respuesta. Recordá: respondé solo con el JSON.
+
+    **Respuesta del Cliente:** "{pregunta_cliente}"
+    **JSON de Salida:**
+    """
+    
+    try:
+        respuesta_llm = get_cohere_response(message=prompt, chat_history=[], preamble="Eres un asistente experto en procesar pedidos en formato JSON.")
+        # Limpiamos la respuesta para asegurarnos de que es un JSON válido
+        json_limpio = respuesta_llm.strip().replace("```json", "").replace("```", "")
+        return json.loads(json_limpio)
+    except Exception as e:
+        logger.error(f"[PYMES] Error al extraer cantidades con LLM: {e}")
+        # Si el LLM falla, guardamos la respuesta cruda como fallback
+        return [{"error": "No se pudo procesar la solicitud", "texto_original": pregunta_cliente}]
+
 # --- PATRÓN DE DISEÑO: ORQUESTADOR CON MANEJADORES (ORDENADO Y CORREGIDO) ---
 
 class BaseHandler:
@@ -75,40 +124,63 @@ class FollowUpHandler(BaseHandler):
             
         return None
 
+# En services/pymes.py
+
 class PedidoHandler(BaseHandler):
-    """Confirma y crea un pedido en la base de datos."""
+    """
+    Handler especialista que gestiona una conversación de varios pasos
+    y USA UN LLM para estructurar los detalles del pedido.
+    """
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context['session'].get(CONTEXTO_PYME_SESION, {})
-        productos_a_confirmar = contexto_pyme.get('confirmando_pedido')
+        
+        # --- PASO 2: El usuario envía las cantidades y las procesamos con IA ---
+        if 'detallando_pedido' in contexto_pyme:
+            productos_para_pedido = contexto_pyme['detallando_pedido']
+            
+            # ¡AQUÍ USAMOS NUESTRA NUEVA FUNCIÓN INTELIGENTE!
+            detalles_estructurados = _extraer_cantidades_con_llm(pregunta, productos_para_pedido)
+            
+            try:
+                nro_pedido = f"P-{random.randint(10000, 99999)}"
+                nuevo_pedido = PymePedido(
+                    user_id=self.context['user_id'],
+                    nro_pedido=nro_pedido,
+                    # Guardamos el JSON estructurado en la base de datos
+                    detalles=json.dumps(detalles_estructurados, indent=2, ensure_ascii=False),
+                    estado="pendiente"
+                )
+                db.session.add(nuevo_pedido)
+                db.session.commit()
 
-        if productos_a_confirmar:
-            palabras_confirmacion = ["sí", "dale", "quiero", "generar pedido", "confirmar", "ok"]
-            if any(palabra in pregunta.lower() for palabra in palabras_confirmacion):
-                try:
-                    nro_pedido = f"P-{random.randint(10000, 99999)}"
-                    nuevo_pedido = PymePedido(
-                        user_id=self.context['user_id'],
-                        nro_pedido=nro_pedido,
-                        detalles=json.dumps(productos_a_confirmar),
-                        estado="pendiente"
-                    )
-                    db.session.add(nuevo_pedido)
-                    db.session.commit()
-                    
-                    self.context['session'][CONTEXTO_PYME_SESION] = {}
-                    self.context['session'].modified = True
-                    
-                    respuesta = (
-                        f"¡Excelente! He generado tu pedido con el número **{nro_pedido}**.\n"
-                        "Un representante de ventas se pondrá en contacto contigo a la brevedad. ¡Muchas gracias por tu compra!"
-                    )
-                    return {"respuesta": respuesta, "fuente": "handler_pedido"}
-                except Exception as e:
-                    logging.error(f"[PYMES] Error fatal creando pedido: {e}", exc_info=True)
-                    db.session.rollback()
-                    return {"respuesta": "Hubo un problema al generar tu pedido. Un representante te contactará.", "fuente": "error_handler_pedido"}
+                self.context['session'][CONTEXTO_PYME_SESION] = {}
+                self.context['session'].modified = True
+                
+                respuesta = (
+                    f"¡Pedido recibido! He generado tu orden con el número **{nro_pedido}**.\n"
+                    "Un representante de ventas se pondrá en contacto contigo. ¡Muchas gracias!"
+                )
+                return {"respuesta": respuesta, "fuente": "handler_pedido_confirmado_ia"}
+            except Exception as e:
+                logging.error(f"[PYMES] Error fatal guardando pedido estructurado: {e}", exc_info=True)
+                db.session.rollback()
+                return {"respuesta": "Hubo un problema al guardar tu pedido. Un representante te contactará.", "fuente": "error_handler_pedido"}
+
+        # --- PASO 1: El usuario confirma que quiere iniciar un pedido ---
+        elif 'confirmando_pedido' in contexto_pyme:
+            palabras_confirmacion = ["si", "sí", "dale", "quiero", "generar", "confirmar", "ok", "me gustaria"]
+            pregunta_limpia = pregunta.lower().strip()
+            if any(pregunta_limpia.startswith(palabra) for palabra in palabras_confirmacion):
+                productos_encontrados = contexto_pyme['confirmando_pedido']
+                
+                self.context['session'][CONTEXTO_PYME_SESION] = {'detallando_pedido': productos_encontrados}
+                self.context['session'].modified = True
+                
+                respuesta = "¡Perfecto! Para continuar, por favor, decime qué productos y qué cantidades querés. Por ejemplo: 'una caja de cabernet y 2 de blanco dulce'."
+                return {"respuesta": respuesta, "fuente": "handler_pedido_iniciado"}
+
         return None
-
+    
 class TicketStatusHandler(BaseHandler):
     """Busca el estado de un ticket existente."""
     def handle(self, pregunta: str) -> dict | None:
