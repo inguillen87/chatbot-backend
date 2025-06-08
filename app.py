@@ -30,7 +30,20 @@ def create_app(config_class=Config):
     print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
     print(f"SESSION_TYPE: {app.config.get('SESSION_TYPE')}")
     print("-----------------------------")
+ # --- RUTAS DE PRUEBA PARA DEPURAR LA SESIÓN ---
+    @app.route('/poner-memoria')
+    def poner_memoria():
+        from flask import session
+        session['clave_de_prueba'] = 'funciona!'
+        return "<h1>Memoria establecida. Ahora andá a /leer-memoria</h1>"
 
+    @app.route('/leer-memoria')
+    def leer_memoria():
+        from flask import session
+        valor = session.get('clave_de_prueba', '¡LA MEMORIA ESTÁ VACÍA!')
+        return f"<h1>El valor guardado en la memoria es: {valor}</h1>"
+    # --- FIN DE RUTAS DE PRUEBA ---
+    
     # --- 2. Bloque único y ordenado de Inicialización de Extensiones ---
     db.init_app(app)
     migrate.init_app(app, db)
