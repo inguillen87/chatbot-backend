@@ -249,57 +249,76 @@ class ClaimHandler(BaseHandler):
                 return {"respuesta": respuesta, "fuente": "registro_reclamo"}
         return None
 
+from services.webinfo import obtener_info_web # Asegúrate de que esta importación exista
+
+
 class VectorCatalogHandler(BaseHandler):
-    """Busca en el catálogo de productos y ofrece crear un pedido."""
+    """
+    Busca en el catálogo. Primero en Qdrant (data premium del PDF),
+    y si no encuentra, busca en la data del Scraper (data base).
+    """
     def handle(self, pregunta: str) -> dict | None:
-        palabras_pedido = ["comprar", "precio", "pedido", "cotización", "oferta", "disponible", "stock", "quiero"]
+        palabras_pedido = ["comprar", "precio", "pedido", "catalogo", "stock", "quiero", "vinos", "productos"]
         if any(w in pregunta.lower() for w in palabras_pedido):
+            user_id = self.context.get('user_id')
+            user_obj = self.context.get('user_obj')
+            
+            if not user_id or not user_obj:
+                return None # No podemos continuar sin un usuario
+
+            # --- CAPA 1: Búsqueda en Qdrant (Catálogo PDF/Excel) ---
             try:
-                resultados = buscar_item_vectorizado(pregunta, self.context['user_id'])
-                if resultados:
-                    respuesta_texto = "¡Claro! Encontré esto en nuestro catálogo:\n"
+                resultados_qdrant = buscar_item_vectorizado(pregunta, user_id)
+                if resultados_qdrant:
+                    logging.info(f"[VectorCatalogHandler] Se encontraron {len(resultados_qdrant)} resultados en QDRANT.")
+                    respuesta_texto = "¡Claro! En nuestro catálogo detallado encontré esto:\n"
                     items_encontrados = []
-                    for item in resultados:
+                    for item in resultados_qdrant:
                         nombre = item.payload.get('nombre', 'Producto sin nombre')
                         precio = item.payload.get('precio_str', 'Consultar precio')
                         respuesta_texto += f"- **{nombre}**: ${precio}\n"
                         items_encontrados.append(item.payload)
                     
                     respuesta_texto += "\n¿Te gustaría que genere un pedido con alguno de estos productos?"
-                    
                     self.context['session'][CONTEXTO_PYME_SESION] = {'confirmando_pedido': items_encontrados}
                     self.context['session'].modified = True
-                    return {"respuesta": respuesta_texto, "fuente": "catalogo_vector"}
+                    return {"respuesta": respuesta_texto, "fuente": "catalogo_qdrant"}
             except Exception as e:
-                logging.warning(f"[PYMES] Error en VectorCatalogHandler: {e}")
-        return None
+                logging.warning(f"[VectorCatalogHandler] Error buscando en Qdrant: {e}")
 
-# En services/pymes.py
+            # --- CAPA 2: Búsqueda en Scraper (Conocimiento Base) ---
+            # Si no hubo resultados en Qdrant, pasamos a la siguiente capa.
+            try:
+                link_web = getattr(user_obj, 'link_web', None)
+                if link_web:
+                    info_web = obtener_info_web(user_id, link_web)
+                    if info_web and info_web.get('productos'):
+                        logging.info(f"[VectorCatalogHandler] No hubo data en Qdrant, pero se encontró data del SCRAPER.")
+                        nombres_productos = [p.get('nombre') for p in info_web['productos'] if p.get('nombre')]
+                        if nombres_productos:
+                            respuesta_texto = "Revisando la información de nuestro sitio web, te puedo mencionar estos productos:\n"
+                            respuesta_texto += "\n".join([f"- {nombre}" for nombre in nombres_productos])
+                            respuesta_texto += "\n\n¿Te interesa alguno en particular para darte más detalles?"
+                            return {"respuesta": respuesta_texto, "fuente": "catalogo_scraper"}
+            except Exception as e:
+                 logging.warning(f"[VectorCatalogHandler] Error buscando info del scraper: {e}")
+
+        # Si ninguna de las dos capas funcionó, retorna None y deja pasar al SalesEngageHandler
+        return None
 
 class SalesEngageHandler(BaseHandler):
     """
-    Handler INTERMEDIO y ESCALABLE. Se activa si hay intención de compra 
-    y no hay catálogo, usando palabras clave específicas del rubro del cliente.
-    Le habla correctamente al CLIENTE FINAL.
+    Handler intermedio. Se activa si hay intención de compra y no hay NINGUNA 
+    fuente de datos (ni Qdrant ni Scraper).
     """
     def handle(self, pregunta: str) -> dict | None:
-        # 1. Creamos una lista base de palabras genéricas de venta
-        palabras_genericas = ["comprar", "vender", "precio", "producto", "catalogo", "stock", "disponible", "articulos", "items"]
-        
-        # 2. Obtenemos el rubro del contexto
-        rubro = self.context.get('rubro_obj')
-        
-        # 3. Si el rubro tiene palabras clave específicas, las agregamos
-        palabras_venta_final = palabras_genericas
-        if rubro and getattr(rubro, 'palabras_clave_catalogo', None):
-            palabras_especificas = [p.strip() for p in rubro.palabras_clave_catalogo.split(',')]
-            palabras_venta_final.extend(palabras_especificas)
-            logging.info(f"[SalesEngageHandler] Usando palabras clave extendidas para el rubro '{rubro.nombre}': {palabras_especificas}")
+        contexto_pyme = self.context['session'].get(CONTEXTO_PYME_SESION, {})
+        # Si ya dimos este aviso, no lo repetimos.
+        if contexto_pyme.get('aviso_sin_catalogo_dado'):
+            return None
 
-        # 4. Verificamos si hay intención de compra
-        if any(palabra in pregunta.lower() for palabra in palabras_venta_final):
-            
-            # 5. Formulamos la NUEVA respuesta, correcta para el CLIENTE FINAL
+        palabras_venta = ["comprar", "precio", "producto", "catalogo", "stock", "vinos"] # Lista simplificada
+        if any(palabra in pregunta.lower() for palabra in palabras_venta):
             nombre_pyme = self.context.get('nombre_pyme', 'nuestra empresa')
             respuesta = (
                 f"Veo que te interesa consultar sobre nuestros productos en {nombre_pyme}, ¡qué bueno!\n\n"
@@ -307,48 +326,57 @@ class SalesEngageHandler(BaseHandler):
                 "¿Te gustaría que tome nota de tu consulta y tus datos para que un representante comercial se ponga en contacto contigo a la brevedad?"
             )
             
-            # En un futuro, aquí podríamos iniciar un flujo para crear un ticket de "LEAD"
+            # ¡LA MEMORIA! Ponemos la bandera para no repetirnos.
+            self.context['session'].setdefault(CONTEXTO_PYME_SESION, {})['aviso_sin_catalogo_dado'] = True
+            self.context['session'].modified = True
+
             return {"respuesta": respuesta, "fuente": "handler_sin_catalogo"}
             
         return None
-class FaqHandler(BaseHandler):
-    """Busca en las Preguntas Frecuentes (FAQs)."""
-    def handle(self, pregunta: str) -> dict | None:
-        try:
-            faq = buscar_en_faq_spacy(pregunta, self.context['rubro_obj'].id)
-            if faq and faq.answer:
-                respuesta = reemplazar_placeholders(faq.answer, self.context['user_obj'])
-                return {"respuesta": respuesta, "fuente": "faq"}
-        except Exception as e:
-            logging.warning(f"[PYMES] Error en FaqHandler: {e}")
-        return None
-
-class IntentHandler(BaseHandler):
-    """Detecta intenciones generales (saludos, despedidas, etc.)."""
-    def handle(self, pregunta: str) -> dict | None:
-        try:
-            intent_resp = buscar_en_intents(pregunta, self.context['rubro_nombre'])
-            if intent_resp:
-                respuesta = reemplazar_placeholders(intent_resp, self.context['user_obj'])
-                return {"respuesta": respuesta, "fuente": "intent"}
-        except Exception as e:
-            logging.warning(f"[PYMES] Error en IntentHandler: {e}")
-        return None
-
+    
 class LLMHandler(BaseHandler):
-    """El último recurso: llama al LLM con un prompt optimizado."""
+    """
+    El último recurso: llama al LLM con un prompt optimizado que incluye
+    la instrucción de usar los datos de contacto como fallback.
+    """
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica del LLM (sin cambios)
         try:
-            # ... (código del prompt y llamada a cohere) ...
-            return {"respuesta": "Respuesta del LLM...", "fuente": "llm"} # Placeholder
+            # Creamos el prompt dinámicamente con los datos de la pyme
+            prompt_pyme = f"""
+Eres "Chatboc", el agente de ventas y atención al cliente de {self.context['nombre_pyme']}.
+**Tus Datos Clave:**
+- Contacto Principal: Teléfono {self.context['telefono'] or 'no provisto'}, Email {self.context['email'] or 'no provisto'}.
+
+**Reglas de Oro:**
+1. Actúa como un humano experto, amable, profesional y argentino.
+2. Sé proactivo. Si podés vender o resolver algo, ofrecelo.
+3. Si no sabes una respuesta sobre un producto o servicio específico, NO inventes. En su lugar, ofrecé amablemente los canales de contacto para que un humano pueda ayudar. Di algo como: 'No tengo ese detalle a mano, pero podés consultar directamente a nuestro equipo al {self.context['telefono']}'.
+4. Revisa el historial reciente para dar continuidad a la charla.
+
+Historial reciente:
+"""
+            # Añadimos el historial de chat al prompt
+            for msg in self.context['mensajes_previos']:
+                prompt_pyme += f"\n- {msg.get('role', 'user')}: {msg.get('content','')}"
+            prompt_pyme += f"\n- Cliente: {pregunta}\n- Chatboc:"
+
+            # Llamamos al LLM con el prompt completo
+            respuesta_llm = get_cohere_response(
+                message=pregunta,
+                chat_history=[{"role": m.get("role", "user"), "message": m.get("content", "")} for m in self.context['mensajes_previos']],
+                preamble=prompt_pyme
+            )
+            
+            if respuesta_llm:
+                respuesta_final = reemplazar_placeholders(respuesta_llm, self.context['user_obj'])
+                return {"respuesta": respuesta_final, "fuente": "llm"}
+
         except Exception as e:
             logging.error(f"[PYMES] Error fatal en LLMHandler: {e}", exc_info=True)
-
+        
+        # Si el LLM falla por alguna razón, devolvemos las sugerencias como último recurso
         sugs = sugerencias_por_rubro(self.context['rubro_nombre'])
         return {"respuesta": "No encontré una respuesta directa. Probá con: " + " · ".join(f"“{s}”" for s in sugs if s), "fuente": "sugerencia_fallback"}
-
-
 # --- FUNCIÓN PRINCIPAL: EL ORQUESTADOR ---
 def responder_pyme(pregunta, user_obj, rubro_obj, session_obj=None, **kwargs):
     session = session_obj if session_obj is not None else flask_session
