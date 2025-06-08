@@ -132,6 +132,7 @@ class PedidoHandler(BaseHandler):
     y USA UN LLM para estructurar los detalles del pedido.
     """
     def handle(self, pregunta: str) -> dict | None:
+        logging.warning(f"[DEBUG-PEDIDOS] Contexto de sesión al entrar al PedidoHandler: {self.context['session'].get(CONTEXTO_PYME_SESION)}")
         contexto_pyme = self.context['session'].get(CONTEXTO_PYME_SESION, {})
         
         # --- PASO 2: El usuario envía las cantidades y las procesamos con IA ---
