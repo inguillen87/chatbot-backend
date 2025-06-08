@@ -278,30 +278,39 @@ class VectorCatalogHandler(BaseHandler):
 
 class SalesEngageHandler(BaseHandler):
     """
-    Este handler se activa si el usuario muestra intención de compra, 
-    pero no se encontraron productos en el catálogo vectorial.
-    Su objetivo es guiar al usuario para que cargue su catálogo o contacte a un vendedor.
+    Handler INTERMEDIO y ESCALABLE. Se activa si hay intención de compra 
+    y no hay catálogo, usando palabras clave específicas del rubro del cliente.
+    Le habla correctamente al CLIENTE FINAL.
     """
     def handle(self, pregunta: str) -> dict | None:
-        palabras_venta = ["comprar", "vender", "precio", "producto", "catalogo", "stock", "vinos", "cajas"]
-        # Se activa si detecta intención de compra
-        if any(palabra in pregunta.lower() for palabra in palabras_venta):
+        # 1. Creamos una lista base de palabras genéricas de venta
+        palabras_genericas = ["comprar", "vender", "precio", "producto", "catalogo", "stock", "disponible", "articulos", "items"]
+        
+        # 2. Obtenemos el rubro del contexto
+        rubro = self.context.get('rubro_obj')
+        
+        # 3. Si el rubro tiene palabras clave específicas, las agregamos
+        palabras_venta_final = palabras_genericas
+        if rubro and getattr(rubro, 'palabras_clave_catalogo', None):
+            palabras_especificas = [p.strip() for p in rubro.palabras_clave_catalogo.split(',')]
+            palabras_venta_final.extend(palabras_especificas)
+            logging.info(f"[SalesEngageHandler] Usando palabras clave extendidas para el rubro '{rubro.nombre}': {palabras_especificas}")
+
+        # 4. Verificamos si hay intención de compra
+        if any(palabra in pregunta.lower() for palabra in palabras_venta_final):
             
-            # Esta respuesta solo se dará si el VectorCatalogHandler falló antes
-            nombre_pyme = self.context.get('nombre_pyme', 'tu empresa')
+            # 5. Formulamos la NUEVA respuesta, correcta para el CLIENTE FINAL
+            nombre_pyme = self.context.get('nombre_pyme', 'nuestra empresa')
             respuesta = (
-                f"Veo que te interesa consultar sobre productos para {nombre_pyme}, ¡excelente!\n\n"
-                "Para poder darte precios y stock, primero necesito que tu catálogo de productos esté cargado en mi sistema. "
-                "Parece que aún no lo has subido.\n\n"
-                "Podés hacerlo ahora desde tu panel de perfil, en la sección 'Tu Catálogo de Productos'. "
-                "Si preferís, también puedo tomar tus datos para que un representante comercial se ponga en contacto y te asesore personalmente."
+                f"Veo que te interesa consultar sobre nuestros productos en {nombre_pyme}, ¡qué bueno!\n\n"
+                "En este momento no encuentro información detallada en mi sistema para responderte.\n\n"
+                "¿Te gustaría que tome nota de tu consulta y tus datos para que un representante comercial se ponga en contacto contigo a la brevedad?"
             )
             
-            # Devolvemos una respuesta útil en lugar de dejar que la conversación muera
+            # En un futuro, aquí podríamos iniciar un flujo para crear un ticket de "LEAD"
             return {"respuesta": respuesta, "fuente": "handler_sin_catalogo"}
             
         return None
-    
 class FaqHandler(BaseHandler):
     """Busca en las Preguntas Frecuentes (FAQs)."""
     def handle(self, pregunta: str) -> dict | None:
