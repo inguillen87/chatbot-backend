@@ -80,24 +80,22 @@ class User(db.Model, UserMixin):
     def __repr__(self):
         return f"<User {self.email}>"
 
+# En models.py
+
 class MunicipioTicket(db.Model):
     __tablename__ = "municipio_ticket"
     id = db.Column(db.Integer, primary_key=True)
     pregunta = db.Column(db.Text, nullable=False)
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
-    # ---------------------
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime, default=db.func.now())
     archivo_url = db.Column(db.String(255), nullable=True)
-    comentarios = db.relationship(
-        'TicketComentario',
-        primaryjoin="and_(MunicipioTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='municipio')",
-        backref='municipio_ticket', # <--- ¡COMA AÑADIDA!
-        lazy='dynamic'
-    )
+    
+    # RELACIÓN CORREGIDA
+    comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
 
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"
@@ -115,48 +113,30 @@ class PymeTicket(db.Model):
     email = db.Column(db.String(120), nullable=True)
     dni = db.Column(db.String(20), nullable=True)
     estado_cliente = db.Column(db.String(30), default="no_definido")
-   # Dentro de la clase MunicipioTicket
 
-    comentarios = db.relationship(
-        'TicketComentario',
-        primaryjoin="and_(MunicipioTicket.id==foreign(TicketComentario.ticket_id), TicketComentario.tipo_ticket=='municipio')",
-        backref='municipio_ticket', # <--- ¡COMA AÑADIDA!
-        lazy='dynamic'
-    )
-
-# --- La clase PymePedido empieza aquí, AFUERA y al mismo nivel que PymeTicket ---
-
-class PymePedido(db.Model): 
-    __tablename__ = "pyme_pedido"
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    # Usamos un string para el número para poder ponerle un prefijo como "P-"
-    nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
-    estado = db.Column(db.String(30), default="pendiente") # pendiente, confirmado, enviado, cancelado
-    detalles = db.Column(db.Text, nullable=True) # Guardaremos los productos como un JSON
-    monto_total = db.Column(db.Float, nullable=True)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<PymePedido {self.nro_pedido}>"
-
-    def __repr__(self):
-        return f"<PymePedido {self.nro_pedido}>"
+    # RELACIÓN CORREGIDA
+    comentarios = db.relationship('TicketComentario', back_populates='pyme_ticket', lazy='dynamic')
 
 class TicketComentario(db.Model):
     __tablename__ = "ticket_comentario"
     id = db.Column(db.Integer, primary_key=True)
-    ticket_id = db.Column(db.Integer, nullable=False)   # No FK por polimorfismo
-    tipo_ticket = db.Column(db.String(20), nullable=False)  # 'pyme' o 'municipio'
+    
+    # --- CAMPOS DE RELACIÓN CORREGIDOS ---
+    # Creamos columnas de FK explícitas, permitiendo que sean nulas
+    # ya que un comentario pertenece a un tipo de ticket O al otro.
+    pyme_ticket_id = db.Column(db.Integer, db.ForeignKey('pyme_ticket.id'), nullable=True)
+    municipio_ticket_id = db.Column(db.Integer, db.ForeignKey('municipio_ticket.id'), nullable=True)
+    # ------------------------------------
+
     comentario = db.Column(db.Text, nullable=False)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, nullable=True)
-    telefono = db.Column(db.String(30), nullable=True)
-    email = db.Column(db.String(120), nullable=True)
-    dni = db.Column(db.String(20), nullable=True)
-    estado_cliente = db.Column(db.String(30), default="no_definido")
-    es_admin = db.Column(db.Boolean, default=False)  # Si es admin el que responde
+    es_admin = db.Column(db.Boolean, default=False)
 
+    # --- RELACIONES INVERSAS CORREGIDAS ---
+    pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
+    municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
+    
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
