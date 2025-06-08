@@ -7,7 +7,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 import uuid
 import json
-import uuid
 
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -80,8 +79,6 @@ class User(db.Model, UserMixin):
     def __repr__(self):
         return f"<User {self.email}>"
 
-# En models.py
-
 class MunicipioTicket(db.Model):
     __tablename__ = "municipio_ticket"
     id = db.Column(db.Integer, primary_key=True)
@@ -94,7 +91,6 @@ class MunicipioTicket(db.Model):
     fecha = db.Column(db.DateTime, default=db.func.now())
     archivo_url = db.Column(db.String(255), nullable=True)
     
-    # RELACIÓN CORREGIDA
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
 
 class PymeTicket(db.Model):
@@ -114,26 +110,34 @@ class PymeTicket(db.Model):
     dni = db.Column(db.String(20), nullable=True)
     estado_cliente = db.Column(db.String(30), default="no_definido")
 
-    # RELACIÓN CORREGIDA
     comentarios = db.relationship('TicketComentario', back_populates='pyme_ticket', lazy='dynamic')
+
+# --- CLASE PymePedido AÑADIDA ---
+class PymePedido(db.Model): 
+    __tablename__ = "pyme_pedido"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
+    estado = db.Column(db.String(30), default="pendiente") # pendiente, confirmado, enviado, cancelado
+    detalles = db.Column(db.Text, nullable=True) # Guardaremos los productos como un JSON
+    monto_total = db.Column(db.Float, nullable=True)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<PymePedido {self.nro_pedido}>"
 
 class TicketComentario(db.Model):
     __tablename__ = "ticket_comentario"
     id = db.Column(db.Integer, primary_key=True)
     
-    # --- CAMPOS DE RELACIÓN CORREGIDOS ---
-    # Creamos columnas de FK explícitas, permitiendo que sean nulas
-    # ya que un comentario pertenece a un tipo de ticket O al otro.
     pyme_ticket_id = db.Column(db.Integer, db.ForeignKey('pyme_ticket.id'), nullable=True)
     municipio_ticket_id = db.Column(db.Integer, db.ForeignKey('municipio_ticket.id'), nullable=True)
-    # ------------------------------------
 
     comentario = db.Column(db.Text, nullable=False)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, nullable=True)
     es_admin = db.Column(db.Boolean, default=False)
 
-    # --- RELACIONES INVERSAS CORREGIDAS ---
     pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
     municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
     
@@ -165,7 +169,6 @@ class CatalogoEmbedding(db.Model):
     embedding_vector = db.Column(JSON)
 
 class Conversacion(db.Model):
-    # Tus campos existentes...
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     pregunta = db.Column(db.Text, nullable=False)
@@ -173,23 +176,18 @@ class Conversacion(db.Model):
     fuente = db.Column(db.String(50), nullable=False)
     rubro = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-
-    # --- LA LÍNEA CLAVE, CORREGIDA PARA SQLITE ---
     session_id = db.Column(db.String(36), default=lambda: str(uuid.uuid4()), nullable=False)
-
-    # El índice (esto está bien)
     __table_args__ = (Index('ix_conversacion_session_id', 'session_id'),)
 
 class SitioWebInfo(db.Model):
     __tablename__ = 'sitio_web_info'
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)  # Pyme, Municipio, etc.
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     rubro_id = db.Column(db.Integer, db.ForeignKey("rubro.id"), nullable=True)
     url = db.Column(db.String(255), nullable=False)
-    datos_json = db.Column(db.Text, nullable=False)  # Guarda todo el dict serializado
+    datos_json = db.Column(db.Text, nullable=False)
     fecha_scraping = db.Column(db.DateTime, default=datetime.utcnow)
     actualizado = db.Column(db.Boolean, default=False)
-
     def __repr__(self):
         return f"<SitioWebInfo id={self.id} url={self.url}>"
     
