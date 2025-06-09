@@ -5,7 +5,7 @@ import logging
 import sys
 from flask import Flask
 from flask_cors import CORS
-from flask_session import Session  # <-- 1. IMPORTACIÓN AÑADIDA
+# from flask_session import Session  # <-- 1. LÍNEA ELIMINADA
 
 from config import Config
 from extensions import db, migrate
@@ -23,34 +23,14 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # --- Bloque de Diagnóstico (lo dejamos temporalmente) ---
-    print("--- DIAGNÓSTICO DE SESIÓN ---")
-    print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
-    print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
-    print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
-    print(f"SESSION_TYPE: {app.config.get('SESSION_TYPE')}")
-    print("-----------------------------")
- # --- RUTAS DE PRUEBA PARA DEPURAR LA SESIÓN ---
-    @app.route('/poner-memoria')
-    def poner_memoria():
-        from flask import session
-        session['clave_de_prueba'] = 'funciona!'
-        return "<h1>Memoria establecida. Ahora andá a /leer-memoria</h1>"
-
-    @app.route('/leer-memoria')
-    def leer_memoria():
-        from flask import session
-        valor = session.get('clave_de_prueba', '¡LA MEMORIA ESTÁ VACÍA!')
-        return f"<h1>El valor guardado en la memoria es: {valor}</h1>"
-    # --- FIN DE RUTAS DE PRUEBA ---
-    
-    # --- 2. Bloque único y ordenado de Inicialización de Extensiones ---
+    # --- Inicialización de Extensiones ---
     db.init_app(app)
     migrate.init_app(app, db)
     
-    # Configuración y activación de Sesiones en el Servidor
-    app.config['SESSION_SQLALCHEMY'] = db
-    Session(app)
+    # La sesión nativa de Flask se activa automáticamente al tener un SECRET_KEY.
+    # No se necesita ninguna configuración adicional aquí.
+    # app.config['SESSION_SQLALCHEMY'] = db  # <-- 2. LÍNEA ELIMINADA
+    # Session(app)                          # <-- 3. LÍNEA ELIMINADA
 
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -65,7 +45,8 @@ def create_app(config_class=Config):
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
-    # --- 3. Configuración de CORS ---
+    # --- Configuración de CORS ---
+    # Tu configuración actual es correcta y la mantenemos.
     allowed_origins = [
         "https://chatboc.ar",
         "https://www.chatboc.ar",
@@ -73,7 +54,6 @@ def create_app(config_class=Config):
         "http://localhost:8080",
         "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app",
         "https://chatboc-frontend-git-main-marcelos-projects-c26aa499.vercel.app",
-        # Podrías agregar aquí cualquier otra URL de preview de Vercel si es necesario
     ]
     CORS(
         app,
@@ -83,7 +63,7 @@ def create_app(config_class=Config):
         allow_headers=["Authorization", "Content-Type", "Origin", "Accept"]
     )
 
-    # --- 4. Registro de Blueprints (Rutas) ---
+    # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
@@ -93,11 +73,12 @@ def create_app(config_class=Config):
     # Registro de comandos CLI
     register_commands(app)
 
-    # --- 5. La función devuelve la app al final de todo ---
     return app
 
 # --- Creación de la instancia de la aplicación ---
 app = create_app()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    # El puerto se toma de la variable de entorno, ideal para Render
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
