@@ -202,11 +202,11 @@ class LLMHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         try:
             prompt_pyme = f"""
-Eres "Chatboc", el agente de ventas y atención al cliente de {self.context.get('nombre_pyme', 'la empresa')}.
-Tus Datos de Contacto: Teléfono {self.context.get('telefono', 'no provisto')}, Email {self.context.get('email', 'no provisto')}.
-Regla de Oro: Si no sabes una respuesta sobre un producto, NO inventes. Ofrece amablemente los canales de contacto para que un humano pueda ayudar.
-Historial reciente:
-"""
+                "Chatboc", el agente de ventas y atención al cliente de {self.context.get('nombre_pyme', 'la empresa')}.
+                Tus Datos de Contacto: Teléfono {self.context.get('telefono', 'no provisto')}, Email {self.context.get('email', 'no provisto')}.
+                Regla de Oro: Si no sabes una respuesta sobre un producto, NO inventes. Ofrece amablemente los canales de contacto para que un humano pueda ayudar.
+                Historial reciente:
+                """
             for msg in self.context.get('mensajes_previos', []):
                 prompt_pyme += f"\n- {msg.get('role', 'user')}: {msg.get('content','')}"
             prompt_pyme += f"\n- Cliente: {pregunta}\n- Chatboc:"
@@ -224,7 +224,8 @@ Historial reciente:
 
 def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
-    contexto_pyme = contexto_previo.get(CONTEXTO_PYME_SESION, {})
+    contexto_previo_valido = contexto_previo if contexto_previo is not None else {}
+    contexto_pyme = contexto_previo_valido.get(CONTEXTO_PYME_SESION, {})
 
     context = {
         "contexto_pyme": contexto_pyme,
