@@ -1,3 +1,5 @@
+# services/pymes.py
+
 import logging
 import re
 import random
@@ -19,7 +21,7 @@ from services.webinfo import obtener_info_web
 logger = logging.getLogger(__name__)
 
 # --- Constantes ---
-NOMBRE_HISTORIAL_SESION = "historial_chat_cliente"
+NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme" # Usamos un nombre único para la sesión de historial
 CONTEXTO_PYME_SESION = "contexto_pyme"
 MAX_HISTORIAL_CHAT = 14
 
@@ -51,7 +53,7 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles: li
         logger.error(f"[PYMES] Error al extraer cantidades con LLM: {e}")
         return [{"error": "No se pudo procesar la solicitud", "texto_original": pregunta_cliente}]
 
-# --- ARQUITECTURA DE HANDLERS ---
+# --- ARQUITECTURA DE HANDLERS (COMPLETA Y FUNCIONAL) ---
 
 class BaseHandler:
     def __init__(self, context):
@@ -93,7 +95,7 @@ class PedidoHandler(BaseHandler):
                 nuevo_pedido = PymePedido(user_id=self.context['user_id'], nro_pedido=nro_pedido, detalles=json.dumps(detalles_estructurados, indent=2, ensure_ascii=False), estado="pendiente")
                 db.session.add(nuevo_pedido)
                 db.session.commit()
-                respuesta = (f"¡Pedido recibido! He generado tu orden con el número **{nro_pedido}** con los detalles que me indicaste.\nUn representante de ventas se pondrá en contacto contigo. ¡Muchas gracias!")
+                respuesta = (f"¡Pedido recibido! He generado tu orden con el número **{nro_pedido}**.\nUn representante de ventas se pondrá en contacto contigo. ¡Muchas gracias!")
                 return {"respuesta": respuesta, "fuente": "handler_pedido_confirmado_ia"}
             except Exception as e:
                 db.session.rollback()
@@ -104,7 +106,7 @@ class PedidoHandler(BaseHandler):
             if any(pregunta.lower().strip().startswith(palabra) for palabra in palabras_confirmacion):
                 productos_encontrados = contexto_pyme.pop('confirmando_pedido')
                 self.context['contexto_pyme']['detallando_pedido'] = productos_encontrados
-                return {"respuesta": "¡Perfecto! Para continuar, por favor, decime qué productos y qué cantidades querés.", "fuente": "handler_pedido_iniciado"}
+                return {"respuesta": "¡Perfecto! Para continuar, decime qué productos y qué cantidades querés.", "fuente": "handler_pedido_iniciado"}
         return None
 
 class TicketStatusHandler(BaseHandler):
@@ -115,7 +117,7 @@ class TicketStatusHandler(BaseHandler):
             ticket = PymeTicket.query.filter_by(nro_ticket=int(nro), user_id=self.context.get('user_id')).first()
             if ticket:
                 msg = f"El ticket de reclamo #{nro} (Asunto: '{ticket.asunto}') está en estado: '{ticket.estado}'."
-                # ... (lógica para buscar comentarios si es necesario)
+                # Aquí podrías añadir una lógica para mostrar el último comentario si quisieras
                 return {"respuesta": msg, "fuente": "consulta_estado_ticket"}
             else:
                 return {"respuesta": f"No se encontró ningún ticket con el número #{nro}.", "fuente": "ticket_no_encontrado"}
@@ -134,9 +136,9 @@ class BrokenProductHandler(BaseHandler):
 
 class ClaimHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
-        if any(w in pregunta.lower() for w in ["mal servicio", "problema", "no llegó", "demora", "reclamo"]):
+        if any(w in pregunta.lower() for w in ["mal servicio", "problema", "no llegó", "demora", "reclamo", "queja"]):
             asunto = _generar_asunto_con_llm(pregunta)
-            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data={"pregunta": pregunta, "user_id": self.context['user_id'], "asunto": asunto, "categoria": "Reclamo"})
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data={"pregunta": pregunta, "user_id": self.context['user_id'],"asunto": asunto, "categoria": "Reclamo"})
             if ticket_creado:
                 respuesta = (f"Lamento mucho el inconveniente. He generado un reclamo con el ticket #{ticket_creado.nro_ticket}.\nPara poder ayudarte mejor, ¿podrías darme más detalles?")
                 self.context['contexto_pyme']['esperando_detalles_reclamo'] = ticket_creado.id
@@ -158,14 +160,12 @@ class VectorCatalogHandler(BaseHandler):
                     return {"respuesta": respuesta_texto, "fuente": "catalogo_qdrant"}
             except Exception as e:
                 logging.warning(f"[PYMES] Error buscando en Qdrant: {e}")
-            # Si no hay resultados, no hace nada y deja pasar al siguiente handler.
         return None
 
 class SalesEngageHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context.get('contexto_pyme', {})
         if contexto_pyme.get('aviso_sin_catalogo_dado'): return None
-        
         palabras_venta = ["comprar", "precio", "producto", "catalogo", "stock", "vinos"]
         if any(palabra in pregunta.lower() for palabra in palabras_venta):
             nombre_pyme = self.context.get('nombre_pyme', 'nuestra empresa')
@@ -179,7 +179,8 @@ class SalesEngageHandler(BaseHandler):
 class FaqHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         try:
-            faq = buscar_en_faq_spacy(pregunta, self.context['rubro_obj'].id)
+            # Esta lógica viene de tu archivo original
+            faq = buscar_en_faq_spacy(pregunta, self.context['rubro_obj'].id if self.context.get('rubro_obj') else 1)
             if faq and faq.answer:
                 return {"respuesta": reemplazar_placeholders(faq.answer, self.context['user_obj']), "fuente": "faq"}
         except Exception as e:
@@ -189,7 +190,8 @@ class FaqHandler(BaseHandler):
 class IntentHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         try:
-            intent_resp = buscar_en_intents(pregunta, self.context['rubro_nombre'])
+            # Esta lógica viene de tu archivo original
+            intent_resp = buscar_en_intents(pregunta, self.context.get('rubro_nombre', 'general'))
             if intent_resp:
                 return {"respuesta": reemplazar_placeholders(intent_resp, self.context['user_obj']), "fuente": "intent"}
         except Exception as e:
@@ -200,8 +202,8 @@ class LLMHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         try:
             prompt_pyme = f"""
-Eres "Chatboc", el agente de ventas y atención al cliente de {self.context['nombre_pyme']}.
-Tus Datos de Contacto: Teléfono {self.context['telefono'] or 'no provisto'}, Email {self.context['email'] or 'no provisto'}.
+Eres "Chatboc", el agente de ventas y atención al cliente de {self.context.get('nombre_pyme', 'la empresa')}.
+Tus Datos de Contacto: Teléfono {self.context.get('telefono', 'no provisto')}, Email {self.context.get('email', 'no provisto')}.
 Regla de Oro: Si no sabes una respuesta sobre un producto, NO inventes. Ofrece amablemente los canales de contacto para que un humano pueda ayudar.
 Historial reciente:
 """
@@ -211,7 +213,7 @@ Historial reciente:
             
             respuesta_llm = get_cohere_response(message=pregunta, chat_history=self.context.get('mensajes_previos', []), preamble=prompt_pyme)
             if respuesta_llm:
-                return {"respuesta": reemplazar_placeholders(respuesta_llm, self.context['user_obj']), "fuente": "llm"}
+                return {"respuesta": reemplazar_placeholders(respuesta_llm, self.context.get('user_obj')), "fuente": "llm"}
         except Exception as e:
             logging.error(f"[PYMES] Error fatal en LLMHandler: {e}", exc_info=True)
         
@@ -228,11 +230,13 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
         "contexto_pyme": contexto_pyme,
         "user_obj": user_obj, "rubro_obj": rubro_obj,
         "user_id": getattr(user_obj, "id", None),
-        "nombre_pyme": getattr(user_obj, "nombre_empresa", "la empresa"),
-        "telefono": getattr(user_obj, "telefono", ""), "direccion": getattr(user_obj, "direccion", ""),
-        "email": getattr(user_obj, "email", ""), "plan": getattr(user_obj, "plan", "anonimo"),
-        "preguntas_usadas": getattr(user_obj, "preguntas_usadas", 0),
-        "limite_preguntas": getattr(user_obj, "limite_preguntas", 10),
+        "nombre_pyme": getattr(user_obj, "nombre_empresa", "la empresa") if user_obj else "la empresa",
+        "telefono": getattr(user_obj, "telefono", "") if user_obj else "",
+        "direccion": getattr(user_obj, "direccion", "") if user_obj else "",
+        "email": getattr(user_obj, "email", "") if user_obj else "",
+        "plan": getattr(user_obj, "plan", "anonimo") if user_obj else "anonimo",
+        "preguntas_usadas": getattr(user_obj, "preguntas_usadas", 0) if user_obj else 0,
+        "limite_preguntas": getattr(user_obj, "limite_preguntas", 10) if user_obj else 10,
         "rubro_nombre": getattr(rubro_obj, "nombre", "empresa") if rubro_obj else "desconocido",
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     }
@@ -262,12 +266,10 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     historial.append({"role": "assistant", "content": respuesta_final['respuesta']})
     flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:]
     
-    # La sesión de historial se sigue manejando con Flask-Session, pero no se guarda en la DB.
-    # El contexto de la conversación se maneja manualmente.
-    
     try:
-        db.session.add(Conversacion(user_id=context['user_id'], pregunta=pregunta, respuesta=respuesta_final['respuesta'], fuente=respuesta_final.get('fuente', 'desconocida'), rubro=context['rubro_nombre']))
-        db.session.commit()
+        if context['user_id']:
+            db.session.add(Conversacion(user_id=context['user_id'], pregunta=pregunta, respuesta=respuesta_final['respuesta'], fuente=respuesta_final.get('fuente', 'desconocida'), rubro=context['rubro_nombre']))
+            db.session.commit()
     except Exception as e:
         logging.error(f"[PYMES] Error guardando conversación en DB: {e}")
         db.session.rollback()
