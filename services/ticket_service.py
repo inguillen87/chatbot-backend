@@ -3,10 +3,13 @@ import random
 from datetime import datetime
 from typing import Dict, Any, Literal, Union
 import logging
+
 from models import MunicipioTicket, PymeTicket, TicketComentario, db
 from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
+
+# --- Interfaces y Estrategias de Creación ---
 
 class TicketCreator:
     def create(self, ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket]:
@@ -14,16 +17,26 @@ class TicketCreator:
 
 class MunicipioTicketCreator(TicketCreator):
     def create(self, ticket_data: Dict[str, Any]) -> MunicipioTicket:
-        # Usa los campos enriquecidos de tu models.py
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
-            pregunta=ticket_data.get("detalles", ""), # Usamos 'pregunta' para los detalles
+            detalles=ticket_data.get("detalles"),
             nro_ticket=ticket_data.get("nro_ticket")
         )
 
-# ... PymeTicketCreator se mantiene igual ...
+class PymeTicketCreator(TicketCreator):
+    def create(self, ticket_data: Dict[str, Any]) -> PymeTicket:
+        return PymeTicket(
+            user_id=ticket_data.get("user_id"),
+            asunto=ticket_data.get("asunto", "Sin Asunto"),
+            categoria=ticket_data.get("categoria", "General"),
+            pregunta=ticket_data.get("pregunta"),
+            nro_ticket=ticket_data.get("nro_ticket"),
+            rubro_id=ticket_data.get("rubro_id")
+        )
+
+# --- Clase de Servicio Principal ---
 
 class ServicioTickets:
     def __init__(self):
@@ -34,7 +47,7 @@ class ServicioTickets:
 
     def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None]:
         creator = self.creators.get(tipo_ticket)
-        if not creator: raise ValueError("Tipo de ticket inválido")
+        if not creator: raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
         
         ticket_data["nro_ticket"] = random.randint(100000, 999999)
         
@@ -42,22 +55,18 @@ class ServicioTickets:
             ticket = creator.create(ticket_data)
             db.session.add(ticket)
             db.session.flush()
-
             if ticket_data.get("comentario"):
                 comentario = TicketComentario(
                     comentario=ticket_data.get("comentario"),
                     user_id=ticket_data.get("user_id"),
-                    es_admin=False # El comentario inicial siempre es del ciudadano
+                    es_agente=False
                 )
-                if tipo_ticket == "municipio":
-                    comentario.municipio_ticket_id = ticket.id
-                else:
-                    comentario.pyme_ticket_id = ticket.id
+                if tipo_ticket == "municipio": comentario.municipio_ticket_id = ticket.id
+                else: comentario.pyme_ticket_id = ticket.id
                 db.session.add(comentario)
-
             db.session.commit()
             logger.info(f"Ticket #{ticket.nro_ticket} creado.")
-            return ticket # Devuelve el objeto completo
+            return ticket
         except SQLAlchemyError as e:
             db.session.rollback()
             logger.error(f"Error de DB al crear ticket: {e}", exc_info=True)
@@ -67,19 +76,14 @@ class ServicioTickets:
         TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         ticket = db.session.get(TicketModel, ticket_id)
         if not ticket: return None
-
         try:
             nuevo_comentario = TicketComentario(
                 comentario=comentario_data.get("comentario"),
                 user_id=comentario_data.get("user_id"),
-                es_admin=comentario_data.get("es_admin", False) # Diferencia la respuesta del agente
+                es_agente=comentario_data.get("es_agente", False)
             )
-            
-            if tipo_ticket == "municipio":
-                nuevo_comentario.municipio_ticket_id = ticket.id
-            else:
-                nuevo_comentario.pyme_ticket_id = ticket.id
-
+            if tipo_ticket == "municipio": nuevo_comentario.municipio_ticket_id = ticket.id
+            else: nuevo_comentario.pyme_ticket_id = ticket.id
             db.session.add(nuevo_comentario)
             db.session.commit()
             return nuevo_comentario
