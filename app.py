@@ -6,7 +6,6 @@ import sys
 from flask import Flask
 from flask_cors import CORS
 from flask_session import Session  # <-- 1. IMPORTACIÓN AÑADIDA
-from flask_login import LoginManager  # <-- NUEVA IMPORTACIÓN
 
 from config import Config
 from extensions import db, migrate
