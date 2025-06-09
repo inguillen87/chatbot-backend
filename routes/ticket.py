@@ -1,89 +1,134 @@
 # routes/ticket.py
-from flask import Blueprint, request, jsonify
-from flask_login import login_required, current_user
-from models import MunicipioTicket, PymeTicket, TicketComentario, db
+
+from flask import Blueprint, request, jsonify, current_app
+from flask_login import current_user, login_required # Usamos login_required para proteger estas rutas
+from models import MunicipioTicket, PymeTicket, User, db
+from services.ticket_service import servicio_tickets
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
+# --- Helper para no repetir código ---
+def get_ticket_model_and_check_permission(ticket_id):
+    # Primero, intentamos encontrar el ticket en PymeTicket
+    ticket = db.session.get(PymeTicket, ticket_id)
+    tipo = "pyme"
+    if not ticket:
+        # Si no está en Pyme, lo buscamos en MunicipioTicket
+        ticket = db.session.get(MunicipioTicket, ticket_id)
+        tipo = "municipio"
+    
+    if not ticket:
+        return None, None, jsonify({"error": "Ticket no encontrado."}), 404
+        
+    # Verificación de seguridad: un admin puede ver todo, un usuario solo lo suyo
+    # Asumimos que los tickets de municipio son públicos para los agentes logueados
+    if tipo == "pyme" and not getattr(current_user, 'es_admin', False) and current_user.id != ticket.user_id:
+        return None, None, jsonify({"error": "No tienes permiso para ver este ticket."}), 403
+
+    return ticket, tipo, None, None
+
+
+# --- RUTAS DE LA API ---
+
 @ticket_bp.route('/', methods=['GET'])
 @login_required
-def get_tickets_de_usuario():
+def get_tickets_del_usuario():
     """
-    Endpoint universal y mejorado para obtener tickets.
-    Devuelve TODOS los tickets (Pymes y Municipios) para un superadmin,
-    o solo los tickets correspondientes al rubro del usuario logueado.
+    Endpoint para obtener la lista de tickets de un usuario (para el panel).
+    Determina si son de Pyme o Municipio basado en el rubro del usuario.
     """
-    if not current_user:
-        return jsonify({"error": "Usuario no autenticado."}), 401
+    # ... (Tu lógica para listar tickets se mantiene, es buena, la integramos aquí)
+    usuario = current_user
+    if not usuario or not usuario.rubro:
+        return jsonify({"error": "Usuario o rubro no encontrado."}), 404
     
-    # Aquí podrías tener una lógica para superadmin si quisieras
-    # if getattr(current_user, 'es_super_admin', False):
-    #     tickets_pymes = PymeTicket.query.all()
-    #     tickets_municipios = MunicipioTicket.query.all()
-    # else:
-
-    # Lógica actual: Muestra los tickets según el rubro del usuario logueado
-    if not current_user.rubro:
-        return jsonify([]) # Si el usuario no tiene rubro, no tiene tickets que ver
-
-    if current_user.rubro.nombre.lower().strip() == 'municipios':
-        tickets = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).all()
-        tipo = 'municipio'
-    else:
-        # Asumimos que cualquier otro rubro es una Pyme y que los tickets están asociados al user_id
-        tickets = PymeTicket.query.filter_by(user_id=current_user.id).order_by(PymeTicket.fecha.desc()).all()
-        tipo = 'pyme'
-
+    TicketModel = MunicipioTicket if usuario.rubro.nombre.lower().strip() == 'municipios' else PymeTicket
+    tickets = TicketModel.query.filter_by(user_id=usuario.id).order_by(TicketModel.fecha.desc()).all()
+    
     resultado = [{
-        "id": t.id, "tipo": tipo, "nro_ticket": t.nro_ticket, "asunto": getattr(t, 'asunto', 'N/A'),
-        "estado": t.estado, "fecha": t.fecha.isoformat()
+        "id": t.id, "nro_ticket": t.nro_ticket, "asunto": getattr(t, 'asunto', 'N/A'),
+        "categoria": getattr(t, 'categoria', 'N/A'), "estado": t.estado, "fecha": t.fecha.isoformat()
     } for t in tickets]
         
     return jsonify(resultado)
 
-
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
+@ticket_bp.route('/<int:ticket_id>', methods=['GET'])
 @login_required
-def get_detalle_ticket(tipo: str, ticket_id: int):
-    """Obtiene el detalle completo de UN ticket, incluyendo sus comentarios."""
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket = db.session.get(TicketModel, ticket_id)
+def get_detalle_ticket(ticket_id):
+    """
+    NUEVO: Endpoint para obtener el detalle completo de UN ticket,
+    incluyendo su historial de comentarios.
+    """
+    ticket, tipo, error_response, status_code = get_ticket_model_and_check_permission(ticket_id)
+    if error_response:
+        return error_response, status_code
 
-    if not ticket:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-    
-    # Aquí iría tu lógica de permisos
-    
-    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_agente": c.es_agente} for c in ticket.comentarios]
+    comentarios = [{"comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_agente": c.es_agente} for c in ticket.comentarios]
     
     ticket_data = {
         "id": ticket.id, "nro_ticket": ticket.nro_ticket, "asunto": getattr(ticket, 'asunto', ''),
-        "estado": ticket.estado, "fecha": ticket.fecha.isoformat(),
-        "detalles": getattr(ticket, 'detalles', getattr(ticket, 'pregunta', '')),
-        "comentarios": sorted(comentarios, key=lambda c: c['fecha'])
+        "categoria": getattr(ticket, 'categoria', ''), "estado": ticket.estado,
+        "fecha": ticket.fecha.isoformat(), "detalles": getattr(ticket, 'detalles', getattr(ticket, 'pregunta', '')),
+        "comentarios": comentarios
     }
     return jsonify(ticket_data)
 
 
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
+@ticket_bp.route('/<int:ticket_id>/responder', methods=['POST'])
 @login_required
-def responder_a_ticket(tipo: str, ticket_id: int):
-    """Endpoint para que un AGENTE pueda responder a un ticket."""
+def responder_a_ticket(ticket_id):
+    """
+    NUEVO: Endpoint para que un AGENTE pueda responder a un ticket.
+    Esto cumple tu requisito de "poder responder".
+    """
+    ticket, tipo, error_response, status_code = get_ticket_model_and_check_permission(ticket_id)
+    if error_response:
+        return error_response, status_code
+    
     data = request.get_json()
     if not data or not data.get("comentario"):
         return jsonify({"error": "El comentario no puede estar vacío."}), 400
-
-    from services.ticket_service import servicio_tickets
+    
+    # Usamos nuestro servicio de tickets para crear el comentario
     nuevo_comentario = servicio_tickets.crear_comentario(
-        ticket_id=ticket_id, tipo_ticket=tipo,
-        comentario_data={"comentario": data["comentario"], "es_agente": True}
+        ticket_id=ticket.id,
+        tipo_ticket=tipo,
+        comentario_data={
+            "comentario": data["comentario"],
+            "user_id": current_user.id, # El ID del agente que responde
+            "es_agente": True  # Marcamos que la respuesta viene del panel
+        }
     )
     
     if nuevo_comentario:
-        TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-        ticket = db.session.get(TicketModel, ticket_id)
-        if ticket.estado == "nuevo": ticket.estado = "en_proceso"
+        # Al responder, cambiamos el estado del ticket a "en proceso"
+        ticket.estado = "en_proceso"
         db.session.commit()
-        return jsonify({"mensaje": "Respuesta enviada con éxito."}), 201
+        return jsonify({"mensaje": "Respuesta enviada con éxito.", "comentario_id": nuevo_comentario.id}), 201
     
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
+
+
+@ticket_bp.route('/<int:ticket_id>/estado', methods=['PUT'])
+@login_required
+def cambiar_estado_ticket(ticket_id):
+    """
+    NUEVO: Endpoint para cambiar el estado de un ticket.
+    Cumple tu requisito de "resuelto, derivado, etc.".
+    """
+    ticket, _, error_response, status_code = get_ticket_model_and_check_permission(ticket_id)
+    if error_response:
+        return error_response, status_code
+
+    data = request.get_json()
+    nuevo_estado = data.get("estado")
+    if not nuevo_estado:
+        return jsonify({"error": "Falta el nuevo estado."}), 400
+
+    # Aquí podrías validar que el estado sea uno de los permitidos
+    # estados_validos = ["nuevo", "en_proceso", "resuelto", "derivado"] ...
+    
+    ticket.estado = nuevo_estado
+    db.session.commit()
+    
+    return jsonify({"mensaje": f"El estado del ticket #{ticket.nro_ticket} ha sido actualizado a '{nuevo_estado}'."})
