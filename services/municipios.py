@@ -63,13 +63,39 @@ class HumanEscalationHandler(BaseMunicipioHandler):
         return None
 
 class GeneralHandler(BaseMunicipioHandler):
-    """Maneja el resto de las consultas genéricas."""
+    """Maneja el resto de las consultas usando el LLM con un prompt especializado."""
     def handle(self, pregunta: str) -> dict | None:
-        # Este es el fallback final, atrapa todo lo que no sea un flujo específico
-        # Aquí iría la lógica para responder con FAQs o con un LLM genérico
-        return {"respuesta": f"Recibí tu consulta sobre '{pregunta}'. Estoy buscando la mejor información para darte."}
-
-
+        intencion = self.context.get('intencion')
+        # Se activa para cualquier pregunta que no sea un flujo específico ya iniciado.
+        if intencion == 'pregunta_general' or intencion == 'consultar_tramite' or intencion == 'consultar_impuestos':
+            
+            nombre_municipio = getattr(self.context.get('user_obj'), "nombre_empresa", "este municipio")
+            prompt_sistema = (
+                f"Sos un agente de atención ciudadana experto para {nombre_municipio}. Tu identidad es la de un empleado municipal real, amable, eficiente y muy resolutivo. "
+                "Tu objetivo es ayudar a los vecinos con sus consultas sobre trámites (como licencias de conducir), impuestos, servicios, horarios e información general de forma clara y concisa. "
+                "Si no sabes la respuesta exacta, nunca inventes. En su lugar, indicá los canales de contacto oficiales del municipio. "
+                "Siempre finaliza tu respuesta con una pregunta que invite a la acción, como '¿Puedo ayudarte con algo más?'."
+            )
+            
+            try:
+                respuesta_llm = get_cohere_response(
+                    message=pregunta, 
+                    preamble=prompt_sistema
+                )
+                
+                # Preparamos una respuesta con botones de acción comunes
+                return {
+                    "respuesta": respuesta_llm,
+                    "botones": [
+                        {"texto": "Hacer un Reclamo", "payload": "Quiero hacer un reclamo"},
+                        {"texto": "Ver otros trámites", "payload": "¿Qué trámites puedo hacer?"}
+                    ]
+                }
+            except Exception as e:
+                logger.error(f"[MUNICIPIO] Error en la llamada al LLM en GeneralHandler: {e}")
+                return {"respuesta": "En este momento estoy teniendo dificultades para procesar tu consulta. Por favor, intenta de nuevo en unos minutos."}
+                
+        return None
 def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
