@@ -38,7 +38,7 @@ def buscar_item_vectorizado(pregunta: str, user_id: int):
             must=[
                 models.FieldCondition(
                     key="user_id", # El campo en tus metadatos de Qdrant
-                    match=models.MatchValue(value=user_id)
+                    match=models.(value=user_id)
                 )
             ]
         )
