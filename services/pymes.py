@@ -71,7 +71,7 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
             display_name = f"{nombre_completo} (SKU: {sku})"
         elif p.get('descripcion'):
             # --- CORRECCIÓN DE INDENTACIÓN Y F-STRING ---
-            # Esta línea debe estar indentada DENTRO del 'elif'
+            # Esta línea DEBE estar indentada correctamente dentro del 'elif'
             display_name = f"""{nombre_completo} ({p['descripcion'][:30].replace('\n', ' ')}...)""" 
         nombres_y_sku.append(display_name) # Esta línea debe estar al nivel del bucle 'for'
 
@@ -177,23 +177,20 @@ class FollowUpHandler(BaseHandler):
                 servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": f"Info adicional del cliente: {pregunta}", "user_id": self.context['user_id']})
                 return {"respuesta": "Recibido. Gracias por la información. Ya estamos procesando el envío de tu reemplazo.", "fuente": "datos_reemplazo_recibidos", "estado_respuesta": "exito_seguimiento"}
         
-        # --- FLUJO DE SEGUIMIENTO: Creación final del Pedido ---
+        # --- FLUJO DE SEGUIMIENTO: Creación final del Pedido (Paso 2) ---
         elif 'confirmando_pedido_final_paso_2' in contexto_pyme:
             productos_a_confirmar = contexto_pyme.pop('productos_a_confirmar_en_paso_2')
             monto_total_final = contexto_pyme.pop('monto_total_final_en_paso_2', 0.0)
             
-            # Intentar extraer contacto si no se hizo antes o si el usuario lo da aquí
             nombre = None
             email = None
             telefono = None
 
-            # Si el usuario está logueado, prioriza sus datos de perfil
             if self.context.get('user_obj'):
                 nombre = self.context['user_obj'].name
                 email = self.context['user_obj'].email
                 telefono = self.context['user_obj'].telefono
             
-            # Si es anónimo o el usuario logueado no tiene todos los datos, intentar extraer de la pregunta
             if not nombre or not email or not telefono:
                 email_match = re.search(r'[\w\.-]+@[\w\.-]+', pregunta)
                 if email_match: email = email_match.group(0)
@@ -201,37 +198,35 @@ class FollowUpHandler(BaseHandler):
                 phone_match = re.search(r'(\+?\d{1,3}[-.\s]?)?(\(?\d{2,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{4,8}', pregunta)
                 if phone_match: telefono = phone_match.group(0)
                 
-                # Extraer el nombre de lo que queda en la pregunta
                 temp_pregunta = pregunta
                 if email: temp_pregunta = temp_pregunta.replace(email, "").strip()
                 if telefono: temp_pregunta = temp_pregunta.replace(telefono, "").strip()
                 nombre = temp_pregunta if temp_pregunta else nombre if nombre else "Cliente Anónimo"
 
-            # Preparar datos para crear el pedido
             pedido_data = {
                 "asunto": f"Pedido Web: {contexto_pyme.get('pregunta_original_pedido', 'Solicitud de Producto')}",
                 "detalles": json.dumps(productos_a_confirmar, indent=2, ensure_ascii=False), # Guardar el JSON de productos
-                "rubro": self.context.get("rubro_nombre", "general_pyme"), # Rubro de la PYME que recibe el pedido
+                "rubro": self.context.get("rubro_nombre", "general_pyme"), 
                 "nombre_cliente": nombre,
                 "email_cliente": email,
                 "telefono_cliente": telefono,
-                "user_id": self.context.get("user_id"), # ID del cliente (puede ser None)
+                "user_id": self.context.get("user_id"),
                 "monto_total": monto_total_final
             }
             
             nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_data)
-            self.context['contexto_pyme'].clear() # Limpiar la memoria del flujo después de finalizarlo
+            self.context['contexto_pyme'].clear() 
             
             if nuevo_pedido:
                 return {
                     "respuesta": f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!", 
                     "fuente": "handler_pedido_creado",
-                    "estado_respuesta": "exito_pedido_creado", # Para el guiño del bot
-                    "pedido_data": { # Datos para mostrar en el PedidoPanel del frontend
+                    "estado_respuesta": "exito_pedido_creado", 
+                    "pedido_data": { 
                         "nro_pedido": nuevo_pedido.nro_pedido,
                         "estado": nuevo_pedido.estado,
                         "asunto": nuevo_pedido.asunto,
-                        "detalles": json.loads(nuevo_pedido.detalles), # Parsear de nuevo para enviar a frontend
+                        "detalles": json.loads(nuevo_pedido.detalles), 
                         "fecha_creacion": nuevo_pedido.fecha.isoformat(),
                         "nombre_cliente": nuevo_pedido.nombre_cliente,
                         "email_cliente": nuevo_pedido.email_cliente,
@@ -506,14 +501,12 @@ class EngancheAnonimoHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         user = self.context.get("user_obj")
         rubro = self.context.get("rubro_obj")
-        # El 'tiene_catalogo' debería venir del user_obj o rubro_obj si está configurado en el backend
         tiene_catalogo_para_pyme = False 
-        if rubro and hasattr(rubro, 'tiene_catalogo'): # Asumiendo que Rubro model podría tener este atributo
+        if rubro and hasattr(rubro, 'tiene_catalogo'): 
             tiene_catalogo_para_pyme = rubro.tiene_catalogo
-        elif user and hasattr(user, 'tiene_catalogo_personalizado'): # O el User model
+        elif user and hasattr(user, 'tiene_catalogo_personalizado'):
             tiene_catalogo_para_pyme = user.tiene_catalogo_personalizado
 
-        # Solo enganchar si el usuario es anónimo Y el rubro debería tener catálogo
         if user is None and tiene_catalogo_para_pyme:
             return {
                 "respuesta": "Para darte una atención más personalizada con nuestro catálogo, promociones y atención preferencial, te invito a registrarte o iniciar sesión.",
@@ -533,12 +526,11 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo_valido = contexto_previo if contexto_previo is not None else {}
     contexto_pyme = contexto_previo_valido.get(CONTEXTO_PYME_SESION, {})
 
-    # Preparar el contexto que se pasa a todos los handlers
     context = {
         "contexto_pyme": contexto_pyme,
         "user_obj": user_obj, 
         "rubro_obj": rubro_obj,
-        "user_id": getattr(user_obj, "id", None), # Será None si el usuario es anónimo
+        "user_id": getattr(user_obj, "id", None),
         "nombre_pyme": getattr(user_obj, "nombre_empresa", "la empresa") if user_obj else "la empresa",
         "telefono": getattr(user_obj, "telefono", "") if user_obj else "",
         "direccion": getattr(user_obj, "direccion", "") if user_obj else "",
@@ -548,27 +540,21 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
         "limite_preguntas": getattr(user_obj, "limite_preguntas", 10) if user_obj else 10,
         "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
-        # 'tiene_catalogo' en el contexto para EngancheAnonimoHandler (ej. si el rubro tiene catálogo)
-        # Puedes pasarlo desde aquí si tienes la forma de determinarlo.
-        # Por ejemplo, si rubro_obj.id tiene un catálogo asociado
-        # "tiene_catalogo": CatalogoItem.query.filter_by(user_id=getattr(user_obj, 'id', None)).first() is not None # Lógica de ejemplo
     }
     
-    # La cadena de handlers es crucial. El orden importa.
-    # Los handlers más específicos o de flujo deben ir primero.
     handler_chain = [
-        LimitHandler,               # 1. Primero, verificar límites de preguntas
-        FollowUpHandler,            # 2. Manejar respuestas de seguimiento (reclamos, *confirmación de pedidos*)
-        IntentClassifierPymeHandler,# 3. Clasificar la intención del usuario con LLM (si no es seguimiento)
-        PedidoHandler,              # 4. Manejar el flujo de pedidos (iniciar, detalles, confirmar, consultar estado)
-        VectorCatalogHandler,       # 5. Buscar en catálogo vectorizado (si aplica y la intención lo permite o el pedido no lo cubrió)
-        BrokenProductHandler,       # 6. Reclamos específicos (ej. producto roto)
-        ClaimHandler,               # 7. Reclamos generales
-        FaqHandler,                 # 8. Preguntas frecuentes (FAQ)
-        IntentHandler,              # 9. Intents predefinidos (respuestas directas y rápidas)
-        SalesEngageHandler,         # 10. Engagement de ventas (si no hay catálogo o no se encontró producto)
-        LLMHandler,                 # 11. Modelo de lenguaje generativo como fallback principal
-        EngancheAnonimoHandler      # 12. Enganche para usuarios anónimos (último recurso si no se pudo responder nada)
+        LimitHandler,               
+        FollowUpHandler,            
+        IntentClassifierPymeHandler,
+        PedidoHandler,              
+        VectorCatalogHandler,       
+        BrokenProductHandler,       
+        ClaimHandler,               
+        FaqHandler,                 
+        IntentHandler,              
+        SalesEngageHandler,         
+        LLMHandler,                 
+        EngancheAnonimoHandler      
     ]
 
     respuesta_final = None
@@ -578,44 +564,39 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
         if respuesta_final:
             if not isinstance(respuesta_final, dict):
                 logging.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_final)}")
-                respuesta_final = None # Fuerza a None para que el bucle continúe o active el fallback
+                respuesta_final = None 
             else:
-                break # Si el handler devolvió un dict válido, rompemos la cadena
+                break 
 
     if not respuesta_final:
-        # Fallback final si ningún handler pudo dar una respuesta válida
         respuesta_final = {"respuesta": "Disculpa, no pude procesar tu solicitud en este momento. Por favor, intenta de nuevo o reformula tu pregunta.", 
                            "fuente": "error_no_handler", 
                            "estado_respuesta": "error_critico"}
     
-    # Actualizar historial de chat de la sesión
     historial = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     historial.append({"role": "user", "content": pregunta})
     asistente_content = str(respuesta_final.get('respuesta','')) 
     historial.append({"role": "assistant", "content": asistente_content})
-    flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:] # Mantener el historial limitado
+    flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:] 
     
-    # Guardar la conversación en la base de datos (solo si el usuario no es anónimo)
     try:
-        if context['user_id']: # Solo guarda en Conversacion si el user_id no es None
+        if context['user_id']: 
             db.session.add(Conversacion(
                 user_id=context['user_id'], 
                 pregunta=pregunta, 
-                respuesta=respuesta_final.get('respuesta', ''), # Asegura que sea string
+                respuesta=respuesta_final.get('respuesta', ''), 
                 fuente=respuesta_final.get('fuente', 'desconocida'), 
                 rubro=context['rubro_nombre']
             ))
             db.session.commit()
-        # Si el usuario es anónimo (user_id is None), la conversación no se guarda en esta tabla de Conversacion
     except Exception as e:
         logging.error(f"[PYMES] Error guardando conversación en DB: {e}", exc_info=True)
         db.session.rollback()
 
-    # Devolver la respuesta final al frontend
     return {
         "respuesta": respuesta_final.get('respuesta', "Error: respuesta mal formada."),
         "fuente": respuesta_final.get('fuente', 'desconocida'),
         "contexto_actualizado": {CONTEXTO_PYME_SESION: contexto_pyme},
         "estado_respuesta": respuesta_final.get('estado_respuesta', 'no_entendido'),
-        "pedido_data": respuesta_final.get('pedido_data', None) # <-- Importante para el Frontend (para el panel de pedidos)
+        "pedido_data": respuesta_final.get('pedido_data', None)
     }
