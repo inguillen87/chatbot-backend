@@ -53,13 +53,14 @@ def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
     descripcion_herramientas = """
     {
       "consultar_recoleccion_por_direccion": {
-        "descripcion": "Se usa para obtener los horarios y días de recolección de basura, residuos o cuando pasa el camión basurero para una dirección específica. El usuario DEBE proporcionar una dirección o el nombre de una calle.",
+        "descripcion": "Se usa para obtener los horarios y días de recolección de basura, residuos o cuando pasa el camión basurero para una dirección específica. El usuario DEBE proporcionar una dirección o el nombre de una calle. Si falta la dirección, la herramienta NO SE USA directamente, se pide la dirección.",
         "parametros": { "direccion": "La dirección completa que el usuario mencionó, por ejemplo: 'Avenida San Martín 123, Junín'" }
       }
     }
     """
     prompt = f"""
     Tu única tarea es analizar la PREGUNTA DEL USUARIO y decidir si se puede resolver con una de las HERRAMIENTAS DISPONIBLES.
+    Si una herramienta requiere un parámetro (como una dirección) y no está en la pregunta, debes indicar que falta.
 
     HERRAMIENTAS DISPONIBLES:
     {descripcion_herramientas}
@@ -69,16 +70,19 @@ def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
     INSTRUCCIONES:
     1. Si la pregunta coincide claramente con la descripción de una herramienta y contiene los parámetros necesarios, responde SÓLO con un objeto JSON con el formato:
     `{{"usar_herramienta": "nombre_de_la_herramienta", "parametros": {{"nombre_parametro": "valor_extraido"}}}}`
-    2. Si la pregunta NO coincide con ninguna herramienta o le faltan parámetros (como la dirección), responde SÓLO con la palabra: `null`
+    2. Si la pregunta coincide con una herramienta pero le FALTAN PARÁMETROS ESENCIALES (ej. la dirección para la recolección), responde SÓLO con un objeto JSON con el formato:
+    `{{"usar_herramienta": "nombre_de_la_herramienta", "faltan_parametros": ["nombre_parametro"]}}`
+    3. Si la pregunta NO coincide con ninguna herramienta o no es relevante para ellas, responde SÓLO con la palabra: `null`
 
     Ejemplos:
     - Pregunta: "a que hora pasa el basurero por 25 de mayo 1550?" -> Respuesta: {{"usar_herramienta": "consultar_recoleccion_por_direccion", "parametros": {{"direccion": "25 de mayo 1550"}}}}
-    - Pregunta: "horarios del camion de basura?" -> Respuesta: null (falta la dirección)
-    - Pregunta: "necesito hacer un reclamo" -> Respuesta: null (no es una herramienta de esta lista)
+    - Pregunta: "horarios del camion de basura?" -> Respuesta: {{"usar_herramienta": "consultar_recoleccion_por_direccion", "faltan_parametros": ["direccion"]}}
+    - Pregunta: "necesito hacer un reclamo" -> Respuesta: null
 
     Tu respuesta:
     """
     return prompt
+
 
 # --- CLASES HANDLER (NUEVA Y EXISTENTES) ---
 
@@ -238,8 +242,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.info(f"Notificación SMS enviada para ticket M-{ticket.nro_ticket} a {telefono_formateado}")
 
                 memoria.clear() 
-                # El mensaje final actualizado (sin mención de email)
-                return {"respuesta": f"¡Gracias, **{nombre_vecino}**! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. Te llegará un SMS de confirmación a tu celular con el número de reclamo. Por favor, consulta el estado de tu reclamo por este mismo medio usando ese número. ¡Estamos para ayudarte!"}
+                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. El equipo de **{categoria}** lo revisará y podrá contactarte al número que nos proporcionaste."}
             else:
                 memoria.clear() 
                 return {"respuesta": "Disculpa, no pudimos generar tu reclamo en este momento. Por favor, intenta de nuevo más tarde o comunícate con la municipalidad."}
