@@ -238,7 +238,8 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.info(f"Notificación SMS enviada para ticket M-{ticket.nro_ticket} a {telefono_formateado}")
 
                 memoria.clear() 
-                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. El equipo de **{categoria}** lo revisará y podrá contactarte al número que nos proporcionaste."}
+                # El mensaje final actualizado (sin mención de email)
+                return {"respuesta": f"¡Gracias, **{nombre_vecino}**! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. Te llegará un SMS de confirmación a tu celular con el número de reclamo. Por favor, consulta el estado de tu reclamo por este mismo medio usando ese número. ¡Estamos para ayudarte!"}
             else:
                 memoria.clear() 
                 return {"respuesta": "Disculpa, no pudimos generar tu reclamo en este momento. Por favor, intenta de nuevo más tarde o comunícate con la municipalidad."}
