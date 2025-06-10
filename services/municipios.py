@@ -132,16 +132,29 @@ class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
+        
+        # --- Lógica Inicial: Elegir el tipo de trámite ---
         if self.context.get('intencion') == 'consultar_tramite' and not estado:
             memoria['estado_conversacion'] = 'esperando_tipo_tramite'
             return {"respuesta": "¡Claro! Te puedo ayudar con información sobre varios trámites. ¿Cuál te interesa?", "botones": [{"texto": "Licencia de Conducir"}, {"texto": "Habilitación Comercial"}]}
-        elif estado == 'esperando_tipo_tramite':
-            memoria.clear()
-            if "licencia" in pregunta.lower():
-                return {"respuesta": "Para la Licencia de Conducir necesitás: DNI con domicilio actualizado, no tener multas pendientes y realizar el curso de seguridad vial. ¿Necesitas saber dónde hacer el curso?"}
-            else: # Asumimos Habilitación Comercial
-                return {"respuesta": "Para Habilitaciones Comerciales, los requisitos varían según el rubro. Es mejor que te acerques a la oficina de comercio para un asesoramiento personalizado."}
-        return None
+
+        # --- Flujo de Licencia de Conducir ---
+        elif estado == 'esperando_tipo_tramite' and "licencia" in pregunta.lower():
+            # NO BORRAMOS LA MEMORIA. Guardamos el nuevo estado.
+            memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
+            return {"respuesta": "Para la Licencia de Conducir necesitás: DNI con domicilio actualizado, no tener multas pendientes y realizar el curso de seguridad vial. ¿Necesitas saber dónde hacer el curso?"}
+        
+        elif estado == 'esperando_pregunta_curso_licencia' and ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower()):
+            # Cuando el usuario pregunta dónde, le damos la info y AHORA sí limpiamos.
+            memoria.clear() # Limpiamos al FINAL del flujo.
+            return {"respuesta": "El curso de seguridad vial se realiza de forma online en el portal de la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias en [Dirección del Centro]."}
+
+        # --- Flujo de Habilitación Comercial ---
+        elif estado == 'esperando_tipo_tramite' and "habilitacion" in pregunta.lower():
+            memoria.clear() # Este es un flujo de un solo paso, así que aquí está bien limpiar.
+            return {"respuesta": "Para Habilitaciones Comerciales, los requisitos varían según el rubro. Es mejor que te acerques a la oficina de comercio para un asesoramiento personalizado."}
+
+        return None # Si no coincide con ningún estado, no hacemos nada.
 
 class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
