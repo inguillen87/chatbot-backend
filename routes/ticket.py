@@ -1,223 +1,281 @@
+# src/routes/auth.py
+
 from flask import Blueprint, request, jsonify, current_app
-from models import MunicipioTicket, PymeTicket, User, TicketComentario, db # Asegúrate de importar TicketComentario
-from services.ticket_service import servicio_tickets
-from .auth import token_requerido
+from sqlalchemy import func
+from werkzeug.security import check_password_hash # Importación que faltaba
+from models import User, Rubro, db, PymePedido # <-- Importamos PymePedido
+from functools import wraps
+import uuid
+import json
+from datetime import datetime
 
-ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
+# Definimos el Blueprint. NO le daremos url_prefix aquí para no romper /login, /register, etc.
+auth_bp = Blueprint('auth', __name__) 
 
-@ticket_bp.route('/', methods=['GET'])
-@token_requerido
-def get_tickets_del_usuario(current_user: User):
+def token_requerido(f):
     """
-    Endpoint universal y mejorado para obtener la lista de tickets.
-    Determina si el usuario es de una Pyme o Municipio y devuelve los tickets correspondientes.
+    Decorador para proteger rutas, asegurando que un token válido esté presente
+    en el encabezado 'Authorization' y que corresponda a un usuario activo.
+    Pasa el objeto `User` al handler de la ruta.
     """
-    if not current_user or not current_user.rubro:
-        return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization")
+        token = None
+        
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+        
+        if not token:
+            current_app.logger.warning("Intento de acceso a ruta protegida sin token.")
+            return jsonify({"error": "Token faltante o malformado"}), 401
+
+        user = User.query.filter_by(token=token).first()
+
+        if not user:
+            current_app.logger.warning(f"Intento de acceso con token inválido o expirado: {token}")
+            return jsonify({"error": "Token inválido o sesión expirada"}), 401
+
+        # Pasa el objeto `user` directamente a la función decorada
+        return f(user, *args, **kwargs)
+    return decorated
+
+# --- ENDPOINT DE LOGIN ---
+# La ruta será /login
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    if not data or not data.get('email') or not data.get('password'):
+        return jsonify({"error": "Email y contraseña requeridos."}), 400
+
+    user = User.query.filter_by(email=data.get("email").strip().lower()).first()
+
+    if not user or not user.check_password(data.get("password")):
+        current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
+        return jsonify({"error": "Email o contraseña incorrectos."}), 401
+
+    # Asegurarse de que el usuario tenga un token si no lo tiene
+    if not user.token:
+        user.token = str(uuid.uuid4())
+        db.session.commit()
+
+    current_app.logger.info(f"Login exitoso para: {user.email}")
+    return jsonify({
+        "mensaje": "Login exitoso",
+        "id": user.id,
+        "token": user.token,
+        "email": user.email,
+        "name": user.name,
+    })
+
+# --- ENDPOINT DE REGISTRO ---
+# La ruta será /register
+@auth_bp.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Solicitud JSON inválida."}), 400
+
+    required_fields = ["name", "email", "password", "nombre_empresa", "rubro", "acepto_terminos"]
+    if not all(field in data and data[field] for field in required_fields):
+        return jsonify({"error": "Todos los campos son obligatorios."}), 400
+
+    if not data["acepto_terminos"]:
+        return jsonify({"error": "Es necesario aceptar los términos y condiciones."}), 400
+        
+    if User.query.filter_by(email=data['email'].strip().lower()).first():
+        return jsonify({"error": "Ya existe un usuario con ese correo electrónico."}), 409
+
+    rubro = Rubro.query.filter(func.lower(Rubro.nombre) == func.lower(data['rubro'].strip())).first()
+    if not rubro:
+        return jsonify({"error": f"El rubro '{data['rubro']}' no es válido."}), 400
+
+    user = User(
+        name=data['name'].strip(),
+        email=data['email'].strip().lower(),
+        token=str(uuid.uuid4()),
+        nombre_empresa=data['nombre_empresa'].strip(),
+        rubro_id=rubro.id,
+        rubro=rubro,
+        plan="gratis",
+        acepto_terminos=True,
+        fecha_aceptacion_terminos=datetime.utcnow()
+    )
+    user.set_password(data['password'])
 
     try:
-        if current_user.rubro.nombre.lower().strip() == 'municipios':
-            # Si es un usuario de Municipio, puede ver todos los tickets de municipio.
-            tickets = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).all()
-            tipo = 'municipio'
-            # No hay campos específicos de PymeTicket aquí
-            def serialize_ticket(t):
-                return {
-                    "id": t.id,
-                    "tipo": tipo,
-                    "nro_ticket": t.nro_ticket,
-                    "asunto": getattr(t, 'asunto', 'N/A'),
-                    "estado": t.estado,
-                    "fecha": t.fecha.isoformat(),
-                    # Campos específicos de MunicipioTicket si los necesitas en la lista
-                    # "pregunta": t.pregunta, 
-                    # "categoria": t.categoria
-                }
-        else: # Asumimos que es una PYME
-            # Si es una Pyme, ve sus propios tickets (los creados por ella)
-            # Y también tickets que fueron creados por clientes *para* su rubro
-            # Esto depende de cómo quieras vincular PymeTickets a la PYME.
-            # Opción 1: Tickets creados por este user (si la PYME es también cliente)
-            # tickets = PymeTicket.query.filter_by(user_id=current_user.id).order_by(PymeTicket.fecha.desc()).all()
-
-            # Opción 2 (más probable para gestión): Tickets asociados a su rubro.
-            # Esto requiere que PymeTicket tenga un rubro_id o rubro_nombre asociado a la PYME.
-            # Tu PymeTicket ya tiene 'rubro_id'.
-            if current_user.rubro_id:
-                tickets = PymeTicket.query.filter_by(rubro_id=current_user.rubro_id).order_by(PymeTicket.fecha.desc()).all()
-            else: # Fallback si la PYME no tiene rubro_id
-                tickets = PymeTicket.query.filter_by(user_id=current_user.id).order_by(PymeTicket.fecha.desc()).all()
-
-            tipo = 'pyme'
-            # Campos específicos de PymeTicket para la serialización
-            def serialize_ticket(t):
-                return {
-                    "id": t.id,
-                    "tipo": tipo,
-                    "nro_ticket": t.nro_ticket,
-                    "asunto": getattr(t, 'asunto', 'N/A'),
-                    "estado": t.estado,
-                    "fecha": t.fecha.isoformat(),
-                    "telefono": getattr(t, 'telefono', None),
-                    "email": getattr(t, 'email', None),
-                    "dni": getattr(t, 'dni', None),
-                    "estado_cliente": getattr(t, 'estado_cliente', None),
-                    # Otros campos de PymeTicket si necesitas en la lista
-                }
-        
-        resultado = [serialize_ticket(t) for t in tickets]
-        return jsonify(resultado)
+        db.session.add(user)
+        db.session.commit()
+        current_app.logger.info(f"Usuario registrado: {user.email} con ID {user.id}")
+        return jsonify({
+            "mensaje": "Usuario registrado exitosamente.",
+            "id": user.id,
+            "token": user.token,
+            "name": user.name,
+            "email": user.email,
+        }), 201
     except Exception as e:
-        current_app.logger.error(f"Error en get_tickets_del_usuario para user {current_user.id}: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al obtener los tickets."}), 500
+        db.session.rollback()
+        current_app.logger.error(f"Error al registrar usuario: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al guardar el usuario."}), 500
 
-
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
+# --- ENDPOINT /ME (Obtener perfil del usuario logueado) ---
+# La ruta será /me
+@auth_bp.route('/me', methods=['GET'])
 @token_requerido
-def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
-    """Obtiene el detalle completo de UN ticket, incluyendo su historial de comentarios."""
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket = db.session.get(TicketModel, ticket_id)
+def get_current_user(user):
+    rubro_nombre = user.rubro.nombre if user.rubro else "General"
+    return jsonify({
+        "id": user.id, "email": user.email, "name": user.name, "token": user.token,
+        "rubro": rubro_nombre, "nombre_empresa": user.nombre_empresa, "telefono": user.telefono,
+        "direccion": user.direccion, "ciudad": user.ciudad, "provincia": user.provincia,
+        "pais": user.pais, "latitud": user.latitud, "longitud": user.longitud,
+        "link_web": user.link_web, "plan": user.plan, "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": user.limite_preguntas, "horario_json": user.horario_json,
+        "logo_url": getattr(user, "logo_url", ""),
+    })
 
-    if not ticket:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-    
-    # Lógica de permisos para la PYME o Municipio
-    has_permission = False
-    if tipo == 'municipio' and current_user.rubro.nombre.lower().strip() == 'municipios':
-        has_permission = True # Usuarios de municipio pueden ver todos los tickets de municipio
-    elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
-        # La PYME puede ver sus PymeTickets si están asociados a su rubro_id o user_id
-        # Asumo que el ticket.rubro_id es el id del rubro del current_user logueado (la PYME)
-        if ticket.rubro_id and current_user.rubro_id and ticket.rubro_id == current_user.rubro_id:
-            has_permission = True
-        # Si el ticket fue creado por la PYME (como cliente de otro servicio)
-        elif ticket.user_id == current_user.id:
-            has_permission = True
-    
-    if not has_permission:
-        return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
-
-    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket.comentarios]
-    
-    ticket_data = {
-        "id": ticket.id, 
-        "tipo": tipo, 
-        "nro_ticket": ticket.nro_ticket, 
-        "asunto": getattr(ticket, 'asunto', ''), 
-        "estado": ticket.estado,
-        "fecha": ticket.fecha.isoformat(), 
-        "detalles": getattr(ticket, 'detalles', getattr(ticket, 'pregunta', '')), # Usa 'detalles' o 'pregunta'
-        "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        # --- AÑADIR CAMPOS ESPECÍFICOS DE PYMETICKET PARA EL DETALLE ---
-        "rubro_id": getattr(ticket, 'rubro_id', None),
-        "telefono": getattr(ticket, 'telefono', None),
-        "email": getattr(ticket, 'email', None),
-        "dni": getattr(ticket, 'dni', None),
-        "estado_cliente": getattr(ticket, 'estado_cliente', None),
-        "archivo_url": getattr(ticket, 'archivo_url', None) # Si hay archivos adjuntos
-    }
-    return jsonify(ticket_data)
-
-
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
+# --- ENDPOINT PARA ACTUALIZAR PERFIL ---
+# La ruta será /perfil
+@auth_bp.route('/perfil', methods=['PUT'])
 @token_requerido
-def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
-    """Endpoint para que un AGENTE pueda responder a un ticket."""
+def actualizar_perfil(user):
     data = request.get_json()
-    if not data or not data.get("comentario"):
-        return jsonify({"error": "El comentario no puede estar vacío."}), 400
-    
-    # Lógica de permisos de agente (solo el dueño de la PYME/Municipio puede responder)
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket_obj = db.session.get(TicketModel, ticket_id)
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
+    if not data:
+        return jsonify({"error": "No se recibieron datos."}), 400
 
-    # Verificar si el usuario logueado es el agente/dueño correcto para este tipo de ticket
-    has_permission_to_respond = False
-    if tipo == 'municipio' and current_user.rubro.nombre.lower().strip() == 'municipios':
-        has_permission_to_respond = True
-    elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
-        # La PYME responde a tickets de su rubro
-        if ticket_obj.rubro_id and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id:
-            has_permission_to_respond = True
-    
-    if not has_permission_to_respond:
-        return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
-
-    nuevo_comentario = servicio_tickets.crear_comentario(
-        ticket_id=ticket_id, tipo_ticket=tipo,
-        comentario_data={"comentario": data["comentario"], "user_id": current_user.id, "es_admin": True}
-    )
-    
-    if nuevo_comentario:
-        # Actualizar el estado del ticket a 'en_proceso' si estaba en 'nuevo'
-        if ticket_obj.estado == "nuevo":
-            ticket_obj.estado = "en_proceso"
-            db.session.commit()
+    try:
+        for key, value in data.items():
+            if hasattr(user, key):
+                if key == "horario_json":
+                    setattr(user, "horario", value)
+                else:
+                    setattr(user, key, value)
         
-        # Devolver el ticket actualizado completo para que el frontend no tenga que hacer otra petición
-        # Reutilizamos la lógica de get_detalle_ticket
-        comentarios_actualizados = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
-        ticket_data = {
-            "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket, 
-            "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-            "fecha": ticket_obj.fecha.isoformat(), 
-            "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
-            "comentarios": sorted(comentarios_actualizados, key=lambda c: c['fecha']),
-            "rubro_id": getattr(ticket_obj, 'rubro_id', None),
-            "telefono": getattr(ticket_obj, 'telefono', None),
-            "email": getattr(ticket_obj, 'email', None),
-            "dni": getattr(ticket_obj, 'dni', None),
-            "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
-            "archivo_url": getattr(ticket_obj, 'archivo_url', None)
-        }
-        return jsonify(ticket_data), 200 # Devolver 200 OK y el objeto actualizado
-    
-    return jsonify({"error": "No se pudo guardar la respuesta."}), 500
+        # Horario JSON
+        horario_json_str = data.get('horario_json')
+        if horario_json_str is not None:
+            try:
+                if horario_json_str:
+                    json.loads(horario_json_str) 
+                user.horario = horario_json_str
+            except json.JSONDecodeError:
+                current_app.logger.error(f"Horario JSON inválido para user {user.id}")
+                return jsonify({"error": "Formato de horario JSON inválido"}), 400
 
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
+        if 'logo_url' in data:
+            user.logo_url = data['logo_url']
+            
+        db.session.commit()
+        return jsonify({"mensaje": "Perfil actualizado correctamente."}), 200
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al actualizar perfil para {user.email}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al guardar el perfil."}), 500
+
+# --- NUEVOS ENDPOINTS DE PEDIDOS (AHORA EN auth.py) ---
+
+# ENDPOINT /USER/PEDIDOS (Listar Pedidos de la PYME Logueada)
+# La ruta real será /user/pedidos
+@auth_bp.route('/pedidos', methods=['GET'])
 @token_requerido
-def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
-    """Endpoint para cambiar el estado de un ticket."""
-    data = request.get_json()
-    nuevo_estado = data.get("estado")
-    if not nuevo_estado:
-        return jsonify({"error": "Falta el nuevo estado."}), 400
-        
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket_obj = db.session.get(TicketModel, ticket_id)
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-        
-    # Lógica de permisos para cambiar el estado (similar a responder)
-    has_permission_to_change_state = False
-    if tipo == 'municipio' and current_user.rubro.nombre.lower().strip() == 'municipios':
-        has_permission_to_change_state = True
-    elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
-        if ticket_obj.rubro_id and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id:
-            has_permission_to_change_state = True
-    
-    if not has_permission_to_change_state:
-        return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
+def get_user_pedidos(current_user: User):
+    """
+    Obtiene la lista de pedidos asociados a la PYME (current_user).
+    La PYME ve los pedidos de su rubro.
+    """
+    if not current_user or not current_user.rubro:
+        return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar pedidos."}), 404
 
-    ticket_obj.estado = nuevo_estado
-    db.session.commit()
+    try:
+        rubro_nombre = current_user.rubro.nombre.lower()
+        pedidos = PymePedido.query.filter_by(rubro=rubro_nombre).order_by(PymePedido.fecha.desc()).all()
+
+        pedidos_data = []
+        for pedido in pedidos:
+            detalles_parsed = [] 
+            if pedido.detalles:
+                try:
+                    parsed_content = json.loads(pedido.detalles)
+                    if isinstance(parsed_content, list):
+                        detalles_parsed = parsed_content
+                    else: # Si no es lista, encapsularlo para mostrar como info genérica
+                        detalles_parsed = [{"info": parsed_content}] 
+                except json.JSONDecodeError:
+                    current_app.logger.warning(f"Detalles de pedido {pedido.nro_pedido} mal formados: {pedido.detalles}")
+                    detalles_parsed = [{"error": "Detalles del pedido mal formados o no son un array de productos"}] 
+            
+            pedidos_data.append({
+                "id": pedido.id,
+                "nro_pedido": pedido.nro_pedido,
+                "asunto": pedido.asunto,
+                "estado": pedido.estado,
+                "detalles": detalles_parsed, 
+                "monto_total": pedido.monto_total,
+                "fecha_creacion": pedido.fecha.isoformat(), 
+                "nombre_cliente": pedido.nombre_cliente,
+                "email_cliente": pedido.email_cliente,
+                "telefono_cliente": pedido.telefono_cliente,
+                "rubro": pedido.rubro
+            })
+        
+        return jsonify({"pedidos": pedidos_data}), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Error al obtener pedidos para user {current_user.id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno del servidor al obtener pedidos"}), 500
+
+# ENDPOINT PARA ACTUALIZAR ESTADO DE UN PEDIDO
+# La ruta real será /user/pedidos/<nro_pedido>/estado
+@auth_bp.route('/pedidos/<string:nro_pedido>/estado', methods=['PUT'])
+@token_requerido
+def update_pedido_estado(nro_pedido):
+    """
+    Actualiza el estado de un pedido específico.
+    Solo la PYME dueña del rubro asociado al pedido puede actualizarlo.
+    """
+    user_id = current_user.id 
+    data = request.get_json()
+    new_estado = data.get('estado')
+
+    if not new_estado:
+        return jsonify({"error": "Estado no proporcionado"}), 400
     
-    # Devolver el ticket actualizado completo
-    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
-    ticket_data = {
-        "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket, 
-        "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": ticket_obj.fecha.isoformat(), 
-        "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
-        "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "rubro_id": getattr(ticket_obj, 'rubro_id', None),
-        "telefono": getattr(ticket_obj, 'telefono', None),
-        "email": getattr(ticket_obj, 'email', None),
-        "dni": getattr(ticket_obj, 'dni', None),
-        "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
-        "archivo_url": getattr(ticket_obj, 'archivo_url', None)
-    }
-    return jsonify(ticket_data)
+    try:
+        if not current_user.rubro:
+            return jsonify({"error": "Usuario sin rubro asociado para gestionar pedidos"}), 403
+
+        pedido = PymePedido.query.filter_by(nro_pedido=nro_pedido, rubro=current_user.rubro.nombre.lower()).first()
+
+        if not pedido:
+            return jsonify({"error": "Pedido no encontrado o no autorizado. Verifique si pertenece a su rubro."}), 404
+        
+        allowed_states = ["pendiente", "en_proceso", "enviado", "entregado", "cancelado", "satisfecho"] 
+        if new_estado not in allowed_states:
+            return jsonify({"error": f"Estado '{new_estado}' no permitido"}), 400
+
+        pedido.estado = new_estado
+        db.session.commit()
+        logger.info(f"Estado del pedido {nro_pedido} (user {user_id}) actualizado a: {new_estado}")
+        
+        return jsonify({"message": "Estado del pedido actualizado con éxito", "pedido": {"nro_pedido": pedido.nro_pedido, "estado": pedido.estado}}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al actualizar estado del pedido {nro_pedido} para user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno del servidor al actualizar estado del pedido"}), 500
+
+# --- ENDPOINTS DE CATÁLOGO (Mantener si los tienes en este archivo o añadir aquí) ---
+# Si tus endpoints de catálogo están aquí, pégalos.
+# Por ejemplo:
+# @auth_bp.route('/subir_catalogo', methods=['POST'])
+# @token_requerido
+# def upload_catalog(current_user: User):
+#    # ... (Tu lógica existente para subir catálogo)
+#    pass
+
+# @auth_bp.route('/get_catalog_items', methods=['GET'])
+# @token_requerido
+# def get_catalog_items(current_user: User):
+#    # ... (Tu lógica para obtener items de catálogo)
+#    pass

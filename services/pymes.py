@@ -1,4 +1,4 @@
-# src/services/pymes.py
+# src/services/pymes.py - REEMPLAZAR TODO EL CONTENIDO CON ESTO
 
 import logging
 import re
@@ -70,10 +70,11 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         if sku and sku != nombre_completo and sku != "N/A":
             display_name = f"{nombre_completo} (SKU: {sku})"
         elif p.get('descripcion'):
-            # --- CORRECCIÓN DE INDENTACIÓN Y F-STRING ---
-            # Esta línea DEBE estar indentada correctamente dentro del 'elif'
-            display_name = f"{nombre_completo} ({descripcion_corta}...)"
-        nombres_y_sku.append(display_name) # Esta línea debe estar al nivel del bucle 'for'
+            # --- CORRECCIÓN FINAL GARANTIZADA PARA EL F-STRING ---
+            # Preparamos la descripción limpia antes de usarla en el f-string
+            desc_para_display = p['descripcion'][:30].replace('\n', ' ').strip()
+            display_name = f"{nombre_completo} ({desc_para_display}...)" 
+        nombres_y_sku.append(display_name)
 
     prompt = f"""
     Tu tarea es analizar la respuesta de un cliente y extraer los productos y cantidades que solicita, basándote en la lista de PRODUCTOS DISPONIBLES.
