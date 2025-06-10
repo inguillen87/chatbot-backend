@@ -12,7 +12,7 @@ CONTEXTO_MUNICIPIO = "contexto_municipio"
 def _clasificar_intencion_con_llm(pregunta: str) -> str:
     """Usa un LLM para una clasificación de intención robusta."""
     prompt = f"""
-    Clasifica la consulta de un ciudadano en una de estas categorías: 'iniciar_reclamo', 'consultar_tramite', 'consultar_impuestos', 'consultar_estado_ticket', 'hablar_con_agente', 'saludo', 'pregunta_general'.
+    Clasifica la siguiente consulta de un ciudadano en una de estas categorías: 'iniciar_reclamo', 'consultar_tramite', 'consultar_impuestos', 'consultar_estado_ticket', 'hablar_con_agente', 'saludo', 'pregunta_general'.
     Responde ÚNICAMENTE con la categoría.
 
     Ejemplos:
@@ -32,14 +32,12 @@ def _clasificar_intencion_con_llm(pregunta: str) -> str:
             if cat in respuesta_llm:
                 return cat.replace(" ", "_")
         return "pregunta_general"
-    except Exception as e:
-        logger.error(f"[MUNICIPIO] Error en clasificación LLM: {e}")
+    except Exception:
         # Fallback a keywords si la IA falla
         texto = pregunta.lower()
-        if any(w in texto for w in ["reclamo", "roto", "bache", "luz", "queja"]): return 'iniciar_reclamo'
-        if any(w in texto for w in ["ticket", "estado"]): return 'consultar_estado_ticket'
-        if any(w in texto for w in ["impuesto", "pagar", "deuda"]): return 'consultar_impuestos'
-        if any(w in texto for w in ["trámite", "carnet", "licencia"]): return 'consultar_tramite'
+        if any(w in texto for w in ["reclamo", "roto", "bache", "luz"]): return 'iniciar_reclamo'
+        if any(w in texto for w in ["impuesto", "pagar"]): return 'consultar_impuestos'
+        if any(w in texto for w in ["trámite", "carnet"]): return 'consultar_tramite'
         return 'pregunta_general'
 
 class BaseMunicipioHandler:
@@ -47,7 +45,7 @@ class BaseMunicipioHandler:
     def handle(self, pregunta: str) -> dict | None: raise NotImplementedError
 
 class IntentClassifierHandler(BaseMunicipioHandler):
-    """El primer handler. Usa IA para clasificar la intención."""
+    """El primer handler. Clasifica la intención y la añade al contexto."""
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         if not memoria.get('estado_conversacion'):
@@ -80,7 +78,7 @@ class ReclamoHandler(BaseMunicipioHandler):
         estado = memoria.get('estado_conversacion')
         if self.context.get('intencion') == 'iniciar_reclamo' and not estado:
             memoria['estado_conversacion'] = 'esperando_categoria_reclamo'; memoria['pregunta_original'] = pregunta
-            return {"respuesta": "Entendido. Para dirigir tu reclamo al área correcta, seleccioná una categoría:", "botones": [{"texto": "Alumbrado"}, {"texto": "Calles"}, {"texto": "Limpieza"}]}
+            return {"respuesta": "Entendido. Para dirigir tu reclamo al área correcta, seleccioná una categoría:", "botones": [{"texto": "Alumbrado"}, {"texto": "Calles y Veredas"}, {"texto": "Limpieza"}]}
         elif estado == 'esperando_categoria_reclamo':
             memoria['estado_conversacion'] = 'esperando_direccion_reclamo'; memoria['categoria_reclamo'] = pregunta
             return {"respuesta": f"Perfecto: **{pregunta}**. Ahora, indicame la dirección exacta del problema."}
@@ -127,8 +125,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     if not respuesta_final:
         respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta."}
 
-    # ... (lógica de guardado en DB sin cambios) ...
-    
     return {
         "respuesta": respuesta_final.get('respuesta'),
         "botones": respuesta_final.get('botones', []),
