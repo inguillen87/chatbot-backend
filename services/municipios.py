@@ -1,6 +1,7 @@
 import logging
 import re
 import json
+import os 
 from models import MunicipioTicket, TicketComentario, db # Usando tus modelos
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
