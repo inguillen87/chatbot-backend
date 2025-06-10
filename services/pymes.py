@@ -72,7 +72,7 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         elif p.get('descripcion'):
             # --- CORRECCIÓN DE INDENTACIÓN Y F-STRING ---
             # Esta línea DEBE estar indentada correctamente dentro del 'elif'
-            display_name = f"""{nombre_completo} ({p['descripcion'][:30].replace('\n', ' ')}...)""" 
+            display_name = f"{nombre_completo} ({descripcion_corta}...)"
         nombres_y_sku.append(display_name) # Esta línea debe estar al nivel del bucle 'for'
 
     prompt = f"""
