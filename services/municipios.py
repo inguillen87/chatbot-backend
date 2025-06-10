@@ -256,11 +256,13 @@ class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
-        
-        # Si la intención es 'consultar_tramite' y no estamos en un flujo, iniciamos con opciones de trámites
-        if self.context.get('intencion') == 'consultar_tramite' and not estado:
-            # Ofrecemos la opción de Licencia de Conducir y el botón de "Más Trámites"
-            memoria['estado_conversacion'] = 'esperando_seleccion_tramite_general' # Nuevo estado para manejar la respuesta del botón
+        intencion = self.context.get('intencion') 
+
+        logger.info(f"[TRAMITES] Recibido: Pregunta='{pregunta}', Estado='{estado}', Intencion='{intencion}'")
+
+        # Paso 1: Iniciar el flujo de trámites / dar opciones iniciales
+        if intencion == 'consultar_tramite' and not estado:
+            memoria['estado_conversacion'] = 'esperando_seleccion_tramite_general' 
             return {
                 "respuesta": "¡Claro! Te puedo ayudar con información sobre la Licencia de Conducir, o puedes explorar otros trámites municipales.",
                 "botones": [
@@ -269,36 +271,49 @@ class TramitesHandler(BaseMunicipioHandler):
                 ]
             }
         
-        # Si el usuario selecciona "Licencia de Conducir" (como texto) o pregunta directamente por ella
+        # Paso 2: El usuario ha seleccionado/preguntado por Licencia de Conducir
+        # y estamos iniciando ese sub-flujo (o re-ingresando si el LLM redirige)
         elif (estado == 'esperando_seleccion_tramite_general' and "licencia" in pregunta.lower()) or \
-             (self.context.get('intencion') == 'consultar_tramite' and "licencia" in pregunta.lower() and not estado):
-            memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
-            return {"respuesta": "Para la Licencia de Conducir necesitás: DNI con domicilio actualizado, no tener multas pendientes y realizar el curso de seguridad vial. ¿Necesitás saber dónde hacer el curso?"}
-        
-        # Si ya estamos en el flujo y preguntan por el curso
-        elif estado == 'esperando_pregunta_curso_licencia' and ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower()):
-            memoria.clear() 
+             (intencion == 'consultar_tramite' and "licencia" in pregunta.lower() and not estado):
+            
+            memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia' # Avanzamos al estado de preguntar por el curso
+            
             return {
-                "respuesta": "El curso de seguridad vial se realiza de forma online en el portal de la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias en [Dirección del Centro].",
+                "respuesta": "Para la Licencia de Conducir necesitás: DNI actualizado, no tener multas, y hacer el curso de seguridad vial.",
+                "botones": [
+                    {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
+                    {"texto": "¿Dónde hacer el curso?", "accion_interna": "preguntar_curso"}, # Nuevo: acción interna para el curso
+                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"} 
+                ]
+            }
+        
+        # Paso 3: El usuario pregunta específicamente "¿Dónde hacer el curso?" (ya sea por texto o botón)
+        elif estado == 'esperando_pregunta_curso_licencia' and \
+             ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower() or "preguntar_curso" == pregunta.lower()): # Incluye el "acción_interna"
+            
+            memoria.clear() # Limpiamos la memoria al dar la info final del curso
+            return {
+                "respuesta": "El curso de seguridad vial es online en la Agencia Nacional de Seguridad Vial o presencialmente en [Dirección del Centro].",
                 "botones": [
                     {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
                     {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"} 
                 ]
             }
         
-        # Si está en el flujo de licencia de conducir pero no pregunta por el curso o la respuesta es "no"
+        # Paso 4: El usuario dice "no" a la pregunta del curso (si no necesita más info del curso)
         elif estado == 'esperando_pregunta_curso_licencia' and ("no" in pregunta.lower()):
-            memoria.clear() 
+            memoria.clear() # Limpiamos la memoria al finalizar el flujo
             return {
-                "respuesta": "Entendido. Para sacar el turno, podés hacerlo fácilmente desde aquí:",
+                "respuesta": "Entendido. Para sacar el turno de tu Licencia de Conducir, haz clic aquí:",
                 "botones": [
                     {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
                     {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"} 
                 ]
             }
-        # Si el usuario hace clic en "Más Trámites" (que se envía como texto) desde el estado inicial de trámite
+        
+        # Paso 5: El usuario hace clic en "Más Trámites" (enviado como texto) desde el estado inicial o cualquier otro punto
         elif estado == 'esperando_seleccion_tramite_general' and "más trámites" in pregunta.lower():
-            memoria.clear() # Limpiamos la memoria ya que el usuario se irá a la web
+            memoria.clear() 
             return {
                 "respuesta": "¡Claro! Te dirijo a la página de Trámites del municipio para que explores todas las opciones.",
                 "botones": [
@@ -306,6 +321,10 @@ class TramitesHandler(BaseMunicipioHandler):
                 ]
             }
         
+        # Manejo de casos donde el usuario está en el estado inicial de trámite pero la pregunta no es 'licencia' ni 'más trámites'
+        elif estado == 'esperando_seleccion_tramite_general':
+             return {"respuesta": "Disculpa, ¿qué tipo de trámite te interesa? Puedes preguntar por 'Licencia de Conducir' o hacer clic en 'Más Trámites'."}
+
         return None
 
 
