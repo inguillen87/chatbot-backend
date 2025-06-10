@@ -5,7 +5,7 @@ from sqlalchemy.dialects.sqlite import JSON
 from extensions import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
-import uuid
+import uuid # <-- Asegúrate que uuid esté importado
 import json
 
 class Rubro(db.Model):
@@ -116,15 +116,45 @@ class PymeTicket(db.Model):
 class PymePedido(db.Model): 
     __tablename__ = "pyme_pedido"
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    # --- MODIFICADO: user_id ahora es nullable=True para permitir anónimos ---
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) 
+    user = db.relationship('User', backref='pyme_pedidos') # Relación con el User model
+    
     nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
-    estado = db.Column(db.String(30), default="pendiente") # pendiente, confirmado, enviado, cancelado
-    detalles = db.Column(db.Text, nullable=True) # Guardaremos los productos como un JSON
+    # --- AÑADIDO: Campo para el Asunto del Pedido (obligatorio) ---
+    asunto = db.Column(db.String(255), nullable=False) 
+    estado = db.Column(db.String(30), default="pendiente") # pendiente, en_proceso, completado, cancelado, etc.
+    # Los detalles del pedido (productos, cantidades) se guardarán como JSON string
+    detalles = db.Column(db.Text, nullable=True) 
     monto_total = db.Column(db.Float, nullable=True)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # --- AÑADIDO: Campos de contacto directo para usuarios anónimos o logueados ---
+    nombre_cliente = db.Column(db.String(100), nullable=True)
+    email_cliente = db.Column(db.String(100), nullable=True)
+    telefono_cliente = db.Column(db.String(50), nullable=True)
+    
+    # --- AÑADIDO: Para saber a qué rubro de PYME pertenece el pedido ---
+    rubro = db.Column(db.String(100), nullable=False) # El rubro de la PYME que recibe el pedido
+
+    def __init__(self, asunto, detalles, rubro, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None):
+        self.asunto = asunto
+        self.detalles = detalles
+        self.rubro = rubro
+        self.nombre_cliente = nombre_cliente
+        self.email_cliente = email_cliente
+        self.telefono_cliente = telefono_cliente
+        self.user_id = user_id
+        self.nro_pedido = self._generate_nro_pedido()
+
+    def _generate_nro_pedido(self):
+        # Genera un número de pedido único. Prefijo "PED" para diferenciarlo de tickets.
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        random_suffix = str(uuid.uuid4().hex)[:6].upper()
+        return f"PED-{timestamp}-{random_suffix}"
 
     def __repr__(self):
-        return f"<PymePedido {self.nro_pedido}>"
+        return f"<PymePedido {self.nro_pedido} - {self.asunto}>"
 
 class TicketComentario(db.Model):
     __tablename__ = "ticket_comentario"
