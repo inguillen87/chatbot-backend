@@ -190,6 +190,20 @@ class GeneralHandler(BaseMunicipioHandler):
         prompt = "Sos un agente de atención ciudadana experto..."
         respuesta_llm = get_cohere_response(message=pregunta, preamble=prompt)
         return {"respuesta": respuesta_llm}
+     
+# ¡ENGANCHE PARA ANÓNIMOS SIN USER_ID! (último recurso en landing demo)
+class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if not self.context.get("user_id"):
+            return {
+                "respuesta": "Para darte una mejor atención personalizada, por favor registrate o iniciá sesión. Así vas a poder hacer reclamos reales y recibir respuestas oficiales del municipio.",
+                "botones": [
+                    {"texto": "Iniciar Sesión", "url": "/login"},
+                    {"texto": "Registrarme Gratis", "url": "/register"},
+                    {"texto": "Planes Premium", "url": "/precios"}
+                ]
+            }
+        return None
 
 # --- FUNCIÓN PRINCIPAL ORQUESTADORA (MODIFICADA) ---
 def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
@@ -208,22 +222,23 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         ReclamoHandler, 
         ImpuestosHandler, 
         TramitesHandler, 
-        GeneralHandler
+        GeneralHandler,
+        EngancheAnonimoMunicipioHandler  # <-- Nuevo para usuarios sin login
+
     ]
     
     respuesta_final = None
     for handler_class in handler_chain:
         handler_instance = handler_class(context)
         respuesta_final = handler_instance.handle(pregunta)
-        if respuesta_final: 
+        if respuesta_final:
             break
-    
+
     if not respuesta_final:
         respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta."}
 
-    # Nos aseguramos de devolver siempre el contexto actualizado
     return {
-        "respuesta": respuesta_final.get('respuesta'), 
-        "botones": respuesta_final.get('botones', []), 
+        "respuesta": respuesta_final.get('respuesta'),
+        "botones": respuesta_final.get('botones', []),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio}
     }
