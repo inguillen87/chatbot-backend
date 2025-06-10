@@ -210,16 +210,40 @@ class LLMHandler(BaseHandler):
             for msg in self.context.get('mensajes_previos', []):
                 prompt_pyme += f"\n- {msg.get('role', 'user')}: {msg.get('content','')}"
             prompt_pyme += f"\n- Cliente: {pregunta}\n- Chatboc:"
-            
+
             respuesta_llm = get_cohere_response(message=pregunta, chat_history=self.context.get('mensajes_previos', []), preamble=prompt_pyme)
             if respuesta_llm:
                 return {"respuesta": reemplazar_placeholders(respuesta_llm, self.context.get('user_obj')), "fuente": "llm"}
         except Exception as e:
             logging.error(f"[PYMES] Error fatal en LLMHandler: {e}", exc_info=True)
-        
-        sugs = sugerencias_por_rubro(self.context.get('rubro_nombre', 'empresa'))
-        return {"respuesta": "No encontré una respuesta directa. Probá con: " + " · ".join(f"“{s}”" for s in sugs if s), "fuente": "sugerencia_fallback"}
 
+        # NUEVO: fallback mejorado para modo demo sin romper flujo
+        rubro = self.context.get('rubro_nombre', 'empresa')
+        sugs = sugerencias_por_rubro(rubro)
+        sugerencias_texto = " · ".join(f"“{s}”" for s in sugs if s)
+        return {
+            "respuesta": f"No encontré una respuesta directa. Probá con: {sugerencias_texto if sugerencias_texto else 'otras palabras clave'}.",
+            "fuente": "sugerencia_fallback"
+        }
+
+class EngancheAnonimoHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        user = self.context.get("user_obj")
+        rubro = self.context.get("rubro_obj")
+        tiene_catalogo = self.context.get("tiene_catalogo", False)
+
+        if user is None or rubro is None or not tiene_catalogo:
+            return {
+                "respuesta": "Para responderte mejor, necesitás registrarte o acceder con tu cuenta. Así podremos darte respuestas personalizadas con tu catálogo, promociones y atención preferencial.",
+                "acciones": [
+                    {"texto": "Registrarme gratis", "url": "/register"},
+                    {"texto": "Planes y beneficios", "url": "/precios"}
+                ],
+                "fuente": "enganche_anonimo"
+            }
+
+        return None  # Si todo está bien, no hace nada
+    
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL ---
 
 def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
@@ -245,7 +269,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     handler_chain = [
         LimitHandler, FollowUpHandler, PedidoHandler, TicketStatusHandler, 
         BrokenProductHandler, ClaimHandler, VectorCatalogHandler, 
-        SalesEngageHandler, FaqHandler, IntentHandler, LLMHandler
+        SalesEngageHandler, FaqHandler, IntentHandler, LLMHandler,EngancheAnonimoHandler
     ]
 
     respuesta_final = None
