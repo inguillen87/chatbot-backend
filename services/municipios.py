@@ -1,6 +1,6 @@
 import logging
 import re
-from models import MunicipioTicket, TicketComentario, db
+from models import MunicipioTicket, TicketComentario, db # Usando tus modelos
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 
@@ -62,7 +62,15 @@ class TicketStatusHandler(BaseMunicipioHandler):
             ticket = MunicipioTicket.query.filter_by(nro_ticket=int(match.group(0))).first()
             if ticket:
                 respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado}**."
-                ultimo_comentario_agente = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_agente=True).order_by(TicketComentario.fecha.desc()).first()
+                
+                # --- INICIO DE LA CORRECCIÓN ---
+                # Usamos 'es_admin' como está definido en tu models.py para TicketComentario
+                ultimo_comentario_agente = TicketComentario.query.filter_by(
+                    municipio_ticket_id=ticket.id, 
+                    es_admin=True  # <-- CORREGIDO: Usando 'es_admin'
+                ).order_by(TicketComentario.fecha.desc()).first()
+                # --- FIN DE LA CORRECCIÓN ---
+
                 if ultimo_comentario_agente:
                     respuesta += f"\n\nÚltima actualización de nuestro equipo: *\"{ultimo_comentario_agente.comentario}\"*"
                 return {"respuesta": respuesta}
@@ -108,7 +116,7 @@ class TramitesHandler(BaseMunicipioHandler):
                 return {"respuesta": "Para Habilitaciones Comerciales, los requisitos varían según el rubro. Es mejor que te acerques a la oficina de comercio para un asesoramiento personalizado."}
         return None
 
-class GeneralHandler(BaseMunicipioHandler):
+class GeneralHandler(Basemunderlyingipipoder):
     def handle(self, pregunta: str) -> dict | None:
         prompt = "Sos un agente de atención ciudadana experto..." # Tu prompt completo
         respuesta_llm = get_cohere_response(message=pregunta, preamble=prompt)
