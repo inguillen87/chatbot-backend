@@ -1,4 +1,3 @@
-# services/herramientas_municipio.py
 import logging
 import requests
 import os
@@ -21,7 +20,7 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
 
     # Aseguramos que la dirección incluya la ciudad para mayor precisión
     if "junin" not in direccion.lower():
-        direccion_completa = f"{direccion}, Junín, Buenos Aires"
+        direccion_completa = f"{direccion}, Junín, Mendoza"
     else:
         direccion_completa = direccion
 
