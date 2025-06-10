@@ -60,7 +60,7 @@ class ServicioTickets:
                 comentario = TicketComentario(
                     comentario=ticket_data.get("comentario"),
                     user_id=ticket_data.get("user_id"),
-                    es_agente=False
+                    es_admine=False
                 )
                 # MEJORA: Usar la relación directa es más limpio.
                 if tipo_ticket == "municipio":
@@ -85,7 +85,7 @@ class ServicioTickets:
             nuevo_comentario = TicketComentario(
                 comentario=comentario_data.get("comentario"),
                 user_id=comentario_data.get("user_id"),
-                es_agente=comentario_data.get("es_agente", False)
+                es_admin=comentario_data.get("es_admin", False)
             )
             # MEJORA: Usar la relación directa es más limpio.
             if tipo_ticket == "municipio":
