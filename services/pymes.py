@@ -408,16 +408,13 @@ class ClaimHandler(BaseHandler):
 
 class VectorCatalogHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
-        # Añadido "compra" para activar el catálogo también
         if any(w in pregunta.lower() for w in ["comprar", "precio", "pedido", "catalogo", "stock", "quiero", "vinos", "compra"]):
             try:
-                # Asegúrate de que user_id se esté pasando correctamente para la búsqueda de catálogo
                 resultados = buscar_item_vectorizado(pregunta, self.context['user_id']) 
                 if resultados:
                     respuesta_texto = "¡Claro! En nuestro catálogo detallado encontré esto:\n"
                     items_payload = [item.payload for item in resultados] 
                     
-                    # Almacenar los payloads completos en el contexto para el PedidoHandler
                     self.context['contexto_pyme']['productos_mostrados_catalogo'] = items_payload
 
                     for payload in items_payload:
@@ -425,11 +422,9 @@ class VectorCatalogHandler(BaseHandler):
                         sku = payload.get('sku', 'N/A')
                         precio_str = payload.get('precio_str', 'Consultar')
                         
-                        # Mostrar más detalles en la respuesta para el usuario
                         respuesta_texto += f"- **{nombre}** (SKU: {sku}): ${precio_str}\n"
                     
                     respuesta_texto += "\n¿Te gustaría que genere un pedido con alguno de estos productos?"
-                    # La intención de 'iniciar_pedido' será clasificada por IntentClassifierPymeHandler si el usuario dice "sí"
                     return {"respuesta": respuesta_texto, "fuente": "catalogo_qdrant", "estado_respuesta": "exito_catalogo_mostrado"}
             except Exception as e:
                 logging.warning(f"[PYMES] Error buscando en Qdrant o procesando catálogo: {e}")
