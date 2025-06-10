@@ -1,13 +1,14 @@
 import logging
 import re
 import json
-import os 
+import os
 from models import MunicipioTicket, TicketComentario, db # Usando tus modelos
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 # Importamos nuestra nueva y flamante herramienta
 from .herramientas_municipio import consultar_recoleccion_por_direccion
 from .logic import _clasificar_intencion_con_llm 
+from twilio.rest import Client # <<<<<<<<<<<<<< CORREGIDO: Importación de Client
 
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
@@ -17,39 +18,34 @@ TOOL_REGISTRY = {
     "consultar_recoleccion_por_direccion": consultar_recoleccion_por_direccion,
 }
 
+# Variables de entorno para Twilio, se leen de os.environ
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER") # Este será '+17432643718'
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER") 
 
 # --- FUNCIÓN DE NOTIFICACIÓN REAL ---
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     """
     Envía una notificación SMS real usando Twilio.
     """
-    # Validación básica de número de destino (opcional pero recomendado)
-    # Aquí puedes ajustar la regex para que sea más permisiva con números locales
-    # o más estricta con el formato E.164 (+<código país><número>)
-    if not re.match(r'^\+\d{7,15}$', numero_destino): # Un rango más flexible de 7 a 15 dígitos después del +
-        logger.warning(f"[NOTIFICACION SMS] Número de destino '{numero_destino}' no parece ser un formato válido (Ej: +549XXXXXXXXXX). Intentando enviar de todas formas.")
-        # Podrías agregar aquí lógica para prefijar el código de país si el usuario no lo pone.
-        # Por ejemplo: if not numero_destino.startswith('+'): numero_destino = '+549' + numero_destino
-        # Pero esto requiere ser muy cuidadoso para no prefijar números que ya lo tienen.
+    # Esta validación básica se mantiene
+    if not re.match(r'^\+\d{7,15}$', numero_destino): 
+        logger.warning(f"[NOTIFICACION SMS] Número de destino '{numero_destino}' no parece ser un formato válido E.164. Intentando enviar de todas formas.")
 
     if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
-        logger.error("[NOTIFICACION SMS] Credenciales de Twilio no configuradas. No se puede enviar SMS.")
+        logger.error("[NOTIFICACION SMS] Credenciales de Twilio no configuradas (missing SID, Token, or Number). No se puede enviar SMS.")
         return
 
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         message = client.messages.create(
-            to=numero_destino, # Asegúrate de que este número esté en formato internacional (ej. +5492634123456)
+            to=numero_destino, 
             from_=TWILIO_PHONE_NUMBER,
             body=mensaje
         )
         logger.info(f"[NOTIFICACION SMS REAL] SMS enviado, SID: {message.sid}")
     except Exception as e:
         logger.error(f"[NOTIFICACION SMS REAL] Error al enviar SMS a {numero_destino}: {e}")
-
 
 
 # --- PROMPT PARA EL NUEVO TOOLHANDLER ---
@@ -94,7 +90,6 @@ class BaseMunicipioHandler:
 class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
-        # Solo intentamos usar herramientas si no estamos en medio de otra conversación
         if memoria.get('estado_conversacion'):
             return None
 
@@ -113,14 +108,9 @@ class ToolHandler(BaseMunicipioHandler):
                     resultado = funcion_a_ejecutar(**parametros)
                     return {"respuesta": resultado}
         except (json.JSONDecodeError, TypeError):
-            # Si la respuesta no es un JSON válido o es 'null', no hacemos nada y pasamos al siguiente handler
             logger.info("[ToolHandler] La pregunta no requiere una herramienta específica. Pasando a la cadena principal.")
             return None
         return None
-
-# --- TUS HANDLERS EXISTENTES (SIN CAMBIOS, EXCEPTO CORRECCIONES MENORES) ---
-# (El código de tus handlers va aquí. Pega el código de tu archivo, asegurándote
-# que TicketStatusHandler usa 'es_admin' y TramitesHandler tiene la lógica de memoria corregida)
 
 class IntentClassifierHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -206,7 +196,6 @@ class ReclamoHandler(BaseMunicipioHandler):
         elif estado == 'esperando_nombre_vecino':
             memoria['estado_conversacion'] = 'esperando_telefono_vecino'
             memoria['nombre_vecino'] = pregunta
-            # Modificación aquí: Pedir el número sin el prefijo internacional
             return {"respuesta": "Gracias, **[nombre_vecino]**. Por último, ¿cuál es tu **número de teléfono** (solo los números, incluyendo el código de área, ej: `2634123456`)?"} 
         
         # Paso 5: Recibir teléfono, formatear, crear el ticket y ENVIAR NOTIFICACIÓN
@@ -214,18 +203,13 @@ class ReclamoHandler(BaseMunicipioHandler):
             categoria = memoria.get('categoria_reclamo', 'General')
             direccion = memoria.get('direccion_reclamo', 'No especificada')
             nombre_vecino = memoria.get('nombre_vecino', 'Anónimo')
-            telefono_input = pregunta # La última pregunta es el teléfono
+            telefono_input = pregunta 
 
-            # --- NUEVA LÓGICA DE NORMALIZACIÓN DEL NÚMERO DE TELÉFONO ---
+            # --- LÓGICA DE NORMALIZACIÓN DEL NÚMERO DE TELÉFONO ---
             telefono_formateado = telefono_input.strip()
-            # Remover cualquier caracter no numérico
             telefono_formateado = re.sub(r'\D', '', telefono_formateado) 
 
-            # Asumimos que si no empieza con '+', es un número local de Mendoza y le agregamos +549
-            # Esta es una suposición clave: si el número ya es internacional pero de otro país, no lo modificará.
             if not telefono_formateado.startswith('+'):
-                # Para Mendoza, los celulares suelen ir con 9 después del código de área.
-                # Asumimos el código de país +54 (Argentina) y el 9 de celular para la región.
                 telefono_formateado = '+549' + telefono_formateado 
                 logger.info(f"[RECLAMO] Número de teléfono ajustado a formato internacional: {telefono_formateado}")
             # --- FIN NUEVA LÓGICA ---
@@ -235,7 +219,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 f"Categoría: {categoria}\n"
                 f"Dirección del problema: {direccion}\n"
                 f"Nombre del vecino: {nombre_vecino}\n"
-                f"Teléfono de contacto: {telefono_formateado}" # Usamos el número formateado aquí
+                f"Teléfono de contacto: {telefono_formateado}" 
             )
 
             ticket = servicio_tickets.crear_nuevo_ticket(
@@ -250,7 +234,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             
             if ticket:
                 mensaje_confirmacion = f"Municipio de Junín: Recibimos su reclamo (Ticket M-{ticket.nro_ticket}) sobre {categoria}. Será procesado a la brevedad. ¡Gracias por contactarnos!"
-                enviar_notificacion_sms(telefono_formateado, mensaje_confirmacion) # Enviamos al número formateado
+                enviar_notificacion_sms(telefono_formateado, mensaje_confirmacion) 
                 logger.info(f"Notificación SMS enviada para ticket M-{ticket.nro_ticket} a {telefono_formateado}")
 
                 memoria.clear() 
@@ -276,40 +260,49 @@ class TramitesHandler(BaseMunicipioHandler):
         # Si la intención es 'consultar_tramite' y no estamos en un flujo, iniciamos con opciones de trámites
         if self.context.get('intencion') == 'consultar_tramite' and not estado:
             # Ofrecemos la opción de Licencia de Conducir y el botón de "Más Trámites"
+            memoria['estado_conversacion'] = 'esperando_seleccion_tramite_general' # Nuevo estado para manejar la respuesta del botón
             return {
                 "respuesta": "¡Claro! Te puedo ayudar con información sobre la Licencia de Conducir, o puedes explorar otros trámites municipales.",
                 "botones": [
-                    {"texto": "Licencia de Conducir", "accion": "consultar_licencia"}, # Podríamos usar una acción interna o directamente iniciar el flujo
+                    {"texto": "Licencia de Conducir"}, 
                     {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
                 ]
             }
         
-        # Si el usuario selecciona "Licencia de Conducir" o pregunta directamente por ella
-        # Añadimos una condición para 'accion' si usas botones con acciones o si la pregunta es sobre licencia
-        elif (estado == 'esperando_tipo_tramite' and "licencia" in pregunta.lower()) or \
+        # Si el usuario selecciona "Licencia de Conducir" (como texto) o pregunta directamente por ella
+        elif (estado == 'esperando_seleccion_tramite_general' and "licencia" in pregunta.lower()) or \
              (self.context.get('intencion') == 'consultar_tramite' and "licencia" in pregunta.lower() and not estado):
             memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
             return {"respuesta": "Para la Licencia de Conducir necesitás: DNI con domicilio actualizado, no tener multas pendientes y realizar el curso de seguridad vial. ¿Necesitás saber dónde hacer el curso?"}
         
         # Si ya estamos en el flujo y preguntan por el curso
         elif estado == 'esperando_pregunta_curso_licencia' and ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower()):
-            memoria.clear() # Limpiamos la memoria al finalizar el flujo del trámite
+            memoria.clear() 
             return {
                 "respuesta": "El curso de seguridad vial se realiza de forma online en el portal de la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias en [Dirección del Centro].",
                 "botones": [
                     {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"} # Botón adicional aquí también
+                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"} 
                 ]
             }
         
         # Si está en el flujo de licencia de conducir pero no pregunta por el curso o la respuesta es "no"
         elif estado == 'esperando_pregunta_curso_licencia' and ("no" in pregunta.lower()):
-            memoria.clear() # Limpiamos la memoria y ofrecemos el turno directamente
+            memoria.clear() 
             return {
                 "respuesta": "Entendido. Para sacar el turno, podés hacerlo fácilmente desde aquí:",
                 "botones": [
                     {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"} # Botón adicional aquí también
+                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"} 
+                ]
+            }
+        # Si el usuario hace clic en "Más Trámites" (que se envía como texto) desde el estado inicial de trámite
+        elif estado == 'esperando_seleccion_tramite_general' and "más trámites" in pregunta.lower():
+            memoria.clear() # Limpiamos la memoria ya que el usuario se irá a la web
+            return {
+                "respuesta": "¡Claro! Te dirijo a la página de Trámites del municipio para que explores todas las opciones.",
+                "botones": [
+                    {"texto": "Ir a Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
                 ]
             }
         
@@ -317,28 +310,7 @@ class TramitesHandler(BaseMunicipioHandler):
 
 
 class GeneralHandler(BaseMunicipioHandler):
-     def handle(self, pregunta: str) -> dict | None:
-        prompt = "Sos un agente de atención ciudadana experto..."
-        respuesta_llm = get_cohere_response(message=pregunta, preamble=prompt)
-        return {"respuesta": respuesta_llm}
-     
-# ¡ENGANCHE PARA ANÓNIMOS SIN USER_ID! (último recurso en landing demo)
-class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
-        if not self.context.get("user_id"):
-            return {
-                "respuesta": "Para darte una mejor atención personalizada, por favor registrate o iniciá sesión. Así vas a poder hacer reclamos reales y recibir respuestas oficiales del municipio.",
-                "botones": [
-                    {"texto": "Iniciar Sesión", "url": "/login"},
-                    {"texto": "Registrarme Gratis", "url": "/register"},
-                    {"texto": "Planes Premium", "url": "/precios"}
-                ]
-            }
-        return None
-
-
-class GeneralHandler(BaseMunicipioHandler):
-     def handle(self, pregunta: str) -> dict | None:
         prompt = "Sos un agente de atención ciudadana experto..."
         respuesta_llm = get_cohere_response(message=pregunta, preamble=prompt)
         return {"respuesta": respuesta_llm}
@@ -363,9 +335,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     context = {"contexto_municipio": contexto_municipio, "user_obj": user_obj, "user_id": getattr(user_obj, "id", None), "intencion": None}
 
-    # ¡NUEVA CADENA DE HANDLERS MEJORADA!
-    # El ToolHandler intenta resolver primero con herramientas específicas.
-    # Si no puede, deja pasar la pregunta a tus handlers de siempre.
     handler_chain = [
         ToolHandler, 
         IntentClassifierHandler, 
@@ -373,10 +342,9 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         TicketStatusHandler, 
         ReclamoHandler, 
         ImpuestosHandler, 
-        TramitesHandler, 
+        TramitesHandler, # Este handler ha sido modificado
         GeneralHandler,
-        EngancheAnonimoMunicipioHandler  # <-- Nuevo para usuarios sin login
-
+        EngancheAnonimoMunicipioHandler  
     ]
     
     respuesta_final = None
@@ -388,6 +356,10 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
 
     if not respuesta_final:
         respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta."}
+
+    if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
+        nombre_vecino_memoria = context.get('contexto_municipio', {}).get('nombre_vecino', 'vecino')
+        respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
 
     return {
         "respuesta": respuesta_final.get('respuesta'),
