@@ -71,7 +71,7 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         if sku and sku != nombre_completo and sku != "N/A":
             display_name = f"{nombre_completo} (SKU: {sku})"
         elif p.get('descripcion'):
-            display_name = f"{nombre_completo} ({p['descripcion'][:30].replace('\n', ' ')}...)" # Limpia saltos de línea
+            display_name = f"{nombre_completo} ({p['descripcion'][:30].replace('\n', ' ')}...)""" # Limpia saltos de línea
         nombres_y_sku.append(display_name)
 
     # El prompt debe ser muy explícito en pedir el identificador exacto que le dimos
