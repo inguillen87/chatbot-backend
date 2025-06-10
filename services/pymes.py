@@ -1,5 +1,3 @@
-# src/services/pymes.py - REEMPLAZAR TODO EL CONTENIDO CON ESTO
-
 import logging
 import re
 import random
@@ -34,7 +32,7 @@ Si la pregunta no encaja en ninguna de las categorías, clasifícala como 'gener
 
 INTENCIONES POSIBLES:
 - iniciar_pedido: El usuario quiere hacer un pedido, solicitar un producto, cotización, o información para compra. (ej. "quiero pedir 5 cajas de vino", "cotización de este producto", "cómo compro", "quiero encargar")
-- consultar_estado_pedido: El usuario quiere saber el estado de un pedido existente. (ej. "estado de mi pedido PED-123", "cómo va mi orden", "mi compra está lista?")
+- consultar_estado_pedido: El usuario quiere saber el estado de un pedido existente. (ej. "estado de mi reclamo", "cómo va mi ticket 12345")
 - consultar_stock: El usuario pregunta sobre la disponibilidad de un producto o stock.
 - consultar_horario: El usuario pregunta sobre horarios de atención.
 - consultar_ubicacion: El usuario pregunta por la dirección física.
@@ -227,7 +225,7 @@ class FollowUpHandler(BaseHandler):
                         "nro_pedido": nuevo_pedido.nro_pedido,
                         "estado": nuevo_pedido.estado,
                         "asunto": nuevo_pedido.asunto,
-                        "detalles": json.loads(nuevo_pedido.detalles), 
+                        "detalles": json.loads(nuevo_pedido.detalles), # Parsear detalles para el frontend
                         "fecha_creacion": nuevo_pedido.fecha.isoformat(),
                         "nombre_cliente": nuevo_pedido.nombre_cliente,
                         "email_cliente": nuevo_pedido.email_cliente,
@@ -246,7 +244,8 @@ class IntentClassifierPymeHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
         if not memoria.get('estado_conversacion'):
-            self.context['intencion'] = _clasificar_intencion_con_llm(pregunta, prompt_base=PROMPT_CLASIFICACION_INTENCION_PYME)
+            # LÍNEA A MODIFICAR
+            self.context['intencion'] = _clasificar_intencion_con_llm(pregunta) # Eliminado prompt_base
         else:
             self.context['intencion'] = 'continuar_flujo_pyme'
         logger.info(f"[PYME] Intención clasificada: {self.context.get('intencion')}")
@@ -311,7 +310,7 @@ class PedidoHandler(BaseHandler):
                     subtotal = 0.0 
                 monto_total_temp += subtotal
 
-                resumen_productos_confirmacion += f"- **{nombre}** (SKU: {sku}): {cantidad} {unidad} @ ${precio_str} = ${subtotal:,.2f}\n"
+            resumen_productos_confirmacion += f"- **{nombre}** (SKU: {sku}): {cantidad} {unidad} @ ${precio_str} = ${subtotal:,.2f}\n"
 
             resumen_productos_confirmacion += f"\n**Monto estimado total: ${monto_total_temp:,.2f}**"
             resumen_productos_confirmacion += "\n\n¿Confirmas este pedido? También podés indicarme tus datos de contacto (nombre, teléfono o email) si no los tengo."
@@ -539,18 +538,18 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     }
     
     handler_chain = [
-        LimitHandler,               
-        FollowUpHandler,            
+        LimitHandler,           
+        FollowUpHandler,        
         IntentClassifierPymeHandler,
-        PedidoHandler,              
-        VectorCatalogHandler,       
-        BrokenProductHandler,       
-        ClaimHandler,               
-        FaqHandler,                 
-        IntentHandler,              
-        SalesEngageHandler,         
-        LLMHandler,                 
-        EngancheAnonimoHandler      
+        PedidoHandler,          
+        VectorCatalogHandler,   
+        BrokenProductHandler,   
+        ClaimHandler,           
+        FaqHandler,             
+        IntentHandler,          
+        SalesEngageHandler,     
+        LLMHandler,             
+        EngancheAnonimoHandler  
     ]
 
     respuesta_final = None
