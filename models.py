@@ -1,11 +1,11 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey 
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
 from sqlalchemy import Index
 from sqlalchemy.dialects.sqlite import JSON
 from extensions import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
-import uuid # <-- Asegúrate que uuid esté importado
+import uuid
 import json
 
 class Rubro(db.Model):
@@ -17,6 +17,7 @@ class Rubro(db.Model):
     subrubros = db.relationship('Rubro', backref=db.backref('padre', remote_side=[id]), lazy=True)
     faqs = db.relationship('QA', backref='rubro', lazy=True)
     sugerencias = db.relationship('Sugerencia', backref='rubro', lazy=True)
+
     def __repr__(self):
         return f"<Rubro {self.nombre}>"
 
@@ -34,6 +35,7 @@ class Sugerencia(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=False)
     texto = db.Column(db.String(255), nullable=False)
+
     def __repr__(self):
         return f"<Sugerencia {self.id}>"
 
@@ -55,7 +57,7 @@ class User(db.Model, UserMixin):
     link_web = db.Column(db.String(255), nullable=True)
     acepto_terminos = db.Column(Boolean, default=False)
     fecha_aceptacion_terminos = db.Column(DateTime, nullable=True)
-    horario = db.Column(db.String(100), nullable=True) 
+    horario = db.Column(db.String(100), nullable=True)
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
     limite_preguntas = db.Column(db.Integer, default=50)
@@ -64,18 +66,22 @@ class User(db.Model, UserMixin):
     rubro = db.relationship("Rubro", backref="usuarios")
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
+
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
+
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
     @property
     def horario_json(self):
         if self.horario:
             try:
                 return json.loads(self.horario)
             except json.JSONDecodeError:
-                return None 
+                return None
         return None
+
     def __repr__(self):
         return f"<User {self.email}>"
 
@@ -90,7 +96,6 @@ class MunicipioTicket(db.Model):
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime, default=db.func.now())
     archivo_url = db.Column(db.String(255), nullable=True)
-    
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
 
 class PymeTicket(db.Model):
@@ -109,33 +114,23 @@ class PymeTicket(db.Model):
     email = db.Column(db.String(120), nullable=True)
     dni = db.Column(db.String(20), nullable=True)
     estado_cliente = db.Column(db.String(30), default="no_definido")
-
     comentarios = db.relationship('TicketComentario', back_populates='pyme_ticket', lazy='dynamic')
 
-# --- CLASE PymePedido AÑADIDA ---
-class PymePedido(db.Model): 
+class PymePedido(db.Model):
     __tablename__ = "pyme_pedido"
     id = db.Column(db.Integer, primary_key=True)
-    # --- MODIFICADO: user_id ahora es nullable=True para permitir anónimos ---
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) 
-    user = db.relationship('User', backref='pyme_pedidos') # Relación con el User model
-    
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) # Permite anónimos
+    user = db.relationship('User', backref='pyme_pedidos')
     nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
-    # --- AÑADIDO: Campo para el Asunto del Pedido (obligatorio) ---
-    asunto = db.Column(db.String(255), nullable=False) 
-    estado = db.Column(db.String(30), default="pendiente") # pendiente, en_proceso, completado, cancelado, etc.
-    # Los detalles del pedido (productos, cantidades) se guardarán como JSON string
-    detalles = db.Column(db.Text, nullable=True) 
+    asunto = db.Column(db.String(255), nullable=False)
+    estado = db.Column(db.String(30), default="pendiente")
+    detalles = db.Column(db.Text, nullable=True) # JSON string
     monto_total = db.Column(db.Float, nullable=True)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # --- AÑADIDO: Campos de contacto directo para usuarios anónimos o logueados ---
     nombre_cliente = db.Column(db.String(100), nullable=True)
     email_cliente = db.Column(db.String(100), nullable=True)
     telefono_cliente = db.Column(db.String(50), nullable=True)
-    
-    # --- AÑADIDO: Para saber a qué rubro de PYME pertenece el pedido ---
-    rubro = db.Column(db.String(100), nullable=False) # El rubro de la PYME que recibe el pedido
+    rubro = db.Column(db.String(100), nullable=False)
 
     def __init__(self, asunto, detalles, rubro, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None):
         self.asunto = asunto
@@ -148,10 +143,31 @@ class PymePedido(db.Model):
         self.nro_pedido = self._generate_nro_pedido()
 
     def _generate_nro_pedido(self):
-        # Genera un número de pedido único. Prefijo "PED" para diferenciarlo de tickets.
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
         random_suffix = str(uuid.uuid4().hex)[:6].upper()
         return f"PED-{timestamp}-{random_suffix}"
+
+    def to_dict(self):
+        """Convierte el objeto Pedido a un diccionario serializable."""
+        try:
+            detalles_json = json.loads(self.detalles) if self.detalles else []
+        except json.JSONDecodeError:
+            detalles_json = []
+
+        return {
+            "id": self.id,
+            "nro_pedido": self.nro_pedido,
+            "asunto": self.asunto,
+            "estado": self.estado,
+            "detalles": detalles_json,
+            "monto_total": self.monto_total,
+            "fecha_creacion": self.fecha.isoformat() if self.fecha else None,
+            "nombre_cliente": self.nombre_cliente,
+            "email_cliente": self.email_cliente,
+            "telefono_cliente": self.telefono_cliente,
+            "rubro": self.rubro,
+            "user_id": self.user_id
+        }
 
     def __repr__(self):
         return f"<PymePedido {self.nro_pedido} - {self.asunto}>"
@@ -159,18 +175,15 @@ class PymePedido(db.Model):
 class TicketComentario(db.Model):
     __tablename__ = "ticket_comentario"
     id = db.Column(db.Integer, primary_key=True)
-    
     pyme_ticket_id = db.Column(db.Integer, db.ForeignKey('pyme_ticket.id'), nullable=True)
     municipio_ticket_id = db.Column(db.Integer, db.ForeignKey('municipio_ticket.id'), nullable=True)
-
     comentario = db.Column(db.Text, nullable=False)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, nullable=True)
     es_admin = db.Column(db.Boolean, default=False)
-
     pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
     municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
-    
+
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -185,6 +198,7 @@ class CatalogoItem(db.Model):
     texto = db.Column(db.Text, nullable=True)
     embedding = db.Column(db.PickleType, nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
     def __repr__(self):
         return f"<CatalogoItem {self.id} para user {self.user_id}>"
 
@@ -218,9 +232,10 @@ class SitioWebInfo(db.Model):
     datos_json = db.Column(db.Text, nullable=False)
     fecha_scraping = db.Column(db.DateTime, default=datetime.utcnow)
     actualizado = db.Column(db.Boolean, default=False)
+
     def __repr__(self):
         return f"<SitioWebInfo id={self.id} url={self.url}>"
-    
+
 class Log(db.Model):
     __tablename__ = "logs"
     id = db.Column(db.Integer, primary_key=True)
