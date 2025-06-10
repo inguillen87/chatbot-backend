@@ -1,41 +1,89 @@
 import logging
 import re
+import json
 from models import MunicipioTicket, TicketComentario, db # Usando tus modelos
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
+# Importamos nuestra nueva y flamante herramienta
+from .herramientas_municipio import consultar_recoleccion_por_direccion
 
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
 
-def _clasificar_intencion_con_llm(pregunta: str) -> str:
+# --- REGISTRO DE HERRAMIENTAS DISPONIBLES ---
+TOOL_REGISTRY = {
+    "consultar_recoleccion_por_direccion": consultar_recoleccion_por_direccion,
+}
+
+# --- PROMPT PARA EL NUEVO TOOLHANDLER ---
+def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
+    descripcion_herramientas = """
+    {
+      "consultar_recoleccion_por_direccion": {
+        "descripcion": "Se usa para obtener los horarios y días de recolección de basura, residuos o cuando pasa el camión basurero para una dirección específica. El usuario DEBE proporcionar una dirección o el nombre de una calle.",
+        "parametros": { "direccion": "La dirección completa que el usuario mencionó, por ejemplo: 'Avenida San Martín 123, Junín'" }
+      }
+    }
+    """
     prompt = f"""
-    Clasifica la consulta de un ciudadano en una de estas categorías: 'iniciar_reclamo', 'consultar_tramite', 'consultar_impuestos', 'consultar_estado_ticket', 'hablar_con_agente', 'saludo', 'pregunta_general'.
-    Responde ÚNICAMENTE con la categoría.
+    Tu única tarea es analizar la PREGUNTA DEL USUARIO y decidir si se puede resolver con una de las HERRAMIENTAS DISPONIBLES.
+
+    HERRAMIENTAS DISPONIBLES:
+    {descripcion_herramientas}
+
+    PREGUNTA DEL USUARIO: "{pregunta_usuario}"
+
+    INSTRUCCIONES:
+    1. Si la pregunta coincide claramente con la descripción de una herramienta y contiene los parámetros necesarios, responde SÓLO con un objeto JSON con el formato:
+    `{{"usar_herramienta": "nombre_de_la_herramienta", "parametros": {{"nombre_parametro": "valor_extraido"}}}}`
+    2. Si la pregunta NO coincide con ninguna herramienta o le faltan parámetros (como la dirección), responde SÓLO con la palabra: `null`
 
     Ejemplos:
-    - Consulta: "se cayó un árbol en mi vereda" -> iniciar_reclamo
-    - Consulta: "necesito ayuda de una persona" -> hablar_con_agente
-    - Consulta: "cómo saco el carnet de conducir?" -> consultar_tramite
-    - Consulta: "dónde pago mis tasas?" -> consultar_impuestos
-    - Consulta: "quería saber cómo va mi ticket 12345" -> consultar_estado_ticket
+    - Pregunta: "a que hora pasa el basurero por 25 de mayo 1550?" -> Respuesta: {{"usar_herramienta": "consultar_recoleccion_por_direccion", "parametros": {{"direccion": "25 de mayo 1550"}}}}
+    - Pregunta: "horarios del camion de basura?" -> Respuesta: null (falta la dirección)
+    - Pregunta: "necesito hacer un reclamo" -> Respuesta: null (no es una herramienta de esta lista)
 
-    Consulta a clasificar: "{pregunta}"
-    Categoría:
+    Tu respuesta:
     """
-    try:
-        respuesta_llm = get_cohere_response(message=prompt, preamble="Eres un experto en clasificar intenciones de ciudadanos.").strip().lower().replace(" ", "_")
-        categorias_validas = ['iniciar_reclamo', 'consultar_tramite', 'consultar_impuestos', 'consultar_estado_ticket', 'hablar_con_agente', 'saludo', 'pregunta_general']
-        for cat in categorias_validas:
-            if cat in respuesta_llm:
-                return cat.replace(" ", "_")
-        return "pregunta_general"
-    except Exception as e:
-        logger.error(f"[MUNICIPIO] Error en clasificación LLM: {e}")
-        return "pregunta_general"
+    return prompt
+
+# --- CLASES HANDLER (NUEVA Y EXISTENTES) ---
 
 class BaseMunicipioHandler:
     def __init__(self, context): self.context = context
     def handle(self, pregunta: str) -> dict | None: raise NotImplementedError
+
+# ¡NUEVO! Este es el "Recepcionista Experto"
+class ToolHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get('contexto_municipio', {})
+        # Solo intentamos usar herramientas si no estamos en medio de otra conversación
+        if memoria.get('estado_conversacion'):
+            return None
+
+        prompt = crear_prompt_decision_herramienta(pregunta)
+        respuesta_llm = get_cohere_response(message=prompt, preamble="Eres un experto en decidir si una pregunta requiere una herramienta específica. Responde solo con JSON o 'null'.")
+
+        try:
+            decision = json.loads(respuesta_llm)
+            if decision and "usar_herramienta" in decision:
+                nombre_herramienta = decision["usar_herramienta"]
+                parametros = decision.get("parametros", {})
+
+                if nombre_herramienta in TOOL_REGISTRY:
+                    logger.info(f"[ToolHandler] Usando la herramienta '{nombre_herramienta}'")
+                    funcion_a_ejecutar = TOOL_REGISTRY[nombre_herramienta]
+                    resultado = funcion_a_ejecutar(**parametros)
+                    return {"respuesta": resultado}
+        except (json.JSONDecodeError, TypeError):
+            # Si la respuesta no es un JSON válido o es 'null', no hacemos nada y pasamos al siguiente handler
+            logger.info("[ToolHandler] La pregunta no requiere una herramienta específica. Pasando a la cadena principal.")
+            return None
+        return None
+
+# --- TUS HANDLERS EXISTENTES (SIN CAMBIOS, EXCEPTO CORRECCIONES MENORES) ---
+# (El código de tus handlers va aquí. Pega el código de tu archivo, asegurándote
+# que TicketStatusHandler usa 'es_admin' y TramitesHandler tiene la lógica de memoria corregida)
 
 class IntentClassifierHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -54,13 +102,10 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             if ticket: return {"respuesta": f"Entendido. Un agente revisará tu consulta. Tu número de seguimiento es #{ticket.nro_ticket}."}
         return None
 
-# NOTA: He notado que en esta nueva versión del código que me pasaste, la línea de abajo volvió a usar 'es_agente'.
-# La he vuelto a corregir a 'es_admin' para que sea consistente con tu archivo models.py y evitar futuros errores.
 class TicketStatusHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado_conversacion = memoria.get('estado_conversacion')
-        
         if estado_conversacion == 'esperando_confirmacion_cierre':
             ticket_id = memoria.get('ticket_id_activo')
             ticket = db.session.get(MunicipioTicket, ticket_id)
@@ -72,26 +117,21 @@ class TicketStatusHandler(BaseMunicipioHandler):
             else:
                 memoria.clear()
                 return {"respuesta": "Entendido. Dejaré el ticket abierto para que nuestro equipo continúe con el seguimiento. ¿Hay algo más que quieras agregar?"}
-
         elif estado_conversacion == 'esperando_calificacion':
             ticket_id = memoria.get('ticket_id_activo')
             servicio_tickets.crear_comentario(
                 ticket_id=ticket_id, tipo_ticket="municipio",
-                comentario_data={"comentario": f"Calificación del vecino: {pregunta}", "es_admin": False} # Corregido a es_admin
+                comentario_data={"comentario": f"Calificación del vecino: {pregunta}", "es_admin": False}
             )
             memoria.clear()
             return {"respuesta": "¡Muchas gracias por tu calificación! Hemos cerrado el ticket. ¿Necesitas ayuda con algo más?"}
-
         if self.context.get('intencion') == 'consultar_estado_ticket':
             match = re.search(r'\d{5,}', pregunta)
             if not match: return {"respuesta": "Por favor, decime el número de ticket que querés consultar."}
-            
             ticket = MunicipioTicket.query.filter_by(nro_ticket=int(match.group(0))).first()
             if not ticket: return {"respuesta": f"No pude encontrar ningún ticket con el número {match.group(0)}."}
-
             respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado}**."
-            ultimo_comentario_agente = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first() # Corregido a es_admin
-            
+            ultimo_comentario_agente = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first()
             if ultimo_comentario_agente:
                 respuesta += f"\n\nÚltima actualización de nuestro equipo: *\"{ultimo_comentario_agente.comentario}\"*"
                 if ticket.estado == "en_proceso":
@@ -99,9 +139,7 @@ class TicketStatusHandler(BaseMunicipioHandler):
                     memoria['ticket_id_activo'] = ticket.id
                     respuesta += "\n\n¿Tu problema fue solucionado con esta respuesta?"
                     return {"respuesta": respuesta, "botones": [{"texto": "Sí, solucionado"}, {"texto": "No, aún no"}]}
-
             return {"respuesta": respuesta}
-            
         return None
 
 class ReclamoHandler(BaseMunicipioHandler):
@@ -127,54 +165,64 @@ class ImpuestosHandler(BaseMunicipioHandler):
             respuesta = "Podés consultar tu estado de deuda y pagar tus tasas municipales online a través de nuestro portal de autogestión, o presencialmente de Lunes a Viernes de 8 a 14hs."
             return {"respuesta": respuesta, "botones": [{"texto": "Ir al Portal de Pagos"}, {"texto": "Hacer un reclamo"}]}
         return None
-        
+
 class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
-        
-        # --- Lógica Inicial: Elegir el tipo de trámite ---
         if self.context.get('intencion') == 'consultar_tramite' and not estado:
             memoria['estado_conversacion'] = 'esperando_tipo_tramite'
             return {"respuesta": "¡Claro! Te puedo ayudar con información sobre varios trámites. ¿Cuál te interesa?", "botones": [{"texto": "Licencia de Conducir"}, {"texto": "Habilitación Comercial"}]}
-
-        # --- Flujo de Licencia de Conducir ---
         elif estado == 'esperando_tipo_tramite' and "licencia" in pregunta.lower():
-            # NO BORRAMOS LA MEMORIA. Guardamos el nuevo estado.
             memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
             return {"respuesta": "Para la Licencia de Conducir necesitás: DNI con domicilio actualizado, no tener multas pendientes y realizar el curso de seguridad vial. ¿Necesitas saber dónde hacer el curso?"}
-        
         elif estado == 'esperando_pregunta_curso_licencia' and ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower()):
-            # Cuando el usuario pregunta dónde, le damos la info y AHORA sí limpiamos.
-            memoria.clear() # Limpiamos al FINAL del flujo.
+            memoria.clear()
             return {"respuesta": "El curso de seguridad vial se realiza de forma online en el portal de la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias en [Dirección del Centro]."}
-
-        # --- Flujo de Habilitación Comercial ---
         elif estado == 'esperando_tipo_tramite' and "habilitacion" in pregunta.lower():
-            memoria.clear() # Este es un flujo de un solo paso, así que aquí está bien limpiar.
+            memoria.clear()
             return {"respuesta": "Para Habilitaciones Comerciales, los requisitos varían según el rubro. Es mejor que te acerques a la oficina de comercio para un asesoramiento personalizado."}
-
-        return None # Si no coincide con ningún estado, no hacemos nada.
+        return None
 
 class GeneralHandler(BaseMunicipioHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        prompt = "Sos un agente de atención ciudadana experto..." # Tu prompt completo
+     def handle(self, pregunta: str) -> dict | None:
+        prompt = "Sos un agente de atención ciudadana experto..."
         respuesta_llm = get_cohere_response(message=pregunta, preamble=prompt)
         return {"respuesta": respuesta_llm}
 
+# --- FUNCIÓN PRINCIPAL ORQUESTADORA (MODIFICADA) ---
 def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     context = {"contexto_municipio": contexto_municipio, "user_obj": user_obj, "user_id": getattr(user_obj, "id", None), "intencion": None}
 
-    handler_chain = [IntentClassifierHandler, HumanEscalationHandler, TicketStatusHandler, ReclamoHandler, ImpuestosHandler, TramitesHandler, GeneralHandler]
+    # ¡NUEVA CADENA DE HANDLERS MEJORADA!
+    # El ToolHandler intenta resolver primero con herramientas específicas.
+    # Si no puede, deja pasar la pregunta a tus handlers de siempre.
+    handler_chain = [
+        ToolHandler, 
+        IntentClassifierHandler, 
+        HumanEscalationHandler, 
+        TicketStatusHandler, 
+        ReclamoHandler, 
+        ImpuestosHandler, 
+        TramitesHandler, 
+        GeneralHandler
+    ]
     
     respuesta_final = None
     for handler_class in handler_chain:
         handler_instance = handler_class(context)
         respuesta_final = handler_instance.handle(pregunta)
-        if respuesta_final: break
+        if respuesta_final: 
+            break
+    
     if not respuesta_final:
         respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta."}
 
-    return {"respuesta": respuesta_final.get('respuesta'), "botones": respuesta_final.get('botones', []), "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio}}
+    # Nos aseguramos de devolver siempre el contexto actualizado
+    return {
+        "respuesta": respuesta_final.get('respuesta'), 
+        "botones": respuesta_final.get('botones', []), 
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio}
+    }
