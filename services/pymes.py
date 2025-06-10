@@ -1,4 +1,4 @@
-# services/pymes.py
+# src/services/pymes.py
 
 import logging
 import re
@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import session as flask_session
 
 # --- Importaciones ---
-from models import Conversacion, PymeTicket, TicketComentario, PymePedido, Rubro, db # <-- Asegúrate que PymePedido esté importado
+from models import Conversacion, PymeTicket, TicketComentario, PymePedido, Rubro, db
 from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro
 from services.cohere_ai import get_cohere_response
@@ -17,8 +17,8 @@ from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
 from services.webinfo import obtener_info_web
-from services.pedido_service import servicio_pedidos # <-- Nueva importación de tu servicio de pedidos
-from .logic import _clasificar_intencion_con_llm # <-- Importa la función de clasificación global
+from services.pedido_service import servicio_pedidos
+from .logic import _clasificar_intencion_con_llm
 
 logger = logging.getLogger(__name__)
 
@@ -57,24 +57,33 @@ def _generar_asunto_con_llm(pregunta: str) -> str:
         return (pregunta[:75] + '...') if len(pregunta) > 75 else pregunta
 
 def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw: list) -> list:
-    # ... (código anterior)
+    """
+    Analiza la respuesta del cliente para extraer productos y cantidades.
+    productos_disponibles_raw: Lista de diccionarios completos de productos (ej. de Qdrant payload).
+    """
+    nombres_y_sku = []
     for p in productos_disponibles_raw:
-        # ... (código anterior)
+        nombre_completo = p.get('nombre', '')
+        sku = p.get('sku', '')
+        display_name = nombre_completo # Inicializar display_name aquí como valor por defecto
+        
+        if sku and sku != nombre_completo and sku != "N/A":
+            display_name = f"{nombre_completo} (SKU: {sku})"
         elif p.get('descripcion'):
-            # --- ASEGÚRATE DE QUE ESTA LÍNEA ESTÉ ASÍ EN TU ARCHIVO pyMES.PY ---
-    display_name = f"""{nombre_completo} ({p['descripcion'][:30].replace('\n', ' ')}...)""" # Limpia saltos de línea
-    nombres_y_sku.append(display_name)
+            # --- CORRECCIÓN DE INDENTACIÓN Y F-STRING ---
+            # Esta línea debe estar indentada DENTRO del 'elif'
+            display_name = f"""{nombre_completo} ({p['descripcion'][:30].replace('\n', ' ')}...)""" 
+        nombres_y_sku.append(display_name) # Esta línea debe estar al nivel del bucle 'for'
 
-    # El prompt debe ser muy explícito en pedir el identificador exacto que le dimos
     prompt = f"""
     Tu tarea es analizar la respuesta de un cliente y extraer los productos y cantidades que solicita, basándote en la lista de PRODUCTOS DISPONIBLES.
     Si el cliente menciona "cada variedad" o "todos los que me mostraste", debes incluir TODOS los productos de la lista de PRODUCTOS DISPONIBLES con la cantidad especificada.
     Tu respuesta DEBE SER ÚNICAMENTE un objeto JSON en formato de lista. Cada objeto debe tener "producto_identificador", "cantidad" y "unidad".
-    "producto_identificador" debe ser el nombre exacto o el nombre con SKU que se te proporcionó en la lista PRODUCTOS DISPONIBLES para una identificación precisa.
+    "producto_identificador" debe ser el nombre exacto o el nombre con SKU que se te proporcionó en la lista PRODUCTOS_DISPONIBLES para una identificación precisa.
     Si no se especifica unidad (como 'caja', 'botella'), usa 'unidad'. Si no se puede determinar la cantidad, asume '1'.
-    Si el producto no está en la lista de PRODUCTOS DISPONIBLES, NO lo incluyas.
+    Si el producto no está en la lista de PRODUCTOS_DISPONIBLES, NO lo incluyas.
 
-    PRODUCTOS DISPONIBLES: {json.dumps(nombres_y_sku, ensure_ascii=False)}
+    PRODUCTOS_DISPONIBLES: {json.dumps(nombres_y_sku, ensure_ascii=False)}
 
     RESPUESTA DEL CLIENTE: "{pregunta_cliente}"
 
@@ -86,15 +95,13 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         parsed_json = json.loads(json_limpio)
         
         productos_parseados = []
-        # Bandera para detectar si el usuario pidió "cada variedad" o "todos"
         pedio_todos = "cada variedad" in pregunta_cliente.lower() or "todos los que me mostraste" in pregunta_cliente.lower()
 
         if pedio_todos and productos_disponibles_raw:
-            # Si pidió todos y hay productos en la lista original, agrégales la cantidad especificada o 1
             cantidad_general = 1
-            match_cantidad_general = re.search(r'(\d+)\s*caj(a|as)|(\d+)\s*botell(a|as)|(\d+)\s*unidad(es)?', pregunta_cliente, re.IGNORECASE)
+            match_cantidad_general = re.search(r'(\d+)\s*(?:caj(?:a|as)|botell(?:a|as)|unidad(?:es)?)', pregunta_cliente, re.IGNORECASE)
             if match_cantidad_general:
-                cantidad_general = int(match_cantidad_general.group(1) or match_cantidad_general.group(3) or match_cantidad_general.group(5))
+                cantidad_general = int(match_cantidad_general.group(1))
 
             for p_raw in productos_disponibles_raw:
                 productos_parseados.append({
@@ -104,24 +111,21 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
                     "precio_str": p_raw.get('precio_str', 'Consultar'),
                     "cantidad": cantidad_general, 
                     "unidad": p_raw.get('unidad', 'unidad'),
-                    "detalles_originales": p_raw # Guardar el payload completo para referencia
+                    "detalles_originales": p_raw 
                 })
-        else: # Si no pidió "todos" o no hay productos de referencia, procesar lo que el LLM extrajo
+        else: # Procesar lo que el LLM extrajo si no se pidió "todos"
             for item_llm in parsed_json:
                 identificador = item_llm.get('producto_identificador', '').strip()
                 cantidad = item_llm.get('cantidad', 1)
                 unidad = item_llm.get('unidad', 'unidad')
 
-                # Buscar el producto original completo por su identificador (nombre o SKU)
                 matched_product = None
                 for p_raw in productos_disponibles_raw:
                     nombre_completo = p_raw.get('nombre', '')
                     sku = p_raw.get('sku', '')
-                    # Intenta match exacto con el identificador del LLM
                     if identificador == nombre_completo or identificador == sku:
                         matched_product = p_raw
                         break
-                    # Intenta match por subcadena o nombre (flexible)
                     if identificador.lower() in nombre_completo.lower():
                         matched_product = p_raw
                         break
@@ -130,16 +134,16 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
                     productos_parseados.append({
                         "nombre": matched_product.get('nombre'),
                         "sku": matched_product.get('sku', 'N/A'),
-                        "precio": matched_product.get('precio', 0.0), # Usar el precio original numérico
-                        "precio_str": matched_product.get('precio_str', 'Consultar'), # Precio formateado
+                        "precio": matched_product.get('precio', 0.0), 
+                        "precio_str": matched_product.get('precio_str', 'Consultar'),
                         "cantidad": cantidad,
                         "unidad": unidad,
-                        "detalles_originales": matched_product # Guardar el payload completo para referencia
+                        "detalles_originales": matched_product 
                     })
         return productos_parseados
     except Exception as e:
         logger.error(f"[PYMES] Error al extraer cantidades con LLM: {e}", exc_info=True)
-        return [] # Devolver lista vacía para indicar que no se pudo procesar
+        return []
 
 # --- ARQUITECTURA DE HANDLERS ---
 
@@ -173,17 +177,17 @@ class FollowUpHandler(BaseHandler):
                 servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": f"Info adicional del cliente: {pregunta}", "user_id": self.context['user_id']})
                 return {"respuesta": "Recibido. Gracias por la información. Ya estamos procesando el envío de tu reemplazo.", "fuente": "datos_reemplazo_recibidos", "estado_respuesta": "exito_seguimiento"}
         
-        # --- NUEVO FLUJO DE SEGUIMIENTO: Confirmación final del Pedido ---
-        elif 'confirmando_pedido_final' in contexto_pyme: 
-            productos_a_confirmar = contexto_pyme.pop('confirmando_pedido_final')
-            monto_total_final = contexto_pyme.pop('monto_total_final', 0.0)
+        # --- FLUJO DE SEGUIMIENTO: Creación final del Pedido ---
+        elif 'confirmando_pedido_final_paso_2' in contexto_pyme:
+            productos_a_confirmar = contexto_pyme.pop('productos_a_confirmar_en_paso_2')
+            monto_total_final = contexto_pyme.pop('monto_total_final_en_paso_2', 0.0)
             
             # Intentar extraer contacto si no se hizo antes o si el usuario lo da aquí
             nombre = None
             email = None
             telefono = None
 
-            # Si el usuario está logueado, prioriza sus datos
+            # Si el usuario está logueado, prioriza sus datos de perfil
             if self.context.get('user_obj'):
                 nombre = self.context['user_obj'].name
                 email = self.context['user_obj'].email
@@ -201,17 +205,17 @@ class FollowUpHandler(BaseHandler):
                 temp_pregunta = pregunta
                 if email: temp_pregunta = temp_pregunta.replace(email, "").strip()
                 if telefono: temp_pregunta = temp_pregunta.replace(telefono, "").strip()
-                nombre = temp_pregunta if temp_pregunta else nombre if nombre else "Cliente Anónimo" # Usar el nombre si ya lo teníamos
+                nombre = temp_pregunta if temp_pregunta else nombre if nombre else "Cliente Anónimo"
 
             # Preparar datos para crear el pedido
             pedido_data = {
                 "asunto": f"Pedido Web: {contexto_pyme.get('pregunta_original_pedido', 'Solicitud de Producto')}",
                 "detalles": json.dumps(productos_a_confirmar, indent=2, ensure_ascii=False), # Guardar el JSON de productos
-                "rubro": self.context.get("rubro_nombre", "general_pyme"),
+                "rubro": self.context.get("rubro_nombre", "general_pyme"), # Rubro de la PYME que recibe el pedido
                 "nombre_cliente": nombre,
                 "email_cliente": email,
                 "telefono_cliente": telefono,
-                "user_id": self.context.get("user_id"), # Será None si el usuario es anónimo
+                "user_id": self.context.get("user_id"), # ID del cliente (puede ser None)
                 "monto_total": monto_total_final
             }
             
@@ -222,12 +226,12 @@ class FollowUpHandler(BaseHandler):
                 return {
                     "respuesta": f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!", 
                     "fuente": "handler_pedido_creado",
-                    "estado_respuesta": "exito_pedido_creado", # Para el guiño
+                    "estado_respuesta": "exito_pedido_creado", # Para el guiño del bot
                     "pedido_data": { # Datos para mostrar en el PedidoPanel del frontend
                         "nro_pedido": nuevo_pedido.nro_pedido,
                         "estado": nuevo_pedido.estado,
                         "asunto": nuevo_pedido.asunto,
-                        "detalles": nuevo_pedido.detalles, # Esto es el JSON de productos
+                        "detalles": json.loads(nuevo_pedido.detalles), # Parsear de nuevo para enviar a frontend
                         "fecha_creacion": nuevo_pedido.fecha.isoformat(),
                         "nombre_cliente": nuevo_pedido.nombre_cliente,
                         "email_cliente": nuevo_pedido.email_cliente,
@@ -246,10 +250,9 @@ class IntentClassifierPymeHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
         if not memoria.get('estado_conversacion'):
-            # Usamos el prompt específico para PYMES aquí
             self.context['intencion'] = _clasificar_intencion_con_llm(pregunta, prompt_base=PROMPT_CLASIFICACION_INTENCION_PYME)
         else:
-            self.context['intencion'] = 'continuar_flujo_pyme' # Estado para continuar flujos
+            self.context['intencion'] = 'continuar_flujo_pyme'
         logger.info(f"[PYME] Intención clasificada: {self.context.get('intencion')}")
         return None
 
@@ -263,7 +266,6 @@ class PedidoHandler(BaseHandler):
             contexto_pyme['estado_conversacion'] = 'esperando_detalles_pedido'
             contexto_pyme['pregunta_original_pedido'] = pregunta
             
-            # Si se viene de un catálogo, ya tenemos productos_mostrados_catalogo
             productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
             if productos_referencia:
                 resumen_productos = "\n".join([
@@ -282,7 +284,7 @@ class PedidoHandler(BaseHandler):
                     "estado_respuesta": "pyme_pregunta_pedido"
                 }
 
-        # --- RECIBIENDO DETALLES DEL PEDIDO ---
+        # --- RECIBIENDO DETALLES DEL PEDIDO (después de 'iniciar_pedido') ---
         elif estado_conversacion == 'esperando_detalles_pedido':
             productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
             detalles_estructurados = _extraer_cantidades_con_llm(pregunta, productos_referencia)
@@ -297,7 +299,6 @@ class PedidoHandler(BaseHandler):
             contexto_pyme['productos_solicitados_temp'] = detalles_estructurados
             contexto_pyme['estado_conversacion'] = 'confirmando_pedido_temp'
             
-            # Resumen detallado para que el usuario confirme
             resumen_productos_confirmacion = "Tenemos lo siguiente para tu pedido:\n"
             monto_total_temp = 0.0
             for p in detalles_estructurados:
@@ -305,14 +306,13 @@ class PedidoHandler(BaseHandler):
                 sku = p.get('sku', 'N/A')
                 cantidad = p.get('cantidad', 1)
                 unidad = p.get('unidad', 'unidad')
-                precio = p.get('precio', 0.0) # Precio numérico
-                precio_str = p.get('precio_str', 'Consultar') # Precio formateado
+                precio = p.get('precio', 0.0)
+                precio_str = p.get('precio_str', 'Consultar')
                 
-                # Asegurarse de que precio y cantidad sean números para el cálculo
                 try:
-                    subtotal = float(cantidad) * float(precio) if isinstance(cantidad, (int, float, str)) and isinstance(precio, (int, float, str)) else 0.0
-                except ValueError:
-                    subtotal = 0.0 # Manejo de error si no se pueden convertir a float
+                    subtotal = float(cantidad) * float(precio)
+                except (ValueError, TypeError):
+                    subtotal = 0.0 
                 monto_total_temp += subtotal
 
                 resumen_productos_confirmacion += f"- **{nombre}** (SKU: {sku}): {cantidad} {unidad} @ ${precio_str} = ${subtotal:,.2f}\n"
@@ -328,6 +328,25 @@ class PedidoHandler(BaseHandler):
                 "estado_respuesta": "pyme_confirmar_pedido"
             }
         
+        # --- CONFIRMANDO PEDIDO (respuesta "sí" a la confirmación detallada) ---
+        elif estado_conversacion == 'confirmando_pedido_temp':
+            palabras_confirmacion = ["si", "sí", "dale", "quiero", "generar", "confirmar", "ok", "me gustaria", "si quiero"]
+            if any(p in pregunta.lower().strip() for p in palabras_confirmacion):
+                # Guardar los datos para el FollowUpHandler
+                contexto_pyme['productos_a_confirmar_en_paso_2'] = contexto_pyme.pop('productos_solicitados_temp')
+                contexto_pyme['monto_total_final_en_paso_2'] = contexto_pyme.pop('monto_total_temp')
+                contexto_pyme['estado_conversacion'] = 'confirmando_pedido_final_paso_2' # Establecer el nuevo estado para FollowUpHandler
+                
+                # Devolvemos una respuesta para el usuario y no None, para que el flujo sea más claro
+                return {
+                    "respuesta": "¡Excelente! Estoy procesando los últimos detalles. Por favor, confirmame tu nombre y un contacto (teléfono o email) para finalizar.",
+                    "fuente": "pedido_confirmado_paso_1",
+                    "estado_respuesta": "pyme_pregunta_contacto"
+                }
+            else:
+                contexto_pyme.clear() # El usuario no confirmó, resetear
+                return {"respuesta": "Entendido. No se generará el pedido en este momento. ¿Hay algo más en lo que pueda ayudarte?", "fuente": "pedido_cancelado"}
+
         # --- CONSULTA DE ESTADO DE PEDIDO ---
         elif self.context.get('intencion') == 'consultar_estado_pedido':
             pedido_match = re.search(r"(pedido|orden|compra)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
@@ -343,7 +362,7 @@ class PedidoHandler(BaseHandler):
                             "nro_pedido": pedido.nro_pedido,
                             "estado": pedido.estado,
                             "asunto": pedido.asunto,
-                            "detalles": pedido.detalles, # Esto es el JSON de productos
+                            "detalles": json.loads(pedido.detalles), # Parsear detalles para el frontend
                             "fecha_creacion": pedido.fecha.isoformat(),
                             "nombre_cliente": pedido.nombre_cliente,
                             "email_cliente": pedido.email_cliente,
@@ -401,7 +420,7 @@ class VectorCatalogHandler(BaseHandler):
                 resultados = buscar_item_vectorizado(pregunta, self.context['user_id']) 
                 if resultados:
                     respuesta_texto = "¡Claro! En nuestro catálogo detallado encontré esto:\n"
-                    items_payload = [item.payload for item in resultados] # Los payloads completos
+                    items_payload = [item.payload for item in resultados] 
                     
                     # Almacenar los payloads completos en el contexto para el PedidoHandler
                     self.context['contexto_pyme']['productos_mostrados_catalogo'] = items_payload
@@ -458,8 +477,6 @@ class IntentHandler(BaseHandler):
 class LLMHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         try:
-            # PROMPT_CLASIFICACION_INTENCION_PYME se usa en IntentClassifierPymeHandler, NO aquí.
-            # Aquí va el prompt general para el LLM conversacional.
             prompt_pyme = f"""
             "Chatboc", el agente de ventas y atención al cliente de {self.context.get('nombre_pyme', 'la empresa')}.
             Tus Datos de Contacto: Teléfono {self.context.get('telefono', 'no provisto')}, Email {self.context.get('email', 'no provisto')}.
