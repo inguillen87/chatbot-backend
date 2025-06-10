@@ -90,12 +90,19 @@ class BaseMunicipioHandler:
     def __init__(self, context): self.context = context
     def handle(self, pregunta: str) -> dict | None: raise NotImplementedError
 
-# ¡NUEVO! Este es el "Recepcionista Experto"
 class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
-        if memoria.get('estado_conversacion'):
-            return None
+        
+        # Si ya estamos esperando un parámetro para una herramienta, lo manejamos.
+        if memoria.get('estado_conversacion') == 'esperando_param_recoleccion':
+            memoria['estado_conversacion'] = None # Limpiamos el estado después de obtener el parámetro
+            return {"respuesta": consultar_recoleccion_por_direccion(direccion=pregunta)}
+            
+        # Solo intentamos usar herramientas si no estamos en medio de OTRA conversación
+        # PERO permitimos que se inicie un flujo de herramienta si no hay estado o si el estado es el de la herramienta
+        if memoria.get('estado_conversacion') and memoria.get('estado_conversacion') != 'esperando_param_recoleccion':
+            return None # Si hay otro flujo activo, no usamos herramientas
 
         prompt = crear_prompt_decision_herramienta(pregunta)
         respuesta_llm = get_cohere_response(message=prompt, preamble="Eres un experto en decidir si una pregunta requiere una herramienta específica. Responde solo con JSON o 'null'.")
@@ -104,18 +111,26 @@ class ToolHandler(BaseMunicipioHandler):
             decision = json.loads(respuesta_llm)
             if decision and "usar_herramienta" in decision:
                 nombre_herramienta = decision["usar_herramienta"]
-                parametros = decision.get("parametros", {})
-
+                
                 if nombre_herramienta in TOOL_REGISTRY:
-                    logger.info(f"[ToolHandler] Usando la herramienta '{nombre_herramienta}'")
+                    # Caso 1: Faltan parámetros
+                    if "faltan_parametros" in decision:
+                        param_faltante = decision["faltan_parametros"][0] # Tomamos el primero si hay varios
+                        if param_faltante == "direccion":
+                            memoria['estado_conversacion'] = 'esperando_param_recoleccion' # Guardamos estado para esperar la dirección
+                            return {"respuesta": "Claro, para decirte el horario exacto de recolección de basura, necesito la dirección completa. Por favor, indicame la calle y el número, por ejemplo: `Avenida San Martín 123, Junín`."}
+                    
+                    # Caso 2: Parámetros presentes, ejecutar herramienta
+                    parametros = decision.get("parametros", {})
+                    logger.info(f"[ToolHandler] Usando la herramienta '{nombre_herramienta}' con parámetros: {parametros}")
                     funcion_a_ejecutar = TOOL_REGISTRY[nombre_herramienta]
                     resultado = funcion_a_ejecutar(**parametros)
                     return {"respuesta": resultado}
         except (json.JSONDecodeError, TypeError):
-            logger.info("[ToolHandler] La pregunta no requiere una herramienta específica. Pasando a la cadena principal.")
+            logger.info("[ToolHandler] La pregunta no requiere una herramienta específica o la respuesta del LLM no es JSON válida. Pasando a la cadena principal.")
             return None
         return None
-
+    
 class IntentClassifierHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
@@ -358,6 +373,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     context = {"contexto_municipio": contexto_municipio, "user_obj": user_obj, "user_id": getattr(user_obj, "id", None), "intencion": None}
 
+    # ¡LA CADENA DE HANDLERS ES LA MISMA!
     handler_chain = [
         ToolHandler, 
         IntentClassifierHandler, 
@@ -365,7 +381,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         TicketStatusHandler, 
         ReclamoHandler, 
         ImpuestosHandler, 
-        TramitesHandler, # Este handler ha sido modificado
+        TramitesHandler, 
         GeneralHandler,
         EngancheAnonimoMunicipioHandler  
     ]
@@ -380,6 +396,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     if not respuesta_final:
         respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta."}
 
+    # Aquí se reemplaza el placeholder [nombre_vecino] si existe
     if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
         nombre_vecino_memoria = context.get('contexto_municipio', {}).get('nombre_vecino', 'vecino')
         respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
