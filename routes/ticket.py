@@ -54,7 +54,7 @@ def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
     if tipo == 'pyme' and ticket.user_id != current_user.id:
          return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
-    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_agente": c.es_agente} for c in ticket.comentarios]
+    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket.comentarios]
     
     ticket_data = {
         "id": ticket.id, "tipo": tipo, "nro_ticket": ticket.nro_ticket, 
@@ -76,7 +76,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     
     nuevo_comentario = servicio_tickets.crear_comentario(
         ticket_id=ticket_id, tipo_ticket=tipo,
-        comentario_data={"comentario": data["comentario"], "user_id": current_user.id, "es_agente": True}
+        comentario_data={"comentario": data["comentario"], "user_id": current_user.id, "es_admin": True}
     )
     
     if nuevo_comentario:
