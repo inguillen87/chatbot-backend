@@ -6,6 +6,7 @@ from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 # Importamos nuestra nueva y flamante herramienta
 from .herramientas_municipio import consultar_recoleccion_por_direccion
+from .logic import _clasificar_intencion_con_llm 
 
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"

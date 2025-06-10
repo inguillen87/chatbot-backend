@@ -12,7 +12,55 @@ RUBROS_PUBLICOS = {
     "entidad_publica",
     # Agregá acá los que consideres públicos
 }
+# src/services/logic.py
+import logging
+from services.cohere_ai import get_cohere_response # Asegúrate de que esta importación exista y sea correcta
 
+logger = logging.getLogger(__name__)
+
+# Puedes ajustar este prompt según las intenciones que quieras clasificar
+PROMPT_CLASIFICACION_INTENCION = """
+Analiza la siguiente PREGUNTA DEL USUARIO y clasifica su INTENCIÓN.
+Si la pregunta no encaja en ninguna de las categorías, clasifícala como 'general'.
+
+INTENCIONES POSIBLES:
+- iniciar_reclamo: El usuario quiere iniciar un reclamo o queja (ej. "quiero reclamar por una luz", "hay basura en la calle")
+- consultar_estado_ticket: El usuario quiere saber el estado de un ticket o reclamo existente (ej. "estado de mi reclamo", "cómo va mi ticket 12345")
+- consultar_impuestos: El usuario pregunta sobre impuestos municipales, tasas o pagos (ej. "quiero pagar mis impuestos", "deuda de tasas")
+- consultar_tramite: El usuario pregunta sobre cómo realizar un trámite (ej. "requisitos para licencia de conducir", "cómo se hace habilitacion comercial")
+- hablar_con_agente: El usuario quiere hablar con una persona (ej. "necesito hablar con alguien", "me pasas con un operador")
+- general: Cualquier otra consulta que no encaje en las anteriores.
+
+PREGUNTA DEL USUARIO: "{pregunta_usuario}"
+
+Tu respuesta debe ser SÓLO una de las INTENCIONES POSIBLES.
+"""
+
+def _clasificar_intencion_con_llm(pregunta: str) -> str:
+    """
+    Clasifica la intención de la pregunta del usuario utilizando un modelo de lenguaje.
+    """
+    logger.info(f"[CLASIFICADOR INTENCION] Clasificando intención para: '{pregunta}'")
+
+    prompt = PROMPT_CLASIFICACION_INTENCION.format(pregunta_usuario=pregunta)
+
+    try:
+        # Asegúrate de que get_cohere_response esté correctamente configurado
+        # para tu API de Cohere o el LLM que estés usando.
+        # El preamble aquí es opcional, pero ayuda a guiar el LLM.
+        intencion = get_cohere_response(
+            message=prompt, 
+            preamble="Eres un clasificador de intención de usuario. Responde solo con la intención clasificada."
+        )
+        # Limpia cualquier espacio en blanco o caracter especial
+        intencion_limpia = intencion.strip().lower()
+        logger.info(f"[CLASIFICADOR INTENCION] Intención detectada: '{intencion_limpia}'")
+        return intencion_limpia
+    except Exception as e:
+        logger.error(f"[CLASIFICADOR INTENCION] Error al clasificar intención con LLM: {e}")
+        return "general" # Retorna una intención por defecto en caso de error
+
+# ... otras funciones que ya tengas en logic.py (como responder_chatboc)
 def responder_chatboc(
     pregunta,
     user_obj=None,
