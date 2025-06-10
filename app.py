@@ -19,6 +19,7 @@ from routes.ticket import ticket_bp
 from routes.rubros import rubros_bp
 from services.upload_processor import upload_bp
 from cli_commands import register_commands
+from routes.pedidos import pedidos_bp # <-- ¡NUEVA IMPORTACIÓN AQUÍ!
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -91,6 +92,7 @@ def create_app(config_class=Config):
     app.register_blueprint(ticket_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(rubros_bp)
+    app.register_blueprint(pedidos_bp, url_prefix='/api') # <-- ¡NUEVO REGISTRO AQUÍ! Puedes usar un prefijo como '/api'
 
     # Registro de comandos CLI
     register_commands(app)
