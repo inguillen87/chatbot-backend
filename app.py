@@ -6,6 +6,7 @@ import sys
 from flask import Flask
 from flask_cors import CORS
 from flask_session import Session  # <-- 1. IMPORTACIÓN AÑADIDA
+#from flask_login import LoginManager  # <-- NUEVA IMPORTACIÓN
 
 from config import Config
 from extensions import db, migrate
@@ -52,15 +53,7 @@ def create_app(config_class=Config):
     app.config['SESSION_SQLALCHEMY'] = db
     Session(app)
 
-# --- ¡LA SOLUCIÓN! INICIALIZACIÓN DE FLASK-LOGIN ---
-    login_manager = LoginManager()
-    login_manager.init_app(app)
 
-    @login_manager.user_loader
-    def load_user(user_id):
-        # Esta función le dice a Flask-Login cómo encontrar un usuario por su ID
-        return User.query.get(int(user_id))
-    
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
     handler = logging.StreamHandler(sys.stderr)
