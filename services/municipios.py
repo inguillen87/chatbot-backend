@@ -55,28 +55,35 @@ class HumanEscalationHandler(BaseMunicipioHandler):
         return None
 
 class TicketStatusHandler(BaseMunicipioHandler):
+    """
+    Mejorado: Ahora busca y muestra la última respuesta del agente.
+    """
     def handle(self, pregunta: str) -> dict | None:
         if self.context.get('intencion') == 'consultar_estado_ticket':
             match = re.search(r'\d{5,}', pregunta)
-            if not match: return {"respuesta": "Por favor, decime el número de ticket que querés consultar."}
-            ticket = MunicipioTicket.query.filter_by(nro_ticket=int(match.group(0))).first()
+            if not match:
+                return {"respuesta": "Por favor, decime el número de ticket que querés consultar."}
+            
+            nro_ticket = int(match.group(0))
+            ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
+
             if ticket:
                 respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado}**."
                 
-                # --- INICIO DE LA CORRECCIÓN ---
-                # Usamos 'es_admin' como está definido en tu models.py para TicketComentario
+                # --- LÓGICA MEJORADA: BUSCAMOS LA ÚLTIMA RESPUESTA DEL AGENTE ---
                 ultimo_comentario_agente = TicketComentario.query.filter_by(
                     municipio_ticket_id=ticket.id, 
-                    es_admin=True  # <-- CORREGIDO: Usando 'es_admin'
+                    es_agente=True # o es_admin, según tu modelo final
                 ).order_by(TicketComentario.fecha.desc()).first()
-                # --- FIN DE LA CORRECCIÓN ---
-
+                
                 if ultimo_comentario_agente:
                     respuesta += f"\n\nÚltima actualización de nuestro equipo: *\"{ultimo_comentario_agente.comentario}\"*"
+                
                 return {"respuesta": respuesta}
-            else: return {"respuesta": f"No pude encontrar ningún ticket con el número {match.group(0)}."}
+            else:
+                return {"respuesta": f"No pude encontrar ningún ticket con el número {nro_ticket}."}
         return None
-
+    
 class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
