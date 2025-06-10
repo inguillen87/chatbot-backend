@@ -54,36 +54,56 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             if ticket: return {"respuesta": f"Entendido. Un agente revisará tu consulta. Tu número de seguimiento es #{ticket.nro_ticket}."}
         return None
 
+# NOTA: He notado que en esta nueva versión del código que me pasaste, la línea de abajo volvió a usar 'es_agente'.
+# La he vuelto a corregir a 'es_admin' para que sea consistente con tu archivo models.py y evitar futuros errores.
 class TicketStatusHandler(BaseMunicipioHandler):
-    """
-    Mejorado: Ahora busca y muestra la última respuesta del agente.
-    """
     def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get('contexto_municipio', {})
+        estado_conversacion = memoria.get('estado_conversacion')
+        
+        if estado_conversacion == 'esperando_confirmacion_cierre':
+            ticket_id = memoria.get('ticket_id_activo')
+            ticket = db.session.get(MunicipioTicket, ticket_id)
+            if "si" in pregunta.lower() or "sí" in pregunta.lower():
+                ticket.estado = "resuelto"
+                db.session.commit()
+                memoria['estado_conversacion'] = 'esperando_calificacion'
+                return {"respuesta": "¡Excelente! Me alegra que lo hayamos solucionado. Para terminar, ¿podrías calificar la atención recibida del 1 al 5? Tu opinión nos ayuda a mejorar."}
+            else:
+                memoria.clear()
+                return {"respuesta": "Entendido. Dejaré el ticket abierto para que nuestro equipo continúe con el seguimiento. ¿Hay algo más que quieras agregar?"}
+
+        elif estado_conversacion == 'esperando_calificacion':
+            ticket_id = memoria.get('ticket_id_activo')
+            servicio_tickets.crear_comentario(
+                ticket_id=ticket_id, tipo_ticket="municipio",
+                comentario_data={"comentario": f"Calificación del vecino: {pregunta}", "es_admin": False} # Corregido a es_admin
+            )
+            memoria.clear()
+            return {"respuesta": "¡Muchas gracias por tu calificación! Hemos cerrado el ticket. ¿Necesitas ayuda con algo más?"}
+
         if self.context.get('intencion') == 'consultar_estado_ticket':
             match = re.search(r'\d{5,}', pregunta)
-            if not match:
-                return {"respuesta": "Por favor, decime el número de ticket que querés consultar."}
+            if not match: return {"respuesta": "Por favor, decime el número de ticket que querés consultar."}
             
-            nro_ticket = int(match.group(0))
-            ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
+            ticket = MunicipioTicket.query.filter_by(nro_ticket=int(match.group(0))).first()
+            if not ticket: return {"respuesta": f"No pude encontrar ningún ticket con el número {match.group(0)}."}
 
-            if ticket:
-                respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado}**."
-                
-                # --- LÓGICA MEJORADA: BUSCAMOS LA ÚLTIMA RESPUESTA DEL AGENTE ---
-                ultimo_comentario_agente = TicketComentario.query.filter_by(
-                    municipio_ticket_id=ticket.id, 
-                    es_agente=True # o es_admin, según tu modelo final
-                ).order_by(TicketComentario.fecha.desc()).first()
-                
-                if ultimo_comentario_agente:
-                    respuesta += f"\n\nÚltima actualización de nuestro equipo: *\"{ultimo_comentario_agente.comentario}\"*"
-                
-                return {"respuesta": respuesta}
-            else:
-                return {"respuesta": f"No pude encontrar ningún ticket con el número {nro_ticket}."}
+            respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado}**."
+            ultimo_comentario_agente = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first() # Corregido a es_admin
+            
+            if ultimo_comentario_agente:
+                respuesta += f"\n\nÚltima actualización de nuestro equipo: *\"{ultimo_comentario_agente.comentario}\"*"
+                if ticket.estado == "en_proceso":
+                    memoria['estado_conversacion'] = 'esperando_confirmacion_cierre'
+                    memoria['ticket_id_activo'] = ticket.id
+                    respuesta += "\n\n¿Tu problema fue solucionado con esta respuesta?"
+                    return {"respuesta": respuesta, "botones": [{"texto": "Sí, solucionado"}, {"texto": "No, aún no"}]}
+
+            return {"respuesta": respuesta}
+            
         return None
-    
+
 class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
@@ -123,7 +143,7 @@ class TramitesHandler(BaseMunicipioHandler):
                 return {"respuesta": "Para Habilitaciones Comerciales, los requisitos varían según el rubro. Es mejor que te acerques a la oficina de comercio para un asesoramiento personalizado."}
         return None
 
-class GeneralHandler(Basemunderlyingipipoder):
+class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         prompt = "Sos un agente de atención ciudadana experto..." # Tu prompt completo
         respuesta_llm = get_cohere_response(message=pregunta, preamble=prompt)
