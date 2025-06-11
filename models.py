@@ -122,7 +122,7 @@ class PymePedido(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) # Permite anónimos
     user = db.relationship('User', backref='pyme_pedidos')
     nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
-    asunto = db.Column(db.String(255), nullable=False)
+    asunto = db.Column(db.String(255), nullable=True)
     estado = db.Column(db.String(30), default="pendiente")
     detalles = db.Column(db.Text, nullable=True) # JSON string
     monto_total = db.Column(db.Float, nullable=True)
@@ -130,7 +130,7 @@ class PymePedido(db.Model):
     nombre_cliente = db.Column(db.String(100), nullable=True)
     email_cliente = db.Column(db.String(100), nullable=True)
     telefono_cliente = db.Column(db.String(50), nullable=True)
-    rubro = db.Column(db.String(100), nullable=False)
+    rubro = db.Column(db.String(100), nullable=True)
 
     def __init__(self, asunto, detalles, rubro, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None):
         self.asunto = asunto
