@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, current_app
 from models import MunicipioTicket, PymeTicket, User, TicketComentario, db # Asegúrate de importar TicketComentario
 from services.ticket_service import servicio_tickets
 from .auth import token_requerido
+from collections import defaultdict # Importa defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
@@ -301,3 +302,42 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
     
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
+@ticket_bp.route('/panel_por_categoria', methods=['GET'])
+@token_requerido
+def get_panel_por_categoria(current_user: User):
+    """
+    Endpoint para el panel de administración. Devuelve todos los tickets de municipio,
+    agrupados en un diccionario por categoría.
+    """
+    # --- Permisos: Solo los agentes del municipio pueden ver este panel ---
+    es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
+    if not es_agente_municipal:
+        return jsonify({"error": "No tienes permiso para acceder a este panel."}), 403
+
+    try:
+        # 1. Obtenemos TODOS los tickets de municipio, ordenados por fecha reciente
+        tickets = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).all()
+
+        # 2. Creamos un diccionario para agrupar los tickets
+        # defaultdict es útil porque crea listas vacías automáticamente para nuevas categorías
+        tickets_agrupados = defaultdict(list)
+
+        # 3. Iteramos y agrupamos cada ticket en su categoría
+        for ticket in tickets:
+            # Serializamos la información esencial del ticket
+            ticket_data = {
+                "id": ticket.id,
+                "nro_ticket": ticket.nro_ticket,
+                "asunto": ticket.asunto,
+                "estado": ticket.estado,
+                "fecha": ticket.fecha.isoformat(),
+                # Podemos añadir más datos si el panel los necesita
+                "direccion": ticket.detalles.split("Dirección del problema:")[1].split("\n")[0].strip() if "Dirección del problema:" in ticket.detalles else "No especificada"
+            }
+            tickets_agrupados[ticket.categoria or "Sin Categoría"].append(ticket_data)
+        
+        return jsonify(tickets_agrupados)
+
+    except Exception as e:
+        current_app.logger.error(f"Error en get_panel_por_categoria: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
