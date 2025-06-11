@@ -23,6 +23,37 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER") 
 
+class GreetingHandler(BaseMunicipioHandler):
+    """
+    Handler especializado en capturar el primer saludo de un usuario
+    para darle la bienvenida y guiarlo, evitando escalados innecesarios.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get('contexto_municipio', {})
+        # Solo se activa si NO hay un estado de conversación previo
+        if not memoria.get('estado_conversacion'):
+            saludos = ['hola', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'que tal']
+            pregunta_limpia = pregunta.strip().lower()
+
+            # Verificamos si el mensaje es un saludo simple
+            if pregunta_limpia in saludos:
+                # Limpiamos la memoria por si quedó algo de una conversación anterior
+                memoria.clear() 
+                
+                respuesta = (
+                    "¡Hola! 👋 Soy tu asistente virtual del Municipio de Junín. "
+                    "Estoy aquí para ayudarte de forma rápida y automática. "
+                    "Puedes preguntarme cosas como:\n\n"
+                    "✅ '¿Cuándo pasa el basurero por San Martín 123?'\n"
+                    "✅ 'Quiero hacer un reclamo por una luz quemada'\n"
+                    "✅ '¿Cómo saco el carnet de conducir?'\n\n"
+                    "¿En qué te puedo ayudar hoy?"
+                )
+                return {"respuesta": respuesta}
+        
+        # Si no es un saludo inicial o ya hay una conversación, no hace nada.
+        return None
+    
 # --- FUNCIÓN DE NOTIFICACIÓN REAL ---
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     """
@@ -142,10 +173,51 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         return None
 
 class HumanEscalationHandler(BaseMunicipioHandler):
+    """
+    Gestiona la solicitud de hablar con un agente, pero primero
+    intenta retener al usuario con las opciones automáticas.
+    """
     def handle(self, pregunta: str) -> dict | None:
-        if self.context.get('intencion') == 'hablar_con_agente':
-            ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={"asunto": "Solicitud de Agente Humano", "categoria": "Escalado Urgente", "detalles": pregunta, "user_id": self.context.get("user_id")})
-            if ticket: return {"respuesta": f"Entendido. Un agente revisará tu consulta. Tu número de seguimiento es #{ticket.nro_ticket}."}
+        memoria = self.context.get('contexto_municipio', {})
+        intencion = self.context.get('intencion')
+        estado_conversacion = memoria.get('estado_conversacion')
+
+        # Escenario 1: El usuario pide un agente por primera vez
+        if intencion == 'hablar_con_agente' and estado_conversacion != 'esperando_confirmacion_escalado':
+            memoria['estado_conversacion'] = 'esperando_confirmacion_escalado'
+            respuesta = (
+                "Entiendo que quieres hablar con una persona. Antes de derivarte, recuerda que puedo ayudarte instantáneamente a:\n\n"
+                "🔹 Consultar horarios de recolección.\n"
+                "🔹 Iniciar un reclamo formal paso a paso.\n"
+                "🔹 Consultar el estado de un ticket existente.\n"
+                "🔹 Informarte sobre trámites e impuestos.\n\n"
+                "¿Estás seguro de que quieres crear un ticket para que te contacte un agente humano?"
+            )
+            return {"respuesta": respuesta, "botones": [{"texto": "Sí, quiero esperar a un agente"}, {"texto": "No, intentaré con el bot"}]}
+
+        # Escenario 2: El usuario confirma que SÍ quiere escalar
+        elif estado_conversacion == 'esperando_confirmacion_escalado':
+            # Si la respuesta es afirmativa, creamos el ticket
+            if any(palabra in pregunta.lower() for palabra in ['si', 'sí', 'seguro', 'agente']):
+                memoria.clear() # Limpiamos la memoria para la nueva interacción
+                ticket = servicio_tickets.crear_nuevo_ticket(
+                    tipo_ticket="municipio",
+                    ticket_data={
+                        "asunto": "Solicitud de Agente Humano",
+                        "categoria": "Escalado Urgente",
+                        "detalles": "El vecino solicitó explícitamente la atención de un agente.",
+                        "user_id": self.context.get("user_id")
+                    }
+                )
+                if ticket:
+                    return {"respuesta": f"Entendido. Un agente revisará tu consulta a la brevedad. Tu número de seguimiento es #{ticket.nro_ticket}. El tiempo de respuesta puede variar."}
+                else:
+                    return {"respuesta": "Disculpa, hubo un problema al crear tu ticket. Por favor, intenta más tarde."}
+            # Si la respuesta es negativa, reseteamos el flujo
+            else:
+                memoria.clear()
+                return {"respuesta": "¡Perfecto! Me alegra tener otra oportunidad. Dime, ¿en qué te puedo ayudar?"}
+
         return None
 
 class TicketStatusHandler(BaseMunicipioHandler):
@@ -373,11 +445,12 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     context = {"contexto_municipio": contexto_municipio, "user_obj": user_obj, "user_id": getattr(user_obj, "id", None), "intencion": None}
 
-    # ¡LA CADENA DE HANDLERS ES LA MISMA!
+    # ¡LA CADENA DE HANDLERS ES LA MISMA! -> AHORA LA VAMOS A MEJORAR
     handler_chain = [
+        GreetingHandler,           # <-- NUEVO: Lo ponemos primero para capturar saludos.
         ToolHandler, 
         IntentClassifierHandler, 
-        HumanEscalationHandler, 
+        HumanEscalationHandler,    # La versión modificada ahora funciona perfectamente aquí.
         TicketStatusHandler, 
         ReclamoHandler, 
         ImpuestosHandler, 
