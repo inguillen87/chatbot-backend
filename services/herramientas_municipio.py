@@ -1,10 +1,73 @@
-# /app/bots/municipio/herramientas_municipio.py
-
+from services.cohere_ai import get_cohere_response # Asegúrate de poder importarlo aquí
+import json
 import logging
 import requests
 import os
 import unicodedata # <--- ¡Importante agregar esta línea!
 
+# ... (el resto de tus herramientas y diccionarios)
+
+# --- NUEVA HERRAMIENTA DE SUGERENCIA DE CATEGORÍAS ---
+
+def crear_prompt_sugerir_categorias(texto_usuario: str, categorias_disponibles: list[str]) -> str:
+    """Crea un prompt específico para que el LLM sugiera categorías relevantes."""
+    
+    lista_categorias_str = "\n".join(f"- {cat}" for cat in categorias_disponibles)
+    
+    prompt = f"""
+Tu tarea es actuar como un experto clasificador de reclamos municipales.
+Dado un RECLAMO DE USUARIO y una LISTA DE CATEGORÍAS, tu única función es seleccionar las 3 categorías más relevantes de la lista que mejor correspondan al reclamo del usuario.
+
+LISTA DE CATEGORÍAS DISPONIBLES:
+{lista_categorias_str}
+
+RECLAMO DE USUARIO: "{texto_usuario}"
+
+INSTRUCCIONES:
+- Analiza el reclamo del usuario y compáralo con la lista de categorías.
+- Devuelve SÓLO un objeto JSON que contenga una única clave "sugerencias" con una lista de hasta 3 nombres de categorías extraídos EXACTAMENTE de la lista proporcionada.
+- Si ninguna categoría parece relevante, devuelve una lista vacía.
+
+Ejemplo 1:
+- Reclamo: "la esquina de mi casa está a oscuras y el asfalto es un desastre"
+- Respuesta: {{"sugerencias": ["Luminaria", "Arreglo de calle"]}}
+
+Ejemplo 2:
+- Reclamo: "quiero saber el teléfono del intendente"
+- Respuesta: {{"sugerencias": []}}
+
+Tu respuesta:
+"""
+    return prompt
+
+def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
+    """
+    Usa el LLM para obtener una lista de categorías sugeridas basadas en el texto del usuario.
+    """
+    # Obtenemos la lista única de todas las categorías posibles desde nuestro diccionario
+    todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
+    
+    # Creamos el prompt especializado
+    prompt = crear_prompt_sugerir_categorias(texto_usuario, todas_las_categorias)
+    
+    try:
+        # Llamamos al LLM
+        respuesta_llm = get_cohere_response(message=prompt, preamble="Eres un experto clasificador. Responde solo con el JSON solicitado.")
+        
+        # Parseamos la respuesta JSON
+        resultado = json.loads(respuesta_llm)
+        sugerencias = resultado.get("sugerencias", [])
+        
+        # Devolvemos solo las primeras 3 sugerencias, si las hay
+        if isinstance(sugerencias, list):
+            return sugerencias[:3]
+            
+    except (json.JSONDecodeError, TypeError, Exception) as e:
+        logger.error(f"[sugerir_categorias] Error al procesar sugerencias del LLM: {e}")
+        return [] # En caso de error, devolvemos una lista vacía
+
+    return []
+   
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
 
