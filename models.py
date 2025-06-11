@@ -93,6 +93,7 @@ class MunicipioTicket(db.Model):
     categoria = db.Column(db.String(100), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
+    ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime, default=db.func.now())
     archivo_url = db.Column(db.String(255), nullable=True)

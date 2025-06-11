@@ -221,3 +221,83 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         "archivo_url": getattr(ticket_obj, 'archivo_url', None)
     }
     return jsonify(ticket_data)
+@ticket_bp.route('/chat/<int:ticket_id>/mensajes', methods=['GET'])
+@token_requerido
+def get_chat_mensajes(current_user: User, ticket_id: int):
+    """
+    Endpoint para el polling del chat en vivo del municipio.
+    Devuelve los nuevos mensajes y el estado actual de una sala de chat (ticket).
+    """
+    try:
+        # 1. Buscar la sala de chat, que es un MunicipioTicket
+        sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
+        if not sala_de_chat:
+            return jsonify({"error": "Sala de chat no encontrada."}), 404
+
+        # 2. LÓGICA DE PERMISOS CORRECTA Y FINAL
+        # Se verifica si el usuario es un agente municipal basándose en su rubro.
+        es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
+        
+        # Se verifica si el usuario es el creador del ticket.
+        es_dueño_del_ticket = sala_de_chat.user_id == current_user.id
+
+        # Si no es ni agente ni dueño, no tiene acceso.
+        if not (es_agente_municipal or es_dueño_del_ticket):
+            return jsonify({"error": "No tienes permiso para acceder a este chat."}), 403
+
+        # 3. Obtener el último mensaje que el cliente ya tiene
+        ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
+
+        # 4. Consultar solo los mensajes nuevos
+        mensajes_nuevos = TicketComentario.query.filter(
+            TicketComentario.municipio_ticket_id == ticket_id,
+            TicketComentario.id > ultimo_mensaje_id
+        ).order_by(TicketComentario.fecha.asc()).all()
+
+        # 5. Formatear la Respuesta JSON (esto ya estaba bien)
+        mensajes_formateados = [{
+            "id": msg.id,
+            "texto": msg.comentario,
+            "fecha": msg.fecha.isoformat(),
+            "es_admin": msg.es_admin  # Usamos el campo del modelo TicketComentario
+        } for msg in mensajes_nuevos]
+
+        respuesta_final = {
+            "estado_chat": sala_de_chat.estado,
+            "mensajes": mensajes_formateados
+        }
+
+        return jsonify(respuesta_final)
+
+    except Exception as e:
+        current_app.logger.error(f"Error en get_chat_mensajes para ticket {ticket_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+    
+    # En ticket_bp.py
+
+@ticket_bp.route('/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
+@token_requerido
+def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
+    """Endpoint para que un CIUDADANO envíe un mensaje a un chat en vivo existente."""
+    data = request.get_json()
+    if not data or not data.get("comentario"):
+        return jsonify({"error": "El comentario no puede estar vacío."}), 400
+    
+    sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
+    if not sala_de_chat:
+        return jsonify({"error": "Sala de chat no encontrada."}), 404
+
+    # Verificamos que solo el dueño del ticket pueda escribir en él.
+    if sala_de_chat.user_id != current_user.id:
+        return jsonify({"error": "No tienes permiso para responder en este chat."}), 403
+
+    # Usamos tu servicio para crear el comentario, marcando es_admin como False
+    nuevo_comentario = servicio_tickets.crear_comentario(
+        ticket_id=ticket_id, tipo_ticket="municipio",
+        comentario_data={"comentario": data["comentario"], "user_id": current_user.id, "es_admin": False}
+    )
+
+    if nuevo_comentario:
+        return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
+    
+    return jsonify({"error": "No se pudo guardar la respuesta."}), 500

@@ -174,50 +174,61 @@ class IntentClassifierHandler(BaseMunicipioHandler):
 
 class HumanEscalationHandler(BaseMunicipioHandler):
     """
-    Gestiona la solicitud de hablar con un agente, pero primero
-    intenta retener al usuario con las opciones automáticas.
+    Gestiona la solicitud de hablar con un agente.
+    En lugar de solo crear un ticket, crea una sala de chat en vivo 
+    y la pone en estado de espera para que un agente se conecte.
     """
     def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get('contexto_municipio', {})
-        intencion = self.context.get('intencion')
-        estado_conversacion = memoria.get('estado_conversacion')
+        # Este handler se activa cuando la intención es hablar con un agente.
+        if self.context.get('intencion') == 'hablar_con_agente':
+            
+            logger.info(f"[HumanEscalationHandler] El usuario {self.context.get('user_id')} solicita un agente. Creando sala de chat...")
 
-        # Escenario 1: El usuario pide un agente por primera vez
-        if intencion == 'hablar_con_agente' and estado_conversacion != 'esperando_confirmacion_escalado':
-            memoria['estado_conversacion'] = 'esperando_confirmacion_escalado'
-            respuesta = (
-                "Entiendo que quieres hablar con una persona. Antes de derivarte, recuerda que puedo ayudarte instantáneamente a:\n\n"
-                "🔹 Consultar horarios de recolección.\n"
-                "🔹 Iniciar un reclamo formal paso a paso.\n"
-                "🔹 Consultar el estado de un ticket existente.\n"
-                "🔹 Informarte sobre trámites e impuestos.\n\n"
-                "¿Estás seguro de que quieres crear un ticket para que te contacte un agente humano?"
+            # --- Paso 1: Crear la "Sala de Chat" (el Ticket) ---
+            # Usamos tu servicio de tickets para mantener la consistencia del código.
+            # El estado 'esperando_agente_en_vivo' es la clave de esta nueva lógica.
+            ticket_data = {
+                "asunto": "Solicitud de Chat en Vivo",
+                "categoria": "Atención en Vivo",
+                "detalles": f"El vecino solicitó atención en vivo con el mensaje: '{pregunta}'", # Guardamos el mensaje inicial
+                "user_id": self.context.get("user_id"),
+                "estado": "esperando_agente_en_vivo"  # <-- ¡NUEVO ESTADO CLAVE!
+            }
+            
+            # Asumimos que tu servicio crea el ticket y lo devuelve
+            sala_de_chat = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data)
+
+            if not sala_de_chat:
+                logger.error("[HumanEscalationHandler] No se pudo crear la sala de chat (ticket).")
+                return {"respuesta": "Disculpa, hubo un problema técnico al intentar conectar con un agente. Por favor, intenta de nuevo más tarde."}
+
+            # --- Paso 2: Guardar el primer mensaje del vecino en el historial del chat ---
+            # Es importante que el agente vea por qué el vecino pidió ayuda.
+            servicio_tickets.crear_comentario(
+                ticket_id=sala_de_chat.id,
+                tipo_ticket="municipio",
+                comentario_data={
+                    "comentario": pregunta,
+                    "es_admin": False, # Es un mensaje del vecino
+                    "user_id": self.context.get("user_id")
+                }
             )
-            return {"respuesta": respuesta, "botones": [{"texto": "Sí, quiero esperar a un agente"}, {"texto": "No, intentaré con el bot"}]}
+            
+            logger.info(f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada y en espera.")
 
-        # Escenario 2: El usuario confirma que SÍ quiere escalar
-        elif estado_conversacion == 'esperando_confirmacion_escalado':
-            # Si la respuesta es afirmativa, creamos el ticket
-            if any(palabra in pregunta.lower() for palabra in ['si', 'sí', 'seguro', 'agente']):
-                memoria.clear() # Limpiamos la memoria para la nueva interacción
-                ticket = servicio_tickets.crear_nuevo_ticket(
-                    tipo_ticket="municipio",
-                    ticket_data={
-                        "asunto": "Solicitud de Agente Humano",
-                        "categoria": "Escalado Urgente",
-                        "detalles": "El vecino solicitó explícitamente la atención de un agente.",
-                        "user_id": self.context.get("user_id")
-                    }
-                )
-                if ticket:
-                    return {"respuesta": f"Entendido. Un agente revisará tu consulta a la brevedad. Tu número de seguimiento es #{ticket.nro_ticket}. El tiempo de respuesta puede variar."}
-                else:
-                    return {"respuesta": "Disculpa, hubo un problema al crear tu ticket. Por favor, intenta más tarde."}
-            # Si la respuesta es negativa, reseteamos el flujo
-            else:
-                memoria.clear()
-                return {"respuesta": "¡Perfecto! Me alegra tener otra oportunidad. Dime, ¿en qué te puedo ayudar?"}
+            # --- Paso 3: Responder al vecino para que espere en la ventana ---
+            respuesta_al_vecino = (
+                f"¡Entendido! He abierto una sala de chat directa con nuestro equipo. "
+                f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. \n\n"
+                "Por favor, aguarda un momento mientras un agente se conecta. **No cierres esta ventana.**"
+            )
+            
+            # Limpiamos el contexto para futuras interacciones dentro del chat.
+            self.context.get('contexto_municipio', {}).clear()
 
+            return {"respuesta": respuesta_al_vecino}
+
+        # Si la intención no es hablar con un agente, este handler no hace nada.
         return None
 
 class TicketStatusHandler(BaseMunicipioHandler):
