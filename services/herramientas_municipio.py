@@ -1,3 +1,5 @@
+# /app/bots/municipio/herramientas_municipio.py
+
 import logging
 import requests
 import os
@@ -5,22 +7,19 @@ import os
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
 
-# Importa la nueva herramienta de geocodificación que crearemos en el siguiente paso
-# --- NUEVO REGISTRO DE HERRAMIENTAS INTELIGENTE ---
-T
-}
+# --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
     """
     Herramienta profesional que usa la API de Google Maps para geocodificar una dirección
     y luego determina el horario de recolección.
     """
+    # ... (El código de esta función está perfecto, no necesita cambios)
     logger.info(f"[HERRAMIENTA GEO] Buscando horario para: '{direccion}'")
 
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps no configurada.")
         return "Error de configuración interna. No puedo acceder al servicio de mapas."
 
-    # Aseguramos que la dirección incluya la ciudad para mayor precisión
     if "junin" not in direccion.lower():
         direccion_completa = f"{direccion}, Junín, Mendoza"
     else:
@@ -30,52 +29,31 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
 
     try:
         response = requests.get(geocode_url)
-        response.raise_for_status()  # Lanza un error si la petición falla (ej: 4xx, 5xx)
+        response.raise_for_status()
         data = response.json()
 
         if not data or data['status'] != 'OK' or not data.get('results'):
             logger.warning(f"[HERRAMIENTA GEO] La API de Google no pudo geocodificar la dirección: {direccion}")
             return "No pude verificar esa dirección. ¿Puedes ser un poco más específico, incluyendo la ciudad?"
 
-        # Obtenemos la latitud y longitud
         location = data['results'][0]['geometry']['location']
         lat, lng = location['lat'], location['lng']
         logger.info(f"[HERRAMIENTA GEO] Coordenadas para '{direccion}': Lat={lat}, Lng={lng}")
 
-        # --- LÓGICA DE DECISIÓN BASADA EN COORDENADAS ---
-        # Aquí es donde conectarías con el sistema real del municipio.
-        # Por ahora, simulamos la lógica basada en zonas geográficas de Junín.
-
-        # Ejemplo de polígono para la zona céntrica de Junín
         if -34.595 <= lat <= -34.580 and -60.955 <= lng <= -60.935:
             return f"Detecté que la dirección '{direccion}' está en la **zona céntrica**. Allí, la recolección es de **Lunes a Sábado por la noche (a partir de las 22:00 hs)**."
-        
-        # Ejemplo de polígono para el barrio "Villa Belgrano"
         elif -34.580 <= lat <= -34.570 and -60.935 <= lng <= -60.920:
-             return f"Para la zona de **Villa Belgrano**, la recolección es los días **Martes, Jueves y Sábado por la mañana (a partir de las 08:00 hs)**."
-
+            return f"Para la zona de **Villa Belgrano**, la recolección es los días **Martes, Jueves y Sábado por la mañana (a partir de las 08:00 hs)**."
         else:
             return "Según la ubicación, te corresponde el servicio de recolección zonal. Los días son **Lunes, Miércoles y Viernes por la noche (a partir de las 21:00 hs)**. Te recomiendo confirmarlo en la web del municipio."
-
     except requests.exceptions.RequestException as e:
         logger.error(f"[HERRAMIENTA GEO] Error de conexión con la API de Google: {e}")
         return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
-    
-def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
-    """
-    Analiza el texto del usuario en busca de palabras clave para asignar una categoría.
-    """
-    texto_lower = texto_usuario.lower()
-    for keyword, category in KEYWORD_TO_CATEGORY_MAP.items():
-        if keyword in texto_lower:
-            # Si encuentra una palabra clave, devuelve la categoría inmediatamente.
-            return category
-            
-    # Si después de revisar todas las palabras clave no encuentra ninguna,
-    # devuelve "Otros".
-    return "Otros"
-    
-# Diccionario que mapea palabras clave a las categorías oficiales del municipio
+
+
+# --- HERRAMIENTA 2: CATEGORIZACIÓN DE RECLAMOS ---
+
+# AJUSTE 1: Diccionario definido ANTES de la función que lo usa.
 KEYWORD_TO_CATEGORY_MAP = {
     # Categoría: Luminaria
     "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria",
@@ -89,7 +67,7 @@ KEYWORD_TO_CATEGORY_MAP = {
     # Categoría: Limpieza
     "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza",
     "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza",
-    "desmalezamiento": "Limpieza", "baldío": "Limpieza", "baldío": "Limpieza",
+    "desmalezamiento": "Limpieza", "baldío": "Limpieza",
     
     # Categoría: Arreglo de calle
     "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle",
@@ -124,6 +102,14 @@ KEYWORD_TO_CATEGORY_MAP = {
     "obra": "Tramites de Obras Privadas", "construccion": "Tramites de Obras Privadas",
     "plano": "Tramites de Obras Privadas",
 }
-# Función que intenta adivinar la categoría a partir de un texto.
-# Colócala debajo del diccionario KEYWORD_TO_CATEGORY_MAP
 
+def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
+    """
+    Analiza el texto del usuario en busca de palabras clave para asignar una categoría.
+    """
+    texto_lower = texto_usuario.lower()
+    for keyword, category in KEYWORD_TO_CATEGORY_MAP.items():
+        if keyword in texto_lower:
+            return category
+            
+    return "Otros"
