@@ -91,5 +91,5 @@ def listar_pedidos_usuario(user):
         return jsonify(pedidos_en_json), 200
 
     except Exception as e:
-        logger.error(f"Error en la ruta /user/pedidos: {e}", exc_info=True)
+        logger.error(f"Error en la ruta /pedidos: {e}", exc_info=True)
         return jsonify({"error": "Error interno del servidor al obtener los pedidos."}), 500
