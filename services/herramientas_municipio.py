@@ -3,9 +3,24 @@
 import logging
 import requests
 import os
+import unicodedata # <--- ¡Importante agregar esta línea!
 
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
+
+
+# --- NUEVA FUNCIÓN DE NORMALIZACIÓN ---
+def normalizar_texto(texto: str) -> str:
+    """
+    Convierte un texto a minúsculas y le quita todos los acentos y diacríticos.
+    Ej: "Árbol Caído" -> "arbol caido"
+    """
+    # NFD descompone los caracteres en su forma base y sus diacríticos (ej: 'á' -> 'a' + '´')
+    forma_normalizada = unicodedata.normalize('NFD', texto)
+    # Luego, nos quedamos solo con los caracteres que no son diacríticos (los ASCII)
+    texto_sin_acentos = "".join(c for c in forma_normalizada if not unicodedata.combining(c))
+    
+    return texto_sin_acentos.lower()
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
@@ -53,7 +68,8 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
 
 # --- HERRAMIENTA 2: CATEGORIZACIÓN DE RECLAMOS ---
 
-# AJUSTE 1: Diccionario definido ANTES de la función que lo usa.
+# En herramientas_municipio.py, reemplaza tu diccionario
+
 KEYWORD_TO_CATEGORY_MAP = {
     # Categoría: Luminaria
     "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria",
@@ -61,13 +77,12 @@ KEYWORD_TO_CATEGORY_MAP = {
     "farol": "Luminaria",
     
     # Categoría: Arbol Caido
-    "arbol": "Arbol Caido", "árbol": "Arbol Caido", "rama": "Arbol Caido",
-    "gajo": "Arbol Caido",
+    "arbol": "Arbol Caido", "rama": "Arbol Caido", "gajo": "Arbol Caido",
     
     # Categoría: Limpieza
     "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza",
     "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza",
-    "desmalezamiento": "Limpieza", "baldío": "Limpieza",
+    "desmalezamiento": "Limpieza", "baldio": "Limpieza", # 'baldío' ahora es 'baldio'
     
     # Categoría: Arreglo de calle
     "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle",
@@ -75,11 +90,11 @@ KEYWORD_TO_CATEGORY_MAP = {
     "pavimento": "Arreglo de calle",
     
     # Categoría: Falta de agua, rotura de caño
-    "agua": "Falta de agua, rotura de caño", "caño": "Falta de agua, rotura de caño",
+    "agua": "Falta de agua, rotura de caño", "cano": "Falta de agua, rotura de caño", # 'caño' ahora es 'cano'
     "perdida": "Falta de agua, rotura de caño", "fuga": "Falta de agua, rotura de caño",
     
     # Categoría: Rotura de semaforo
-    "semaforo": "Rotura de semaforo", "semáforo": "Rotura de semaforo",
+    "semaforo": "Rotura de semaforo", 
     
     # Categoría: Fumigacion
     "fumigacion": "Fumigacion", "fumigar": "Fumigacion", "bichos": "Fumigacion",
@@ -94,9 +109,8 @@ KEYWORD_TO_CATEGORY_MAP = {
     "gato": "Castracion de mascota",
     
     # Categoría: Inspeccion de comercio
-    "inspeccion": "Inspeccion de comercio", "inspección": "Inspeccion de comercio",
-    "comercio": "Inspeccion de comercio", "negocio": "Inspeccion de comercio",
-    "habilitacion": "Inspeccion de comercio",
+    "inspeccion": "Inspeccion de comercio", "comercio": "Inspeccion de comercio", 
+    "negocio": "Inspeccion de comercio", "habilitacion": "Inspeccion de comercio",
     
     # Categoría: Tramites de Obras Privadas
     "obra": "Tramites de Obras Privadas", "construccion": "Tramites de Obras Privadas",
@@ -106,10 +120,16 @@ KEYWORD_TO_CATEGORY_MAP = {
 def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
     """
     Analiza el texto del usuario en busca de palabras clave para asignar una categoría.
+    Ahora normaliza el texto para ser insensible a mayúsculas y acentos.
     """
-    texto_lower = texto_usuario.lower()
+    # --- ¡ÚNICO CAMBIO, PERO MUY PODEROSO! ---
+    # Normalizamos el texto del usuario antes de empezar a buscar.
+    texto_normalizado = normalizar_texto(texto_usuario)
+    # -------------------------------------------
+
     for keyword, category in KEYWORD_TO_CATEGORY_MAP.items():
-        if keyword in texto_lower:
+        # Como las keywords del diccionario ya están normalizadas, la comparación es directa.
+        if keyword in texto_normalizado:
             return category
             
     return "Otros"
