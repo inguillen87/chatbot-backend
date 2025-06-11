@@ -9,16 +9,23 @@ class Config:
     Clase de configuración principal de la aplicación.
     Contiene todas las variables de configuración.
     """
-    
+
     # 1. LLAVE SECRETA: Crucial para la seguridad de la sesión.
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
 
     # 2. CONFIGURACIÓN DE LA BASE DE DATOS:
+    # Se añade '?check_same_thread=False' a las URIs de SQLite para prevenir
+    # el error 500 en entornos de servidor multi-hilo como Render.
     if os.getenv("RENDER") == "true":
-        SQLALCHEMY_DATABASE_URI = "sqlite:////data/database.db"
+        # --- MODIFICADO: Configuración para producción en Render ---
+        db_path_render = "/data/database.db"
+        SQLALCHEMY_DATABASE_URI = f"sqlite:///{db_path_render}?check_same_thread=False"
     else:
+        # --- MODIFICADO: Configuración para desarrollo local ---
         local_db_path = os.path.join(basedir, 'instance', 'database.db')
-        SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}"
+        # Asegurarse de que el directorio 'instance' exista
+        os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
+        SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}?check_same_thread=False"
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -26,7 +33,8 @@ class Config:
     # Para que funcionen en un entorno con dominios separados (Vercel + Render).
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_SAMESITE = 'None'
-    SESSION_COOKIE_DOMAIN = '.chatboc.ar'
+    # Ajustado para funcionar en subdominios, si es necesario. Si no, se puede quitar.
+    # SESSION_COOKIE_DOMAIN = '.chatboc.ar' # Descomentar si tienes problemas entre www y api.
 
     # 4. CONFIGURACIÓN PARA SESIONES EN EL LADO DEL SERVIDOR (Flask-Session)
     # Le decimos a Flask-Session que guarde la "memoria" en nuestra base de datos.
