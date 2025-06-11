@@ -6,17 +6,17 @@ from models import MunicipioTicket, TicketComentario, db # Usando tus modelos
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 # Importamos nuestra nueva y flamante herramienta
-from .herramientas_municipio import consultar_recoleccion_por_direccion
 from .logic import _clasificar_intencion_con_llm 
 from twilio.rest import Client # <<<<<<<<<<<<<< CORREGIDO: Importación de Client
 
+# --- ¡CORRECTO! Importamos las funciones desde la caja de herramientas ---
+from .herramientas_municipio import (
+    consultar_recoleccion_por_direccion, 
+    categorizar_reclamo_por_palabra_clave
+)
+
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
-
-# --- REGISTRO DE HERRAMIENTAS DISPONIBLES ---
-TOOL_REGISTRY = {
-    "consultar_recoleccion_por_direccion": consultar_recoleccion_por_direccion,
-}
 
 # Variables de entorno para Twilio, se leen de os.environ
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -79,39 +79,57 @@ def enviar_notificacion_sms(numero_destino: str, mensaje: str):
         logger.error(f"[NOTIFICACION SMS REAL] Error al enviar SMS a {numero_destino}: {e}")
 
 
-# --- PROMPT PARA EL NUEVO TOOLHANDLER ---
-def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
-    descripcion_herramientas = """
-    {
-      "consultar_recoleccion_por_direccion": {
-        "descripcion": "Se usa para obtener los horarios y días de recolección de basura, residuos o cuando pasa el camión basurero para una dirección específica. El usuario DEBE proporcionar una dirección o el nombre de una calle. Si falta la dirección, la herramienta NO SE USA directamente, se pide la dirección.",
-        "parametros": { "direccion": "La dirección completa que el usuario mencionó, por ejemplo: 'Avenida San Martín 123, Junín'" }
-      }
+TOOL_REGISTRY = {
+    "consultar_recoleccion_por_direccion": {
+        "funcion": consultar_recoleccion_por_direccion,
+        "descripcion": "Se usa para obtener los horarios y días de recolección de basura para una dirección específica. El usuario DEBE proporcionar una dirección, calle o descripción de un lugar.",
+        "parametros": {
+            "direccion": "La dirección completa o descripción del lugar que el usuario mencionó. Por ejemplo: 'Avenida San Martín 123, Junín'."
+        },
+        "ejemplo_pregunta": "a que hora pasa el basurero por 25 de mayo 1550?",
+        "ejemplo_llamada": '{"usar_herramienta": "consultar_recoleccion_por_direccion", "parametros": {"direccion": "25 de mayo 1550"}}'
     }
+}
+def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
     """
+    Genera un prompt para el LLM dinámicamente a partir del TOOL_REGISTRY.
+    """
+    # Construcción dinámica de la descripción de herramientas
+    descripcion_herramientas = "{\n"
+    for nombre, detalles in TOOL_REGISTRY.items():
+        descripcion_herramientas += f'  "{nombre}": {{\n'
+        descripcion_herramientas += f'    "descripcion": "{detalles["descripcion"]}",\n'
+        descripcion_herramientas += f'    "parametros": {json.dumps(detalles["parametros"])}\n'
+        descripcion_herramientas += '  },\n'
+    descripcion_herramientas = descripcion_herramientas.rstrip(',\n') + "\n}"
+
+    # Construcción dinámica de los ejemplos
+    ejemplos_str = ""
+    for detalles in TOOL_REGISTRY.values():
+        ejemplos_str += f'  - Pregunta: "{detalles["ejemplo_pregunta"]}" -> Respuesta: {detalles["ejemplo_llamada"]}\n'
+
     prompt = f"""
-    Tu única tarea es analizar la PREGUNTA DEL USUARIO y decidir si se puede resolver con una de las HERRAMIENTAS DISPONIBLES.
-    Si una herramienta requiere un parámetro (como una dirección) y no está en la pregunta, debes indicar que falta.
+Tu única tarea es analizar la PREGUNTA DEL USUARIO y decidir si se puede resolver con una de las HERRAMIENTAS DISPONIBLES.
+Si una herramienta requiere un parámetro y no está en la pregunta, indica que falta (faltan_parametros).
 
-    HERRAMIENTAS DISPONIBLES:
-    {descripcion_herramientas}
+HERRAMIENTAS DISPONIBLES:
+{descripcion_herramientas}
 
-    PREGUNTA DEL USUARIO: "{pregunta_usuario}"
+PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 
-    INSTRUCCIONES:
-    1. Si la pregunta coincide claramente con la descripción de una herramienta y contiene los parámetros necesarios, responde SÓLO con un objeto JSON con el formato:
-    `{{"usar_herramienta": "nombre_de_la_herramienta", "parametros": {{"nombre_parametro": "valor_extraido"}}}}`
-    2. Si la pregunta coincide con una herramienta pero le FALTAN PARÁMETROS ESENCIALES (ej. la dirección para la recolección), responde SÓLO con un objeto JSON con el formato:
-    `{{"usar_herramienta": "nombre_de_la_herramienta", "faltan_parametros": ["nombre_parametro"]}}`
-    3. Si la pregunta NO coincide con ninguna herramienta o no es relevante para ellas, responde SÓLO con la palabra: `null`
+INSTRUCCIONES:
+1. Si la pregunta coincide claramente con la descripción de una herramienta y contiene los parámetros necesarios, responde SÓLO con un objeto JSON con el formato:
+   `{{"usar_herramienta": "nombre_de_la_herramienta", "parametros": {{"nombre_parametro": "valor_extraido"}}}}`
+2. Si la pregunta coincide con una herramienta pero le FALTAN PARÁMETROS ESENCIALES, responde SÓLO con un objeto JSON con el formato:
+   `{{"usar_herramienta": "nombre_de_la_herramienta", "faltan_parametros": ["nombre_parametro"]}}`
+3. Si la pregunta NO coincide con ninguna herramienta o no es relevante para ellas, responde SÓLO con la palabra: `null`
 
-    Ejemplos:
-    - Pregunta: "a que hora pasa el basurero por 25 de mayo 1550?" -> Respuesta: {{"usar_herramienta": "consultar_recoleccion_por_direccion", "parametros": {{"direccion": "25 de mayo 1550"}}}}
-    - Pregunta: "horarios del camion de basura?" -> Respuesta: {{"usar_herramienta": "consultar_recoleccion_por_direccion", "faltan_parametros": ["direccion"]}}
-    - Pregunta: "necesito hacer un reclamo" -> Respuesta: null
+Ejemplos:
+{ejemplos_str}
+- Pregunta: "necesito hacer un reclamo" -> Respuesta: null
 
-    Tu respuesta:
-    """
+Tu respuesta:
+"""
     return prompt
 
 
@@ -276,12 +294,31 @@ class ReclamoHandler(BaseMunicipioHandler):
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
 
-        # Paso 1: Iniciar el reclamo y pedir categoría
+         # --- Paso 1: Iniciar el reclamo Y AUTOCATEGORIZAR ---
         if self.context.get('intencion') == 'iniciar_reclamo' and not estado:
-            memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
+            
+            # --- NUEVA LÓGICA DE AUTOCATEGORIZACIÓN ---
+            categoria_adivinada = categorizar_reclamo_por_palabra_clave(pregunta)
             memoria['pregunta_original'] = pregunta
-            return {"respuesta": "Entendido, vamos a iniciar tu reclamo. Para dirigirlo al área correcta, por favor, seleccioná una de las siguientes categorías:", "botones": [{"texto": "Alumbrado Público"}, {"texto": "Calles y Veredas"}, {"texto": "Limpieza y Residuos"}]}
-        
+            
+            if categoria_adivinada != "Otros":
+                # ¡Éxito! Adivinamos la categoría.
+                logger.info(f"[ReclamoHandler] Categoría detectada automáticamente: {categoria_adivinada}")
+                memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
+                memoria['categoria_reclamo'] = categoria_adivinada
+                # Nos salteamos un paso y pedimos la dirección directamente.
+                return {"respuesta": f"Entendido. He clasificado tu reclamo en la categoría **{categoria_adivinada}**. Para continuar, por favor, indícame la **dirección completa del problema** (calle y número)."}
+            else:
+                # No se pudo adivinar. Volvemos al flujo normal de preguntar con botones.
+                logger.info("[ReclamoHandler] No se detectó categoría, mostrando opciones.")
+                memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
+                return {"respuesta": "Entendido, vamos a iniciar tu reclamo. Para dirigirlo al área correcta, por favor, seleccioná una de las siguientes categorías:", 
+                        "botones": [
+                            {"texto": "Luminaria"}, {"texto": "Arreglo de calle"}, {"texto": "Limpieza"},
+                            {"texto": "Arbol Caido"}, {"texto": "Fumigacion"}, {"texto": "Falta de agua"},
+                            {"texto": "Rotura de semaforo"}, {"texto": "Otros"}
+                        ]}
+            
         # Paso 2: Recibir categoría y pedir dirección
         elif estado == 'esperando_categoria_reclamo':
             memoria['estado_conversacion'] = 'esperando_direccion_reclamo'

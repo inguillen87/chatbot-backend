@@ -3,10 +3,12 @@ import requests
 import os
 
 logger = logging.getLogger(__name__)
-
-# La clave se lee de forma segura desde las variables de entorno de tu servidor
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
 
+# Importa la nueva herramienta de geocodificación que crearemos en el siguiente paso
+# --- NUEVO REGISTRO DE HERRAMIENTAS INTELIGENTE ---
+T
+}
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
     """
     Herramienta profesional que usa la API de Google Maps para geocodificar una dirección
@@ -58,3 +60,70 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
     except requests.exceptions.RequestException as e:
         logger.error(f"[HERRAMIENTA GEO] Error de conexión con la API de Google: {e}")
         return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
+    
+def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
+    """
+    Analiza el texto del usuario en busca de palabras clave para asignar una categoría.
+    """
+    texto_lower = texto_usuario.lower()
+    for keyword, category in KEYWORD_TO_CATEGORY_MAP.items():
+        if keyword in texto_lower:
+            # Si encuentra una palabra clave, devuelve la categoría inmediatamente.
+            return category
+            
+    # Si después de revisar todas las palabras clave no encuentra ninguna,
+    # devuelve "Otros".
+    return "Otros"
+    
+# Diccionario que mapea palabras clave a las categorías oficiales del municipio
+KEYWORD_TO_CATEGORY_MAP = {
+    # Categoría: Luminaria
+    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria",
+    "foco": "Luminaria", "lampara": "Luminaria", "iluminacion": "Luminaria",
+    "farol": "Luminaria",
+    
+    # Categoría: Arbol Caido
+    "arbol": "Arbol Caido", "árbol": "Arbol Caido", "rama": "Arbol Caido",
+    "gajo": "Arbol Caido",
+    
+    # Categoría: Limpieza
+    "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza",
+    "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza",
+    "desmalezamiento": "Limpieza", "baldío": "Limpieza", "baldío": "Limpieza",
+    
+    # Categoría: Arreglo de calle
+    "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle",
+    "vereda": "Arreglo de calle", "pozo": "Arreglo de calle", "rotura": "Arreglo de calle",
+    "pavimento": "Arreglo de calle",
+    
+    # Categoría: Falta de agua, rotura de caño
+    "agua": "Falta de agua, rotura de caño", "caño": "Falta de agua, rotura de caño",
+    "perdida": "Falta de agua, rotura de caño", "fuga": "Falta de agua, rotura de caño",
+    
+    # Categoría: Rotura de semaforo
+    "semaforo": "Rotura de semaforo", "semáforo": "Rotura de semaforo",
+    
+    # Categoría: Fumigacion
+    "fumigacion": "Fumigacion", "fumigar": "Fumigacion", "bichos": "Fumigacion",
+    "plaga": "Fumigacion", "mosquitos": "Fumigacion", "ratas": "Fumigacion",
+    
+    # Categoría: Riego de Calle
+    "riego": "Riego de Calle", "regar": "Riego de Calle",
+    
+    # Categoría: Castracion de mascota
+    "castracion": "Castracion de mascota", "castrar": "Castracion de mascota",
+    "mascota": "Castracion de mascota", "perro": "Castracion de mascota",
+    "gato": "Castracion de mascota",
+    
+    # Categoría: Inspeccion de comercio
+    "inspeccion": "Inspeccion de comercio", "inspección": "Inspeccion de comercio",
+    "comercio": "Inspeccion de comercio", "negocio": "Inspeccion de comercio",
+    "habilitacion": "Inspeccion de comercio",
+    
+    # Categoría: Tramites de Obras Privadas
+    "obra": "Tramites de Obras Privadas", "construccion": "Tramites de Obras Privadas",
+    "plano": "Tramites de Obras Privadas",
+}
+# Función que intenta adivinar la categoría a partir de un texto.
+# Colócala debajo del diccionario KEYWORD_TO_CATEGORY_MAP
+
