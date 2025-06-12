@@ -319,7 +319,6 @@ def get_panel_por_categoria(current_user: User):
         tickets = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).all()
 
         # 2. Creamos un diccionario para agrupar los tickets
-        # defaultdict es útil porque crea listas vacías automáticamente para nuevas categorías
         tickets_agrupados = defaultdict(list)
 
         # 3. Iteramos y agrupamos cada ticket en su categoría
@@ -331,11 +330,14 @@ def get_panel_por_categoria(current_user: User):
                 "asunto": ticket.asunto,
                 "estado": ticket.estado,
                 "fecha": ticket.fecha.isoformat(),
-                # Podemos añadir más datos si el panel los necesita
-                "direccion": ticket.detalles.split("Dirección del problema:")[1].split("\n")[0].strip() if "Dirección del problema:" in ticket.detalles else "No especificada"
+                "direccion": (
+                    ticket.detalles.split("Dirección del problema:")[1].split("\n")[0].strip()
+                    if ticket.detalles and "Dirección del problema:" in ticket.detalles
+                    else "No especificada"
+                )
             }
             tickets_agrupados[ticket.categoria or "Sin Categoría"].append(ticket_data)
-        
+
         return jsonify(tickets_agrupados)
 
     except Exception as e:
