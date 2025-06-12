@@ -77,9 +77,9 @@ def get_tickets_del_usuario(current_user: User):
 @token_requerido
 def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
     """Obtiene el detalle completo de UN ticket, incluyendo su historial de comentarios."""
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
+    # Corregimos la comparación a "municipios" en plural
+    TicketModel = MunicipioTicket if tipo == "municipios" else PymeTicket # <-- CORREGIDO
     ticket = db.session.get(TicketModel, ticket_id)
-
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
     
@@ -130,7 +130,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "El comentario no puede estar vacío."}), 400
     
     # Lógica de permisos de agente (solo el dueño de la PYME/Municipio puede responder)
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
+    TicketModel = MunicipioTicket if tipo == "municipios" else PymeTicket # <-- CORREGIDO
     ticket_obj = db.session.get(TicketModel, ticket_id)
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
@@ -187,7 +187,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if not nuevo_estado:
         return jsonify({"error": "Falta el nuevo estado."}), 400
         
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
+    TicketModel = MunicipioTicket if tipo == "municipios" else PymeTicket # <-- CORREGIDO
     ticket_obj = db.session.get(TicketModel, ticket_id)
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
