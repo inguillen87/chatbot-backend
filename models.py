@@ -95,6 +95,7 @@ class MunicipioTicket(db.Model):
     estado = db.Column(db.String(30), default="nuevo")
     ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
+    detalles = db.Column(db.Text)  # <-- Esto es lo que falta
     fecha = db.Column(db.DateTime, default=db.func.now())
     archivo_url = db.Column(db.String(255), nullable=True)
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
