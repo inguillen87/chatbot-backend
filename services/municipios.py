@@ -2,7 +2,8 @@ import logging
 import re
 import json
 import os
-from models import MunicipioTicket, TicketComentario, db
+# --- MODIFICACIÓN 1: Importamos el modelo SitioWebInfo ---
+from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 from .logic import _clasificar_intencion_con_llm
@@ -19,6 +20,20 @@ CONTEXTO_MUNICIPIO = "contexto_municipio"
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
+
+# --- MODIFICACIÓN 2: Definimos el nuevo prompt inteligente ---
+PROMPT_MUNICIPIO_CON_CONTEXTO = """
+Eres un asistente virtual experto del municipio. Tu deber es responder la PREGUNTA DEL USUARIO de manera precisa y amigable, utilizando únicamente la INFORMACIÓN DE CONTEXTO que te proporciono. No inventes información que no esté en el contexto. Si la respuesta no se encuentra en el contexto, indica amablemente que no tienes esa información específica y sugiere contactar a la municipalidad.
+
+--- INFORMACIÓN DE CONTEXTO ---
+{contexto_scraped}
+---------------------------------
+
+PREGUNTA DEL USUARIO: "{pregunta_usuario}"
+
+Respuesta:
+"""
+
 # Handler VACÍO de impuestos, para evitar errores si no lo usás todavía
 class BaseMunicipioHandler:
     def __init__(self, context):
@@ -54,7 +69,7 @@ class GreetingHandler(BaseMunicipioHandler):
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     if not re.match(r'^\+\d{7,15}$', numero_destino):
         logger.warning(f"[NOTIFICACION SMS] Número de destino '{numero_destino}' no parece ser un formato válido E.164. Intentando enviar de todas formas.")
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWilio_PHONE_NUMBER]):
         logger.error("[NOTIFICACION SMS] Credenciales de Twilio no configuradas (missing SID, Token, or Number). No se puede enviar SMS.")
         return
     try:
@@ -83,10 +98,10 @@ TOOL_REGISTRY = {
 def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
     descripcion_herramientas = "{\n"
     for nombre, detalles in TOOL_REGISTRY.items():
-        descripcion_herramientas += f'  "{nombre}": {{\n'
-        descripcion_herramientas += f'    "descripcion": "{detalles["descripcion"]}",\n'
-        descripcion_herramientas += f'    "parametros": {json.dumps(detalles["parametros"])}\n'
-        descripcion_herramientas += '  },\n'
+        descripcion_herramientas += f'   "{nombre}": {{\n'
+        descripcion_herramientas += f'     "descripcion": "{detalles["descripcion"]}",\n'
+        descripcion_herramientas += f'     "parametros": {json.dumps(detalles["parametros"])}\n'
+        descripcion_herramientas += '   },\n'
     descripcion_herramientas = descripcion_herramientas.rstrip(',\n') + "\n}"
     ejemplos_str = ""
     for detalles in TOOL_REGISTRY.values():
@@ -277,7 +292,7 @@ class ReclamoHandler(BaseMunicipioHandler):
         elif estado == 'esperando_nombre_vecino':
             memoria['estado_conversacion'] = 'esperando_telefono_vecino'
             memoria['nombre_vecino'] = pregunta
-            return {"respuesta": f"Gracias, **{pregunta}**. Por último, ¿cuál es tu **número de teléfono** (solo los números, incluyendo el código de área, ej: `2634123456`)?"} 
+            return {"respuesta": f"Gracias, [nombre_vecino]. Por último, ¿cuál es tu **número de teléfono** (solo los números, incluyendo el código de área, ej: `2634123456`)?"} 
         elif estado == 'esperando_telefono_vecino':
             categoria = memoria.get('categoria_reclamo', 'General')
             direccion = memoria.get('direccion_reclamo', 'No especificada')
@@ -376,10 +391,55 @@ class TramitesHandler(BaseMunicipioHandler):
             return {"respuesta": "Disculpa, ¿qué tipo de trámite te interesa? Puedes preguntar por 'Licencia de Conducir' o hacer clic en 'Más Trámites'."}
         return None
 
+# --- MODIFICACIÓN 3: El GeneralHandler ahora usa la Base de Datos ---
 class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
-        prompt = "Sos un agente de atención ciudadana experto..."
-        respuesta_llm = get_cohere_response(message=pregunta, preamble=prompt)
+        # Si ninguna otra herramienta o flujo específico manejó la pregunta,
+        # este handler la tratará como una consulta general usando el conocimiento de la DB.
+        logger.info("[GeneralHandler] Manejando como consulta general. Buscando contexto en la DB.")
+        user_obj = self.context.get("user_obj")
+
+        if not user_obj:
+            logger.warning("[GeneralHandler] No se encontró user_obj en el contexto. No se puede buscar información.")
+            # Dejamos que el flujo continúe por si hay un handler para anónimos más adelante.
+            return None
+
+        # 1. Buscar el conocimiento en la base de datos para este municipio
+        contexto_scraped = ""
+        try:
+            contenidos = SitioWebInfo.query.filter_by(user_id=user_obj.id).all()
+            textos_relevantes = []
+            for item in contenidos:
+                # Cargamos el JSON que está guardado como texto
+                datos = json.loads(item.datos_json)
+                # Extraemos el contenido de texto plano
+                if datos.get("tipo") == "contenido_general" and datos.get("contenido"):
+                    textos_relevantes.append(datos["contenido"])
+            
+            contexto_scraped = " ".join(textos_relevantes)
+            
+            if contexto_scraped:
+                logger.info(f"[GeneralHandler] Se encontraron {len(contexto_scraped)} caracteres de contexto.")
+            else:
+                logger.info("[GeneralHandler] No se encontró contexto scrapeado en la DB para este usuario.")
+                contexto_scraped = "No hay información de contexto disponible para esta consulta."
+
+        except Exception as e:
+            logger.error(f"[GeneralHandler] Error al obtener contexto de la DB: {e}")
+            contexto_scraped = "Hubo un error al cargar la información de contexto."
+
+        # 2. Construir el prompt y llamar a Cohere
+        prompt_final = PROMPT_MUNICIPIO_CON_CONTEXTO.format(
+            contexto_scraped=contexto_scraped,
+            pregunta_usuario=pregunta
+        )
+        
+        respuesta_llm = get_cohere_response(
+            message=prompt_final,
+            preamble="Eres un asistente municipal que responde basado en información oficial."
+        )
+
+        # Devolvemos la respuesta para que la cadena de handlers termine aquí.
         return {"respuesta": respuesta_llm}
 
 class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
@@ -413,6 +473,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         ReclamoHandler,
         ImpuestosHandler,
         TramitesHandler,
+        # El GeneralHandler ahora es mucho más potente
         GeneralHandler,
         EngancheAnonimoMunicipioHandler
     ]
@@ -423,10 +484,13 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         if respuesta_final:
             break
     if not respuesta_final:
-        respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta."}
+        respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta. Por favor, intenta reformular tu pregunta."}
+    
+    # Este bloque reemplaza el [nombre_vecino] con el nombre real guardado en la memoria
     if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
         nombre_vecino_memoria = context.get('contexto_municipio', {}).get('nombre_vecino', 'vecino')
         respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
+
     return {
         "respuesta": respuesta_final.get('respuesta'),
         "botones": respuesta_final.get('botones', []),
