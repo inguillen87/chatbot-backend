@@ -13,7 +13,41 @@ from .herramientas_municipio import (
     categorizar_reclamo_por_palabra_clave,
     sugerir_categorias_relevantes
 )
+# En src/services/municipios.py, después de los imports
 
+def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
+    """
+    Usa el LLM para determinar si la respuesta de un usuario se desvía de la pregunta anterior.
+    
+    Args:
+        texto_usuario: La respuesta que dio el usuario.
+        tipo_esperado: Una descripción de lo que el bot esperaba (ej: "una dirección", "un número de teléfono").
+        
+    Returns:
+        True si parece una pregunta nueva, False si parece una respuesta válida.
+    """
+    prompt = f"""
+    Mi chatbot esperaba que el usuario respondiera con {tipo_esperado}.
+    El usuario respondió: "{texto_usuario}".
+
+    Analiza la respuesta del usuario. Si parece que el usuario está intentando responder a mi solicitud, responde SÓLO con la palabra 'RESPUESTA_VALIDA'.
+    Si parece que el usuario está ignorando mi solicitud y haciendo una pregunta completamente nueva o cambiando de tema, responde SÓLO con la palabra 'PREGUNTA_NUEVA'.
+
+    Ejemplos:
+    - Esperaba: "una dirección". Usuario respondió: "San Martín 123". -> RESPUESTA_VALIDA
+    - Esperaba: "una dirección". Usuario respondió: "cuánto cuesta el impuesto inmobiliario?". -> PREGUNTA_NUEVA
+    - Esperaba: "un número de teléfono". Usuario respondió: "261123456". -> RESPUESTA_VALIDA
+    - Esperaba: "un número de teléfono". Usuario respondió: "no gracias, mejor decime los horarios de atención". -> PREGUNTA_NUEVA
+
+    Tu decisión:
+    """
+    try:
+        decision = get_cohere_response(message=prompt, preamble="Eres un clasificador de respuestas de usuario. Responde solo con 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.")
+        logger.info(f"[Guardián de Flujo] Decisión para '{texto_usuario}': {decision.strip()}")
+        return "PREGUNTA_NUEVA" in decision
+    except Exception as e:
+        logger.error(f"[Guardián de Flujo] Error: {e}")
+        return False # En caso de error, asumimos que la respuesta es válida para no romper el flujo.
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
 
@@ -246,13 +280,19 @@ class TicketStatusHandler(BaseMunicipioHandler):
             return {"respuesta": respuesta}
         return None
 
+# Reemplaza SOLO la clase ReclamoHandler en tu archivo municipios.py
+
 class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
+        
+        # --- PASO 1: Iniciar el flujo de reclamo ---
         if self.context.get('intencion') == 'iniciar_reclamo' and not estado:
+            memoria.clear() # Limpiamos cualquier estado anterior
             memoria['pregunta_original'] = pregunta
             categoria_adivinada = categorizar_reclamo_por_palabra_clave(pregunta)
+            
             if categoria_adivinada != "Otros":
                 logger.info(f"[ReclamoHandler] Nivel 1: Categoría detectada por keyword: {categoria_adivinada}")
                 memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
@@ -265,35 +305,58 @@ class ReclamoHandler(BaseMunicipioHandler):
                     memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
                     botones_sugeridos = [{"texto": sug} for sug in sugerencias]
                     botones_sugeridos.append({"texto": "Ninguna de estas"})
-                    return {
-                        "respuesta": "Entendido. Tu reclamo parece estar relacionado con uno de estos temas. Por favor, selecciona la opción más precisa para continuar:",
-                        "botones": botones_sugeridos
-                    }
+                    return {"respuesta": "Entendido. Tu reclamo parece estar relacionado con uno de estos temas. Por favor, selecciona la opción más precisa para continuar:", "botones": botones_sugeridos}
                 else:
                     logger.info("[ReclamoHandler] Nivel 3: No hubo sugerencias. Mostrando lista de respaldo.")
                     memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
                     return {
                         "respuesta": "Entendido, vamos a iniciar tu reclamo. No estoy seguro de la categoría, ¿podrías seleccionarla de esta lista?",
-                        "botones": [
-                            {"texto": "Luminaria"}, {"texto": "Arreglo de calle"}, {"texto": "Limpieza"},
-                            {"texto": "Arbol Caido"}, {"texto": "Fumigacion"}, {"texto": "Otros"}
-                        ]
+                        "botones": [{"texto": "Luminaria"}, {"texto": "Arreglo de calle"}, {"texto": "Limpieza"}, {"texto": "Otros"}]
                     }
+        
+        # --- PASO 2: Esperando la categoría ---
         elif estado == 'esperando_categoria_reclamo':
+            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
+            if es_pregunta_nueva(pregunta, "una categoría de reclamo"):
+                memoria.clear()
+                return None # Cede el control a la cadena principal
+
             if pregunta.lower() in ["ninguna de estas", "otra categoría", "otros"]:
                 pregunta = "Otros"
             memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
             memoria['categoria_reclamo'] = pregunta
-            return {"respuesta": f"Perfecto, categoría: **{pregunta}**. Ahora, indicame la **dirección completa del problema**, por ejemplo: `San Martín 123, Junín, Mendoza`."}
+            return {"respuesta": f"Perfecto, categoría: **{pregunta}**. Ahora, indicame la **dirección completa del problema**."}
+            
+        # --- PASO 3: Esperando la dirección ---
         elif estado == 'esperando_direccion_reclamo':
+            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
+            if es_pregunta_nueva(pregunta, "una dirección completa"):
+                memoria.clear()
+                return None # Cede el control
+
             memoria['estado_conversacion'] = 'esperando_nombre_vecino'
             memoria['direccion_reclamo'] = pregunta
             return {"respuesta": "¡Gracias por la dirección! Ahora, por favor, indicame tu **nombre completo**."}
+
+        # --- PASO 4: Esperando el nombre ---
         elif estado == 'esperando_nombre_vecino':
+            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
+            if es_pregunta_nueva(pregunta, "tu nombre completo"):
+                memoria.clear()
+                return None # Cede el control
+
             memoria['estado_conversacion'] = 'esperando_telefono_vecino'
             memoria['nombre_vecino'] = pregunta
-            return {"respuesta": f"Gracias, [nombre_vecino]. Por último, ¿cuál es tu **número de teléfono** (solo los números, incluyendo el código de área, ej: `2634123456`)?"} 
+            return {"respuesta": f"Gracias, {pregunta}. Por último, ¿cuál es tu **número de teléfono** (con código de área)?"} 
+            
+        # --- PASO 5: Esperando el teléfono y finalizando ---
         elif estado == 'esperando_telefono_vecino':
+            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
+            if es_pregunta_nueva(pregunta, "un número de teléfono"):
+                memoria.clear()
+                return None # Cede el control
+
+            # --- Lógica original para crear el ticket ---
             categoria = memoria.get('categoria_reclamo', 'General')
             direccion = memoria.get('direccion_reclamo', 'No especificada')
             nombre_vecino = memoria.get('nombre_vecino', 'Anónimo')
@@ -301,7 +364,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             telefono_formateado = re.sub(r'\D', '', telefono_input.strip())
             if not telefono_formateado.startswith('+'):
                 telefono_formateado = '+549' + telefono_formateado
-            logger.info(f"[RECLAMO] Número de teléfono ajustado a formato internacional: {telefono_formateado}")
+            
             detalles_ticket = (
                 f"Consulta original: {memoria.get('pregunta_original', 'N/A')}\n"
                 f"Categoría: {categoria}\n"
@@ -312,27 +375,30 @@ class ReclamoHandler(BaseMunicipioHandler):
             ticket = servicio_tickets.crear_nuevo_ticket(
                 tipo_ticket="municipio",
                 ticket_data={
-                    "asunto": f"Reclamo de {categoria}",
-                    "categoria": categoria,
-                    "detalles": detalles_ticket,
-                    "user_id": self.context.get("user_id")
+                    "asunto": f"Reclamo de {categoria}", "categoria": categoria,
+                    "detalles": detalles_ticket, "user_id": self.context.get("user_id")
                 }
             )
+            
             if ticket:
-                mensaje_confirmacion = f"Municipio de Junín: Recibimos su reclamo (Ticket M-{ticket.nro_ticket}) sobre {categoria}. Será procesado a la brevedad. ¡Gracias por contactarnos!"
-                # enviar_notificacion_sms(telefono_formateado, mensaje_confirmacion)  # Descomentar para usar SMS real
-                logger.info(f"Notificación SMS (simulada) enviada para ticket M-{ticket.nro_ticket} a {telefono_formateado}")
+                mensaje_confirmacion = f"Municipio de Junín: Recibimos su reclamo (Ticket M-{ticket.nro_ticket}) sobre {categoria}. Será procesado a la brevedad. ¡Gracias!"
+                # enviar_notificacion_sms(telefono_formateado, mensaje_confirmacion)
+                logger.info(f"Notificación SMS (simulada) enviada para ticket M-{ticket.nro_ticket}")
                 memoria.clear()
-                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. El equipo de **{categoria}** lo revisará y podrá contactarte al número que nos proporcionaste."}
+                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. El equipo de **{categoria}** lo revisará y podrá contactarte al número que proporcionaste."}
             else:
                 memoria.clear()
-                return {"respuesta": "Disculpa, no pudimos generar tu reclamo en este momento. Por favor, intenta de nuevo más tarde o comunícate con la municipalidad."}
+                return {"respuesta": "Disculpa, no pudimos generar tu reclamo. Por favor, intenta de nuevo más tarde."}
+        
+        # Si no coincide ningún estado de este handler, cede el control
         return None
-
+    
 # Handler VACÍO de impuestos, para evitar errores si no lo usás todavía
 class ImpuestosHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         return None
+
+# Reemplaza toda tu clase TramitesHandler con esta versión mejorada.
 
 class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -340,6 +406,29 @@ class TramitesHandler(BaseMunicipioHandler):
         estado = memoria.get('estado_conversacion')
         intencion = self.context.get('intencion')
         logger.info(f"[TRAMITES] Recibido: Pregunta='{pregunta}', Estado='{estado}', Intencion='{intencion}'")
+
+        # --- Flujo de Licencia de Conducir ---
+        if (intencion == 'consultar_tramite' and "licencia" in pregunta.lower() and not estado) or \
+           (estado == 'esperando_seleccion_tramite_general' and "licencia" in pregunta.lower()):
+            memoria.clear() # Limpiamos estado anterior para iniciar este flujo limpio
+            memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
+            return {
+                "respuesta": "Para la Licencia de Conducir necesitás: DNI actualizado, no tener multas, y hacer el curso de seguridad vial.",
+                "botones": [
+                    {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
+                    {"texto": "¿Dónde hacer el curso?", "accion_interna": "preguntar_curso"},
+                ]
+            }
+
+        if estado == 'esperando_pregunta_curso_licencia' and \
+           ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower() or "preguntar_curso" == pregunta.lower()):
+            memoria.clear()
+            return {
+                "respuesta": "El curso de seguridad vial es online en la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias de tu municipio.",
+                "botones": [{"texto": "Sacar Turno", "url": "https://tlc.mendoza.gov.ar/turnos"}]
+            }
+
+        # --- Flujo General de Trámites (Punto de Entrada) ---
         if intencion == 'consultar_tramite' and not estado:
             memoria['estado_conversacion'] = 'esperando_seleccion_tramite_general'
             return {
@@ -349,46 +438,17 @@ class TramitesHandler(BaseMunicipioHandler):
                     {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
                 ]
             }
-        elif (estado == 'esperando_seleccion_tramite_general' and "licencia" in pregunta.lower()) or \
-             (intencion == 'consultar_tramite' and "licencia" in pregunta.lower() and not estado):
-            memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
-            return {
-                "respuesta": "Para la Licencia de Conducir necesitás: DNI actualizado, no tener multas, y hacer el curso de seguridad vial.",
-                "botones": [
-                    {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
-                    {"texto": "¿Dónde hacer el curso?", "accion_interna": "preguntar_curso"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
-                ]
-            }
-        elif estado == 'esperando_pregunta_curso_licencia' and \
-             ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower() or "preguntar_curso" == pregunta.lower()):
-            memoria.clear()
-            return {
-                "respuesta": "El curso de seguridad vial es online en la Agencia Nacional de Seguridad Vial o presencialmente en [Dirección del Centro].",
-                "botones": [
-                    {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
-                ]
-            }
-        elif estado == 'esperando_pregunta_curso_licencia' and ("no" in pregunta.lower()):
-            memoria.clear()
-            return {
-                "respuesta": "Entendido. Para sacar el turno de tu Licencia de Conducir, haz clic aquí:",
-                "botones": [
-                    {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
-                ]
-            }
-        elif estado == 'esperando_seleccion_tramite_general' and "más trámites" in pregunta.lower():
-            memoria.clear()
-            return {
-                "respuesta": "¡Claro! Te dirijo a la página de Trámites del municipio para que explores todas las opciones.",
-                "botones": [
-                    {"texto": "Ir a Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
-                ]
-            }
-        elif estado == 'esperando_seleccion_tramite_general':
-            return {"respuesta": "Disculpa, ¿qué tipo de trámite te interesa? Puedes preguntar por 'Licencia de Conducir' o hacer clic en 'Más Trámites'."}
+        
+        # --- LA MODIFICACIÓN CLAVE ---
+        # Si estamos en el estado de 'esperando_seleccion_tramite_general' pero el usuario 
+        # no eligió ninguna opción válida, no respondemos nada aquí.
+        # Devolvemos None para que el siguiente handler (GeneralHandler) lo intente.
+        if estado == 'esperando_seleccion_tramite_general':
+             logger.info("[TRAMITES] El usuario no seleccionó una opción de trámite válida. Pasando al siguiente handler.")
+             memoria.clear() # Limpiamos el estado para que no quede atorado
+             return None
+
+        # Si no aplica ninguna regla de este handler, cede el control.
         return None
 
 # --- MODIFICACIÓN 3: El GeneralHandler ahora usa la Base de Datos ---
