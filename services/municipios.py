@@ -16,7 +16,11 @@ from .herramientas_municipio import (
     sugerir_categorias_relevantes # <-- ¡LA NUEVA FUNCIÓN!
 )
 
-
+class BaseMunicipioHandler:
+    def __init__(self, context):
+        self.context = context
+    def handle(self, pregunta: str) -> dict | None:
+        raise NotImplementedError
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
 
