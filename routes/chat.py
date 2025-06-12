@@ -30,15 +30,45 @@ def _authenticate_and_get_user():
 def ask():
     try:
         pregunta, contexto_previo, error_response = _get_request_data()
-        if error_response: return error_response, 400
+        if error_response:
+            return error_response, 400
 
         user_obj = _authenticate_and_get_user()
+        if not user_obj:
+            return jsonify({"error": "No autenticado."}), 401
+
         rubro_obj = user_obj.rubro if user_obj and user_obj.rubro else None
-        
-        # Pasamos el contexto a la lógica principal
-        resultado = responder_chatboc(pregunta=pregunta, user_obj=user_obj, rubro_obj=rubro_obj, contexto_previo=contexto_previo)
-        
+
+        # --- CONTROL DE PLAN ---
+        if user_obj.plan != "full" and user_obj.preguntas_usadas >= user_obj.limite_preguntas:
+            return jsonify({
+                "error": f"Alcanzaste el límite de preguntas de tu plan ({user_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
+            }), 403
+
+        # --- RESPUESTA PRINCIPAL DEL BOT ---
+        resultado = responder_chatboc(
+            pregunta=pregunta,
+            user_obj=user_obj,
+            rubro_obj=rubro_obj,
+            contexto_previo=contexto_previo
+        )
+
+        # --- INCREMENTAR CONTADOR SOLO SI TODO ESTÁ OK ---
+        user_obj.preguntas_usadas += 1
+        try:
+            from extensions import db
+            db.session.commit()
+        except Exception as e:
+            current_app.logger.error(f"Error al actualizar preguntas_usadas: {e}")
+            # NO frena el flujo del bot, pero loguea
+
+        # --- OPCIONAL: DEVOLVER CONTADOR ACTUALIZADO ---
+        if isinstance(resultado, dict):
+            resultado["preguntas_usadas"] = user_obj.preguntas_usadas
+            resultado["limite_preguntas"] = user_obj.limite_preguntas
+
         return jsonify(resultado), 200
+
     except Exception as e:
         current_app.logger.error(f"❌ Error crítico en /ask: {e}", exc_info=True)
         return jsonify({"error": "Error interno del servidor."}), 500
