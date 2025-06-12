@@ -1,122 +1,123 @@
 # services/utils.py
 import re
+import pandas as pd
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-def limpiar_texto_base(texto: Optional[str]) -> str:
-    if texto is None:
-        return ""
-    if not isinstance(texto, str):
-        try:
-            texto = str(texto)
-        except Exception:
-            return ""
-            
-    texto_limpio = texto.lower() 
-    texto_limpio = re.sub(r'\s+', ' ', texto_limpio) 
-    return texto_limpio.strip()
+# --- CAJA DE HERRAMIENTAS DE LIMPIEZA Y PARSEO ---
 
-def parse_precio_flexible(texto_precio_input: Optional[str | float | int]) -> Tuple[Optional[str], Optional[float], Optional[str]]:
+def limpiar_texto_base(texto: Optional[Any]) -> str:
+    """Limpia y normaliza texto de forma robusta, asegurando que la entrada sea un string."""
+    if texto is None: return ""
+    if not isinstance(texto, str):
+        try: texto = str(texto)
+        except Exception: return ""
+    # Normaliza espacios, convierte a minúsculas
+    return re.sub(r'\s+', ' ', texto).strip().lower()
+
+def parse_precio_flexible(texto_precio_input: Optional[Any]) -> Tuple[Optional[str], Optional[float], Optional[str]]:
+    """
+    Tu potente función para parsear precios. La conservamos y usamos porque es excelente.
+    Toma cualquier tipo de entrada, la convierte a string y extrae el precio y la moneda.
+    """
     if texto_precio_input is None: return None, None, None
     texto_precio_str = str(texto_precio_input).strip()
     if not texto_precio_str: return None, None, None
-    moneda_detectada = "ARS"; numero_para_procesar = texto_precio_str
+
+    moneda_detectada = "ARS"
+    numero_para_procesar = texto_precio_str
+
     if re.search(r"(?i)\bUSD\b|U\$S", numero_para_procesar):
-        moneda_detectada = "USD"; numero_para_procesar = re.sub(r"(?i)\bUSD\b|U\$S", "", numero_para_procesar, flags=re.IGNORECASE).strip()
+        moneda_detectada = "USD"
+        numero_para_procesar = re.sub(r"(?i)\bUSD\b|U\$S", "", numero_para_procesar, flags=re.IGNORECASE).strip()
     elif re.search(r"(?i)\bARS\b", numero_para_procesar):
-        moneda_detectada = "ARS"; numero_para_procesar = re.sub(r"(?i)\bARS\b", "", numero_para_procesar, flags=re.IGNORECASE).strip()
-    elif re.search(r"(?i)\bEUR\b", numero_para_procesar):
-        moneda_detectada = "EUR"; numero_para_procesar = re.sub(r"(?i)\bEUR\b", "", numero_para_procesar, flags=re.IGNORECASE).strip()
-    if "€" in numero_para_procesar: moneda_detectada = "EUR"; numero_para_procesar = numero_para_procesar.replace("€", "").strip()
-    elif "$" in numero_para_procesar:
-        if moneda_detectada == "ARS": numero_para_procesar = numero_para_procesar.replace("$", "", 1).strip()
-    if not numero_para_procesar: return None, None, None
+        moneda_detectada = "ARS"
+        # No es necesario quitar ARS si no hay símbolo de peso
+    
+    if "$" in numero_para_procesar:
+        numero_para_procesar = numero_para_procesar.replace("$", "", 1).strip()
+
+    if not numero_para_procesar: return texto_precio_str, None, moneda_detectada
+    
     numero_normalizado = numero_para_procesar
     if ',' in numero_normalizado and '.' in numero_normalizado:
-        if numero_normalizado.rfind(',') > numero_normalizado.rfind('.'): numero_normalizado = numero_normalizado.replace('.', '').replace(',', '.')
-        else: numero_normalizado = numero_normalizado.replace(',', '')
+        if numero_normalizado.rfind(',') > numero_normalizado.rfind('.'):
+            numero_normalizado = numero_normalizado.replace('.', '').replace(',', '.')
+        else:
+            numero_normalizado = numero_normalizado.replace(',', '')
     elif ',' in numero_normalizado:
         partes_coma = numero_normalizado.split(',')
-        if len(partes_coma) > 1 and len(partes_coma[-1]) <= 2 and partes_coma[-1].isdigit(): numero_normalizado = "".join(partes_coma[:-1]) + "." + partes_coma[-1]
-        else: numero_normalizado = numero_normalizado.replace(',', '')
+        if len(partes_coma) > 1 and len(partes_coma[-1]) in [1, 2] and partes_coma[-1].isdigit():
+            numero_normalizado = "".join(partes_coma[:-1]) + "." + partes_coma[-1]
+        else:
+            numero_normalizado = numero_normalizado.replace(',', '')
+            
     numero_final_para_float_str = re.sub(r"[^0-9.]", "", numero_normalizado)
     try:
-        if not numero_final_para_float_str or not re.search(r"\d", numero_final_para_float_str): raise ValueError("String numérico vacío o sin dígitos")
-        precio_flt = float(numero_final_para_float_str)
-        return numero_final_para_float_str, precio_flt, moneda_detectada
-    except ValueError:
-        if re.search(r"\d", numero_para_procesar): return limpiar_texto_base(numero_para_procesar), None, moneda_detectada
-        return None, None, moneda_detectada
+        if not numero_final_para_float_str or not re.search(r"\d", numero_final_para_float_str):
+            raise ValueError("String numérico no contiene dígitos válidos")
+        precio_flt = round(float(numero_final_para_float_str), 2)
+        # Devolvemos el string original por si era "Consultar", el float y la moneda
+        return texto_precio_str, precio_flt, moneda_detectada
+    except (ValueError, TypeError):
+        # Si falla la conversión pero había algún número, devolvemos el texto original
+        if re.search(r"\d", numero_para_procesar):
+            return texto_precio_str, None, moneda_detectada
+        return texto_precio_str, None, moneda_detectada
 
-def extraer_unidades_y_tipos_precio(texto_linea: str, pyme_rubro_nombre: str = "generico") -> tuple[Optional[str], Optional[str]]:
-    if not texto_linea: return None, None
-    texto_linea_lower = limpiar_texto_base(texto_linea) 
-    unidad = None; tipo_precio = None
-    unidades_patrones = [
-        (r"\b(caja(?:s)?\s*x\s*\d{1,3})\b", "caja_especifica"), (r"\b(pack\s*x\s*\d{1,3})\b", "pack_especifico"),
-        (r"\b(\d{1,4}\s*ml)\b", "volumen_ml"), (r"\b(\d{1,2}(?:[.,]\d{1,2})?\s*lts?)\b", "volumen_lts"),
-        (r"\b(\d{1,3}(?:[.,]\d{1,3})?\s*kilos?g?)\b", "peso_kg"), (r"\b(\d{1,4}\s*gr(?:s)?|gramo(?:s)?)\b", "peso_gr"),
-        (r"\b(docena(?:s)?)\b", "docena"), (r"\b(par(?:es)?)\b", "par"),
-        (r"\b(blister(?:es)?\s*x\s*\d{1,2})\b", "blister_especifico"), (r"\b(horma)\b", "horma"),
-        (r"\b(caja|box)\b", "caja_generica"), (r"\b(botella|bottle)\b", "botella_generica"),
-        (r"\b(pack)\b", "pack_generico"), (r"\b(blister)\b", "blister_generico"),
-        (r"\b(unidad|unidades|unid\.?|un\.?|u\.?)\b", "unidad_generica")]
-    tipos_precio_keywords = { "mayorista": ["mayorista", "por mayor", "distribuidor", "distr?", "mayor"], "minorista": ["minorista", "al detalle", "público", "publico", "consumidor final", "cf", "minor"], "promocion": ["promo", "oferta", "descuento", "dcto", "dto", "especial", "sale", "liquidación", "outlet", "rebaja"]}
-    mejor_match_unidad = None; texto_linea_temp = texto_linea_lower
-    for patron, _ in unidades_patrones:
-        match = re.search(patron, texto_linea_temp) 
-        if match:
-            unidad_encontrada_raw = match.group(1)
-            if mejor_match_unidad is None or len(unidad_encontrada_raw) > len(mejor_match_unidad): mejor_match_unidad = unidad_encontrada_raw
-    if mejor_match_unidad: unidad = re.sub(r'\s+', ' ', mejor_match_unidad).strip()
-    for tipo, keywords in tipos_precio_keywords.items():
-        for kw in keywords:
-            if re.search(r'\b' + re.escape(kw.replace("?", "\\w?")) + r'\b', texto_linea_lower): tipo_precio = tipo; break
-        if tipo_precio: break
-    return unidad, tipo_precio
+# --- EL CEREBRO INTELIGENTE ---
 
-def sugerencias_por_rubro(rubro):
+KEYWORD_MAP = {
+    'sku': ["codigo", "código", "cod.", "sku", "art.", "articulo", "ref", "id", "item code", "ean"],
+    'nombre': ["producto", "nombre", "descripción", "descripcion", "detalle", "variedad", "designacion", "item", "title"],
+    'precio': ["precio", "lista", "pvp", "valor", "importe", "$", "contado", "oferta", "sugerido", "minorista", "publico", "tarifa"],
+    'marca': ["marca", "linea", "línea", "brand", "fabricante", "bodega"],
+    'categoria': ["categoria", "categoría", "rubro", "tipo", "familia", "clase"],
+    'unidad': ["unidad", "unidades", "unid", "u/m", "presentacion", "envase", "caja x", "pack x", "contenido"],
+    'stock': ["stock", "cantidad", "disponible", "existencias", "cant.", "quantity", "qty"],
+}
+
+def crear_mapa_de_columnas_inteligente(
+    df: pd.DataFrame, 
+    max_filas_a_revisar: int = 15
+) -> Optional[Tuple[Dict[str, str], int]]:
     """
-    Devuelve una lista de sugerencias de preguntas para el rubro desde /data/sugerencias.json.
-    - rubro puede ser nombre (str) o id (int).
-    - Si no encuentra, devuelve sugerencias genéricas.
+    Analiza las primeras N filas de un DataFrame para encontrar la fila de encabezado
+    y crear un mapa de columnas {'campo_estandar': 'nombre_columna_original'}.
+    Devuelve: Una tupla (mapa_de_columnas, indice_fila_datos_inicio) o None si no encuentra un mapa válido.
     """
-    # Ubicación absoluta (ajustá si tu path de proyecto es distinto)
-    SUGERENCIAS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'sugerencias.json')
-    try:
-        with open(SUGERENCIAS_PATH, encoding='utf-8') as f:
-            sugerencias_data = json.load(f)
-    except Exception as e:
-        logging.warning(f"[PYMES] No se pudo leer sugerencias.json: {e}")
-        sugerencias_data = {}
+    logger.info(f"[CEREBRO] Iniciando búsqueda inteligente de mapa de columnas...")
+    
+    mejor_mapa: Dict[str, str] = {}
+    mejor_fila_idx: int = -1
+    max_campos_encontrados: int = 0
 
-    # Detección de nombre de rubro
-    rubro_nombre = None
-    if isinstance(rubro, str):
-        rubro_nombre = rubro.lower().replace(" ", "_")
-    elif hasattr(rubro, 'nombre'):
-        rubro_nombre = str(rubro.nombre).lower().replace(" ", "_")
-    elif isinstance(rubro, int):
-        # Mapeo simple (completar con tus IDs si tenés otra lógica)
-        id_map = {
-            1: "bodega",
-            2: "almacen",
-            3: "medico",
-            4: "local_comercial",
-            5: "municipios",
-        }
-        rubro_nombre = id_map.get(rubro)
-    if not rubro_nombre:
-        rubro_nombre = "bodega"  # Fallback seguro
+    for i, row in df.head(max_filas_a_revisar).iterrows():
+        mapa_actual = {}
+        celdas_originales = [str(cell).strip() for cell in row.tolist()]
+        celdas_limpias = [limpiar_texto_base(cell) for cell in celdas_originales]
+        
+        for campo_estandar, keywords in KEYWORD_MAP.items():
+            if campo_estandar in mapa_actual: continue
+            for idx, celda_limpia in enumerate(celdas_limpias):
+                if not celda_limpia: continue
+                for keyword in keywords:
+                    if re.search(r'\b' + re.escape(keyword) + r'\b', celda_limpia, re.IGNORECASE):
+                        mapa_actual[campo_estandar] = celdas_originales[idx]
+                        break
+                if campo_estandar in mapa_actual: break
 
-    sugerencias = sugerencias_data.get(rubro_nombre, [])
-    if not sugerencias:
-        # Devuelve unas sugerencias por defecto si no hay
-        sugerencias = [
-            "Consultá nuestro catálogo",
-            "Contactá a un asesor",
-            "Visitá nuestra web para más info"
-        ]
-    return sugerencias
+        if len(mapa_actual) > max_campos_encontrados:
+            max_campos_encontrados = len(mapa_actual)
+            mejor_mapa = mapa_actual
+            mejor_fila_idx = i
+
+    if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
+        fila_inicio_datos = mejor_fila_idx + 1
+        logger.info(f"✅ [CEREBRO] Mapa de columnas válido encontrado. Encabezados en fila {mejor_fila_idx}. Datos comienzan en {fila_inicio_datos}. Mapa: {mejor_mapa}")
+        return mejor_mapa, fila_inicio_datos
+    else:
+        logger.error("[CEREBRO] No se pudo crear un mapa válido. Faltan campos esenciales 'nombre' y/o 'precio'.")
+        return None
