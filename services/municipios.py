@@ -20,15 +20,16 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 # Handler VACÍO de impuestos, para evitar errores si no lo usás todavía
-class ImpuestosHandler(BaseMunicipioHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        return None
-
 class BaseMunicipioHandler:
     def __init__(self, context):
         self.context = context
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
+
+class ImpuestosHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        return None
+
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
