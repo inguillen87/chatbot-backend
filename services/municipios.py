@@ -301,6 +301,9 @@ class TicketStatusHandler(BaseMunicipioHandler):
             return {"respuesta": respuesta}
         return None
 
+# --- CÓDIGO CORRECTO PARA ReclamoHandler ---
+# Pega esto en tu archivo y reemplaza la clase ReclamoHandler completa para estar 100% seguros.
+
 class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
@@ -309,7 +312,6 @@ class ReclamoHandler(BaseMunicipioHandler):
         if self.context.get('intencion') == 'iniciar_reclamo' and not estado:
             memoria.clear()
             memoria['pregunta_original'] = pregunta
-            # He añadido "Arbol Caido" a las palabras clave para que lo detecte directamente.
             categoria_adivinada = categorizar_reclamo_por_palabra_clave(pregunta)
             
             if categoria_adivinada != "Otros":
@@ -330,7 +332,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                     return {"respuesta": "Entendido, vamos a iniciar tu reclamo. ¿Podrías seleccionarla de esta lista?", "botones": [{"texto": "Luminaria"}, {"texto": "Limpieza"}, {"texto": "Arbol Caido"}, {"texto": "Otros"}]}
 
         if estado == 'esperando_categoria_reclamo':
-            # Aquí el guardián sí es útil, porque la respuesta es más abierta.
             if es_pregunta_nueva(pregunta, "una categoría de reclamo"): memoria.clear(); return None
             if pregunta.lower() in ["ninguna de estas", "otra categoría", "otros"]: pregunta = "Otros"
             memoria['categoria_reclamo'] = pregunta
@@ -338,24 +339,16 @@ class ReclamoHandler(BaseMunicipioHandler):
             return {"respuesta": f"Perfecto, categoría: **{pregunta}**. Ahora, indicame la **dirección completa del problema**."}
 
         if estado == 'esperando_direccion_reclamo':
-            # Para una dirección, el guardián también puede ser demasiado sensible. Lo quitamos.
-            # if es_pregunta_nueva(pregunta, "una dirección completa"): memoria.clear(); return None
             memoria['direccion_reclamo'] = pregunta
             memoria['estado_conversacion'] = 'esperando_nombre_vecino'
             return {"respuesta": "¡Gracias! Ahora, por favor, tu **nombre completo**."}
 
         if estado == 'esperando_nombre_vecino':
-            # --- CORRECCIÓN CLAVE AQUÍ ---
-            # Eliminamos la llamada a es_pregunta_nueva. Confiamos en que el usuario nos da su nombre.
             memoria['nombre_vecino'] = pregunta
             memoria['estado_conversacion'] = 'esperando_telefono_vecino'
-            # ¡Ahora sí te pedirá el teléfono!
             return {"respuesta": f"Gracias, {pregunta}. Por último, tu **número de teléfono** (con código de área)."}
 
         if estado == 'esperando_telefono_vecino':
-            # --- CORRECCIÓN CLAVE AQUÍ ---
-            # También lo eliminamos aquí para asegurar que no falle.
-            
             # PASO 1: Leemos todas las variables de la memoria PRIMERO
             categoria = memoria.get('categoria_reclamo', 'General')
             direccion = memoria.get('direccion_reclamo', 'No especificada')
@@ -387,11 +380,41 @@ class ReclamoHandler(BaseMunicipioHandler):
                 memoria.clear()
                 return {"respuesta": "Disculpa, no pudimos generar tu reclamo. Por favor, intenta de nuevo más tarde."}
         return None
+# --- COPIA Y PEGA ESTE CÓDIGO JUSTO DESPUÉS DE LA CLASE ReclamoHandler ---
+
+class TramitesHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get('contexto_municipio', {})
+        estado = memoria.get('estado_conversacion')
+        intencion = self.context.get('intencion')
+
+        if intencion == 'consultar_tramite' and not estado:
+            memoria.clear()
+            memoria['estado_conversacion'] = 'esperando_seleccion_tramite'
+            return {"respuesta": "¡Claro! Te puedo ayudar con información sobre la Licencia de Conducir, o puedes explorar otros trámites municipales.", "botones": [{"texto": "Licencia de Conducir"}, {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}]}
+
+        if estado == 'esperando_seleccion_tramite':
+            if es_pregunta_nueva(pregunta, "una opción de trámite"): memoria.clear(); return None
+            if "licencia" in pregunta.lower():
+                memoria.clear()
+                memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
+                return {"respuesta": "Para la Licencia de Conducir necesitás: DNI actualizado, no tener multas, и hacer el curso de seguridad vial.", "botones": [{"texto": "Sacar Turno", "url": "https://tlc.mendoza.gov.ar/turnos"}, {"texto": "¿Dónde hacer el curso?"}]}
+            # Si el usuario escribe cualquier otra cosa, salimos del flujo de trámites
+            memoria.clear(); return None
+
+        if estado == 'esperando_pregunta_curso_licencia':
+            if es_pregunta_nueva(pregunta, "una pregunta sobre el curso"): memoria.clear(); return None
+            memoria.clear()
+            return {"respuesta": "El curso de seguridad vial es online en la web de la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias de tu municipio."}
+        return None
 
 class ImpuestosHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         return None
 
+# Después de estas, debería empezar la clase GeneralHandler
+# class GeneralHandler(BaseMunicipioHandler):
+# ...
 class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         logger.info("[GeneralHandler] Manejando como consulta general con contexto de DB.")
