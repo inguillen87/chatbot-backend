@@ -325,6 +325,7 @@ def get_panel_por_categoria(current_user: User):
     """
     Endpoint para el panel de administración. Devuelve todos los tickets de municipio,
     agrupados en un diccionario por categoría.
+    VERSIÓN FINAL Y CORREGIDA.
     """
     # --- Permisos: Solo los agentes del municipio pueden ver este panel ---
     es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
@@ -343,6 +344,7 @@ def get_panel_por_categoria(current_user: User):
             # Serializamos la información esencial del ticket
             ticket_data = {
                 "id": ticket.id,
+                "tipo": "municipios", # <--- LA LÍNEA MÁGICA
                 "nro_ticket": ticket.nro_ticket,
                 "asunto": ticket.asunto,
                 "estado": ticket.estado,
