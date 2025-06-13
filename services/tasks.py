@@ -3,7 +3,7 @@
 
 import logging
 from models import User, db # Asumo que tu modelo de usuario se llama User y tienes db
-from services.scraper import extraer_info_contacto_web
+from services.scraper_avanzado import extraer_info_contacto_web
 from services.webinfo import guardar_info_web # --- INTEGRADO: Importamos tu función ---
 
 logger = logging.getLogger(__name__)

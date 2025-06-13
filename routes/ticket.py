@@ -77,40 +77,28 @@ def get_tickets_del_usuario(current_user: User):
 @token_requerido
 def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
     """
-    Obtiene el detalle completo de UN ticket, incluyendo su historial de comentarios.
-    Esta versión tiene la lógica de permisos completamente corregida y es más robusta.
+    Devuelve el detalle completo de UN ticket: datos, comentarios, contacto, etc.
     """
-    # 1. Determinar el modelo y buscar el ticket
-    #    (Corregido para usar "municipios" en plural)
     TicketModel = MunicipioTicket if tipo == "municipios" else PymeTicket
     ticket = db.session.get(TicketModel, ticket_id)
-
     if not ticket:
-        current_app.logger.warning(f"Intento de acceso a ticket no existente: tipo={tipo}, id={ticket_id}")
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    # 2. Lógica de permisos MEJORADA Y CORREGIDA
-    has_permission = False
-
-    # CASO 1: El dueño del ticket siempre tiene permiso para verlo. (¡MUY IMPORTANTE!)
-    if ticket.user_id == current_user.id:
-        has_permission = True
-
-    # CASO 2: Un agente del MUNICIPIO puede ver cualquier ticket de 'municipios'.
-    # (Corregido 'municipio' a 'municipios' y se añadió chequeo de seguridad para 'current_user.rubro')
-    elif tipo == 'municipios' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
-        has_permission = True
-
-    # CASO 3: Un agente de una PYME puede ver los tickets asociados a su rubro.
-    elif tipo == 'pyme' and current_user.rubro_id and ticket.rubro_id == current_user.rubro_id:
-        has_permission = True
-
-    # 3. Si después de todas las revisiones no tiene permiso, se le deniega el acceso.
-    if not has_permission:
-        current_app.logger.warning(f"Acceso denegado (403) para usuario {current_user.email} en ticket {tipo}/{ticket_id}")
+    # Permisos
+    is_admin_muni = tipo == 'municipios' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
+    is_dueño = ticket.user_id == current_user.id
+    is_admin_pyme = tipo == 'pyme' and current_user.rubro_id and ticket.rubro_id == current_user.rubro_id
+    if not (is_admin_muni or is_dueño or is_admin_pyme):
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
-    # 4. Si tiene permiso, se prepara y devuelve la información del ticket.
+    # --- Extraer datos contacto ---
+    detalles = ticket.detalles or ""
+    nombre, tel, email, direccion = "No especificado", "No especificado", "No especificado", "No especificada"
+    if "Nombre:" in detalles: nombre = detalles.split("Nombre:")[1].split("\n")[0].strip()
+    if "Teléfono:" in detalles: tel = detalles.split("Teléfono:")[1].split("\n")[0].strip()
+    if "Email:" in detalles: email = detalles.split("Email:")[1].split("\n")[0].strip()
+    if "Dirección:" in detalles: direccion = detalles.split("Dirección:")[1].split("\n")[0].strip()
+
     comentarios = [
         {"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin}
         for c in ticket.comentarios
@@ -121,19 +109,17 @@ def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
         "tipo": tipo,
         "nro_ticket": ticket.nro_ticket,
         "asunto": getattr(ticket, 'asunto', ''),
+        "categoria": getattr(ticket, 'categoria', ''),
         "estado": ticket.estado,
         "fecha": ticket.fecha.isoformat(),
         "detalles": getattr(ticket, 'detalles', getattr(ticket, 'pregunta', '')),
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        # Campos específicos (se obtienen de forma segura con getattr)
-        "rubro_id": getattr(ticket, 'rubro_id', None),
-        "telefono": getattr(ticket, 'telefono', None),
-        "email": getattr(ticket, 'email', None),
-        "dni": getattr(ticket, 'dni', None),
-        "estado_cliente": getattr(ticket, 'estado_cliente', None),
+        "nombre_usuario": nombre,
+        "telefono": tel,
+        "email": email,
+        "direccion": direccion,
         "archivo_url": getattr(ticket, 'archivo_url', None)
     }
-    
     return jsonify(ticket_data)
 
 
