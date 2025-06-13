@@ -2,7 +2,6 @@ import logging
 import re
 import json
 import os
-# --- MODIFICACIÓN 1: Importamos el modelo SitioWebInfo ---
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
@@ -13,41 +12,7 @@ from .herramientas_municipio import (
     categorizar_reclamo_por_palabra_clave,
     sugerir_categorias_relevantes
 )
-# En src/services/municipios.py, después de los imports
 
-def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
-    """
-    Usa el LLM para determinar si la respuesta de un usuario se desvía de la pregunta anterior.
-    
-    Args:
-        texto_usuario: La respuesta que dio el usuario.
-        tipo_esperado: Una descripción de lo que el bot esperaba (ej: "una dirección", "un número de teléfono").
-        
-    Returns:
-        True si parece una pregunta nueva, False si parece una respuesta válida.
-    """
-    prompt = f"""
-    Mi chatbot esperaba que el usuario respondiera con {tipo_esperado}.
-    El usuario respondió: "{texto_usuario}".
-
-    Analiza la respuesta del usuario. Si parece que el usuario está intentando responder a mi solicitud, responde SÓLO con la palabra 'RESPUESTA_VALIDA'.
-    Si parece que el usuario está ignorando mi solicitud y haciendo una pregunta completamente nueva o cambiando de tema, responde SÓLO con la palabra 'PREGUNTA_NUEVA'.
-
-    Ejemplos:
-    - Esperaba: "una dirección". Usuario respondió: "San Martín 123". -> RESPUESTA_VALIDA
-    - Esperaba: "una dirección". Usuario respondió: "cuánto cuesta el impuesto inmobiliario?". -> PREGUNTA_NUEVA
-    - Esperaba: "un número de teléfono". Usuario respondió: "261123456". -> RESPUESTA_VALIDA
-    - Esperaba: "un número de teléfono". Usuario respondió: "no gracias, mejor decime los horarios de atención". -> PREGUNTA_NUEVA
-
-    Tu decisión:
-    """
-    try:
-        decision = get_cohere_response(message=prompt, preamble="Eres un clasificador de respuestas de usuario. Responde solo con 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.")
-        logger.info(f"[Guardián de Flujo] Decisión para '{texto_usuario}': {decision.strip()}")
-        return "PREGUNTA_NUEVA" in decision
-    except Exception as e:
-        logger.error(f"[Guardián de Flujo] Error: {e}")
-        return False # En caso de error, asumimos que la respuesta es válida para no romper el flujo.
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
 
@@ -55,30 +20,41 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 
-# --- MODIFICACIÓN 2: Definimos el nuevo prompt inteligente ---
 PROMPT_MUNICIPIO_CON_CONTEXTO = """
 Eres un asistente virtual experto del municipio. Tu deber es responder la PREGUNTA DEL USUARIO de manera precisa y amigable, utilizando únicamente la INFORMACIÓN DE CONTEXTO que te proporciono. No inventes información que no esté en el contexto. Si la respuesta no se encuentra en el contexto, indica amablemente que no tienes esa información específica y sugiere contactar a la municipalidad.
-
 --- INFORMACIÓN DE CONTEXTO ---
 {contexto_scraped}
 ---------------------------------
-
 PREGUNTA DEL USUARIO: "{pregunta_usuario}"
-
 Respuesta:
 """
 
-# Handler VACÍO de impuestos, para evitar errores si no lo usás todavía
+def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
+    """
+    Usa el LLM para determinar si la respuesta de un usuario se desvía de la pregunta anterior.
+    """
+    prompt = f"""
+    Mi chatbot esperaba que el usuario respondiera con {tipo_esperado}.
+    El usuario respondió: "{texto_usuario}".
+
+    Analiza la respuesta del usuario. Si parece que el usuario está intentando responder a mi solicitud (por ejemplo, dando la dirección, el teléfono, etc.), responde SÓLO con la palabra 'RESPUESTA_VALIDA'.
+    Si parece que el usuario está ignorando mi solicitud y haciendo una pregunta completamente nueva o cambiando de tema, responde SÓLO con la palabra 'PREGUNTA_NUEVA'.
+
+    Tu decisión:
+    """
+    try:
+        decision = get_cohere_response(message=prompt, preamble="Eres un clasificador de respuestas. Responde solo con 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.")
+        logger.info(f"[Guardián de Flujo] Decisión para '{texto_usuario}': {decision.strip()}")
+        return "PREGUNTA_NUEVA" in decision
+    except Exception as e:
+        logger.error(f"[Guardián de Flujo] Error: {e}")
+        return False # En caso de error, asumimos que la respuesta es válida para no romper el flujo.
+
 class BaseMunicipioHandler:
     def __init__(self, context):
         self.context = context
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
-
-class ImpuestosHandler(BaseMunicipioHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        return None
-
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -103,7 +79,7 @@ class GreetingHandler(BaseMunicipioHandler):
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     if not re.match(r'^\+\d{7,15}$', numero_destino):
         logger.warning(f"[NOTIFICACION SMS] Número de destino '{numero_destino}' no parece ser un formato válido E.164. Intentando enviar de todas formas.")
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWilio_PHONE_NUMBER]):
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
         logger.error("[NOTIFICACION SMS] Credenciales de Twilio no configuradas (missing SID, Token, or Number). No se puede enviar SMS.")
         return
     try:
@@ -168,10 +144,14 @@ class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         if memoria.get('estado_conversacion') == 'esperando_param_recoleccion':
+            if es_pregunta_nueva(pregunta, "una dirección"):
+                memoria.clear(); return None
             memoria['estado_conversacion'] = None
             return {"respuesta": consultar_recoleccion_por_direccion(direccion=pregunta)}
+        
         if memoria.get('estado_conversacion') and memoria.get('estado_conversacion') != 'esperando_param_recoleccion':
             return None
+            
         prompt = crear_prompt_decision_herramienta(pregunta)
         respuesta_llm = get_cohere_response(message=prompt, preamble="Eres un experto en decidir si una pregunta requiere una herramienta específica. Responde solo con JSON o 'null'.")
         try:
@@ -183,7 +163,7 @@ class ToolHandler(BaseMunicipioHandler):
                         param_faltante = decision["faltan_parametros"][0]
                         if param_faltante == "direccion":
                             memoria['estado_conversacion'] = 'esperando_param_recoleccion'
-                            return {"respuesta": "Claro, para decirte el horario exacto de recolección de basura, necesito la dirección completa. Por favor, indicame la calle y el número, por ejemplo: `Avenida San Martín 123, Junín`."}
+                            return {"respuesta": "Claro, para decirte el horario exacto de recolección de basura, necesito la dirección completa. Por favor, indicame la calle y el número."}
                     parametros = decision.get("parametros", {})
                     logger.info(f"[ToolHandler] Usando la herramienta '{nombre_herramienta}' con parámetros: {parametros}")
                     funcion_a_ejecutar = TOOL_REGISTRY[nombre_herramienta]["funcion"]
@@ -191,7 +171,6 @@ class ToolHandler(BaseMunicipioHandler):
                     return {"respuesta": resultado}
         except (json.JSONDecodeError, TypeError):
             logger.info("[ToolHandler] La pregunta no requiere una herramienta específica o la respuesta del LLM no es JSON válida. Pasando a la cadena principal.")
-            return None
         return None
 
 class IntentClassifierHandler(BaseMunicipioHandler):
@@ -207,71 +186,69 @@ class IntentClassifierHandler(BaseMunicipioHandler):
 class HumanEscalationHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         if self.context.get('intencion') == 'hablar_con_agente':
-            logger.info(f"[HumanEscalationHandler] El usuario {self.context.get('user_id')} solicita un agente. Creando sala de chat...")
+            logger.info(f"[HumanEscalationHandler] El usuario {self.context.get('user_id')} solicita un agente.")
             ticket_data = {
-                "asunto": "Solicitud de Chat en Vivo",
-                "categoria": "Atención en Vivo",
+                "asunto": "Solicitud de Chat en Vivo", "categoria": "Atención en Vivo",
                 "detalles": f"El vecino solicitó atención en vivo con el mensaje: '{pregunta}'",
-                "user_id": self.context.get("user_id"),
-                "estado": "esperando_agente_en_vivo"
+                "user_id": self.context.get("user_id"), "estado": "esperando_agente_en_vivo"
             }
             sala_de_chat = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data)
             if not sala_de_chat:
-                logger.error("[HumanEscalationHandler] No se pudo crear la sala de chat (ticket).")
-                return {"respuesta": "Disculpa, hubo un problema técnico al intentar conectar con un agente. Por favor, intenta de nuevo más tarde."}
+                return {"respuesta": "Disculpa, hubo un problema técnico al intentar conectar con un agente."}
+            
             servicio_tickets.crear_comentario(
-                ticket_id=sala_de_chat.id,
-                tipo_ticket="municipio",
-                comentario_data={
-                    "comentario": pregunta,
-                    "es_admin": False,
-                    "user_id": self.context.get("user_id")
-                }
+                ticket_id=sala_de_chat.id, tipo_ticket="municipio",
+                comentario_data={"comentario": pregunta, "es_admin": False, "user_id": self.context.get("user_id")}
             )
-            logger.info(f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada y en espera.")
+            logger.info(f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada.")
             respuesta_al_vecino = (
                 f"¡Entendido! He abierto una sala de chat directa con nuestro equipo. "
                 f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. \n\n"
                 "Por favor, aguarda un momento mientras un agente se conecta. **No cierres esta ventana.**"
             )
             self.context.get('contexto_municipio', {}).clear()
-            return {"respuesta": respuesta_al_vecino}
+            return {"respuesta": respuesta_al_vecino, "ticket_id": sala_de_chat.id}
         return None
 
 class TicketStatusHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado_conversacion = memoria.get('estado_conversacion')
+        
         if estado_conversacion == 'esperando_confirmacion_cierre':
+            # --- GUARDIÁN INTELIGENTE ---
+            if es_pregunta_nueva(pregunta, "una confirmación (sí o no)"): memoria.clear(); return None
+            
             ticket_id = memoria.get('ticket_id_activo')
             ticket = db.session.get(MunicipioTicket, ticket_id)
             if "si" in pregunta.lower() or "sí" in pregunta.lower():
                 ticket.estado = "resuelto"
                 db.session.commit()
                 memoria['estado_conversacion'] = 'esperando_calificacion'
-                return {"respuesta": "¡Excelente! Me alegra que lo hayamos solucionado. Para terminar, ¿podrías calificar la atención recibida del 1 al 5? Tu opinión nos ayuda a mejorar."}
+                return {"respuesta": "¡Excelente! Me alegra que lo hayamos solucionado. Para terminar, ¿podrías calificar la atención recibida del 1 al 5?"}
             else:
                 memoria.clear()
-                return {"respuesta": "Entendido. Dejaré el ticket abierto para que nuestro equipo continúe con el seguimiento. ¿Hay algo más que quieras agregar?"}
+                return {"respuesta": "Entendido. Dejaré el ticket abierto para que nuestro equipo continúe con el seguimiento."}
+        
         elif estado_conversacion == 'esperando_calificacion':
+            # --- GUARDIÁN INTELIGENTE ---
+            if es_pregunta_nueva(pregunta, "una calificación del 1 al 5"): memoria.clear(); return None
+                
             ticket_id = memoria.get('ticket_id_activo')
-            servicio_tickets.crear_comentario(
-                ticket_id=ticket_id, tipo_ticket="municipio",
-                comentario_data={"comentario": f"Calificación del vecino: {pregunta}", "es_admin": False}
-            )
+            servicio_tickets.crear_comentario(ticket_id=ticket_id, tipo_ticket="municipio", comentario_data={"comentario": f"Calificación del vecino: {pregunta}", "es_admin": False})
             memoria.clear()
             return {"respuesta": "¡Muchas gracias por tu calificación! Hemos cerrado el ticket. ¿Necesitas ayuda con algo más?"}
+
         if self.context.get('intencion') == 'consultar_estado_ticket':
             match = re.search(r'\d{5,}', pregunta)
-            if not match:
-                return {"respuesta": "Por favor, decime el número de ticket que querés consultar."}
+            if not match: return {"respuesta": "Por favor, decime el número de ticket que querés consultar."}
             ticket = MunicipioTicket.query.filter_by(nro_ticket=int(match.group(0))).first()
-            if not ticket:
-                return {"respuesta": f"No pude encontrar ningún ticket con el número {match.group(0)}."}
+            if not ticket: return {"respuesta": f"No pude encontrar ningún ticket con el número {match.group(0)}."}
+            
             respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado}**."
-            ultimo_comentario_agente = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first()
-            if ultimo_comentario_agente:
-                respuesta += f"\n\nÚltima actualización de nuestro equipo: *\"{ultimo_comentario_agente.comentario}\"*"
+            ultimo_comentario = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first()
+            if ultimo_comentario:
+                respuesta += f"\n\nÚltima actualización de nuestro equipo: *\"{ultimo_comentario.comentario}\"*"
                 if ticket.estado == "en_proceso":
                     memoria['estado_conversacion'] = 'esperando_confirmacion_cierre'
                     memoria['ticket_id_activo'] = ticket.id
@@ -280,226 +257,118 @@ class TicketStatusHandler(BaseMunicipioHandler):
             return {"respuesta": respuesta}
         return None
 
-# Reemplaza SOLO la clase ReclamoHandler en tu archivo municipios.py
-
 class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
         
-        # --- PASO 1: Iniciar el flujo de reclamo ---
         if self.context.get('intencion') == 'iniciar_reclamo' and not estado:
-            memoria.clear() # Limpiamos cualquier estado anterior
+            memoria.clear()
             memoria['pregunta_original'] = pregunta
             categoria_adivinada = categorizar_reclamo_por_palabra_clave(pregunta)
             
             if categoria_adivinada != "Otros":
-                logger.info(f"[ReclamoHandler] Nivel 1: Categoría detectada por keyword: {categoria_adivinada}")
+                logger.info(f"[ReclamoHandler] Nivel 1: Categoría por keyword: {categoria_adivinada}")
                 memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
                 memoria['categoria_reclamo'] = categoria_adivinada
-                return {"respuesta": f"Entendido. He clasificado tu reclamo en la categoría **{categoria_adivinada}**. Para continuar, por favor, indícame la **dirección completa del problema** (calle y número)."}
+                return {"respuesta": f"Entendido. Reclamo clasificado como **{categoria_adivinada}**. Para continuar, indicame la **dirección del problema**."}
             else:
-                logger.info("[ReclamoHandler] Nivel 2: No hubo keyword exacta. Buscando sugerencias con LLM.")
+                logger.info("[ReclamoHandler] Nivel 2: Buscando sugerencias con LLM.")
                 sugerencias = sugerir_categorias_relevantes(pregunta)
                 if sugerencias:
                     memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
-                    botones_sugeridos = [{"texto": sug} for sug in sugerencias]
-                    botones_sugeridos.append({"texto": "Ninguna de estas"})
-                    return {"respuesta": "Entendido. Tu reclamo parece estar relacionado con uno de estos temas. Por favor, selecciona la opción más precisa para continuar:", "botones": botones_sugeridos}
+                    botones = [{"texto": sug} for sug in sugerencias] + [{"texto": "Ninguna de estas"}]
+                    return {"respuesta": "Entendido. Tu reclamo parece relacionado con uno de estos temas. Selecciona la opción más precisa:", "botones": botones}
                 else:
-                    logger.info("[ReclamoHandler] Nivel 3: No hubo sugerencias. Mostrando lista de respaldo.")
+                    logger.info("[ReclamoHandler] Nivel 3: Mostrando lista de respaldo.")
                     memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
-                    return {
-                        "respuesta": "Entendido, vamos a iniciar tu reclamo. No estoy seguro de la categoría, ¿podrías seleccionarla de esta lista?",
-                        "botones": [{"texto": "Luminaria"}, {"texto": "Arreglo de calle"}, {"texto": "Limpieza"}, {"texto": "Otros"}]
-                    }
-        
-        # --- PASO 2: Esperando la categoría ---
-        elif estado == 'esperando_categoria_reclamo':
-            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
-            if es_pregunta_nueva(pregunta, "una categoría de reclamo"):
-                memoria.clear()
-                return None # Cede el control a la cadena principal
+                    return {"respuesta": "Entendido, vamos a iniciar tu reclamo. ¿Podrías seleccionarla de esta lista?", "botones": [{"texto": "Luminaria"}, {"texto": "Limpieza"}, {"texto": "Otros"}]}
 
-            if pregunta.lower() in ["ninguna de estas", "otra categoría", "otros"]:
-                pregunta = "Otros"
-            memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
+        if estado == 'esperando_categoria_reclamo':
+            if es_pregunta_nueva(pregunta, "una categoría de reclamo"): memoria.clear(); return None
+            if pregunta.lower() in ["ninguna de estas", "otra categoría", "otros"]: pregunta = "Otros"
             memoria['categoria_reclamo'] = pregunta
+            memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
             return {"respuesta": f"Perfecto, categoría: **{pregunta}**. Ahora, indicame la **dirección completa del problema**."}
-            
-        # --- PASO 3: Esperando la dirección ---
-        elif estado == 'esperando_direccion_reclamo':
-            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
-            if es_pregunta_nueva(pregunta, "una dirección completa"):
-                memoria.clear()
-                return None # Cede el control
 
-            memoria['estado_conversacion'] = 'esperando_nombre_vecino'
+        if estado == 'esperando_direccion_reclamo':
+            if es_pregunta_nueva(pregunta, "una dirección completa"): memoria.clear(); return None
             memoria['direccion_reclamo'] = pregunta
-            return {"respuesta": "¡Gracias por la dirección! Ahora, por favor, indicame tu **nombre completo**."}
+            memoria['estado_conversacion'] = 'esperando_nombre_vecino'
+            return {"respuesta": "¡Gracias! Ahora, por favor, tu **nombre completo**."}
 
-        # --- PASO 4: Esperando el nombre ---
-        elif estado == 'esperando_nombre_vecino':
-            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
-            if es_pregunta_nueva(pregunta, "tu nombre completo"):
-                memoria.clear()
-                return None # Cede el control
-
-            memoria['estado_conversacion'] = 'esperando_telefono_vecino'
+        if estado == 'esperando_nombre_vecino':
+            if es_pregunta_nueva(pregunta, "tu nombre completo"): memoria.clear(); return None
             memoria['nombre_vecino'] = pregunta
-            return {"respuesta": f"Gracias, {pregunta}. Por último, ¿cuál es tu **número de teléfono** (con código de área)?"} 
-            
-        # --- PASO 5: Esperando el teléfono y finalizando ---
-        elif estado == 'esperando_telefono_vecino':
-            # --- GUARDIÁN: Verificamos si el usuario cambió de tema ---
-            if es_pregunta_nueva(pregunta, "un número de teléfono"):
-                memoria.clear()
-                return None # Cede el control
+            memoria['estado_conversacion'] = 'esperando_telefono_vecino'
+            return {"respuesta": f"Gracias, {pregunta}. Por último, tu **número de teléfono** (con código de área)."}
 
-            # --- Lógica original para crear el ticket ---
+        if estado == 'esperando_telefono_vecino':
+            if es_pregunta_nueva(pregunta, "un número de teléfono"): memoria.clear(); return None
             categoria = memoria.get('categoria_reclamo', 'General')
             direccion = memoria.get('direccion_reclamo', 'No especificada')
-            nombre_vecino = memoria.get('nombre_vecino', 'Anónimo')
-            telefono_input = pregunta
-            telefono_formateado = re.sub(r'\D', '', telefono_input.strip())
-            if not telefono_formateado.startswith('+'):
-                telefono_formateado = '+549' + telefono_formateado
-            
-            detalles_ticket = (
-                f"Consulta original: {memoria.get('pregunta_original', 'N/A')}\n"
-                f"Categoría: {categoria}\n"
-                f"Dirección del problema: {direccion}\n"
-                f"Nombre del vecino: {nombre_vecino}\n"
-                f"Teléfono de contacto: {telefono_formateado}"
-            )
-            ticket = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="municipio",
-                ticket_data={
-                    "asunto": f"Reclamo de {categoria}", "categoria": categoria,
-                    "detalles": detalles_ticket, "user_id": self.context.get("user_id")
-                }
-            )
-            
+            nombre = memoria.get('nombre_vecino', 'Anónimo')
+            telefono = re.sub(r'\D', '', pregunta.strip())
+            if not telefono.startswith('+'): telefono = '+549' + telefono
+            detalles = f"Consulta original: {memoria.get('pregunta_original', 'N/A')}\nCategoría: {categoria}\nDirección: {direccion}\nNombre: {nombre}\nTeléfono: {telefono}"
+            ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={"asunto": f"Reclamo de {categoria}", "categoria": categoria, "detalles": detalles, "user_id": self.context.get("user_id")})
             if ticket:
-                mensaje_confirmacion = f"Municipio de Junín: Recibimos su reclamo (Ticket M-{ticket.nro_ticket}) sobre {categoria}. Será procesado a la brevedad. ¡Gracias!"
-                # enviar_notificacion_sms(telefono_formateado, mensaje_confirmacion)
-                logger.info(f"Notificación SMS (simulada) enviada para ticket M-{ticket.nro_ticket}")
                 memoria.clear()
-                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. El equipo de **{categoria}** lo revisará y podrá contactarte al número que proporcionaste."}
+                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. El equipo de **{categoria}** lo revisará y podrá contactarte."}
             else:
                 memoria.clear()
                 return {"respuesta": "Disculpa, no pudimos generar tu reclamo. Por favor, intenta de nuevo más tarde."}
-        
-        # Si no coincide ningún estado de este handler, cede el control
         return None
-    
-# Handler VACÍO de impuestos, para evitar errores si no lo usás todavía
-class ImpuestosHandler(BaseMunicipioHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        return None
-
-# Reemplaza toda tu clase TramitesHandler con esta versión mejorada.
 
 class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
         intencion = self.context.get('intencion')
-        logger.info(f"[TRAMITES] Recibido: Pregunta='{pregunta}', Estado='{estado}', Intencion='{intencion}'")
 
-        # --- Flujo de Licencia de Conducir ---
-        if (intencion == 'consultar_tramite' and "licencia" in pregunta.lower() and not estado) or \
-           (estado == 'esperando_seleccion_tramite_general' and "licencia" in pregunta.lower()):
-            memoria.clear() # Limpiamos estado anterior para iniciar este flujo limpio
-            memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
-            return {
-                "respuesta": "Para la Licencia de Conducir necesitás: DNI actualizado, no tener multas, y hacer el curso de seguridad vial.",
-                "botones": [
-                    {"texto": "Sacar Turno Licencia de Conducir", "url": "https://tlc.mendoza.gov.ar/turnos"},
-                    {"texto": "¿Dónde hacer el curso?", "accion_interna": "preguntar_curso"},
-                ]
-            }
-
-        if estado == 'esperando_pregunta_curso_licencia' and \
-           ("donde" in pregunta.lower() or "si" in pregunta.lower() or "sí" in pregunta.lower() or "preguntar_curso" == pregunta.lower()):
-            memoria.clear()
-            return {
-                "respuesta": "El curso de seguridad vial es online en la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias de tu municipio.",
-                "botones": [{"texto": "Sacar Turno", "url": "https://tlc.mendoza.gov.ar/turnos"}]
-            }
-
-        # --- Flujo General de Trámites (Punto de Entrada) ---
         if intencion == 'consultar_tramite' and not estado:
-            memoria['estado_conversacion'] = 'esperando_seleccion_tramite_general'
-            return {
-                "respuesta": "¡Claro! Te puedo ayudar con información sobre la Licencia de Conducir, o puedes explorar otros trámites municipales.",
-                "botones": [
-                    {"texto": "Licencia de Conducir"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
-                ]
-            }
-        
-        # --- LA MODIFICACIÓN CLAVE ---
-        # Si estamos en el estado de 'esperando_seleccion_tramite_general' pero el usuario 
-        # no eligió ninguna opción válida, no respondemos nada aquí.
-        # Devolvemos None para que el siguiente handler (GeneralHandler) lo intente.
-        if estado == 'esperando_seleccion_tramite_general':
-             logger.info("[TRAMITES] El usuario no seleccionó una opción de trámite válida. Pasando al siguiente handler.")
-             memoria.clear() # Limpiamos el estado para que no quede atorado
-             return None
+            memoria.clear()
+            memoria['estado_conversacion'] = 'esperando_seleccion_tramite'
+            return {"respuesta": "¡Claro! Te puedo ayudar con información sobre la Licencia de Conducir, o puedes explorar otros trámites municipales.", "botones": [{"texto": "Licencia de Conducir"}, {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}]}
 
-        # Si no aplica ninguna regla de este handler, cede el control.
+        if estado == 'esperando_seleccion_tramite':
+            if es_pregunta_nueva(pregunta, "una opción de trámite"): memoria.clear(); return None
+            if "licencia" in pregunta.lower():
+                memoria.clear()
+                memoria['estado_conversacion'] = 'esperando_pregunta_curso_licencia'
+                return {"respuesta": "Para la Licencia de Conducir necesitás: DNI actualizado, no tener multas, y hacer el curso de seguridad vial.", "botones": [{"texto": "Sacar Turno", "url": "https://tlc.mendoza.gov.ar/turnos"}, {"texto": "¿Dónde hacer el curso?"}]}
+            # Si el usuario escribe cualquier otra cosa, salimos del flujo de trámites
+            memoria.clear(); return None
+
+        if estado == 'esperando_pregunta_curso_licencia':
+            if es_pregunta_nueva(pregunta, "una pregunta sobre el curso"): memoria.clear(); return None
+            memoria.clear()
+            return {"respuesta": "El curso de seguridad vial es online en la web de la Agencia Nacional de Seguridad Vial o presencialmente en el Centro de Emisión de Licencias de tu municipio."}
         return None
 
-# --- MODIFICACIÓN 3: El GeneralHandler ahora usa la Base de Datos ---
+class ImpuestosHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        return None
+
 class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
-        # Si ninguna otra herramienta o flujo específico manejó la pregunta,
-        # este handler la tratará como una consulta general usando el conocimiento de la DB.
-        logger.info("[GeneralHandler] Manejando como consulta general. Buscando contexto en la DB.")
+        logger.info("[GeneralHandler] Manejando como consulta general con contexto de DB.")
         user_obj = self.context.get("user_obj")
-
         if not user_obj:
-            logger.warning("[GeneralHandler] No se encontró user_obj en el contexto. No se puede buscar información.")
-            # Dejamos que el flujo continúe por si hay un handler para anónimos más adelante.
-            return None
+            return None # Dejamos que el EngancheAnonimoHandler se encargue
 
-        # 1. Buscar el conocimiento en la base de datos para este municipio
         contexto_scraped = ""
         try:
             contenidos = SitioWebInfo.query.filter_by(user_id=user_obj.id).all()
-            textos_relevantes = []
-            for item in contenidos:
-                # Cargamos el JSON que está guardado como texto
-                datos = json.loads(item.datos_json)
-                # Extraemos el contenido de texto plano
-                if datos.get("tipo") == "contenido_general" and datos.get("contenido"):
-                    textos_relevantes.append(datos["contenido"])
-            
-            contexto_scraped = " ".join(textos_relevantes)
-            
-            if contexto_scraped:
-                logger.info(f"[GeneralHandler] Se encontraron {len(contexto_scraped)} caracteres de contexto.")
-            else:
-                logger.info("[GeneralHandler] No se encontró contexto scrapeado en la DB para este usuario.")
-                contexto_scraped = "No hay información de contexto disponible para esta consulta."
-
+            textos_relevantes = [json.loads(item.datos_json).get("contenido", "") for item in contenidos if json.loads(item.datos_json).get("tipo") == "contenido_general"]
+            contexto_scraped = " ".join(filter(None, textos_relevantes))
+            if not contexto_scraped: contexto_scraped = "No hay información de contexto disponible para esta consulta."
         except Exception as e:
             logger.error(f"[GeneralHandler] Error al obtener contexto de la DB: {e}")
             contexto_scraped = "Hubo un error al cargar la información de contexto."
-
-        # 2. Construir el prompt y llamar a Cohere
-        prompt_final = PROMPT_MUNICIPIO_CON_CONTEXTO.format(
-            contexto_scraped=contexto_scraped,
-            pregunta_usuario=pregunta
-        )
         
-        respuesta_llm = get_cohere_response(
-            message=prompt_final,
-            preamble="Eres un asistente municipal que responde basado en información oficial."
-        )
-
-        # Devolvemos la respuesta para que la cadena de handlers termine aquí.
+        prompt_final = PROMPT_MUNICIPIO_CON_CONTEXTO.format(contexto_scraped=contexto_scraped, pregunta_usuario=pregunta)
+        respuesta_llm = get_cohere_response(message=prompt_final, preamble="Eres un asistente municipal que responde basado en información oficial.")
         return {"respuesta": respuesta_llm}
 
 class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
@@ -507,11 +376,7 @@ class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
         if not self.context.get("user_id"):
             return {
                 "respuesta": "Para darte una mejor atención personalizada, por favor registrate o iniciá sesión. Así vas a poder hacer reclamos reales y recibir respuestas oficiales del municipio.",
-                "botones": [
-                    {"texto": "Iniciar Sesión", "url": "/login"},
-                    {"texto": "Registrarme Gratis", "url": "/register"},
-                    {"texto": "Planes Premium", "url": "/precios"}
-                ]
+                "botones": [{"texto": "Iniciar Sesión", "url": "/login"}, {"texto": "Registrarme Gratis", "url": "/register"}]
             }
         return None
 
@@ -519,36 +384,34 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     context = {
-        "contexto_municipio": contexto_municipio,
-        "user_obj": user_obj,
-        "user_id": getattr(user_obj, "id", None),
-        "intencion": None
+        "contexto_municipio": contexto_municipio, "user_obj": user_obj,
+        "user_id": getattr(user_obj, "id", None), "intencion": None
     }
+    
+    estado_antes_de_procesar = contexto_municipio.get('estado_conversacion')
+
     handler_chain = [
-        GreetingHandler,
-        ToolHandler,
-        IntentClassifierHandler,
-        HumanEscalationHandler,
-        TicketStatusHandler,
-        ReclamoHandler,
-        ImpuestosHandler,
-        TramitesHandler,
-        # El GeneralHandler ahora es mucho más potente
-        GeneralHandler,
-        EngancheAnonimoMunicipioHandler
+        GreetingHandler, ToolHandler, IntentClassifierHandler, HumanEscalationHandler, 
+        TicketStatusHandler, ReclamoHandler, TramitesHandler, ImpuestosHandler, 
+        GeneralHandler, EngancheAnonimoMunicipioHandler
     ]
+    
     respuesta_final = None
     for handler_class in handler_chain:
         handler_instance = handler_class(context)
         respuesta_final = handler_instance.handle(pregunta)
-        if respuesta_final:
-            break
+        if respuesta_final: break
+
     if not respuesta_final:
         respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta. Por favor, intenta reformular tu pregunta."}
     
-    # Este bloque reemplaza el [nombre_vecino] con el nombre real guardado en la memoria
+    estado_despues_de_procesar = contexto_municipio.get('estado_conversacion')
+    if estado_antes_de_procesar and not estado_despues_de_procesar and respuesta_final.get('respuesta'):
+        mensaje_transicion = "Entendido, cambiemos de tema. Sobre tu nueva consulta:\n\n"
+        respuesta_final['respuesta'] = mensaje_transicion + respuesta_final['respuesta']
+
     if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
-        nombre_vecino_memoria = context.get('contexto_municipio', {}).get('nombre_vecino', 'vecino')
+        nombre_vecino_memoria = contexto_municipio.get('nombre_vecino', 'vecino')
         respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
 
     return {
