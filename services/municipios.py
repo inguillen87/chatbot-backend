@@ -436,32 +436,46 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     context = {
-        "contexto_municipio": contexto_municipio, "user_obj": user_obj,
-        "user_id": getattr(user_obj, "id", None), "intencion": None
+        "contexto_municipio": contexto_municipio,
+        "user_obj": user_obj,
+        "user_id": getattr(user_obj, "id", None),
+        "intencion": None
     }
-    
+
     estado_antes_de_procesar = contexto_municipio.get('estado_conversacion')
 
     handler_chain = [
-        GreetingHandler, ToolHandler, IntentClassifierHandler, HumanEscalationHandler, 
-        TicketStatusHandler, ReclamoHandler, TramitesHandler, ImpuestosHandler, 
+        GreetingHandler, ToolHandler, IntentClassifierHandler, HumanEscalationHandler,
+        TicketStatusHandler, ReclamoHandler, TramitesHandler, ImpuestosHandler,
         GeneralHandler, EngancheAnonimoMunicipioHandler
     ]
-    
+
     respuesta_final = None
     for handler_class in handler_chain:
         handler_instance = handler_class(context)
         respuesta_final = handler_instance.handle(pregunta)
-        if respuesta_final: break
+        if respuesta_final:
+            break
 
     if not respuesta_final:
         respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta. Por favor, intenta reformular tu pregunta."}
-    
-    estado_despues_de_procesar = contexto_municipio.get('estado_conversacion')
-    if estado_antes_de_procesar and not estado_despues_de_procesar and respuesta_final.get('respuesta'):
-        mensaje_transicion = "Entendido, cambiemos de tema. Sobre tu nueva consulta:\n\n"
-        respuesta_final['respuesta'] = mensaje_transicion + respuesta_final['respuesta']
 
+    estado_despues_de_procesar = contexto_municipio.get('estado_conversacion')
+    texto_respuesta = respuesta_final.get('respuesta', '')
+
+    # Evitar el mensaje de "cambio de tema" si se acaba de crear un ticket/reclamo
+    FRASES_EXITO = [
+        "Tu reclamo fue generado con el ticket",  # ajustá esto según la frase exacta de éxito
+        "Te hemos enviado una notificación por WhatsApp y SMS con los detalles.",
+        "Fue generado el ticket"
+    ]
+    es_cierre_flujo = any(frase in texto_respuesta for frase in FRASES_EXITO)
+
+    if estado_antes_de_procesar and not estado_despues_de_procesar and texto_respuesta and not es_cierre_flujo:
+        mensaje_transicion = "Entendido, cambiemos de tema. Sobre tu nueva consulta:\n\n"
+        respuesta_final['respuesta'] = mensaje_transicion + texto_respuesta
+
+    # Placeholder para nombre_vecino si lo hubiera
     if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
         nombre_vecino_memoria = contexto_municipio.get('nombre_vecino', 'vecino')
         respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
@@ -471,4 +485,3 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         "botones": respuesta_final.get('botones', []),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio}
     }
-

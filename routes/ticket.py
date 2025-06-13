@@ -66,25 +66,22 @@ def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    # Permisos igual que antes
     is_admin_muni = tipo == 'municipios' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
-    is_dueño = getattr(ticket, "user_id", None) == current_user.id
+    is_dueño = ticket.user_id == current_user.id
     is_admin_pyme = tipo == 'pyme' and current_user.rubro_id and getattr(ticket, 'rubro_id', None) == current_user.rubro_id
     if not (is_admin_muni or is_dueño or is_admin_pyme):
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
     detalles = getattr(ticket, 'detalles', '') or ''
-    # Más robusto: soporta distintas variantes y formatos
-    import re
-    nombre = re.search(r"(Nombre(?: completo)?):\s*(.+)", detalles)
-    tel = re.search(r"(Tel[eé]fono):\s*([\+\d ]+)", detalles)
-    email = re.search(r"(Email):\s*(\S+@\S+\.\S+)", detalles)
-    direccion = re.search(r"(Direcci[oó]n(?: del problema)?):\s*(.+)", detalles)
-    categoria = getattr(ticket, 'categoria', '')
+    nombre, tel, email, direccion = "No especificado", "No especificado", "No especificado", "No especificada"
+    if "Nombre:" in detalles: nombre = detalles.split("Nombre:")[1].split("\n")[0].strip()
+    if "Teléfono:" in detalles: tel = detalles.split("Teléfono:")[1].split("\n")[0].strip()
+    if "Email:" in detalles: email = detalles.split("Email:")[1].split("\n")[0].strip()
+    if "Dirección:" in detalles: direccion = detalles.split("Dirección:")[1].split("\n")[0].strip()
 
     comentarios = [
         {"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin}
-        for c in getattr(ticket, 'comentarios', [])
+        for c in ticket.comentarios
     ]
 
     ticket_data = {
@@ -92,20 +89,19 @@ def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
         "tipo": tipo,
         "nro_ticket": ticket.nro_ticket,
         "asunto": getattr(ticket, 'asunto', ''),
-        "categoria": categoria,
+        "categoria": getattr(ticket, 'categoria', ''),
         "estado": ticket.estado,
         "fecha": ticket.fecha.isoformat(),
         "pregunta": getattr(ticket, 'pregunta', ''),
         "detalles": detalles,
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "nombre_usuario": nombre.group(2) if nombre else "",
-        "telefono": tel.group(2) if tel else "",
-        "email": email.group(2) if email else "",
-        "direccion": direccion.group(2) if direccion else "",
+        "nombre_usuario": nombre,
+        "telefono": tel,
+        "email": email,
+        "direccion": direccion,
         "archivo_url": getattr(ticket, 'archivo_url', None)
     }
     return jsonify(ticket_data)
-
 
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
 @token_requerido
