@@ -304,40 +304,42 @@ class TicketStatusHandler(BaseMunicipioHandler):
 # --- CÓDIGO CORRECTO PARA ReclamoHandler ---
 # Pega esto en tu archivo y reemplaza la clase ReclamoHandler completa para estar 100% seguros.
 
+# Reemplaza esta clase completa en municipios.py
 class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
-        
+
         if self.context.get('intencion') == 'iniciar_reclamo' and not estado:
+            # ... (esta parte inicial no cambia)
             memoria.clear()
             memoria['pregunta_original'] = pregunta
             categoria_adivinada = categorizar_reclamo_por_palabra_clave(pregunta)
-            
             if categoria_adivinada != "Otros":
                 logger.info(f"[ReclamoHandler] Nivel 1: Categoría por keyword: {categoria_adivinada}")
                 memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
                 memoria['categoria_reclamo'] = categoria_adivinada
                 return {"respuesta": f"Entendido. Reclamo clasificado como **{categoria_adivinada}**. Para continuar, indicame la **dirección del problema**."}
             else:
-                logger.info("[ReclamoHandler] Nivel 2: Buscando sugerencias con LLM.")
-                sugerencias = sugerir_categorias_relevantes(pregunta)
-                if sugerencias:
-                    memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
-                    botones = [{"texto": sug} for sug in sugerencias] + [{"texto": "Ninguna de estas"}]
-                    return {"respuesta": "Entendido. Tu reclamo parece relacionado con uno de estos temas. Selecciona la opción más precisa:", "botones": botones}
-                else:
-                    logger.info("[ReclamoHandler] Nivel 3: Mostrando lista de respaldo.")
-                    memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
-                    return {"respuesta": "Entendido, vamos a iniciar tu reclamo. ¿Podrías seleccionarla de esta lista?", "botones": [{"texto": "Luminaria"}, {"texto": "Limpieza"}, {"texto": "Arbol Caido"}, {"texto": "Otros"}]}
+                logger.info("[ReclamoHandler] Nivel 2: Mostrando lista de respaldo.")
+                memoria['estado_conversacion'] = 'esperando_categoria_reclamo'
+                return {"respuesta": "Entendido, vamos a iniciar tu reclamo. ¿Podrías seleccionarla de esta lista?", "botones": [{"texto": "Luminaria"}, {"texto": "Limpieza"}, {"texto": "Arbol Caido"}, {"texto": "Otros"}]}
 
         if estado == 'esperando_categoria_reclamo':
+            # --- LÓGICA MEJORADA AQUÍ ---
             if es_pregunta_nueva(pregunta, "una categoría de reclamo"): memoria.clear(); return None
-            if pregunta.lower() in ["ninguna de estas", "otra categoría", "otros"]: pregunta = "Otros"
-            memoria['categoria_reclamo'] = pregunta
-            memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
-            return {"respuesta": f"Perfecto, categoría: **{pregunta}**. Ahora, indicame la **dirección completa del problema**."}
 
+            # Intentamos clasificar la respuesta del usuario una vez más.
+            categoria_final = categorizar_reclamo_por_palabra_clave(pregunta)
+
+            logger.info(f"[ReclamoHandler] Categoría final seleccionada/mapeada: {categoria_final}")
+
+            memoria['categoria_reclamo'] = categoria_final
+            memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
+            return {"respuesta": f"Perfecto, categoría: **{categoria_final}**. Ahora, indicame la **dirección completa del problema**."}
+
+        # ... el resto de los estados (esperando_direccion, esperando_nombre, etc.) no cambian
+        # y pueden quedar exactamente como están en tu archivo actual.
         if estado == 'esperando_direccion_reclamo':
             memoria['direccion_reclamo'] = pregunta
             memoria['estado_conversacion'] = 'esperando_nombre_vecino'
@@ -349,39 +351,23 @@ class ReclamoHandler(BaseMunicipioHandler):
             return {"respuesta": f"Gracias, {pregunta}. Por último, tu **número de teléfono** (con código de área)."}
 
         if estado == 'esperando_telefono_vecino':
-            # PASO 1: Leemos todas las variables de la memoria PRIMERO
             categoria = memoria.get('categoria_reclamo', 'General')
             direccion = memoria.get('direccion_reclamo', 'No especificada')
             nombre = memoria.get('nombre_vecino', 'Anónimo')
-            
             telefono = re.sub(r'\D', '', pregunta.strip())
             if not telefono.startswith('+'): telefono = '+549' + telefono 
-            
-            # PASO 2: Ahora sí, creamos los detalles y el ticket
             detalles = f"Consulta original: {memoria.get('pregunta_original', 'N/A')}\nCategoría: {categoria}\nDirección: {direccion}\nNombre: {nombre}\nTeléfono: {telefono}"
-            
             ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={"asunto": f"Reclamo de {categoria}", "categoria": categoria, "detalles": detalles, "user_id": self.context.get("user_id")})
-            
             if ticket:
-                # PASO 3: Y finalmente, enviamos las notificaciones
-                enviar_notificacion_whatsapp_con_plantilla(
-                    numero_destino=telefono,
-                    nombre=nombre,
-                    nro_ticket=ticket.nro_ticket,
-                    categoria=categoria
-                )
-                
+                enviar_notificacion_whatsapp_con_plantilla(numero_destino=telefono, nombre=nombre, nro_ticket=ticket.nro_ticket, categoria=categoria)
                 mensaje_sms = f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado. Te mantendremos al tanto por SMS."
                 enviar_notificacion_sms(telefono, mensaje_sms)
-
                 memoria.clear()
                 return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. Te hemos enviado una notificación por WhatsApp y SMS con los detalles."}
             else:
                 memoria.clear()
                 return {"respuesta": "Disculpa, no pudimos generar tu reclamo. Por favor, intenta de nuevo más tarde."}
         return None
-# --- COPIA Y PEGA ESTE CÓDIGO JUSTO DESPUÉS DE LA CLASE ReclamoHandler ---
-
 class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
