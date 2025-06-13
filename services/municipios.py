@@ -20,6 +20,7 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 TWILIO_WHATSAPP_NUMBER = 'whatsapp:+14155238886' # Número del Sandbox de Twilio
+TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
 PROMPT_MUNICIPIO_CON_CONTEXTO = """
 Eres un asistente virtual experto del municipio. Tu deber es responder la PREGUNTA DEL USUARIO de manera precisa y amigable, utilizando únicamente la INFORMACIÓN DE CONTEXTO que te proporciono. No inventes información que no esté en el contexto. Si la respuesta no se encuentra en el contexto, indica amablemente que no tienes esa información específica y sugiere contactar a la municipalidad.
@@ -88,7 +89,7 @@ def enviar_notificacion_whatsapp_con_plantilla(numero_destino: str, nombre: str,
 
     # IMPORTANTE: Busca este ID en tu consola de Twilio, en la sección de plantillas del Sandbox.
     # Corresponde a la plantilla "Appointment Reminders".
-    CONTENT_SID_PLANTILLA = "HXb54d603575e4e4ff0129c8e7cfd1585e" # ¡Usa el SID de tu consola!
+    CONTENT_SID_PLANTILLA = TWILIO_WHATSAPP_CONTENT_SID
 
     destinatario_whatsapp = f'whatsapp:{numero_destino}'
     
@@ -306,12 +307,20 @@ class TicketStatusHandler(BaseMunicipioHandler):
 
 # Reemplaza esta clase completa en municipios.py
 class ReclamoHandler(BaseMunicipioHandler):
+    def build_detalles_memoria(self, memoria: dict) -> str:
+        return (
+            f"Consulta original: {memoria.get('pregunta_original', '')}\n"
+            f"Categoría: {memoria.get('categoria_reclamo', '')}\n"
+            f"Dirección: {memoria.get('direccion_reclamo', '')}\n"
+            f"Nombre: {memoria.get('nombre_vecino', '')}\n"
+            f"Teléfono: {memoria.get('telefono_vecino', '')}"
+        )
+
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         estado = memoria.get('estado_conversacion')
 
         if self.context.get('intencion') == 'iniciar_reclamo' and not estado:
-            # ... (esta parte inicial no cambia)
             memoria.clear()
             memoria['pregunta_original'] = pregunta
             categoria_adivinada = categorizar_reclamo_por_palabra_clave(pregunta)
@@ -326,20 +335,16 @@ class ReclamoHandler(BaseMunicipioHandler):
                 return {"respuesta": "Entendido, vamos a iniciar tu reclamo. ¿Podrías seleccionarla de esta lista?", "botones": [{"texto": "Luminaria"}, {"texto": "Limpieza"}, {"texto": "Arbol Caido"}, {"texto": "Otros"}]}
 
         if estado == 'esperando_categoria_reclamo':
-            # --- LÓGICA MEJORADA AQUÍ ---
-            if es_pregunta_nueva(pregunta, "una categoría de reclamo"): memoria.clear(); return None
+            if es_pregunta_nueva(pregunta, "una categoría de reclamo"):
+                memoria.clear()
+                return None
 
-            # Intentamos clasificar la respuesta del usuario una vez más.
             categoria_final = categorizar_reclamo_por_palabra_clave(pregunta)
-
             logger.info(f"[ReclamoHandler] Categoría final seleccionada/mapeada: {categoria_final}")
-
             memoria['categoria_reclamo'] = categoria_final
             memoria['estado_conversacion'] = 'esperando_direccion_reclamo'
             return {"respuesta": f"Perfecto, categoría: **{categoria_final}**. Ahora, indicame la **dirección completa del problema**."}
 
-        # ... el resto de los estados (esperando_direccion, esperando_nombre, etc.) no cambian
-        # y pueden quedar exactamente como están en tu archivo actual.
         if estado == 'esperando_direccion_reclamo':
             memoria['direccion_reclamo'] = pregunta
             memoria['estado_conversacion'] = 'esperando_nombre_vecino'
@@ -351,13 +356,23 @@ class ReclamoHandler(BaseMunicipioHandler):
             return {"respuesta": f"Gracias, {pregunta}. Por último, tu **número de teléfono** (con código de área)."}
 
         if estado == 'esperando_telefono_vecino':
+            memoria['telefono_vecino'] = pregunta.strip()  # Guardamos el tel crudo
             categoria = memoria.get('categoria_reclamo', 'General')
-            direccion = memoria.get('direccion_reclamo', 'No especificada')
-            nombre = memoria.get('nombre_vecino', 'Anónimo')
-            telefono = re.sub(r'\D', '', pregunta.strip())
-            if not telefono.startswith('+'): telefono = '+549' + telefono 
-            detalles = f"Consulta original: {memoria.get('pregunta_original', 'N/A')}\nCategoría: {categoria}\nDirección: {direccion}\nNombre: {nombre}\nTeléfono: {telefono}"
-            ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={"asunto": f"Reclamo de {categoria}", "categoria": categoria, "detalles": detalles, "user_id": self.context.get("user_id")})
+            direccion = memoria.get('direccion_reclamo', '')
+            nombre = memoria.get('nombre_vecino', '')
+            telefono = re.sub(r'\D', '', memoria.get('telefono_vecino', ''))
+            if not telefono.startswith('+'): telefono = '+549' + telefono
+
+            detalles = self.build_detalles_memoria(memoria)
+            ticket = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="municipio",
+                ticket_data={
+                    "asunto": f"Reclamo de {categoria}",
+                    "categoria": categoria,
+                    "detalles": detalles,
+                    "user_id": self.context.get("user_id")
+                }
+            )
             if ticket:
                 enviar_notificacion_whatsapp_con_plantilla(numero_destino=telefono, nombre=nombre, nro_ticket=ticket.nro_ticket, categoria=categoria)
                 mensaje_sms = f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado. Te mantendremos al tanto por SMS."
@@ -368,6 +383,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 memoria.clear()
                 return {"respuesta": "Disculpa, no pudimos generar tu reclamo. Por favor, intenta de nuevo más tarde."}
         return None
+
 class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
