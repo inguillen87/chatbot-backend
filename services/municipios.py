@@ -19,6 +19,7 @@ CONTEXTO_MUNICIPIO = "contexto_municipio"
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
+TWILIO_WHATSAPP_NUMBER = 'whatsapp:+14155238886' # Número del Sandbox de Twilio
 
 PROMPT_MUNICIPIO_CON_CONTEXTO = """
 Eres un asistente virtual experto del municipio. Tu deber es responder la PREGUNTA DEL USUARIO de manera precisa y amigable, utilizando únicamente la INFORMACIÓN DE CONTEXTO que te proporciono. No inventes información que no esté en el contexto. Si la respuesta no se encuentra en el contexto, indica amablemente que no tienes esa información específica y sugiere contactar a la municipalidad.
@@ -76,22 +77,42 @@ class GreetingHandler(BaseMunicipioHandler):
                 return {"respuesta": respuesta}
         return None
 
-def enviar_notificacion_sms(numero_destino: str, mensaje: str):
-    if not re.match(r'^\+\d{7,15}$', numero_destino):
-        logger.warning(f"[NOTIFICACION SMS] Número de destino '{numero_destino}' no parece ser un formato válido E.164. Intentando enviar de todas formas.")
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
-        logger.error("[NOTIFICACION SMS] Credenciales de Twilio no configuradas (missing SID, Token, or Number). No se puede enviar SMS.")
+def enviar_notificacion_whatsapp(numero_destino: str, mensaje: str):
+    """
+    Envía una notificación por WhatsApp usando el Sandbox de Twilio.
+    """
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
+        logger.error("[NOTIFICACION WHATSAPP] Credenciales de Twilio no configuradas. No se puede enviar WhatsApp.")
         return
+
+    # IMPORTANTE: Twilio requiere que el número de destino para WhatsApp
+    # tenga el prefijo "whatsapp:" y esté en formato E.164.
+    destinatario_whatsapp = f'whatsapp:{numero_destino}'
+    
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         message = client.messages.create(
-            to=numero_destino,
-            from_=TWILIO_PHONE_NUMBER,
-            body=mensaje
+            from_=TWILIO_WHATSAPP_NUMBER,
+            body=mensaje,
+            to=destinatario_whatsapp
         )
-        logger.info(f"[NOTIFICACION SMS REAL] SMS enviado, SID: {message.sid}")
+        logger.info(f"[NOTIFICACION WHATSAPP] WhatsApp enviado, SID: {message.sid}")
     except Exception as e:
-        logger.error(f"[NOTIFICACION SMS REAL] Error al enviar SMS a {numero_destino}: {e}")
+        # Twilio puede dar error si el usuario no se ha unido al Sandbox.
+        logger.error(f"[NOTIFICACION WHATSAPP] Error al enviar WhatsApp a {destinatario_whatsapp}: {e}")
+
+def enviar_notificacion_dual(numero_destino: str, mensaje: str):
+    """
+    Función principal que envía una notificación tanto por SMS como por WhatsApp.
+    """
+    logger.info(f"Iniciando envío de notificación DUAL a {numero_destino}")
+    
+    # 1. Envía por WhatsApp
+    enviar_notificacion_whatsapp(numero_destino, mensaje)
+    
+    # 2. Envía por SMS
+    enviar_notificacion_sms(numero_destino, mensaje)
+
 
 TOOL_REGISTRY = {
     "consultar_recoleccion_por_direccion": {
@@ -297,24 +318,27 @@ class ReclamoHandler(BaseMunicipioHandler):
             memoria['estado_conversacion'] = 'esperando_nombre_vecino'
             return {"respuesta": "¡Gracias! Ahora, por favor, tu **nombre completo**."}
 
-        if estado == 'esperando_nombre_vecino':
-            if es_pregunta_nueva(pregunta, "tu nombre completo"): memoria.clear(); return None
-            memoria['nombre_vecino'] = pregunta
-            memoria['estado_conversacion'] = 'esperando_telefono_vecino'
-            return {"respuesta": f"Gracias, {pregunta}. Por último, tu **número de teléfono** (con código de área)."}
-
-        if estado == 'esperando_telefono_vecino':
-            if es_pregunta_nueva(pregunta, "un número de teléfono"): memoria.clear(); return None
-            categoria = memoria.get('categoria_reclamo', 'General')
-            direccion = memoria.get('direccion_reclamo', 'No especificada')
-            nombre = memoria.get('nombre_vecino', 'Anónimo')
+         if estado == 'esperando_telefono_vecino':
+            # ... (código para obtener la categoría, dirección, nombre, etc.)
             telefono = re.sub(r'\D', '', pregunta.strip())
-            if not telefono.startswith('+'): telefono = '+549' + telefono
+            # Esta línea es para asegurar el formato correcto para Argentina. ¡Bien hecho!
+            if not telefono.startswith('+'): telefono = '+549' + telefono 
+            
             detalles = f"Consulta original: {memoria.get('pregunta_original', 'N/A')}\nCategoría: {categoria}\nDirección: {direccion}\nNombre: {nombre}\nTeléfono: {telefono}"
+            
             ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={"asunto": f"Reclamo de {categoria}", "categoria": categoria, "detalles": detalles, "user_id": self.context.get("user_id")})
+            
             if ticket:
+                # --- ¡AQUÍ HACEMOS LA MAGIA! ---
+                # 1. Preparamos el mensaje de notificación
+                mensaje_notificacion = f"¡Hola {nombre}! Tu reclamo en el Municipio fue generado con el ticket M-{ticket.nro_ticket}. El equipo de {categoria} lo revisará pronto."
+                
+                # 2. Llamamos a nuestra nueva función DUAL
+                enviar_notificacion_dual(telefono, mensaje_notificacion)
+                
                 memoria.clear()
-                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. El equipo de **{categoria}** lo revisará y podrá contactarte."}
+                # El mensaje en el chat puede ser un poco más conciso.
+                return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. Te hemos enviado una notificación por WhatsApp y SMS con los detalles."}
             else:
                 memoria.clear()
                 return {"respuesta": "Disculpa, no pudimos generar tu reclamo. Por favor, intenta de nuevo más tarde."}
