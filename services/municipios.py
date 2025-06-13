@@ -462,7 +462,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         mensaje_transicion = "Entendido, cambiemos de tema. Sobre tu nueva consulta:\n\n"
         respuesta_final['respuesta'] = mensaje_transicion + respuesta_final['respuesta']
 
-      if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
+    if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
         nombre_vecino_memoria = contexto_municipio.get('nombre_vecino', 'vecino')
         respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
 
@@ -471,3 +471,4 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         "botones": respuesta_final.get('botones', []),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio}
     }
+
