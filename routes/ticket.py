@@ -6,6 +6,8 @@ from collections import defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
+# ... (código anterior)
+
 @ticket_bp.route('/', methods=['GET'])
 @token_requerido
 def get_tickets_del_usuario(current_user: User):
@@ -16,13 +18,14 @@ def get_tickets_del_usuario(current_user: User):
         return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
 
     try:
-        if current_user.rubro.nombre.lower().strip() == 'municipios':
+        # CAMBIO: Usar 'municipio' en la comparación
+        if current_user.rubro.nombre.lower().strip() == 'municipios': # Esta línea se mantiene para chequear el rol del usuario
             tickets = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).all()
-            tipo = 'municipio'
+            tipo = 'municipio' # <--- Asegúrate que aquí sea 'municipio'
             def serialize_ticket(t):
                 return {
                     "id": t.id,
-                    "tipo": tipo,
+                    "tipo": tipo, # Esto será 'municipio'
                     "nro_ticket": t.nro_ticket,
                     "asunto": getattr(t, 'asunto', 'N/A'),
                     "estado": t.estado,
@@ -55,18 +58,21 @@ def get_tickets_del_usuario(current_user: User):
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
 
+
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @token_requerido
 def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
     """
     Devuelve el detalle completo de UN ticket, incluyendo comentarios y datos de contacto.
     """
-    TicketModel = MunicipioTicket if tipo == "municipios" else PymeTicket
+    # CAMBIO: Usar 'municipio' para seleccionar el modelo
+    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket # <--- CAMBIO AQUÍ
     ticket = db.session.get(TicketModel, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    is_admin_muni = tipo == 'municipios' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
+    # CAMBIO: Usar 'municipio' en la comparación de permisos
+    is_admin_muni = tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' # <--- CAMBIO AQUÍ
     is_dueño = ticket.user_id == current_user.id
     is_admin_pyme = tipo == 'pyme' and current_user.rubro_id and getattr(ticket, 'rubro_id', None) == current_user.rubro_id
     if not (is_admin_muni or is_dueño or is_admin_pyme):
@@ -111,13 +117,15 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     if not data or not data.get("comentario"):
         return jsonify({"error": "El comentario no puede estar vacío."}), 400
 
-    TicketModel = MunicipioTicket if tipo == "municipios" else PymeTicket
+    # CAMBIO: Usar 'municipio' para seleccionar el modelo
+    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket # <--- CAMBIO AQUÍ
     ticket_obj = db.session.get(TicketModel, ticket_id)
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     has_permission_to_respond = False
-    if tipo == 'municipio' and current_user.rubro.nombre.lower().strip() == 'municipios':
+    # CAMBIO: Usar 'municipio' en la comparación de permisos
+    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios': # <--- CAMBIO AQUÍ
         has_permission_to_respond = True
     elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
         if getattr(ticket_obj, 'rubro_id', None) and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id:
@@ -127,7 +135,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
     nuevo_comentario = servicio_tickets.crear_comentario(
-        ticket_id=ticket_id, tipo_ticket=tipo,
+        ticket_id=ticket_id, tipo_ticket=tipo, # tipo_ticket aquí ya es correcto si el parámetro 'tipo' es singular
         comentario_data={"comentario": data["comentario"], "user_id": current_user.id, "es_admin": True}
     )
 
@@ -138,9 +146,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
         comentarios_actualizados = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
         ticket_data = {
-            "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket, 
+            "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
             "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-            "fecha": ticket_obj.fecha.isoformat(), 
+            "fecha": ticket_obj.fecha.isoformat(),
             "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
             "comentarios": sorted(comentarios_actualizados, key=lambda c: c['fecha']),
             "rubro_id": getattr(ticket_obj, 'rubro_id', None),
@@ -151,7 +159,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             "archivo_url": getattr(ticket_obj, 'archivo_url', None)
         }
         return jsonify(ticket_data), 200
-    
+
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
 
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
@@ -163,13 +171,15 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if not nuevo_estado:
         return jsonify({"error": "Falta el nuevo estado."}), 400
 
-    TicketModel = MunicipioTicket if tipo == "municipios" else PymeTicket
+    # CAMBIO: Usar 'municipio' para seleccionar el modelo
+    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket # <--- CAMBIO AQUÍ
     ticket_obj = db.session.get(TicketModel, ticket_id)
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     has_permission_to_change_state = False
-    if tipo == 'municipio' and current_user.rubro.nombre.lower().strip() == 'municipios':
+    # CAMBIO: Usar 'municipio' en la comparación de permisos
+    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios': # <--- CAMBIO AQUÍ
         has_permission_to_change_state = True
     elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
         if getattr(ticket_obj, 'rubro_id', None) and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id:
@@ -183,9 +193,9 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
     ticket_data = {
-        "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket, 
+        "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
         "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": ticket_obj.fecha.isoformat(), 
+        "fecha": ticket_obj.fecha.isoformat(),
         "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
         "rubro_id": getattr(ticket_obj, 'rubro_id', None),
@@ -277,18 +287,22 @@ def get_panel_por_categoria(current_user: User):
         tickets_agrupados = defaultdict(list)
 
         for ticket in tickets:
+            # Lógica mejorada para extraer la dirección del detalle
+            direccion = "No especificada"
+            if ticket.detalles:
+                for line in ticket.detalles.splitlines():
+                    if "Dirección del problema:" in line:
+                        direccion = line.split("Dirección del problema:")[1].strip()
+                        break
+
             ticket_data = {
                 "id": ticket.id,
-                "tipo": "municipios",
+                "tipo": "municipio", # <--- YA HECHO ESTE CAMBIO EN LA INTERACCIÓN ANTERIOR
                 "nro_ticket": ticket.nro_ticket,
                 "asunto": ticket.asunto,
                 "estado": ticket.estado,
                 "fecha": ticket.fecha.isoformat(),
-                "direccion": (
-                    ticket.detalles.split("Dirección del problema:")[1].split("\n")[0].strip()
-                    if ticket.detalles and "Dirección del problema:" in ticket.detalles
-                    else "No especificada"
-                )
+                "direccion": direccion
             }
             tickets_agrupados[ticket.categoria or "Sin Categoría"].append(ticket_data)
 
