@@ -77,41 +77,64 @@ class GreetingHandler(BaseMunicipioHandler):
                 return {"respuesta": respuesta}
         return None
 
-def enviar_notificacion_whatsapp(numero_destino: str, mensaje: str):
+def enviar_notificacion_whatsapp_con_plantilla(numero_destino: str, nombre: str, nro_ticket: str, categoria: str):
     """
-    Envía una notificación por WhatsApp usando el Sandbox de Twilio.
+    Envía una notificación por WhatsApp usando una PLANTILLA APROBADA (del Sandbox o de Producción).
+    Esta es la versión final y recomendada.
     """
     if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
-        logger.error("[NOTIFICACION WHATSAPP] Credenciales de Twilio no configuradas. No se puede enviar WhatsApp.")
+        logger.error("[NOTIFICACION WHATSAPP] Credenciales de Twilio no configuradas.")
         return
 
-    # IMPORTANTE: Twilio requiere que el número de destino para WhatsApp
-    # tenga el prefijo "whatsapp:" y esté en formato E.164.
+    # IMPORTANTE: Busca este ID en tu consola de Twilio, en la sección de plantillas del Sandbox.
+    # Corresponde a la plantilla "Appointment Reminders".
+    CONTENT_SID_PLANTILLA = "HXb54d603575e4e4ff0129c8e7cfd1585e" # ¡Usa el SID de tu consola!
+
     destinatario_whatsapp = f'whatsapp:{numero_destino}'
     
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        
+        # Las variables que llenarán los campos {{1}} y {{2}} de la plantilla.
+        variables_plantilla = {
+            '1': f"Hola {nombre}! Se generó tu ticket M-{nro_ticket}",
+            '2': f"El área de {categoria} lo revisará pronto."
+        }
+
         message = client.messages.create(
             from_=TWILIO_WHATSAPP_NUMBER,
-            body=mensaje,
-            to=destinatario_whatsapp
+            to=destinatario_whatsapp,
+            content_sid=CONTENT_SID_PLANTILLA,
+            content_variables=json.dumps(variables_plantilla)
         )
-        logger.info(f"[NOTIFICACION WHATSAPP] WhatsApp enviado, SID: {message.sid}")
+        logger.info(f"[NOTIFICACION WHATSAPP] Mensaje de plantilla enviado, SID: {message.sid}")
     except Exception as e:
-        # Twilio puede dar error si el usuario no se ha unido al Sandbox.
-        logger.error(f"[NOTIFICACION WHATSAPP] Error al enviar WhatsApp a {destinatario_whatsapp}: {e}")
+        logger.error(f"[NOTIFICACION WHATSAPP] Error al enviar plantilla a {destinatario_whatsapp}: {e}")
 
-def enviar_notificacion_dual(numero_destino: str, mensaje: str):
+
+
+def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     """
-    Función principal que envía una notificación tanto por SMS como por WhatsApp.
+    Envía una notificación por SMS usando las credenciales de Twilio.
     """
-    logger.info(f"Iniciando envío de notificación DUAL a {numero_destino}")
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
+        logger.error("[NOTIFICACION SMS] Credenciales de Twilio no configuradas. No se puede enviar SMS.")
+        return
     
-    # 1. Envía por WhatsApp
-    enviar_notificacion_whatsapp(numero_destino, mensaje)
-    
-    # 2. Envía por SMS
-    enviar_notificacion_sms(numero_destino, mensaje)
+    # Verificación simple del formato del número
+    if not re.match(r'^\+\d{7,15}$', numero_destino):
+        logger.warning(f"[NOTIFICACION SMS] Número de destino '{numero_destino}' no parece un formato E.164 válido. Intentando enviar de todas formas.")
+
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            to=numero_destino,
+            from_=TWILIO_PHONE_NUMBER,
+            body=mensaje
+        )
+        logger.info(f"[NOTIFICACION SMS] SMS enviado, SID: {message.sid}")
+    except Exception as e:
+        logger.error(f"[NOTIFICACION SMS] Error al enviar SMS a {numero_destino}: {e}")
 
 
 TOOL_REGISTRY = {
@@ -318,26 +341,36 @@ class ReclamoHandler(BaseMunicipioHandler):
             memoria['estado_conversacion'] = 'esperando_nombre_vecino'
             return {"respuesta": "¡Gracias! Ahora, por favor, tu **nombre completo**."}
 
-         if estado == 'esperando_telefono_vecino':
-            # ... (código para obtener la categoría, dirección, nombre, etc.)
+        if estado == 'esperando_telefono_vecino':
+            if es_pregunta_nueva(pregunta, "un número de teléfono"): memoria.clear(); return None
+            
+            # --- PASO 1: Leemos todas las variables de la memoria PRIMERO ---
+            categoria = memoria.get('categoria_reclamo', 'General')
+            direccion = memoria.get('direccion_reclamo', 'No especificada')
+            nombre = memoria.get('nombre_vecino', 'Anónimo')
+            
             telefono = re.sub(r'\D', '', pregunta.strip())
-            # Esta línea es para asegurar el formato correcto para Argentina. ¡Bien hecho!
             if not telefono.startswith('+'): telefono = '+549' + telefono 
             
+            # --- PASO 2: Ahora sí, creamos los detalles y el ticket ---
             detalles = f"Consulta original: {memoria.get('pregunta_original', 'N/A')}\nCategoría: {categoria}\nDirección: {direccion}\nNombre: {nombre}\nTeléfono: {telefono}"
             
             ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={"asunto": f"Reclamo de {categoria}", "categoria": categoria, "detalles": detalles, "user_id": self.context.get("user_id")})
             
             if ticket:
-                # --- ¡AQUÍ HACEMOS LA MAGIA! ---
-                # 1. Preparamos el mensaje de notificación
-                mensaje_notificacion = f"¡Hola {nombre}! Tu reclamo en el Municipio fue generado con el ticket M-{ticket.nro_ticket}. El equipo de {categoria} lo revisará pronto."
+                # --- PASO 3: Y finalmente, enviamos las notificaciones ---
+                enviar_notificacion_whatsapp_con_plantilla(
+                    numero_destino=telefono,
+                    nombre=nombre, # Usamos la variable 'nombre' que ya definimos
+                    nro_ticket=ticket.nro_ticket,
+                    categoria=categoria # Usamos la variable 'categoria'
+                )
                 
-                # 2. Llamamos a nuestra nueva función DUAL
-                enviar_notificacion_dual(telefono, mensaje_notificacion)
-                
+                mensaje_sms = f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado. Te mantendremos al tanto por SMS."
+                # ¡FALTA ESTA LLAMADA! La agregamos.
+                enviar_notificacion_sms(telefono, mensaje_sms)
+
                 memoria.clear()
-                # El mensaje en el chat puede ser un poco más conciso.
                 return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. Te hemos enviado una notificación por WhatsApp y SMS con los detalles."}
             else:
                 memoria.clear()
