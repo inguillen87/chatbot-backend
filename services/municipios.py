@@ -106,17 +106,26 @@ class BaseMunicipioHandler:
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
-        if not memoria.get('estado_conversacion'):
-            saludos = ['hola', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'que tal', 'buenas']
-            if normalizar_texto(pregunta.strip("!.,?")) in saludos:
-                memoria.clear()
-                return {
-                    "respuesta": (
-                        "¡Hola! 👋 Soy el asistente virtual del Municipio. "
-                        "Consultame trámites, reclamos, turnos o lo que necesites. ¿En qué te ayudo hoy?"
-                    )
-                }
+        texto = normalizar_texto(pregunta.strip("!.,?"))
+        saludos = ['hola', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'que tal', 'buenas']
+
+        # 1. Si es solo un saludo, responde amigable.
+        if texto in saludos:
+            memoria.clear()
+            return {
+                "respuesta": (
+                    "¡Hola! 👋 Soy Chatboc, tu asistente digital del Municipio. "
+                    "¿Querés hacer un reclamo, consultar un trámite o resolver una duda? ¡Contame en qué te ayudo!"
+                )
+            }
+
+        # 2. Si detecta saludo mezclado con consulta, deja que los otros handlers respondan pero mete saludo en la respuesta.
+        for saludo in saludos:
+            if texto.startswith(saludo + " ") or texto.startswith(saludo + ",") or texto.startswith(saludo + "."):
+                memoria['saludo_detectado'] = True
+                break
         return None
+
 
 class IntentClassifierHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
