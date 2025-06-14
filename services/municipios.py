@@ -656,17 +656,17 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     # --- SIGUE EL FLUJO NORMAL ---
     estado_antes = contexto_municipio.get('estado_conversacion')
     handler_chain = [
-        GreetingHandler,
-        ToolHandler,
-        HumanEscalationHandler,
-        IntentClassifierHandler,
-        TicketStatusHandler,
-        ReclamoHandler,
-        TramitesHandler,
-        ImpuestosHandler,
-        GeneralHandler,
-        EngancheAnonimoMunicipioHandler
-    ]
+    GreetingHandler,
+    IntentClassifierHandler,
+    TicketStatusHandler,
+    ReclamoHandler,
+    TramitesHandler,
+    ImpuestosHandler,
+    ToolHandler,  
+    HumanEscalationHandler,
+    GeneralHandler,
+    EngancheAnonimoMunicipioHandler
+]
     respuesta_final = None
     for handler_class in handler_chain:
         try:
