@@ -60,6 +60,28 @@ def enviar_email_pedido_admin(pedido) -> bool:
     return enviar_email(ADMIN_EMAIL, asunto, cuerpo)
 
 
+def enviar_email_ticket_admin(ticket) -> bool:
+    """Envía un correo al administrador con el nuevo ticket."""
+    if not ADMIN_EMAIL:
+        logger.warning("[EMAIL] ADMIN_EMAIL no configurado.")
+        return False
+
+    asunto = f"Nuevo ticket {ticket.nro_ticket}"
+    cuerpo = (
+        f"<h3>Nuevo ticket registrado</h3>"
+        f"<p><strong>Número:</strong> {ticket.nro_ticket}</p>"
+        f"<p><strong>Asunto:</strong> {ticket.asunto}</p>"
+        f"<p><strong>Categoría:</strong> {ticket.categoria}</p>"
+        f"<p><strong>Pregunta:</strong> {ticket.pregunta}</p>"
+    )
+    if getattr(ticket, "telefono", None) or getattr(ticket, "email", None):
+        cuerpo += (
+            f"<p><strong>Contacto:</strong> {getattr(ticket, 'email', '')} "
+            f"- {getattr(ticket, 'telefono', '')}</p>"
+        )
+    return enviar_email(ADMIN_EMAIL, asunto, cuerpo)
+
+
 def enviar_sms(destino: str, mensaje: str) -> bool:
     """Envía un SMS usando Twilio."""
     if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, destino]):

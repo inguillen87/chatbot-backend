@@ -16,6 +16,7 @@ from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legib
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
+from services.email_service import enviar_email_ticket_admin, enviar_sms
 from services.webinfo import obtener_info_web
 from services.pedido_service import servicio_pedidos
 from services.herramientas_pyme import TOOL_REGISTRY_PYME
@@ -394,6 +395,19 @@ class BrokenProductHandler(BaseHandler):
                 }
             )
             if ticket:
+                try:
+                    enviar_email_ticket_admin(ticket)
+                except Exception as e:
+                    logger.error(f"Error enviando email de ticket roto: {e}")
+                try:
+                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
+                    if telefono:
+                        tel = re.sub(r"\D", "", telefono)
+                        if not tel.startswith("+") and len(tel) > 8:
+                            tel = "+549" + tel
+                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
+                except Exception as e:
+                    logger.error(f"Error enviando SMS de ticket roto: {e}")
                 memoria['estado_conversacion'] = 'esperando_datos_reclamo_roto'
                 memoria['ticket_id_roto'] = ticket.id
                 return {"respuesta": f"Lamentamos lo ocurrido. Creamos el ticket **{ticket.nro_ticket}**. ¿Podés contarnos más detalles o enviar una foto?", "fuente": "reclamo_roto"}
@@ -417,6 +431,19 @@ class ClaimHandler(BaseHandler):
                 }
             )
             if ticket:
+                try:
+                    enviar_email_ticket_admin(ticket)
+                except Exception as e:
+                    logger.error(f"Error enviando email de ticket: {e}")
+                try:
+                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
+                    if telefono:
+                        tel = re.sub(r"\D", "", telefono)
+                        if not tel.startswith("+") and len(tel) > 8:
+                            tel = "+549" + tel
+                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
+                except Exception as e:
+                    logger.error(f"Error enviando SMS de ticket: {e}")
                 self.context.get('contexto_pyme', {})['esperando_detalles_reclamo'] = ticket.id
                 return {"respuesta": f"Registré tu reclamo con número **{ticket.nro_ticket}**. ¿Podés brindarme más detalles?", "fuente": "reclamo_registrado"}
         return None
