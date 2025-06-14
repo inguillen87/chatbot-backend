@@ -134,68 +134,46 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
 # En herramientas_municipio.py, reemplaza tu diccionario
 
 KEYWORD_TO_CATEGORY_MAP = {
-    # Categoría: Luminaria
-    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria",
-    "foco": "Luminaria", "lampara": "Luminaria", "iluminacion": "Luminaria",
-    "farol": "Luminaria",
-    
-    # Categoría: Arbol Caido
-    "arbol": "Arbol Caido", "rama": "Arbol Caido", "gajo": "Arbol Caido",
-    
-    # Categoría: Limpieza
-    "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza",
-    "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza",
-    "desmalezamiento": "Limpieza", "baldio": "Limpieza", # 'baldío' ahora es 'baldio'
-    
-    # Categoría: Arreglo de calle
-    "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle",
-    "vereda": "Arreglo de calle", "pozo": "Arreglo de calle", "rotura": "Arreglo de calle",
-    "pavimento": "Arreglo de calle",
-    
-    # Categoría: Falta de agua, rotura de caño
-    "agua": "Falta de agua, rotura de caño", "cano": "Falta de agua, rotura de caño", # 'caño' ahora es 'cano'
-    "perdida": "Falta de agua, rotura de caño", "fuga": "Falta de agua, rotura de caño",
-    
-    # Categoría: Rotura de semaforo
-    "semaforo": "Rotura de semaforo", 
-    
-    # Categoría: Fumigacion
-    "fumigacion": "Fumigacion", "fumigar": "Fumigacion", "bichos": "Fumigacion",
-    "plaga": "Fumigacion", "mosquitos": "Fumigacion", "ratas": "Fumigacion",
-    
-    # Categoría: Riego de Calle
+    # Luminaria
+    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria", "farol": "Luminaria", "iluminacion": "Luminaria", "foco": "Luminaria", "lampara": "Luminaria",
+    # Arbol Caido
+    "arbol": "Arbol Caido", "arbol caido": "Arbol Caido", "rama": "Arbol Caido", "ramas": "Arbol Caido", "gajo": "Arbol Caido", "tronco": "Arbol Caido",
+    # Limpieza
+    "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza", "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza", "maleza": "Limpieza", "desmalezado": "Limpieza", "baldio": "Limpieza",
+    # Arreglo de calle
+    "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle", "vereda": "Arreglo de calle", "pozo": "Arreglo de calle", "pavimento": "Arreglo de calle", "calzada": "Arreglo de calle", "hueco": "Arreglo de calle",
+    # Falta de agua, rotura de caño
+    "agua": "Falta de agua, rotura de caño", "caño": "Falta de agua, rotura de caño", "cano": "Falta de agua, rotura de caño", "perdida": "Falta de agua, rotura de caño", "fuga": "Falta de agua, rotura de caño", "rotura": "Falta de agua, rotura de caño",
+    # Rotura de semaforo
+    "semaforo": "Rotura de semaforo", "semáforo": "Rotura de semaforo", "luz roja": "Rotura de semaforo", "luz verde": "Rotura de semaforo",
+    # Fumigacion
+    "fumigacion": "Fumigacion", "fumigar": "Fumigacion", "bichos": "Fumigacion", "plaga": "Fumigacion", "mosquitos": "Fumigacion", "insectos": "Fumigacion", "ratas": "Fumigacion", "cucarachas": "Fumigacion",
+    # Riego de Calle
     "riego": "Riego de Calle", "regar": "Riego de Calle",
-    
-    # Categoría: Castracion de mascota
-    "castracion": "Castracion de mascota", "castrar": "Castracion de mascota",
-    "mascota": "Castracion de mascota", "perro": "Castracion de mascota",
-    "gato": "Castracion de mascota",
-    
-    # Categoría: Inspeccion de comercio
-    "inspeccion": "Inspeccion de comercio", "comercio": "Inspeccion de comercio", 
-    "negocio": "Inspeccion de comercio", "habilitacion": "Inspeccion de comercio",
-    
-    # Categoría: Tramites de Obras Privadas
-    "obra": "Tramites de Obras Privadas", "construccion": "Tramites de Obras Privadas",
-    "plano": "Tramites de Obras Privadas",
+    # Castracion de mascota
+    "castracion": "Castracion de mascota", "castración": "Castracion de mascota", "castrar": "Castracion de mascota", "mascota": "Castracion de mascota", "perro": "Castracion de mascota", "gato": "Castracion de mascota", "esterilizacion": "Castracion de mascota", "esterilización": "Castracion de mascota",
+    # Inspeccion de comercio
+    "inspeccion": "Inspeccion de comercio", "inspección": "Inspeccion de comercio", "comercio": "Inspeccion de comercio", "negocio": "Inspeccion de comercio", "habilitacion": "Inspeccion de comercio",
+    # Tramites de Obras Privadas
+    "obra": "Tramites de Obras Privadas", "construccion": "Tramites de Obras Privadas", "construcción": "Tramites de Obras Privadas", "plano": "Tramites de Obras Privadas",
 }
 
-def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
-    """
-    Analiza el texto del usuario en busca de palabras clave para asignar una categoría.
-    Ahora normaliza el texto para ser insensible a mayúsculas y acentos.
-    """
-    # --- ¡ÚNICO CAMBIO, PERO MUY PODEROSO! ---
-    # Normalizamos el texto del usuario antes de empezar a buscar.
-    texto_normalizado = normalizar_texto(texto_usuario)
-    # -------------------------------------------
 
+def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
+    texto_normalizado = normalizar_texto(texto_usuario)
+
+    # 1. Intentá match EXACTO con la lista de categorías ya normalizadas
+    categorias_normalizadas = {normalizar_texto(cat): cat for cat in set(KEYWORD_TO_CATEGORY_MAP.values())}
+    if texto_normalizado in categorias_normalizadas:
+        return categorias_normalizadas[texto_normalizado]
+
+    # 2. Si no, buscá por keywords
     for keyword, category in KEYWORD_TO_CATEGORY_MAP.items():
-        # Como las keywords del diccionario ya están normalizadas, la comparación es directa.
         if keyword in texto_normalizado:
             return category
-            
+
     return "Otros"
+
 
 # En herramientas_municipio.py
 
