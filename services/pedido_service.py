@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from models import db, PymePedido # Asegúrate que PymePedido esté importado desde models
 import re
 from datetime import datetime
 from models import db, PymePedido  # Asegúrate que PymePedido esté importado desde models
@@ -28,6 +29,7 @@ class PedidoService:
             )
             db.session.add(nuevo_pedido)
             db.session.commit()
+            logger.info(f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{nuevo_pedido.rubro}' por cliente '{nuevo_pedido.nombre_cliente}'")
             logger.info(
                 f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{nuevo_pedido.rubro}' por cliente '{nuevo_pedido.nombre_cliente}'"
             )
