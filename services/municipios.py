@@ -91,14 +91,44 @@ def enviar_notificacion_whatsapp_con_plantilla(numero_destino: str, nombre: str,
         logger.error(f"[NOTIFICACION WHATSAPP] Error: {e}", exc_info=True)
 
 def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
+    """Determina si el usuario cambió de tema o respondió lo esperado.
+
+    Se intenta primero con heurísticas sencillas para evitar falsos positivos
+    cuando el usuario envía datos como números de ticket o teléfonos. Si las
+    heurísticas no aplican, se consulta al modelo de lenguaje.
+    """
+
+    texto = texto_usuario.strip().lower()
+
+    if tipo_esperado == "una confirmación (sí o no)":
+        if texto in {"si", "sí", "no"}:
+            return False
+
+    if tipo_esperado == "una calificación del 1 al 5":
+        if re.fullmatch(r"[1-5]", texto):
+            return False
+
+    if tipo_esperado == "un número de ticket":
+        if re.fullmatch(r"\d{5,}", texto):
+            return False
+
+    if tipo_esperado in {"el dato solicitado", "una dirección"}:
+        if re.search(r"\d", texto):
+            # Si contiene dígitos asumimos que puede ser una dirección o número
+            return False
+
     prompt = f"""
     Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.
     RESPUESTA DEL USUARIO: "{texto_usuario}"
     Si responde lo que esperabas, contestá 'RESPUESTA_VALIDA'.
     Si cambia de tema, contestá 'PREGUNTA_NUEVA'.
     """
+
     try:
-        decision = get_cohere_response(message=prompt, preamble="Sos un clasificador. Solo respondé 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.")
+        decision = get_cohere_response(
+            message=prompt,
+            preamble="Sos un clasificador. Solo respondé 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'."
+        )
         logger.info(f"[Guardián de Flujo] Decisión: {decision.strip()}")
         return "PREGUNTA_NUEVA" in decision
     except Exception as e:
