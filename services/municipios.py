@@ -37,7 +37,7 @@ MINI_FAQ_TRAMITES = {
             "q": "pago multa",
             "a": "Para sacar o renovar tu Licencia necesitás no tener multas impagas.",
             "botones": [
-                {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
+                {"texto": "Ir a Rentas", "url": "https://www.juninmendoza.gov.ar/tramites/"},
                 {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
             ]
         },
