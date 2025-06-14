@@ -9,7 +9,12 @@ from google.oauth2 import service_account
 from typing import List, Dict, Any, Optional
 
 # Importamos nuestro cerebro y herramientas compartidas
-from .utils import limpiar_texto_base, parse_precio_flexible, crear_mapa_de_columnas_inteligente
+from .utils import (
+    limpiar_texto_base,
+    parse_precio_flexible,
+    parse_cantidad_flexible,
+    crear_mapa_de_columnas_inteligente,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +169,10 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
                     "marca": str(row.get(mapa_columnas.get('marca'), '')).strip(),
                     "categoria_qdrant": str(row.get(mapa_columnas.get('categoria'), pyme_rubro_nombre)).strip(),
                     "unidad": str(row.get(mapa_columnas.get('unidad'), 'unidad')).strip(),
-                    "cantidad_disponible": str(row.get(mapa_columnas.get('stock'), '1')).strip(),
+                    "cantidad_disponible": str(
+                        parse_cantidad_flexible(row.get(mapa_columnas.get('stock'), '1'))
+                        or '0'
+                    ).strip(),
                 }
                 productos_extraidos_final.append(producto)
             except Exception as e_row:
