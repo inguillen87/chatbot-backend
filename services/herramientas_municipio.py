@@ -175,11 +175,6 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
     return "Otros"
 
 
-# En herramientas_municipio.py
-
-# ... (mantén todas tus funciones existentes como normalizar_texto, KEYWORD_TO_CATEGORY_MAP, etc.)
-
-
 # --- NUEVA FUNCIÓN-HERRAMIENTA: AGENDA DE EVENTOS ---
 
 def consultar_eventos_culturales(fecha: str) -> str:
