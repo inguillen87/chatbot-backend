@@ -17,7 +17,8 @@ from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
 from services.email_service import enviar_email_ticket_admin, enviar_sms
-from services.webinfo import obtener_info_web
+from services.webinfo import obtener_info_web, guardar_info_web
+from services.scraper_avanzado import extraer_productos_de_url
 from services.pedido_service import servicio_pedidos
 from services.herramientas_pyme import TOOL_REGISTRY_PYME
 from .logic import _clasificar_intencion_con_llm
@@ -475,23 +476,53 @@ class VectorCatalogHandler(BaseHandler):
             return None
 
         resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, limite=3)
-        if not resultados:
-            return None
-
         productos_mostrados = []
-        for hit in resultados:
-            if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
-                productos_mostrados.append(hit.payload)
 
-        if productos_mostrados:
-            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-            respuesta = armar_respuesta_legible(resultados)
-            if respuesta:
-                return {
-                    'respuesta': respuesta,
-                    'fuente': 'catalogo_vector',
-                    'estado_respuesta': 'mostrar_catalogo'
-                }
+        if resultados:
+            for hit in resultados:
+                if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
+                    productos_mostrados.append(hit.payload)
+
+            if productos_mostrados:
+                self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+                respuesta = armar_respuesta_legible(resultados)
+                if respuesta:
+                    return {
+                        'respuesta': respuesta,
+                        'fuente': 'catalogo_vector',
+                        'estado_respuesta': 'mostrar_catalogo'
+                    }
+
+        # Fallback: intentar scrapear la web si no hubo resultados
+        user_obj = self.context.get('user_obj')
+        if user_obj and getattr(user_obj, 'link_web', None):
+            try:
+                productos = []
+                contenidos = SitioWebInfo.query.filter_by(user_id=user_obj.id).all()
+                for item in contenidos:
+                    datos = json.loads(item.datos_json)
+                    if datos.get('tipo') == 'productos':
+                        productos.extend(datos.get('productos', []))
+
+                if not productos:
+                    datos_scrape = extraer_productos_de_url(user_obj.link_web)
+                    if datos_scrape.get('productos'):
+                        guardar_info_web(user_id=user_obj.id, rubro_id=user_obj.rubro_id, url=user_obj.link_web, data_dict=datos_scrape)
+                        productos = datos_scrape['productos']
+
+                if productos:
+                    productos_mostrados = productos[:3]
+                    self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+                    resumen = "\n".join([
+                        f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in productos_mostrados
+                    ])
+                    return {
+                        'respuesta': f"Estos son algunos productos que encontré en nuestra tienda:\n{resumen}",
+                        'fuente': 'catalogo_scraper',
+                        'estado_respuesta': 'mostrar_catalogo'
+                    }
+            except Exception as e:
+                logger.error(f"[VectorCatalogHandler] Error en fallback scraper: {e}")
 
         return None
 
