@@ -79,6 +79,14 @@ def parse_cantidad_flexible(texto_cantidad_input: Optional[Any]) -> Optional[flo
     except ValueError:
         return None
 
+def safe_row_get(row: pd.Series, column: Any) -> Any:
+    """Safely obtain a value from a DataFrame row by label or position."""
+    if isinstance(column, int):
+        if column < len(row):
+            return row.iloc[column]
+        return ""
+    return row.get(column, "")
+
 def extraer_unidades_y_tipos_precio(texto_linea: str, pyme_rubro_nombre: str = "generico") -> tuple[Optional[str], Optional[str]]:
     """Tu excelente función para extraer unidades y tipos de precio. Se conserva intacta."""
     if not texto_linea: return None, None

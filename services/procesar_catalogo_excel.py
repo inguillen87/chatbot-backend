@@ -9,6 +9,7 @@ from .utils import (
     parse_precio_flexible,
     parse_cantidad_flexible,
     crear_mapa_de_columnas_inteligente,
+    safe_row_get,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,8 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
     # 3. Iteramos y extraemos los productos
     for index, row in df_datos.iterrows():
         try:
-            nombre_prod = str(row.get(mapa_columnas.get('nombre', ''), '')).strip()
-            precio_crudo = str(row.get(mapa_columnas.get('precio'), '')).strip()
+            nombre_prod = str(safe_row_get(row, mapa_columnas.get('nombre', ''))).strip()
+            precio_crudo = str(safe_row_get(row, mapa_columnas.get('precio'))).strip()
 
             if not nombre_prod or not precio_crudo or len(nombre_prod) < 2: continue
 
@@ -66,15 +67,15 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
                 "precio_str": precio_str if precio_str else "Consultar",
                 "precio_float": precio_float,
                 "moneda": moneda if moneda else "ARS",
-                "sku": str(row.get(mapa_columnas.get('sku'), '')).strip()[:100],
-                "descripcion": str(row.get(mapa_columnas.get('descripcion'), '')).strip()[:1000],
-                "marca": str(row.get(mapa_columnas.get('marca'), '')).strip()[:100],
-                "categoria_qdrant": str(row.get(mapa_columnas.get('categoria'), pyme_rubro_nombre)).strip()[:100],
-                "unidad": str(row.get(mapa_columnas.get('unidad'), 'unidad')).strip()[:50],
+                "sku": str(safe_row_get(row, mapa_columnas.get('sku'))).strip()[:100],
+                "descripcion": str(safe_row_get(row, mapa_columnas.get('descripcion'))).strip()[:1000],
+                "marca": str(safe_row_get(row, mapa_columnas.get('marca'))).strip()[:100],
+                "categoria_qdrant": str(safe_row_get(row, mapa_columnas.get('categoria')) or pyme_rubro_nombre).strip()[:100],
+                "unidad": str(safe_row_get(row, mapa_columnas.get('unidad')) or 'unidad').strip()[:50],
                 "cantidad_disponible": (
                     str(
                         parse_cantidad_flexible(
-                            row.get(mapa_columnas.get('stock'), '1')
+                            safe_row_get(row, mapa_columnas.get('stock')) or '1'
                         )
                         or '0'
                     )[:50]
