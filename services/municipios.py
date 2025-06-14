@@ -590,10 +590,13 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             )
             logger.info(f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada.")
             self.context.get('contexto_municipio', {}).clear()
-            return {"respuesta": (
-                f"¡Listo! Abrimos una sala de chat directa con el equipo.\n"
-                f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. Esperá, un agente se conecta en breve."
-            ), "ticket_id": sala_de_chat.id}
+            return {
+    "respuesta": (
+        f"¡Listo! Abrimos una sala de chat directa con el equipo.\n"
+        f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. Esperá, un agente se conecta en breve."
+    ),
+    "ticket_id": sala_de_chat.id  # <---- Esto es FUNDAMENTAL para que el frontend lo siga!
+}
         return None
 
 def serializar_enum(obj):

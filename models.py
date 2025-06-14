@@ -93,6 +93,7 @@ class MunicipioTicket(db.Model):
     categoria = db.Column(db.String(100), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
     ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     detalles = db.Column(db.Text)  # <-- Esto es lo que falta
@@ -108,6 +109,7 @@ class PymeTicket(db.Model):
     categoria = db.Column(db.String(100), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime, default=db.func.now())
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
