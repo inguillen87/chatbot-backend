@@ -47,6 +47,40 @@ MINI_FAQ_TRAMITES = {
         {"q": "turno", "a": "Solicitá turno en: https://tlc.mendoza.gov.ar/turnos"}
     ]
 }
+
+# Opciones de trámites disponibles en la Municipalidad de Junín.
+# El texto de cada opción es devuelto al vecino cuando selecciona el trámite.
+TRAMITES_INFO = {
+    "mesa de entrada": (
+        "Podés presentar notas, reclamos y solicitudes en la Mesa de Entrada "
+        "ubicada en [direccion]. También encontrás formularios en [linkWeb]."
+    ),
+    "rentas": (
+        "Consultá tus impuestos municipales o generá boletas desde "
+        "[linkWeb]. También podés acercarte al área de Rentas en [direccion]."
+    ),
+    "obras privadas": (
+        "Los permisos de construcción y consultas de planos se gestionan en "
+        "Obras Privadas. Revisá requisitos en la web municipal o acercate a "
+        "[direccion]."
+    ),
+    "catastro": (
+        "Para certificados catastrales y actualizaciones de parcelas, "
+        "dirigite al sector Catastro en [direccion] o consultá en [linkWeb]."
+    ),
+    "forestales": (
+        "Solicitá permisos de poda, extracción o forestación en la Dirección "
+        "de Forestales. Más información disponible en [linkWeb]."
+    ),
+    "carnet de sanidad": (
+        "El carnet sanitario para manipuladores de alimentos se tramita en "
+        "Sanidad municipal. Podés pedir turno online desde [linkWeb]."
+    ),
+    "registro de artesanos": (
+        "La inscripción al Registro de Artesanos y ferias se realiza en el "
+        "área de Cultura municipal. Consultá requisitos en [linkWeb]."
+    ),
+}
 EJEMPLO_DIRECCION = "Ejemplo: San Martín 123, Barrio Centro, Junín"
 
 class ConversationState(Enum):
@@ -409,27 +443,27 @@ class TramitesHandler(BaseMunicipioHandler):
         if intencion == 'consultar_tramite' and not estado:
             memoria.clear()
             memoria['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_TRAMITE
+            opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
             return {
-                "respuesta": "¿Sobre qué trámite necesitás información? Te ayudo con Licencia, pagos, etc.",
-                "botones": [
-                    {"texto": "Licencia de Conducir"},
-                    {"texto": "Pagos y Deudas"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"},
-                ]
+                "respuesta": "¿Sobre qué trámite necesitás información?",
+                "botones": opciones,
             }
 
         if estado == ConversationState.ESPERANDO_SELECCION_TRAMITE:
             if es_pregunta_nueva(pregunta, "una opción de trámite"):
                 memoria.clear()
+                opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
                 return {
                     "respuesta": "¿Sobre qué otra gestión necesitás ayuda?",
-                    "botones": [
-                        {"texto": "Licencia de Conducir"},
-                        {"texto": "Pagos y Deudas"},
-                        {"texto": "Más Trámites"},
-                    ]
+                    "botones": opciones,
                 }
-            if "licencia" in normalizar_texto(pregunta):
+
+            texto = normalizar_texto(pregunta)
+            if texto in TRAMITES_INFO:
+                memoria.clear()
+                return {"respuesta": TRAMITES_INFO[texto]}
+
+            if "licencia" in texto:
                 memoria['estado_conversacion'] = ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
                 return {
                     "respuesta": (
@@ -440,11 +474,11 @@ class TramitesHandler(BaseMunicipioHandler):
                         {"texto": "¿Dónde hacer el curso?"}
                     ]
                 }
-            else:
-                memoria['estado_conversacion'] = ConversationState.ESPERANDO_DETALLE_TRAMITE
-                return {
-                    "respuesta": "¿Sobre qué trámite puntual querés información?",
-                }
+
+            memoria['estado_conversacion'] = ConversationState.ESPERANDO_DETALLE_TRAMITE
+            return {
+                "respuesta": "¿Sobre qué trámite puntual querés información?",
+            }
         if estado == ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA:
             if es_pregunta_nueva(pregunta, "una pregunta sobre el curso de licencia"):
                 memoria.clear()
