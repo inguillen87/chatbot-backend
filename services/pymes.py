@@ -54,7 +54,7 @@ INTENCIONES POSIBLES:
 - consultar_stock: El usuario pregunta sobre la disponibilidad de un producto o stock.
 - consultar_horario: El usuario pregunta sobre horarios de atención.
 - consultar_ubicacion: El usuario pregunta por la dirección física.
-- hablar_con_agente_pyme: El usuario quiere hablar con una persona de la empresa.
+- hablar_con_agente_pyme: El usuario quiere hablar con una persona de la empresa (ej. "necesito hablar con alguien", "quiero hablar con una persona", "pasame con un humano", "me pasas con un operador", "quiero un representante")
 - general_pyme: Cualquier otra consulta que no encaje en las anteriores.
 
 PREGUNTA DEL USUARIO: "{pregunta_usuario}"
