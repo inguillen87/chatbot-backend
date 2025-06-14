@@ -558,14 +558,14 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     handler_chain = [
         LimitHandler,
         FollowUpHandler,
-        IntentClassifierPymeHandler,
-        PedidoHandler,
+        IntentClassifierPymeHandler, # 1. Clasifica la intención
+        VectorCatalogHandler,      # 2. BUSCA EN EL CATÁLOGO VECTORIAL PRIMERO
+        PedidoHandler,             # 3. Ahora sí, gestiona el pedido con el contexto de productos
         BrokenProductHandler,
         ClaimHandler,
-        VectorCatalogHandler,
         FaqHandler,
         ToolHandlerPyme,
-        LLMHandler,
+        LLMHandler,                # Este ahora es un excelente fallback inteligente
         IntentHandler,
         SalesEngageHandler,
         EngancheAnonimoHandler,
