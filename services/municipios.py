@@ -33,12 +33,53 @@ BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICA
 MINI_FAQ_TRAMITES = {
     "licencia_de_conducir": [
         {"q": "cuánto cuesta", "a": "El costo de la Licencia depende de la categoría. Consultalo en la web oficial del municipio o en mesa de entrada."},
-        {"q": "pago multa", "a": "Para sacar o renovar tu Licencia necesitás no tener multas impagas. Consultá y pagalas en Rentas: https://rentas.juninmendoza.gov.ar/"},
+        {
+            "q": "pago multa",
+            "a": "Para sacar o renovar tu Licencia necesitás no tener multas impagas.",
+            "botones": [
+                {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
+                {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
+            ]
+        },
         {"q": "vencimiento", "a": "La fecha de vencimiento y los requisitos están en el reverso de tu Licencia o en la web del municipio."},
         {"q": "curso", "a": "El curso de seguridad vial se hace online (Agencia Nacional de Seguridad Vial) o presencial en el Centro de Licencias."},
         {"q": "requisitos", "a": "DNI actualizado, no tener multas, hacer el curso y, si corresponde, apto médico."},
         {"q": "turno", "a": "Solicitá turno en: https://tlc.mendoza.gov.ar/turnos"}
     ]
+}
+
+# Opciones de trámites disponibles en la Municipalidad de Junín.
+# El texto de cada opción es devuelto al vecino cuando selecciona el trámite.
+TRAMITES_INFO = {
+    "mesa de entrada": (
+        "Podés presentar notas, reclamos y solicitudes en la Mesa de Entrada "
+        "ubicada en [direccion]. También encontrás formularios en [linkWeb]."
+    ),
+    "rentas": (
+        "Consultá tus impuestos municipales o generá boletas desde "
+        "[linkWeb]. También podés acercarte al área de Rentas en [direccion]."
+    ),
+    "obras privadas": (
+        "Los permisos de construcción y consultas de planos se gestionan en "
+        "Obras Privadas. Revisá requisitos en la web municipal o acercate a "
+        "[direccion]."
+    ),
+    "catastro": (
+        "Para certificados catastrales y actualizaciones de parcelas, "
+        "dirigite al sector Catastro en [direccion] o consultá en [linkWeb]."
+    ),
+    "forestales": (
+        "Solicitá permisos de poda, extracción o forestación en la Dirección "
+        "de Forestales. Más información disponible en [linkWeb]."
+    ),
+    "carnet de sanidad": (
+        "El carnet sanitario para manipuladores de alimentos se tramita en "
+        "Sanidad municipal. Podés pedir turno online desde [linkWeb]."
+    ),
+    "registro de artesanos": (
+        "La inscripción al Registro de Artesanos y ferias se realiza en el "
+        "área de Cultura municipal. Consultá requisitos en [linkWeb]."
+    ),
 }
 EJEMPLO_DIRECCION = "Ejemplo: San Martín 123, Barrio Centro, Junín"
 
@@ -390,7 +431,7 @@ def buscar_en_faqs(pregunta, tramite):
     pregunta_norm = normalizar_texto(pregunta)
     for item in MINI_FAQ_TRAMITES[tramite]:
         if any(palabra in pregunta_norm for palabra in item["q"].split()):
-            return item["a"]
+            return item
     return None
 
 class TramitesHandler(BaseMunicipioHandler):
@@ -402,27 +443,27 @@ class TramitesHandler(BaseMunicipioHandler):
         if intencion == 'consultar_tramite' and not estado:
             memoria.clear()
             memoria['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_TRAMITE
+            opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
             return {
-                "respuesta": "¿Sobre qué trámite necesitás información? Te ayudo con Licencia, pagos, etc.",
-                "botones": [
-                    {"texto": "Licencia de Conducir"},
-                    {"texto": "Pagos y Deudas"},
-                    {"texto": "Más Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"},
-                ]
+                "respuesta": "¿Sobre qué trámite necesitás información?",
+                "botones": opciones,
             }
 
         if estado == ConversationState.ESPERANDO_SELECCION_TRAMITE:
             if es_pregunta_nueva(pregunta, "una opción de trámite"):
                 memoria.clear()
+                opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
                 return {
                     "respuesta": "¿Sobre qué otra gestión necesitás ayuda?",
-                    "botones": [
-                        {"texto": "Licencia de Conducir"},
-                        {"texto": "Pagos y Deudas"},
-                        {"texto": "Más Trámites"},
-                    ]
+                    "botones": opciones,
                 }
-            if "licencia" in normalizar_texto(pregunta):
+
+            texto = normalizar_texto(pregunta)
+            if texto in TRAMITES_INFO:
+                memoria.clear()
+                return {"respuesta": TRAMITES_INFO[texto]}
+
+            if "licencia" in texto:
                 memoria['estado_conversacion'] = ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
                 return {
                     "respuesta": (
@@ -433,11 +474,11 @@ class TramitesHandler(BaseMunicipioHandler):
                         {"texto": "¿Dónde hacer el curso?"}
                     ]
                 }
-            else:
-                memoria['estado_conversacion'] = ConversationState.ESPERANDO_DETALLE_TRAMITE
-                return {
-                    "respuesta": "¿Sobre qué trámite puntual querés información?",
-                }
+
+            memoria['estado_conversacion'] = ConversationState.ESPERANDO_DETALLE_TRAMITE
+            return {
+                "respuesta": "¿Sobre qué trámite puntual querés información?",
+            }
         if estado == ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA:
             if es_pregunta_nueva(pregunta, "una pregunta sobre el curso de licencia"):
                 memoria.clear()
@@ -450,9 +491,10 @@ class TramitesHandler(BaseMunicipioHandler):
             respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
             if respuesta_faq:
                 memoria.clear()
-                return {
-                    "respuesta": respuesta_faq
-                }
+                respuesta = {"respuesta": respuesta_faq["a"]}
+                if "botones" in respuesta_faq:
+                    respuesta["botones"] = respuesta_faq["botones"]
+                return respuesta
             memoria.clear()
             return {
                 "respuesta": "El curso se hace online (Agencia Nacional de Seguridad Vial) o presencial en el municipio."
@@ -462,9 +504,10 @@ class TramitesHandler(BaseMunicipioHandler):
             respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
             if respuesta_faq:
                 memoria.clear()
-                return {
-                    "respuesta": respuesta_faq
-                }
+                respuesta = {"respuesta": respuesta_faq["a"]}
+                if "botones" in respuesta_faq:
+                    respuesta["botones"] = respuesta_faq["botones"]
+                return respuesta
             memoria.clear()
             return {
                 "respuesta": "Listo. Si es sobre otro trámite, decime cuál y te paso la info."
@@ -478,7 +521,10 @@ class ImpuestosHandler(BaseMunicipioHandler):
             self.context.get('contexto_municipio', {}).clear()
             return {
                 "respuesta": "Consultá impuestos, descargá boletas y pagá online en Rentas.",
-                "botones": [{"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"}]
+                "botones": [
+                    {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
+                    {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
+                ]
             }
         return None
 
@@ -493,7 +539,10 @@ class GeneralHandler(BaseMunicipioHandler):
             respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
             if respuesta_faq:
                 memoria.clear()
-                return {"respuesta": respuesta_faq}
+                respuesta = {"respuesta": respuesta_faq["a"]}
+                if "botones" in respuesta_faq:
+                    respuesta["botones"] = respuesta_faq["botones"]
+                return respuesta
             memoria.clear()
             return {"respuesta": "¿Sobre qué más te puedo ayudar?"}
 
