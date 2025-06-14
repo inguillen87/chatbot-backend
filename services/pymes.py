@@ -12,6 +12,7 @@ from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro
 from services.cohere_ai import get_cohere_response
 from services.vector_search import buscar_item_vectorizado
+from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
@@ -308,7 +309,29 @@ class ClaimHandler(BaseHandler):
 
 class VectorCatalogHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        user_id = self.context.get('user_id')
+        if not user_id:
+            return None
+
+        resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, limite=3)
+        if not resultados:
+            return None
+
+        productos_mostrados = []
+        for hit in resultados:
+            if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
+                productos_mostrados.append(hit.payload)
+
+        if productos_mostrados:
+            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+            respuesta = armar_respuesta_legible(resultados)
+            if respuesta:
+                return {
+                    'respuesta': respuesta,
+                    'fuente': 'catalogo_vector',
+                    'estado_respuesta': 'mostrar_catalogo'
+                }
+
         return None
 
 class SalesEngageHandler(BaseHandler):
