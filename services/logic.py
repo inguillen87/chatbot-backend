@@ -28,7 +28,7 @@ INTENCIONES POSIBLES:
 - consultar_estado_ticket: El usuario quiere saber el estado de un ticket o reclamo existente (ej. "estado de mi reclamo", "cómo va mi ticket 12345")
 - consultar_impuestos: El usuario pregunta sobre impuestos municipales, tasas o pagos (ej. "quiero pagar mis impuestos", "deuda de tasas")
 - consultar_tramite: El usuario pregunta sobre cómo realizar un trámite (ej. "requisitos para licencia de conducir", "cómo se hace habilitacion comercial")
-- hablar_con_agente: El usuario quiere hablar con una persona (ej. "necesito hablar con alguien", "me pasas con un operador")
+- hablar_con_agente: El usuario quiere hablar con una persona (ej. "necesito hablar con alguien", "quiero hablar con una persona", "pasame con un humano", "me pasas con un operador", "quiero un representante")
 - general: Cualquier otra consulta que no encaje en las anteriores.
 
 PREGUNTA DEL USUARIO: "{pregunta_usuario}"
