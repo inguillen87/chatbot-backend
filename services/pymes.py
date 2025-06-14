@@ -16,6 +16,7 @@ from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legib
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
+from services.email_service import enviar_email_ticket_admin, enviar_sms
 from services.webinfo import obtener_info_web
 from services.pedido_service import servicio_pedidos
 from services.herramientas_pyme import TOOL_REGISTRY_PYME
@@ -27,6 +28,24 @@ logger = logging.getLogger(__name__)
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 CONTEXTO_PYME_SESION = "contexto_pyme"
 MAX_HISTORIAL_CHAT = 14
+
+
+def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
+    """Determina si el usuario cambió de tema cuando se esperaba un dato."""
+    texto = texto_usuario.strip().lower()
+    if tipo_esperado == "el dato solicitado" and re.search(r"\d", texto):
+        return False
+    prompt = (
+        f"Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.\n"
+        f"RESPUESTA DEL USUARIO: '{texto_usuario}'\n"
+        "Si responde lo que esperabas, contestá 'RESPUESTA_VALIDA'."
+        " Si cambia de tema, contestá 'PREGUNTA_NUEVA'."
+    )
+    try:
+        decision = get_cohere_response(message=prompt, preamble="Sos un clasificador. Solo respondé 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.")
+        return "PREGUNTA_NUEVA" in decision
+    except Exception:
+        return False
 
 # MODIFICACIÓN 2: Definimos el nuevo prompt inteligente para Pymes, que usará el contexto de la DB
 PROMPT_PYME_CON_CONTEXTO = """
@@ -164,6 +183,17 @@ class BaseHandler:
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
 
+
+class GreetingHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        texto = pregunta.strip().lower().strip("!.,?")
+        saludos = ["hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"]
+        tokens = re.sub(r"[!.,?]", "", texto).split()
+        set_saludo = {"hola", "buenos", "dias", "buenas", "tardes", "noches", "hey", "que", "tal"}
+        if texto in saludos or (0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)):
+            return {"respuesta": "¡Hola! Soy Chatboc. ¿En qué puedo ayudarte hoy?", "fuente": "saludo_pyme"}
+        return None
+
 class LimitHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         if self.context.get('preguntas_usadas', 0) >= self.context.get('limite_preguntas', 50):
@@ -175,18 +205,27 @@ class FollowUpHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context.get('contexto_pyme', {})
         if 'esperando_detalles_reclamo' in contexto_pyme:
+            if es_pregunta_nueva(pregunta, "el dato solicitado"):
+                contexto_pyme.clear()
+                return None
             ticket_id = contexto_pyme.pop('esperando_detalles_reclamo')
             ticket = db.session.get(PymeTicket, ticket_id)
             if ticket:
                 servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": pregunta, "user_id": self.context['user_id']})
                 return {"respuesta": "Perfecto, he añadido tus comentarios al reclamo.", "fuente": "detalle_reclamo_agregado", "estado_respuesta": "exito_seguimiento"}
         elif 'esperando_datos_reclamo_roto' in contexto_pyme:
+            if es_pregunta_nueva(pregunta, "el dato solicitado"):
+                contexto_pyme.clear()
+                return None
             ticket_id = contexto_pyme.pop('esperando_datos_reclamo_roto')
             ticket = db.session.get(PymeTicket, ticket_id)
             if ticket:
                 servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": f"Info adicional del cliente: {pregunta}", "user_id": self.context['user_id']})
                 return {"respuesta": "Recibido. Gracias por la información. Ya estamos procesando el envío de tu reemplazo.", "fuente": "datos_reemplazo_recibidos", "estado_respuesta": "exito_seguimiento"}
         elif 'confirmando_pedido_final_paso_2' in contexto_pyme:
+            if es_pregunta_nueva(pregunta, "el dato solicitado"):
+                contexto_pyme.clear()
+                return None
             productos_a_confirmar = contexto_pyme.pop('productos_a_confirmar_en_paso_2')
             monto_total_final = contexto_pyme.pop('monto_total_final_en_paso_2', 0.0)
             nombre, email, telefono = None, None, None
@@ -356,6 +395,19 @@ class BrokenProductHandler(BaseHandler):
                 }
             )
             if ticket:
+                try:
+                    enviar_email_ticket_admin(ticket)
+                except Exception as e:
+                    logger.error(f"Error enviando email de ticket roto: {e}")
+                try:
+                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
+                    if telefono:
+                        tel = re.sub(r"\D", "", telefono)
+                        if not tel.startswith("+") and len(tel) > 8:
+                            tel = "+549" + tel
+                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
+                except Exception as e:
+                    logger.error(f"Error enviando SMS de ticket roto: {e}")
                 memoria['estado_conversacion'] = 'esperando_datos_reclamo_roto'
                 memoria['ticket_id_roto'] = ticket.id
                 return {"respuesta": f"Lamentamos lo ocurrido. Creamos el ticket **{ticket.nro_ticket}**. ¿Podés contarnos más detalles o enviar una foto?", "fuente": "reclamo_roto"}
@@ -379,6 +431,19 @@ class ClaimHandler(BaseHandler):
                 }
             )
             if ticket:
+                try:
+                    enviar_email_ticket_admin(ticket)
+                except Exception as e:
+                    logger.error(f"Error enviando email de ticket: {e}")
+                try:
+                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
+                    if telefono:
+                        tel = re.sub(r"\D", "", telefono)
+                        if not tel.startswith("+") and len(tel) > 8:
+                            tel = "+549" + tel
+                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
+                except Exception as e:
+                    logger.error(f"Error enviando SMS de ticket: {e}")
                 self.context.get('contexto_pyme', {})['esperando_detalles_reclamo'] = ticket.id
                 return {"respuesta": f"Registré tu reclamo con número **{ticket.nro_ticket}**. ¿Podés brindarme más detalles?", "fuente": "reclamo_registrado"}
         return None
@@ -557,6 +622,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     
     handler_chain = [
         LimitHandler,
+        GreetingHandler,
         FollowUpHandler,
         IntentClassifierPymeHandler, # 1. Clasifica la intención
         VectorCatalogHandler,      # 2. BUSCA EN EL CATÁLOGO VECTORIAL PRIMERO
