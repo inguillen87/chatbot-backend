@@ -33,7 +33,14 @@ BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICA
 MINI_FAQ_TRAMITES = {
     "licencia_de_conducir": [
         {"q": "cuánto cuesta", "a": "El costo de la Licencia depende de la categoría. Consultalo en la web oficial del municipio o en mesa de entrada."},
-        {"q": "pago multa", "a": "Para sacar o renovar tu Licencia necesitás no tener multas impagas. Consultá y pagalas en Rentas: https://rentas.juninmendoza.gov.ar/"},
+        {
+            "q": "pago multa",
+            "a": "Para sacar o renovar tu Licencia necesitás no tener multas impagas.",
+            "botones": [
+                {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
+                {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
+            ]
+        },
         {"q": "vencimiento", "a": "La fecha de vencimiento y los requisitos están en el reverso de tu Licencia o en la web del municipio."},
         {"q": "curso", "a": "El curso de seguridad vial se hace online (Agencia Nacional de Seguridad Vial) o presencial en el Centro de Licencias."},
         {"q": "requisitos", "a": "DNI actualizado, no tener multas, hacer el curso y, si corresponde, apto médico."},
@@ -390,7 +397,7 @@ def buscar_en_faqs(pregunta, tramite):
     pregunta_norm = normalizar_texto(pregunta)
     for item in MINI_FAQ_TRAMITES[tramite]:
         if any(palabra in pregunta_norm for palabra in item["q"].split()):
-            return item["a"]
+            return item
     return None
 
 class TramitesHandler(BaseMunicipioHandler):
@@ -450,9 +457,10 @@ class TramitesHandler(BaseMunicipioHandler):
             respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
             if respuesta_faq:
                 memoria.clear()
-                return {
-                    "respuesta": respuesta_faq
-                }
+                respuesta = {"respuesta": respuesta_faq["a"]}
+                if "botones" in respuesta_faq:
+                    respuesta["botones"] = respuesta_faq["botones"]
+                return respuesta
             memoria.clear()
             return {
                 "respuesta": "El curso se hace online (Agencia Nacional de Seguridad Vial) o presencial en el municipio."
@@ -462,9 +470,10 @@ class TramitesHandler(BaseMunicipioHandler):
             respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
             if respuesta_faq:
                 memoria.clear()
-                return {
-                    "respuesta": respuesta_faq
-                }
+                respuesta = {"respuesta": respuesta_faq["a"]}
+                if "botones" in respuesta_faq:
+                    respuesta["botones"] = respuesta_faq["botones"]
+                return respuesta
             memoria.clear()
             return {
                 "respuesta": "Listo. Si es sobre otro trámite, decime cuál y te paso la info."
@@ -478,7 +487,10 @@ class ImpuestosHandler(BaseMunicipioHandler):
             self.context.get('contexto_municipio', {}).clear()
             return {
                 "respuesta": "Consultá impuestos, descargá boletas y pagá online en Rentas.",
-                "botones": [{"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"}]
+                "botones": [
+                    {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
+                    {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
+                ]
             }
         return None
 
@@ -493,7 +505,10 @@ class GeneralHandler(BaseMunicipioHandler):
             respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
             if respuesta_faq:
                 memoria.clear()
-                return {"respuesta": respuesta_faq}
+                respuesta = {"respuesta": respuesta_faq["a"]}
+                if "botones" in respuesta_faq:
+                    respuesta["botones"] = respuesta_faq["botones"]
+                return respuesta
             memoria.clear()
             return {"respuesta": "¿Sobre qué más te puedo ayudar?"}
 
