@@ -12,11 +12,11 @@ if project_path not in sys.path:
 # --- Fin Configuración ---
 
 # Importa tu app de Flask y la base de datos `db`
-from app import create_app, db 
+from app import create_app, db
 # Importa los modelos que vas a usar
-from src.models import User, Rubro, SitioWebInfo
+from models import User, Rubro, SitioWebInfo
 # Importa las herramientas del scraper
-from src.services.scraper_avanzado import (
+from services.scraper_avanzado import (
     descubrir_links_relevantes,
     extraer_contenido_general,
     extraer_productos_de_url
