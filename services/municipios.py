@@ -606,6 +606,15 @@ def serializar_enum(obj):
     else:
         return obj
 
+BOTONES_COMANDOS_MUNICIPIO = {
+    "Hacer un reclamo": "iniciar_reclamo",
+    "Consultar estado de un trámite": "consultar_estado_ticket",
+    "Consultar estado de ticket": "consultar_estado_ticket",
+    "Consultar otro ticket": "consultar_estado_ticket",
+    "Hablar con un agente": "hablar_con_agente",
+    "Nuevo reclamo": "iniciar_reclamo",
+}
+
 def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
@@ -622,6 +631,17 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         "user_id": getattr(user_obj, "id", None),
         "intencion": None
     }
+    # --- INTERCEPTA COMANDOS DE BOTONES ---
+    comando = BOTONES_COMANDOS_MUNICIPIO.get(pregunta.strip())
+    if comando:
+        context['intencion'] = comando
+        if comando == "iniciar_reclamo":
+            return ReclamoHandler(context).handle("Quiero hacer un reclamo")
+        elif comando == "consultar_estado_ticket":
+            return TicketStatusHandler(context).handle("Consultar estado de ticket")
+        elif comando == "hablar_con_agente":
+            return HumanEscalationHandler(context).handle("Hablar con un agente")
+    # --- SIGUE EL FLUJO NORMAL ---
     estado_antes = contexto_municipio.get('estado_conversacion')
     handler_chain = [
         GreetingHandler,
