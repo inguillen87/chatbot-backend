@@ -326,17 +326,27 @@ class ReclamoHandler(BaseMunicipioHandler):
             )
             memoria.clear()
             if ticket:
-                enviar_notificacion_whatsapp_con_plantilla(telefono_e164, nombre, ticket.nro_ticket, categoria)
-                enviar_notificacion_sms(telefono_e164, f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado.")
+                enviar_notificacion_whatsapp_con_plantilla(
+                    telefono_e164,
+                    nombre,
+                    ticket.nro_ticket,
+                    categoria,
+                )
+                enviar_notificacion_sms(
+                    telefono_e164,
+                    f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado."
+                )
                 return {
                     "respuesta": (
-                        f"¡Listo! Reclamo registrado (**M-{ticket.nro_ticket}**). ¿Hacés otro reclamo, consultás un ticket o hablás con un agente?"
+                        f"¡Listo! Tu reclamo fue generado con éxito. El número de ticket es **M-{ticket.nro_ticket}**. "
+                        "Vas a recibir un mensaje con el detalle."
                     ),
                     "botones": [
                         {"texto": "Nuevo reclamo"},
                         {"texto": "Consultar estado de ticket"},
-                        {"texto": "Hablar con un agente"}
-                    ]
+                        {"texto": "Hablar con un agente"},
+                    ],
+                    "ticket_id": ticket.id,
                 }
             return {
                 "respuesta": "No se pudo generar el reclamo. Probá de nuevo o llamanos al 0800-MUNICIPIO.",
@@ -730,9 +740,13 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     estado_despues = contexto_municipio.get('estado_conversacion')
     texto_respuesta = respuesta_final.get('respuesta', '')
     FRASES_EXITO = [
-        "Tu reclamo fue generado", "¡Gracias por tu calificación!",
-        "Dejamos el ticket abierto", "El curso de seguridad vial es online",
-        "Abrimos una sala de chat directa", "Tu número de chat es"
+        "Tu reclamo fue generado",
+        "Reclamo registrado",
+        "¡Gracias por tu calificación!",
+        "Dejamos el ticket abierto",
+        "El curso de seguridad vial es online",
+        "Abrimos una sala de chat directa",
+        "Tu número de chat es",
     ]
     es_cierre_flujo = any(frase in texto_respuesta for frase in FRASES_EXITO)
     if estado_antes and not estado_despues and texto_respuesta and not es_cierre_flujo:
