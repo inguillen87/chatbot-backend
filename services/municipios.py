@@ -367,9 +367,8 @@ class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
             }
         return None
 
-# Pega esta clase completa en tu archivo municipios.py
+# Reemplaza estas dos piezas en tu archivo municipios.py
 
-# Pega esta función de ayuda justo antes de la clase ToolHandler
 def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
     """Crea el prompt para que el LLM decida qué herramienta usar."""
     
@@ -404,7 +403,8 @@ class ToolHandler(BaseMunicipioHandler):
             if es_pregunta_nueva(pregunta, "una dirección"):
                 memoria.clear(); return None
             
-            memoria.clear()
+            memoria.clear() # Limpiamos estado antes de ejecutar
+            # Asumimos que la herramienta a usar es la de recolección, que es la única que pide este parámetro
             return {"respuesta": consultar_recoleccion_por_direccion(direccion=pregunta)}
         
         # Si estamos en otro flujo (ej. un reclamo), no interrumpimos
@@ -416,7 +416,7 @@ class ToolHandler(BaseMunicipioHandler):
         try:
             respuesta_llm_str = get_cohere_response(message=prompt, preamble="Eres un experto en decidir si una pregunta requiere una herramienta. Responde solo con JSON o 'null'.")
             
-            if respuesta_llm_str.strip().lower() == "null":
+            if not respuesta_llm_str or respuesta_llm_str.strip().lower() == "null":
                 return None # La IA decidió que ninguna herramienta sirve
 
             decision = json.loads(respuesta_llm_str)
@@ -431,21 +431,30 @@ class ToolHandler(BaseMunicipioHandler):
                 if param_faltante == "direccion":
                     memoria['estado_conversacion'] = ConversationState.ESPERANDO_PARAM_RECOLECCION
                     return {"respuesta": "Claro, para darte esa información necesito que me indiques la dirección completa, por favor."}
+                # Aquí podrías agregar lógica para otros parámetros faltantes en el futuro
             
-            # Caso 2: La IA encontró la herramienta y extrajo los datos
+            # Caso 2: La IA encontró la herramienta y extrajo los datos para ejecutarla
             elif "parametros" in decision:
                 parametros = decision["parametros"]
                 funcion_a_ejecutar = TOOL_REGISTRY[nombre_herramienta]["funcion"]
                 logger.info(f"[ToolHandler] Ejecutando herramienta '{nombre_herramienta}' con parámetros: {parametros}")
+                
+                # Ejecutamos la función y obtenemos el resultado
                 resultado = funcion_a_ejecutar(**parametros)
-                return {"respuesta": resultado}
+                
+                # Si la función devuelve un JSON (como la de turnos), lo parseamos
+                try:
+                    resultado_dict = json.loads(resultado)
+                    return resultado_dict
+                except (json.JSONDecodeError, TypeError):
+                    # Si no es un JSON, es una respuesta de texto simple
+                    return {"respuesta": resultado}
 
-       except (json.JSONDecodeError, TypeError, Exception) as e:
+        except (json.JSONDecodeError, TypeError, Exception) as e:
             logger.error(f"[ToolHandler] Error procesando decisión de herramienta: {e}", exc_info=True)
-            return None
+            return None # En caso de error, no rompemos el chat y seguimos a otros handlers
 
         return None
-            
         # --- Lógica principal para decidir si usar una herramienta ---
         
         # (Asegúrate de tener la función crear_prompt_decision_herramienta y TOOL_REGISTRY definidos)
@@ -507,6 +516,18 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             return {"respuesta": respuesta_al_vecino, "ticket_id": sala_de_chat.id}
             
         return None
+    
+def serializar_enum(obj):
+    # Convierte cualquier Enum en su .name recursivamente en dicts y listas
+    if isinstance(obj, Enum):
+        return obj.name
+    elif isinstance(obj, dict):
+        return {k: serializar_enum(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [serializar_enum(v) for v in obj]
+    else:
+        return obj
+   
 # <<< FIN DE HANDLERS FALTANTES >>>
 
 
@@ -516,7 +537,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
 
-    # Corrección para cargar el estado Enum desde el contexto JSON
+    # --- Parche: cargar estado Enum desde string si viene así (por session, etc)
     estado_guardado = contexto_municipio.get('estado_conversacion')
     if estado_guardado and isinstance(estado_guardado, str):
         try:
@@ -534,19 +555,18 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
 
     estado_antes_de_procesar = contexto_municipio.get('estado_conversacion')
 
-    # <<< CORRECCIÓN: Handler chain completo y en orden estratégico
-    # Este es el "cerebro" del bot, decidiendo qué habilidad usar primero.
+    # --- Handler chain (decisión ordenada de habilidades)
     handler_chain = [
-        GreetingHandler,              # 1. Responde saludos básicos.
-        ToolHandler,                  # 2. Revisa si puede usar una herramienta (¡muy importante!).
-        HumanEscalationHandler,       # 3. Revisa si el usuario quiere hablar con una persona (¡clave!).
-        IntentClassifierHandler,      # 4. Si no hay herramienta ni escalamiento, clasifica la intención general.
-        TicketStatusHandler,          # 5. Si la intención es consultar ticket, maneja ese flujo.
-        ReclamoHandler,               # 6. Si la intención es iniciar reclamo, maneja ese flujo.
-        TramitesHandler,              # 7. Si es sobre trámites, maneja ese flujo.
-        ImpuestosHandler,             # 8. Si es sobre impuestos, etc.
-        GeneralHandler,               # 9. Si nada de lo anterior coincide, intenta una respuesta general.
-        EngancheAnonimoMunicipioHandler # 10. Como último recurso, si es anónimo, le pide que se registre.
+        GreetingHandler,
+        ToolHandler,
+        HumanEscalationHandler,
+        IntentClassifierHandler,
+        TicketStatusHandler,
+        ReclamoHandler,
+        TramitesHandler,
+        ImpuestosHandler,
+        GeneralHandler,
+        EngancheAnonimoMunicipioHandler
     ]
 
     respuesta_final = None
@@ -562,9 +582,9 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
 
     if not respuesta_final:
         if not context.get("user_id"):
-             respuesta_final = EngancheAnonimoMunicipioHandler(context).handle(pregunta)
+            respuesta_final = EngancheAnonimoMunicipioHandler(context).handle(pregunta)
         else:
-             respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta. ¿Podrías intentar reformular tu pregunta?"}
+            respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta. ¿Podrías intentar reformular tu pregunta?"}
 
     estado_despues_de_procesar = contexto_municipio.get('estado_conversacion')
     texto_respuesta = respuesta_final.get('respuesta', '')
@@ -584,10 +604,8 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         nombre_vecino_memoria = contexto_municipio.get('nombre_vecino', 'vecino')
         respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
 
-    # Corrección para guardar el estado Enum como texto en el JSON
-    contexto_para_guardar = context["contexto_municipio"]
-    if 'estado_conversacion' in contexto_para_guardar and isinstance(contexto_para_guardar['estado_conversacion'], ConversationState):
-        contexto_para_guardar['estado_conversacion'] = contexto_para_guardar['estado_conversacion'].name
+    # --- FIX UNIVERSAL: serializamos todo el contexto para que sea 100% JSON friendly
+    contexto_para_guardar = serializar_enum(context["contexto_municipio"])
 
     return {
         "respuesta": respuesta_final.get('respuesta'),
