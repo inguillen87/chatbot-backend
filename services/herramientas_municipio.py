@@ -196,3 +196,65 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
             return category
             
     return "Otros"
+
+# En herramientas_municipio.py
+
+# ... (mantén todas tus funciones existentes como normalizar_texto, KEYWORD_TO_CATEGORY_MAP, etc.)
+
+
+# --- NUEVA FUNCIÓN-HERRAMIENTA: AGENDA DE EVENTOS ---
+
+def consultar_eventos_culturales(fecha: str) -> str:
+    """
+    Consulta una agenda de eventos FAKE para una fecha dada.
+    En un futuro, esto consultaría una base de datos real.
+    """
+    # Normalizamos la fecha que nos llega del LLM para poder buscarla.
+    fecha_normalizada = normalizar_texto(fecha)
+    
+    # --- BASE DE DATOS DE EJEMPLO ---
+    agenda = {
+        "hoy": [
+            "Concierto de la Filarmónica de Mendoza en el Teatro Ducal. 21:00 hs.",
+            "Feria de Artesanos en la Plaza Departamental. De 18:00 a 22:00 hs."
+        ],
+        "manana": [
+            "Ciclo de Cine Argentino en el Microcine Municipal. 20:00 hs. Entrada gratuita.",
+            "Maratón 'Junín Corre' 10K. Largada desde el Polideportivo. 09:00 hs."
+        ],
+        "sabado": [
+             "Maratón 'Junín Corre' 10K. Largada desde el Polideportivo. 09:00 hs.",
+             "Noche de las Vinerías: Degustaciones en bodegas locales. A partir de las 19:00 hs."
+        ]
+    }
+    
+    eventos = agenda.get(fecha_normalizada)
+    
+    if eventos:
+        lista_eventos = "\n".join(f"- {evento}" for evento in eventos)
+        return f"Para la fecha '{fecha}', encontré los siguientes eventos:\n{lista_eventos}"
+    else:
+        # El LLM es bueno interpretando fechas, si nos pasa '15 de junio' y no lo tenemos, damos esta respuesta.
+        return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
+
+
+# --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---
+
+TOOL_REGISTRY = {
+    "consultar_recoleccion_por_direccion": {
+        "funcion": consultar_recoleccion_por_direccion,
+        "descripcion": "Se usa para obtener los horarios y días de recolección de basura para una dirección específica.",
+        "parametros": {
+            "direccion": {"type": "string", "description": "La dirección completa del lugar. Por ejemplo: 'Avenida San Martín 123, Junín'."}
+        }
+    },
+    
+    # --- NUEVA HERRAMIENTA REGISTRADA ---
+    "consultar_eventos_culturales": {
+        "funcion": consultar_eventos_culturales,
+        "descripcion": "Consulta la agenda de eventos culturales, recitales o actividades municipales para una fecha específica, como 'hoy', 'mañana' o 'el sábado'.",
+        "parametros": {
+            "fecha": {"type": "string", "description": "La fecha de la consulta. Puede ser una palabra como 'hoy', 'mañana', 'este fin de semana', o una fecha específica como '15 de junio'."}
+        }
+    }
+}

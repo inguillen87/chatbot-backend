@@ -366,31 +366,82 @@ class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
             }
         return None
 
+# Pega esta clase completa en tu archivo municipios.py
+
+class ToolHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get('contexto_municipio', {})
+        
+        # Flujo para cuando ya se pidió un parámetro (dirección) y el usuario responde
+        if memoria.get('estado_conversacion') == ConversationState.ESPERANDO_PARAM_RECOLECCION:
+            if es_pregunta_nueva(pregunta, "una dirección"):
+                memoria.clear()
+                return None  # Permite que otro handler tome la nueva pregunta
+            
+            # Si el usuario da la dirección, se ejecuta la herramienta y se limpia el estado
+            memoria['estado_conversacion'] = None
+            return {"respuesta": consultar_recoleccion_por_direccion(direccion=pregunta)}
+        
+        # Si estamos en medio de otro flujo, este handler no debe actuar
+        if memoria.get('estado_conversacion'):
+            return None
+            
+        # --- Lógica principal para decidir si usar una herramienta ---
+        
+        # (Asegúrate de tener la función crear_prompt_decision_herramienta y TOOL_REGISTRY definidos)
+        # Por ahora, esta parte la dejamos como la tenías, si quieres la podemos refinar luego.
+        # prompt = crear_prompt_decision_herramienta(pregunta) 
+        # respuesta_llm = get_cohere_response(...)
+        
+        # Simplificamos por ahora para que busque la intención de "recolección"
+        palabras_clave_recoleccion = ["basurero", "recoleccion", "residuos", "basura"]
+        if any(palabra in normalizar_texto(pregunta) for palabra in palabras_clave_recoleccion):
+            # Si se menciona la recolección pero no se da una dirección, la pedimos.
+            # (Aquí una lógica más avanzada con el LLM podría extraer la dirección si ya está presente)
+            memoria['estado_conversacion'] = ConversationState.ESPERANDO_PARAM_RECOLECCION
+            return {"respuesta": "Claro, para darte el horario de recolección, necesito la dirección completa, por favor."}
+
+        return None
 # <<< FIN DE HANDLERS FALTANTES >>>
 
 
-# --- Función Principal ---
+
+
 def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
+
+    # Corrección para cargar el estado Enum desde el contexto JSON
+    estado_guardado = contexto_municipio.get('estado_conversacion')
+    if estado_guardado and isinstance(estado_guardado, str):
+        try:
+            contexto_municipio['estado_conversacion'] = ConversationState[estado_guardado]
+        except KeyError:
+            logger.warning(f"Se encontró un estado inválido en el contexto: {estado_guardado}")
+            contexto_municipio['estado_conversacion'] = None
+
     context = {
-        "contexto_municipio": contexto_municipio, "user_obj": user_obj,
-        "user_id": getattr(user_obj, "id", None), "intencion": None
+        "contexto_municipio": contexto_municipio,
+        "user_obj": user_obj,
+        "user_id": getattr(user_obj, "id", None),
+        "intencion": None
     }
 
     estado_antes_de_procesar = contexto_municipio.get('estado_conversacion')
 
+    # <<< CORRECCIÓN: Handler chain completo y en orden estratégico
+    # Este es el "cerebro" del bot, decidiendo qué habilidad usar primero.
     handler_chain = [
-        GreetingHandler,
-        # ToolHandler, # Descomentar si se implementa una herramienta específica
-        IntentClassifierHandler,
-        # HumanEscalationHandler, # Descomentar para habilitar chat en vivo
-        TicketStatusHandler,
-        ReclamoHandler,
-        TramitesHandler,
-        ImpuestosHandler,
-        GeneralHandler,
-        EngancheAnonimoMunicipioHandler
+        GreetingHandler,              # 1. Responde saludos básicos.
+        ToolHandler,                  # 2. Revisa si puede usar una herramienta (¡muy importante!).
+        HumanEscalationHandler,       # 3. Revisa si el usuario quiere hablar con una persona (¡clave!).
+        IntentClassifierHandler,      # 4. Si no hay herramienta ni escalamiento, clasifica la intención general.
+        TicketStatusHandler,          # 5. Si la intención es consultar ticket, maneja ese flujo.
+        ReclamoHandler,               # 6. Si la intención es iniciar reclamo, maneja ese flujo.
+        TramitesHandler,              # 7. Si es sobre trámites, maneja ese flujo.
+        ImpuestosHandler,             # 8. Si es sobre impuestos, etc.
+        GeneralHandler,               # 9. Si nada de lo anterior coincide, intenta una respuesta general.
+        EngancheAnonimoMunicipioHandler # 10. Como último recurso, si es anónimo, le pide que se registre.
     ]
 
     respuesta_final = None
@@ -405,22 +456,17 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
             logger.error(f"Error en handler {handler_class.__name__}: {e}", exc_info=True)
 
     if not respuesta_final:
-        # Si después de todos los handlers no hay respuesta, es un fallback final.
         if not context.get("user_id"):
-             # Si es anónimo, se repite el enganche.
              respuesta_final = EngancheAnonimoMunicipioHandler(context).handle(pregunta)
         else:
              respuesta_final = {"respuesta": "Disculpa, no entendí tu consulta. ¿Podrías intentar reformular tu pregunta?"}
-
 
     estado_despues_de_procesar = contexto_municipio.get('estado_conversacion')
     texto_respuesta = respuesta_final.get('respuesta', '')
 
     FRASES_EXITO = [
-        "Tu reclamo fue generado",
-        "¡Muchas gracias por tu calificación!",
-        "Dejaré el ticket abierto",
-        "El curso de seguridad vial es online",
+        "Tu reclamo fue generado", "¡Muchas gracias por tu calificación!",
+        "Dejaré el ticket abierto", "El curso de seguridad vial es online",
         "He abierto una sala de chat directa"
     ]
     es_cierre_flujo = any(frase in texto_respuesta for frase in FRASES_EXITO)
@@ -433,8 +479,13 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         nombre_vecino_memoria = contexto_municipio.get('nombre_vecino', 'vecino')
         respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
 
+    # Corrección para guardar el estado Enum como texto en el JSON
+    contexto_para_guardar = context["contexto_municipio"]
+    if 'estado_conversacion' in contexto_para_guardar and isinstance(contexto_para_guardar['estado_conversacion'], ConversationState):
+        contexto_para_guardar['estado_conversacion'] = contexto_para_guardar['estado_conversacion'].name
+
     return {
         "respuesta": respuesta_final.get('respuesta'),
         "botones": respuesta_final.get('botones', []),
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio}
-    }   
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar}
+    }
