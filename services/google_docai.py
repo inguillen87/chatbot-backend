@@ -14,6 +14,7 @@ from .utils import (
     parse_precio_flexible,
     parse_cantidad_flexible,
     crear_mapa_de_columnas_inteligente,
+    safe_row_get,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,8 +155,8 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
         for index, row in df_datos.iterrows():
             try:
                 # Usamos los NOMBRES DE COLUMNA ORIGINALES que están en el mapa para obtener los datos
-                nombre_prod = str(row.get(mapa_columnas.get('nombre', ''), '')).strip()
-                precio_crudo = str(row.get(mapa_columnas.get('precio', ''), '')).strip()
+                nombre_prod = str(safe_row_get(row, mapa_columnas.get('nombre', ''))).strip()
+                precio_crudo = str(safe_row_get(row, mapa_columnas.get('precio', ''))).strip()
 
                 if not nombre_prod or not precio_crudo or len(nombre_prod) < 2: continue
                 
@@ -164,13 +165,15 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
                 
                 producto = {
                     "nombre": nombre_prod, "precio_str": precio_str, "precio_float": precio_float, "moneda": moneda,
-                    "sku": str(row.get(mapa_columnas.get('sku'), '')).strip(),
-                    "descripcion": str(row.get(mapa_columnas.get('descripcion'), '')).strip(),
-                    "marca": str(row.get(mapa_columnas.get('marca'), '')).strip(),
-                    "categoria_qdrant": str(row.get(mapa_columnas.get('categoria'), pyme_rubro_nombre)).strip(),
-                    "unidad": str(row.get(mapa_columnas.get('unidad'), 'unidad')).strip(),
+                    "sku": str(safe_row_get(row, mapa_columnas.get('sku'))).strip(),
+                    "descripcion": str(safe_row_get(row, mapa_columnas.get('descripcion'))).strip(),
+                    "marca": str(safe_row_get(row, mapa_columnas.get('marca'))).strip(),
+                    "categoria_qdrant": str(safe_row_get(row, mapa_columnas.get('categoria')) or pyme_rubro_nombre).strip(),
+                    "unidad": str(safe_row_get(row, mapa_columnas.get('unidad')) or 'unidad').strip(),
                     "cantidad_disponible": str(
-                        parse_cantidad_flexible(row.get(mapa_columnas.get('stock'), '1'))
+                        parse_cantidad_flexible(
+                            safe_row_get(row, mapa_columnas.get('stock')) or '1'
+                        )
                         or '0'
                     ).strip(),
                 }
