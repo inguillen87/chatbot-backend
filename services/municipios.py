@@ -54,19 +54,19 @@ class ConversationState(Enum):
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
     ESPERANDO_DETALLE_TRAMITE = auto()
-    
+
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     """
     Envía un SMS real usando Twilio (no WhatsApp). Requiere credenciales válidas.
     """
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_SMS_NUMBER]):
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,TWILIO_PHONE_NUMBER ]):
         print("[NOTIFICACION SMS] Faltan credenciales de Twilio SMS.")
         return
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         message = client.messages.create(
             body=mensaje,
-            from_=TWILIO_SMS_NUMBER,
+            from_=TWILIO_PHONE_NUMBER,
             to=numero_destino
         )
         print(f"[NOTIFICACION SMS] SMS enviado SID: {message.sid}")
