@@ -2,8 +2,9 @@
 
 import logging
 import uuid
-from models import db, PymePedido # Asegúrate que PymePedido esté importado desde models
 from datetime import datetime
+from models import db, PymePedido  # Asegúrate que PymePedido esté importado desde models
+from .email_service import enviar_email_pedido_admin
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,13 @@ class PedidoService:
             )
             db.session.add(nuevo_pedido)
             db.session.commit()
-            logger.info(f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{nuevo_pedido.rubro}' por cliente '{nuevo_pedido.nombre_cliente}'")
+            logger.info(
+                f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{nuevo_pedido.rubro}' por cliente '{nuevo_pedido.nombre_cliente}'"
+            )
+            try:
+                enviar_email_pedido_admin(nuevo_pedido)
+            except Exception as e:
+                logger.error(f"Error enviando email de pedido: {e}")
             return nuevo_pedido
         except Exception as e:
             db.session.rollback()
