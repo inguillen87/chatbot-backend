@@ -18,6 +18,7 @@ from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
 from services.webinfo import obtener_info_web
 from services.pedido_service import servicio_pedidos
+from services.herramientas_pyme import TOOL_REGISTRY_PYME
 from .logic import _clasificar_intencion_con_llm
 
 logger = logging.getLogger(__name__)
@@ -293,18 +294,93 @@ class PedidoHandler(BaseHandler):
         return None
 
 class TicketStatusHandler(BaseHandler):
+    """Permite consultar el estado de un ticket de soporte de la PyME."""
+
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        memoria = self.context.get('contexto_pyme', {})
+        estado = memoria.get('estado_conversacion')
+
+        if estado == 'esperando_numero_ticket':
+            match = re.search(r"\d{5,}", pregunta)
+            if not match:
+                return {"respuesta": "No entendí el número de ticket. ¿Podés repetirlo?", "fuente": "ticket_falta_numero"}
+            nro = int(match.group(0))
+            ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
+            memoria.clear()
+            if ticket:
+                return {"respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.", "fuente": "ticket_ok"}
+            return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
+
+        if self.context.get('intencion') == 'consultar_estado_ticket':
+            match = re.search(r"\d{5,}", pregunta)
+            if match:
+                nro = int(match.group(0))
+                ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
+                if ticket:
+                    return {"respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.", "fuente": "ticket_ok"}
+                return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
+            memoria['estado_conversacion'] = 'esperando_numero_ticket'
+            return {"respuesta": "Decime el número de ticket que querés consultar.", "fuente": "ticket_pedir_numero"}
+
         return None
 
 class BrokenProductHandler(BaseHandler):
+    """Registra un reclamo por producto roto y solicita más información."""
+
+    PALABRAS_CLAVE = ["roto", "quebrado", "defectuoso", "dañado"]
+
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        memoria = self.context.get('contexto_pyme', {})
+
+        if memoria.get('estado_conversacion') == 'esperando_datos_reclamo_roto':
+            ticket_id = memoria.pop('ticket_id_roto', None)
+            if ticket_id:
+                servicio_tickets.crear_comentario(
+                    ticket_id=ticket_id,
+                    tipo_ticket="pyme",
+                    comentario_data={"comentario": pregunta, "user_id": self.context.get('user_id')}
+                )
+                memoria.clear()
+                return {"respuesta": "Gracias, registramos el detalle de tu reclamo y pronto te contactaremos.", "fuente": "reclamo_roto_comentado"}
+            return None
+
+        if any(pal in pregunta.lower() for pal in self.PALABRAS_CLAVE):
+            ticket = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="pyme",
+                ticket_data={
+                    "asunto": "Producto roto",
+                    "categoria": "producto_roto",
+                    "pregunta": pregunta,
+                    "user_id": self.context.get('user_id'),
+                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None)
+                }
+            )
+            if ticket:
+                memoria['estado_conversacion'] = 'esperando_datos_reclamo_roto'
+                memoria['ticket_id_roto'] = ticket.id
+                return {"respuesta": f"Lamentamos lo ocurrido. Creamos el ticket **{ticket.nro_ticket}**. ¿Podés contarnos más detalles o enviar una foto?", "fuente": "reclamo_roto"}
         return None
 
 class ClaimHandler(BaseHandler):
+    """Genera un ticket de reclamo general."""
+
+    PALABRAS_CLAVE = ["reclamo", "queja", "mala atención", "problema"]
+
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        if any(pal in pregunta.lower() for pal in self.PALABRAS_CLAVE):
+            ticket = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="pyme",
+                ticket_data={
+                    "asunto": _generar_asunto_con_llm(pregunta),
+                    "categoria": "reclamo",
+                    "pregunta": pregunta,
+                    "user_id": self.context.get('user_id'),
+                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None)
+                }
+            )
+            if ticket:
+                self.context.get('contexto_pyme', {})['esperando_detalles_reclamo'] = ticket.id
+                return {"respuesta": f"Registré tu reclamo con número **{ticket.nro_ticket}**. ¿Podés brindarme más detalles?", "fuente": "reclamo_registrado"}
         return None
 
 class VectorCatalogHandler(BaseHandler):
@@ -335,18 +411,60 @@ class VectorCatalogHandler(BaseHandler):
         return None
 
 class SalesEngageHandler(BaseHandler):
+    """Ofrece sugerencias comerciales cuando no se detecta otra intención."""
+
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        sugerencias = sugerencias_por_rubro(self.context.get('rubro_nombre'))
+        if sugerencias:
+            texto = reemplazar_placeholders(random.choice(sugerencias), self.context.get('user_obj'))
+            return {"respuesta": texto, "fuente": "sugerencia_venta"}
         return None
 
 class FaqHandler(BaseHandler):
+    """Responde usando la base de preguntas frecuentes."""
+
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        rubro = self.context.get('rubro_obj')
+        if not rubro:
+            return None
+        match = buscar_en_faq_spacy(pregunta, rubro.id)
+        if match:
+            return {
+                "respuesta": reemplazar_placeholders(match.answer, self.context.get('user_obj')),
+                "fuente": "faq"
+            }
+        return None
+
+class ToolHandlerPyme(BaseHandler):
+    """Resuelve consultas directas mediante pequeñas herramientas."""
+
+    def handle(self, pregunta: str) -> dict | None:
+        texto = pregunta.lower()
+        if 'horario' in texto or 'abren' in texto:
+            res = TOOL_REGISTRY_PYME['consultar_horario']['funcion'](self.context.get('user_obj'))
+            return json.loads(res)
+        if 'stock' in texto:
+            match = re.search(r'stock (?:de )?(.*)', texto)
+            producto = match.group(1).strip() if match else ''
+            if producto:
+                res = TOOL_REGISTRY_PYME['verificar_stock']['funcion'](producto, self.context.get('user_id'))
+                return json.loads(res)
+        if 'envío' in texto or 'envio' in texto:
+            match = re.search(r'env(?:i|ío)\s+a\s+([\w\s]+)', texto)
+            ciudad = match.group(1).strip() if match else ''
+            if ciudad:
+                res = TOOL_REGISTRY_PYME['calcular_envio']['funcion'](ciudad)
+                return json.loads(res)
         return None
 
 class IntentHandler(BaseHandler):
+    """Fallback basado en intents cargados desde data/intents.json."""
+
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        rubro = self.context.get('rubro_nombre')
+        respuesta = buscar_en_intents(pregunta, rubro)
+        if respuesta:
+            return {"respuesta": reemplazar_placeholders(respuesta, self.context.get('user_obj')), "fuente": "intent"}
         return None
 
 # --- MODIFICACIÓN 3: El LLMHandler ahora es el que usa el contexto de la base de datos ---
@@ -403,8 +521,18 @@ class LLMHandler(BaseHandler):
             return {"respuesta": "No pude encontrar una respuesta para tu consulta en este momento.", "fuente": "llm_fallback"}
 
 class EngancheAnonimoHandler(BaseHandler):
+    """Invita a registrarse si el usuario es anónimo."""
+
     def handle(self, pregunta: str) -> dict | None:
-        # Lógica sin cambios
+        if not self.context.get('user_id') or self.context.get('plan') == 'anonimo':
+            return {
+                "respuesta": (
+                    "Para seguir con la atención personalizada y guardar tu historial, registrate o iniciá sesión."),
+                "botones": [
+                    {"texto": "Iniciar sesión", "url": "/login"},
+                    {"texto": "Registrarme Gratis", "url": "/register"}
+                ]
+            }
         return None
 
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL (sin cambios) ---
@@ -428,9 +556,19 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
     }
     
     handler_chain = [
-        LimitHandler, FollowUpHandler, IntentClassifierPymeHandler, PedidoHandler, 
-        VectorCatalogHandler, BrokenProductHandler, ClaimHandler, FaqHandler, 
-        IntentHandler, SalesEngageHandler, LLMHandler, EngancheAnonimoHandler
+        LimitHandler,
+        FollowUpHandler,
+        IntentClassifierPymeHandler,
+        PedidoHandler,
+        BrokenProductHandler,
+        ClaimHandler,
+        VectorCatalogHandler,
+        FaqHandler,
+        ToolHandlerPyme,
+        LLMHandler,
+        IntentHandler,
+        SalesEngageHandler,
+        EngancheAnonimoHandler,
     ]
 
     respuesta_final = None
