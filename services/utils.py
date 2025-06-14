@@ -27,6 +27,12 @@ def parse_precio_flexible(texto_precio_input: Optional[Any]) -> Tuple[Optional[s
     moneda_detectada = "ARS"
     numero_para_procesar = texto_precio_str
 
+    # Extrae el último patrón numérico significativo (para casos como
+    # "1/2 DOC POR $ 5.400,00")
+    posibles_numeros = re.findall(r"\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?", numero_para_procesar)
+    if posibles_numeros:
+        numero_para_procesar = posibles_numeros[-1]
+
     if re.search(r"(?i)\bUSD\b|U\$S", numero_para_procesar):
         moneda_detectada = "USD"
         numero_para_procesar = re.sub(r"(?i)\bUSD\b|U\$S", "", numero_para_procesar, flags=re.IGNORECASE).strip()
@@ -124,7 +130,8 @@ KEYWORD_MAP = {
     ],
     'nombre': [
         "producto", "nombre", "variedad", "designacion", "item",
-        "title", "denominacion", "vino", "articulo"
+        "title", "denominacion", "vino", "articulo", "descripcion",
+        "descripción", "detalle"
     ],
     'descripcion': [
         "descripcion", "descripción", "detalle", "detalles",
@@ -225,6 +232,17 @@ def crear_mapa_de_columnas_inteligente(
 
     if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
         logger.info(f"✅ [CEREBRO] Mapa heurístico obtenido: {mejor_mapa}")
+        return mejor_mapa, 0
+
+    # Fallback: usar columna de SKU o descripción como nombre cuando no se
+    # identificó explícitamente una columna de nombre
+    if 'nombre' not in mejor_mapa:
+        if 'descripcion' in mejor_mapa:
+            mejor_mapa['nombre'] = mejor_mapa['descripcion']
+        elif 'sku' in mejor_mapa:
+            mejor_mapa['nombre'] = mejor_mapa['sku']
+    if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
+        logger.info(f"✅ [CEREBRO] Mapa de columnas asignado por fallback: {mejor_mapa}")
         return mejor_mapa, 0
 
     logger.error(
