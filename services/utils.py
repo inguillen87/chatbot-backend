@@ -62,6 +62,23 @@ def parse_precio_flexible(texto_precio_input: Optional[Any]) -> Tuple[Optional[s
             return texto_precio_str, None, moneda_detectada
         return texto_precio_str, None, moneda_detectada
 
+def parse_cantidad_flexible(texto_cantidad_input: Optional[Any]) -> Optional[float]:
+    """Intenta extraer un número de una cantidad con formato libre."""
+    if texto_cantidad_input is None:
+        return None
+    texto = str(texto_cantidad_input).strip()
+    if not texto:
+        return None
+    texto_norm = texto.replace(".", "").replace(",", ".")
+    match = re.search(r"-?\d+(?:\.\d+)?", texto_norm)
+    if not match:
+        return None
+    try:
+        num = float(match.group())
+        return int(num) if num.is_integer() else num
+    except ValueError:
+        return None
+
 def extraer_unidades_y_tipos_precio(texto_linea: str, pyme_rubro_nombre: str = "generico") -> tuple[Optional[str], Optional[str]]:
     """Tu excelente función para extraer unidades y tipos de precio. Se conserva intacta."""
     if not texto_linea: return None, None
@@ -98,9 +115,12 @@ KEYWORD_MAP = {
         "ref", "referencia", "id", "item code", "ean"
     ],
     'nombre': [
-        "producto", "nombre", "descripción", "descripcion", "detalle", 
-        "variedad", "designacion", "item", "title", "denominacion", "vino",
-        "articulo" # A veces 'articulo' es el nombre, no el SKU
+        "producto", "nombre", "variedad", "designacion", "item",
+        "title", "denominacion", "vino", "articulo"
+    ],
+    'descripcion': [
+        "descripcion", "descripción", "detalle", "detalles",
+        "descripcion producto", "description", "comentarios"
     ],
     'precio': [
         "precio", "precio lista", "lista", "pvp", "p.v.p", "valor", "importe", "$", "contado", 

@@ -4,7 +4,12 @@ import logging
 import os
 import re
 from typing import List, Dict, Any
-from .utils import limpiar_texto_base, parse_precio_flexible, crear_mapa_de_columnas_inteligente
+from .utils import (
+    limpiar_texto_base,
+    parse_precio_flexible,
+    parse_cantidad_flexible,
+    crear_mapa_de_columnas_inteligente,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +34,9 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
     # 1. Usamos el cerebro para entender el archivo
     resultado_mapeo = crear_mapa_de_columnas_inteligente(df_bruto)
     if not resultado_mapeo:
-        raise ValueError("No se pudieron identificar las columnas de 'Nombre' y 'Precio'. Revisa que el archivo tenga encabezados claros.")
+        raise ValueError(
+            "No se encontraron columnas de nombre o precio. Asegurate de que el archivo tenga encabezados claros."
+        )
 
     mapa_columnas, fila_inicio_datos = resultado_mapeo
     
@@ -64,7 +71,14 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
                 "marca": str(row.get(mapa_columnas.get('marca'), '')).strip()[:100],
                 "categoria_qdrant": str(row.get(mapa_columnas.get('categoria'), pyme_rubro_nombre)).strip()[:100],
                 "unidad": str(row.get(mapa_columnas.get('unidad'), 'unidad')).strip()[:50],
-                "cantidad_disponible": str(row.get(mapa_columnas.get('stock'), '1')).strip()[:50],
+                "cantidad_disponible": (
+                    str(
+                        parse_cantidad_flexible(
+                            row.get(mapa_columnas.get('stock'), '1')
+                        )
+                        or '0'
+                    )[:50]
+                ),
             }
             productos_extraidos.append(producto)
 
