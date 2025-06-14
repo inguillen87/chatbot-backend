@@ -16,6 +16,7 @@ from .herramientas_municipio import (
     categorizar_reclamo_por_palabra_clave,
     sugerir_categorias_relevantes,
     normalizar_texto,
+    TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP
 )
 
@@ -368,23 +369,82 @@ class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
 
 # Pega esta clase completa en tu archivo municipios.py
 
+# Pega esta función de ayuda justo antes de la clase ToolHandler
+def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
+    """Crea el prompt para que el LLM decida qué herramienta usar."""
+    
+    descripcion_herramientas_json = {}
+    for nombre, detalles in TOOL_REGISTRY.items():
+        descripcion_herramientas_json[nombre] = {
+            "descripcion": detalles["descripcion"],
+            "parametros": detalles["parametros"]
+        }
+    
+    prompt = f"""
+Tu única tarea es actuar como un despachador de herramientas inteligente. Analiza la PREGUNTA DEL USUARIO y decide si alguna de las HERRAMIENTAS DISPONIBLES puede resolverla.
+
+HERRAMIENTAS DISPONIBLES:
+{json.dumps(descripcion_herramientas_json, indent=2)}
+
+PREGUNTA DEL USUARIO: "{pregunta_usuario}"
+
+INSTRUCCIONES DE RESPUESTA:
+- Si la pregunta del usuario coincide con la descripción de una herramienta y contiene los parámetros necesarios, responde SÓLO con un objeto JSON: {{"herramienta": "nombre_herramienta", "parametros": {{"nombre_param": "valor_extraido"}}}}.
+- Si la pregunta coincide con una herramienta pero le FALTAN PARÁMETROS, responde SÓLO con un JSON que indique qué falta: {{"herramienta": "nombre_herramienta", "faltan_parametros": ["nombre_param"]}}.
+- Si la pregunta NO se puede resolver con ninguna herramienta, responde SÓLO con la palabra: null.
+"""
+    return prompt
+
 class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
-        
-        # Flujo para cuando ya se pidió un parámetro (dirección) y el usuario responde
+
+        # Flujo para cuando el bot ya pidió un parámetro (la dirección)
         if memoria.get('estado_conversacion') == ConversationState.ESPERANDO_PARAM_RECOLECCION:
             if es_pregunta_nueva(pregunta, "una dirección"):
-                memoria.clear()
-                return None  # Permite que otro handler tome la nueva pregunta
+                memoria.clear(); return None
             
-            # Si el usuario da la dirección, se ejecuta la herramienta y se limpia el estado
-            memoria['estado_conversacion'] = None
+            memoria.clear()
             return {"respuesta": consultar_recoleccion_por_direccion(direccion=pregunta)}
         
-        # Si estamos en medio de otro flujo, este handler no debe actuar
+        # Si estamos en otro flujo (ej. un reclamo), no interrumpimos
         if memoria.get('estado_conversacion'):
             return None
+
+        # --- Lógica de decisión con IA ---
+        prompt = crear_prompt_decision_herramienta(pregunta)
+        try:
+            respuesta_llm_str = get_cohere_response(message=prompt, preamble="Eres un experto en decidir si una pregunta requiere una herramienta. Responde solo con JSON o 'null'.")
+            
+            if respuesta_llm_str.strip().lower() == "null":
+                return None # La IA decidió que ninguna herramienta sirve
+
+            decision = json.loads(respuesta_llm_str)
+            nombre_herramienta = decision.get("herramienta")
+
+            if not nombre_herramienta or nombre_herramienta not in TOOL_REGISTRY:
+                return None
+
+            # Caso 1: La IA detectó la herramienta pero faltan datos
+            if "faltan_parametros" in decision:
+                param_faltante = decision["faltan_parametros"][0]
+                if param_faltante == "direccion":
+                    memoria['estado_conversacion'] = ConversationState.ESPERANDO_PARAM_RECOLECCION
+                    return {"respuesta": "Claro, para darte esa información necesito que me indiques la dirección completa, por favor."}
+            
+            # Caso 2: La IA encontró la herramienta y extrajo los datos
+            elif "parametros" in decision:
+                parametros = decision["parametros"]
+                funcion_a_ejecutar = TOOL_REGISTRY[nombre_herramienta]["funcion"]
+                logger.info(f"[ToolHandler] Ejecutando herramienta '{nombre_herramienta}' con parámetros: {parametros}")
+                resultado = funcion_a_ejecutar(**parametros)
+                return {"respuesta": resultado}
+
+       except (json.JSONDecodeError, TypeError, Exception) as e:
+            logger.error(f"[ToolHandler] Error procesando decisión de herramienta: {e}", exc_info=True)
+            return None
+
+        return None
             
         # --- Lógica principal para decidir si usar una herramienta ---
         
@@ -401,6 +461,51 @@ class ToolHandler(BaseMunicipioHandler):
             memoria['estado_conversacion'] = ConversationState.ESPERANDO_PARAM_RECOLECCION
             return {"respuesta": "Claro, para darte el horario de recolección, necesito la dirección completa, por favor."}
 
+        return None
+    
+    # Pega esta clase completa en tu archivo municipios.py
+
+class HumanEscalationHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        # La intención 'hablar_con_agente' debe ser detectada por tu clasificador de LLM
+        if self.context.get('intencion') == 'hablar_con_agente':
+            logger.info(f"[HumanEscalationHandler] El usuario {self.context.get('user_id')} solicita un agente.")
+            
+            # Aquí asumimos que tienes un servicio para crear tickets de "chat en vivo"
+            # y que tu modelo MunicipioTicket tiene un estado para esto.
+            ticket_data = {
+                "asunto": "Solicitud de Chat en Vivo",
+                "categoria": "Atención en Vivo",
+                "detalles": f"El vecino solicitó atención en vivo con el mensaje: '{pregunta}'",
+                "user_id": self.context.get("user_id"),
+                "estado": "esperando_agente_en_vivo" # Estado hipotético para la cola de atención
+            }
+            
+            sala_de_chat = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data)
+            
+            if not sala_de_chat:
+                return {"respuesta": "Disculpa, hubo un problema técnico al intentar conectar con un agente. Por favor, intenta más tarde."}
+            
+            # Guardamos el primer mensaje del usuario en el historial del chat
+            servicio_tickets.crear_comentario(
+                ticket_id=sala_de_chat.id,
+                tipo_ticket="municipio",
+                comentario_data={"comentario": pregunta, "es_admin": False, "user_id": self.context.get("user_id")}
+            )
+            
+            logger.info(f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada.")
+            
+            respuesta_al_vecino = (
+                f"¡Entendido! He abierto una sala de chat directa con nuestro equipo. "
+                f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. \n\n"
+                "Por favor, aguarda un momento mientras un agente se conecta. **No cierres esta ventana.**"
+            )
+            
+            # Limpiamos el contexto para que la próxima interacción sea con el agente humano
+            self.context.get('contexto_municipio', {}).clear()
+            
+            return {"respuesta": respuesta_al_vecino, "ticket_id": sala_de_chat.id}
+            
         return None
 # <<< FIN DE HANDLERS FALTANTES >>>
 
