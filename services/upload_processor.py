@@ -14,7 +14,10 @@ from services.procesar_catalogo_excel import procesar_catalogo_excel
 
 from .utils import limpiar_texto_base
 
-from services.qdrant_utils import get_qdrant_client
+from services.qdrant_utils import (
+    get_qdrant_client,
+    verificar_y_crear_coleccion_qdrant,
+)
 from qdrant_client import models as qdrant_models
 from typing import List, Dict, Any, Optional
 
@@ -32,6 +35,10 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
     if not qdrant_cli:
         logger.error(f"[QDRANT_SAVE] No se pudo obtener cliente Qdrant para user_id={user_id}.")
         raise ConnectionError("No se pudo conectar a Qdrant para guardar los datos.")
+
+    vector_dim = len(vectores[0]) if vectores else 1024
+    if not verificar_y_crear_coleccion_qdrant("catalogos", vector_dim):
+        raise ConnectionError("No se pudo inicializar la colección en Qdrant.")
 
     puntos_para_insertar: List[qdrant_models.PointStruct] = []
 
@@ -236,6 +243,10 @@ def subir_catalogo():
             if rubro_obj and rubro_obj.nombre:
                 pyme_rubro_nombre = rubro_obj.nombre.lower().strip()
         logger.info(f"[UPLOAD_PROC] Rubro de la Pyme para procesamiento: {pyme_rubro_nombre}")
+
+        if not verificar_y_crear_coleccion_qdrant("catalogos", 1024):
+            logger.error("[UPLOAD_PROC] No se pudo preparar la colección en Qdrant")
+            return jsonify({"error": "Error de infraestructura al preparar el catálogo."}), 500
 
         logger.info(f"Intentando eliminar catálogo anterior en Qdrant para user_id={user.id}...")
         try:
