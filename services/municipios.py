@@ -375,7 +375,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             )
             if ticket:
                 enviar_notificacion_whatsapp_con_plantilla(numero_destino=telefono, nombre=nombre, nro_ticket=ticket.nro_ticket, categoria=categoria)
-                mensaje_sms = f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado. Te mantendremos al tanto por SMS."
+                mensaje_sms = f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado. Consulta cunado quieras el estado del mismo."
                 enviar_notificacion_sms(telefono, mensaje_sms)
                 memoria.clear()
                 return {"respuesta": f"¡Gracias! Tu reclamo fue generado con el ticket **M-{ticket.nro_ticket}**. Te hemos enviado una notificación por WhatsApp y SMS con los detalles."}
