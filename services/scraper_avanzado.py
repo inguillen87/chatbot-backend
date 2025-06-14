@@ -78,3 +78,58 @@ def extraer_productos_de_url(url: str) -> dict:
     except Exception as e:
         logger.error(f"[SCRAPER_PRODUCTOS] Error en {url}: {e}")
         return {"error": str(e)}
+
+
+def extraer_info_contacto_web(base_url: str) -> dict:
+    """Extrae teléfonos, correos y direcciones de una página web."""
+    logger.info(f"[SCRAPER_CONTACTO] Extrayendo información de contacto de: {base_url}")
+    resultados = {
+        "tipo": "contacto",
+        "telefonos": [],
+        "emails": [],
+        "direcciones": [],
+    }
+
+    try:
+        urls = {base_url}
+        # Buscamos links que parezcan ser de contacto para obtener más datos
+        for link in descubrir_links_relevantes(base_url):
+            if any(pal in link.lower() for pal in ["contact", "contacto", "ubicacion", "ubicación", "about", "quienes"]):
+                urls.add(link)
+
+        for url in list(urls)[:5]:  # Limitar a unas pocas páginas
+            res = requests.get(url, timeout=15, headers=HEADERS)
+            res.raise_for_status()
+            soup = BeautifulSoup(res.text, "html.parser")
+            texto = soup.get_text(separator=" ", strip=True)
+
+            # Emails
+            emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", texto)
+            for email in emails:
+                if email not in resultados["emails"]:
+                    resultados["emails"].append(email)
+
+            # Teléfonos
+            telefonos_raw = re.findall(r"(?:\+?\d{1,4}[\s-]*)?(?:\(?\d{2,4}\)?[\s-]*)?\d{3,4}[\s-]*\d{3,4}", texto)
+            for tel in telefonos_raw:
+                limpio = re.sub(r"\D", "", tel)
+                if len(limpio) >= 7 and limpio not in resultados["telefonos"]:
+                    resultados["telefonos"].append(limpio)
+
+            # Direcciones a partir de etiquetas <address>
+            for addr in soup.find_all("address"):
+                texto_addr = addr.get_text(separator=" ", strip=True)
+                if texto_addr and texto_addr not in resultados["direcciones"]:
+                    resultados["direcciones"].append(texto_addr)
+
+            # También buscamos palabras clave comunes
+            for kw in ["dirección", "direccion", "ubicación", "ubicacion"]:
+                for tag in soup.find_all(string=re.compile(kw, re.IGNORECASE)):
+                    fragmento = tag.parent.get_text(separator=" ", strip=True)
+                    if fragmento and fragmento not in resultados["direcciones"] and len(fragmento) <= 120:
+                        resultados["direcciones"].append(fragmento)
+
+        return resultados
+    except Exception as e:
+        logger.error(f"[SCRAPER_CONTACTO] Error en {base_url}: {e}")
+        return {"error": str(e)}
