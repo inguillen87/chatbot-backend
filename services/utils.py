@@ -185,12 +185,28 @@ def crear_mapa_de_columnas_inteligente(
             mejor_mapa = mapa_actual
             mejor_fila_idx = i
 
+    if 'nombre' not in mejor_mapa:
+        if 'descripcion' in mejor_mapa:
+            mejor_mapa['nombre'] = mejor_mapa['descripcion']
+            logger.info(
+                f"[CEREBRO] Columna '{mejor_mapa['descripcion']}' tomada como nombre por falta de encabezado explícito."
+            )
+        elif 'marca' in mejor_mapa:
+            mejor_mapa['nombre'] = mejor_mapa['marca']
+            logger.info(
+                f"[CEREBRO] Columna '{mejor_mapa['marca']}' tomada como nombre por falta de encabezado explícito."
+            )
+
     if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
         fila_inicio_datos = mejor_fila_idx + 1
-        logger.info(f"✅ [CEREBRO] Mapa de columnas válido encontrado. Encabezados en fila {mejor_fila_idx}. Score: {mejor_score}. Mapa: {mejor_mapa}")
+        logger.info(
+            f"✅ [CEREBRO] Mapa de columnas válido encontrado. Encabezados en fila {mejor_fila_idx}. Score: {mejor_score}. Mapa: {mejor_mapa}"
+        )
         return mejor_mapa, fila_inicio_datos
     else:
-        logger.error(f"[CEREBRO] No se pudo crear un mapa válido. Faltan campos esenciales 'nombre' y/o 'precio'. Mejor mapa encontrado: {mejor_mapa}")
+        logger.error(
+            f"[CEREBRO] No se pudo crear un mapa válido. Faltan campos esenciales 'nombre' y/o 'precio'. Mejor mapa encontrado: {mejor_mapa}"
+        )
         return None
 
 # --- 3. OTRAS UTILIDADES (Función que ya tenías) ---
