@@ -260,12 +260,32 @@ class FollowUpHandler(BaseHandler):
         return None
 
 class IntentClassifierPymeHandler(BaseHandler):
+    """Clasifica la intención y aplica un fallback por palabras clave."""
+
+    KEYWORDS_PEDIDO = [
+        "comprar",
+        "pedido",
+        "ordenar",
+        "cotizar",
+        "precio",
+        "malbec",
+    ]
+
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
         if not memoria.get('estado_conversacion'):
-            self.context['intencion'] = _clasificar_intencion_con_llm(pregunta)
+            intencion = _clasificar_intencion_con_llm(pregunta)
+
+            # Heurística simple si el clasificador no detecta la intención
+            if intencion in {"general", "general_pyme"}:
+                texto = pregunta.lower()
+                if any(kw in texto for kw in self.KEYWORDS_PEDIDO):
+                    intencion = "iniciar_pedido"
+
+            self.context['intencion'] = intencion
         else:
             self.context['intencion'] = 'continuar_flujo_pyme'
+
         logger.info(f"[PYME] Intención clasificada: {self.context.get('intencion')}")
         return None
 
