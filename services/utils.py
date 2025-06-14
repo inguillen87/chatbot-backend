@@ -142,8 +142,8 @@ KEYWORD_MAP = {
 }
 
 def crear_mapa_de_columnas_inteligente(
-    df: pd.DataFrame, 
-    max_filas_a_revisar: int = 15
+    df: pd.DataFrame,
+    max_filas_a_revisar: int = 50
 ) -> Optional[Tuple[Dict[str, str], int]]:
     """
     Analiza las primeras N filas de un DataFrame para encontrar la fila de encabezado
@@ -185,29 +185,44 @@ def crear_mapa_de_columnas_inteligente(
             mejor_mapa = mapa_actual
             mejor_fila_idx = i
 
-    if 'nombre' not in mejor_mapa:
-        if 'descripcion' in mejor_mapa:
-            mejor_mapa['nombre'] = mejor_mapa['descripcion']
-            logger.info(
-                f"[CEREBRO] Columna '{mejor_mapa['descripcion']}' tomada como nombre por falta de encabezado explícito."
-            )
-        elif 'marca' in mejor_mapa:
-            mejor_mapa['nombre'] = mejor_mapa['marca']
-            logger.info(
-                f"[CEREBRO] Columna '{mejor_mapa['marca']}' tomada como nombre por falta de encabezado explícito."
-            )
-
     if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
         fila_inicio_datos = mejor_fila_idx + 1
         logger.info(
             f"✅ [CEREBRO] Mapa de columnas válido encontrado. Encabezados en fila {mejor_fila_idx}. Score: {mejor_score}. Mapa: {mejor_mapa}"
         )
         return mejor_mapa, fila_inicio_datos
-    else:
-        logger.error(
-            f"[CEREBRO] No se pudo crear un mapa válido. Faltan campos esenciales 'nombre' y/o 'precio'. Mejor mapa encontrado: {mejor_mapa}"
-        )
-        return None
+
+    # Intento heurístico adicional cuando falta 'nombre' o 'precio'
+    logger.warning(
+        f"[CEREBRO] Buscando mapa por heurística. Mapa parcial: {mejor_mapa}"
+    )
+
+    if 'precio' not in mejor_mapa:
+        for col in df.columns:
+            valores = df[col].head(max_filas_a_revisar)
+            parseables = sum(1 for v in valores if parse_precio_flexible(v)[1] is not None)
+            if parseables >= max(2, len(valores) // 2):
+                mejor_mapa['precio'] = col
+                break
+
+    if 'nombre' not in mejor_mapa:
+        for col in df.columns:
+            if col == mejor_mapa.get('precio'):
+                continue
+            textos = [str(v).strip() for v in df[col].head(max_filas_a_revisar)]
+            largas = [t for t in textos if len(t) > 2]
+            if len(largas) >= len(textos) // 2:
+                mejor_mapa['nombre'] = col
+                break
+
+    if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
+        logger.info(f"✅ [CEREBRO] Mapa heurístico obtenido: {mejor_mapa}")
+        return mejor_mapa, 0
+
+    logger.error(
+        f"[CEREBRO] No se pudo crear un mapa válido. Faltan campos esenciales 'nombre' y/o 'precio'. Mejor mapa encontrado: {mejor_mapa}"
+    )
+    return None
 
 # --- 3. OTRAS UTILIDADES (Función que ya tenías) ---
 def sugerencias_por_rubro(rubro):
