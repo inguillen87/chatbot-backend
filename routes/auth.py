@@ -135,3 +135,25 @@ def actualizar_perfil(user):
         db.session.rollback()
         current_app.logger.error(f"Error al actualizar perfil para {user.email}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al guardar el perfil."}), 500
+    
+def anon_o_token_requerido(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        # 1. Autenticación estándar primero
+        auth_header = request.headers.get('Authorization', '')
+        user = None
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            user = User.query.filter_by(token=token).first()
+            if user:
+                g.current_user = user
+                return f(current_user=user, *args, **kwargs)
+
+        # 2. Si no hay user, busca anon_id en el header
+        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id") or None
+        if anon_id:
+            g.anon_id = anon_id
+            return f(current_user=None, anon_id=anon_id, *args, **kwargs)
+
+        return jsonify({"error": "Falta autenticación."}), 401
+    return decorated
