@@ -266,14 +266,29 @@ class PedidoHandler(BaseHandler):
             else:
                 contexto_pyme.clear()
                 return {"respuesta": "Entendido. No se generará el pedido. ¿Hay algo más en lo que pueda ayudarte?", "fuente": "pedido_cancelado"}
+        elif estado_conversacion == 'esperando_numero_pedido':
+            pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
+            if not pedido_match:
+                return {"respuesta": "No entendí el número de pedido. ¿Podés repetirlo?", "fuente": "pedido_falta_numero"}
+            nro_pedido_str = pedido_match.group(2).upper()
+            pedido = servicio_pedidos.obtener_pedido_por_nro(nro_pedido_str)
+            contexto_pyme.clear()
+            if pedido:
+                return {"respuesta": f"El pedido **Nº {pedido.nro_pedido}** se encuentra en estado: **{pedido.estado}**.", "fuente": "consulta_estado_pedido_ok", "estado_respuesta": "mostrar_pedido_en_panel", "pedido_data": pedido.to_dict()}
+            else:
+                return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
         elif self.context.get('intencion') == 'consultar_estado_pedido':
             pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
             if pedido_match:
                 nro_pedido_str = pedido_match.group(2).upper()
                 pedido = servicio_pedidos.obtener_pedido_por_nro(nro_pedido_str)
-                if pedido: return {"respuesta": f"El pedido **Nº {pedido.nro_pedido}** se encuentra en estado: **{pedido.estado}**.", "fuente": "consulta_estado_pedido_ok", "estado_respuesta": "mostrar_pedido_en_panel", "pedido_data": pedido.to_dict()}
-                else: return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
-            else: return {"respuesta": "Para consultar, por favor, decime el número de pedido.", "fuente": "pedido_falta_numero"}
+                if pedido:
+                    return {"respuesta": f"El pedido **Nº {pedido.nro_pedido}** se encuentra en estado: **{pedido.estado}**.", "fuente": "consulta_estado_pedido_ok", "estado_respuesta": "mostrar_pedido_en_panel", "pedido_data": pedido.to_dict()}
+                else:
+                    return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
+            else:
+                contexto_pyme['estado_conversacion'] = 'esperando_numero_pedido'
+                return {"respuesta": "Para consultar, por favor, decime el número de pedido.", "fuente": "pedido_falta_numero"}
         return None
 
 class TicketStatusHandler(BaseHandler):

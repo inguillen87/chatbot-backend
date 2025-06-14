@@ -45,6 +45,7 @@ EJEMPLO_DIRECCION = "Ejemplo: San Martín 123, Barrio Centro, Junín"
 class ConversationState(Enum):
     ESPERANDO_CONFIRMACION_CIERRE = auto()
     ESPERANDO_CALIFICACION = auto()
+    ESPERANDO_NUMERO_TICKET = auto()
     ESPERANDO_PARAM_RECOLECCION = auto()
     ESPERANDO_CATEGORIA_RECLAMO = auto()
     ESPERANDO_DIRECCION_RECLAMO = auto()
@@ -108,9 +109,11 @@ class GreetingHandler(BaseMunicipioHandler):
         memoria = self.context.get('contexto_municipio', {})
         texto = normalizar_texto(pregunta.strip("!.,?"))
         saludos = ['hola', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'que tal', 'buenas']
+        tokens = re.sub(r'[!.,?]', '', texto).split()
+        set_saludo = {'hola', 'buenos', 'dias', 'buenas', 'tardes', 'noches', 'hey', 'que', 'tal'}
 
         # 1. Si es solo un saludo, responde amigable.
-        if texto in saludos:
+        if texto in saludos or (0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)):
             memoria.clear()
             return {
                 "respuesta": (
@@ -165,9 +168,34 @@ class TicketStatusHandler(BaseMunicipioHandler):
                 {"texto": "Consultar otro ticket"},
                 {"texto": "Hablar con un agente"}
             ]}
+        elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET:
+            if es_pregunta_nueva(pregunta, "un número de ticket"):
+                memoria.clear(); return None
+            match = re.search(r'\d{5,}', pregunta)
+            if not match:
+                return {"respuesta": "No entendí el número de ticket. ¿Podés repetirlo?"}
+            numero = int(match.group(0))
+            ticket = MunicipioTicket.query.filter_by(nro_ticket=numero).first()
+            memoria.pop('estado_conversacion', None)
+            if not ticket:
+                return {"respuesta": f"No encontré ticket {match.group(0)}."}
+            respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' está en estado: **{ticket.estado}**."
+            ultimo_comentario = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first()
+            if ultimo_comentario:
+                respuesta += f"\nÚltima actualización: *{ultimo_comentario.comentario}*"
+                if ticket.estado == "en_proceso":
+                    memoria['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_CIERRE
+                    memoria['ticket_id_activo'] = ticket.id
+                    respuesta += "\n¿Se resolvió tu problema?"
+                    return {"respuesta": respuesta, "botones": [
+                        {"texto": "Sí, solucionado"}, {"texto": "No, aún no"}
+                    ]}
+            return {"respuesta": respuesta}
         if self.context.get('intencion') == 'consultar_estado_ticket':
             match = re.search(r'\d{5,}', pregunta)
-            if not match: return {"respuesta": "Decime el número de ticket que querés consultar."}
+            if not match:
+                memoria['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET
+                return {"respuesta": "Decime el número de ticket que querés consultar."}
             ticket = MunicipioTicket.query.filter_by(nro_ticket=int(match.group(0))).first()
             if not ticket: return {"respuesta": f"No encontré ticket {match.group(0)}."}
             respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' está en estado: **{ticket.estado}**."
