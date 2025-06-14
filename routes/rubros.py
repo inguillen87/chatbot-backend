@@ -7,8 +7,8 @@ from models import Rubro
 # Esto es más limpio y evita conflictos.
 rubros_bp = Blueprint('rubros', __name__, url_prefix='/rubros')
 
-# 2. La ruta ahora es solo '/', porque hereda el prefijo '/rubros'.
-@rubros_bp.route('/', methods=['GET'])
+# Acepta tanto '/rubros' como '/rubros/' para evitar redirecciones
+@rubros_bp.route('', methods=['GET'], strict_slashes=False)
 def get_all_rubros():
     """
     Endpoint para obtener la lista de todos los rubros.
@@ -20,5 +20,5 @@ def get_all_rubros():
         return jsonify(lista_rubros)
     except Exception as e:
         # Usamos current_app para acceder al logger configurado en app.py
-        current_app.logger.error(f"Error al obtener la lista de rubros: {e}", exc_info=True)
+        current_app.logger.exception(f"Error al obtener la lista de rubros: {e}")
         return jsonify({"error": "Error interno al obtener los rubros."}), 500
