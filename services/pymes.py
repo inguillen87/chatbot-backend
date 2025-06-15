@@ -600,6 +600,17 @@ class VectorCatalogHandler(BaseHandler):
         if not user_id:
             return None
 
+        # Si el usuario está iniciando o continuando un pedido,
+        # dejamos que el PedidoHandler maneje el flujo
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+        if self.context.get('intencion') == 'iniciar_pedido' or estado in {
+            PymeConversationState.ESPERANDO_DETALLES_PEDIDO,
+            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
+            PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2,
+        }:
+            return None
+
         resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, limite=3)
         productos_mostrados = []
 
