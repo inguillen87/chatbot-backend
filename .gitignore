@@ -8,6 +8,7 @@ instance/*
 *.json
 !data/tramites.json
 !data/respuestas_municipio.json
+!data/municipios/**
 __pycache__/
 *.pyc
 
