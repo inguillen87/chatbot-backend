@@ -60,6 +60,22 @@ def enviar_email_pedido_admin(pedido) -> bool:
     return enviar_email(ADMIN_EMAIL, asunto, cuerpo)
 
 
+def enviar_email_pedido_cliente(pedido) -> bool:
+    """Envía un correo al cliente confirmando su pedido."""
+    destino = getattr(pedido, "email_cliente", None)
+    if not destino:
+        logger.warning("[EMAIL] Pedido sin email de cliente.")
+        return False
+
+    asunto = f"Confirmación de pedido {pedido.nro_pedido}"
+    cuerpo = (
+        f"<p>Hola {pedido.nombre_cliente or ''},</p>"
+        f"<p>Recibimos tu pedido <strong>{pedido.nro_pedido}</strong> y está en proceso.</p>"
+        "<p>Te avisaremos cuando esté listo para el envío.</p>"
+    )
+    return enviar_email(destino, asunto, cuerpo)
+
+
 def enviar_email_ticket_admin(ticket) -> bool:
     """Envía un correo al administrador con el nuevo ticket."""
     if not ADMIN_EMAIL:
@@ -80,6 +96,22 @@ def enviar_email_ticket_admin(ticket) -> bool:
             f"- {getattr(ticket, 'telefono', '')}</p>"
         )
     return enviar_email(ADMIN_EMAIL, asunto, cuerpo)
+
+
+def enviar_email_ticket_cliente(ticket) -> bool:
+    """Confirma al cliente que su reclamo fue recibido."""
+    destino = getattr(ticket, "email", None)
+    if not destino:
+        logger.warning("[EMAIL] Ticket sin email de cliente.")
+        return False
+
+    asunto = f"Reclamo {ticket.nro_ticket} recibido"
+    cuerpo = (
+        f"<p>Hola,</p>"
+        f"<p>Registramos tu reclamo con número <strong>{ticket.nro_ticket}</strong>.</p>"
+        "<p>Nos comunicaremos pronto para darle seguimiento.</p>"
+    )
+    return enviar_email(destino, asunto, cuerpo)
 
 
 def enviar_sms(destino: str, mensaje: str) -> bool:
