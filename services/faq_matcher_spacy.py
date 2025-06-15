@@ -1,7 +1,7 @@
 # services/faq_matcher_spacy.py
 import spacy
 import logging
-from typing import Optional, List # Añadido List
+from typing import Optional, List, Tuple
 from models import QA
 from .utils import limpiar_texto_base
 
@@ -45,3 +45,50 @@ def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float =
     else:
         logger.info(f"📉 [FAQ] No match >= {threshold} para '{pregunta_limpia}' (Rubro {rubro_id}). Mejor score: {mejor_score:.3f}")
         return None
+
+def buscar_top_n_faqs(pregunta_usuario: str, rubro_id: int, n: int = 3, threshold: float = 0.5) -> List[Tuple[QA, float]]:
+    """Devuelve las mejores ``n`` FAQs ordenadas por similitud."""
+    _cargar_spacy_modelo_faq()
+    if NLP_SPACY_FAQ is None:
+        logger.error("[FAQ] Imposible buscar: modelo spaCy no cargado.")
+        return []
+    if not pregunta_usuario or not isinstance(pregunta_usuario, str) or not pregunta_usuario.strip():
+        logger.warning("[FAQ] Pregunta vacía.")
+        return []
+    if not isinstance(rubro_id, int):
+        logger.warning(f"[FAQ] Rubro ID inválido ({rubro_id}).")
+        return []
+
+    try:
+        faqs: List[QA] = QA.query.filter_by(rubro_id=rubro_id).all()
+    except Exception as e_db:
+        logger.error(f"[FAQ] Error consultando FAQs BD para rubro {rubro_id}: {e_db}", exc_info=True)
+        return []
+
+    if not faqs:
+        logger.info(f"[FAQ] No FAQs en BD para rubro ID {rubro_id}.")
+        return []
+
+    pregunta_limpia = limpiar_texto_base(pregunta_usuario)
+    doc_user = NLP_SPACY_FAQ(pregunta_limpia)
+    if not doc_user.has_vector or not doc_user.vector_norm:
+        logger.warning(f"[FAQ] No vector para pregunta: '{pregunta_limpia}'.")
+        return []
+
+    resultados: List[Tuple[QA, float]] = []
+    for faq_item in faqs:
+        if not faq_item.question or not faq_item.question.strip():
+            continue
+        doc_faq = NLP_SPACY_FAQ(limpiar_texto_base(faq_item.question))
+        if not doc_faq.has_vector or not doc_faq.vector_norm:
+            continue
+        try:
+            score = doc_user.similarity(doc_faq)
+            if score >= threshold:
+                resultados.append((faq_item, score))
+        except Exception as e_sim:
+            logger.error(f"[FAQ] Error similitud FAQ ID {faq_item.id}: {e_sim}", exc_info=True)
+            continue
+
+    resultados.sort(key=lambda x: x[1], reverse=True)
+    return resultados[:n]
