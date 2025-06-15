@@ -3,6 +3,7 @@ import re
 import random
 import json
 from datetime import datetime
+from enum import Enum, auto
 from flask import session as flask_session
 
 # --- Importaciones ---
@@ -29,6 +30,29 @@ logger = logging.getLogger(__name__)
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 CONTEXTO_PYME_SESION = "contexto_pyme"
 MAX_HISTORIAL_CHAT = 14
+
+
+class PymeConversationState(Enum):
+    ESPERANDO_DETALLES_PEDIDO = auto()
+    CONFIRMANDO_PEDIDO_TEMP = auto()
+    CONFIRMANDO_PEDIDO_FINAL_PASO_2 = auto()
+    ESPERANDO_NUMERO_PEDIDO = auto()
+    ESPERANDO_NUMERO_TICKET = auto()
+    ESPERANDO_DETALLES_RECLAMO = auto()
+    ESPERANDO_DATOS_RECLAMO_ROTO = auto()
+
+
+def serialize_state(state: PymeConversationState | None) -> str | None:
+    return state.name if state else None
+
+
+def deserialize_state(value: str | None) -> PymeConversationState | None:
+    if not value:
+        return None
+    try:
+        return PymeConversationState[value]
+    except KeyError:
+        return None
 
 
 def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
@@ -205,25 +229,35 @@ class LimitHandler(BaseHandler):
 class FollowUpHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context.get('contexto_pyme', {})
-        if 'esperando_detalles_reclamo' in contexto_pyme:
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+        if estado == PymeConversationState.ESPERANDO_DETALLES_RECLAMO:
             if es_pregunta_nueva(pregunta, "el dato solicitado"):
                 contexto_pyme.clear()
                 return None
-            ticket_id = contexto_pyme.pop('esperando_detalles_reclamo')
+            ticket_id = contexto_pyme.pop('ticket_id_reclamo', None)
             ticket = db.session.get(PymeTicket, ticket_id)
             if ticket:
                 servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": pregunta, "user_id": self.context['user_id']})
-                return {"respuesta": "Perfecto, he añadido tus comentarios al reclamo.", "fuente": "detalle_reclamo_agregado", "estado_respuesta": "exito_seguimiento"}
-        elif 'esperando_datos_reclamo_roto' in contexto_pyme:
+                return {
+                    "respuesta": "Perfecto, he añadido tus comentarios al reclamo.",
+                    "fuente": "detalle_reclamo_agregado",
+                    "estado_respuesta": "exito_seguimiento",
+                    "botones": [
+                        {"texto": "Nuevo pedido"},
+                        {"texto": "Consultar pedido"},
+                        {"texto": "Hablar con un agente"}
+                    ]
+                }
+        elif estado == PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO:
             if es_pregunta_nueva(pregunta, "el dato solicitado"):
                 contexto_pyme.clear()
                 return None
-            ticket_id = contexto_pyme.pop('esperando_datos_reclamo_roto')
+            ticket_id = contexto_pyme.pop('ticket_id_roto', None)
             ticket = db.session.get(PymeTicket, ticket_id)
             if ticket:
                 servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": f"Info adicional del cliente: {pregunta}", "user_id": self.context['user_id']})
                 return {"respuesta": "Recibido. Gracias por la información. Ya estamos procesando el envío de tu reemplazo.", "fuente": "datos_reemplazo_recibidos", "estado_respuesta": "exito_seguimiento"}
-        elif 'confirmando_pedido_final_paso_2' in contexto_pyme:
+        elif estado == PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2:
             if es_pregunta_nueva(pregunta, "el dato solicitado"):
                 contexto_pyme.clear()
                 return None
@@ -252,9 +286,15 @@ class FollowUpHandler(BaseHandler):
             self.context['contexto_pyme'].clear() 
             if nuevo_pedido:
                 return {
-                    "respuesta": f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!", 
-                    "fuente": "handler_pedido_creado", "estado_respuesta": "exito_pedido_creado", 
-                    "pedido_data": nuevo_pedido.to_dict()
+                    "respuesta": f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!",
+                    "fuente": "handler_pedido_creado",
+                    "estado_respuesta": "exito_pedido_creado",
+                    "pedido_data": nuevo_pedido.to_dict(),
+                    "botones": [
+                        {"texto": "Nuevo pedido"},
+                        {"texto": "Consultar pedido"},
+                        {"texto": "Hablar con un agente"}
+                    ]
                 }
             else:
                 return {"respuesta": "Disculpa, hubo un problema técnico al registrar tu pedido.", "fuente": "handler_pedido_error", "estado_respuesta": "error_pedido"}
@@ -293,9 +333,9 @@ class IntentClassifierPymeHandler(BaseHandler):
 class PedidoHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context.get('contexto_pyme', {})
-        estado_conversacion = contexto_pyme.get('estado_conversacion')
+        estado_conversacion = deserialize_state(contexto_pyme.get('estado_conversacion'))
         if self.context.get('intencion') == 'iniciar_pedido' and not estado_conversacion:
-            contexto_pyme['estado_conversacion'] = 'esperando_detalles_pedido'
+            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_PEDIDO)
             contexto_pyme['pregunta_original_pedido'] = pregunta
             productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
             if productos_referencia:
@@ -303,13 +343,13 @@ class PedidoHandler(BaseHandler):
                 return {"respuesta": f"¡Claro! Encontré estos productos:\n{resumen_productos}\n\n¿Cuáles y cuántos te gustaría pedir? Por ejemplo: '1 caja de Malbec y 2 de Cabernet'.", "fuente": "handler_pedido_iniciado_con_catalogo", "estado_respuesta": "pyme_pregunta_pedido"}
             else:
                 return {"respuesta": "¡Claro! Para tu pedido, contame qué productos o servicios te interesan y en qué cantidad.", "fuente": "handler_pedido_iniciado_generico", "estado_respuesta": "pyme_pregunta_pedido"}
-        elif estado_conversacion == 'esperando_detalles_pedido':
+        elif estado_conversacion == PymeConversationState.ESPERANDO_DETALLES_PEDIDO:
             productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
             detalles_estructurados = _extraer_cantidades_con_llm(pregunta, productos_referencia)
             if not detalles_estructurados:
                 return {"respuesta": "No pude identificar los productos que mencionas. Por favor, sé más específico sobre lo que te interesa de nuestro catálogo.", "fuente": "handler_pedido_error_productos", "estado_respuesta": "pyme_error_productos"}
             contexto_pyme['productos_solicitados_temp'] = detalles_estructurados
-            contexto_pyme['estado_conversacion'] = 'confirmando_pedido_temp'
+            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
             resumen_productos_confirmacion = "Tenemos lo siguiente para tu pedido:\n"
             monto_total_temp = 0.0
             for p in detalles_estructurados:
@@ -319,16 +359,16 @@ class PedidoHandler(BaseHandler):
             resumen_productos_confirmacion += f"\n**Monto estimado: ${monto_total_temp:,.2f}**\n\n¿Confirmas este pedido? También podés indicarme tus datos (nombre, teléfono, email)."
             contexto_pyme['monto_total_temp'] = monto_total_temp
             return {"respuesta": resumen_productos_confirmacion, "fuente": "handler_pedido_detalles_para_confirmar", "estado_respuesta": "pyme_confirmar_pedido"}
-        elif estado_conversacion == 'confirmando_pedido_temp':
+        elif estado_conversacion == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
             if any(p in pregunta.lower().strip() for p in ["si", "sí", "dale", "quiero", "confirmar", "ok"]):
                 contexto_pyme['productos_a_confirmar_en_paso_2'] = contexto_pyme.pop('productos_solicitados_temp')
                 contexto_pyme['monto_total_final_en_paso_2'] = contexto_pyme.pop('monto_total_temp')
-                contexto_pyme['estado_conversacion'] = 'confirmando_pedido_final_paso_2'
+                contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2)
                 return {"respuesta": "¡Excelente! Estoy procesando los últimos detalles. Por favor, confirmame tu nombre y un contacto (teléfono o email) para finalizar.", "fuente": "pedido_confirmado_paso_1", "estado_respuesta": "pyme_pregunta_contacto"}
             else:
                 contexto_pyme.clear()
                 return {"respuesta": "Entendido. No se generará el pedido. ¿Hay algo más en lo que pueda ayudarte?", "fuente": "pedido_cancelado"}
-        elif estado_conversacion == 'esperando_numero_pedido':
+        elif estado_conversacion == PymeConversationState.ESPERANDO_NUMERO_PEDIDO:
             pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
             if not pedido_match:
                 return {"respuesta": "No entendí el número de pedido. ¿Podés repetirlo?", "fuente": "pedido_falta_numero"}
@@ -349,7 +389,7 @@ class PedidoHandler(BaseHandler):
                 else:
                     return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
             else:
-                contexto_pyme['estado_conversacion'] = 'esperando_numero_pedido'
+                contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_PEDIDO)
                 return {"respuesta": "Para consultar, por favor, decime el número de pedido.", "fuente": "pedido_falta_numero"}
         return None
 
@@ -358,9 +398,9 @@ class TicketStatusHandler(BaseHandler):
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
-        estado = memoria.get('estado_conversacion')
+        estado = deserialize_state(memoria.get('estado_conversacion'))
 
-        if estado == 'esperando_numero_ticket':
+        if estado == PymeConversationState.ESPERANDO_NUMERO_TICKET:
             match = re.search(r"\d{5,}", pregunta)
             if not match:
                 return {"respuesta": "No entendí el número de ticket. ¿Podés repetirlo?", "fuente": "ticket_falta_numero"}
@@ -368,7 +408,15 @@ class TicketStatusHandler(BaseHandler):
             ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
             memoria.clear()
             if ticket:
-                return {"respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.", "fuente": "ticket_ok"}
+                return {
+                    "respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.",
+                    "fuente": "ticket_ok",
+                    "botones": [
+                        {"texto": "Nuevo pedido"},
+                        {"texto": "Consultar pedido"},
+                        {"texto": "Hablar con un agente"}
+                    ]
+                }
             return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
 
         if self.context.get('intencion') == 'consultar_estado_ticket':
@@ -377,9 +425,17 @@ class TicketStatusHandler(BaseHandler):
                 nro = int(match.group(0))
                 ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
                 if ticket:
-                    return {"respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.", "fuente": "ticket_ok"}
+                    return {
+                        "respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.",
+                        "fuente": "ticket_ok",
+                        "botones": [
+                            {"texto": "Nuevo pedido"},
+                            {"texto": "Consultar pedido"},
+                            {"texto": "Hablar con un agente"}
+                        ]
+                    }
                 return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
-            memoria['estado_conversacion'] = 'esperando_numero_ticket'
+            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_TICKET)
             return {"respuesta": "Decime el número de ticket que querés consultar.", "fuente": "ticket_pedir_numero"}
 
         return None
@@ -392,7 +448,8 @@ class BrokenProductHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
 
-        if memoria.get('estado_conversacion') == 'esperando_datos_reclamo_roto':
+        estado = deserialize_state(memoria.get('estado_conversacion'))
+        if estado == PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO:
             ticket_id = memoria.pop('ticket_id_roto', None)
             if ticket_id:
                 servicio_tickets.crear_comentario(
@@ -401,7 +458,15 @@ class BrokenProductHandler(BaseHandler):
                     comentario_data={"comentario": pregunta, "user_id": self.context.get('user_id')}
                 )
                 memoria.clear()
-                return {"respuesta": "Gracias, registramos el detalle de tu reclamo y pronto te contactaremos.", "fuente": "reclamo_roto_comentado"}
+                return {
+                    "respuesta": "Gracias, registramos el detalle de tu reclamo y pronto te contactaremos.",
+                    "fuente": "reclamo_roto_comentado",
+                    "botones": [
+                        {"texto": "Nuevo pedido"},
+                        {"texto": "Consultar pedido"},
+                        {"texto": "Hablar con un agente"}
+                    ]
+                }
             return None
 
         if any(pal in pregunta.lower() for pal in self.PALABRAS_CLAVE):
@@ -429,9 +494,17 @@ class BrokenProductHandler(BaseHandler):
                         enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
                 except Exception as e:
                     logger.error(f"Error enviando SMS de ticket roto: {e}")
-                memoria['estado_conversacion'] = 'esperando_datos_reclamo_roto'
+                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO)
                 memoria['ticket_id_roto'] = ticket.id
-                return {"respuesta": f"Lamentamos lo ocurrido. Creamos el ticket **{ticket.nro_ticket}**. ¿Podés contarnos más detalles o enviar una foto?", "fuente": "reclamo_roto"}
+                return {
+                    "respuesta": f"Lamentamos lo ocurrido. Creamos el ticket **{ticket.nro_ticket}**. ¿Podés contarnos más detalles o enviar una foto?",
+                    "fuente": "reclamo_roto",
+                    "botones": [
+                        {"texto": "Nuevo pedido"},
+                        {"texto": "Consultar pedido"},
+                        {"texto": "Hablar con un agente"}
+                    ]
+                }
         return None
 
 class ClaimHandler(BaseHandler):
@@ -465,8 +538,18 @@ class ClaimHandler(BaseHandler):
                         enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
                 except Exception as e:
                     logger.error(f"Error enviando SMS de ticket: {e}")
-                self.context.get('contexto_pyme', {})['esperando_detalles_reclamo'] = ticket.id
-                return {"respuesta": f"Registré tu reclamo con número **{ticket.nro_ticket}**. ¿Podés brindarme más detalles?", "fuente": "reclamo_registrado"}
+                memoria = self.context.get('contexto_pyme', {})
+                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
+                memoria['ticket_id_reclamo'] = ticket.id
+                return {
+                    "respuesta": f"Registré tu reclamo con número **{ticket.nro_ticket}**. ¿Podés brindarme más detalles?",
+                    "fuente": "reclamo_registrado",
+                    "botones": [
+                        {"texto": "Nuevo pedido"},
+                        {"texto": "Consultar pedido"},
+                        {"texto": "Hablar con un agente"}
+                    ]
+                }
         return None
 
 class VectorCatalogHandler(BaseHandler):
