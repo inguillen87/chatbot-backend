@@ -13,6 +13,7 @@ from services.utils_placeholders import (
     reemplazar_placeholders,
     obtener_respuesta_municipio,
 )
+from services.config_loader import cargar_configuracion_municipio
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
     categorizar_reclamo_por_palabra_clave,
@@ -31,59 +32,44 @@ TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 TWILIO_WHATSAPP_NUMBER = 'whatsapp:+14155238886'
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
+MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
+CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
+
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
 
-MINI_FAQ_TRAMITES = {
-    "licencia_de_conducir": [
-        {"q": "cuánto cuesta", "a": "El costo de la Licencia depende de la categoría. Consultalo en la web oficial del municipio o en mesa de entrada."},
-        {
-            "q": "pago multa",
-            "a": "Para sacar o renovar tu Licencia necesitás no tener multas impagas.",
-            "botones": [
-                {"texto": "Ir a Rentas", "url": "https://www.juninmendoza.gov.ar/tramites/"},
-                {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
-            ]
-        },
-        {"q": "vencimiento", "a": "La fecha de vencimiento y los requisitos están en el reverso de tu Licencia o en la web del municipio."},
-        {"q": "curso", "a": "El curso de seguridad vial se hace online (Agencia Nacional de Seguridad Vial) o presencial en el Centro de Licencias."},
-        {"q": "requisitos", "a": "DNI actualizado, no tener multas, hacer el curso y, si corresponde, apto médico."},
-        {"q": "turno", "a": "Solicitá turno en: https://tlc.mendoza.gov.ar/turnos"}
-    ]
-}
+MINI_FAQ_TRAMITES = cargar_configuracion_municipio(
+    MUNICIPIO_ID, "mini_faq_tramites.json"
+)
 
 # --- Trámites municipales ---
-TRAMITES_JSON_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "data", "tramites.json"
-)
 _TRAMITES_CACHE = None
 
 
 def cargar_tramites_info():
-    """Carga la descripción de los trámites desde el archivo JSON."""
+    """Carga la descripción de los trámites desde el JSON del municipio."""
     global _TRAMITES_CACHE
     if _TRAMITES_CACHE is None:
-        try:
-            with open(TRAMITES_JSON_PATH, "r", encoding="utf-8") as f:
-                _TRAMITES_CACHE = json.load(f)
-        except Exception as e:
-            logger.error(f"[TRAMITES] No se pudo cargar {TRAMITES_JSON_PATH}: {e}")
-            _TRAMITES_CACHE = {}
+        _TRAMITES_CACHE = cargar_configuracion_municipio(
+            MUNICIPIO_ID, "tramites.json"
+        )
     return _TRAMITES_CACHE
 
 
 TRAMITES_INFO = cargar_tramites_info()
 
 # URL por defecto para los trámites del municipio
-DEFAULT_TRAMITES_WEB_URL = os.environ.get(
-    "TRAMITES_WEB_URL_DEFAULT", "https://www.ejemplo.gob.ar/tramites/"
+DEFAULT_TRAMITES_WEB_URL = CONFIG_MUNICIPIO.get(
+    "tramites_web_url", "https://www.ejemplo.gob.ar/tramites/"
 )
 
 # Dirección del municipio utilizada en respuestas
-MUNICIPIO_DIRECCION = os.environ.get(
-    "MUNICIPIO_DIRECCION", "San Martín 15, M6000 Junín, Mendoza"
+MUNICIPIO_DIRECCION = CONFIG_MUNICIPIO.get(
+    "direccion", "Dirección del municipio"
 )
-EJEMPLO_DIRECCION = "Ejemplo: San Martín 123, Barrio Centro, Junín"
+EJEMPLO_DIRECCION = CONFIG_MUNICIPIO.get(
+    "ejemplo_direccion", "Avenida Siempreviva 123"
+)
 
 class ConversationState(Enum):
     ESPERANDO_CONFIRMACION_CIERRE = auto()

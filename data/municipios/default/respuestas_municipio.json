@@ -1,0 +1,10 @@
+{
+    "impuestos_info": "Consultá impuestos, descargá boletas y pagá online en Rentas.",
+    "impuestos_botones": [
+        {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
+        {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
+    ],
+    "curso_licencia_info": "El curso se hace online (Agencia Nacional de Seguridad Vial) o presencial en el municipio.",
+    "reclamo_error": "No se pudo generar el reclamo. Probá de nuevo o llamanos al 0800-MUNICIPIO.",
+    "tramite_no_encontrado": "No encontré ese trámite. Estas son las opciones disponibles:"
+}

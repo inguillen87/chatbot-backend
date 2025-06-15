@@ -4,6 +4,7 @@ import logging
 import requests
 import os
 import unicodedata # <--- ¡Importante agregar esta línea!
+from services.config_loader import cargar_configuracion_municipio
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -70,6 +71,8 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
    
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
+MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
+CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 
 
 # --- NUEVA FUNCIÓN DE NORMALIZACIÓN ---
@@ -98,8 +101,9 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
         logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps no configurada.")
         return "Error de configuración interna. No puedo acceder al servicio de mapas."
 
-    if "junin" not in direccion.lower():
-        direccion_completa = f"{direccion}, Junín, Mendoza"
+    ciudad = CONFIG_MUNICIPIO.get("ciudad", "")
+    if ciudad and ciudad.lower() not in direccion.lower():
+        direccion_completa = f"{direccion}, {ciudad}"
     else:
         direccion_completa = direccion
 
@@ -185,21 +189,10 @@ def consultar_eventos_culturales(fecha: str) -> str:
     # Normalizamos la fecha que nos llega del LLM para poder buscarla.
     fecha_normalizada = normalizar_texto(fecha)
     
-    # --- BASE DE DATOS DE EJEMPLO ---
-    agenda = {
-        "hoy": [
-            "Concierto de la Filarmónica de Mendoza en el Teatro Ducal. 21:00 hs.",
-            "Feria de Artesanos en la Plaza Departamental. De 18:00 a 22:00 hs."
-        ],
-        "manana": [
-            "Ciclo de Cine Argentino en el Microcine Municipal. 20:00 hs. Entrada gratuita.",
-            "Maratón 'Junín Corre' 10K. Largada desde el Polideportivo. 09:00 hs."
-        ],
-        "sabado": [
-             "Maratón 'Junín Corre' 10K. Largada desde el Polideportivo. 09:00 hs.",
-             "Noche de las Vinerías: Degustaciones en bodegas locales. A partir de las 19:00 hs."
-        ]
-    }
+    # Cargamos la agenda desde la configuración del municipio
+    agenda = cargar_configuracion_municipio(MUNICIPIO_ID, "agenda.json")
+    if not isinstance(agenda, dict):
+        agenda = {}
     
     eventos = agenda.get(fecha_normalizada)
     
@@ -218,7 +211,10 @@ TOOL_REGISTRY = {
         "funcion": consultar_recoleccion_por_direccion,
         "descripcion": "Se usa para obtener los horarios y días de recolección de basura para una dirección específica.",
         "parametros": {
-            "direccion": {"type": "string", "description": "La dirección completa del lugar. Por ejemplo: 'Avenida San Martín 123, Junín'."}
+            "direccion": {
+                "type": "string",
+                "description": f"La dirección completa del lugar. Ejemplo: '{CONFIG_MUNICIPIO.get('ejemplo_direccion', 'Av. Siempreviva 123')}'."
+            }
         }
     },
     
