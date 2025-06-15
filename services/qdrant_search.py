@@ -55,46 +55,39 @@ def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 
         logger.error(f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}", exc_info=True)
         return []
 
-def armar_respuesta_legible(resultados_qdrant: List[qdrant_models.ScoredPoint]) -> str:
+def armar_respuesta_legible(resultados_qdrant: List[qdrant_models.ScoredPoint], max_items: int = 3) -> str:
     if not resultados_qdrant:
         logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
-        return ""
+        return "No encontré productos para mostrar en este momento."
 
-    contexto_items = []
-    logger.info(f"[QDRANT FORMAT] Formateando {len(resultados_qdrant)} resultados.")
-    for hit in resultados_qdrant:
-        if not hasattr(hit, 'payload') or not isinstance(hit.payload, dict):
-            continue
-        p = hit.payload
-        nombre = p.get('nombre', 'Sin nombre')
-        categoria = p.get('categoria_qdrant', '')
-        moneda = p.get('moneda', '')
-        precio_str = p.get('precio_str', '')
-        precio_float = p.get('precio_float', None)
-        unidad = p.get('unidad', '')
-        descripcion = p.get('descripcion', '')
+    lines = []
+    for idx, hit in enumerate(resultados_qdrant[:max_items], 1):
+        p = getattr(hit, "payload", None) or {}
+        nombre = p.get("nombre") or p.get("title") or "Producto sin nombre"
+        sku = p.get("sku") or ""
+        categoria = p.get("categoria_qdrant") or p.get("categoria") or ""
+        moneda = p.get("moneda", "")
+        precio = p.get("precio_str") or p.get("precio") or p.get("precio_unitario") or ""
+        if not precio and p.get("precio_float") is not None:
+            precio = f"{p.get('precio_float'):,.2f}"
+        unidad = p.get("unidad") or p.get("presentacion") or ""
+        descripcion = p.get("descripcion") or p.get("descripcion_corta") or ""
 
-        partes = [f"**{nombre}**"]
+        partes = [f"{idx}. {nombre}"]
+        if sku and sku.lower() not in nombre.lower():
+            partes[-1] += f" (SKU: {sku})"
         if categoria:
             partes.append(f"Categoría: {categoria}")
-        if precio_str:
-            partes.append(f"Precio: {moneda} {precio_str}".strip())
-        elif precio_float is not None:
-            partes.append(f"Precio: {moneda} {precio_float:,.2f}".strip())
-        else:
-            partes.append("Precio: Consultar")
+        if precio:
+            partes.append(f"Precio: {moneda} {precio}".strip())
         if unidad:
             partes.append(f"Presentación: {unidad}")
-        desc_limpia = limpiar_texto_base(descripcion)
-        if desc_limpia and desc_limpia != limpiar_texto_base(nombre):
-            if len(descripcion) > 120:
-                partes.append(f"Descripción: {descripcion[:120].strip()}...")
-            else:
-                partes.append(f"Descripción: {descripcion.strip()}")
-        contexto_items.append(" · ".join(partes))
+        if descripcion and descripcion.lower() not in nombre.lower():
+            desc_limpia = descripcion.strip().replace("\n", " ")
+            if len(desc_limpia) > 100:
+                desc_limpia = desc_limpia[:100] + "..."
+            partes.append(f"Descripción: {desc_limpia}")
 
-    if not contexto_items:
-        logger.info("[QDRANT FORMAT] Ningún ítem formateado.")
-        return ""
+        lines.append(" · ".join(partes))
 
-    return "Según nuestro catálogo, esto podría interesarte:\n\n" + "\n".join(contexto_items)
+    return "Según nuestro catálogo, esto podría interesarte:\n\n" + "\n".join(lines)
