@@ -206,10 +206,24 @@ class GreetingHandler(BaseMunicipioHandler):
 
 
 class IntentClassifierHandler(BaseMunicipioHandler):
+    KEYWORDS_AGENTE = [
+        "agente",
+        "humano",
+        "persona",
+        "represent",
+        "operador",
+        "emplead",
+        "municipal",
+    ]
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         if not memoria.get('estado_conversacion'):
-            self.context['intencion'] = _clasificar_intencion_con_llm(pregunta)
+            intencion = _clasificar_intencion_con_llm(pregunta)
+            if intencion == 'general':
+                texto = normalizar_texto(pregunta)
+                if any(kw in texto for kw in self.KEYWORDS_AGENTE):
+                    intencion = 'hablar_con_agente'
+            self.context['intencion'] = intencion
         else:
             self.context['intencion'] = 'continuar_flujo'
         logger.info(f"[MUNICIPIO] Intención: {self.context.get('intencion')}")

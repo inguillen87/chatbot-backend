@@ -27,6 +27,7 @@ from services.webinfo import obtener_info_web, guardar_info_web
 from services.scraper_avanzado import extraer_productos_de_url
 from services.pedido_service import servicio_pedidos
 from services.herramientas_pyme import TOOL_REGISTRY_PYME
+from services.herramientas_municipio import normalizar_texto
 from .logic import _clasificar_intencion_con_llm
 
 logger = logging.getLogger(__name__)
@@ -350,6 +351,16 @@ class IntentClassifierPymeHandler(BaseHandler):
         "malbec",
     ]
 
+    KEYWORDS_AGENTE = [
+        "agente",
+        "humano",
+        "persona",
+        "represent",
+        "operador",
+        "emplead",
+        "municipal",
+    ]
+
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
         if not memoria.get('estado_conversacion'):
@@ -360,6 +371,8 @@ class IntentClassifierPymeHandler(BaseHandler):
                 texto = pregunta.lower()
                 if any(kw in texto for kw in self.KEYWORDS_PEDIDO):
                     intencion = "iniciar_pedido"
+                elif any(kw in normalizar_texto(pregunta) for kw in self.KEYWORDS_AGENTE):
+                    intencion = "hablar_con_agente_pyme"
 
             self.context['intencion'] = intencion
         else:
