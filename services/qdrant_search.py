@@ -55,7 +55,7 @@ def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 
         logger.error(f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}", exc_info=True)
         return []
 
-def armar_respuesta_legible(resultados_qdrant: List[qdrant_models.ScoredPoint], max_items: int = 3) -> str:
+def armar_respuesta_legible(resultados_qdrant: List[qdrant_models.ScoredPoint], max_items: int = 5) -> str:
     if not resultados_qdrant:
         logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
         return "No encontré productos para mostrar en este momento."
