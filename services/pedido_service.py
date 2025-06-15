@@ -6,7 +6,12 @@ from models import db, PymePedido # Asegúrate que PymePedido esté importado de
 import re
 from datetime import datetime
 from models import db, PymePedido  # Asegúrate que PymePedido esté importado desde models
-from .email_service import enviar_email_pedido_admin, enviar_sms, enviar_whatsapp
+from .email_service import (
+    enviar_email_pedido_admin,
+    enviar_email_pedido_cliente,
+    enviar_sms,
+    enviar_whatsapp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +42,10 @@ class PedidoService:
                 enviar_email_pedido_admin(nuevo_pedido)
             except Exception as e:
                 logger.error(f"Error enviando email de pedido: {e}")
+            try:
+                enviar_email_pedido_cliente(nuevo_pedido)
+            except Exception as e:
+                logger.error(f"Error enviando email al cliente: {e}")
             try:
                 if nuevo_pedido.telefono_cliente:
                     telefono = re.sub(r"\D", "", nuevo_pedido.telefono_cliente)
