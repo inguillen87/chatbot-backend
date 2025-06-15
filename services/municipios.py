@@ -49,41 +49,37 @@ MINI_FAQ_TRAMITES = {
     ]
 }
 
-# Opciones de trámites disponibles en la Municipalidad de Junín.
-# El texto de cada opción es devuelto al vecino cuando selecciona el trámite.
-TRAMITES_INFO = {
-    "mesa de entrada": (
-        "Podés presentar notas, reclamos y solicitudes en la Mesa de Entrada "
-        "ubicada en [direccion]. También encontrás formularios en [linkWeb]."
-    ),
-    "rentas": (
-        "Consultá tus impuestos municipales o generá boletas desde "
-        "[linkWeb]. También podés acercarte al área de Rentas en [direccion]."
-    ),
-    "obras privadas": (
-        "Los permisos de construcción y consultas de planos se gestionan en "
-        "Obras Privadas. Revisá requisitos en la web municipal o acercate a "
-        "[direccion]."
-    ),
-    "catastro": (
-        "Para certificados catastrales y actualizaciones de parcelas, "
-        "dirigite al sector Catastro en [direccion] o consultá en [linkWeb]."
-    ),
-    "forestales": (
-        "Solicitá permisos de poda, extracción o forestación en la Dirección "
-        "de Forestales. Más información disponible en [linkWeb]."
-    ),
-    "carnet de sanidad": (
-        "El carnet sanitario para manipuladores de alimentos se tramita en "
-        "Sanidad municipal. Podés pedir turno online desde [linkWeb]."
-    ),
-    "registro de artesanos": (
-        "La inscripción al Registro de Artesanos y ferias se realiza en el "
-        "área de Cultura municipal. Consultá requisitos en [linkWeb]."
-    ),
-}
-TRAMITES_WEB_URL = "https://www.juninmendoza.gov.ar/tramites/"
-MUNICIPIO_DIRECCION = "San Martín 15, M6000 Junín, Mendoza"
+# --- Trámites municipales ---
+TRAMITES_JSON_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "data", "tramites.json"
+)
+_TRAMITES_CACHE = None
+
+
+def cargar_tramites_info():
+    """Carga la descripción de los trámites desde el archivo JSON."""
+    global _TRAMITES_CACHE
+    if _TRAMITES_CACHE is None:
+        try:
+            with open(TRAMITES_JSON_PATH, "r", encoding="utf-8") as f:
+                _TRAMITES_CACHE = json.load(f)
+        except Exception as e:
+            logger.error(f"[TRAMITES] No se pudo cargar {TRAMITES_JSON_PATH}: {e}")
+            _TRAMITES_CACHE = {}
+    return _TRAMITES_CACHE
+
+
+TRAMITES_INFO = cargar_tramites_info()
+
+# URL por defecto para los trámites del municipio
+DEFAULT_TRAMITES_WEB_URL = os.environ.get(
+    "TRAMITES_WEB_URL_DEFAULT", "https://www.ejemplo.gob.ar/tramites/"
+)
+
+# Dirección del municipio utilizada en respuestas
+MUNICIPIO_DIRECCION = os.environ.get(
+    "MUNICIPIO_DIRECCION", "San Martín 15, M6000 Junín, Mendoza"
+)
 EJEMPLO_DIRECCION = "Ejemplo: San Martín 123, Barrio Centro, Junín"
 
 class ConversationState(Enum):
@@ -461,7 +457,7 @@ class TramitesHandler(BaseMunicipioHandler):
                 memoria.clear()
                 info = TRAMITES_INFO[clave_tramite]
                 user_obj = self.context.get("user_obj")
-                link_web = getattr(user_obj, "link_web", None) or TRAMITES_WEB_URL
+                link_web = getattr(user_obj, "link_web", None) or DEFAULT_TRAMITES_WEB_URL
                 direccion = getattr(user_obj, "direccion", None) or MUNICIPIO_DIRECCION
                 data = {"linkWeb": link_web, "direccion": direccion}
                 info = reemplazar_placeholders(info, data)
@@ -825,9 +821,13 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     if estado_antes and not estado_despues and texto_respuesta and not es_cierre_flujo:
         mensaje_transicion = "Entendido, cambiamos de tema. Sobre tu nueva consulta:\n\n"
         respuesta_final['respuesta'] = mensaje_transicion + texto_respuesta
-    if "[nombre_vecino]" in respuesta_final.get('respuesta', ''):
-        nombre_vecino_memoria = contexto_municipio.get('nombre_vecino', 'vecino')
-        respuesta_final['respuesta'] = respuesta_final['respuesta'].replace("[nombre_vecino]", nombre_vecino_memoria)
+    # Reemplaza cualquier placeholder presente en la respuesta final
+    texto_respuesta = reemplazar_placeholders(
+        respuesta_final.get('respuesta', ''), context.get('user_obj')
+    )
+    texto_respuesta = reemplazar_placeholders(texto_respuesta, contexto_municipio)
+    respuesta_final['respuesta'] = texto_respuesta
+
     contexto_para_guardar = serializar_enum(context["contexto_municipio"])
     return {
         "respuesta": respuesta_final.get('respuesta'),
