@@ -42,7 +42,10 @@ def get_tickets_del_usuario(current_user: User):
                     "asunto": getattr(t, 'asunto', 'N/A'),
                     "estado": t.estado,
                     "fecha": t.fecha.isoformat(),
-                    "categoria": getattr(t, 'categoria', None)
+                    "categoria": getattr(t, 'categoria', None),
+                    "direccion": getattr(t, 'direccion', None),
+                    "latitud": getattr(t, 'latitud', None),
+                    "longitud": getattr(t, 'longitud', None)
                 }
         else:
             if current_user.rubro_id:
@@ -62,7 +65,10 @@ def get_tickets_del_usuario(current_user: User):
                     "email": getattr(t, 'email', None),
                     "dni": getattr(t, 'dni', None),
                     "estado_cliente": getattr(t, 'estado_cliente', None),
-                    "categoria": getattr(t, 'categoria', None)
+                    "categoria": getattr(t, 'categoria', None),
+                    "direccion": getattr(t, 'direccion', None),
+                    "latitud": getattr(t, 'latitud', None),
+                    "longitud": getattr(t, 'longitud', None)
                 }
         resultado = [serialize_ticket(t) for t in tickets]
         return jsonify(resultado)
@@ -86,11 +92,15 @@ def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
     detalles = getattr(ticket, 'detalles', '') or ''
-    nombre, tel, email, direccion = "No especificado", "No especificado", "No especificado", "No especificada"
+    nombre, tel, email = "No especificado", "No especificado", "No especificado"
+    direccion = getattr(ticket, 'direccion', None)
+    if not direccion:
+        direccion = "No especificada"
     if "Nombre:" in detalles: nombre = detalles.split("Nombre:")[1].split("\n")[0].strip()
     if "Teléfono:" in detalles: tel = detalles.split("Teléfono:")[1].split("\n")[0].strip()
     if "Email:" in detalles: email = detalles.split("Email:")[1].split("\n")[0].strip()
-    if "Dirección:" in detalles: direccion = detalles.split("Dirección:")[1].split("\n")[0].strip()
+    if not getattr(ticket, 'direccion', None) and "Dirección:" in detalles:
+        direccion = detalles.split("Dirección:")[1].split("\n")[0].strip()
 
     comentarios = [
         {"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin}
@@ -317,8 +327,8 @@ def get_panel_por_categoria(current_user: User):
         tickets_agrupados = defaultdict(list)
 
         for ticket in tickets:
-            direccion = "No especificada"
-            if ticket.detalles:
+            direccion = ticket.direccion or "No especificada"
+            if not ticket.direccion and ticket.detalles:
                 for line in ticket.detalles.splitlines():
                     if "Dirección del problema:" in line:
                         direccion = line.split("Dirección del problema:")[1].strip()
@@ -374,12 +384,13 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     if lon is not None:
         ticket_obj.longitud = lon
     if direccion:
-        ticket_obj.detalles = (ticket_obj.detalles or '') + f"\nDirección: {direccion}"
+        ticket_obj.direccion = direccion
 
     db.session.commit()
 
     return jsonify({
         "id": ticket_obj.id,
         "latitud": ticket_obj.latitud,
-        "longitud": ticket_obj.longitud
+        "longitud": ticket_obj.longitud,
+        "direccion": ticket_obj.direccion
     })

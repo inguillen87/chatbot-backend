@@ -97,6 +97,7 @@ class MunicipioTicket(db.Model):
     ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     detalles = db.Column(db.Text)  # <-- Esto es lo que falta
+    direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
     fecha = db.Column(db.DateTime, default=db.func.now())
@@ -120,6 +121,7 @@ class PymeTicket(db.Model):
     email = db.Column(db.String(120), nullable=True)
     dni = db.Column(db.String(20), nullable=True)
     estado_cliente = db.Column(db.String(30), default="no_definido")
+    direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
     comentarios = db.relationship('TicketComentario', back_populates='pyme_ticket', lazy='dynamic')
