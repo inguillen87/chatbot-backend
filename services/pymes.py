@@ -17,7 +17,7 @@ from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legib
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
-from services.email_service import enviar_email_ticket_admin, enviar_sms
+from services.email_service import enviar_email_ticket_admin, enviar_sms, enviar_whatsapp
 from services.webinfo import obtener_info_web, guardar_info_web
 from services.scraper_avanzado import extraer_productos_de_url
 from services.pedido_service import servicio_pedidos
@@ -492,8 +492,9 @@ class BrokenProductHandler(BaseHandler):
                         if not tel.startswith("+") and len(tel) > 8:
                             tel = "+549" + tel
                         enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
+                        enviar_whatsapp(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
                 except Exception as e:
-                    logger.error(f"Error enviando SMS de ticket roto: {e}")
+                    logger.error(f"Error enviando SMS/WhatsApp de ticket roto: {e}")
                 memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO)
                 memoria['ticket_id_roto'] = ticket.id
                 return {
@@ -536,8 +537,9 @@ class ClaimHandler(BaseHandler):
                         if not tel.startswith("+") and len(tel) > 8:
                             tel = "+549" + tel
                         enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
+                        enviar_whatsapp(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
                 except Exception as e:
-                    logger.error(f"Error enviando SMS de ticket: {e}")
+                    logger.error(f"Error enviando SMS/WhatsApp de ticket: {e}")
                 memoria = self.context.get('contexto_pyme', {})
                 memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
                 memoria['ticket_id_reclamo'] = ticket.id
