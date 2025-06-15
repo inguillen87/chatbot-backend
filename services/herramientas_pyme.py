@@ -36,7 +36,22 @@ def calcular_costo_envio(ciudad):
 
 
 TOOL_REGISTRY_PYME = {
-    "consultar_horario": {"funcion": consultar_horario_actual, "parametros": ["user"]},
-    "verificar_stock": {"funcion": verificar_stock_producto, "parametros": ["nombre", "user_id"]},
-    "calcular_envio": {"funcion": calcular_costo_envio, "parametros": ["ciudad"]},
+    "consultar_horario": {
+        "funcion": consultar_horario_actual,
+        "descripcion": "Informa el horario de atención de la empresa.",
+        "parametros": {"user": {"type": "object", "description": "Instancia del usuario pyme"}},
+    },
+    "verificar_stock": {
+        "funcion": verificar_stock_producto,
+        "descripcion": "Verifica la disponibilidad de un producto en el catálogo.",
+        "parametros": {
+            "nombre": {"type": "string", "description": "Nombre del producto"},
+            "user_id": {"type": "integer", "description": "ID de la pyme"}
+        },
+    },
+    "calcular_envio": {
+        "funcion": calcular_costo_envio,
+        "descripcion": "Calcula un costo estimado de envío a una ciudad dada.",
+        "parametros": {"ciudad": {"type": "string", "description": "Ciudad de destino"}},
+    },
 }
