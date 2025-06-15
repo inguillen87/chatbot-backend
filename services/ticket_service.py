@@ -21,7 +21,9 @@ class MunicipioTicketCreator(TicketCreator):
             categoria=ticket_data.get("categoria", "General"),
             pregunta=ticket_data.get("pregunta", ""),    # Reclamo original
             detalles=ticket_data.get("detalles", ""),    # Dirección, nombre, tel, etc.
-            nro_ticket=ticket_data.get("nro_ticket")
+            nro_ticket=ticket_data.get("nro_ticket"),
+            latitud=ticket_data.get("latitud"),
+            longitud=ticket_data.get("longitud")
         )
 
 class PymeTicketCreator(TicketCreator):
@@ -32,7 +34,9 @@ class PymeTicketCreator(TicketCreator):
             categoria=ticket_data.get("categoria", "General"),
             pregunta=ticket_data.get("pregunta"),
             nro_ticket=ticket_data.get("nro_ticket"),
-            rubro_id=ticket_data.get("rubro_id")
+            rubro_id=ticket_data.get("rubro_id"),
+            latitud=ticket_data.get("latitud"),
+            longitud=ticket_data.get("longitud")
         )
 
 class ServicioTickets:
