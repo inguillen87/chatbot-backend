@@ -15,6 +15,7 @@ from .utils import (
     parse_cantidad_flexible,
     crear_mapa_de_columnas_inteligente,
     safe_row_get,
+    extraer_unidades_y_tipos_precio,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,21 @@ def _obtener_documento_ai(pdf_path: str) -> Optional[documentai.Document]:
         logger.error(f"❌ [DOCAI-GET] Error en llamada a API Google Document AI: {e}", exc_info=True)
         raise  # Re-lanzamos la excepción para que el procesador principal la capture
 
+
+def _obtener_precio_desde_fila(row: pd.Series, mapa_columnas: Dict[str, str]) -> tuple[str, Optional[float], str]:
+    """Devuelve el precio detectado en una fila, con fallback analizando toda la linea."""
+    precio_crudo = str(safe_row_get(row, mapa_columnas.get('precio', ''))).strip()
+    precio_str, precio_float, moneda = parse_precio_flexible(precio_crudo)
+
+    if precio_float is None:
+        fila_completa = " ".join(str(c) for c in row.tolist())
+        precio_str_2, precio_float_2, moneda_2 = parse_precio_flexible(fila_completa)
+        if precio_float_2 is not None:
+            precio_str, precio_float = precio_str_2, precio_float_2
+            if moneda_2:
+                moneda = moneda_2
+    return precio_str, precio_float, moneda
+
 # --- 3. FUNCIÓN PRINCIPAL REFACTORIZADA PARA PDF ---
 
 def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre: str = "generico") -> List[Dict[str, Any]]:
@@ -154,22 +170,30 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
         
         for index, row in df_datos.iterrows():
             try:
-                # Usamos los NOMBRES DE COLUMNA ORIGINALES que están en el mapa para obtener los datos
                 nombre_prod = str(safe_row_get(row, mapa_columnas.get('nombre', ''))).strip()
-                precio_crudo = str(safe_row_get(row, mapa_columnas.get('precio', ''))).strip()
+                precio_str, precio_float, moneda = _obtener_precio_desde_fila(row, mapa_columnas)
 
-                if not nombre_prod or not precio_crudo or len(nombre_prod) < 2: continue
-                
-                precio_str, precio_float, moneda = parse_precio_flexible(precio_crudo)
-                if precio_float is None and not re.search(r'consultar|s/p', precio_str or "", re.IGNORECASE): continue
-                
+                if not nombre_prod or len(nombre_prod) < 2:
+                    fila_completa = " ".join(str(c) for c in row.tolist())
+                    posible_nombre = re.split(r"\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?", fila_completa, 1)[0].strip()
+                    if posible_nombre:
+                        nombre_prod = posible_nombre
+
+                if not nombre_prod or precio_float is None:
+                    continue
+
+                unidad_detectada, _ = extraer_unidades_y_tipos_precio(" ".join(str(c) for c in row.tolist()), pyme_rubro_nombre)
+
                 producto = {
-                    "nombre": nombre_prod, "precio_str": precio_str, "precio_float": precio_float, "moneda": moneda,
+                    "nombre": nombre_prod,
+                    "precio_str": precio_str,
+                    "precio_float": precio_float,
+                    "moneda": moneda,
                     "sku": str(safe_row_get(row, mapa_columnas.get('sku'))).strip(),
                     "descripcion": str(safe_row_get(row, mapa_columnas.get('descripcion'))).strip(),
                     "marca": str(safe_row_get(row, mapa_columnas.get('marca'))).strip(),
                     "categoria_qdrant": str(safe_row_get(row, mapa_columnas.get('categoria')) or pyme_rubro_nombre).strip(),
-                    "unidad": str(safe_row_get(row, mapa_columnas.get('unidad')) or 'unidad').strip(),
+                    "unidad": unidad_detectada or str(safe_row_get(row, mapa_columnas.get('unidad')) or 'unidad').strip(),
                     "cantidad_disponible": str(
                         parse_cantidad_flexible(
                             safe_row_get(row, mapa_columnas.get('stock')) or '1'
@@ -179,7 +203,9 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
                 }
                 productos_extraidos_final.append(producto)
             except Exception as e_row:
-                logger.warning(f"⚠️ Error procesando una fila de la Tabla PDF #{i+1}. Fila: {index}. Error: {e_row}")
+                logger.warning(
+                    f"⚠️ Error procesando una fila de la Tabla PDF #{i+1}. Fila: {index}. Error: {e_row}"
+                )
                 continue
 
     logger.info(f"✅ Proceso de PDF completado. Total productos finales de todas las tablas: {len(productos_extraidos_final)}")
