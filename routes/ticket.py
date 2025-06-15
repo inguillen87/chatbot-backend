@@ -112,7 +112,9 @@ def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
         "telefono": tel,
         "email": email,
         "direccion": direccion,
-        "archivo_url": getattr(ticket, 'archivo_url', None)
+        "archivo_url": getattr(ticket, 'archivo_url', None),
+        "latitud": getattr(ticket, 'latitud', None),
+        "longitud": getattr(ticket, 'longitud', None)
     }
     return jsonify(ticket_data)
 
@@ -161,7 +163,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             "email": getattr(ticket_obj, 'email', None),
             "dni": getattr(ticket_obj, 'dni', None),
             "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
-            "archivo_url": getattr(ticket_obj, 'archivo_url', None)
+            "archivo_url": getattr(ticket_obj, 'archivo_url', None),
+            "latitud": getattr(ticket_obj, 'latitud', None),
+            "longitud": getattr(ticket_obj, 'longitud', None)
         }
         return jsonify(ticket_data), 200
 
@@ -207,6 +211,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         "dni": getattr(ticket_obj, 'dni', None),
         "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
         "archivo_url": getattr(ticket_obj, 'archivo_url', None)
+        ,"latitud": getattr(ticket_obj, 'latitud', None)
+        ,"longitud": getattr(ticket_obj, 'longitud', None)
     }
     return jsonify(ticket_data)
 
@@ -325,7 +331,9 @@ def get_panel_por_categoria(current_user: User):
                 "asunto": ticket.asunto,
                 "estado": ticket.estado,
                 "fecha": ticket.fecha.isoformat(),
-                "direccion": direccion
+                "direccion": direccion,
+                "latitud": getattr(ticket, 'latitud', None),
+                "longitud": getattr(ticket, 'longitud', None)
             }
             tickets_agrupados[ticket.categoria or "Sin Categoría"].append(ticket_data)
 
@@ -334,3 +342,44 @@ def get_panel_por_categoria(current_user: User):
     except Exception as e:
         current_app.logger.error(f"Error en get_panel_por_categoria: {e}", exc_info=True)
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
+
+
+# ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
+@ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT'])
+@token_requerido
+def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
+    data = request.get_json() or {}
+    lat = data.get('latitud')
+    lon = data.get('longitud')
+    direccion = data.get('direccion')
+
+    TicketModel = MunicipioTicket if tipo == 'municipio' else PymeTicket
+    ticket_obj = db.session.get(TicketModel, ticket_id)
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    has_perm = False
+    if current_user.id == ticket_obj.user_id:
+        has_perm = True
+    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
+        has_perm = True
+    elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+        has_perm = True
+
+    if not has_perm:
+        return jsonify({"error": "No tienes permiso para modificar este ticket."}), 403
+
+    if lat is not None:
+        ticket_obj.latitud = lat
+    if lon is not None:
+        ticket_obj.longitud = lon
+    if direccion:
+        ticket_obj.detalles = (ticket_obj.detalles or '') + f"\nDirección: {direccion}"
+
+    db.session.commit()
+
+    return jsonify({
+        "id": ticket_obj.id,
+        "latitud": ticket_obj.latitud,
+        "longitud": ticket_obj.longitud
+    })
