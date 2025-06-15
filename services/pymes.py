@@ -17,7 +17,12 @@ from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legib
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
-from services.email_service import enviar_email_ticket_admin, enviar_sms, enviar_whatsapp
+from services.email_service import (
+    enviar_email_ticket_admin,
+    enviar_email_ticket_cliente,
+    enviar_sms,
+    enviar_whatsapp,
+)
 from services.webinfo import obtener_info_web, guardar_info_web
 from services.scraper_avanzado import extraer_productos_de_url
 from services.pedido_service import servicio_pedidos
@@ -516,6 +521,7 @@ class BrokenProductHandler(BaseHandler):
             if ticket:
                 try:
                     enviar_email_ticket_admin(ticket)
+                    enviar_email_ticket_cliente(ticket)
                 except Exception as e:
                     logger.error(f"Error enviando email de ticket roto: {e}")
                 try:
@@ -561,6 +567,7 @@ class ClaimHandler(BaseHandler):
             if ticket:
                 try:
                     enviar_email_ticket_admin(ticket)
+                    enviar_email_ticket_cliente(ticket)
                 except Exception as e:
                     logger.error(f"Error enviando email de ticket: {e}")
                 try:
