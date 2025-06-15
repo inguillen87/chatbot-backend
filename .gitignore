@@ -6,6 +6,7 @@ instance/*
 .env
 /data/*.json
 *.json
+!data/tramites.json
 __pycache__/
 *.pyc
 
