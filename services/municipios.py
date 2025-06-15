@@ -9,6 +9,7 @@ from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 from .logic import _clasificar_intencion_con_llm
 from twilio.rest import Client
+from services.utils_placeholders import reemplazar_placeholders
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
     categorizar_reclamo_por_palabra_clave,
@@ -96,7 +97,6 @@ class ConversationState(Enum):
     ESPERANDO_TELEFONO_VECINO = auto()
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
-    ESPERANDO_DETALLE_TRAMITE = auto()
 
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     """
@@ -460,8 +460,11 @@ class TramitesHandler(BaseMunicipioHandler):
             if clave_tramite:
                 memoria.clear()
                 info = TRAMITES_INFO[clave_tramite]
-                info = info.replace("[linkWeb]", TRAMITES_WEB_URL)
-                info = info.replace("[direccion]", MUNICIPIO_DIRECCION)
+                user_obj = self.context.get("user_obj")
+                link_web = getattr(user_obj, "link_web", None) or TRAMITES_WEB_URL
+                direccion = getattr(user_obj, "direccion", None) or MUNICIPIO_DIRECCION
+                data = {"linkWeb": link_web, "direccion": direccion}
+                info = reemplazar_placeholders(info, data)
                 return {"respuesta": info}
 
             if "licencia" in texto:
@@ -476,17 +479,11 @@ class TramitesHandler(BaseMunicipioHandler):
                     ]
                 }
 
-            if es_pregunta_nueva(pregunta, "una opción de trámite"):
-                memoria.clear()
-                opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
-                return {
-                    "respuesta": "¿Sobre qué otra gestión necesitás ayuda?",
-                    "botones": opciones,
-                }
-
-            memoria['estado_conversacion'] = ConversationState.ESPERANDO_DETALLE_TRAMITE
+            memoria.clear()
+            opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
             return {
-                "respuesta": "¿Sobre qué trámite puntual querés información?",
+                "respuesta": "No encontré ese trámite. Estas son las opciones disponibles:",
+                "botones": opciones,
             }
         if estado == ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA:
             if es_pregunta_nueva(pregunta, "una pregunta sobre el curso de licencia"):
@@ -509,18 +506,6 @@ class TramitesHandler(BaseMunicipioHandler):
                 "respuesta": "El curso se hace online (Agencia Nacional de Seguridad Vial) o presencial en el municipio."
             }
 
-        if estado == ConversationState.ESPERANDO_DETALLE_TRAMITE:
-            respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
-            if respuesta_faq:
-                memoria.clear()
-                respuesta = {"respuesta": respuesta_faq["a"]}
-                if "botones" in respuesta_faq:
-                    respuesta["botones"] = respuesta_faq["botones"]
-                return respuesta
-            memoria.clear()
-            return {
-                "respuesta": "Listo. Si es sobre otro trámite, decime cuál y te paso la info."
-            }
         return None
 
 class ImpuestosHandler(BaseMunicipioHandler):
@@ -544,7 +529,7 @@ class GeneralHandler(BaseMunicipioHandler):
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get('estado_conversacion')
 
-        if estado in [ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA, ConversationState.ESPERANDO_DETALLE_TRAMITE]:
+        if estado == ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA:
             respuesta_faq = buscar_en_faqs(pregunta, "licencia_de_conducir")
             if respuesta_faq:
                 memoria.clear()
