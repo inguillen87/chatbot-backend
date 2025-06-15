@@ -7,6 +7,7 @@ instance/*
 /data/*.json
 *.json
 !data/tramites.json
+!data/respuestas_municipio.json
 __pycache__/
 *.pyc
 

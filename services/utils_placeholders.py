@@ -25,8 +25,13 @@ def reemplazar_placeholders(texto, datos):
     return texto
 
 # La ruta correcta a /data/sugerencias.json (dos niveles arriba desde /services)
-SUGERENCIAS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "sugerencias.json")
+BASE_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+
+SUGERENCIAS_PATH = os.path.join(BASE_DATA_PATH, "sugerencias.json")
+RESPUESTAS_MUNICIPIO_PATH = os.path.join(BASE_DATA_PATH, "respuestas_municipio.json")
+
 _cache_sugerencias = None
+_cache_respuestas_municipio = None
 
 def sugerencias_por_rubro(rubro_nombre):
     global _cache_sugerencias
@@ -39,3 +44,16 @@ def sugerencias_por_rubro(rubro_nombre):
             _cache_sugerencias = {}
     rubro_key = str(rubro_nombre).strip().lower()
     return _cache_sugerencias.get(rubro_key, [])
+
+
+def obtener_respuesta_municipio(clave: str) -> str | list:
+    """Devuelve la respuesta o lista de la clave indicada desde respuestas_municipio.json."""
+    global _cache_respuestas_municipio
+    if _cache_respuestas_municipio is None:
+        try:
+            with open(RESPUESTAS_MUNICIPIO_PATH, "r", encoding="utf-8") as f:
+                _cache_respuestas_municipio = json.load(f)
+        except Exception as e:
+            logger.error(f"[RESPUESTAS] No se pudo cargar {RESPUESTAS_MUNICIPIO_PATH}: {e}")
+            _cache_respuestas_municipio = {}
+    return _cache_respuestas_municipio.get(clave, "")
