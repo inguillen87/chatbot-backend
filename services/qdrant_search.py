@@ -9,7 +9,7 @@ from .utils import limpiar_texto_base
 logger = logging.getLogger(__name__)
 
 # NUEVO --> Cambiamos la firma para aceptar 'None' en user_id
-def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 3, score_min: float = 0.60) -> List[qdrant_models.ScoredPoint]:
+def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 3, score_min: float = 0.40) -> List[qdrant_models.ScoredPoint]:
 # <-- FIN NUEVO
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
