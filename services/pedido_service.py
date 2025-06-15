@@ -6,7 +6,7 @@ from models import db, PymePedido # Asegúrate que PymePedido esté importado de
 import re
 from datetime import datetime
 from models import db, PymePedido  # Asegúrate que PymePedido esté importado desde models
-from .email_service import enviar_email_pedido_admin, enviar_sms
+from .email_service import enviar_email_pedido_admin, enviar_sms, enviar_whatsapp
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,9 @@ class PedidoService:
                     if not telefono.startswith("+") and len(telefono) > 8:
                         telefono = "+549" + telefono
                     enviar_sms(telefono, f"Tu pedido {nuevo_pedido.nro_pedido} fue registrado")
+                    enviar_whatsapp(telefono, f"Tu pedido {nuevo_pedido.nro_pedido} fue registrado")
             except Exception as e:
-                logger.error(f"Error enviando SMS de pedido: {e}")
+                logger.error(f"Error enviando SMS/WhatsApp de pedido: {e}")
             return nuevo_pedido
         except Exception as e:
             db.session.rollback()
