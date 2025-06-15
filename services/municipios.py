@@ -81,6 +81,8 @@ TRAMITES_INFO = {
         "área de Cultura municipal. Consultá requisitos en [linkWeb]."
     ),
 }
+TRAMITES_WEB_URL = "https://www.juninmendoza.gov.ar/tramites/"
+MUNICIPIO_DIRECCION = "San Martín 15, M6000 Junín, Mendoza"
 EJEMPLO_DIRECCION = "Ejemplo: San Martín 123, Barrio Centro, Junín"
 
 class ConversationState(Enum):
@@ -450,18 +452,17 @@ class TramitesHandler(BaseMunicipioHandler):
             }
 
         if estado == ConversationState.ESPERANDO_SELECCION_TRAMITE:
-            if es_pregunta_nueva(pregunta, "una opción de trámite"):
-                memoria.clear()
-                opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
-                return {
-                    "respuesta": "¿Sobre qué otra gestión necesitás ayuda?",
-                    "botones": opciones,
-                }
-
             texto = normalizar_texto(pregunta)
-            if texto in TRAMITES_INFO:
+            clave_tramite = next(
+                (k for k in TRAMITES_INFO.keys() if normalizar_texto(k) == texto),
+                None,
+            )
+            if clave_tramite:
                 memoria.clear()
-                return {"respuesta": TRAMITES_INFO[texto]}
+                info = TRAMITES_INFO[clave_tramite]
+                info = info.replace("[linkWeb]", TRAMITES_WEB_URL)
+                info = info.replace("[direccion]", MUNICIPIO_DIRECCION)
+                return {"respuesta": info}
 
             if "licencia" in texto:
                 memoria['estado_conversacion'] = ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
@@ -473,6 +474,14 @@ class TramitesHandler(BaseMunicipioHandler):
                         {"texto": "Sacar Turno", "url": "https://tlc.mendoza.gov.ar/turnos"},
                         {"texto": "¿Dónde hacer el curso?"}
                     ]
+                }
+
+            if es_pregunta_nueva(pregunta, "una opción de trámite"):
+                memoria.clear()
+                opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
+                return {
+                    "respuesta": "¿Sobre qué otra gestión necesitás ayuda?",
+                    "botones": opciones,
                 }
 
             memoria['estado_conversacion'] = ConversationState.ESPERANDO_DETALLE_TRAMITE
