@@ -40,6 +40,8 @@ class PymeConversationState(Enum):
     ESPERANDO_NUMERO_TICKET = auto()
     ESPERANDO_DETALLES_RECLAMO = auto()
     ESPERANDO_DATOS_RECLAMO_ROTO = auto()
+    ESPERANDO_CIUDAD_ENVIO = auto()
+    ESPERANDO_NOMBRE_PRODUCTO_STOCK = auto()
 
 
 def serialize_state(state: PymeConversationState | None) -> str | None:
@@ -105,6 +107,25 @@ PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 
 Tu respuesta debe ser SÓLO una de las INTENCIONES POSIBLES.
 """
+
+# --- Utilidad para decidir herramientas con LLM ---
+def crear_prompt_decision_herramienta_pyme(pregunta_usuario: str) -> str:
+    descripcion_herramientas = {}
+    for nombre, det in TOOL_REGISTRY_PYME.items():
+        descripcion_herramientas[nombre] = {
+            "descripcion": det.get("descripcion", ""),
+            "parametros": det.get("parametros", {})
+        }
+    prompt = f"""
+Sos un despachador de herramientas para PYMES. Analizá la PREGUNTA DEL USUARIO y decidí si alguna herramienta puede resolverla.
+HERRAMIENTAS DISPONIBLES:
+{json.dumps(descripcion_herramientas, indent=2, ensure_ascii=False)}
+PREGUNTA: "{pregunta_usuario}"
+- Si coincide y hay parámetros, devolvé JSON: {{"herramienta": "nombre", "parametros": {{"nombre_param": "valor"}}}}
+- Si faltan parámetros, devolvé JSON: {{"herramienta": "nombre", "faltan_parametros": ["nombre_param"]}}
+- Si ninguna aplica, devolvé 'null'.
+"""
+    return prompt
 
 # --- Funciones Auxiliares (sin cambios) ---
 def _generar_asunto_con_llm(pregunta: str) -> str:
@@ -298,6 +319,18 @@ class FollowUpHandler(BaseHandler):
                 }
             else:
                 return {"respuesta": "Disculpa, hubo un problema técnico al registrar tu pedido.", "fuente": "handler_pedido_error", "estado_respuesta": "error_pedido"}
+        elif estado == PymeConversationState.ESPERANDO_CIUDAD_ENVIO:
+            if es_pregunta_nueva(pregunta, "una ciudad o localidad"):
+                contexto_pyme.clear(); return None
+            resultado = TOOL_REGISTRY_PYME['calcular_envio']['funcion'](pregunta.strip())
+            contexto_pyme.clear()
+            return json.loads(resultado)
+        elif estado == PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK:
+            if es_pregunta_nueva(pregunta, "un producto"):
+                contexto_pyme.clear(); return None
+            resultado = TOOL_REGISTRY_PYME['verificar_stock']['funcion'](pregunta.strip(), self.context.get('user_id'))
+            contexto_pyme.clear()
+            return json.loads(resultado)
         return None
 
 class IntentClassifierPymeHandler(BaseHandler):
@@ -640,6 +673,54 @@ class ToolHandlerPyme(BaseHandler):
     """Resuelve consultas directas mediante pequeñas herramientas."""
 
     def handle(self, pregunta: str) -> dict | None:
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+
+        if estado == PymeConversationState.ESPERANDO_CIUDAD_ENVIO:
+            if es_pregunta_nueva(pregunta, "una ciudad o localidad"):
+                contexto_pyme.clear(); return None
+            resultado = TOOL_REGISTRY_PYME['calcular_envio']['funcion'](pregunta.strip())
+            contexto_pyme.clear()
+            return json.loads(resultado)
+        if estado == PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK:
+            if es_pregunta_nueva(pregunta, "un producto"):
+                contexto_pyme.clear(); return None
+            resultado = TOOL_REGISTRY_PYME['verificar_stock']['funcion'](pregunta.strip(), self.context.get('user_id'))
+            contexto_pyme.clear()
+            return json.loads(resultado)
+        if estado:
+            return None
+
+        prompt = crear_prompt_decision_herramienta_pyme(pregunta)
+        try:
+            respuesta_llm_str = get_cohere_response(
+                message=prompt,
+                preamble="Sos experto en decidir si una pregunta requiere una herramienta. Respondé JSON o 'null'."
+            )
+            if respuesta_llm_str and respuesta_llm_str.strip().lower() != 'null':
+                decision = json.loads(respuesta_llm_str)
+                nombre = decision.get('herramienta')
+                if nombre and nombre in TOOL_REGISTRY_PYME:
+                    if 'faltan_parametros' in decision:
+                        faltante = decision['faltan_parametros'][0]
+                        if nombre == 'calcular_envio' and faltante == 'ciudad':
+                            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_CIUDAD_ENVIO)
+                            return {"respuesta": "¿A qué ciudad debería calcular el envío?"}
+                        if nombre == 'verificar_stock' and faltante == 'nombre':
+                            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK)
+                            return {"respuesta": "¿De qué producto querés saber el stock?"}
+                    elif 'parametros' in decision:
+                        parametros = decision['parametros']
+                        if nombre == 'consultar_horario':
+                            parametros = {'user': self.context.get('user_obj')}
+                        if nombre == 'verificar_stock':
+                            parametros['user_id'] = self.context.get('user_id')
+                        funcion = TOOL_REGISTRY_PYME[nombre]['funcion']
+                        resultado = funcion(**parametros)
+                        return json.loads(resultado)
+        except Exception as e:
+            logger.error(f"[ToolHandlerPyme] Error: {e}", exc_info=True)
+
         texto = pregunta.lower()
         if 'horario' in texto or 'abren' in texto:
             res = TOOL_REGISTRY_PYME['consultar_horario']['funcion'](self.context.get('user_obj'))
@@ -721,6 +802,34 @@ class LLMHandler(BaseHandler):
         else:
             return {"respuesta": "No pude encontrar una respuesta para tu consulta en este momento.", "fuente": "llm_fallback"}
 
+class HumanEscalationPymeHandler(BaseHandler):
+    """Escala la conversación a un agente humano."""
+
+    def handle(self, pregunta: str) -> dict | None:
+        if self.context.get('intencion') == 'hablar_con_agente_pyme':
+            logger.info(f"[HumanEscalationPyme] Usuario {self.context.get('user_id')} pide agente.")
+            ticket_data = {
+                "asunto": "Solicitud de Chat en Vivo",
+                "categoria": "Chat en Vivo",
+                "detalles": f"El cliente solicitó chat en vivo: '{pregunta}'",
+                "user_id": self.context.get('user_id'),
+                "estado": "esperando_agente_en_vivo",
+            }
+            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data)
+            if not sala:
+                return {"respuesta": "No pudimos conectar con un agente. Intentá más tarde."}
+            servicio_tickets.crear_comentario(
+                ticket_id=sala.id,
+                tipo_ticket="pyme",
+                comentario_data={"comentario": pregunta, "user_id": self.context.get('user_id')},
+            )
+            self.context.get('contexto_pyme', {}).clear()
+            return {
+                "respuesta": f"¡Listo! Abrimos una sala de chat. Tu número es **{sala.nro_ticket}**. Un agente se unirá pronto.",
+                "ticket_id": sala.id,
+            }
+        return None
+
 class EngancheAnonimoHandler(BaseHandler):
     """Invita a registrarse si el usuario es anónimo."""
 
@@ -767,6 +876,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
         ClaimHandler,
         FaqHandler,
         ToolHandlerPyme,
+        HumanEscalationPymeHandler,
         LLMHandler,                # Este ahora es un excelente fallback inteligente
         IntentHandler,
         SalesEngageHandler,
