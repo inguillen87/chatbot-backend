@@ -9,7 +9,10 @@ from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 from .logic import _clasificar_intencion_con_llm
 from twilio.rest import Client
-from services.utils_placeholders import reemplazar_placeholders
+from services.utils_placeholders import (
+    reemplazar_placeholders,
+    obtener_respuesta_municipio,
+)
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
     categorizar_reclamo_por_palabra_clave,
@@ -418,7 +421,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "ticket_id": ticket.id,
                 }
             return {
-                "respuesta": "No se pudo generar el reclamo. Probá de nuevo o llamanos al 0800-MUNICIPIO.",
+                "respuesta": obtener_respuesta_municipio("reclamo_error"),
                 "botones": [{"texto": "Hablar con un agente"}]
             }
         return None
@@ -466,9 +469,7 @@ class TramitesHandler(BaseMunicipioHandler):
             if "licencia" in texto:
                 memoria['estado_conversacion'] = ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
                 return {
-                    "respuesta": (
-                        "Para la Licencia: DNI actualizado, no tener multas y hacer el curso de seguridad vial."
-                    ),
+                    "respuesta": obtener_respuesta_municipio("curso_licencia_info"),
                     "botones": [
                         {"texto": "Sacar Turno", "url": "https://tlc.mendoza.gov.ar/turnos"},
                         {"texto": "¿Dónde hacer el curso?"}
@@ -478,7 +479,7 @@ class TramitesHandler(BaseMunicipioHandler):
             memoria.clear()
             opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
             return {
-                "respuesta": "No encontré ese trámite. Estas son las opciones disponibles:",
+                "respuesta": obtener_respuesta_municipio("tramite_no_encontrado"),
                 "botones": opciones,
             }
         if estado == ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA:
@@ -499,7 +500,7 @@ class TramitesHandler(BaseMunicipioHandler):
                 return respuesta
             memoria.clear()
             return {
-                "respuesta": "El curso se hace online (Agencia Nacional de Seguridad Vial) o presencial en el municipio."
+                "respuesta": obtener_respuesta_municipio("curso_licencia_info")
             }
 
         return None
@@ -510,11 +511,8 @@ class ImpuestosHandler(BaseMunicipioHandler):
         if intencion == 'consultar_impuestos':
             self.context.get('contexto_municipio', {}).clear()
             return {
-                "respuesta": "Consultá impuestos, descargá boletas y pagá online en Rentas.",
-                "botones": [
-                    {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
-                    {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
-                ]
+                "respuesta": obtener_respuesta_municipio("impuestos_info"),
+                "botones": obtener_respuesta_municipio("impuestos_botones")
             }
         return None
 
