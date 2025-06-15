@@ -207,14 +207,11 @@ class GreetingHandler(BaseMunicipioHandler):
 
 class IntentClassifierHandler(BaseMunicipioHandler):
     KEYWORDS_AGENTE = [
-        "agente",
-        "humano",
-        "persona",
-        "represent",
-        "operador",
-        "emplead",
-        "municipal",
-    ]
+    "agente", "humano", "persona", "representante", "operador", "empleado",
+    "municipal", "atención", "real", "chat real", "soporte", "ayuda humana",
+    "hablar con alguien", "asesor", "consultor", "soporte técnico", "atender", "personal"
+]
+
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
         if not memoria.get('estado_conversacion'):
