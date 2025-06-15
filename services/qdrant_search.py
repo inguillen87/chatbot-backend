@@ -7,7 +7,12 @@ from .utils import limpiar_texto_base
 
 logger = logging.getLogger(__name__)
 
-def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 3, score_min: float = 0.30) -> List[qdrant_models.ScoredPoint]:
+def buscar_catalogo_qdrant(
+    user_id: Optional[int],
+    pregunta: str,
+    limite: int = 3,
+    score_min: float = 0.30
+) -> List[qdrant_models.ScoredPoint]:
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
         logger.error("[QDRANT SEARCH] No se pudo obtener cliente Qdrant.")
@@ -33,7 +38,12 @@ def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 
 
         if user_id is not None:
             search_filter = qdrant_models.Filter(
-                must=[qdrant_models.FieldCondition(key="user_id", match=qdrant_models.MatchValue(value=user_id))]
+                must=[
+                    qdrant_models.FieldCondition(
+                        key="user_id",
+                        match=qdrant_models.MatchValue(value=user_id)
+                    )
+                ]
             )
             logger.info(f"[QDRANT SEARCH] Buscando en catálogo PRIVADO para {id_log}, pregunta '{pregunta_limpia}'")
         else:
@@ -47,7 +57,7 @@ def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 
             limit=limite,
             score_threshold=score_min
         )
-        logger.info(f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[r.score for r in resultados[:3]]}")
+        logger.info(f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}")
         return resultados
 
     except Exception as e_qdrant:
@@ -55,7 +65,10 @@ def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 
         logger.error(f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}", exc_info=True)
         return []
 
-def armar_respuesta_legible(resultados_qdrant: List[qdrant_models.ScoredPoint], max_items: int = 5) -> str:
+def armar_respuesta_legible(
+    resultados_qdrant: List[qdrant_models.ScoredPoint],
+    max_items: int = 5
+) -> str:
     if not resultados_qdrant:
         logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
         return "No encontré productos para mostrar en este momento."
