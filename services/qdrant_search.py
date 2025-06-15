@@ -9,7 +9,7 @@ from .utils import limpiar_texto_base
 logger = logging.getLogger(__name__)
 
 # NUEVO --> Cambiamos la firma para aceptar 'None' en user_id
-def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 3, score_min: float = 0.40) -> List[qdrant_models.ScoredPoint]:
+def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 3, score_min: float = 0.30) -> List[qdrant_models.ScoredPoint]:
 # <-- FIN NUEVO
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
@@ -59,6 +59,7 @@ def buscar_catalogo_qdrant(user_id: Optional[int], pregunta: str, limite: int = 
         # <-- FIN NUEVO
 
         resultados = qdrant_cli.search(
+            logger.info(f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Score de los 3 mejores: {[r.score for r in resultados[:3]]}")
             collection_name="catalogos",
             query_vector=vector_q,
             query_filter=search_filter, # Pasamos el filtro (que puede ser None)
