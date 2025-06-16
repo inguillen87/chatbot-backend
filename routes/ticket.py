@@ -356,8 +356,8 @@ def get_panel_por_categoria(current_user: User):
 
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT'])
-@token_requerido
-def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
+@anon_o_token_requerido
+def actualizar_ubicacion_ticket(current_user, anon_id, tipo: str, ticket_id: int):
     data = request.get_json() or {}
     lat = data.get('latitud')
     lon = data.get('longitud')
@@ -369,11 +369,13 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     has_perm = False
-    if current_user.id == ticket_obj.user_id:
+    if current_user and current_user.id == ticket_obj.user_id:
         has_perm = True
-    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
+    elif anon_id and getattr(ticket_obj, 'anon_id', None) == anon_id:
         has_perm = True
-    elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+    elif current_user and tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
+        has_perm = True
+    elif current_user and tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         has_perm = True
 
     if not has_perm:
