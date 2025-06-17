@@ -82,6 +82,8 @@ def armar_respuesta_legible(
     max_items: int = 5,
     order_by: str | None = None,
 ) -> str:
+    """Convierte una lista de resultados Qdrant en un texto legible."""
+
     if not resultados_qdrant:
         logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
         return "No encontré productos para mostrar en este momento."
@@ -89,36 +91,44 @@ def armar_respuesta_legible(
     if order_by == "price":
         resultados_qdrant = _ordenar_por_precio(resultados_qdrant)
     else:
-        resultados_qdrant = sorted(resultados_qdrant, key=lambda r: getattr(r, "score", 0), reverse=True)
+        resultados_qdrant = sorted(
+            resultados_qdrant, key=lambda r: getattr(r, "score", 0), reverse=True
+        )
 
-    lines = []
+    lineas: List[str] = []
     for idx, hit in enumerate(resultados_qdrant[:max_items], 1):
-        p = getattr(hit, "payload", None) or {}
-        nombre = p.get("nombre") or p.get("title") or "Producto sin nombre"
-        sku = p.get("sku") or ""
-        categoria = p.get("categoria_qdrant") or p.get("categoria") or ""
-        moneda = p.get("moneda", "")
-        precio = p.get("precio_str") or p.get("precio") or p.get("precio_unitario") or ""
+        p = getattr(hit, "payload", {}) or {}
+
+        nombre = str(p.get("nombre") or p.get("title") or "Producto sin nombre").strip()
+        sku = str(p.get("sku") or "").strip()
+        categoria = str(p.get("categoria_qdrant") or p.get("categoria") or "").strip()
+        moneda = str(p.get("moneda", "")).strip()
+        precio = str(
+            p.get("precio_str") or p.get("precio") or p.get("precio_unitario") or ""
+        ).strip()
         if not precio and p.get("precio_float") is not None:
             precio = f"{p.get('precio_float'):,.2f}"
-        unidad = p.get("unidad") or p.get("presentacion") or ""
-        descripcion = p.get("descripcion") or p.get("descripcion_corta") or ""
+        unidad = str(p.get("unidad") or p.get("presentacion") or "").strip()
+        descripcion = str(p.get("descripcion") or p.get("descripcion_corta") or "").strip()
 
-        partes = [f"{idx}. {nombre}"]
+        datos_linea: List[str] = [f"{idx}. {nombre}"]
         if sku and sku.lower() not in nombre.lower():
-            partes[-1] += f" (SKU: {sku})"
+            datos_linea[0] += f" (SKU: {sku})"
         if categoria:
-            partes.append(f"Categoría: {categoria}")
+            datos_linea.append(f"  - Categoría: {categoria}")
         if precio:
-            partes.append(f"Precio: {moneda} {precio}".strip())
+            if moneda and moneda.lower() not in precio.lower():
+                datos_linea.append(f"  - Precio: {moneda} {precio}")
+            else:
+                datos_linea.append(f"  - Precio: {precio}")
         if unidad:
-            partes.append(f"Presentación: {unidad}")
+            datos_linea.append(f"  - Presentación: {unidad}")
         if descripcion and descripcion.lower() not in nombre.lower():
-            desc_limpia = descripcion.strip().replace("\n", " ")
+            desc_limpia = descripcion.replace("\n", " ").strip()
             if len(desc_limpia) > 100:
                 desc_limpia = desc_limpia[:100] + "..."
-            partes.append(f"Descripción: {desc_limpia}")
+            datos_linea.append(f"  - Descripción: {desc_limpia}")
 
-        lines.append(" · ".join(partes))
+        lineas.append("\n".join(datos_linea))
 
-    return "Según nuestro catálogo, esto podría interesarte:\n\n" + "\n".join(lines)
+    return "Según nuestro catálogo, esto podría interesarte:\n\n" + "\n\n".join(lineas)
