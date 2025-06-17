@@ -433,14 +433,19 @@ class PedidoHandler(BaseHandler):
             contexto_pyme['monto_total_temp'] = monto_total_temp
             return {"respuesta": resumen_productos_confirmacion, "fuente": "handler_pedido_detalles_para_confirmar", "estado_respuesta": "pyme_confirmar_pedido"}
         elif estado_conversacion == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            if any(p in pregunta.lower().strip() for p in ["si", "sí", "dale", "quiero", "confirmar", "ok"]):
-                contexto_pyme['productos_a_confirmar_en_paso_2'] = contexto_pyme.pop('productos_solicitados_temp')
-                contexto_pyme['monto_total_final_en_paso_2'] = contexto_pyme.pop('monto_total_temp')
-                contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2)
-                return {"respuesta": "¡Excelente! Estoy procesando los últimos detalles. Por favor, confirmame tu nombre y un contacto (teléfono o email) para finalizar.", "fuente": "pedido_confirmado_paso_1", "estado_respuesta": "pyme_pregunta_contacto"}
-            else:
+            texto_normalizado = normalizar_texto(pregunta)
+            if re.search(r"\b(no|cancel(ar)?|rechazo|no quiero)\b", texto_normalizado):
                 contexto_pyme.clear()
                 return {"respuesta": "Entendido. No se generará el pedido. ¿Hay algo más en lo que pueda ayudarte?", "fuente": "pedido_cancelado"}
+
+            contexto_pyme['productos_a_confirmar_en_paso_2'] = contexto_pyme.pop('productos_solicitados_temp')
+            contexto_pyme['monto_total_final_en_paso_2'] = contexto_pyme.pop('monto_total_temp')
+            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2)
+            return {
+                "respuesta": "¡Excelente! Estoy procesando los últimos detalles. Por favor, confirmame tu nombre y un contacto (teléfono o email) para finalizar.",
+                "fuente": "pedido_confirmado_paso_1",
+                "estado_respuesta": "pyme_pregunta_contacto"
+            }
         elif estado_conversacion == PymeConversationState.ESPERANDO_NUMERO_PEDIDO:
             pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
             if not pedido_match:
@@ -650,6 +655,7 @@ class VectorCatalogHandler(BaseHandler):
             user_id=user_id,
             pregunta=pregunta,
             limite=DEFAULT_SEARCH_LIMIT,
+            categoria=self.context.get('rubro_nombre'),
         )
         productos_mostrados = []
 
