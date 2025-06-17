@@ -15,7 +15,8 @@ def buscar_catalogo_qdrant(
     user_id: Optional[int],
     pregunta: str,
     limite: int = DEFAULT_SEARCH_LIMIT,
-    score_min: float = 0.30
+    score_min: float = 0.30,
+    categoria: str | None = None,
 ) -> List[qdrant_models.ScoredPoint]:
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
@@ -40,18 +41,32 @@ def buscar_catalogo_qdrant(
         search_filter = None
         id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
 
-        if user_id is not None:
-            search_filter = qdrant_models.Filter(
-                must=[
+        if user_id is not None or categoria:
+            must_conditions = []
+            if user_id is not None:
+                must_conditions.append(
                     qdrant_models.FieldCondition(
                         key="user_id",
-                        match=qdrant_models.MatchValue(value=user_id)
+                        match=qdrant_models.MatchValue(value=user_id),
                     )
-                ]
+                )
+            if categoria:
+                must_conditions.append(
+                    qdrant_models.FieldCondition(
+                        key="categoria_qdrant",
+                        match=qdrant_models.MatchValue(value=categoria.lower()),
+                    )
+                )
+            search_filter = qdrant_models.Filter(must=must_conditions)
+
+        if user_id is not None:
+            logger.info(
+                f"[QDRANT SEARCH] Buscando en catálogo PRIVADO para {id_log}, pregunta '{pregunta_limpia}', categoria='{categoria}'"
             )
-            logger.info(f"[QDRANT SEARCH] Buscando en catálogo PRIVADO para {id_log}, pregunta '{pregunta_limpia}'")
         else:
-            logger.info(f"[QDRANT SEARCH] Buscando en catálogo GENERAL para {id_log}, pregunta '{pregunta_limpia}'")
+            logger.info(
+                f"[QDRANT SEARCH] Buscando en catálogo GENERAL para {id_log}, pregunta '{pregunta_limpia}', categoria='{categoria}'"
+            )
             # Si tuvieras un campo catálogo_público, acá le podés meter ese filtro
 
         resultados = qdrant_cli.search(
