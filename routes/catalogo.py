@@ -2,28 +2,55 @@ from flask import Blueprint, request, jsonify
 from models import CatalogoItem
 from routes.auth import token_requerido
 from services.qdrant_search import buscar_catalogo_qdrant, DEFAULT_SEARCH_LIMIT
+from services.utils import calcular_precio_por_unidad
 
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
 
 def _formatear_producto(data: dict) -> dict:
-    precio_raw = data.get('precio_float') if data.get('precio_float') is not None else data.get('precio_str')
-    if isinstance(precio_raw, str) and not precio_raw.strip():
-        precio_raw = None
+    """Normaliza un diccionario de producto al formato universal."""
+    precio_pack = None
+    precio_unitario = None
+
+    precio_float = data.get("precio_float")
+    precio_str = data.get("precio_str")
+
+    if precio_float is not None:
+        precio_pack = precio_float
+        precio_unitario = calcular_precio_por_unidad(
+            precio_float, data.get("unidad") or data.get("presentacion", "")
+        )
+    elif isinstance(precio_str, str) and precio_str.strip():
+        from services.utils import parse_precio_flexible
+
+        _, parsed_float, _ = parse_precio_flexible(precio_str)
+        if parsed_float is not None:
+            precio_pack = parsed_float
+            precio_unitario = calcular_precio_por_unidad(
+                parsed_float, data.get("unidad") or data.get("presentacion", "")
+            )
+        else:
+            precio_pack = precio_str.strip()
+
+    if precio_unitario is None:
+        precio_unitario = precio_pack
+
+    if isinstance(precio_pack, str) and not precio_pack:
+        precio_pack = None
 
     return {
-        'nombre': data.get('nombre', ''),
-        'categoria': data.get('categoria') or data.get('categoria_qdrant', ''),
-        'descripcion': data.get('descripcion'),
-        'sku': data.get('sku'),
-        'presentacion': data.get('unidad') or data.get('presentacion', ''),
-        'talles': data.get('talles'),
-        'colores': data.get('colores'),
-        'precio_unitario': precio_raw,
-        'precio_pack': data.get('precio_pack'),
-        'stock': data.get('cantidad'),
-        'marca': data.get('marca'),
-        'imagen_url': data.get('imagen_url'),
+        "nombre": data.get("nombre", ""),
+        "categoria": data.get("categoria") or data.get("categoria_qdrant", ""),
+        "descripcion": data.get("descripcion") or None,
+        "sku": data.get("sku") or None,
+        "presentacion": data.get("unidad") or data.get("presentacion", ""),
+        "talles": data.get("talles"),
+        "colores": data.get("colores"),
+        "precio_unitario": precio_unitario,
+        "precio_pack": precio_pack if precio_pack != precio_unitario else None,
+        "stock": data.get("cantidad"),
+        "marca": data.get("marca"),
+        "imagen_url": data.get("imagen_url"),
     }
 
 
