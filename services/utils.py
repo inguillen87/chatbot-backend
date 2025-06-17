@@ -121,6 +121,23 @@ def extraer_unidades_y_tipos_precio(texto_linea: str, pyme_rubro_nombre: str = "
         if tipo_precio: break
     return unidad, tipo_precio
 
+def calcular_precio_por_unidad(precio_float: Optional[float], unidad_texto: str) -> Optional[float]:
+    """Calcula el precio por unidad cuando la presentación indica varias unidades."""
+    if precio_float is None or not unidad_texto:
+        return None
+    texto = limpiar_texto_base(unidad_texto)
+    match = re.search(r"(?:x|por|de)\s*(\d+(?:[.,]\d+)?)", texto)
+    if not match:
+        match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:unidades|unidad|u|uds?|pack|caja)", texto)
+    if match:
+        try:
+            cantidad = float(match.group(1).replace(',', '.'))
+            if cantidad > 0:
+                return round(precio_float / cantidad, 2)
+        except ValueError:
+            return None
+    return None
+
 # --- 2. EL CEREBRO INTELIGENTE v3.0 (Nuestra Lógica de Mapeo Mejorada) ---
 
 KEYWORD_MAP = {

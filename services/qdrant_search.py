@@ -1,10 +1,11 @@
 import logging
 import os
+import re
 from typing import List, Optional
 from .qdrant_utils import get_qdrant_client
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
-from .utils import limpiar_texto_base
+from .utils import limpiar_texto_base, calcular_precio_por_unidad
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
@@ -129,13 +130,26 @@ def armar_respuesta_legible(
             precio = f"{p.get('precio_float'):,.2f}"
         unidad = str(p.get("unidad") or p.get("presentacion") or "").strip()
         descripcion = str(p.get("descripcion") or p.get("descripcion_corta") or "").strip()
+        precio_unitario_calc = None
+        try:
+            precio_base_float = float(p.get("precio_float")) if p.get("precio_float") is not None else None
+            precio_unitario_calc = calcular_precio_por_unidad(precio_base_float, unidad)
+        except Exception:
+            precio_unitario_calc = None
 
         datos_linea: List[str] = [f"- **{nombre}**"]
         if sku and sku.lower() not in nombre.lower() and sku.lower() != "n/a":
             datos_linea.append(f"  - SKU: {sku}")
         if unidad:
             datos_linea.append(f"  - Presentación: {unidad}")
-        if precio and precio not in {"0", "0.0", "$0", "$0.0"}:
+        if precio_unitario_calc:
+            if moneda:
+                datos_linea.append(f"  - Precio por caja: {moneda} {precio}")
+                datos_linea.append(f"  - Precio por unidad: {moneda} {precio_unitario_calc:,.2f}")
+            else:
+                datos_linea.append(f"  - Precio por caja: {precio}")
+                datos_linea.append(f"  - Precio por unidad: {precio_unitario_calc:,.2f}")
+        elif precio and precio not in {"0", "0.0", "$0", "$0.0"}:
             if moneda and moneda.lower() not in precio.lower():
                 datos_linea.append(f"  - Precio: {moneda} {precio}")
             else:
