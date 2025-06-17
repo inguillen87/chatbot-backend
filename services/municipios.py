@@ -214,12 +214,15 @@ class IntentClassifierHandler(BaseMunicipioHandler):
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_municipio', {})
-        if not memoria.get('estado_conversacion'):
+        texto = normalizar_texto(pregunta)
+
+        # Permitir solicitar un agente en cualquier momento
+        if any(kw in texto for kw in self.KEYWORDS_AGENTE):
+            self.context['intencion'] = 'hablar_con_agente'
+        elif not memoria.get('estado_conversacion'):
             intencion = _clasificar_intencion_con_llm(pregunta)
-            if intencion == 'general':
-                texto = normalizar_texto(pregunta)
-                if any(kw in texto for kw in self.KEYWORDS_AGENTE):
-                    intencion = 'hablar_con_agente'
+            if intencion == 'general' and any(kw in texto for kw in self.KEYWORDS_AGENTE):
+                intencion = 'hablar_con_agente'
             self.context['intencion'] = intencion
         else:
             self.context['intencion'] = 'continuar_flujo'
