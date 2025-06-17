@@ -65,13 +65,31 @@ def buscar_catalogo_qdrant(
         logger.error(f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}", exc_info=True)
         return []
 
+def _ordenar_por_precio(resultados: List[qdrant_models.ScoredPoint]) -> List[qdrant_models.ScoredPoint]:
+    """Ordena la lista de resultados por el campo ``precio_float`` ascendente."""
+    def _precio(hit: qdrant_models.ScoredPoint) -> float:
+        p = getattr(hit, "payload", None) or {}
+        try:
+            return float(p.get("precio_float"))
+        except (TypeError, ValueError):
+            return float("inf")
+
+    return sorted(resultados, key=_precio)
+
+
 def armar_respuesta_legible(
     resultados_qdrant: List[qdrant_models.ScoredPoint],
-    max_items: int = 5
+    max_items: int = 5,
+    order_by: str | None = None,
 ) -> str:
     if not resultados_qdrant:
         logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
         return "No encontré productos para mostrar en este momento."
+
+    if order_by == "price":
+        resultados_qdrant = _ordenar_por_precio(resultados_qdrant)
+    else:
+        resultados_qdrant = sorted(resultados_qdrant, key=lambda r: getattr(r, "score", 0), reverse=True)
 
     lines = []
     for idx, hit in enumerate(resultados_qdrant[:max_items], 1):
