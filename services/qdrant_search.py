@@ -100,7 +100,7 @@ def armar_respuesta_legible(
         )
 
     lineas: List[str] = []
-    for idx, hit in enumerate(resultados_qdrant[:max_items], 1):
+    for hit in resultados_qdrant[:max_items]:
         p = getattr(hit, "payload", {}) or {}
 
         nombre = str(p.get("nombre") or p.get("title") or "Producto sin nombre").strip()
@@ -115,7 +115,7 @@ def armar_respuesta_legible(
         unidad = str(p.get("unidad") or p.get("presentacion") or "").strip()
         descripcion = str(p.get("descripcion") or p.get("descripcion_corta") or "").strip()
 
-        datos_linea: List[str] = [f"{idx}. **{nombre}**"]
+        datos_linea: List[str] = [f"- **{nombre}**"]
         if sku and sku.lower() not in nombre.lower() and sku.lower() != "n/a":
             datos_linea.append(f"  - SKU: {sku}")
         if unidad:
@@ -135,4 +135,4 @@ def armar_respuesta_legible(
 
         lineas.append("\n".join(datos_linea))
 
-    return "Según nuestro catálogo, esto podría interesarte:\n\n" + "\n\n".join(lineas)
+    return "¡Sí! Esto encontré en el catálogo:\n\n" + "\n\n".join(lineas)
