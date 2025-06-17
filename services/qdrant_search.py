@@ -1,16 +1,20 @@
 import logging
+import os
 from typing import List, Optional
 from .qdrant_utils import get_qdrant_client
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
 from .utils import limpiar_texto_base
 
+# Permite ajustar el número de resultados devueltos desde una variable de entorno.
+DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
+
 logger = logging.getLogger(__name__)
 
 def buscar_catalogo_qdrant(
     user_id: Optional[int],
     pregunta: str,
-    limite: int = 3,
+    limite: int = DEFAULT_SEARCH_LIMIT,
     score_min: float = 0.30
 ) -> List[qdrant_models.ScoredPoint]:
     qdrant_cli = get_qdrant_client()
@@ -79,7 +83,7 @@ def _ordenar_por_precio(resultados: List[qdrant_models.ScoredPoint]) -> List[qdr
 
 def armar_respuesta_legible(
     resultados_qdrant: List[qdrant_models.ScoredPoint],
-    max_items: int = 5,
+    max_items: int = DEFAULT_SEARCH_LIMIT,
     order_by: str | None = None,
 ) -> str:
     """Convierte una lista de resultados Qdrant en un texto legible."""

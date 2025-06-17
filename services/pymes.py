@@ -13,7 +13,11 @@ from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro
 from services.cohere_ai import get_cohere_response
 from services.vector_search import buscar_item_vectorizado
-from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
+from services.qdrant_search import (
+    buscar_catalogo_qdrant,
+    armar_respuesta_legible,
+    DEFAULT_SEARCH_LIMIT,
+)
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.intent_matcher import buscar_en_intents
 from services.ticket_service import servicio_tickets
@@ -642,7 +646,11 @@ class VectorCatalogHandler(BaseHandler):
         }:
             return None
 
-        resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, limite=3)
+        resultados = buscar_catalogo_qdrant(
+            user_id=user_id,
+            pregunta=pregunta,
+            limite=DEFAULT_SEARCH_LIMIT,
+        )
         productos_mostrados = []
 
         if resultados:
@@ -678,7 +686,7 @@ class VectorCatalogHandler(BaseHandler):
                         productos = datos_scrape['productos']
 
                 if productos:
-                    productos_mostrados = productos[:3]
+                    productos_mostrados = productos[:DEFAULT_SEARCH_LIMIT]
                     self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
                     resumen = "\n".join([
                         f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in productos_mostrados
