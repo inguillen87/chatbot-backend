@@ -20,6 +20,7 @@ from routes.rubros import rubros_bp
 from services.upload_processor import upload_bp
 from cli_commands import register_commands
 from routes.pedidos import pedidos_bp # <-- ¡NUEVA IMPORTACIÓN AQUÍ!
+from routes.catalogo import catalogo_bp
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -92,6 +93,7 @@ def create_app(config_class=Config):
     app.register_blueprint(ticket_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(rubros_bp)
+    app.register_blueprint(catalogo_bp)
     app.register_blueprint(pedidos_bp)
     
     # Registro de comandos CLI
