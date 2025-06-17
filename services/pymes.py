@@ -293,6 +293,7 @@ class FollowUpHandler(BaseHandler):
                 contexto_pyme.clear()
                 return None
             productos_a_confirmar = contexto_pyme.pop('productos_a_confirmar_en_paso_2')
+            productos_a_confirmar = sorted(productos_a_confirmar, key=lambda p: (p.get('nombre') or '').lower())
             monto_total_final = contexto_pyme.pop('monto_total_final_en_paso_2', 0.0)
             nombre, email, telefono = None, None, None
             if self.context.get('user_obj'):
@@ -316,22 +317,27 @@ class FollowUpHandler(BaseHandler):
             nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_data)
             self.context['contexto_pyme'].clear() 
             if nuevo_pedido:
-                respuesta_final = f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!"
+                respuesta_final = (
+                    f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. "
+                    "Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!"
+                )
                 link_web = getattr(self.context.get('user_obj'), 'link_web', None)
                 email_contacto = getattr(self.context.get('user_obj'), 'email', None)
-                info_extra = " | ".join([v for v in [link_web, email_contacto] if v])
-                if info_extra:
-                    respuesta_final += f"\n\nMás info: {info_extra}"
+                if email_contacto:
+                    respuesta_final += f"\n\nContacto: {email_contacto}"
+                botones = [
+                    {"texto": "Nuevo pedido"},
+                    {"texto": "Consultar pedido"},
+                    {"texto": "Hablar con un agente"},
+                ]
+                if link_web:
+                    botones.append({"texto": "Ver tienda", "url": link_web})
                 return {
                     "respuesta": respuesta_final,
                     "fuente": "handler_pedido_creado",
                     "estado_respuesta": "exito_pedido_creado",
                     "pedido_data": nuevo_pedido.to_dict(),
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
+                    "botones": botones,
                 }
             else:
                 return {"respuesta": "Disculpa, hubo un problema técnico al registrar tu pedido.", "fuente": "handler_pedido_error", "estado_respuesta": "error_pedido"}
