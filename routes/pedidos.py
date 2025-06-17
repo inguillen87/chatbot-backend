@@ -30,9 +30,12 @@ def iniciar_pedido(user):
             "asunto": f"Pedido rápido: {pregunta_usuario[:50]}...",
             "detalles": json.dumps(productos_solicitados, ensure_ascii=False),
             "rubro": rubro_nombre,
-            "nombre_cliente": user.name,
-            "email_cliente": user.email,
-            "telefono_cliente": user.telefono if hasattr(user, 'telefono') else "N/A",
+            "nombre_cliente": data.get("nombre_cliente"),
+            "email_cliente": data.get("email_cliente"),
+            "telefono_cliente": data.get("telefono_cliente"),
+            "direccion": data.get("direccion"),
+            "latitud": data.get("latitud"),
+            "longitud": data.get("longitud"),
             "user_id": user.id,
             "monto_total": 0.0
         }

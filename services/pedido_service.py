@@ -46,6 +46,9 @@ class PedidoService:
                 email_cliente=pedido_data.get("email_cliente"),
                 telefono_cliente=pedido_data.get("telefono_cliente"),
                 user_id=pedido_data.get("user_id"),  # Puede ser None si es anónimo
+                direccion=pedido_data.get("direccion"),
+                latitud=pedido_data.get("latitud"),
+                longitud=pedido_data.get("longitud"),
             )
             db.session.add(nuevo_pedido)
             db.session.commit()

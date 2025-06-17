@@ -141,8 +141,11 @@ class PymePedido(db.Model):
     email_cliente = db.Column(db.String(100), nullable=True)
     telefono_cliente = db.Column(db.String(50), nullable=True)
     rubro = db.Column(db.String(100), nullable=True)
+    direccion = db.Column(db.String(255), nullable=True)
+    latitud = db.Column(db.Float, nullable=True)
+    longitud = db.Column(db.Float, nullable=True)
 
-    def __init__(self, asunto, detalles, rubro, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None):
+    def __init__(self, asunto, detalles, rubro, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None, direccion=None, latitud=None, longitud=None):
         self.asunto = asunto
         self.detalles = detalles
         self.rubro = rubro
@@ -150,6 +153,9 @@ class PymePedido(db.Model):
         self.email_cliente = email_cliente
         self.telefono_cliente = telefono_cliente
         self.user_id = user_id
+        self.direccion = direccion
+        self.latitud = latitud
+        self.longitud = longitud
         self.nro_pedido = self._generate_nro_pedido()
 
     def _generate_nro_pedido(self):
@@ -176,6 +182,9 @@ class PymePedido(db.Model):
             "email_cliente": self.email_cliente,
             "telefono_cliente": self.telefono_cliente,
             "rubro": self.rubro,
+            "direccion": self.direccion,
+            "latitud": self.latitud,
+            "longitud": self.longitud,
             "user_id": self.user_id
         }
 
