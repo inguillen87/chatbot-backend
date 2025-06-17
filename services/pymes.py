@@ -312,8 +312,14 @@ class FollowUpHandler(BaseHandler):
             nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_data)
             self.context['contexto_pyme'].clear() 
             if nuevo_pedido:
+                respuesta_final = f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!"
+                link_web = getattr(self.context.get('user_obj'), 'link_web', None)
+                email_contacto = getattr(self.context.get('user_obj'), 'email', None)
+                info_extra = " | ".join([v for v in [link_web, email_contacto] if v])
+                if info_extra:
+                    respuesta_final += f"\n\nMás info: {info_extra}"
                 return {
-                    "respuesta": f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!",
+                    "respuesta": respuesta_final,
                     "fuente": "handler_pedido_creado",
                     "estado_respuesta": "exito_pedido_creado",
                     "pedido_data": nuevo_pedido.to_dict(),
@@ -401,13 +407,25 @@ class PedidoHandler(BaseHandler):
                 return {"respuesta": "No pude identificar los productos que mencionas. Por favor, sé más específico sobre lo que te interesa de nuestro catálogo.", "fuente": "handler_pedido_error_productos", "estado_respuesta": "pyme_error_productos"}
             contexto_pyme['productos_solicitados_temp'] = detalles_estructurados
             contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
-            resumen_productos_confirmacion = "Tenemos lo siguiente para tu pedido:\n"
+            resumen_productos_confirmacion = "Resumen de tu pedido:\n\n"
             monto_total_temp = 0.0
             for p in detalles_estructurados:
-                subtotal = (float(p.get('cantidad', 1)) * float(p.get('precio', 0.0)))
-                monto_total_temp += subtotal
-                resumen_productos_confirmacion += f"- **{p.get('nombre', 'N/A')}**: {p.get('cantidad', 1)} {p.get('unidad', 'u')} @ ${p.get('precio_str', 'N/A')} = ${subtotal:,.2f}\n"
-            resumen_productos_confirmacion += f"\n**Monto estimado: ${monto_total_temp:,.2f}**\n\n¿Confirmas este pedido? También podés indicarme tus datos (nombre, teléfono, email)."
+                cantidad = float(p.get('cantidad', 1))
+                precio_unit = float(p.get('precio', 0.0))
+                precio_str = p.get('precio_str') or (f"${precio_unit:,.2f}" if precio_unit else "Consultar")
+                unidad = p.get('unidad', 'u')
+                nombre = p.get('nombre', 'Producto')
+                if precio_unit:
+                    subtotal = cantidad * precio_unit
+                    monto_total_temp += subtotal
+                    resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str} = ${subtotal:,.2f}\n"
+                else:
+                    resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str}\n"
+            if monto_total_temp:
+                resumen_productos_confirmacion += f"\n**Total estimado: ${monto_total_temp:,.2f}**"
+            else:
+                resumen_productos_confirmacion += "\n**Total estimado: Consultar**"
+            resumen_productos_confirmacion += "\n\n¿Confirmás este pedido? Por favor, indicame tu nombre, teléfono y email para avanzar con la compra."
             contexto_pyme['monto_total_temp'] = monto_total_temp
             return {"respuesta": resumen_productos_confirmacion, "fuente": "handler_pedido_detalles_para_confirmar", "estado_respuesta": "pyme_confirmar_pedido"}
         elif estado_conversacion == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:

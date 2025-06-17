@@ -111,23 +111,23 @@ def armar_respuesta_legible(
         unidad = str(p.get("unidad") or p.get("presentacion") or "").strip()
         descripcion = str(p.get("descripcion") or p.get("descripcion_corta") or "").strip()
 
-        datos_linea: List[str] = [f"{idx}. {nombre}"]
-        if sku and sku.lower() not in nombre.lower():
-            datos_linea[0] += f" (SKU: {sku})"
-        if categoria:
-            datos_linea.append(f"  - Categoría: {categoria}")
-        if precio:
+        datos_linea: List[str] = [f"{idx}. **{nombre}**"]
+        if sku and sku.lower() not in nombre.lower() and sku.lower() != "n/a":
+            datos_linea.append(f"  - SKU: {sku}")
+        if unidad:
+            datos_linea.append(f"  - Presentación: {unidad}")
+        if precio and precio not in {"0", "0.0", "$0", "$0.0"}:
             if moneda and moneda.lower() not in precio.lower():
                 datos_linea.append(f"  - Precio: {moneda} {precio}")
             else:
                 datos_linea.append(f"  - Precio: {precio}")
-        if unidad:
-            datos_linea.append(f"  - Presentación: {unidad}")
         if descripcion and descripcion.lower() not in nombre.lower():
             desc_limpia = descripcion.replace("\n", " ").strip()
             if len(desc_limpia) > 100:
                 desc_limpia = desc_limpia[:100] + "..."
             datos_linea.append(f"  - Descripción: {desc_limpia}")
+        if categoria:
+            datos_linea.append(f"  - Categoría: {categoria}")
 
         lineas.append("\n".join(datos_linea))
 
