@@ -1,11 +1,11 @@
 # services/intent_matcher.py
 import json
 import os
-import spacy
 import logging
 from typing import Optional, Dict, List, Any
 import random # Para elegir una respuesta de una lista
 from .utils import limpiar_texto_base
+from .spacy_loader import get_spacy_model
 
 logger = logging.getLogger(__name__)
 NLP_SPACY_INTENT = None
@@ -14,14 +14,9 @@ INTENTS_DATA: Dict[str, List[Dict[str, Any]]] = {}
 def _cargar_recursos_intent():
     global NLP_SPACY_INTENT, INTENTS_DATA
     if NLP_SPACY_INTENT is None:
-        try:
-            logger.info("Cargando modelo spaCy 'es_core_news_md' para Intent Matcher...")
-            NLP_SPACY_INTENT = spacy.load("es_core_news_md")
-            logger.info("✅ Modelo spaCy 'es_core_news_md' cargado para Intent Matcher.")
-            if NLP_SPACY_INTENT.vocab.vectors.shape[0] == 0: 
-                 logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (Intent) se cargó pero no tiene vectores.")
-        except OSError: logger.error("❌ Error al cargar spaCy 'es_core_news_md' (Intent): Modelo no encontrado.")
-        except Exception as e: logger.error(f"❌ Error inesperado al cargar spaCy (Intent): {e}", exc_info=True)
+        NLP_SPACY_INTENT = get_spacy_model()
+        if NLP_SPACY_INTENT is None:
+            logger.error("❌ No se pudo cargar el modelo spaCy para Intent Matcher.")
     if not INTENTS_DATA:
         try:
             current_dir = os.path.dirname(os.path.abspath(__file__)); project_root = os.path.abspath(os.path.join(current_dir, "..")) 
