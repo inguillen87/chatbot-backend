@@ -1,10 +1,12 @@
 import json
 import os
-import spacy
 import logging
+from .spacy_loader import get_spacy_model
 
 try:
-    nlp = spacy.load("es_core_news_md")
+    nlp = get_spacy_model()
+    if nlp is None:
+        raise RuntimeError("Modelo spaCy no cargado")
     print("✅ spaCy cargado correctamente en intent.py")
 except Exception as e:
     logging.error(f"❌ Error al cargar spaCy: {e}")

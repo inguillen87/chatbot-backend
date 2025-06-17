@@ -1,24 +1,19 @@
 # services/faq_matcher_spacy.py
-import spacy
 import logging
 from typing import Optional, List, Tuple
 from models import QA
 from .utils import limpiar_texto_base
+from .spacy_loader import get_spacy_model
 
 logger = logging.getLogger(__name__)
-NLP_SPACY_FAQ = None 
+NLP_SPACY_FAQ = None
 
 def _cargar_spacy_modelo_faq():
     global NLP_SPACY_FAQ
     if NLP_SPACY_FAQ is None:
-        try:
-            logger.info("Cargando modelo spaCy 'es_core_news_md' para FAQ Matcher...")
-            NLP_SPACY_FAQ = spacy.load("es_core_news_md")
-            logger.info("✅ Modelo spaCy 'es_core_news_md' cargado para FAQ Matcher.")
-            if NLP_SPACY_FAQ.vocab.vectors.shape[0] == 0: 
-                 logger.warning("⚠️ El modelo spaCy 'es_core_news_md' (FAQ) se cargó pero no tiene vectores.")
-        except OSError: logger.error("❌ Error al cargar spaCy 'es_core_news_md' (FAQ): Modelo no encontrado.")
-        except Exception as e: logger.error(f"❌ Error inesperado al cargar spaCy (FAQ): {e}", exc_info=True)
+        NLP_SPACY_FAQ = get_spacy_model()
+        if NLP_SPACY_FAQ is None:
+            logger.error("❌ No se pudo cargar el modelo spaCy para FAQ Matcher.")
 
 def buscar_en_faq_spacy(pregunta_usuario: str, rubro_id: int, threshold: float = 0.80) -> Optional[QA]:
     _cargar_spacy_modelo_faq()    

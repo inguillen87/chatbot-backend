@@ -7,6 +7,7 @@ import re
 from google.cloud import documentai 
 from google.oauth2 import service_account
 from typing import List, Dict, Any, Optional
+from .spacy_loader import get_spacy_model
 
 # Importamos nuestro cerebro y herramientas compartidas
 from .utils import (
@@ -19,6 +20,15 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+NLP_SPACY = get_spacy_model()
+
+def limpiar_texto_spacy(texto: str) -> str:
+    """Normaliza texto usando spaCy para mejorar coincidencias."""
+    if not texto or NLP_SPACY is None:
+        return str(texto or "").strip()
+    doc = NLP_SPACY(texto)
+    tokens = [t.text for t in doc if not t.is_space]
+    return " ".join(tokens).strip()
 
 
 # --- 1. Carga de Credenciales (Tu lógica original, intacta) ---
@@ -65,7 +75,10 @@ def _tabla_docai_a_dataframe(table: documentai.Document.Page.Table, full_doc_tex
     # Itera por todas las filas (cabeceras y cuerpo) para construir el DataFrame en bruto
     todas_las_filas = list(table.header_rows) + list(table.body_rows)
     for row in todas_las_filas:
-        celdas_fila = [_get_text_from_layout_segments(cell.layout.text_anchor, full_doc_text) for cell in row.cells]
+        celdas_fila = [
+            limpiar_texto_spacy(_get_text_from_layout_segments(cell.layout.text_anchor, full_doc_text))
+            for cell in row.cells
+        ]
         filas_datos.append(celdas_fila)
         
     return pd.DataFrame(filas_datos) if filas_datos else pd.DataFrame()
