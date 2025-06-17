@@ -634,7 +634,7 @@ class VectorCatalogHandler(BaseHandler):
 
             if productos_mostrados:
                 self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-                respuesta = armar_respuesta_legible(resultados)
+                respuesta = armar_respuesta_legible(resultados, order_by="price")
                 if respuesta:
                     return {
                         'respuesta': respuesta,
