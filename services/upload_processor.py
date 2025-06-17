@@ -37,7 +37,7 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
         raise ConnectionError("No se pudo conectar a Qdrant para guardar los datos.")
 
     vector_dim = len(vectores[0]) if vectores else 1024
-    if not verificar_y_crear_coleccion_qdrant("catalogos", vector_dim):
+    if not verificar_y_crear_coleccion_qdrant("catalogos", vector_dim, create_indexes=True):
         raise ConnectionError("No se pudo inicializar la colección en Qdrant.")
 
     puntos_para_insertar: List[qdrant_models.PointStruct] = []
@@ -244,7 +244,7 @@ def subir_catalogo():
                 pyme_rubro_nombre = rubro_obj.nombre.lower().strip()
         logger.info(f"[UPLOAD_PROC] Rubro de la Pyme para procesamiento: {pyme_rubro_nombre}")
 
-        if not verificar_y_crear_coleccion_qdrant("catalogos", 1024):
+        if not verificar_y_crear_coleccion_qdrant("catalogos", 1024, create_indexes=True):
             logger.error("[UPLOAD_PROC] No se pudo preparar la colección en Qdrant")
             return jsonify({"error": "Error de infraestructura al preparar el catálogo."}), 500
 
