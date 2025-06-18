@@ -58,6 +58,14 @@ def _procesar_chat(
     current_user=None,
     anon_id: str | None = None,
 ):
+    """Procesa una pregunta garantizando coherencia entre rubro y tipo_chat.
+
+    Se usa en /ask, /ask/pyme y /ask/municipio. La estética y la lógica se
+    determinan exclusivamente por el rubro y nunca se mezclan las de pyme con
+    las de municipio. Si el rubro indica un tipo diferente al recibido, se
+    ajusta y se registra un log; si la información es inconsistente, se
+    devuelve un error claro.
+    """
     try:
         (
             pregunta,
@@ -151,6 +159,12 @@ def ask_options():
 @chat_bp.route("/ask", methods=["POST"])
 @anon_o_token_requerido
 def ask(current_user=None, anon_id=None):
+    """Endpoint genérico que delega según el rubro.
+
+    El frontend debe enviar siempre el rubro y el tipo de chat correctos.
+    Si llegan cruzados, el backend ajustará o lanzará error para evitar
+    mezclar la estética de pymes con la de municipios.
+    """
     return _procesar_chat(current_user=current_user, anon_id=anon_id)
 
 
@@ -163,6 +177,12 @@ def ask_pyme_options():
 @chat_bp.route("/ask/pyme", methods=["POST"])
 @anon_o_token_requerido
 def ask_pyme(current_user=None, anon_id=None):
+    """Procesa preguntas para pymes.
+
+    Aunque el endpoint fije el tipo 'pyme', se verificará el rubro para evitar
+    mezclar respuestas de municipio. Cualquier inconsistencia se registra y se
+    corrige o se devuelve error.
+    """
     return _procesar_chat("pyme", current_user=current_user, anon_id=anon_id)
 
 
@@ -174,4 +194,9 @@ def ask_municipio_options():
 @chat_bp.route("/ask/municipio", methods=["POST"])
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None):
+    """Procesa preguntas para municipios.
+
+    Se valida que el rubro corresponda a un ente público y, de no ser así,
+    se registrará un error. Esto previene mezclar lógicas de pyme y municipio.
+    """
     return _procesar_chat("municipio", current_user=current_user, anon_id=anon_id)

@@ -68,8 +68,16 @@ def responder_chatboc(
     session_obj=None,
     rubro_nombre_frontend=None,
     tipo_chat=None,
-    **kwargs
+    **kwargs,
 ):
+    """Envía la consulta al handler correcto según el rubro y tipo de chat.
+
+    Nunca se mezclan lógica ni estética de pymes y municipios. Si la
+    información recibida no coincide (por ejemplo, rubro público pero
+    ``tipo_chat`` de pyme), se ajustará y se registrará un error para que el
+    frontend corrija su comportamiento.
+    """
+
     # 1. Detectar nombre de rubro (universal)
     rubro_nombre = ""
     fuente = ""
@@ -106,13 +114,15 @@ def responder_chatboc(
     if rubro_nombre:
         esperado = "municipio" if rubro_nombre in RUBROS_PUBLICOS else "pyme"
         if tipo_chat and tipo_chat != esperado:
+            logger.error(
+                "ERROR: Se está intentando procesar pyme como municipio o viceversa"
+            )
             logger.warning(
-                "Tipo de chat '%s' no coincide con el rubro '%s'. Ajustando a '%s'",
-                tipo_chat,
-                rubro_nombre,
-                esperado,
+                f"Tipo de chat '{tipo_chat}' no coincide con el rubro '{rubro_nombre}'. AJUSTANDO a '{esperado}'."
             )
             tipo_chat = esperado
+    elif tipo_chat not in ("municipio", "pyme"):
+        raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
     if not tipo_chat:
         raise ValueError("tipo_chat requerido")
