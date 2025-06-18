@@ -153,10 +153,15 @@ def anon_o_token_requerido(f):
                 return f(current_user=user, *args, **kwargs)
 
         # 2. Si no hay user, busca anon_id en el header
-        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id") or None
-        if anon_id:
-            g.anon_id = anon_id
-            return f(current_user=None, anon_id=anon_id, *args, **kwargs)
-
-        return jsonify({"error": "Falta autenticación."}), 401
+        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
+        if not anon_id:
+            anon_id = str(uuid.uuid4())
+        g.anon_id = anon_id
+        resp = f(current_user=None, anon_id=anon_id, *args, **kwargs)
+        resp_obj = resp[0] if isinstance(resp, tuple) else resp
+        try:
+            resp_obj.headers["Anon-Id"] = anon_id
+        except Exception:
+            pass
+        return resp
     return decorated

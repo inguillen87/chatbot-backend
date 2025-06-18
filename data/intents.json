@@ -125,6 +125,17 @@
       "respuesta": "Podés realizar cambios en [nombreEmpresa] dentro del plazo establecido en nuestra política, la cual puedes consultar en [linkWeb] o en nuestro local en [direccion]. Es necesario presentar el ticket de compra y que el producto esté en perfectas condiciones. Todos nuestros productos cuentan con garantía por defectos de fabricación. Ante cualquier inconveniente, contáctanos directamente por WhatsApp al [telefono] o acércate al local. ¿Tienes algún producto que necesites cambiar o consultar por su garantía?"
     }
   ],
+  "ferreteria": [
+    {
+      "categoria": "consultas_generales_ferreteria",
+      "ejemplos": [
+        "¿Tienen clavos y tornillos?",
+        "Busco cemento portland",
+        "Necesito que me envíen materiales a la obra"
+      ],
+      "respuesta": "En [nombreEmpresa] contamos con una amplia línea de productos de ferretería y corralón. Podés consultar precios y stock en [linkWeb] o llamarnos al [telefono] para coordinar envíos a tu obra."
+    }
+  ],
   "municipios": [
   {
     "categoria": "tramites_documentacion",
