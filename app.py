@@ -84,7 +84,7 @@ def create_app(config_class=Config):
         origins=allowed_origins,
         supports_credentials=True,
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Origin", "Accept"]
+        allow_headers=["Authorization", "Content-Type", "Origin", "Accept", "Anon-Id"]
     )
 
     # --- 4. Registro de Blueprints (Rutas) ---
