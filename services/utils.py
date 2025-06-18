@@ -138,6 +138,18 @@ def calcular_precio_por_unidad(precio_float: Optional[float], unidad_texto: str)
             return None
     return None
 
+def calcular_monto_total_items(items: List[Dict[str, Any]]) -> float:
+    """Calcula el monto total de una lista de items {cantidad, precio}."""
+    total = 0.0
+    for item in items:
+        try:
+            cantidad = float(item.get("cantidad", 1))
+            precio = float(item.get("precio", 0))
+            total += cantidad * precio
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
 # --- 2. EL CEREBRO INTELIGENTE v3.0 (Nuestra Lógica de Mapeo Mejorada) ---
 
 KEYWORD_MAP = {
