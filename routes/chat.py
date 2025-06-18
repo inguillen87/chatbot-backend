@@ -3,7 +3,7 @@ import logging
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func
 from models import User, Rubro
-from services.chat_router import get_chat_handler
+from services.logic import responder_chatboc
 
 chat_bp = Blueprint("chat_bp", __name__)
 
@@ -92,15 +92,12 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
                 403,
             )
 
-        try:
-            handler_fn = get_chat_handler(tipo_chat)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-
-        resultado = handler_fn(
+        # Usamos la lógica centralizada que decide según el rubro
+        resultado = responder_chatboc(
             pregunta,
-            user_obj,
-            rubro_obj,
+            user_obj=user_obj,
+            rubro_obj=rubro_obj,
+            rubro_nombre_frontend=rubro_clave,
             contexto_previo=contexto_previo,
         )
 
