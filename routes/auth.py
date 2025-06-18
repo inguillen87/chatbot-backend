@@ -139,6 +139,9 @@ def actualizar_perfil(user):
 def anon_o_token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Permitir solicitudes OPTIONS (preflight CORS) sin autenticación
+        if request.method == "OPTIONS":
+            return "", 200
         # 1. Autenticación estándar primero
         auth_header = request.headers.get('Authorization', '')
         user = None
