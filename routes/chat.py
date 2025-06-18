@@ -145,7 +145,12 @@ def ask_pyme(current_user=None, anon_id=None):
     return _procesar_chat("pyme", current_user=current_user, anon_id=anon_id)
 
 
-@chat_bp.route("/ask/municipio", methods=["POST", "OPTIONS"])
+# Preflight CORS handler for /ask/municipio
+@chat_bp.route("/ask/municipio", methods=["OPTIONS"])
+def ask_municipio_options():
+    return "", 200
+
+@chat_bp.route("/ask/municipio", methods=["POST"])
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None):
     return _procesar_chat("municipio", current_user=current_user, anon_id=anon_id)
