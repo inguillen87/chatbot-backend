@@ -199,32 +199,23 @@ class BaseMunicipioHandler:
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto = normalizar_texto(pregunta.strip("!.,?"))
-        saludos = [
+        texto_original = pregunta.strip()
+        texto_normalizado = normalizar_texto(texto_original)
+
+        saludos_completos = [
             "hola",
             "buenos dias",
             "buenas tardes",
             "buenas noches",
-            "hey",
+            "buenos noches",
             "que tal",
+            "como estas",
             "buenas",
         ]
-        tokens = re.sub(r"[!.,?]", "", texto).split()
-        set_saludo = {
-            "hola",
-            "buenos",
-            "dias",
-            "buenas",
-            "tardes",
-            "noches",
-            "hey",
-            "que",
-            "tal",
-        }
 
-        # 1. Si es solo un saludo, responde amigable.
-        if texto in saludos or (
-            0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)
+        if (
+            texto_normalizado in saludos_completos
+            or any(saludo in texto_normalizado for saludo in saludos_completos)
         ):
             memoria.clear()
             return {
@@ -234,17 +225,12 @@ class GreetingHandler(BaseMunicipioHandler):
                 )
             }
 
-        # 2. Si detecta saludo mezclado con consulta, deja que los otros handlers respondan pero mete saludo en la respuesta.
-        for saludo in saludos:
-            if (
-                texto.startswith(saludo + " ")
-                or texto.startswith(saludo + ",")
-                or texto.startswith(saludo + ".")
-            ):
+        for saludo in saludos_completos:
+            if texto_normalizado.startswith(saludo + " "):
                 memoria["saludo_detectado"] = True
                 break
-        return None
 
+        return None
 
 class CancelHandler(BaseMunicipioHandler):
     """Permite cancelar el flujo actual si el usuario lo solicita."""

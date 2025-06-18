@@ -78,29 +78,25 @@ CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 
 # --- NUEVA FUNCIÓN DE NORMALIZACIÓN ---
 def normalizar_texto(texto: str) -> str:
-    """
-    Convierte un texto a minúsculas y le quita todos los acentos y diacríticos.
-    Ej: "Árbol Caído" -> "arbol caido"
-    """
-    # NFD descompone los caracteres en su forma base y sus diacríticos (ej: 'á' -> 'a' + '´')
-    forma_normalizada = unicodedata.normalize('NFD', texto)
-    texto_sin_acentos = "".join(
-        c for c in forma_normalizada if not unicodedata.combining(c)
+    """Normaliza un texto eliminando acentos y puntuación sin modificar palabras."""
+
+    if not texto:
+        return ""
+
+    texto = texto.lower().strip()
+
+    # Quitar diacríticos (acentos)
+    texto = ''.join(
+        c for c in unicodedata.normalize("NFD", texto) if not unicodedata.combining(c)
     )
 
-    texto_minuscula = texto_sin_acentos.lower()
-    texto_sin_puntos = re.sub(r"[^a-z0-9\s]", " ", texto_minuscula)
-    texto_sin_puntos = re.sub(r"\s+", " ", texto_sin_puntos).strip()
+    # Mantener solo caracteres alfanuméricos y espacios
+    texto = re.sub(r"[^a-z0-9\s]", "", texto)
 
-    palabras = []
-    for palabra in texto_sin_puntos.split():
-        if len(palabra) > 3 and palabra.endswith("es"):
-            palabra = palabra[:-2]
-        elif len(palabra) > 3 and palabra.endswith("s"):
-            palabra = palabra[:-1]
-        palabras.append(palabra)
+    # Normalizar espacios múltiples
+    texto = re.sub(r"\s+", " ", texto).strip()
 
-    return " ".join(palabras)
+    return texto
 
 # --- VALIDACIÓN DE DIRECCIONES ---
 def direccion_es_valida(texto: str) -> bool:
