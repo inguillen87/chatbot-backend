@@ -85,6 +85,11 @@ class MunicipioLogicTests(unittest.TestCase):
         resp = municipios.responder_municipio('Hablar con un agente', user, None)
         self.assertIn('chat directa', resp['respuesta'])
 
+    def test_greeting_with_typo(self):
+        user = DummyUser()
+        resp = municipios.responder_municipio('holaa buenos noxes', user, None)
+        self.assertIn('¿Querés hacer un reclamo', resp['respuesta'])
+
 
 
 if __name__ == '__main__':

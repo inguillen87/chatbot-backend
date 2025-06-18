@@ -1,5 +1,6 @@
 import logging
 import re
+import difflib
 import json
 import os
 from enum import Enum, auto
@@ -199,7 +200,7 @@ class BaseMunicipioHandler:
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto = normalizar_texto(pregunta.strip("!.,?"))
+        texto = normalizar_texto(pregunta)
         saludos = [
             "hola",
             "buenos dias",
@@ -209,7 +210,7 @@ class GreetingHandler(BaseMunicipioHandler):
             "que tal",
             "buenas",
         ]
-        tokens = re.sub(r"[!.,?]", "", texto).split()
+        tokens = texto.split()
         set_saludo = {
             "hola",
             "buenos",
@@ -222,10 +223,22 @@ class GreetingHandler(BaseMunicipioHandler):
             "tal",
         }
 
-        # 1. Si es solo un saludo, responde amigable.
-        if texto in saludos or (
-            0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)
-        ):
+        def token_es_saludo(tok: str) -> bool:
+            if tok in set_saludo:
+                return True
+            return any(difflib.SequenceMatcher(None, tok, s).ratio() >= 0.7 for s in set_saludo)
+
+        es_saludo = texto in saludos or (
+            0 < len(tokens) <= 3 and all(token_es_saludo(t) for t in tokens)
+        )
+
+        if not es_saludo:
+            for saludo in saludos:
+                if difflib.SequenceMatcher(None, texto, saludo).ratio() >= 0.85:
+                    es_saludo = True
+                    break
+
+        if es_saludo:
             memoria.clear()
             return {
                 "respuesta": (
@@ -234,13 +247,8 @@ class GreetingHandler(BaseMunicipioHandler):
                 )
             }
 
-        # 2. Si detecta saludo mezclado con consulta, deja que los otros handlers respondan pero mete saludo en la respuesta.
         for saludo in saludos:
-            if (
-                texto.startswith(saludo + " ")
-                or texto.startswith(saludo + ",")
-                or texto.startswith(saludo + ".")
-            ):
+            if texto.startswith(saludo + " "):
                 memoria["saludo_detectado"] = True
                 break
         return None

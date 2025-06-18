@@ -1,12 +1,17 @@
 import unittest
+from types import ModuleType
+import sys
+
+sys.modules.setdefault('cohere', ModuleType('cohere'))
+sys.modules.setdefault('requests', ModuleType('requests'))
 from services.herramientas_municipio import normalizar_texto
 
 class NormalizationTests(unittest.TestCase):
     def test_remove_accents_and_punctuation(self):
-        self.assertEqual(normalizar_texto('Árboles, caídos!!!'), 'arbol caido')
+        self.assertEqual(normalizar_texto('Árboles, caídos!!!'), 'arboles caidos')
 
     def test_plural_handling(self):
-        self.assertEqual(normalizar_texto('Registros'), 'registro')
+        self.assertEqual(normalizar_texto('Registros'), 'registros')
 
 if __name__ == '__main__':
     unittest.main()
