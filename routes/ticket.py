@@ -355,7 +355,7 @@ def get_panel_por_categoria(current_user: User):
 
 
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT'])
+@ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @anon_o_token_requerido
 def actualizar_ubicacion_ticket(current_user, anon_id, tipo: str, ticket_id: int):
     data = request.get_json() or {}
