@@ -198,7 +198,7 @@ def armar_respuesta_legible(
         stock = str(p.get("cantidad") or p.get("stock") or "").strip()
         if stock:
             datos_linea.append(f"  - Stock disponible: {stock}")
-        datos_linea.append("  - [Agregar al carrito](#) | [Solicitar info](#)")
+
 
         lineas.append("\n".join(datos_linea))
 
