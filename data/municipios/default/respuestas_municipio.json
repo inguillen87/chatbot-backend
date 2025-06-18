@@ -1,7 +1,7 @@
 {
     "impuestos_info": "Consultá impuestos, descargá boletas y pagá online en Rentas.",
     "impuestos_botones": [
-        {"texto": "Ir a Rentas", "url": "https://rentas.juninmendoza.gov.ar/"},
+        {"texto": "Ir a Rentas", "url": "https://www.juninmendoza.gov.ar/vencimientos/"},
         {"texto": "Otros Trámites", "url": "https://www.juninmendoza.gov.ar/tramites/"}
     ],
     "curso_licencia_info": "El curso se hace online (Agencia Nacional de Seguridad Vial) o presencial en el municipio.",
