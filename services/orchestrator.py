@@ -21,12 +21,11 @@ from services.scraper_avanzado import (
     extraer_contenido_general,
     extraer_productos_de_url
 )
+from services.logic import RUBROS_PUBLICOS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista de rubros públicos (puedes moverla a un archivo de configuración si prefieres)
-RUBROS_PUBLICOS = {"municipio", "municipios", "ong", "gobierno", "hospital_publico"}
 
 def run_scraping_orchestrator():
     """
