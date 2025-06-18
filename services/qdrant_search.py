@@ -121,7 +121,10 @@ def armar_respuesta_legible(
 
     if not resultados_qdrant:
         logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
-        return "No encontré productos para mostrar en este momento."
+        return (
+            "No hay productos cargados en el catálogo. "
+            "Contactá a la empresa para más info."
+        )
 
     if order_by == "price":
         resultados_qdrant = _ordenar_por_precio(resultados_qdrant)
