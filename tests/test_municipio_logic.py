@@ -69,13 +69,14 @@ class MunicipioLogicTests(unittest.TestCase):
         self.assertTrue(municipios.es_pregunta_nueva('ok', 'un número de ticket'))
         self.assertTrue(municipios.es_pregunta_nueva('gracias', 'una dirección'))
 
+    @patch('services.municipios.get_cohere_response', return_value='')
     @patch('services.municipios.servicio_tickets')
     @patch('services.municipios._clasificar_intencion_con_llm', return_value='hablar_con_agente')
-    def test_human_escalation(self, mock_clf, mock_servicio):
+    def test_human_escalation(self, mock_clf, mock_servicio, mock_llm):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         mock_servicio.crear_comentario.return_value = None
         user = DummyUser()
-        resp = municipios.responder_municipio('Necesito hablar con un agente', user, None)
+        resp = municipios.responder_municipio('Hablar con un agente', user, None)
         self.assertIn('chat directa', resp['respuesta'])
 
 
