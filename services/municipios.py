@@ -135,6 +135,12 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
 
     texto = texto_usuario.strip().lower()
 
+    # Respuestas de cortesía o pedidos de agente se consideran cambio de tema
+    if texto in {"ok", "gracias"}:
+        return True
+    if any(kw in texto for kw in {"agente", "asesor", "humano", "operador", "persona"}):
+        return True
+
     if tipo_esperado == "una confirmación (sí o no)":
         if texto in {"si", "sí", "no"}:
             return False
