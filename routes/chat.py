@@ -3,7 +3,7 @@ import logging
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func
 from models import User, Rubro
-from services.logic import responder_chatboc
+from services.logic import responder_chatboc, RUBROS_PUBLICOS
 from .auth import anon_o_token_requerido
 
 chat_bp = Blueprint("chat_bp", __name__)
@@ -125,6 +125,24 @@ def _procesar_chat(
             contexto_previo=contexto_previo,
         )
 
+        # --- Determinar si la conversación debe considerarse pública ---
+        rubro_nombre = ""
+        if rubro_obj:
+            rubro_nombre = (
+                getattr(rubro_obj, "nombre", None)
+                or getattr(rubro_obj, "clave", "")
+            ).strip().lower()
+        elif rubro_clave:
+            rubro_nombre = str(rubro_clave).strip().lower()
+        elif user_obj and getattr(user_obj, "rubro", None):
+            rubro = user_obj.rubro
+            rubro_nombre = (
+                getattr(rubro, "nombre", None)
+                or getattr(rubro, "clave", "")
+            ).strip().lower()
+        es_publico = rubro_nombre in RUBROS_PUBLICOS and user_obj is None
+
+
         # --- INCREMENTAR CONTADOR SOLO SI TODO ESTÁ OK ---
         if user_obj:
             user_obj.preguntas_usadas += 1
@@ -139,9 +157,11 @@ def _procesar_chat(
                 # NO frena el flujo del bot, pero loguea
 
         # --- OPCIONAL: DEVOLVER CONTADOR ACTUALIZADO ---
-        if isinstance(resultado, dict) and user_obj:
-            resultado["preguntas_usadas"] = user_obj.preguntas_usadas
-            resultado["limite_preguntas"] = user_obj.limite_preguntas
+        if isinstance(resultado, dict):
+            resultado["es_publico"] = es_publico
+            if user_obj:
+                resultado["preguntas_usadas"] = user_obj.preguntas_usadas
+                resultado["limite_preguntas"] = user_obj.limite_preguntas
 
         return jsonify(resultado), 200
 
