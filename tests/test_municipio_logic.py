@@ -85,6 +85,11 @@ class MunicipioLogicTests(unittest.TestCase):
         resp = municipios.responder_municipio('Hablar con un agente', user, None)
         self.assertIn('chat directa', resp['respuesta'])
 
+    def test_greeting_variation(self):
+        user = DummyUser()
+        resp = municipios.responder_municipio('hola buenos noches', user, None)
+        self.assertIn('tu asistente digital del Municipio', resp['respuesta'])
+
 
 
 if __name__ == '__main__':
