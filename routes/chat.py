@@ -33,7 +33,15 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, None
     except Exception as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
-        return None, None, None, None, None, jsonify({"error": "Formato JSON inválido."})
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            jsonify({"error": "Formato JSON inválido."}),
+        )
+
 
 def _authenticate_and_get_user():
     auth_header = request.headers.get("Authorization", "")
@@ -42,6 +50,7 @@ def _authenticate_and_get_user():
         if token:
             return User.query.filter_by(token=token).first()
     return None
+
 
 def _procesar_chat(tipo_chat_fijo: str | None = None):
     try:
@@ -63,15 +72,25 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
         if rubro_id:
             rubro_obj = Rubro.query.get(rubro_id)
         elif rubro_clave:
-            rubro_obj = Rubro.query.filter(func.lower(Rubro.clave) == rubro_clave.lower()).first()
+            rubro_obj = Rubro.query.filter(
+                func.lower(Rubro.clave) == rubro_clave.lower()
+            ).first()
         else:
             rubro_obj = user_obj.rubro if user_obj and user_obj.rubro else None
 
         # --- CONTROL DE PLAN ---
-        if user_obj.plan != "full" and user_obj.preguntas_usadas >= user_obj.limite_preguntas:
-            return jsonify({
-                "error": f"Alcanzaste el límite de preguntas de tu plan ({user_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
-            }), 403
+        if (
+            user_obj.plan != "full"
+            and user_obj.preguntas_usadas >= user_obj.limite_preguntas
+        ):
+            return (
+                jsonify(
+                    {
+                        "error": f"Alcanzaste el límite de preguntas de tu plan ({user_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
+                    }
+                ),
+                403,
+            )
 
         try:
             handler_fn = get_chat_handler(tipo_chat)
@@ -89,6 +108,7 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
         user_obj.preguntas_usadas += 1
         try:
             from extensions import db
+
             db.session.commit()
         except Exception as e:
             current_app.logger.error(f"Error al actualizar preguntas_usadas: {e}")
