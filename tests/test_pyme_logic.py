@@ -32,7 +32,64 @@ sys.modules['models'] = models_stub
 
 flask_stub = ModuleType('flask')
 flask_stub.session = {}
+class _DummyBlueprint:
+    def __init__(self, *a, **k):
+        pass
+    def route(self, *a, **k):
+        def decorator(func):
+            return func
+        return decorator
+flask_stub.Blueprint = _DummyBlueprint
+flask_stub.request = SimpleNamespace(files={}, headers={})
+flask_stub.jsonify = lambda *a, **k: {}
 sys.modules['flask'] = flask_stub
+
+werkzeug_stub = ModuleType('werkzeug.utils')
+werkzeug_stub.secure_filename = lambda name: name
+sys.modules['werkzeug.utils'] = werkzeug_stub
+
+fsql_stub = ModuleType('flask_sqlalchemy')
+class _DummySQLAlchemy:
+    def __init__(self, *a, **k):
+        self.session = SimpleNamespace(bulk_save_objects=lambda *a, **k: None, commit=lambda: None, rollback=lambda: None)
+fsql_stub.SQLAlchemy = _DummySQLAlchemy
+sys.modules['flask_sqlalchemy'] = fsql_stub
+
+flask_migrate_stub = ModuleType('flask_migrate')
+flask_migrate_stub.Migrate = lambda *a, **k: None
+sys.modules['flask_migrate'] = flask_migrate_stub
+
+flask_login_stub = ModuleType('flask_login')
+flask_login_stub.LoginManager = lambda *a, **k: None
+sys.modules['flask_login'] = flask_login_stub
+
+extensions_stub = ModuleType('extensions')
+extensions_stub.db = models_stub.db
+extensions_stub.migrate = SimpleNamespace()
+sys.modules['extensions'] = extensions_stub
+
+google_cloud_stub = ModuleType('google.cloud')
+documentai_stub = ModuleType('google.cloud.documentai')
+class _DummyDoc:
+    class TextAnchor:
+        def __init__(self):
+            self.text_segments = []
+    class Page:
+        class Table:
+            pass
+    def __init__(self):
+        self.pages = []
+documentai_stub.Document = _DummyDoc
+google_cloud_stub.documentai = documentai_stub
+sys.modules['google'] = ModuleType('google')
+sys.modules['google.cloud'] = google_cloud_stub
+sys.modules['google.cloud.documentai'] = documentai_stub
+google_oauth_stub = ModuleType('google.oauth2')
+service_account_stub = ModuleType('google.oauth2.service_account')
+service_account_stub.Credentials = SimpleNamespace(from_service_account_info=lambda info: None)
+google_oauth_stub.service_account = service_account_stub
+sys.modules['google.oauth2'] = google_oauth_stub
+sys.modules['google.oauth2.service_account'] = service_account_stub
 
 sys.modules['cohere'] = ModuleType('cohere')
 sqlalchemy_stub = ModuleType('sqlalchemy')
@@ -67,6 +124,7 @@ sys.modules['qdrant_client.http'] = qdrant_http_stub
 sys.modules['qdrant_client.http.models'] = qdrant_http_models_stub
 
 from services import pymes
+from services import upload_processor
 
 class DummyTicket:
     def __init__(self, id=1, nro_ticket=654321):
@@ -94,6 +152,15 @@ class PymeLogicTests(unittest.TestCase):
         mock_llm.return_value = 'RESPUESTA_VALIDA'
         self.assertFalse(pymes.es_pregunta_nueva('hola', 'el dato solicitado'))
 
+    @patch('services.pymes.get_cohere_response', return_value='PREGUNTA_NUEVA')
+    def test_heuristics_ticket(self, mock_llm):
+        self.assertFalse(pymes.es_pregunta_nueva('123456', 'un número de ticket'))
+        mock_llm.assert_not_called()
+
+    @patch('services.pymes.get_cohere_response', return_value='RESPUESTA_VALIDA')
+    def test_heuristics_gracias(self, mock_llm):
+        self.assertTrue(pymes.es_pregunta_nueva('gracias', 'el dato solicitado'))
+
     @patch('services.pymes.servicio_tickets')
     @patch('services.pymes._clasificar_intencion_con_llm', return_value='hablar_con_agente_pyme')
     def test_human_escalation_pyme(self, mock_clf, mock_servicio):
@@ -102,6 +169,24 @@ class PymeLogicTests(unittest.TestCase):
         user = DummyUser()
         resp = pymes.responder_pyme('Necesito hablar con un agente', user, None)
         self.assertIn('sala de chat', resp['respuesta'])
+
+
+class UploadProcessorTests(unittest.TestCase):
+    @patch('services.upload_processor.CatalogoItem')
+    @patch('services.upload_processor.db')
+    @patch('services.upload_processor.guardar_en_qdrant')
+    @patch('services.upload_processor.embed_textos', return_value=[[0.1, 0.2]])
+    @patch('services.upload_processor.procesar_catalogo_pdf_google', return_value=[{'nombre': 'vino', 'descripcion': 'tinto', 'precio_str': '10', 'texto_para_embedding': 'vino'}])
+    def test_procesar_pdf_ruta(self, mock_proc, mock_embed, mock_qdrant, mock_db, mock_model):
+        mock_db.session = SimpleNamespace(bulk_save_objects=lambda objs: None, commit=lambda: None, rollback=lambda: None)
+        mock_model.query = SimpleNamespace(filter_by=lambda **k: SimpleNamespace(delete=lambda: None))
+        res = upload_processor.procesar_y_embedear_catalogo('archivo.pdf', 1, 'vino')
+        self.assertEqual(res, 1)
+        mock_proc.assert_called_once_with('archivo.pdf', 1, 'vino')
+
+    def test_extension_invalida(self):
+        with self.assertRaises(ValueError):
+            upload_processor.procesar_y_embedear_catalogo('archivo.docx', 1, 'vino')
 
 
 if __name__ == '__main__':

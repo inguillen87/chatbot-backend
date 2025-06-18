@@ -68,10 +68,26 @@ def deserialize_state(value: str | None) -> PymeConversationState | None:
 
 
 def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
-    """Determina si el usuario cambió de tema cuando se esperaba un dato."""
+    """Determina si el usuario cambió de tema cuando se esperaba un dato.
+
+    Se aplican heurísticas simples antes de consultar al LLM para evitar
+    clasificadores erróneos con tickets o direcciones.
+    """
+
     texto = texto_usuario.strip().lower()
-    if tipo_esperado == "el dato solicitado" and re.search(r"\d", texto):
-        return False
+
+    if tipo_esperado == "un número de ticket":
+        if re.fullmatch(r"\d{5,}", texto):
+            return False
+
+    if tipo_esperado in {"el dato solicitado", "una dirección"}:
+        if re.search(r"\d", texto):
+            return False
+
+    AGRADECIMIENTOS = {"ok", "okey", "gracias", "listo", "dale", "de nada"}
+    if texto in AGRADECIMIENTOS:
+        return True
+
     prompt = (
         f"Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.\n"
         f"RESPUESTA DEL USUARIO: '{texto_usuario}'\n"
