@@ -244,6 +244,65 @@ class GreetingHandler(BaseMunicipioHandler):
         return None
 
 
+class RecoleccionHandler(BaseMunicipioHandler):
+    """Atiende consultas sobre recolección de residuos en cualquier momento."""
+
+    KEYWORDS = ["basura", "recoleccion", "residuos", "basurero"]
+
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        texto = normalizar_texto(pregunta)
+
+        estado = memoria.get("estado_conversacion")
+        if estado == ConversationState.ESPERANDO_PARAM_RECOLECCION:
+            if es_pregunta_nueva(pregunta, "una dirección"):
+                memoria.clear()
+                return None
+            memoria.clear()
+            resultado = consultar_recoleccion_por_direccion(direccion=pregunta)
+            if not resultado or "No" in resultado:
+                return {
+                    "respuesta": "No encontré información de recolección para esa dirección. Podés verificar en la web municipal.",
+                    "botones": [
+                        {"texto": "Consultar otra dirección"},
+                        {"texto": "Hablar con un agente"},
+                    ],
+                }
+            return {
+                "respuesta": f"{resultado}\n¿Consultás otra dirección o hacés otro trámite?",
+                "botones": [
+                    {"texto": "Consultar otra dirección"},
+                    {"texto": "Hacer un reclamo"},
+                ],
+            }
+
+        if any(kw in texto for kw in self.KEYWORDS):
+            memoria.clear()
+            if direccion_es_valida(pregunta):
+                resultado = consultar_recoleccion_por_direccion(direccion=pregunta)
+                if not resultado or "No" in resultado:
+                    return {
+                        "respuesta": "No encontré información de recolección para esa dirección. Revisá si está bien escrita, o consultá al municipio.",
+                        "botones": [
+                            {"texto": "Reintentar"},
+                            {"texto": "Hablar con un agente"},
+                        ],
+                    }
+                return {
+                    "respuesta": f"{resultado}\n¿Consultás otra dirección o hacés otro trámite?",
+                    "botones": [
+                        {"texto": "Consultar otra dirección"},
+                        {"texto": "Hacer un reclamo"},
+                    ],
+                }
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_PARAM_RECOLECCION
+            return {
+                "respuesta": f"¿La dirección para consultar el horario de recolección?\n{EJEMPLO_DIRECCION}",
+            }
+
+        return None
+
+
 class CancelHandler(BaseMunicipioHandler):
     """Permite cancelar el flujo actual si el usuario lo solicita."""
 
@@ -955,6 +1014,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get("contexto_previo", {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     estado_guardado = contexto_municipio.get("estado_conversacion")
+        RecoleccionHandler,
     if estado_guardado and isinstance(estado_guardado, str):
         try:
             contexto_municipio["estado_conversacion"] = ConversationState[
