@@ -58,19 +58,29 @@ def _formatear_producto(data: dict) -> dict:
 @token_requerido
 def listar_catalogo(user):
     items = CatalogoItem.query.filter_by(user_id=user.id).all()
+    if not items:
+        return jsonify(
+            {
+                "mensaje": "No hay productos cargados en el catálogo. "
+                "Contactá a la empresa para más info."
+            }
+        )
+
     productos = []
     for item in items:
         productos.append(
-            _formatear_producto({
-                'nombre': item.nombre,
-                'categoria': item.categoria,
-                'descripcion': item.descripcion,
-                'sku': item.sku,
-                'unidad': item.unidad,
-                'precio_str': item.precio,
-                'cantidad': item.cantidad,
-                'marca': item.marca,
-            })
+            _formatear_producto(
+                {
+                    "nombre": item.nombre,
+                    "categoria": item.categoria,
+                    "descripcion": item.descripcion,
+                    "sku": item.sku,
+                    "unidad": item.unidad,
+                    "precio_str": item.precio,
+                    "cantidad": item.cantidad,
+                    "marca": item.marca,
+                }
+            )
         )
     return jsonify(productos)
 
