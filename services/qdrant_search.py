@@ -41,6 +41,9 @@ def buscar_catalogo_qdrant(
         if not pregunta_limpia:
             logger.warning("[QDRANT SEARCH] Pregunta para búsqueda vacía después de limpiar.")
             return []
+
+        from .sinonimos import aplicar_sinonimos, PRODUCT_SYNONYMS
+        pregunta_limpia = aplicar_sinonimos(pregunta_limpia, PRODUCT_SYNONYMS)
         vector_pregunta_lista = embed_textos([pregunta_limpia], input_type="search_query")
         if not vector_pregunta_lista or not isinstance(vector_pregunta_lista[0], list):
             logger.error(f"[QDRANT SEARCH] No se pudo generar vector para pregunta: '{pregunta_limpia}'")
