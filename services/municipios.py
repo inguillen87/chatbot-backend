@@ -5,7 +5,7 @@ import os
 from enum import Enum, auto
 
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
-from services.cohere_ai import get_cohere_response
+from services.cohere_ai import get_cohere_response, COHERE_API_KEY
 from services.ticket_service import servicio_tickets
 from .logic import _clasificar_intencion_con_llm
 from twilio.rest import Client
@@ -780,6 +780,11 @@ PREGUNTA: "{pregunta_usuario}"
 class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
+        if not COHERE_API_KEY:
+            logger.warning(
+                "[ToolHandler] COHERE_API_KEY no configurada. Se omite decision de herramienta."
+            )
+            return None
         if (
             memoria.get("estado_conversacion")
             == ConversationState.ESPERANDO_PARAM_RECOLECCION
