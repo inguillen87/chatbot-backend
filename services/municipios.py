@@ -135,6 +135,9 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
 
     texto = texto_usuario.strip().lower()
 
+    if texto in {"ok", "gracias", "listo"}:
+        return True
+
     if tipo_esperado == "una confirmación (sí o no)":
         if texto in {"si", "sí", "no"}:
             return False
@@ -621,6 +624,20 @@ class TramitesHandler(BaseMunicipioHandler):
                 )
                 direccion = getattr(user_obj, "direccion", None) or MUNICIPIO_DIRECCION
                 data = {"linkWeb": link_web, "direccion": direccion}
+
+                if isinstance(info, dict):
+                    descripcion = reemplazar_placeholders(info.get("descripcion", ""), data)
+                    botones = info.get("botones")
+                    if botones:
+                        botones_formateados = []
+                        for b in botones:
+                            btn = b.copy()
+                            if "url" in btn:
+                                btn["url"] = reemplazar_placeholders(btn["url"], data)
+                            botones_formateados.append(btn)
+                        return {"respuesta": descripcion, "botones": botones_formateados}
+                    return {"respuesta": descripcion}
+
                 info = reemplazar_placeholders(info, data)
                 return {"respuesta": info}
 
