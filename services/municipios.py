@@ -672,11 +672,18 @@ class TramitesHandler(BaseMunicipioHandler):
             }
 
         if estado == ConversationState.ESPERANDO_SELECCION_TRAMITE:
+            from .sinonimos import aplicar_sinonimos, TRAMITE_SYNONYMS, fuzzy_match
+
             texto = normalizar_texto(pregunta)
+            texto = aplicar_sinonimos(texto, TRAMITE_SYNONYMS)
+
             clave_tramite = next(
                 (k for k in TRAMITES_INFO.keys() if normalizar_texto(k) == texto),
                 None,
             )
+
+            if not clave_tramite:
+                clave_tramite = fuzzy_match(list(TRAMITES_INFO.keys()) + list(TRAMITE_SYNONYMS.keys()), texto)
             if clave_tramite:
                 memoria.clear()
                 info = TRAMITES_INFO[clave_tramite]
