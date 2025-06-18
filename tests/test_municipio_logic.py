@@ -69,6 +69,12 @@ class MunicipioLogicTests(unittest.TestCase):
         self.assertTrue(municipios.es_pregunta_nueva('ok', 'un número de ticket'))
         self.assertTrue(municipios.es_pregunta_nueva('gracias', 'una dirección'))
 
+    @patch('services.municipios.get_cohere_response', return_value='RESPUESTA_VALIDA')
+    def test_es_pregunta_nueva_agente(self, mock_llm):
+        self.assertTrue(
+            municipios.es_pregunta_nueva('Quiero hablar con un asesor', 'una dirección')
+        )
+
     @patch('services.municipios.get_cohere_response', return_value='')
     @patch('services.municipios.servicio_tickets')
     @patch('services.municipios._clasificar_intencion_con_llm', return_value='hablar_con_agente')
