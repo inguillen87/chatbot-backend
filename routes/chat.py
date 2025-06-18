@@ -83,6 +83,15 @@ def _procesar_chat(
         else:
             rubro_obj = user_obj.rubro if user_obj and user_obj.rubro else None
 
+        # Logueamos qué rubro se está usando para procesar la pregunta
+        if rubro_obj:
+            nombre_rubro = getattr(rubro_obj, "nombre", None) or getattr(rubro_obj, "clave", None)
+            current_app.logger.info(
+                f"Usando rubro ID {rubro_obj.id} - {nombre_rubro}"
+            )
+        else:
+            current_app.logger.info("Sin rubro asociado al usuario o en la petición")
+
         # --- CONTROL DE PLAN SOLO PARA USUARIOS AUTENTICADOS ---
         if user_obj:
             if (
@@ -133,13 +142,25 @@ def _procesar_chat(
         return jsonify({"error": "Error interno del servidor."}), 500
 
 
-@chat_bp.route("/ask", methods=["POST", "OPTIONS"])
+# Handler para el preflight de CORS de /ask
+@chat_bp.route("/ask", methods=["OPTIONS"])
+def ask_options():
+    return "", 200
+
+
+@chat_bp.route("/ask", methods=["POST"])
 @anon_o_token_requerido
 def ask(current_user=None, anon_id=None):
     return _procesar_chat(current_user=current_user, anon_id=anon_id)
 
 
-@chat_bp.route("/ask/pyme", methods=["POST", "OPTIONS"])
+# Handler para el preflight de CORS de /ask/pyme
+@chat_bp.route("/ask/pyme", methods=["OPTIONS"])
+def ask_pyme_options():
+    return "", 200
+
+
+@chat_bp.route("/ask/pyme", methods=["POST"])
 @anon_o_token_requerido
 def ask_pyme(current_user=None, anon_id=None):
     return _procesar_chat("pyme", current_user=current_user, anon_id=anon_id)
