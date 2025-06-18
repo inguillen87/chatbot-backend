@@ -4,6 +4,7 @@ import logging
 import requests
 import os
 import unicodedata # <--- ¡Importante agregar esta línea!
+import re
 from services.config_loader import cargar_configuracion_municipio
 
 # ... (el resto de tus herramientas y diccionarios)
@@ -87,6 +88,16 @@ def normalizar_texto(texto: str) -> str:
     texto_sin_acentos = "".join(c for c in forma_normalizada if not unicodedata.combining(c))
     
     return texto_sin_acentos.lower()
+
+# --- VALIDACIÓN DE DIRECCIONES ---
+def direccion_es_valida(texto: str) -> bool:
+    """Heurística simple para verificar si una dirección parece válida."""
+    if not texto:
+        return False
+    texto_norm = normalizar_texto(texto)
+    tiene_numero = bool(re.search(r"\d{1,5}", texto_norm))
+    tiene_palabras = len(re.findall(r"[a-zA-Z]+", texto_norm)) >= 1
+    return tiene_numero and tiene_palabras
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:

@@ -19,6 +19,7 @@ from .herramientas_municipio import (
     categorizar_reclamo_por_palabra_clave,
     sugerir_categorias_relevantes,
     normalizar_texto,
+    direccion_es_valida,
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP
 )
@@ -372,6 +373,10 @@ class ReclamoHandler(BaseMunicipioHandler):
             }
 
         if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
+            if not direccion_es_valida(pregunta):
+                return {
+                    "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}"
+                }
             memoria['direccion_reclamo'] = pregunta
             memoria['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_VECINO
             return {"respuesta": "¡Gracias! Ahora tu nombre completo."}
@@ -431,7 +436,8 @@ def buscar_en_faqs(pregunta, tramite):
         return None
     pregunta_norm = normalizar_texto(pregunta)
     for item in MINI_FAQ_TRAMITES[tramite]:
-        if any(palabra in pregunta_norm for palabra in item["q"].split()):
+        item_norm = normalizar_texto(item["q"])
+        if all(token in pregunta_norm for token in item_norm.split()):
             return item
     return None
 
