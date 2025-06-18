@@ -15,6 +15,17 @@ class TicketCreator:
 
 class MunicipioTicketCreator(TicketCreator):
     def create(self, ticket_data: Dict[str, Any]) -> MunicipioTicket:
+        lat = (
+            ticket_data.get("latitud")
+            or ticket_data.get("lat")
+            or ticket_data.get("latitude")
+        )
+        lon = (
+            ticket_data.get("longitud")
+            or ticket_data.get("lon")
+            or ticket_data.get("lng")
+            or ticket_data.get("longitude")
+        )
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
@@ -23,12 +34,23 @@ class MunicipioTicketCreator(TicketCreator):
             detalles=ticket_data.get("detalles", ""),    # Dirección, nombre, tel, etc.
             nro_ticket=ticket_data.get("nro_ticket"),
             direccion=ticket_data.get("direccion"),
-            latitud=ticket_data.get("latitud"),
-            longitud=ticket_data.get("longitud")
+            latitud=lat,
+            longitud=lon
         )
 
 class PymeTicketCreator(TicketCreator):
     def create(self, ticket_data: Dict[str, Any]) -> PymeTicket:
+        lat = (
+            ticket_data.get("latitud")
+            or ticket_data.get("lat")
+            or ticket_data.get("latitude")
+        )
+        lon = (
+            ticket_data.get("longitud")
+            or ticket_data.get("lon")
+            or ticket_data.get("lng")
+            or ticket_data.get("longitude")
+        )
         return PymeTicket(
             user_id=ticket_data.get("user_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
@@ -37,8 +59,8 @@ class PymeTicketCreator(TicketCreator):
             nro_ticket=ticket_data.get("nro_ticket"),
             rubro_id=ticket_data.get("rubro_id"),
             direccion=ticket_data.get("direccion"),
-            latitud=ticket_data.get("latitud"),
-            longitud=ticket_data.get("longitud")
+            latitud=lat,
+            longitud=lon
         )
 
 class ServicioTickets:
