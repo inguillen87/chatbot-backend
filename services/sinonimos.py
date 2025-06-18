@@ -5,7 +5,20 @@ from .herramientas_municipio import normalizar_texto
 
 # Mapeo simple de sinónimos para trámites municipales
 TRAMITE_SYNONYMS: Dict[str, List[str]] = {
-    "licencia de conducir": ["carnet", "carnet de conducir", "licencia", "registro", "registro de conducir", "carnet de manejo"],
+    "licencia de conducir": [
+        "carnet",
+        "carnet de conducir",
+        "carnet conducir",
+        "licencia",
+        "licencia de manejo",
+        "licencia nacional",
+        "registro",
+        "registro de conducir",
+        "registro conducir",
+        "carnet de manejo",
+        "permiso de conducir",
+        "brevete",
+    ],
 }
 
 # Mapeo de sinónimos para productos comunes en PyME

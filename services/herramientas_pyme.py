@@ -1,6 +1,7 @@
 import json
 import logging
 import random
+import difflib
 from datetime import datetime
 from models import CatalogoItem
 
@@ -17,14 +18,31 @@ def consultar_horario_actual(user):
 
 
 def verificar_stock_producto(nombre, user_id):
+    """Busca stock del producto con coincidencia difusa y sugiere alternativas."""
     if not nombre or not user_id:
         return json.dumps({"respuesta": "Falta especificar el producto."})
-    item = CatalogoItem.query.filter(
-        CatalogoItem.user_id == user_id,
-        CatalogoItem.nombre.ilike(f"%{nombre}%")
-    ).first()
-    if item and item.cantidad:
-        return json.dumps({"respuesta": f"Contamos con {item.cantidad} unidades de {item.nombre}."})
+
+    items = CatalogoItem.query.filter(CatalogoItem.user_id == user_id).all()
+    if not items:
+        return json.dumps({"respuesta": f"No se encontró stock de '{nombre}'."})
+
+    nombres = [it.nombre for it in items if getattr(it, "nombre", None)]
+    coincidencias = difflib.get_close_matches(nombre, nombres, n=3, cutoff=0.6)
+
+    if coincidencias:
+        item = next((i for i in items if i.nombre == coincidencias[0]), None)
+        if item:
+            cant = getattr(item, "cantidad", None)
+            if cant and str(cant) not in {"0", "0.0", "0"}:
+                return json.dumps({"respuesta": f"Contamos con {cant} unidades de {item.nombre}."})
+            alternativas = [c for c in coincidencias[1:] if c != item.nombre]
+            if alternativas:
+                return json.dumps({"respuesta": f"No tenemos stock de {item.nombre}. Quizás te interesen: {', '.join(alternativas)}."})
+            return json.dumps({"respuesta": f"No tenemos stock de {item.nombre}."})
+
+    if nombres:
+        suger = ", ".join(nombres[:3])
+        return json.dumps({"respuesta": f"No se encontró stock de '{nombre}'. Productos disponibles: {suger}."})
     return json.dumps({"respuesta": f"No se encontró stock de '{nombre}'."})
 
 

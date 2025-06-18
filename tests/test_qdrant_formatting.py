@@ -16,11 +16,7 @@ class QdrantFormattingTests(unittest.TestCase):
         # Solo deben aparecer dos productos en el listado
         self.assertEqual(texto.count("**Vino"), 2)
 
-    def test_links_use_base_url(self):
-        hit = DummyHit(payload={"id": 5, "nombre": "Tornillos", "precio_str": "100", "cantidad": "10"}, score=0.9)
-        with patch('config.Config.TIENDA_BASE_URL', 'https://tienda.example.com'):
-            texto = armar_respuesta_legible([hit], max_items=1)
-        self.assertIn("https://tienda.example.com/carrito/agregar/5", texto)
+
 
 if __name__ == '__main__':
     unittest.main()

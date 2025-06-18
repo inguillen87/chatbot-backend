@@ -121,7 +121,10 @@ def armar_respuesta_legible(
 
     if not resultados_qdrant:
         logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
-        return "No encontré productos para mostrar en este momento."
+        return (
+            "No hay productos cargados en el catálogo. "
+            "Contactá a la empresa para más info."
+        )
 
     if order_by == "price":
         resultados_qdrant = _ordenar_por_precio(resultados_qdrant)
@@ -196,25 +199,6 @@ def armar_respuesta_legible(
         if stock:
             datos_linea.append(f"  - Stock disponible: {stock}")
 
-        imagen_url = str(p.get("imagen_url") or p.get("foto") or "").strip()
-        if imagen_url:
-            datos_linea.append(f"  - Imagen: {imagen_url}")
-
-        ubicacion = str(p.get("ubicacion") or p.get("ubicacion_tienda") or "").strip()
-        if ubicacion:
-            datos_linea.append(f"  - Ubicación en tienda: {ubicacion}")
-
-        from config import Config
-        base_url = Config.TIENDA_BASE_URL.rstrip("/")
-        prod_id = p.get("id") or p.get("producto_id")
-        if base_url and prod_id:
-            add_url = f"{base_url}/carrito/agregar/{prod_id}"
-            info_url = f"{base_url}/producto/{prod_id}"
-            datos_linea.append(
-                f"  - [Agregar al carrito]({add_url}) | [Solicitar info]({info_url})"
-            )
-        else:
-            datos_linea.append("  - [Agregar al carrito](#) | [Solicitar info](#)")
 
         lineas.append("\n".join(datos_linea))
 
