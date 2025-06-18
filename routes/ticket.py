@@ -359,8 +359,17 @@ def get_panel_por_categoria(current_user: User):
 @anon_o_token_requerido
 def actualizar_ubicacion_ticket(current_user, anon_id, tipo: str, ticket_id: int):
     data = request.get_json() or {}
-    lat = data.get('latitud')
-    lon = data.get('longitud')
+    lat = (
+        data.get('latitud')
+        or data.get('lat')
+        or data.get('latitude')
+    )
+    lon = (
+        data.get('longitud')
+        or data.get('lon')
+        or data.get('lng')
+        or data.get('longitude')
+    )
     direccion = data.get('direccion')
 
     TicketModel = MunicipioTicket if tipo == 'municipio' else PymeTicket
@@ -382,9 +391,15 @@ def actualizar_ubicacion_ticket(current_user, anon_id, tipo: str, ticket_id: int
         return jsonify({"error": "No tienes permiso para modificar este ticket."}), 403
 
     if lat is not None:
-        ticket_obj.latitud = lat
+        try:
+            ticket_obj.latitud = float(lat)
+        except (TypeError, ValueError):
+            current_app.logger.warning(f"Latitud inválida: {lat}")
     if lon is not None:
-        ticket_obj.longitud = lon
+        try:
+            ticket_obj.longitud = float(lon)
+        except (TypeError, ValueError):
+            current_app.logger.warning(f"Longitud inválida: {lon}")
     if direccion:
         ticket_obj.direccion = direccion
 
