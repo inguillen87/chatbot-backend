@@ -98,6 +98,7 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
             user_obj=user_obj,
             rubro_obj=rubro_obj,
             rubro_nombre_frontend=rubro_clave,
+            tipo_chat=tipo_chat,
             contexto_previo=contexto_previo,
         )
 

@@ -67,6 +67,7 @@ def responder_chatboc(
     rubro_obj=None,
     session_obj=None,
     rubro_nombre_frontend=None,
+    tipo_chat=None,
     **kwargs
 ):
     # 1. Detectar nombre de rubro (universal)
@@ -92,10 +93,18 @@ def responder_chatboc(
 
     logger.info(f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(user_obj, 'id', None)})")
 
-    # 2. Ruteo según tipo de rubro
-    if rubro_nombre in RUBROS_PUBLICOS:
+    if not tipo_chat:
+        raise ValueError("tipo_chat requerido")
+
+    if tipo_chat == "municipio":
         from services.municipios import responder_municipio
-        return responder_municipio(pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs)
-    else:
+        return responder_municipio(
+            pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs
+        )
+    elif tipo_chat == "pyme":
         from services.pymes import responder_pyme
-        return responder_pyme(pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs)
+        return responder_pyme(
+            pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs
+        )
+    else:
+        raise ValueError(f"Tipo de chat no soportado: {tipo_chat}")
