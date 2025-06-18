@@ -443,6 +443,26 @@ class PedidoHandler(BaseHandler):
             productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
             detalles_estructurados = _extraer_cantidades_con_llm(pregunta, productos_referencia)
             if not detalles_estructurados:
+                # Nuevo: intentar buscar en el catálogo si no se pudieron extraer cantidades
+                resultados = buscar_catalogo_qdrant(
+                    user_id=self.context.get('user_id'),
+                    pregunta=pregunta,
+                    limite=DEFAULT_SEARCH_LIMIT,
+                    categoria=self.context.get('rubro_nombre'),
+                )
+                productos_mostrados = []
+                for hit in resultados:
+                    if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
+                        productos_mostrados.append(hit.payload)
+                if productos_mostrados:
+                    contexto_pyme['productos_mostrados_catalogo'] = productos_mostrados
+                    respuesta = armar_respuesta_legible(resultados, order_by="price")
+                    if respuesta:
+                        return {
+                            "respuesta": respuesta,
+                            "fuente": "catalogo_vector_en_pedido",
+                            "estado_respuesta": "mostrar_catalogo",
+                        }
                 return {"respuesta": "No pude identificar los productos que mencionas. Por favor, sé más específico sobre lo que te interesa de nuestro catálogo.", "fuente": "handler_pedido_error_productos", "estado_respuesta": "pyme_error_productos"}
             contexto_pyme['productos_solicitados_temp'] = detalles_estructurados
             contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
