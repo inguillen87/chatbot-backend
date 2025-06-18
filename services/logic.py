@@ -73,14 +73,21 @@ def responder_chatboc(
     # 1. Detectar nombre de rubro (universal)
     rubro_nombre = ""
     fuente = ""
-    if rubro_obj and getattr(rubro_obj, "nombre", None):
-        rubro_nombre = str(rubro_obj.nombre).strip().lower()
-        fuente = "rubro_obj.nombre"
+    if rubro_obj:
+        if getattr(rubro_obj, "nombre", None):
+            rubro_nombre = str(rubro_obj.nombre).strip().lower()
+            fuente = "rubro_obj.nombre"
+        elif getattr(rubro_obj, "clave", None):
+            rubro_nombre = str(rubro_obj.clave).strip().lower()
+            fuente = "rubro_obj.clave"
     elif user_obj and getattr(user_obj, "rubro", None):
         rubro_value = user_obj.rubro
-        if hasattr(rubro_value, "nombre"):
+        if hasattr(rubro_value, "nombre") and rubro_value.nombre:
             rubro_nombre = str(rubro_value.nombre).strip().lower()
             fuente = "user_obj.rubro.nombre"
+        elif hasattr(rubro_value, "clave") and rubro_value.clave:
+            rubro_nombre = str(rubro_value.clave).strip().lower()
+            fuente = "user_obj.rubro.clave"
         else:
             rubro_nombre = str(rubro_value).strip().lower()
             fuente = "user_obj.rubro (str)"
