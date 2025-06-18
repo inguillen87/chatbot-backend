@@ -246,6 +246,21 @@ faq_data = {
             ]
         }
     },
+    "ferreteria": {
+        "nombre": "Ferretería y Corralón",
+        "descripcion": "Venta de materiales, herramientas y productos para la construcción y el hogar.",
+        "padre": "local_comercial",
+        "categorias": {
+            "Productos y servicios": [
+                ["¿Venden cemento por bolsa?", "Sí, contamos con bolsas de cemento de varias marcas. Consultá precios actualizados en [telefono] o en [linkWeb]."],
+                ["¿Hacen envíos a la obra?", "Realizamos envíos a domicilio y obras en la zona. Coordiná la entrega llamando al [telefono]."]
+            ],
+            "Horarios y contacto": [
+                ["¿Cuál es el horario del corralón?", "Nuestro horario de atención es [horario]. Ante cualquier consulta podés llamarnos al [telefono] o visitar [direccion]."],
+                ["¿Dónde están ubicados?", "Nos encontramos en [direccion], en [ubicacion]. En [linkWeb] hay un mapa con cómo llegar."]
+            ]
+        }
+    },
       "municipios":{
     "nombre": "Municipios",  # <-- Agregá esta línea
     "descripcion": "Consultas, trámites y servicios municipales para vecinos.",
