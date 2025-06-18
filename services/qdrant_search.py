@@ -127,6 +127,22 @@ def armar_respuesta_legible(
             resultados_qdrant, key=lambda r: getattr(r, "score", 0), reverse=True
         )
 
+    # -- Eliminar productos duplicados por SKU o nombre --
+    vistos = set()
+    resultados_unicos: List[qdrant_models.ScoredPoint] = []
+    for hit in resultados_qdrant:
+        payload = getattr(hit, "payload", {}) or {}
+        key = (
+            str(payload.get("sku") or "").lower(),
+            str(payload.get("nombre") or payload.get("title") or "").lower(),
+        )
+        if key in vistos:
+            continue
+        vistos.add(key)
+        resultados_unicos.append(hit)
+
+    resultados_qdrant = resultados_unicos
+
     lineas: List[str] = []
     for hit in resultados_qdrant[:max_items]:
         p = getattr(hit, "payload", {}) or {}
