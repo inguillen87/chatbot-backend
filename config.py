@@ -40,3 +40,6 @@ class Config:
     # Le decimos a Flask-Session que guarde la "memoria" en nuestra base de datos.
     SESSION_TYPE = 'sqlalchemy'
     SESSION_SQLALCHEMY_TABLE = 'sessions'
+
+    # Base URL del frontend para generar links de productos
+    TIENDA_BASE_URL = os.getenv("TIENDA_BASE_URL", "")

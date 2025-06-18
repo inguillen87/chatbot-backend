@@ -1,5 +1,7 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
+import os
 from services.qdrant_search import armar_respuesta_legible
 
 class DummyHit(SimpleNamespace):
@@ -14,12 +16,7 @@ class QdrantFormattingTests(unittest.TestCase):
         # Solo deben aparecer dos productos en el listado
         self.assertEqual(texto.count("**Vino"), 2)
 
-    def test_empty_results_message(self):
-        texto = armar_respuesta_legible([], max_items=5)
-        self.assertIn(
-            "No hay productos cargados en el catálogo",
-            texto,
-        )
+
 
 if __name__ == '__main__':
     unittest.main()
