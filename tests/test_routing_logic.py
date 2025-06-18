@@ -39,15 +39,19 @@ class RoutingLogicTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 logic.responder_chatboc('hola')
 
-    def test_rubro_no_interfiere(self):
+    def test_rubro_corrige_a_municipio(self):
+        """Si el rubro es de pyme pero viene tipo_chat municipio se corrige."""
         with stub_modules() as logic:
-            rubro_obj = SimpleNamespace(nombre='municipio')
-            resp = logic.responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj)
+            rubro_obj = SimpleNamespace(nombre='vinoteca', clave='vinoteca')
+            resp = logic.responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
             self.assertEqual(resp['origen'], 'pyme')
-            resp2 = logic.responder_chatboc(
-                'hola', tipo_chat='municipio', rubro_obj=SimpleNamespace(nombre='vinoteca')
-            )
-            self.assertEqual(resp2['origen'], 'municipio')
+
+    def test_rubro_corrige_a_pyme(self):
+        """Si el rubro es municipal pero viene tipo_chat pyme se corrige."""
+        with stub_modules() as logic:
+            rubro_obj = SimpleNamespace(nombre='municipio', clave='municipio')
+            resp = logic.responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj)
+            self.assertEqual(resp['origen'], 'municipio')
 
 if __name__ == '__main__':
     unittest.main()
