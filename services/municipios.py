@@ -152,10 +152,6 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
             # Si contiene dígitos asumimos que puede ser una dirección o número
             return False
 
-    AGRADECIMIENTOS = {"ok", "okey", "gracias", "listo", "dale", "de nada"}
-    if texto in AGRADECIMIENTOS:
-        return True
-
     prompt = f"""
     Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.
     RESPUESTA DEL USUARIO: "{texto_usuario}"
