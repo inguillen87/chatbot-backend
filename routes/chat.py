@@ -4,6 +4,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func
 from models import User, Rubro
 from services.logic import responder_chatboc
+from .auth import anon_o_token_requerido
 
 chat_bp = Blueprint("chat_bp", __name__)
 
@@ -52,7 +53,11 @@ def _authenticate_and_get_user():
     return None
 
 
-def _procesar_chat(tipo_chat_fijo: str | None = None):
+def _procesar_chat(
+    tipo_chat_fijo: str | None = None,
+    current_user=None,
+    anon_id: str | None = None,
+):
     try:
         (
             pregunta,
@@ -65,8 +70,8 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
         if error_response:
             return error_response, 400
 
-        user_obj = _authenticate_and_get_user()
-        if not user_obj:
+        user_obj = current_user if current_user is not None else _authenticate_and_get_user()
+        if not user_obj and not anon_id:
             return jsonify({"error": "No autenticado."}), 401
 
         if rubro_id:
@@ -78,19 +83,20 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
         else:
             rubro_obj = user_obj.rubro if user_obj and user_obj.rubro else None
 
-        # --- CONTROL DE PLAN ---
-        if (
-            user_obj.plan != "full"
-            and user_obj.preguntas_usadas >= user_obj.limite_preguntas
-        ):
-            return (
-                jsonify(
-                    {
-                        "error": f"Alcanzaste el límite de preguntas de tu plan ({user_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
-                    }
-                ),
-                403,
-            )
+        # --- CONTROL DE PLAN SOLO PARA USUARIOS AUTENTICADOS ---
+        if user_obj:
+            if (
+                user_obj.plan != "full"
+                and user_obj.preguntas_usadas >= user_obj.limite_preguntas
+            ):
+                return (
+                    jsonify(
+                        {
+                            "error": f"Alcanzaste el límite de preguntas de tu plan ({user_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
+                        }
+                    ),
+                    403,
+                )
 
         # Usamos la lógica centralizada que decide según el rubro
         resultado = responder_chatboc(
@@ -103,17 +109,20 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
         )
 
         # --- INCREMENTAR CONTADOR SOLO SI TODO ESTÁ OK ---
-        user_obj.preguntas_usadas += 1
-        try:
-            from extensions import db
+        if user_obj:
+            user_obj.preguntas_usadas += 1
+            try:
+                from extensions import db
 
-            db.session.commit()
-        except Exception as e:
-            current_app.logger.error(f"Error al actualizar preguntas_usadas: {e}")
-            # NO frena el flujo del bot, pero loguea
+                db.session.commit()
+            except Exception as e:
+                current_app.logger.error(
+                    f"Error al actualizar preguntas_usadas: {e}"
+                )
+                # NO frena el flujo del bot, pero loguea
 
         # --- OPCIONAL: DEVOLVER CONTADOR ACTUALIZADO ---
-        if isinstance(resultado, dict):
+        if isinstance(resultado, dict) and user_obj:
             resultado["preguntas_usadas"] = user_obj.preguntas_usadas
             resultado["limite_preguntas"] = user_obj.limite_preguntas
 
@@ -125,15 +134,18 @@ def _procesar_chat(tipo_chat_fijo: str | None = None):
 
 
 @chat_bp.route("/ask", methods=["POST"])
-def ask():
-    return _procesar_chat()
+@anon_o_token_requerido
+def ask(current_user=None, anon_id=None):
+    return _procesar_chat(current_user=current_user, anon_id=anon_id)
 
 
 @chat_bp.route("/ask/pyme", methods=["POST"])
-def ask_pyme():
-    return _procesar_chat("pyme")
+@anon_o_token_requerido
+def ask_pyme(current_user=None, anon_id=None):
+    return _procesar_chat("pyme", current_user=current_user, anon_id=anon_id)
 
 
 @chat_bp.route("/ask/municipio", methods=["POST"])
-def ask_municipio():
-    return _procesar_chat("municipio")
+@anon_o_token_requerido
+def ask_municipio(current_user=None, anon_id=None):
+    return _procesar_chat("municipio", current_user=current_user, anon_id=anon_id)
