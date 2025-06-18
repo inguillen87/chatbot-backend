@@ -7,7 +7,9 @@ from services.chat_router import get_chat_handler
 
 chat_bp = Blueprint("chat_bp", __name__)
 
-def _get_request_data():
+
+def _parse_request(tipo_chat_fijo: str | None = None):
+    """Obtiene y valida los campos comunes del cuerpo JSON."""
     try:
         data = request.get_json()
         if not isinstance(data, dict):
@@ -17,9 +19,12 @@ def _get_request_data():
         if not pregunta:
             raise ValueError("Falta el campo 'pregunta'.")
 
-        tipo_chat = data.get("tipo_chat")
-        if tipo_chat not in ("pyme", "municipio"):
-            raise ValueError("'tipo_chat' debe ser 'pyme' o 'municipio'.")
+        if tipo_chat_fijo:
+            tipo_chat = tipo_chat_fijo
+        else:
+            tipo_chat = data.get("tipo_chat")
+            if tipo_chat not in ("pyme", "municipio"):
+                raise ValueError("'tipo_chat' debe ser 'pyme' o 'municipio'.")
 
         contexto_previo = data.get("contexto_previo")  # Leemos la mochila
         rubro_id = data.get("rubro_id")
@@ -38,8 +43,7 @@ def _authenticate_and_get_user():
             return User.query.filter_by(token=token).first()
     return None
 
-@chat_bp.route("/ask", methods=["POST"])
-def ask():
+def _procesar_chat(tipo_chat_fijo: str | None = None):
     try:
         (
             pregunta,
@@ -48,7 +52,7 @@ def ask():
             rubro_id,
             rubro_clave,
             error_response,
-        ) = _get_request_data()
+        ) = _parse_request(tipo_chat_fijo)
         if error_response:
             return error_response, 400
 
@@ -100,3 +104,18 @@ def ask():
     except Exception as e:
         current_app.logger.error(f"❌ Error crítico en /ask: {e}", exc_info=True)
         return jsonify({"error": "Error interno del servidor."}), 500
+
+
+@chat_bp.route("/ask", methods=["POST"])
+def ask():
+    return _procesar_chat()
+
+
+@chat_bp.route("/ask/pyme", methods=["POST"])
+def ask_pyme():
+    return _procesar_chat("pyme")
+
+
+@chat_bp.route("/ask/municipio", methods=["POST"])
+def ask_municipio():
+    return _procesar_chat("municipio")
