@@ -46,6 +46,13 @@ class RoutingLogicTests(unittest.TestCase):
             resp = logic.responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
             self.assertEqual(resp['origen'], 'pyme')
 
+    def test_rubro_sin_nombre_usa_clave(self):
+        """Debe usar la clave del rubro cuando no hay nombre."""
+        with stub_modules() as logic:
+            rubro_obj = SimpleNamespace(nombre=None, clave='vinoteca')
+            resp = logic.responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
+            self.assertEqual(resp['origen'], 'pyme')
+
     def test_rubro_corrige_a_pyme(self):
         """Si el rubro es municipal pero viene tipo_chat pyme se corrige."""
         with stub_modules() as logic:
