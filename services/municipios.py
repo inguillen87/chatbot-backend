@@ -5,7 +5,7 @@ import os
 from enum import Enum, auto
 
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
-from services.cohere_ai import get_cohere_response, COHERE_API_KEY
+from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 from .logic import _clasificar_intencion_con_llm
 from twilio.rest import Client
@@ -38,28 +38,6 @@ CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
-
-# Palabras clave para detectar cuando un vecino pide hablar con un agente humano
-KEYWORDS_AGENTE = [
-    "agente",
-    "humano",
-    "persona",
-    "representante",
-    "operador",
-    "empleado",
-    "municipal",
-    "atencion",
-    "real",
-    "chat real",
-    "soporte",
-    "ayuda humana",
-    "hablar con alguien",
-    "asesor",
-    "consultor",
-    "soporte tecnico",
-    "atender",
-    "personal",
-]
 
 MINI_FAQ_TRAMITES = cargar_configuracion_municipio(
     MUNICIPIO_ID, "mini_faq_tramites.json"
@@ -157,9 +135,6 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
 
     texto = texto_usuario.strip().lower()
 
-    if texto in {"ok", "gracias", "listo"}:
-        return True
-
     if tipo_esperado == "una confirmación (sí o no)":
         if texto in {"si", "sí", "no"}:
             return False
@@ -176,14 +151,6 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
         if re.search(r"\d", texto):
             # Si contiene dígitos asumimos que puede ser una dirección o número
             return False
-
-    AGRADECIMIENTOS = {"ok", "okey", "gracias", "listo", "dale", "de nada"}
-    if texto in AGRADECIMIENTOS:
-        return True
-
-    # Si menciona un agente humano, asumimos que quiere salir del flujo actual
-    if any(kw in normalizar_texto(texto_usuario) for kw in KEYWORDS_AGENTE):
-        return True
 
     prompt = f"""
     Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.
@@ -299,21 +266,99 @@ class CancelHandler(BaseMunicipioHandler):
         return None
 
 
+class RecoleccionHandler(BaseMunicipioHandler):
+    """Atiende consultas sobre recolección de residuos en cualquier momento."""
+
+    KEYWORDS = ["basura", "recoleccion", "residuos", "basurero"]
+
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        texto = normalizar_texto(pregunta)
+
+        estado = memoria.get("estado_conversacion")
+        if estado == ConversationState.ESPERANDO_PARAM_RECOLECCION:
+            if es_pregunta_nueva(pregunta, "una dirección"):
+                memoria.clear()
+                return None
+            memoria.clear()
+            resultado = consultar_recoleccion_por_direccion(direccion=pregunta)
+            if not resultado or "No" in resultado:
+                return {
+                    "respuesta": "No encontré información de recolección para esa dirección. Podés verificar en la web municipal.",
+                    "botones": [
+                        {"texto": "Consultar otra dirección"},
+                        {"texto": "Hablar con un agente"},
+                    ],
+                }
+            return {
+                "respuesta": f"{resultado}\n¿Consultás otra dirección o hacés otro trámite?",
+                "botones": [
+                    {"texto": "Consultar otra dirección"},
+                    {"texto": "Hacer un reclamo"},
+                ],
+            }
+
+        if any(kw in texto for kw in self.KEYWORDS):
+            memoria.clear()
+            if direccion_es_valida(pregunta):
+                resultado = consultar_recoleccion_por_direccion(direccion=pregunta)
+                if not resultado or "No" in resultado:
+                    return {
+                        "respuesta": "No encontré información de recolección para esa dirección. Revisá si está bien escrita, o consultá al municipio.",
+                        "botones": [
+                            {"texto": "Reintentar"},
+                            {"texto": "Hablar con un agente"},
+                        ],
+                    }
+                return {
+                    "respuesta": f"{resultado}\n¿Consultás otra dirección o hacés otro trámite?",
+                    "botones": [
+                        {"texto": "Consultar otra dirección"},
+                        {"texto": "Hacer un reclamo"},
+                    ],
+                }
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_PARAM_RECOLECCION
+            return {
+                "respuesta": f"¿La dirección para consultar el horario de recolección?\n{EJEMPLO_DIRECCION}",
+            }
+
+        return None
+
+
 class IntentClassifierHandler(BaseMunicipioHandler):
-    """Clasifica la intención general de la consulta del vecino."""
+    KEYWORDS_AGENTE = [
+        "agente",
+        "humano",
+        "persona",
+        "representante",
+        "operador",
+        "empleado",
+        "municipal",
+        "atención",
+        "real",
+        "chat real",
+        "soporte",
+        "ayuda humana",
+        "hablar con alguien",
+        "asesor",
+        "consultor",
+        "soporte técnico",
+        "atender",
+        "personal",
+    ]
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         texto = normalizar_texto(pregunta)
 
         # Permitir solicitar un agente en cualquier momento
-        if any(kw in texto for kw in KEYWORDS_AGENTE):
+        if any(kw in texto for kw in self.KEYWORDS_AGENTE):
             self.context["intencion"] = "hablar_con_agente"
             memoria.clear()
         elif not memoria.get("estado_conversacion"):
             intencion = _clasificar_intencion_con_llm(pregunta)
             if intencion == "general" and any(
-                kw in texto for kw in KEYWORDS_AGENTE
+                kw in texto for kw in self.KEYWORDS_AGENTE
             ):
                 intencion = "hablar_con_agente"
             self.context["intencion"] = intencion
@@ -635,20 +680,6 @@ class TramitesHandler(BaseMunicipioHandler):
                 )
                 direccion = getattr(user_obj, "direccion", None) or MUNICIPIO_DIRECCION
                 data = {"linkWeb": link_web, "direccion": direccion}
-
-                if isinstance(info, dict):
-                    descripcion = reemplazar_placeholders(info.get("descripcion", ""), data)
-                    botones = info.get("botones")
-                    if botones:
-                        botones_formateados = []
-                        for b in botones:
-                            btn = b.copy()
-                            if "url" in btn:
-                                btn["url"] = reemplazar_placeholders(btn["url"], data)
-                            botones_formateados.append(btn)
-                        return {"respuesta": descripcion, "botones": botones_formateados}
-                    return {"respuesta": descripcion}
-
                 info = reemplazar_placeholders(info, data)
                 return {"respuesta": info}
 
@@ -804,11 +835,6 @@ PREGUNTA: "{pregunta_usuario}"
 class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        if not COHERE_API_KEY:
-            logger.warning(
-                "[ToolHandler] COHERE_API_KEY no configurada. Se omite decision de herramienta."
-            )
-            return None
         if (
             memoria.get("estado_conversacion")
             == ConversationState.ESPERANDO_PARAM_RECOLECCION
@@ -1013,8 +1039,8 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     handler_chain = [
         GreetingHandler,
         CancelHandler,
+        RecoleccionHandler,
         IntentClassifierHandler,
-
         TicketStatusHandler,
         ReclamoHandler,
         TramitesHandler,
