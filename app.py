@@ -70,18 +70,10 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- 3. Configuración de CORS ---
-    allowed_origins = [
-        "https://chatboc.ar",
-        "https://www.chatboc.ar",
-        "http://localhost:5173",
-        "http://localhost:8080",
-        "https://chatboc-frontend-2cmzvzayk-marcelos-projects-c26aa499.vercel.app",
-        "https://chatboc-frontend-git-main-marcelos-projects-c26aa499.vercel.app",
-        # Podrías agregar aquí cualquier otra URL de preview de Vercel si es necesario
-    ]
+    # CORS abierto para pruebas
     CORS(
         app,
-        origins=allowed_origins,
+        origins="*",
         supports_credentials=True,
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Origin", "Accept", "Anon-Id"]
