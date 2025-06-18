@@ -983,7 +983,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     estado_antes = contexto_municipio.get("estado_conversacion")
     handler_chain = [
         GreetingHandler,
-n
+        
         TicketStatusHandler,
         ReclamoHandler,
         TramitesHandler,
