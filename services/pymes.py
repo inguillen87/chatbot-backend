@@ -2,6 +2,7 @@ import logging
 import re
 import random
 import json
+import difflib
 from datetime import datetime
 from enum import Enum, auto
 from flask import session as flask_session
@@ -33,6 +34,7 @@ from services.scraper_avanzado import extraer_productos_de_url
 from services.pedido_service import servicio_pedidos
 from services.herramientas_pyme import TOOL_REGISTRY_PYME
 from services.herramientas_municipio import normalizar_texto
+import unicodedata
 from .logic import _clasificar_intencion_con_llm
 
 logger = logging.getLogger(__name__)
@@ -243,12 +245,58 @@ class BaseHandler:
 
 class GreetingHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
-        texto = pregunta.strip().lower().strip("!.,?")
-        saludos = ["hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"]
-        tokens = re.sub(r"[!.,?]", "", texto).split()
-        set_saludo = {"hola", "buenos", "dias", "buenas", "tardes", "noches", "hey", "que", "tal"}
-        if texto in saludos or (0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)):
-            return {"respuesta": "¡Hola! Soy Chatboc. ¿En qué puedo ayudarte hoy?", "fuente": "saludo_pyme"}
+        def _normalize_for_greeting(text: str) -> str:
+            text = "".join(
+                c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c)
+            )
+            text = text.lower()
+            text = re.sub(r"[!.,?]", "", text)
+            text = re.sub(r"(\w)\1+", r"\1", text)
+            return re.sub(r"\s+", " ", text).strip()
+
+        texto = _normalize_for_greeting(pregunta)
+        saludos = [
+            "hola",
+            "buenos dias",
+            "buenas tardes",
+            "buenas noches",
+            "hey",
+            "que tal",
+            "buenas",
+        ]
+        tokens = texto.split()
+        set_saludo = {
+            "hola",
+            "buenos",
+            "dias",
+            "buenas",
+            "tardes",
+            "noches",
+            "hey",
+            "que",
+            "tal",
+        }
+
+        def token_es_saludo(tok: str) -> bool:
+            if tok in set_saludo:
+                return True
+            return any(difflib.SequenceMatcher(None, tok, s).ratio() >= 0.7 for s in set_saludo)
+
+        es_saludo = texto in saludos or (
+            0 < len(tokens) <= 3 and all(token_es_saludo(t) for t in tokens)
+        )
+
+        if not es_saludo:
+            for saludo in saludos:
+                if difflib.SequenceMatcher(None, texto, saludo).ratio() >= 0.85:
+                    es_saludo = True
+                    break
+
+        if es_saludo:
+            return {
+                "respuesta": "¡Hola! Soy Chatboc. ¿En qué puedo ayudarte hoy?",
+                "fuente": "saludo_pyme",
+            }
         return None
 
 class LimitHandler(BaseHandler):
