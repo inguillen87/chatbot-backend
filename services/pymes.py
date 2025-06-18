@@ -24,6 +24,7 @@ from services.ticket_service import servicio_tickets
 from services.email_service import (
     enviar_email_ticket_admin,
     enviar_email_ticket_cliente,
+    enviar_email_pedido_cliente,
     enviar_sms,
     enviar_whatsapp,
 )
@@ -296,17 +297,28 @@ class FollowUpHandler(BaseHandler):
             productos_a_confirmar = sorted(productos_a_confirmar, key=lambda p: (p.get('nombre') or '').lower())
             monto_total_final = contexto_pyme.pop('monto_total_final_en_paso_2', 0.0)
             nombre, email, telefono = None, None, None
-            if self.context.get('user_obj'):
-                nombre, email, telefono = self.context['user_obj'].name, self.context['user_obj'].email, self.context['user_obj'].telefono
-            if not nombre or not email or not telefono:
-                email_match = re.search(r'[\w\.-]+@[\w\.-]+', pregunta)
-                if email_match: email = email_match.group(0)
-                phone_match = re.search(r'(\+?\d{1,3}[-.\s]?)?(\(?\d{2,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{4,8}', pregunta)
-                if phone_match: telefono = phone_match.group(0)
-                temp_pregunta = pregunta
-                if email: temp_pregunta = temp_pregunta.replace(email, "").strip()
-                if telefono: temp_pregunta = temp_pregunta.replace(telefono, "").strip()
-                nombre = temp_pregunta if temp_pregunta else nombre if nombre else "Cliente Anónimo"
+            email_match = re.search(r'[\w\.-]+@[\w\.-]+', pregunta)
+            if email_match:
+                email = email_match.group(0)
+            phone_match = re.search(r'(\+?\d{1,3}[-.\s]?)?(\(?\d{2,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{4,8}', pregunta)
+            if phone_match:
+                telefono = phone_match.group(0)
+            temp_pregunta = pregunta
+            if email:
+                temp_pregunta = temp_pregunta.replace(email, "").strip()
+            if telefono:
+                temp_pregunta = temp_pregunta.replace(telefono, "").strip()
+            nombre = temp_pregunta if temp_pregunta else None
+
+            if not nombre:
+                nombre = getattr(self.context.get('user_obj'), 'name', None)
+            if not email:
+                email = getattr(self.context.get('user_obj'), 'email', None)
+            if not telefono:
+                telefono = getattr(self.context.get('user_obj'), 'telefono', None)
+
+            if not nombre:
+                nombre = "Cliente Anónimo"
             pedido_data = {
                 "asunto": f"Pedido Web: {contexto_pyme.get('pregunta_original_pedido', 'Solicitud de Producto')}",
                 "detalles": json.dumps(productos_a_confirmar, indent=2, ensure_ascii=False),
@@ -315,8 +327,25 @@ class FollowUpHandler(BaseHandler):
                 "user_id": self.context.get("user_id"), "monto_total": monto_total_final
             }
             nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_data)
-            self.context['contexto_pyme'].clear() 
+            self.context['contexto_pyme'].clear()
             if nuevo_pedido:
+                try:
+                    if nuevo_pedido.email_cliente:
+                        enviar_email_pedido_cliente(nuevo_pedido)
+                except Exception as e:
+                    logger.error(f"Error enviando email de pedido: {e}")
+                try:
+                    if nuevo_pedido.telefono_cliente:
+                        tel = re.sub(r"\D", "", nuevo_pedido.telefono_cliente)
+                        if not tel.startswith("+") and len(tel) > 8:
+                            tel = "+549" + tel
+                        msg = (
+                            f"¡Muchas gracias! Tu pedido {nuevo_pedido.nro_pedido} fue ingresado."
+                        )
+                        enviar_sms(tel, msg)
+                        enviar_whatsapp(tel, msg)
+                except Exception as e:
+                    logger.error(f"Error enviando SMS/WhatsApp de pedido: {e}")
                 respuesta_final = (
                     f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. "
                     "Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!"
