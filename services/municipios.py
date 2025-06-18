@@ -39,6 +39,28 @@ CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
 
+# Palabras clave para detectar cuando un vecino pide hablar con un agente humano
+KEYWORDS_AGENTE = [
+    "agente",
+    "humano",
+    "persona",
+    "representante",
+    "operador",
+    "empleado",
+    "municipal",
+    "atencion",
+    "real",
+    "chat real",
+    "soporte",
+    "ayuda humana",
+    "hablar con alguien",
+    "asesor",
+    "consultor",
+    "soporte tecnico",
+    "atender",
+    "personal",
+]
+
 MINI_FAQ_TRAMITES = cargar_configuracion_municipio(
     MUNICIPIO_ID, "mini_faq_tramites.json"
 )
@@ -155,6 +177,14 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
             # Si contiene dígitos asumimos que puede ser una dirección o número
             return False
 
+    AGRADECIMIENTOS = {"ok", "okey", "gracias", "listo", "dale", "de nada"}
+    if texto in AGRADECIMIENTOS:
+        return True
+
+    # Si menciona un agente humano, asumimos que quiere salir del flujo actual
+    if any(kw in normalizar_texto(texto_usuario) for kw in KEYWORDS_AGENTE):
+        return True
+
     prompt = f"""
     Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.
     RESPUESTA DEL USUARIO: "{texto_usuario}"
@@ -270,39 +300,20 @@ class CancelHandler(BaseMunicipioHandler):
 
 
 class IntentClassifierHandler(BaseMunicipioHandler):
-    KEYWORDS_AGENTE = [
-        "agente",
-        "humano",
-        "persona",
-        "representante",
-        "operador",
-        "empleado",
-        "municipal",
-        "atención",
-        "real",
-        "chat real",
-        "soporte",
-        "ayuda humana",
-        "hablar con alguien",
-        "asesor",
-        "consultor",
-        "soporte técnico",
-        "atender",
-        "personal",
-    ]
+    """Clasifica la intención general de la consulta del vecino."""
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         texto = normalizar_texto(pregunta)
 
         # Permitir solicitar un agente en cualquier momento
-        if any(kw in texto for kw in self.KEYWORDS_AGENTE):
+        if any(kw in texto for kw in KEYWORDS_AGENTE):
             self.context["intencion"] = "hablar_con_agente"
             memoria.clear()
         elif not memoria.get("estado_conversacion"):
             intencion = _clasificar_intencion_con_llm(pregunta)
             if intencion == "general" and any(
-                kw in texto for kw in self.KEYWORDS_AGENTE
+                kw in texto for kw in KEYWORDS_AGENTE
             ):
                 intencion = "hablar_con_agente"
             self.context["intencion"] = intencion
@@ -1001,6 +1012,8 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     estado_antes = contexto_municipio.get("estado_conversacion")
     handler_chain = [
         GreetingHandler,
+        CancelHandler,
+        IntentClassifierHandler,
 
         TicketStatusHandler,
         ReclamoHandler,
