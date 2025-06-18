@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import logging
 from typing import List, Dict, Any, Optional, Tuple
+from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,19 @@ def parse_cantidad_flexible(texto_cantidad_input: Optional[Any]) -> Optional[flo
         return int(num) if num.is_integer() else num
     except ValueError:
         return None
+
+
+def generar_link_google_maps(
+    direccion: str | None = None,
+    latitud: float | None = None,
+    longitud: float | None = None,
+) -> str | None:
+    """Genera un enlace a Google Maps a partir de una dirección o coordenadas."""
+    if latitud is not None and longitud is not None:
+        return f"https://www.google.com/maps/search/?api=1&query={latitud},{longitud}"
+    if direccion:
+        return f"https://www.google.com/maps/search/?api=1&query={quote_plus(direccion)}"
+    return None
 
 def safe_row_get(row: pd.Series, column: Any) -> Any:
     """Safely obtain a value from a DataFrame row by label or position."""
