@@ -2,7 +2,7 @@ import logging
 import os
 import re
 from typing import List, Optional
-from .qdrant_utils import get_qdrant_client
+from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
 from .utils import limpiar_texto_base, calcular_precio_por_unidad
@@ -22,6 +22,18 @@ def buscar_catalogo_qdrant(
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
         logger.error("[QDRANT SEARCH] No se pudo obtener cliente Qdrant.")
+        return []
+
+    # Aseguramos que la colección exista y tenga los índices necesarios.
+    # Esto previene fallos 403 cuando no existe el índice 'categoria_qdrant'.
+    if not verificar_y_crear_coleccion_qdrant(
+        "catalogos",
+        vector_size=1024,
+        create_indexes=True,
+    ):
+        logger.error(
+            "[QDRANT SEARCH] No se pudo inicializar colección/indexes en Qdrant."
+        )
         return []
 
     try:
