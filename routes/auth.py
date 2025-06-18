@@ -7,6 +7,7 @@ from models import User, Rubro
 from extensions import db
 from functools import wraps
 import uuid
+import g 
 import json
 from datetime import datetime
 
