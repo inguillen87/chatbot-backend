@@ -17,6 +17,7 @@ from .utils import (
     crear_mapa_de_columnas_inteligente,
     safe_row_get,
     extraer_unidades_y_tipos_precio,
+    calcular_precio_por_unidad,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,8 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
 
                 unidad_detectada, _ = extraer_unidades_y_tipos_precio(" ".join(str(c) for c in row.tolist()), pyme_rubro_nombre)
 
+                precio_unitario_calc = calcular_precio_por_unidad(precio_float, unidad_detectada or str(safe_row_get(row, mapa_columnas.get('unidad')) or ''))
+
                 producto = {
                     "nombre": nombre_prod,
                     "precio_str": precio_str,
@@ -214,6 +217,8 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
                         or '0'
                     ).strip(),
                 }
+                if precio_unitario_calc is not None:
+                    producto["precio_unitario"] = precio_unitario_calc
                 productos_extraidos_final.append(producto)
             except Exception as e_row:
                 logger.warning(

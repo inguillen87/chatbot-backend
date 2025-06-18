@@ -10,7 +10,7 @@ from flask import session as flask_session
 # MODIFICACIÓN 1: Agregamos SitioWebInfo a la lista de importaciones de modelos
 from models import Conversacion, PymeTicket, TicketComentario, PymePedido, Rubro, SitioWebInfo, db
 from services.utils_placeholders import reemplazar_placeholders
-from services.utils import sugerencias_por_rubro
+from services.utils import sugerencias_por_rubro, calcular_monto_total_items
 from services.cohere_ai import get_cohere_response
 from services.vector_search import buscar_item_vectorizado
 from services.qdrant_search import (
@@ -418,7 +418,6 @@ class PedidoHandler(BaseHandler):
             contexto_pyme['productos_solicitados_temp'] = detalles_estructurados
             contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
             resumen_productos_confirmacion = "Resumen de tu pedido:\n\n"
-            monto_total_temp = 0.0
             for p in detalles_estructurados:
                 cantidad = float(p.get('cantidad', 1))
                 precio_unit = float(p.get('precio', 0.0))
@@ -427,10 +426,11 @@ class PedidoHandler(BaseHandler):
                 nombre = p.get('nombre', 'Producto')
                 if precio_unit:
                     subtotal = cantidad * precio_unit
-                    monto_total_temp += subtotal
                     resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str} = ${subtotal:,.2f}\n"
                 else:
                     resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str}\n"
+
+            monto_total_temp = calcular_monto_total_items(detalles_estructurados)
             if monto_total_temp:
                 resumen_productos_confirmacion += f"\n**Total estimado: ${monto_total_temp:,.2f}**"
             else:
