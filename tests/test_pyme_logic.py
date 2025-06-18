@@ -19,6 +19,7 @@ class _DummySession:
         pass
 models_stub.Conversacion = _DummyModel
 models_stub.PymeTicket = _DummyModel
+models_stub.MunicipioTicket = _DummyModel
 models_stub.TicketComentario = _DummyModel
 models_stub.PymePedido = _DummyModel
 models_stub.Rubro = _DummyModel
@@ -65,6 +66,15 @@ qdrant_http_models_stub.ScoredPoint = object
 sys.modules['qdrant_client'] = qdrant_stub
 sys.modules['qdrant_client.http'] = qdrant_http_stub
 sys.modules['qdrant_client.http.models'] = qdrant_http_models_stub
+twilio_rest_stub = ModuleType('twilio.rest')
+class _DummyClient:
+    class messages:
+        @staticmethod
+        def create(*a, **k):
+            return SimpleNamespace(sid='dummy')
+twilio_rest_stub.Client = _DummyClient
+sys.modules.setdefault('twilio.rest', twilio_rest_stub)
+sys.modules.setdefault('twilio', ModuleType('twilio'))
 
 from services import pymes
 
@@ -102,6 +112,11 @@ class PymeLogicTests(unittest.TestCase):
         user = DummyUser()
         resp = pymes.responder_pyme('Necesito hablar con un agente', user, None)
         self.assertIn('sala de chat', resp['respuesta'])
+
+    def test_greeting_with_typo(self):
+        user = DummyUser()
+        resp = pymes.responder_pyme('holaa buenos noxes', user, None)
+        self.assertIn('¿En qué puedo ayudarte hoy', resp['respuesta'])
 
 
 if __name__ == '__main__':
