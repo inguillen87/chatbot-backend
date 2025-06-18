@@ -466,7 +466,7 @@ class TramitesHandler(BaseMunicipioHandler):
                 info = reemplazar_placeholders(info, data)
                 return {"respuesta": info}
 
-            if "licencia" in texto:
+            if re.search(r"(licencia|carnet).*conducir", texto):
                 memoria['estado_conversacion'] = ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
                 return {
                     "respuesta": obtener_respuesta_municipio("curso_licencia_info"),
@@ -817,8 +817,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     ]
     es_cierre_flujo = any(frase in texto_respuesta for frase in FRASES_EXITO)
     if estado_antes and not estado_despues and texto_respuesta and not es_cierre_flujo:
-        mensaje_transicion = "Entendido, cambiamos de tema. Sobre tu nueva consulta:\n\n"
-        respuesta_final['respuesta'] = mensaje_transicion + texto_respuesta
+        respuesta_final['respuesta'] = texto_respuesta
     # Reemplaza cualquier placeholder presente en la respuesta final
     texto_respuesta = reemplazar_placeholders(
         respuesta_final.get('respuesta', ''), context.get('user_obj')
