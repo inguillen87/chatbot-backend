@@ -113,6 +113,7 @@ class ServicioTickets:
             nuevo_comentario = TicketComentario(
                 comentario=comentario_data.get("comentario"),
                 user_id=comentario_data.get("user_id"),
+                anon_id=comentario_data.get("anon_id"),
                 es_admin=comentario_data.get("es_admin", False)
             )
             if tipo_ticket == "municipio":
