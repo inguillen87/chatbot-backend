@@ -12,11 +12,25 @@ RUBROS_PUBLICOS = {
     "entidad_publica",
     # Agregá acá los que consideres públicos
 }
-# src/services/logic.py
-import logging
-from services.cohere_ai import get_cohere_response # Asegúrate de que esta importación exista y sea correcta
 
-logger = logging.getLogger(__name__)
+def normalizar_rubro(rubro) -> str:
+    """Devuelve el nombre del rubro en minúsculas."""
+    if not rubro:
+        return ""
+    if isinstance(rubro, str):
+        return rubro.strip().lower()
+    if hasattr(rubro, "nombre") and getattr(rubro, "nombre"):
+        return str(rubro.nombre).strip().lower()
+    if hasattr(rubro, "clave") and getattr(rubro, "clave"):
+        return str(rubro.clave).strip().lower()
+    return str(rubro).strip().lower()
+
+
+def es_rubro_publico(rubro) -> bool:
+    """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
+    return normalizar_rubro(rubro) in RUBROS_PUBLICOS
+
+from services.cohere_ai import get_cohere_response  # Asegúrate de que esta importación exista y sea correcta
 
 # Puedes ajustar este prompt según las intenciones que quieras clasificar
 PROMPT_CLASIFICACION_INTENCION = """
