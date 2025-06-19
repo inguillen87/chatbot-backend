@@ -6,6 +6,9 @@ from collections import defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
+MENSAJE_CHAT_CERRADO = "Este chat está cerrado. Si necesitás ayuda, generá un nuevo reclamo."
+MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
+
 # ---------- LISTA DE TICKETS (logueado) ----------
 @ticket_bp.route('/', methods=['GET'])
 @token_requerido
@@ -84,10 +87,9 @@ def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = No
             return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
     else:
         if getattr(ticket, "anon_id", None) != anon_id:
-            return (
-                jsonify({"error": "Ticket no encontrado o sin permisos."}),
-                404,
-            )
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+        if ticket.estado == "cerrado":
+            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     detalles = getattr(ticket, 'detalles', '') or ''
     nombre, tel, email = "No especificado", "No especificado", "No especificado"
@@ -138,6 +140,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     ticket_obj = db.session.get(TicketModel, ticket_id)
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
+
+    if ticket_obj.estado == "cerrado":
+        return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     has_permission_to_respond = False
     if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
@@ -242,7 +247,10 @@ def get_chat_mensajes(ticket_id: int, current_user=None, anon_id=None):
         es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
 
         if not (es_agente_municipal or es_dueño_del_ticket or es_anonimo_ticket):
-            return jsonify({"error": "No tienes permiso para acceder a este chat."}), 403
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+        if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
+            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
         mensajes_nuevos = (
@@ -294,7 +302,10 @@ def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
     es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
 
     if not (es_dueño or es_anonimo_ticket):
-        return jsonify({"error": "No tienes permiso para responder en este chat."}), 403
+        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+    if sala_de_chat.estado == "cerrado":
+        return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     user_id_para_comentario = current_user.id if current_user else None
 
@@ -304,7 +315,8 @@ def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
         comentario_data={
             "comentario": data["comentario"],
             "user_id": user_id_para_comentario,
-            "es_admin": False
+            "es_admin": False,
+            "anon_id": anon_id
         }
     )
     if nuevo_comentario:

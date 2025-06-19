@@ -1052,7 +1052,11 @@ class HumanEscalationPymeHandler(BaseHandler):
             servicio_tickets.crear_comentario(
                 ticket_id=sala.id,
                 tipo_ticket="pyme",
-                comentario_data={"comentario": pregunta, "user_id": self.context.get('user_id')},
+                comentario_data={
+                    "comentario": pregunta,
+                    "user_id": self.context.get('user_id'),
+                    "anon_id": self.context.get('anon_id'),
+                },
             )
             self.context.get('contexto_pyme', {}).clear()
             return {

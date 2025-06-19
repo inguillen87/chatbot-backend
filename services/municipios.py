@@ -430,6 +430,7 @@ class TicketStatusHandler(BaseMunicipioHandler):
                 comentario_data={
                     "comentario": f"Calificación: {pregunta}",
                     "es_admin": False,
+                    "anon_id": self.context.get("anon_id"),
                 },
             )
             memoria.clear()

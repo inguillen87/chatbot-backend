@@ -199,6 +199,7 @@ class TicketComentario(db.Model):
     comentario = db.Column(db.Text, nullable=False)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, nullable=True)
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
     es_admin = db.Column(db.Boolean, default=False)
     pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
     municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
