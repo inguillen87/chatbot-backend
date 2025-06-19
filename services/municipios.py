@@ -3,7 +3,8 @@ import re
 import json
 import os
 from enum import Enum, auto
-
+import unicodedata
+import difflib
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
@@ -195,39 +196,37 @@ class BaseMunicipioHandler:
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
 
-    # --- utilidades de coincidencia robusta ---
-    def _normalize(self, text: str) -> str:
-        if not isinstance(text, str):
-            return ""
-        return normalizar_texto(text)
-
-    def _has_keyword(self, text: str, keywords: list[str]) -> bool:
-        texto_norm = self._normalize(text)
-        return any(kw in texto_norm for kw in keywords)
-
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto_original = str(pregunta).strip()
-        texto_normalizado = self._normalize(texto_original)
-
-        saludos_completos = [
+        texto = normalizar_texto(pregunta.strip("!.,?"))
+        saludos = [
             "hola",
             "buenos dias",
             "buenas tardes",
             "buenas noches",
-            "buenos noches",
+            "hey",
             "que tal",
-            "como estas",
             "buenas",
-            "buen dia",
-            "saludos",
-            "hola que tal",
-            "hola hola",
         ]
+        tokens = re.sub(r"[!.,?]", "", texto).split()
+        set_saludo = {
+            "hola",
+            "buenos",
+            "dias",
+            "buenas",
+            "tardes",
+            "noches",
+            "hey",
+            "que",
+            "tal",
+        }
 
-        if any(saludo in texto_normalizado for saludo in saludos_completos):
+        # 1. Si es solo un saludo, responde amigable.
+        if texto in saludos or (
+            0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)
+        ):
             memoria.clear()
             return {
                 "respuesta": (
@@ -236,31 +235,32 @@ class GreetingHandler(BaseMunicipioHandler):
                 )
             }
 
-        for saludo in saludos_completos:
-            if texto_normalizado.startswith(saludo + " "):
+        # 2. Si detecta saludo mezclado con consulta, deja que los otros handlers respondan pero mete saludo en la respuesta.
+        for saludo in saludos:
+            if (
+                texto.startswith(saludo + " ")
+                or texto.startswith(saludo + ",")
+                or texto.startswith(saludo + ".")
+            ):
                 memoria["saludo_detectado"] = True
                 break
-
         return None
+
 
 class CancelHandler(BaseMunicipioHandler):
     """Permite cancelar el flujo actual si el usuario lo solicita."""
 
     CANCEL_KEYWORDS = [
         "cancelar",
-        "cancelalo",
-        "cancela",
-        "anular",
         "olvidalo",
         "deja",
         "no importa",
         "volver",
-        "detener",
-        "stop",
     ]
 
     def handle(self, pregunta: str) -> dict | None:
-        if self._has_keyword(pregunta, self.CANCEL_KEYWORDS):
+        texto = normalizar_texto(pregunta)
+        if any(kw in texto for kw in self.CANCEL_KEYWORDS):
             self.context.get("contexto_municipio", {}).clear()
             return {
                 "respuesta": "Operación cancelada. ¿Necesitás ayuda con otro trámite o reclamo?",
@@ -276,19 +276,11 @@ class CancelHandler(BaseMunicipioHandler):
 class RecoleccionHandler(BaseMunicipioHandler):
     """Atiende consultas sobre recolección de residuos en cualquier momento."""
 
-    KEYWORDS = [
-        "basura",
-        "recoleccion",
-        "residuos",
-        "basurero",
-        "recogida",
-        "reciclaje",
-        "desechos",
-    ]
+    KEYWORDS = ["basura", "recoleccion", "residuos", "basurero"]
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto = self._normalize(pregunta)
+        texto = normalizar_texto(pregunta)
 
         estado = memoria.get("estado_conversacion")
         if estado == ConversationState.ESPERANDO_PARAM_RECOLECCION:
@@ -313,7 +305,7 @@ class RecoleccionHandler(BaseMunicipioHandler):
                 ],
             }
 
-        if self._has_keyword(pregunta, self.KEYWORDS):
+        if any(kw in texto for kw in self.KEYWORDS):
             memoria.clear()
             if direccion_es_valida(pregunta):
                 resultado = consultar_recoleccion_por_direccion(direccion=pregunta)
@@ -348,8 +340,6 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         "representante",
         "operador",
         "empleado",
-        "municipal",
-        "atencion",
         "atención",
         "real",
         "chat real",
@@ -358,45 +348,54 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         "hablar con alguien",
         "asesor",
         "consultor",
-        "soporte tecnico",
         "soporte técnico",
         "atender",
         "personal",
-        "persona real",
-        "agente humano",
+        "comunicarme", # Añadir sinónimos comunes
+        "llamar",
+        "contacto",
+        "quiero hablar",
+        "hablame con"
     ]
-
+    # Otras palabras clave para reclamo, trámite, etc. si quieres un fallback rápido sin LLM
+    KEYWORDS_RECLAMO = ["reclamo", "queja", "problema", "denuncia", "reportar"]
+    KEYWORDS_TRAMITE = ["trámite", "tramite", "gestión", "consulta de trámite"]
+    
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto = self._normalize(pregunta)
+        texto_normalizado = normalizar_texto(pregunta)
 
-        # Permitir solicitar un agente en cualquier momento
-        if self._has_keyword(pregunta, self.KEYWORDS_AGENTE):
+        # 1. Prioridad: AGENTE por keywords
+        if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE):
             self.context["intencion"] = "hablar_con_agente"
             memoria.clear()
-        elif not memoria.get("estado_conversacion"):
-            intencion = _clasificar_intencion_con_llm(pregunta)
-            if intencion == "general" and any(
-                kw in texto for kw in self.KEYWORDS_AGENTE
-            ):
-                intencion = "hablar_con_agente"
-            self.context["intencion"] = intencion
+            logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por palabra clave)")
+            return None # <-- Aquí el handler devuelve None, para que el próximo handler lo procese
+
+        # 2. Otras keywords (Reclamo, Trámite)
+        if any(kw in texto_normalizado for kw in self.KEYWORDS_RECLAMO):
+            self.context["intencion"] = "iniciar_reclamo"
+            memoria.clear()
+            logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por palabra clave)")
+            return None
+
+        if any(kw in texto_normalizado for kw in self.KEYWORDS_TRAMITE):
+            self.context["intencion"] = "consultar_tramite"
+            memoria.clear()
+            logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por palabra clave)")
+            return None
+
+        # 3. Clasificación con LLM si no hubo match con keywords
+        if not memoria.get("estado_conversacion"):
+            intencion_llm = _clasificar_intencion_con_llm(pregunta)
+            self.context["intencion"] = intencion_llm
         else:
             self.context["intencion"] = "continuar_flujo"
-        logger.info(f"[MUNICIPIO] Intención: {self.context.get('intencion')}")
-        return None
 
+        logger.info(f"[MUNICIPIO] Intención (final): {self.context.get('intencion')}")
+        return None # Siempre devuelve None, lo cual es correcto para este handler
 
 class TicketStatusHandler(BaseMunicipioHandler):
-    SI_KEYWORDS = [
-        "si",
-        "sí",
-        "claro",
-        "correcto",
-        "afirmativo",
-        "vale",
-        "ok",
-    ]
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado_conversacion = memoria.get("estado_conversacion")
@@ -406,7 +405,7 @@ class TicketStatusHandler(BaseMunicipioHandler):
                 return None
             ticket_id = memoria.get("ticket_id_activo")
             ticket = db.session.get(MunicipioTicket, ticket_id)
-            if self._has_keyword(pregunta, self.SI_KEYWORDS):
+            if "si" in normalizar_texto(pregunta):
                 ticket.estado = "resuelto"
                 db.session.commit()
                 memoria["estado_conversacion"] = (
@@ -696,7 +695,7 @@ class TramitesHandler(BaseMunicipioHandler):
         if estado == ConversationState.ESPERANDO_SELECCION_TRAMITE:
             from .sinonimos import aplicar_sinonimos, TRAMITE_SYNONYMS, fuzzy_match
 
-            texto = self._normalize(pregunta)
+            texto = normalizar_texto(pregunta)
             texto = aplicar_sinonimos(texto, TRAMITE_SYNONYMS)
 
             clave_tramite = next(
@@ -960,16 +959,11 @@ class ToolHandler(BaseMunicipioHandler):
                 "respuesta": "Hubo un error técnico. Probá de nuevo o comunicate con el municipio.",
                 "botones": [{"texto": "Hablar con un agente"}],
             }
-        palabras_clave_recoleccion = [
-            "basurero",
-            "recoleccion",
-            "residuos",
-            "basura",
-            "recogida",
-            "reciclaje",
-            "desechos",
-        ]
-        if self._has_keyword(pregunta, palabras_clave_recoleccion):
+        palabras_clave_recoleccion = ["basurero", "recoleccion", "residuos", "basura"]
+        if any(
+            palabra in normalizar_texto(pregunta)
+            for palabra in palabras_clave_recoleccion
+        ):
             memoria["estado_conversacion"] = (
                 ConversationState.ESPERANDO_PARAM_RECOLECCION
             )
@@ -1024,7 +1018,6 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             }
         return None
 
-
 def serializar_enum(obj):
     if isinstance(obj, Enum):
         return obj.name
@@ -1045,6 +1038,10 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Nuevo reclamo": "iniciar_reclamo",
 }
 
+
+# Contenido COMPLETO y FINAL de la función responder_municipio con las mejoras.
+# Asume que todas las clases Handler y funciones auxiliares (como serializar_enum,
+# normalizar_texto, etc.) están definidas en el mismo archivo o importadas correctamente.
 
 def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     contexto_previo = kwargs.get("contexto_previo", {})
@@ -1069,26 +1066,31 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
     if comando:
         context["intencion"] = comando
         if comando == "iniciar_reclamo":
+            # Directamente llama al handler si es por botón
             return ReclamoHandler(context).handle("Quiero hacer un reclamo")
         elif comando == "consultar_estado_ticket":
+            # Directamente llama al handler si es por botón
             return TicketStatusHandler(context).handle("Consultar estado de ticket")
         elif comando == "hablar_con_agente":
-            return HumanEscalationHandler(context).handle("Hablar con un agente")
+            # Directamente llama al HumanEscalationHandler si es por botón
+            return HumanEscalationHandler(context).handle(pregunta)
+
     # --- SIGUE EL FLUJO NORMAL ---
     estado_antes = contexto_municipio.get("estado_conversacion")
     handler_chain = [
         GreetingHandler,
         CancelHandler,
-        RecoleccionHandler,
         IntentClassifierHandler,
+        HumanEscalationHandler,
+        RecoleccionHandler,
+        # 4. Otros handlers de flujo específico
         TicketStatusHandler,
         ReclamoHandler,
         TramitesHandler,
         ImpuestosHandler,
-        ToolHandler,
-        HumanEscalationHandler,
-        GeneralHandler,
-        EngancheAnonimoMunicipioHandler,
+        ToolHandler, # Herramientas generales
+        GeneralHandler, # LLM de fallback con contexto de DB
+        EngancheAnonimoMunicipioHandler, # Enganche si el usuario es anónimo y no hubo otra respuesta
     ]
     respuesta_final = None
     for handler_class in handler_chain:
@@ -1096,19 +1098,33 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
             handler_instance = handler_class(context)
             respuesta_parcial = handler_instance.handle(pregunta)
             if respuesta_parcial:
-                respuesta_final = respuesta_parcial
-                break
+                # Asegurarse de que la respuesta sea un diccionario.
+                # Ya tienes una verificación similar al inicio de responder_pyme.
+                if not isinstance(respuesta_parcial, dict):
+                    logger.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_parcial)}. Pregunta: '{pregunta}'")
+                    # Podrías querer devolver una respuesta de error genérica aquí o simplemente None
+                    respuesta_parcial = None 
+                
+                if respuesta_parcial: # Si la respuesta parcial es válida
+                    respuesta_final = respuesta_parcial
+                    break # Detener la ejecución de handlers si uno ya dio una respuesta
         except Exception as e:
             logger.error(
                 f"Error en handler {handler_class.__name__}: {e}", exc_info=True
             )
+    
+    # Fallback si ningún handler proporcionó una respuesta final
     if not respuesta_final:
-        if not context.get("user_id"):
+        if not context.get("user_id"): # Si no hay usuario logueado
+            # Este es el último recurso para usuarios anónimos
             respuesta_final = EngancheAnonimoMunicipioHandler(context).handle(pregunta)
         else:
+            # Fallback para usuarios logueados si nada coincidió
             respuesta_final = {
                 "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción."
             }
+    
+    # Lógica de actualización de contexto y placeholders (se mantiene)
     estado_despues = contexto_municipio.get("estado_conversacion")
     texto_respuesta = respuesta_final.get("respuesta", "")
     FRASES_EXITO = [
@@ -1121,18 +1137,28 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         "Tu número de chat es",
     ]
     es_cierre_flujo = any(frase in texto_respuesta for frase in FRASES_EXITO)
+    
+    # Esta lógica ajusta la respuesta si un flujo se cerró exitosamente y no es un "cierre de éxito" reconocido.
+    # No la modifico, asumo que es intencional.
     if estado_antes and not estado_despues and texto_respuesta and not es_cierre_flujo:
+        # Se asume que respuesta_final ya es un dict
         respuesta_final["respuesta"] = texto_respuesta
+    
     # Reemplaza cualquier placeholder presente en la respuesta final
-    texto_respuesta = reemplazar_placeholders(
+    # Asegúrate de que `reemplazar_placeholders` pueda manejar un `user_obj` que es None para anónimos
+    texto_respuesta_procesada = reemplazar_placeholders(
         respuesta_final.get("respuesta", ""), context.get("user_obj")
     )
-    texto_respuesta = reemplazar_placeholders(texto_respuesta, contexto_municipio)
-    respuesta_final["respuesta"] = texto_respuesta
+    texto_respuesta_procesada = reemplazar_placeholders(texto_respuesta_procesada, contexto_municipio)
+    respuesta_final["respuesta"] = texto_respuesta_procesada
 
+    # Serializa el estado del contexto municipal para guardarlo en la sesión
     contexto_para_guardar = serializar_enum(context["contexto_municipio"])
+    
     return {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
+        # Asegúrate de pasar el ticket_id si existe en respuesta_final
+        "ticket_id": respuesta_final.get("ticket_id", None) 
     }
