@@ -11,28 +11,42 @@ chat_bp = Blueprint("chat_bp", __name__)
 
 def _parse_request(tipo_chat_fijo: str | None = None):
     """Obtiene y valida los campos comunes del cuerpo JSON."""
+    def _normalizar_tipo_chat(valor: str | None) -> str | None:
+        if not valor:
+            return None
+        valor = str(valor).strip().lower()
+        sinonimos = {
+            "pymes": "pyme",
+            "pyme": "pyme",
+            "municipios": "municipio",
+            "municipio": "municipio",
+            "muni": "municipio",
+        }
+        return sinonimos.get(valor)
+
     try:
         data = request.get_json()
         if not isinstance(data, dict):
-            raise TypeError("El cuerpo debe ser JSON.")
+            raise TypeError("El cuerpo debe ser JSON")
 
         pregunta = data.get("pregunta")
         if not pregunta:
-            raise ValueError("Falta el campo 'pregunta'.")
+            raise ValueError("Falta el campo 'pregunta'")
 
         if tipo_chat_fijo:
             tipo_chat = tipo_chat_fijo
         else:
-            tipo_chat = data.get("tipo_chat")
+            tipo_chat = _normalizar_tipo_chat(data.get("tipo_chat"))
             if tipo_chat not in ("pyme", "municipio"):
-                raise ValueError("'tipo_chat' debe ser 'pyme' o 'municipio'.")
+                raise ValueError("'tipo_chat' debe ser 'pyme' o 'municipio'")
 
         contexto_previo = data.get("contexto_previo")  # Leemos la mochila
         rubro_id = data.get("rubro_id")
         rubro_clave = data.get("rubro_clave")
 
         return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, None
-    except Exception as e:
+
+    except (TypeError, ValueError) as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
         return (
             None,
@@ -40,7 +54,17 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             None,
             None,
             None,
-            jsonify({"error": "Formato JSON inválido."}),
+            jsonify({"error": str(e)}),
+        )
+    except Exception as e:
+        current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            jsonify({"error": "Formato JSON inválido"}),
         )
 
 
