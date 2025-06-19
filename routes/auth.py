@@ -161,6 +161,18 @@ def get_current_user(user):
         "logo_url": getattr(user, "logo_url", ""),
     })
 
+# Nueva ruta para obtener información básica del token
+@auth_bp.route('/token-info', methods=['GET'])
+@token_requerido
+def token_info(user):
+    """Devuelve el rubro y la empresa asociados al token."""
+    rubro_nombre = user.rubro.nombre if user.rubro else "General"
+    return jsonify({
+        "id": user.id,
+        "rubro": rubro_nombre,
+        "nombre_empresa": user.nombre_empresa,
+    })
+
 @auth_bp.route('/perfil', methods=['PUT'])
 @token_requerido
 def actualizar_perfil(user):

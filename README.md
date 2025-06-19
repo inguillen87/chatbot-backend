@@ -8,6 +8,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /ask/pyme` – optimized for small and medium companies (pymes).
 - `POST /ask/municipio` – optimized for municipalities and other public entities.
 - `POST /auth/widget/register` – quick sign up for end users using the widget.
+- `GET /auth/token-info` – returns the company and sector linked to a token.
 
 ## Uso correcto del rubro
 
