@@ -82,6 +82,7 @@ def responder_chatboc(
     session_obj=None,
     rubro_nombre_frontend=None,
     tipo_chat=None,
+    anon_id=None,
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""

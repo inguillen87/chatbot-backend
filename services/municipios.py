@@ -631,8 +631,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "categoria": categoria,
                     "detalles": detalles,
                     "user_id": self.context.get("user_id"),
-                    "anon_id": self.context.get("anon_id"),  # <--- Usá esto SIEMPRE en los handlers
-
                 },
             )
             memoria.clear()
@@ -990,8 +988,6 @@ class HumanEscalationHandler(BaseMunicipioHandler):
                 "detalles": f"El vecino solicitó chat en vivo: '{pregunta}'",
                 "user_id": self.context.get("user_id"),
                 "estado": "esperando_agente_en_vivo",
-                "anon_id": self.context.get("anon_id"),   # <--- AGREGÁ ESTO
-
             }
             sala_de_chat = servicio_tickets.crear_nuevo_ticket(
                 tipo_ticket="municipio", ticket_data=ticket_data
@@ -1049,7 +1045,7 @@ BOTONES_COMANDOS_MUNICIPIO = {
 # Asume que todas las clases Handler y funciones auxiliares (como serializar_enum,
 # normalizar_texto, etc.) están definidas en el mismo archivo o importadas correctamente.
 
-def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
+def responder_municipio(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
     contexto_previo = kwargs.get("contexto_previo", {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     estado_guardado = contexto_municipio.get("estado_conversacion")
@@ -1065,8 +1061,6 @@ def responder_municipio(pregunta, user_obj, rubro_obj, **kwargs):
         "contexto_municipio": contexto_municipio,
         "user_obj": user_obj,
         "user_id": getattr(user_obj, "id", None),
-        "anon_id": kwargs.get("anon_id", None),    # <-- ESTO ES LO QUE TE FALTA
-
         "intencion": None,
     }
     # --- INTERCEPTA COMANDOS DE BOTONES ---
