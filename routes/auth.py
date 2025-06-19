@@ -15,12 +15,22 @@ auth_bp = Blueprint('auth', __name__)
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization")
+        auth_header = request.headers.get("Authorization", "")
         token = None
-        
-        if auth_header and auth_header.startswith("Bearer "):
+
+        if auth_header.startswith("Bearer "):
             token = auth_header.split(" ")[1]
-        
+
+        if not token:
+            token = request.args.get("token")
+
+        if not token and request.is_json:
+            body = request.get_json(silent=True) or {}
+            token = body.get("token")
+
+        if not token:
+            token = request.form.get("token")
+
         if not token:
             return jsonify({"error": "Token faltante o malformado"}), 401
 

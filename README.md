@@ -10,6 +10,9 @@ This project exposes several endpoints to process questions for different sector
 - `POST /auth/widget/register` – quick sign up for end users using the widget.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
 
+Tokens can be provided via the `Authorization` header (`Bearer <token>`),
+the query parameter `?token=` or a JSON/form field named `token`.
+
 ## Uso correcto del rubro
 
 El archivo `services/logic.py` define el conjunto `RUBROS_PUBLICOS` con los rubros que se tratan como entes públicos, por ejemplo `"municipio"` y `"municipios"`.
