@@ -152,6 +152,7 @@ def _procesar_chat(
             rubro_nombre_frontend=rubro_clave,
             tipo_chat=tipo_chat,
             contexto_previo=contexto_previo,
+            anon_id=anon_id,
         )
 
         # --- Determinar si la conversación debe considerarse pública ---

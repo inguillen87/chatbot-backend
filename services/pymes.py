@@ -707,7 +707,8 @@ class BrokenProductHandler(BaseHandler):
                     "categoria": "producto_roto",
                     "pregunta": pregunta,
                     "user_id": self.context.get('user_id'),
-                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None)
+                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None),
+                    "anon_id": self.context.get('anon_id')
                 }
             )
             if ticket:
@@ -762,7 +763,8 @@ class ClaimHandler(BaseHandler):
                     "categoria": "reclamo",
                     "pregunta": pregunta,
                     "user_id": self.context.get('user_id'),
-                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None)
+                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None),
+                    "anon_id": self.context.get('anon_id')
                 }
             )
             if ticket:
@@ -1042,6 +1044,7 @@ class HumanEscalationPymeHandler(BaseHandler):
                 "detalles": f"El cliente solicitó chat en vivo: '{pregunta}'",
                 "user_id": self.context.get('user_id'),
                 "estado": "esperando_agente_en_vivo",
+                "anon_id": self.context.get('anon_id'),
             }
             sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data)
             if not sala:
@@ -1074,14 +1077,17 @@ class EngancheAnonimoHandler(BaseHandler):
         return None
 
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL (sin cambios) ---
-def responder_pyme(pregunta, user_obj, rubro_obj, **kwargs):
+def responder_pyme(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_previo_valido = contexto_previo if contexto_previo is not None else {}
     contexto_pyme = contexto_previo_valido.get(CONTEXTO_PYME_SESION, {})
 
     context = {
-        "contexto_pyme": contexto_pyme, "user_obj": user_obj, "rubro_obj": rubro_obj,
+        "contexto_pyme": contexto_pyme,
+        "user_obj": user_obj,
+        "rubro_obj": rubro_obj,
         "user_id": getattr(user_obj, "id", None),
+        "anon_id": anon_id,
         "nombre_pyme": getattr(user_obj, "nombre_empresa", "la empresa") if user_obj else "la empresa",
         "telefono": getattr(user_obj, "telefono", "") if user_obj else "",
         "direccion": getattr(user_obj, "direccion", "") if user_obj else "",
