@@ -152,16 +152,20 @@ def anon_o_token_requerido(f):
                 g.current_user = user
                 return f(current_user=user, *args, **kwargs)
 
-        # 2. Si no hay user, busca anon_id en el header
+        # 2. Si no hay user, busca anon_id en header o query string
         anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
         if not anon_id:
-            anon_id = str(uuid.uuid4())
+            return (
+                jsonify({"error": "Token o anon_id requerido"}),
+                401,
+            )
+
         g.anon_id = anon_id
-        resp = f(current_user=None, anon_id=anon_id, *args, **kwargs)
-        resp_obj = resp[0] if isinstance(resp, tuple) else resp
+        response = f(current_user=None, anon_id=anon_id, *args, **kwargs)
+        resp_obj = response[0] if isinstance(response, tuple) else response
         try:
             resp_obj.headers["Anon-Id"] = anon_id
         except Exception:
             pass
-        return resp
+        return response
     return decorated

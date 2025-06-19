@@ -15,9 +15,10 @@ def anon_o_token_requerido(f):
             token = auth_header.split(" ")[1]
             if token:
                 user = User.query.filter_by(token=token).first()
-        anon_id = request.headers.get("Anon-Id")
+
+        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
         if not user and not anon_id:
-            return jsonify({"error": "No autenticado (ni token ni Anon-Id)."}), 401
+            return jsonify({"error": "Token o anon_id requerido"}), 401
         return f(user, anon_id, *args, **kwargs)
     return decorated
 
@@ -78,18 +79,33 @@ def get_tickets_del_usuario(current_user: User):
 
 # ---------- DETALLE DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
-@token_requerido
-def get_detalle_ticket(current_user: User, tipo: str, ticket_id: int):
+@anon_o_token_requerido
+def get_detalle_ticket(current_user: User | None, anon_id: str | None, tipo: str, ticket_id: int):
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket = db.session.get(TicketModel, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    is_admin_muni = tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
-    is_dueño = ticket.user_id == current_user.id
-    is_admin_pyme = tipo == 'pyme' and current_user.rubro_id and getattr(ticket, 'rubro_id', None) == current_user.rubro_id
-    if not (is_admin_muni or is_dueño or is_admin_pyme):
-        return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
+    if current_user:
+        is_admin_muni = (
+            tipo == "municipio"
+            and current_user.rubro
+            and current_user.rubro.nombre.lower().strip() == "municipios"
+        )
+        is_dueño = ticket.user_id == current_user.id
+        is_admin_pyme = (
+            tipo == "pyme"
+            and current_user.rubro_id
+            and getattr(ticket, "rubro_id", None) == current_user.rubro_id
+        )
+        if not (is_admin_muni or is_dueño or is_admin_pyme):
+            return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
+    else:
+        if getattr(ticket, "anon_id", None) != anon_id:
+            return (
+                jsonify({"error": "Ticket no encontrado o sin permisos."}),
+                404,
+            )
 
     detalles = getattr(ticket, 'detalles', '') or ''
     nombre, tel, email = "No especificado", "No especificado", "No especificado"
