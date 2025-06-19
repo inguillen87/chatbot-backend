@@ -28,6 +28,20 @@ from .herramientas_municipio import (
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
 
+# Regex para detectar URLs en texto
+URL_REGEX = re.compile(r"https?://\S+")
+
+
+def agregar_botones_para_links(texto: str, botones: list) -> list:
+    """Agrega botones para cualquier enlace presente en el texto."""
+    if not texto:
+        return botones
+    urls = re.findall(URL_REGEX, texto)
+    for url in urls:
+        if not any(b.get("url") == url for b in botones):
+            botones.append({"texto": "Abrir enlace", "url": url})
+    return botones
+
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
@@ -716,7 +730,8 @@ class TramitesHandler(BaseMunicipioHandler):
                 direccion = getattr(user_obj, "direccion", None) or MUNICIPIO_DIRECCION
                 data = {"linkWeb": link_web, "direccion": direccion}
                 descripcion = reemplazar_placeholders(info.get("descripcion", ""), data)
-                botones = info.get("botones", [])
+                botones = info.get("botones", []).copy()
+                botones = agregar_botones_para_links(descripcion, botones)
                 return {
                     "respuesta": descripcion,
                     "botones": botones,

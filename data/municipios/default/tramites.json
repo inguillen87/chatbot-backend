@@ -1,6 +1,6 @@
 {
-  "mesa de entrada": {
-    "descripcion": "Podés presentar notas, reclamos y solicitudes en la Mesa de Entrada ubicada en [direccion]. También encontrás formularios en [linkWeb].",
+    "mesa de entrada": {
+    "descripcion": "Podés presentar notas, reclamos y solicitudes en la Mesa de Entrada ubicada en [direccion]. También encontrás formularios en https://www.juninmendoza.gov.ar/1645-2/.",
     "botones": [
       {
         "texto": "Ir a Mesa de Entrada",
@@ -8,8 +8,8 @@
       }
     ]
   },
-  "rentas": {
-    "descripcion": "Consultá tus impuestos municipales o generá boletas desde [linkWeb]. También podés acercarte al área de Rentas en [direccion].",
+    "rentas": {
+    "descripcion": "Consultá tus impuestos municipales o generá boletas desde https://www.juninmendoza.gov.ar/vencimientos/. También podés acercarte al área de Rentas en [direccion].",
     "botones": [
       {
         "texto": "Ir a Rentas",
@@ -17,8 +17,8 @@
       }
     ]
   },
-  "obras privadas": {
-    "descripcion": "Los permisos de construcción y consultas de planos se gestionan en Obras Privadas. Revisá requisitos en la web municipal o acercate a [direccion].",
+    "obras privadas": {
+    "descripcion": "Los permisos de construcción y consultas de planos se gestionan en Obras Privadas. Revisá requisitos en la web municipal https://www.juninmendoza.gov.ar/tramites-on-line-obras-privadas/ o acercate a [direccion].",
     "botones": [
       {
         "texto": "Obras Privadas",
@@ -26,8 +26,8 @@
       }
     ]
   },
-  "catastro": {
-    "descripcion": "Para certificados catastrales y actualizaciones de parcelas, dirigite al sector Catastro en [direccion] o consultá en [linkWeb].",
+    "catastro": {
+    "descripcion": "Para certificados catastrales y actualizaciones de parcelas, dirigite al sector Catastro en [direccion] o consultá en https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx.",
     "botones": [
       {
         "texto": "Catastro",
@@ -35,8 +35,8 @@
       }
     ]
   },
-  "forestales": {
-    "descripcion": "Solicitá permisos de poda, extracción o forestación en la Dirección de Forestales. Más información disponible en [linkWeb].",
+    "forestales": {
+    "descripcion": "Solicitá permisos de poda, extracción o forestación en la Dirección de Forestales. Más información disponible en https://www.juninmendoza.gov.ar/solicitudforestales/.",
     "botones": [
       {
         "texto": "Forestales",
@@ -44,8 +44,8 @@
       }
     ]
   },
-  "carnet de sanidad": {
-    "descripcion": "El carnet sanitario para manipuladores de alimentos se tramita en Sanidad municipal. Podés pedir turno online desde [linkWeb].",
+    "carnet de sanidad": {
+    "descripcion": "El carnet sanitario para manipuladores de alimentos se tramita en Sanidad municipal. Podés pedir turno online desde https://www.juninmendoza.gov.ar/carnet-de-sanidad/.",
     "botones": [
       {
         "texto": "Carnet de Sanidad",
@@ -53,7 +53,7 @@
       }
     ]
   },
-  "registro de artesanos": {
+    "registro de artesanos": {
     "descripcion": "La inscripción al Registro de Artesanos y ferias se realiza en el área de Cultura municipal. Consultá requisitos en https://www.juninmendoza.gov.ar/registro-de-artesanos/.",
     "botones": [
       {
@@ -62,8 +62,8 @@
       }
     ]
   },
-  "licencia de conducir": {
-    "descripcion": "Tramite tu licencia de conducir en el Centro de Licencias municipal. Consultá requisitos y turnos en [linkWeb]",
+    "licencia de conducir": {
+    "descripcion": "Tramite tu licencia de conducir en el Centro de Licencias municipal. Consultá requisitos y turnos en https://tlc.mendoza.gov.ar/turnos",
     "botones": [
       {
         "texto": "Sacar Turno",

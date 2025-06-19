@@ -100,8 +100,10 @@ class MunicipioLogicTests(unittest.TestCase):
         # Seleccionamos un trámite específico
         resp2 = municipios.responder_municipio('Rentas', user, None, contexto_previo=contexto)
         self.assertIsInstance(resp2['respuesta'], str)
-        self.assertIn('https://example.com', resp2['respuesta'])
-        self.assertIsInstance(resp2.get('botones'), list)
+        self.assertIn('https://www.juninmendoza.gov.ar/vencimientos/', resp2['respuesta'])
+        self.assertTrue(
+            any(b.get('url') == 'https://www.juninmendoza.gov.ar/vencimientos/' for b in resp2.get('botones', []))
+        )
 
 
 
