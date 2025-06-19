@@ -20,3 +20,14 @@ Si el rubro enviado pertenece a este conjunto, el tipo de chat correspondiente e
 
 Las funciones premium como el chat en vivo o el guardado de la ubicación requieren que el usuario esté autenticado. El registro puede hacerse sin salir del chat enviando un `POST /auth/widget/register` con el token de la pyme o municipio en el encabezado `Authorization`. El backend asociará automáticamente al nuevo usuario con esa entidad y registrará si acepta recibir comunicaciones de marketing.
 
+### Formas de enviar el token
+
+El backend acepta el token en cualquiera de los siguientes lugares de la solicitud:
+
+1. Encabezado `Authorization` con formato `Bearer <token>`.
+2. Encabezado `X-Token`.
+3. Parámetro de query string `?token=...`.
+4. Campo `token` dentro del JSON o formulario enviado.
+
+Esto permite embebidos del widget que envíen el token como atributo o en la URL sin necesidad de modificar el backend.
+

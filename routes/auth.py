@@ -12,15 +12,36 @@ from datetime import datetime
 
 auth_bp = Blueprint('auth', __name__)
 
+def obtener_token():
+    """Extrae el token desde header, query string o payload."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header.split(" ", 1)[1]
+
+    token = request.headers.get("X-Token")
+    if token:
+        return token.strip()
+
+    token = request.args.get("token")
+    if token:
+        return token.strip()
+
+    if request.is_json:
+        token = (request.get_json(silent=True) or {}).get("token")
+        if token:
+            return token.strip()
+
+    token = request.form.get("token")
+    if token:
+        return token.strip()
+
+    return None
+
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization")
-        token = None
-        
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
-        
+        token = obtener_token()
+
         if not token:
             return jsonify({"error": "Token faltante o malformado"}), 401
 
@@ -201,10 +222,9 @@ def anon_o_token_requerido(f):
         if request.method == "OPTIONS":
             return "", 200
         # 1. Autenticación estándar primero
-        auth_header = request.headers.get('Authorization', '')
+        token = obtener_token()
         user = None
-        if auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
+        if token:
             user = User.query.filter_by(token=token).first()
             if user:
                 g.current_user = user
