@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 from models import db, Sugerencia, User
+from routes.auth import obtener_token
 from datetime import datetime
 
 sugerencia_bp = Blueprint("sugerencia", __name__)
@@ -12,7 +13,7 @@ def recibir_sugerencia():
     data = request.get_json()
     texto = data.get("texto")
     rubro_id = data.get("rubro_id")
-    token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    token = obtener_token()
 
     if not texto or not rubro_id:
         return jsonify({"error": "Faltan datos requeridos"}), 400
