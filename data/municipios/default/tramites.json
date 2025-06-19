@@ -4,7 +4,7 @@
     "botones": [
       {
         "texto": "Ir a Mesa de Entrada",
-        "url": "[https://www.juninmendoza.gov.ar/1645-2/]"
+        "url": "https://www.juninmendoza.gov.ar/1645-2/"
       }
     ]
   },
@@ -22,7 +22,7 @@
     "botones": [
       {
         "texto": "Obras Privadas",
-        "url": "[https://www.juninmendoza.gov.ar/tramites-on-line-obras-privadas/]"
+        "url": "https://www.juninmendoza.gov.ar/tramites-on-line-obras-privadas/"
       }
     ]
   },
@@ -31,7 +31,7 @@
     "botones": [
       {
         "texto": "Catastro",
-        "url": "[https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx]"
+        "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx"
       }
     ]
   },
@@ -40,7 +40,7 @@
     "botones": [
       {
         "texto": "Forestales",
-        "url": "[https://www.juninmendoza.gov.ar/solicitudforestales/]"
+        "url": "https://www.juninmendoza.gov.ar/solicitudforestales/"
       }
     ]
   },
@@ -49,7 +49,7 @@
     "botones": [
       {
         "texto": "Carnet de Sanidad",
-        "url": "[https://www.juninmendoza.gov.ar/carnet-de-sanidad/]"
+        "url": "https://www.juninmendoza.gov.ar/carnet-de-sanidad/"
       }
     ]
   },
