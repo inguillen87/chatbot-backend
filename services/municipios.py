@@ -715,8 +715,12 @@ class TramitesHandler(BaseMunicipioHandler):
                 )
                 direccion = getattr(user_obj, "direccion", None) or MUNICIPIO_DIRECCION
                 data = {"linkWeb": link_web, "direccion": direccion}
-                info = reemplazar_placeholders(info, data)
-                return {"respuesta": info}
+                descripcion = reemplazar_placeholders(info.get("descripcion", ""), data)
+                botones = info.get("botones", [])
+                return {
+                    "respuesta": descripcion,
+                    "botones": botones,
+                }
 
             if re.search(r"(licencia|carnet).*conducir", texto):
                 memoria["estado_conversacion"] = (

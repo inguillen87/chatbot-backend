@@ -90,6 +90,19 @@ class MunicipioLogicTests(unittest.TestCase):
         resp = municipios.responder_municipio('hola buenos noches', user, None)
         self.assertIn('tu asistente digital del Municipio', resp['respuesta'])
 
+    def test_tramite_selection_returns_string(self):
+        """El texto de respuesta para un trámite debe ser una cadena."""
+        user = DummyUser()
+        # Primer paso: iniciar el flujo de trámites
+        resp1 = municipios.responder_municipio('Quiero hacer un tramite', user, None)
+        contexto = resp1.get('contexto_actualizado')
+        self.assertIn('trámite', resp1['respuesta'].lower())
+        # Seleccionamos un trámite específico
+        resp2 = municipios.responder_municipio('Rentas', user, None, contexto_previo=contexto)
+        self.assertIsInstance(resp2['respuesta'], str)
+        self.assertIn('https://example.com', resp2['respuesta'])
+        self.assertIsInstance(resp2.get('botones'), list)
+
 
 
 if __name__ == '__main__':
