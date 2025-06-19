@@ -9,6 +9,17 @@ ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
 
+def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ticket_obj) -> None:
+    """Registro unificado de acciones sobre tickets."""
+    current_app.logger.info(
+        "%s | ticket=%s anon_id=%s anon_db=%s estado=%s",
+        action,
+        ticket_id,
+        header_anon_id,
+        getattr(ticket_obj, "anon_id", None),
+        getattr(ticket_obj, "estado", None),
+    )
+
 # ---------- LISTA DE TICKETS (logueado) ----------
 @ticket_bp.route('/', methods=['GET'])
 @token_requerido
@@ -71,13 +82,7 @@ def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = No
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    current_app.logger.info(
-        "get_detalle_ticket | ticket=%s anon_id=%s anon_db=%s estado=%s",
-        ticket_id,
-        anon_id,
-        getattr(ticket, "anon_id", None),
-        ticket.estado,
-    )
+    log_ticket_debug("get_detalle_ticket", ticket_id, anon_id, ticket)
 
     if current_user:
         is_admin_muni = (
@@ -162,6 +167,13 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     if not has_permission_to_respond:
         return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
+    log_ticket_debug(
+        "responder_agente",
+        ticket_id,
+        request.headers.get("Anon-Id"),
+        ticket_obj,
+    )
+
     nuevo_comentario = servicio_tickets.crear_comentario(
         ticket_id=ticket_id, tipo_ticket=tipo,
         comentario_data={"comentario": data["comentario"], "user_id": current_user.id, "es_admin": True}
@@ -216,6 +228,13 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if not has_permission_to_change_state:
         return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
 
+    log_ticket_debug(
+        "cambiar_estado",
+        ticket_id,
+        request.headers.get("Anon-Id"),
+        ticket_obj,
+    )
+
     ticket_obj.estado = nuevo_estado
     db.session.commit()
 
@@ -254,13 +273,7 @@ def get_chat_mensajes(ticket_id: int, current_user=None, anon_id=None):
         es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
         es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
 
-        current_app.logger.info(
-            "get_chat_mensajes | ticket=%s anon_id=%s anon_db=%s estado=%s",
-            ticket_id,
-            anon_id,
-            sala_de_chat.anon_id,
-            sala_de_chat.estado,
-        )
+        log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
         if sala_de_chat.user_id is None and not es_anonimo_ticket and not es_agente_municipal:
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
@@ -320,13 +333,7 @@ def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
         es_dueño = False
     es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
 
-    current_app.logger.info(
-        "responder_ciudadano | ticket=%s anon_id=%s anon_db=%s estado=%s",
-        ticket_id,
-        anon_id,
-        sala_de_chat.anon_id,
-        sala_de_chat.estado,
-    )
+    log_ticket_debug("responder_ciudadano", ticket_id, anon_id, sala_de_chat)
 
     if sala_de_chat.user_id is None and not es_anonimo_ticket:
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
@@ -429,6 +436,13 @@ def actualizar_ubicacion_ticket(tipo: str, ticket_id: int, current_user=None, an
 
     if not has_perm:
         return jsonify({"error": "No tienes permiso para modificar este ticket."}), 403
+
+    log_ticket_debug(
+        "actualizar_ubicacion",
+        ticket_id,
+        anon_id or request.headers.get("Anon-Id"),
+        ticket_obj,
+    )
 
     if lat is not None:
         try:
