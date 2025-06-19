@@ -6,7 +6,7 @@ from collections import defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
-MENSAJE_CHAT_CERRADO = "Este chat está cerrado. Si necesitás ayuda, generá un nuevo reclamo."
+MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
 
 # ---------- LISTA DE TICKETS (logueado) ----------
@@ -70,6 +70,14 @@ def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = No
     ticket = db.session.get(TicketModel, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
+
+    current_app.logger.info(
+        "get_detalle_ticket | ticket=%s anon_id=%s anon_db=%s estado=%s",
+        ticket_id,
+        anon_id,
+        getattr(ticket, "anon_id", None),
+        ticket.estado,
+    )
 
     if current_user:
         is_admin_muni = (
@@ -246,7 +254,18 @@ def get_chat_mensajes(ticket_id: int, current_user=None, anon_id=None):
         es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
         es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
 
-        if not (es_agente_municipal or es_dueño_del_ticket or es_anonimo_ticket):
+        current_app.logger.info(
+            "get_chat_mensajes | ticket=%s anon_id=%s anon_db=%s estado=%s",
+            ticket_id,
+            anon_id,
+            sala_de_chat.anon_id,
+            sala_de_chat.estado,
+        )
+
+        if sala_de_chat.user_id is None and not es_anonimo_ticket and not es_agente_municipal:
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+        if sala_de_chat.user_id is not None and not (es_agente_municipal or es_dueño_del_ticket or es_anonimo_ticket):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
         if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
@@ -301,7 +320,18 @@ def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
         es_dueño = False
     es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
 
-    if not (es_dueño or es_anonimo_ticket):
+    current_app.logger.info(
+        "responder_ciudadano | ticket=%s anon_id=%s anon_db=%s estado=%s",
+        ticket_id,
+        anon_id,
+        sala_de_chat.anon_id,
+        sala_de_chat.estado,
+    )
+
+    if sala_de_chat.user_id is None and not es_anonimo_ticket:
+        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+    if sala_de_chat.user_id is not None and not (es_dueño or es_anonimo_ticket):
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
     if sala_de_chat.estado == "cerrado":
