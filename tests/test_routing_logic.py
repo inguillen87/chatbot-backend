@@ -60,5 +60,12 @@ class RoutingLogicTests(unittest.TestCase):
             resp = logic.responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj)
             self.assertEqual(resp['origen'], 'municipio')
 
+    def test_es_rubro_publico_normaliza(self):
+        with stub_modules() as logic:
+            rubro_obj = SimpleNamespace(nombre='Municipios', clave='municipios')
+            self.assertTrue(logic.es_rubro_publico(rubro_obj))
+            self.assertTrue(logic.es_rubro_publico('municipios'))
+            self.assertEqual(logic.normalizar_rubro(rubro_obj), 'municipios')
+
 if __name__ == '__main__':
     unittest.main()

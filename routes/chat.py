@@ -3,7 +3,12 @@ import logging
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func
 from models import User, Rubro
-from services.logic import responder_chatboc, RUBROS_PUBLICOS
+from services.logic import (
+    responder_chatboc,
+    RUBROS_PUBLICOS,
+    normalizar_rubro,
+    es_rubro_publico,
+)
 from .auth import anon_o_token_requerido
 
 chat_bp = Blueprint("chat_bp", __name__)
@@ -150,21 +155,19 @@ def _procesar_chat(
         )
 
         # --- Determinar si la conversación debe considerarse pública ---
-        rubro_nombre = ""
-        if rubro_obj:
-            rubro_nombre = (
-                getattr(rubro_obj, "nombre", None)
-                or getattr(rubro_obj, "clave", "")
-            ).strip().lower()
-        elif rubro_clave:
-            rubro_nombre = str(rubro_clave).strip().lower()
-        elif user_obj and getattr(user_obj, "rubro", None):
-            rubro = user_obj.rubro
-            rubro_nombre = (
-                getattr(rubro, "nombre", None)
-                or getattr(rubro, "clave", "")
-            ).strip().lower()
-        es_publico = rubro_nombre in RUBROS_PUBLICOS and user_obj is None
+        rubro_seleccionado = (
+            rubro_obj
+            or rubro_clave
+            or (user_obj.rubro if user_obj and getattr(user_obj, "rubro", None) else None)
+        )
+        rubro_nombre = normalizar_rubro(rubro_seleccionado)
+        es_publico = es_rubro_publico(rubro_seleccionado)
+
+        current_app.logger.info(
+            f"[RUBROS] user.rubro={getattr(user_obj, 'rubro', None)} "
+            f"rubroSeleccionado={rubro_seleccionado} "
+            f"rubroNormalizado={rubro_nombre} esRubroPublico={es_publico}"
+        )
 
 
         # --- INCREMENTAR CONTADOR SOLO SI TODO ESTÁ OK ---
