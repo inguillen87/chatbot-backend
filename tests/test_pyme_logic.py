@@ -118,6 +118,22 @@ class PymeLogicTests(unittest.TestCase):
         resp = pymes.responder_pyme('holaa buenos noxes', user, None)
         self.assertIn('¿En qué puedo ayudarte hoy', resp['respuesta'])
 
+    def test_cancel_keywords(self):
+        contexto = {
+            'contexto_pyme': {
+                'estado_conversacion': pymes.serialize_state(pymes.PymeConversationState.CONFIRMANDO_PEDIDO_TEMP),
+                'productos_solicitados_temp': [{'nombre': 'vino', 'cantidad': 1}],
+                'monto_total_temp': 100
+            },
+            'user_id': 1,
+            'rubro_obj': SimpleNamespace(nombre='vinoteca'),
+            'user_obj': DummyUser(),
+            'rubro_nombre': 'vinoteca'
+        }
+        handler = pymes.PedidoHandler(contexto)
+        resp = handler.handle('cancelalo por favor')
+        self.assertEqual(resp['fuente'], 'pedido_cancelado')
+
 
 if __name__ == '__main__':
     unittest.main()

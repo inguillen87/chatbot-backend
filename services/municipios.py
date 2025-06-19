@@ -195,12 +195,22 @@ class BaseMunicipioHandler:
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
 
+    # --- utilidades de coincidencia robusta ---
+    def _normalize(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+        return normalizar_texto(text)
+
+    def _has_keyword(self, text: str, keywords: list[str]) -> bool:
+        texto_norm = self._normalize(text)
+        return any(kw in texto_norm for kw in keywords)
+
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto_original = pregunta.strip()
-        texto_normalizado = normalizar_texto(texto_original)
+        texto_original = str(pregunta).strip()
+        texto_normalizado = self._normalize(texto_original)
 
         saludos_completos = [
             "hola",
@@ -211,12 +221,13 @@ class GreetingHandler(BaseMunicipioHandler):
             "que tal",
             "como estas",
             "buenas",
+            "buen dia",
+            "saludos",
+            "hola que tal",
+            "hola hola",
         ]
 
-        if (
-            texto_normalizado in saludos_completos
-            or any(saludo in texto_normalizado for saludo in saludos_completos)
-        ):
+        if any(saludo in texto_normalizado for saludo in saludos_completos):
             memoria.clear()
             return {
                 "respuesta": (
@@ -237,15 +248,19 @@ class CancelHandler(BaseMunicipioHandler):
 
     CANCEL_KEYWORDS = [
         "cancelar",
+        "cancelalo",
+        "cancela",
+        "anular",
         "olvidalo",
         "deja",
         "no importa",
         "volver",
+        "detener",
+        "stop",
     ]
 
     def handle(self, pregunta: str) -> dict | None:
-        texto = normalizar_texto(pregunta)
-        if any(kw in texto for kw in self.CANCEL_KEYWORDS):
+        if self._has_keyword(pregunta, self.CANCEL_KEYWORDS):
             self.context.get("contexto_municipio", {}).clear()
             return {
                 "respuesta": "Operación cancelada. ¿Necesitás ayuda con otro trámite o reclamo?",
@@ -261,11 +276,19 @@ class CancelHandler(BaseMunicipioHandler):
 class RecoleccionHandler(BaseMunicipioHandler):
     """Atiende consultas sobre recolección de residuos en cualquier momento."""
 
-    KEYWORDS = ["basura", "recoleccion", "residuos", "basurero"]
+    KEYWORDS = [
+        "basura",
+        "recoleccion",
+        "residuos",
+        "basurero",
+        "recogida",
+        "reciclaje",
+        "desechos",
+    ]
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto = normalizar_texto(pregunta)
+        texto = self._normalize(pregunta)
 
         estado = memoria.get("estado_conversacion")
         if estado == ConversationState.ESPERANDO_PARAM_RECOLECCION:
@@ -290,7 +313,7 @@ class RecoleccionHandler(BaseMunicipioHandler):
                 ],
             }
 
-        if any(kw in texto for kw in self.KEYWORDS):
+        if self._has_keyword(pregunta, self.KEYWORDS):
             memoria.clear()
             if direccion_es_valida(pregunta):
                 resultado = consultar_recoleccion_por_direccion(direccion=pregunta)
@@ -326,6 +349,7 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         "operador",
         "empleado",
         "municipal",
+        "atencion",
         "atención",
         "real",
         "chat real",
@@ -334,17 +358,20 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         "hablar con alguien",
         "asesor",
         "consultor",
+        "soporte tecnico",
         "soporte técnico",
         "atender",
         "personal",
+        "persona real",
+        "agente humano",
     ]
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        texto = normalizar_texto(pregunta)
+        texto = self._normalize(pregunta)
 
         # Permitir solicitar un agente en cualquier momento
-        if any(kw in texto for kw in self.KEYWORDS_AGENTE):
+        if self._has_keyword(pregunta, self.KEYWORDS_AGENTE):
             self.context["intencion"] = "hablar_con_agente"
             memoria.clear()
         elif not memoria.get("estado_conversacion"):
@@ -361,6 +388,15 @@ class IntentClassifierHandler(BaseMunicipioHandler):
 
 
 class TicketStatusHandler(BaseMunicipioHandler):
+    SI_KEYWORDS = [
+        "si",
+        "sí",
+        "claro",
+        "correcto",
+        "afirmativo",
+        "vale",
+        "ok",
+    ]
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado_conversacion = memoria.get("estado_conversacion")
@@ -370,7 +406,7 @@ class TicketStatusHandler(BaseMunicipioHandler):
                 return None
             ticket_id = memoria.get("ticket_id_activo")
             ticket = db.session.get(MunicipioTicket, ticket_id)
-            if "si" in normalizar_texto(pregunta):
+            if self._has_keyword(pregunta, self.SI_KEYWORDS):
                 ticket.estado = "resuelto"
                 db.session.commit()
                 memoria["estado_conversacion"] = (
@@ -660,7 +696,7 @@ class TramitesHandler(BaseMunicipioHandler):
         if estado == ConversationState.ESPERANDO_SELECCION_TRAMITE:
             from .sinonimos import aplicar_sinonimos, TRAMITE_SYNONYMS, fuzzy_match
 
-            texto = normalizar_texto(pregunta)
+            texto = self._normalize(pregunta)
             texto = aplicar_sinonimos(texto, TRAMITE_SYNONYMS)
 
             clave_tramite = next(
@@ -924,11 +960,16 @@ class ToolHandler(BaseMunicipioHandler):
                 "respuesta": "Hubo un error técnico. Probá de nuevo o comunicate con el municipio.",
                 "botones": [{"texto": "Hablar con un agente"}],
             }
-        palabras_clave_recoleccion = ["basurero", "recoleccion", "residuos", "basura"]
-        if any(
-            palabra in normalizar_texto(pregunta)
-            for palabra in palabras_clave_recoleccion
-        ):
+        palabras_clave_recoleccion = [
+            "basurero",
+            "recoleccion",
+            "residuos",
+            "basura",
+            "recogida",
+            "reciclaje",
+            "desechos",
+        ]
+        if self._has_keyword(pregunta, palabras_clave_recoleccion):
             memoria["estado_conversacion"] = (
                 ConversationState.ESPERANDO_PARAM_RECOLECCION
             )

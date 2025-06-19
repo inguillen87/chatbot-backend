@@ -242,6 +242,16 @@ class BaseHandler:
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
 
+    # -- utilidades de coincidencia robusta --
+    def _normalize(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+        return normalizar_texto(text)
+
+    def _has_keyword(self, text: str, keywords: list[str]) -> bool:
+        texto_norm = self._normalize(text)
+        return any(kw in texto_norm for kw in keywords)
+
 
 class GreetingHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -263,6 +273,10 @@ class GreetingHandler(BaseHandler):
             "hey",
             "que tal",
             "buenas",
+            "buen dia",
+            "hola hola",
+            "hola que tal",
+            "saludos",
         ]
         tokens = texto.split()
         set_saludo = {
@@ -275,6 +289,8 @@ class GreetingHandler(BaseHandler):
             "hey",
             "que",
             "tal",
+            "saludos",
+            "dia",
         }
 
         def token_es_saludo(tok: str) -> bool:
@@ -441,6 +457,9 @@ class IntentClassifierPymeHandler(BaseHandler):
         "ordenar",
         "cotizar",
         "precio",
+        "encargar",
+        "solicitar",
+        "adquirir",
         "malbec",
     ]
 
@@ -452,6 +471,14 @@ class IntentClassifierPymeHandler(BaseHandler):
         "operador",
         "emplead",
         "municipal",
+        "representante",
+        "asesor",
+        "consultor",
+        "soporte",
+        "atencion",
+        "operador real",
+        "persona real",
+        "agente humano",
     ]
 
     def handle(self, pregunta: str) -> dict | None:
@@ -461,10 +488,10 @@ class IntentClassifierPymeHandler(BaseHandler):
 
             # Heurística simple si el clasificador no detecta la intención
             if intencion in {"general", "general_pyme"}:
-                texto = pregunta.lower()
+                texto = self._normalize(pregunta)
                 if any(kw in texto for kw in self.KEYWORDS_PEDIDO):
                     intencion = "iniciar_pedido"
-                elif any(kw in normalizar_texto(pregunta) for kw in self.KEYWORDS_AGENTE):
+                elif self._has_keyword(pregunta, self.KEYWORDS_AGENTE):
                     intencion = "hablar_con_agente_pyme"
 
             self.context['intencion'] = intencion
@@ -475,6 +502,20 @@ class IntentClassifierPymeHandler(BaseHandler):
         return None
 
 class PedidoHandler(BaseHandler):
+    CANCEL_KEYWORDS = [
+        "cancelar",
+        "cancelalo",
+        "cancela",
+        "anular",
+        "olvidalo",
+        "deja",
+        "no importa",
+        "no quiero",
+        "detener",
+        "stop",
+        "rechazar",
+        "descartar",
+    ]
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context.get('contexto_pyme', {})
         estado_conversacion = deserialize_state(contexto_pyme.get('estado_conversacion'))
@@ -536,8 +577,7 @@ class PedidoHandler(BaseHandler):
             contexto_pyme['monto_total_temp'] = monto_total_temp
             return {"respuesta": resumen_productos_confirmacion, "fuente": "handler_pedido_detalles_para_confirmar", "estado_respuesta": "pyme_confirmar_pedido"}
         elif estado_conversacion == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            texto_normalizado = normalizar_texto(pregunta)
-            if re.search(r"\b(no|cancel(ar)?|rechazo|no quiero)\b", texto_normalizado):
+            if self._has_keyword(pregunta, self.CANCEL_KEYWORDS):
                 contexto_pyme.clear()
                 return {"respuesta": "Entendido. No se generará el pedido. ¿Hay algo más en lo que pueda ayudarte?", "fuente": "pedido_cancelado"}
 
@@ -624,7 +664,16 @@ class TicketStatusHandler(BaseHandler):
 class BrokenProductHandler(BaseHandler):
     """Registra un reclamo por producto roto y solicita más información."""
 
-    PALABRAS_CLAVE = ["roto", "quebrado", "defectuoso", "dañado"]
+    PALABRAS_CLAVE = [
+        "roto",
+        "quebrado",
+        "defectuoso",
+        "dañado",
+        "estropeado",
+        "deteriorado",
+        "partido",
+        "mal estado",
+    ]
 
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
@@ -650,7 +699,7 @@ class BrokenProductHandler(BaseHandler):
                 }
             return None
 
-        if any(pal in pregunta.lower() for pal in self.PALABRAS_CLAVE):
+        if self._has_keyword(pregunta, self.PALABRAS_CLAVE):
             ticket = servicio_tickets.crear_nuevo_ticket(
                 tipo_ticket="pyme",
                 ticket_data={
@@ -693,10 +742,19 @@ class BrokenProductHandler(BaseHandler):
 class ClaimHandler(BaseHandler):
     """Genera un ticket de reclamo general."""
 
-    PALABRAS_CLAVE = ["reclamo", "queja", "mala atención", "problema"]
+    PALABRAS_CLAVE = [
+        "reclamo",
+        "queja",
+        "mala atencion",
+        "mala atención",
+        "problema",
+        "inconveniente",
+        "insatisfaccion",
+        "reclamar",
+    ]
 
     def handle(self, pregunta: str) -> dict | None:
-        if any(pal in pregunta.lower() for pal in self.PALABRAS_CLAVE):
+        if self._has_keyword(pregunta, self.PALABRAS_CLAVE):
             ticket = servicio_tickets.crear_nuevo_ticket(
                 tipo_ticket="pyme",
                 ticket_data={
@@ -838,6 +896,10 @@ class FaqHandler(BaseHandler):
 class ToolHandlerPyme(BaseHandler):
     """Resuelve consultas directas mediante pequeñas herramientas."""
 
+    KEYWORDS_HORARIO = ["horario", "abren", "abierto", "cierran", "hora"]
+    KEYWORDS_STOCK = ["stock", "existencia", "disponible"]
+    KEYWORDS_ENVIO = ["envio", "envío", "mandar", "enviar"]
+
     def handle(self, pregunta: str) -> dict | None:
         contexto_pyme = self.context.get('contexto_pyme', {})
         estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
@@ -887,18 +949,18 @@ class ToolHandlerPyme(BaseHandler):
         except Exception as e:
             logger.error(f"[ToolHandlerPyme] Error: {e}", exc_info=True)
 
-        texto = pregunta.lower()
-        if 'horario' in texto or 'abren' in texto:
+        texto_norm = self._normalize(pregunta)
+        if any(kw in texto_norm for kw in self.KEYWORDS_HORARIO):
             res = TOOL_REGISTRY_PYME['consultar_horario']['funcion'](self.context.get('user_obj'))
             return json.loads(res)
-        if 'stock' in texto:
-            match = re.search(r'stock (?:de )?(.*)', texto)
+        if any(kw in texto_norm for kw in self.KEYWORDS_STOCK):
+            match = re.search(r'stock (?:de )?(.*)', texto_norm)
             producto = match.group(1).strip() if match else ''
             if producto:
                 res = TOOL_REGISTRY_PYME['verificar_stock']['funcion'](producto, self.context.get('user_id'))
                 return json.loads(res)
-        if 'envío' in texto or 'envio' in texto:
-            match = re.search(r'env(?:i|ío)\s+a\s+([\w\s]+)', texto)
+        if any(kw in texto_norm for kw in self.KEYWORDS_ENVIO):
+            match = re.search(r'env(?:i|ío)\s+a\s+([\w\s]+)', texto_norm)
             ciudad = match.group(1).strip() if match else ''
             if ciudad:
                 res = TOOL_REGISTRY_PYME['calcular_envio']['funcion'](ciudad)
