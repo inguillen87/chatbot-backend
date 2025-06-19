@@ -82,6 +82,7 @@ def responder_chatboc(
     session_obj=None,
     rubro_nombre_frontend=None,
     tipo_chat=None,
+    anon_id=None,
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat.
@@ -144,12 +145,22 @@ def responder_chatboc(
     if tipo_chat == "municipio":
         from services.municipios import responder_municipio
         return responder_municipio(
-            pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs
+            pregunta,
+            user_obj,
+            rubro_obj,
+            session_obj=session_obj,
+            anon_id=anon_id,
+            **kwargs,
         )
     elif tipo_chat == "pyme":
         from services.pymes import responder_pyme
         return responder_pyme(
-            pregunta, user_obj, rubro_obj, session_obj=session_obj, **kwargs
+            pregunta,
+            user_obj,
+            rubro_obj,
+            session_obj=session_obj,
+            anon_id=anon_id,
+            **kwargs,
         )
     else:
         raise ValueError(f"Tipo de chat no soportado: {tipo_chat}")
