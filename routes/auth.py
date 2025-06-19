@@ -73,6 +73,7 @@ def register():
     if not rubro:
         return jsonify({"error": f"El rubro '{data['rubro']}' no es válido."}), 400
 
+    acepta_marketing = bool(data.get('acepta_marketing'))
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -80,8 +81,11 @@ def register():
         nombre_empresa=data['nombre_empresa'].strip(),
         rubro_id=rubro.id,
         plan="gratis",
+        rol="usuario",
         acepto_terminos=True,
-        fecha_aceptacion_terminos=datetime.utcnow()
+        fecha_aceptacion_terminos=datetime.utcnow(),
+        acepta_marketing=acepta_marketing,
+        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None
     )
     user.set_password(data['password'])
 
@@ -100,6 +104,48 @@ def register():
         db.session.rollback()
         current_app.logger.error(f"Error al registrar usuario: {e}", exc_info=True)
         return jsonify({"error": "Error interno al guardar el usuario."}), 500
+
+
+@auth_bp.route('/widget/register', methods=['POST'])
+@token_requerido
+def register_from_widget(owner_user):
+    """Registro rápido desde el widget asociado al token."""
+    data = request.get_json() or {}
+    name = data.get('name')
+    email = data.get('email')
+    password = data.get('password')
+    if not name or not email or not password:
+        return jsonify({"error": "Faltan datos obligatorios."}), 400
+
+    if User.query.filter_by(email=email.strip().lower()).first():
+        return jsonify({"error": "Email ya registrado."}), 409
+
+    acepta_marketing = bool(data.get('acepta_marketing'))
+    nuevo = User(
+        name=name.strip(),
+        email=email.strip().lower(),
+        token=str(uuid.uuid4()),
+        rubro_id=owner_user.rubro_id,
+        empresa_id=owner_user.id,
+        plan="gratis",
+        rol="usuario",
+        acepta_marketing=acepta_marketing,
+        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+    )
+    nuevo.set_password(password)
+    try:
+        db.session.add(nuevo)
+        db.session.commit()
+        return jsonify({
+            "id": nuevo.id,
+            "token": nuevo.token,
+            "name": nuevo.name,
+            "email": nuevo.email,
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error en register_from_widget: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al registrar usuario."}), 500
 
 @auth_bp.route('/me', methods=['GET'])
 @token_requerido

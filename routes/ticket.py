@@ -236,7 +236,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
             has_permission_to_change_state = True
 
     if not has_permission_to_change_state:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
+        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
 
         return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
 
@@ -268,29 +268,28 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     }
     return jsonify(ticket_data)
 
-# ---------- CHAT EN VIVO: MENSAJES (TOKEN O ANONIMO) ----------
+# ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
 @ticket_bp.route('/chat/<int:ticket_id>/mensajes', methods=['GET'])
-@anon_o_token_requerido
-def get_chat_mensajes(ticket_id: int, current_user=None, anon_id=None):
+@token_requerido
+def get_chat_mensajes(current_user: User, ticket_id: int):
     """
-    Devuelve los mensajes del chat en vivo.
-    Permite acceso por user logueado o por anon_id (controla que corresponda).
+    Devuelve los mensajes del chat en vivo para un ticket.
+    Requiere que el usuario esté autenticado.
     """
     try:
         sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-        es_agente_municipal = current_user and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
-        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
-        es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
+        es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
+        es_dueño_del_ticket = sala_de_chat.user_id == current_user.id
 
-        log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
+        log_ticket_debug("get_chat_mensajes", ticket_id, None, sala_de_chat)
 
-        if sala_de_chat.user_id is None and not es_anonimo_ticket and not es_agente_municipal:
+        if sala_de_chat.user_id is None and not es_agente_municipal:
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-        if sala_de_chat.user_id is not None and not (es_agente_municipal or es_dueño_del_ticket or es_anonimo_ticket):
+        if sala_de_chat.user_id is not None and not (es_agente_municipal or es_dueño_del_ticket):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
         if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
@@ -324,12 +323,13 @@ def get_chat_mensajes(ticket_id: int, current_user=None, anon_id=None):
         current_app.logger.error(f"Error en get_chat_mensajes para ticket {ticket_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
 
-# ---------- CHAT EN VIVO: RESPONDER CIUDADANO (TOKEN O ANONIMO) ----------
+# ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
-@anon_o_token_requerido
-def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
+@token_requerido
+def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     """
-    Permite al ciudadano responder en el chat de su ticket (token o anon).
+    Permite al ciudadano responder en el chat de su ticket.
+    Requiere que el usuario esté autenticado.
     """
     data = request.get_json()
     if not data or not data.get("comentario"):
@@ -339,26 +339,17 @@ def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
     if not sala_de_chat:
         return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-    if current_user:
-        es_dueño = sala_de_chat.user_id == current_user.id
-    else:
-        es_dueño = False
-    es_anonimo_ticket = anon_id and sala_de_chat.anon_id == anon_id
+    es_dueño = sala_de_chat.user_id == current_user.id
 
-    log_ticket_debug("responder_ciudadano", ticket_id, anon_id, sala_de_chat)
+    log_ticket_debug("responder_ciudadano", ticket_id, None, sala_de_chat)
 
-    if sala_de_chat.user_id is None and not es_anonimo_ticket:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-    if sala_de_chat.user_id is not None and not (es_dueño or es_anonimo_ticket):
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
+    if sala_de_chat.user_id is None or not es_dueño:
+        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
 
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
     if sala_de_chat.estado == "cerrado":
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
+        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
 
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
@@ -370,8 +361,7 @@ def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
         comentario_data={
             "comentario": data["comentario"],
             "user_id": user_id_para_comentario,
-            "es_admin": False,
-            "anon_id": anon_id
+            "es_admin": False
         }
     )
     if nuevo_comentario:
@@ -385,8 +375,7 @@ def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
 def get_panel_por_categoria(current_user: User):
     es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
     if not es_agente_municipal:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
+        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)}")
         return jsonify({"error": "No tienes permiso para acceder a este panel."}), 403
 
     try:
@@ -423,8 +412,9 @@ def get_panel_por_categoria(current_user: User):
 
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
-@anon_o_token_requerido
-def actualizar_ubicacion_ticket(tipo: str, ticket_id: int, current_user=None, anon_id=None):
+@token_requerido
+def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
+    """Actualiza la ubicación geográfica asociada a un ticket."""
     data = request.get_json() or {}
     lat = (
         data.get('latitud')
@@ -445,24 +435,22 @@ def actualizar_ubicacion_ticket(tipo: str, ticket_id: int, current_user=None, an
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     has_perm = False
-    if current_user and current_user.id == ticket_obj.user_id:
+    if current_user.id == ticket_obj.user_id:
         has_perm = True
-    elif anon_id and getattr(ticket_obj, 'anon_id', None) == anon_id:
+    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
         has_perm = True
-    elif current_user and tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
-        has_perm = True
-    elif current_user and tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+    elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         has_perm = True
 
     if not has_perm:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
+        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
 
         return jsonify({"error": "No tienes permiso para modificar este ticket."}), 403
 
     log_ticket_debug(
         "actualizar_ubicacion",
         ticket_id,
-        anon_id or request.headers.get("Anon-Id"),
+        None,
         ticket_obj,
     )
 
