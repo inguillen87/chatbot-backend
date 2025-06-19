@@ -1,26 +1,8 @@
 from flask import Blueprint, request, jsonify, current_app
 from models import MunicipioTicket, PymeTicket, User, TicketComentario, db
 from services.ticket_service import servicio_tickets
-from .auth import token_requerido
+from .auth import token_requerido, anon_o_token_requerido
 from collections import defaultdict
-from functools import wraps
-
-# ----- DECORADOR PARA PERMITIR TOKEN O ANON_ID -----
-def anon_o_token_requerido(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", "")
-        user = None
-        if auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
-            if token:
-                user = User.query.filter_by(token=token).first()
-
-        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
-        if not user and not anon_id:
-            return jsonify({"error": "Token o anon_id requerido"}), 401
-        return f(user, anon_id, *args, **kwargs)
-    return decorated
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
@@ -80,7 +62,7 @@ def get_tickets_del_usuario(current_user: User):
 # ---------- DETALLE DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @anon_o_token_requerido
-def get_detalle_ticket(current_user: User | None, anon_id: str | None, tipo: str, ticket_id: int):
+def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = None, anon_id: str | None = None):
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket = db.session.get(TicketModel, ticket_id)
     if not ticket:
@@ -245,7 +227,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 # ---------- CHAT EN VIVO: MENSAJES (TOKEN O ANONIMO) ----------
 @ticket_bp.route('/chat/<int:ticket_id>/mensajes', methods=['GET'])
 @anon_o_token_requerido
-def get_chat_mensajes(current_user, anon_id, ticket_id):
+def get_chat_mensajes(ticket_id: int, current_user=None, anon_id=None):
     """
     Devuelve los mensajes del chat en vivo.
     Permite acceso por user logueado o por anon_id (controla que corresponda).
@@ -293,7 +275,7 @@ def get_chat_mensajes(current_user, anon_id, ticket_id):
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (TOKEN O ANONIMO) ----------
 @ticket_bp.route('/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
 @anon_o_token_requerido
-def responder_ciudadano_a_chat(current_user, anon_id, ticket_id):
+def responder_ciudadano_a_chat(ticket_id: int, current_user=None, anon_id=None):
     """
     Permite al ciudadano responder en el chat de su ticket (token o anon).
     """
@@ -373,7 +355,7 @@ def get_panel_por_categoria(current_user: User):
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @anon_o_token_requerido
-def actualizar_ubicacion_ticket(current_user, anon_id, tipo: str, ticket_id: int):
+def actualizar_ubicacion_ticket(tipo: str, ticket_id: int, current_user=None, anon_id=None):
     data = request.get_json() or {}
     lat = (
         data.get('latitud')
