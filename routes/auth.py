@@ -131,7 +131,10 @@ def register():
 @token_requerido
 def register_from_widget(owner_user):
     """Registro rápido desde el widget asociado al token."""
-    data = request.get_json() or {}
+    # Aceptar tanto JSON como formularios tradicionales
+    data = request.get_json(silent=True)
+    if not data:
+        data = request.form.to_dict() if request.form else {}
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
