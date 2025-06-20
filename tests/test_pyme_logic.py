@@ -113,6 +113,13 @@ class PymeLogicTests(unittest.TestCase):
         resp = pymes.responder_pyme('Necesito hablar con un agente', user, None)
         self.assertIn('sala de chat', resp['respuesta'])
 
+    @patch('services.pymes.servicio_tickets')
+    @patch('services.pymes._clasificar_intencion_con_llm', return_value='hablar_con_agente_pyme')
+    def test_human_escalation_pyme_anonymous_requires_login(self, mock_clf, mock_servicio):
+        mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
+        resp = pymes.responder_pyme('Necesito hablar con un agente', None, None)
+        self.assertIn('iniciar sesión', resp['respuesta'])
+
     def test_greeting_with_typo(self):
         user = DummyUser()
         resp = pymes.responder_pyme('holaa buenos noxes', user, None)

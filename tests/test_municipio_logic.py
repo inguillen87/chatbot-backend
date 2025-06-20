@@ -85,6 +85,14 @@ class MunicipioLogicTests(unittest.TestCase):
         resp = municipios.responder_municipio('Hablar con un agente', user, None)
         self.assertIn('chat directa', resp['respuesta'])
 
+    @patch('services.municipios.get_cohere_response', return_value='')
+    @patch('services.municipios.servicio_tickets')
+    @patch('services.municipios._clasificar_intencion_con_llm', return_value='hablar_con_agente')
+    def test_human_escalation_anonymous_requires_login(self, mock_clf, mock_servicio, mock_llm):
+        mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
+        resp = municipios.responder_municipio('Hablar con un agente', None, None)
+        self.assertIn('iniciar sesión', resp['respuesta'])
+
     def test_greeting_variation(self):
         user = DummyUser()
         resp = municipios.responder_municipio('hola buenos noches', user, None)

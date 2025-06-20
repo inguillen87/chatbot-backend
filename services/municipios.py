@@ -1019,6 +1019,21 @@ class ToolHandler(BaseMunicipioHandler):
 class HumanEscalationHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         if self.context.get("intencion") == "hablar_con_agente":
+            # Si el usuario es anónimo, pedimos que se registre antes de
+            # iniciar el chat en vivo. Esto asegura que podamos asociar el
+            # ticket a un usuario válido y guardar su ubicación.
+            if not self.context.get("user_id"):
+                return {
+                    "respuesta": (
+                        "Para hablar con un agente y registrar tu reclamo, \n"
+                        "necesitás iniciar sesión o registrarte."
+                    ),
+                    "botones": [
+                        {"texto": "Iniciar sesión", "url": "/login"},
+                        {"texto": "Registrarme Gratis", "url": "/register"},
+                    ],
+                }
+
             logger.info(
                 f"[HumanEscalationHandler] Usuario {self.context.get('user_id')} pide agente."
             )
