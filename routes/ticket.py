@@ -76,7 +76,7 @@ def get_tickets_del_usuario(current_user: User):
 # ---------- DETALLE DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @anon_o_token_requerido
-def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = None, anon_id: str | None = None):
+def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = None, anon_id: str | None = None, owner_user: User | None = None):
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket = db.session.get(TicketModel, ticket_id)
     if not ticket:
@@ -84,6 +84,9 @@ def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = No
 
     log_ticket_debug("get_detalle_ticket", ticket_id, anon_id, ticket)
 
+    is_admin_muni = False
+    is_dueño = False
+    is_admin_pyme = False
     if current_user:
         is_admin_muni = (
             tipo == "municipio"
@@ -95,7 +98,7 @@ def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = No
             tipo == "pyme"
             and current_user.rubro_id
             and getattr(ticket, "rubro_id", None) == current_user.rubro_id
-            )
+        )
     if not (is_admin_muni or is_dueño or is_admin_pyme):
         current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
 
