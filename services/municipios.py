@@ -287,6 +287,26 @@ class CancelHandler(BaseMunicipioHandler):
         return None
 
 
+class PoliteHandler(BaseMunicipioHandler):
+    """Responde brevemente ante agradecimientos u otras expresiones corteses."""
+
+    KEYWORDS = {"gracias", "ok", "ok gracias", "muchas gracias"}
+
+    def handle(self, pregunta: str) -> dict | None:
+        texto = normalizar_texto(pregunta)
+        if texto in self.KEYWORDS:
+            self.context.get("contexto_municipio", {}).clear()
+            return {
+                "respuesta": "¡De nada! ¿Necesitás ayuda con algo más?",
+                "botones": [
+                    {"texto": "Hacer un reclamo"},
+                    {"texto": "Consultar estado de un trámite"},
+                    {"texto": "Hablar con un agente"},
+                ],
+            }
+        return None
+
+
 class RecoleccionHandler(BaseMunicipioHandler):
     """Atiende consultas sobre recolección de residuos en cualquier momento."""
 
@@ -1102,6 +1122,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
     handler_chain = [
         GreetingHandler,
         CancelHandler,
+        PoliteHandler,
         IntentClassifierHandler,
         HumanEscalationHandler,
         RecoleccionHandler,
