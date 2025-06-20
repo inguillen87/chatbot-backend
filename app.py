@@ -71,14 +71,6 @@ def create_app(config_class=Config):
 
     # --- 3. Configuración de CORS ---
     # CORS abierto para pruebas
-    CORS(
-        app,
-        origins="*",
-        supports_credentials=True,
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Origin", "Accept", "Anon-Id", "x-entity-token"],
-    )
-
     @app.after_request
     def ensure_x_entity_header(resp):
         """Guarantee `x-entity-token` is allowed in CORS preflight responses."""
@@ -88,6 +80,14 @@ def create_app(config_class=Config):
             headers.append("x-entity-token")
         resp.headers["Access-Control-Allow-Headers"] = ", ".join(headers)
         return resp
+
+    CORS(
+        app,
+        origins="*",
+        supports_credentials=True,
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Origin", "Accept", "Anon-Id", "x-entity-token"],
+    )
 
     # --- 4. Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
