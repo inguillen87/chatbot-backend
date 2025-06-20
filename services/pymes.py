@@ -837,6 +837,20 @@ class VectorCatalogHandler(BaseHandler):
                         'estado_respuesta': 'mostrar_catalogo'
                     }
 
+        if not productos_mostrados:
+            from services.catalogo_local import buscar_catalogo_local
+            productos_mostrados = buscar_catalogo_local(user_id, pregunta, limite=DEFAULT_SEARCH_LIMIT)
+            if productos_mostrados:
+                self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+                resumen = "\n".join([
+                    f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in productos_mostrados
+                ])
+                return {
+                    'respuesta': f"Estos son algunos productos que encontré en nuestro catálogo:\n{resumen}",
+                    'fuente': 'catalogo_local',
+                    'estado_respuesta': 'mostrar_catalogo'
+                }
+
         # Fallback: intentar scrapear la web si no hubo resultados
         user_obj = self.context.get('user_obj')
         if user_obj and getattr(user_obj, 'link_web', None):
