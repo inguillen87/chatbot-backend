@@ -148,6 +148,7 @@ def cargar_usuarios_demo():
     db.session.commit()
     print("✅ Usuarios demo listos.")
 
+
 def cargar_datos_iniciales():
     print("🚀 Cargando datos iniciales...")
     cargar_faqs()
