@@ -3,7 +3,7 @@
 from flask import Blueprint, request, jsonify, current_app, g
 from sqlalchemy import func
 from werkzeug.security import check_password_hash # Importación que faltaba
-from models import User, Rubro
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario
 from extensions import db
 from functools import wraps
 import uuid
@@ -160,6 +160,14 @@ def register_from_widget(owner_user):
     try:
         db.session.add(nuevo)
         db.session.commit()
+
+        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
+        if anon_id:
+            MunicipioTicket.query.filter_by(anon_id=anon_id, user_id=None).update({"user_id": nuevo.id})
+            PymeTicket.query.filter_by(anon_id=anon_id, user_id=None).update({"user_id": nuevo.id})
+            TicketComentario.query.filter_by(anon_id=anon_id, user_id=None).update({"user_id": nuevo.id})
+            db.session.commit()
+
         return jsonify({
             "id": nuevo.id,
             "token": nuevo.token,
@@ -224,29 +232,25 @@ def anon_o_token_requerido(f):
         # Permitir solicitudes OPTIONS (preflight CORS) sin autenticación
         if request.method == "OPTIONS":
             return "", 200
-        # 1. Autenticación estándar primero
         token = obtener_token()
-        user = None
-        if token:
-            user = User.query.filter_by(token=token).first()
-            if user:
-                g.current_user = user
-                return f(current_user=user, *args, **kwargs)
-
-        # 2. Si no hay user, busca anon_id en header o query string
         anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
-        if not anon_id:
-            return (
-                jsonify({"error": "Token o anon_id requerido"}),
-                401,
-            )
+        user = User.query.filter_by(token=token).first() if token else None
 
-        g.anon_id = anon_id
-        response = f(current_user=None, anon_id=anon_id, *args, **kwargs)
-        resp_obj = response[0] if isinstance(response, tuple) else response
-        try:
-            resp_obj.headers["Anon-Id"] = anon_id
-        except Exception:
-            pass
-        return response
+        if user and not anon_id:
+            g.current_user = user
+            return f(current_user=user, *args, **kwargs)
+
+        if anon_id:
+            if user:
+                g.owner_user = user
+            g.anon_id = anon_id
+            response = f(current_user=None, anon_id=anon_id, owner_user=user, *args, **kwargs)
+            resp_obj = response[0] if isinstance(response, tuple) else response
+            try:
+                resp_obj.headers["Anon-Id"] = anon_id
+            except Exception:
+                pass
+            return response
+
+        return jsonify({"error": "Token o anon_id requerido"}), 401
     return decorated

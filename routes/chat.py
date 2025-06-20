@@ -206,14 +206,15 @@ def ask_options():
 
 @chat_bp.route("/ask", methods=["POST"])
 @anon_o_token_requerido
-def ask(current_user=None, anon_id=None):
+def ask(current_user=None, anon_id=None, owner_user=None):
     """Endpoint genérico que delega según el rubro.
 
     El frontend debe enviar siempre el rubro y el tipo de chat correctos.
     Si llegan cruzados, el backend ajustará o lanzará error para evitar
     mezclar la estética de pymes con la de municipios.
     """
-    return _procesar_chat(current_user=current_user, anon_id=anon_id)
+    user = current_user or owner_user
+    return _procesar_chat(current_user=user, anon_id=anon_id)
 
 
 # Handler para el preflight de CORS de /ask/pyme
@@ -224,14 +225,15 @@ def ask_pyme_options():
 
 @chat_bp.route("/ask/pyme", methods=["POST"])
 @anon_o_token_requerido
-def ask_pyme(current_user=None, anon_id=None):
+def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     """Procesa preguntas para pymes.
 
     Aunque el endpoint fije el tipo 'pyme', se verificará el rubro para evitar
     mezclar respuestas de municipio. Cualquier inconsistencia se registra y se
     corrige o se devuelve error.
     """
-    return _procesar_chat("pyme", current_user=current_user, anon_id=anon_id)
+    user = current_user or owner_user
+    return _procesar_chat("pyme", current_user=user, anon_id=anon_id)
 
 
 # Preflight CORS handler for /ask/municipio
@@ -241,10 +243,11 @@ def ask_municipio_options():
 
 @chat_bp.route("/ask/municipio", methods=["POST"])
 @anon_o_token_requerido
-def ask_municipio(current_user=None, anon_id=None):
+def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     """Procesa preguntas para municipios.
 
     Se valida que el rubro corresponda a un ente público y, de no ser así,
     se registrará un error. Esto previene mezclar lógicas de pyme y municipio.
     """
-    return _procesar_chat("municipio", current_user=current_user, anon_id=anon_id)
+    user = current_user or owner_user
+    return _procesar_chat("municipio", current_user=user, anon_id=anon_id)
