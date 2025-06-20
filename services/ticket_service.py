@@ -128,4 +128,43 @@ class ServicioTickets:
             logger.error(f"Error de DB al crear comentario: {e}", exc_info=True)
             return None
 
+    def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:
+        """Asigna a ``nuevo_user_id`` todos los tickets y comentarios
+        vinculados al ``anon_id`` proporcionado."""
+        if not anon_id or not nuevo_user_id:
+            logger.warning("migrar_tickets_de_anonimo llamado sin parametros validos")
+            return 0
+
+        try:
+            muni_count = (
+                MunicipioTicket.query.filter_by(anon_id=anon_id)
+                .update({"user_id": nuevo_user_id})
+            )
+            pyme_count = (
+                PymeTicket.query.filter_by(anon_id=anon_id)
+                .update({"user_id": nuevo_user_id})
+            )
+            comentario_count = (
+                TicketComentario.query.filter_by(anon_id=anon_id)
+                .update({"user_id": nuevo_user_id})
+            )
+            db.session.commit()
+            total = (muni_count or 0) + (pyme_count or 0) + (comentario_count or 0)
+            logger.info(
+                "Tickets migrados de anon_id %s a user_id %s: %s",
+                anon_id,
+                nuevo_user_id,
+                total,
+            )
+            return total
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            logger.error(
+                "Error de DB al migrar tickets de anonimo %s: %s",
+                anon_id,
+                e,
+                exc_info=True,
+            )
+            return 0
+
 servicio_tickets = ServicioTickets()

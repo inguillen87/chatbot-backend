@@ -138,6 +138,7 @@ def register_from_widget(owner_user):
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
+    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
     if not name or not email or not password:
         return jsonify({"error": "Faltan datos obligatorios."}), 400
 
@@ -160,6 +161,12 @@ def register_from_widget(owner_user):
     try:
         db.session.add(nuevo)
         db.session.commit()
+
+        if anon_id:
+            from services.ticket_service import servicio_tickets
+
+            servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+
         return jsonify({
             "id": nuevo.id,
             "token": nuevo.token,
