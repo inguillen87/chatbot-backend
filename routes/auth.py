@@ -162,6 +162,12 @@ def register_from_widget(owner_user):
         db.session.add(nuevo)
         db.session.commit()
 
+        # --------- BLOQUE CRÍTICO --------------
+        if anon_id:
+            from services.ticket_service import servicio_tickets
+            servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+        # --------- FIN BLOQUE CRÍTICO ----------
+
         return jsonify({
             "id": nuevo.id,
             "token": nuevo.token,
@@ -248,3 +254,4 @@ def anon_o_token_requerido(f):
 
         return jsonify({"error": "Token o anon_id requerido"}), 401
     return decorated
+
