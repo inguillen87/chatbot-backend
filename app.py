@@ -5,8 +5,7 @@ import logging
 import sys
 from flask import Flask
 from flask_cors import CORS
-from flask_session import Session  # <-- 1. IMPORTACIÓN AÑADIDA
-#from flask_login import LoginManager  # <-- NUEVA IMPORTACIÓN
+from flask_session import Session
 
 from config import Config
 from extensions import db, migrate
@@ -19,7 +18,7 @@ from routes.ticket import ticket_bp
 from routes.rubros import rubros_bp
 from services.upload_processor import upload_bp
 from cli_commands import register_commands
-from routes.pedidos import pedidos_bp # <-- ¡NUEVA IMPORTACIÓN AQUÍ!
+from routes.pedidos import pedidos_bp
 from routes.catalogo import catalogo_bp
 
 def create_app(config_class=Config):
@@ -33,7 +32,7 @@ def create_app(config_class=Config):
     print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
     print(f"SESSION_TYPE: {app.config.get('SESSION_TYPE')}")
     print("-----------------------------")
- # --- RUTAS DE PRUEBA PARA DEPURAR LA SESIÓN ---
+    # --- RUTAS DE PRUEBA PARA DEPURAR LA SESIÓN ---
     @app.route('/poner-memoria')
     def poner_memoria():
         from flask import session
@@ -46,15 +45,14 @@ def create_app(config_class=Config):
         valor = session.get('clave_de_prueba', '¡LA MEMORIA ESTÁ VACÍA!')
         return f"<h1>El valor guardado en la memoria es: {valor}</h1>"
     # --- FIN DE RUTAS DE PRUEBA ---
-    
-    # --- 2. Bloque único y ordenado de Inicialización de Extensiones ---
+
+    # --- 2. Inicialización de Extensiones ---
     db.init_app(app)
     migrate.init_app(app, db)
-    
+
     # Configuración y activación de Sesiones en el Servidor
     app.config['SESSION_SQLALCHEMY'] = db
     Session(app)
-
 
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -70,23 +68,38 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- 3. Configuración de CORS ---
-    # CORS abierto para pruebas
+    # Permite todos los orígenes solo para pruebas (ajustar para prod si hace falta)
     CORS(
         app,
         origins="*",
         supports_credentials=True,
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Origin", "Accept", "Anon-Id", "x-entity-token"],
+        allow_headers=[
+            "Authorization", "Content-Type", "Origin", "Accept",
+            "Anon-Id", "x-entity-token"
+        ]
     )
 
+    # --- FIX UNIVERSAL DE HEADERS CUSTOM PARA CORS ---
     @app.after_request
-    def ensure_x_entity_header(resp):
-        """Guarantee `x-entity-token` is allowed in CORS preflight responses."""
-        header_value = resp.headers.get("Access-Control-Allow-Headers", "")
-        headers = [h.strip() for h in header_value.split(",") if h.strip()]
-        if "x-entity-token" not in [h.lower() for h in headers]:
-            headers.append("x-entity-token")
-        resp.headers["Access-Control-Allow-Headers"] = ", ".join(headers)
+    def ensure_custom_cors_headers(resp):
+        """
+        Garantiza que TODOS los headers custom que tu app pueda llegar a usar,
+        queden siempre incluidos en Access-Control-Allow-Headers de la respuesta,
+        para que ningún preflight se los rechace, no importa si Flask-CORS los olvidó.
+        """
+        # Define la lista completa de headers custom que podés llegar a necesitar (sumá acá si agregás más)
+        needed = [
+            "Authorization", "Content-Type", "Origin", "Accept",
+            "Anon-Id", "x-entity-token"
+        ]
+        prev = resp.headers.get("Access-Control-Allow-Headers", "")
+        actual = [h.strip() for h in prev.split(",") if h.strip()]
+        actual_lower = [h.lower() for h in actual]
+        for n in needed:
+            if n.lower() not in actual_lower:
+                actual.append(n)
+        resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
         return resp
 
     # --- 4. Registro de Blueprints (Rutas) ---
@@ -97,7 +110,7 @@ def create_app(config_class=Config):
     app.register_blueprint(rubros_bp)
     app.register_blueprint(catalogo_bp)
     app.register_blueprint(pedidos_bp)
-    
+
     # Registro de comandos CLI
     register_commands(app)
 
