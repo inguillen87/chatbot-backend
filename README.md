@@ -31,3 +31,11 @@ El backend acepta el token en cualquiera de los siguientes lugares de la solicit
 
 Esto permite embebidos del widget que envíen el token como atributo o en la URL sin necesidad de modificar el backend.
 
+### Migración de tickets anónimos
+
+Si el usuario crea tickets en el widget antes de registrarse, guarda un
+identificador anónimo en el navegador (`Anon-Id`). Al enviar ese valor en el
+header `Anon-Id` durante la llamada a `POST /auth/widget/register`, el backend
+migrará automáticamente esos tickets y comentarios para que pertenezcan al nuevo
+usuario.
+
