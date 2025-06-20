@@ -1037,6 +1037,20 @@ class HumanEscalationPymeHandler(BaseHandler):
 
     def handle(self, pregunta: str) -> dict | None:
         if self.context.get('intencion') == 'hablar_con_agente_pyme':
+            # Si es un visitante anónimo, primero debe registrarse para
+            # poder asociar el chat a su cuenta y guardar la información
+            # de ubicación.
+            if not self.context.get('user_id'):
+                return {
+                    "respuesta": (
+                        "Para chatear con un agente necesitás registrarte o iniciar sesión."
+                    ),
+                    "botones": [
+                        {"texto": "Iniciar sesión", "url": "/login"},
+                        {"texto": "Registrarme Gratis", "url": "/register"},
+                    ],
+                }
+
             logger.info(f"[HumanEscalationPyme] Usuario {self.context.get('user_id')} pide agente.")
             ticket_data = {
                 "asunto": "Solicitud de Chat en Vivo",
