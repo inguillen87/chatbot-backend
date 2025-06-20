@@ -11,6 +11,19 @@ from services.logic import (
 )
 from .auth import anon_o_token_requerido
 
+
+from flask import make_response
+
+def cors_options_response():
+    resp = make_response('', 200)
+    # OJO: Si en producción no querés exponerlo a todos, cambiá el "*" por tu dominio
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token'
+    resp.headers['Access-Control-Allow-Credentials'] = 'true'
+    return resp
+
+
 chat_bp = Blueprint("chat_bp", __name__)
 
 
@@ -201,7 +214,7 @@ def _procesar_chat(
 # Handler para el preflight de CORS de /ask
 @chat_bp.route("/ask", methods=["OPTIONS"])
 def ask_options():
-    return "", 200
+    return cors_options_response()
 
 
 @chat_bp.route("/ask", methods=["POST"])
@@ -220,7 +233,7 @@ def ask(current_user=None, anon_id=None, owner_user=None):
 # Handler para el preflight de CORS de /ask/pyme
 @chat_bp.route("/ask/pyme", methods=["OPTIONS"])
 def ask_pyme_options():
-    return "", 200
+    return cors_options_response()
 
 
 @chat_bp.route("/ask/pyme", methods=["POST"])
@@ -239,7 +252,7 @@ def ask_pyme(current_user=None, anon_id=None, owner_user=None):
 # Preflight CORS handler for /ask/municipio
 @chat_bp.route("/ask/municipio", methods=["OPTIONS"])
 def ask_municipio_options():
-    return "", 200
+    return cors_options_response()
 
 @chat_bp.route("/ask/municipio", methods=["POST"])
 @anon_o_token_requerido
