@@ -10,7 +10,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /auth/widget/register` – quick sign up for end users using the widget.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
-- `GET /crm/clientes` – for admins, returns the users associated with their token.
+
 
 ## Uso correcto del rubro
 

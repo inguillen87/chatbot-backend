@@ -95,6 +95,13 @@ def register():
         return jsonify({"error": f"El rubro '{data['rubro']}' no es válido."}), 400
 
     acepta_marketing = bool(data.get('acepta_marketing'))
+    tags = data.get('tags')
+    if isinstance(tags, list):
+        tags_value = ','.join(tags)
+    elif isinstance(tags, str):
+        tags_value = tags
+    else:
+        tags_value = ''
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -106,7 +113,8 @@ def register():
         acepto_terminos=True,
         fecha_aceptacion_terminos=datetime.utcnow(),
         acepta_marketing=acepta_marketing,
-        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None
+        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+        tags=tags_value
     )
     user.set_password(data['password'])
 
@@ -146,6 +154,13 @@ def register_from_widget(owner_user):
         return jsonify({"error": "Email ya registrado."}), 409
 
     acepta_marketing = bool(data.get('acepta_marketing'))
+    tags = data.get('tags')
+    if isinstance(tags, list):
+        tags_value = ','.join(tags)
+    elif isinstance(tags, str):
+        tags_value = tags
+    else:
+        tags_value = ''
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
@@ -156,6 +171,7 @@ def register_from_widget(owner_user):
         rol="usuario",
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+        tags=tags_value,
     )
     nuevo.set_password(password)
     try:
