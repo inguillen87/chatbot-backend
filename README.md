@@ -18,6 +18,11 @@ This project exposes several endpoints to process questions for different sector
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
 - `GET /crm/analytics` – basic stats of registered users and tickets.
 - `POST /crm/campanas/enviar` – mock endpoint to send campaigns to selected users.
+- `POST /tickets/<tipo>/<id>/encuesta` – submit satisfaction survey for a ticket.
+- `GET /tickets/<tipo>/<id>/encuesta` – retrieve survey results for a ticket.
+- `GET /tickets/<tipo>/mapa` – list open tickets with latitude and longitude.
+- `GET /tramites` – list available municipal procedures, supports `?q=` filtering.
+- `GET /tramites/<nombre>` – detailed info for a specific procedure.
 
 ## Variables de entorno
 
@@ -30,7 +35,6 @@ variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
 `chatboc.ar` por defecto.
 
-n
 
 ## Uso correcto del rubro
 
@@ -78,3 +82,4 @@ usuario.
 - El historial de chat para pymes ahora conserva hasta 30 mensajes para dar más contexto en cada respuesta.
   Nuevo módulo de validaciones que comprueba nombre, correo y teléfono usando librerías open source.
 - Si no puedes modificar `requirements.txt`, instala manualmente `email-validator` y `phonenumbers` para habilitar estas validaciones.
+- Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.

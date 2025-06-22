@@ -12,5 +12,6 @@ instance/*
 !data/municipios/**
 __pycache__/
 *.pyc
+venv/
 
 # Pero permite que la estructura instance/ exista

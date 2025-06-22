@@ -20,9 +20,10 @@ class _DummySession:
 models_stub.MunicipioTicket = _DummyModel
 models_stub.PymeTicket = _DummyModel
 models_stub.TicketComentario = _DummyModel
+models_stub.TicketSatisfaccion = _DummyModel
 models_stub.SitioWebInfo = _DummyModel
 models_stub.db = SimpleNamespace(session=_DummySession())
-sys.modules.setdefault('models', models_stub)
+sys.modules['models'] = models_stub
 
 twilio_rest_stub = ModuleType('twilio.rest')
 class _DummyClient:
