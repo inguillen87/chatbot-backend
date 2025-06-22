@@ -23,6 +23,13 @@ El archivo `services/logic.py` define el conjunto `RUBROS_PUBLICOS` con los rubr
 
 Si el rubro enviado pertenece a este conjunto, el tipo de chat correspondiente es `"municipio"`. Debe usarse el endpoint `/ask/municipio` y el campo `tipo_chat` igual a `"municipio"`. Enviar un rubro público al endpoint `/ask/pyme` resultará en un ajuste automático o un error según la configuración.
 
+El backend prioriza siempre el rubro para elegir la lógica. Si el token o el
+rubro indicado corresponde a un municipio, se utilizará la lógica de municipio
+aun cuando el `tipo_chat` recibido sea "pyme". De igual manera, un rubro de pyme
+forzará el uso de la lógica de pyme. No existe un tipo por defecto: si no se
+puede determinar el rubro ni se envía un `tipo_chat` válido, la petición devuelve
+un error claro.
+
 ## Registro en el widget
 
 Las funciones premium como el chat en vivo o el guardado de la ubicación requieren que el usuario esté autenticado. El registro puede hacerse sin salir del chat enviando un `POST /auth/widget/register` con el token de la pyme o municipio en el encabezado `Authorization`. El backend asociará automáticamente al nuevo usuario con esa entidad y registrará si acepta recibir comunicaciones de marketing.

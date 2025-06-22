@@ -163,17 +163,17 @@ def responder_chatboc(
         f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
     )
 
-    # Si el rubro sugiere un tipo de chat distinto al provisto, ajustamos
+    # Si el rubro indica un tipo específico de lógica, lo usamos siempre
     if rubro_nombre:
-        esperado = "municipio" if rubro_nombre in RUBROS_PUBLICOS else "pyme"
+        esperado = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
         if tipo_chat and tipo_chat != esperado:
-            logger.error(
-                "ERROR: Se está intentando procesar pyme como municipio o viceversa"
-            )
             logger.warning(
-                f"Tipo de chat '{tipo_chat}' no coincide con el rubro '{rubro_nombre}'. AJUSTANDO a '{esperado}'."
+                "Tipo de chat '%s' no coincide con el rubro '%s'. Usando '%s'.",
+                tipo_chat,
+                rubro_nombre,
+                esperado,
             )
-            tipo_chat = esperado
+        tipo_chat = esperado
     elif tipo_chat not in ("municipio", "pyme"):
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
