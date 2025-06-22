@@ -229,13 +229,26 @@ def login_from_widget(owner_user):
 @token_requerido
 def get_current_user(user):
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
+    from utils.plan_limits import limite_para_usuario
     return jsonify({
-        "id": user.id, "email": user.email, "name": user.name, "token": user.token,
-        "rubro": rubro_nombre, "nombre_empresa": user.nombre_empresa, "telefono": user.telefono,
-        "direccion": user.direccion, "ciudad": user.ciudad, "provincia": user.provincia,
-        "pais": user.pais, "latitud": user.latitud, "longitud": user.longitud,
-        "link_web": user.link_web, "plan": user.plan, "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": user.limite_preguntas, "horario_json": user.horario_json,
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "token": user.token,
+        "rubro": rubro_nombre,
+        "nombre_empresa": user.nombre_empresa,
+        "telefono": user.telefono,
+        "direccion": user.direccion,
+        "ciudad": user.ciudad,
+        "provincia": user.provincia,
+        "pais": user.pais,
+        "latitud": user.latitud,
+        "longitud": user.longitud,
+        "link_web": user.link_web,
+        "plan": user.plan,
+        "preguntas_usadas": user.preguntas_usadas,
+        "limite_preguntas": limite_para_usuario(user),
+        "horario_json": user.horario_json,
         "logo_url": getattr(user, "logo_url", ""),
     })
 
@@ -268,6 +281,11 @@ def actualizar_me(user):
                 setattr(user, "horario", value)
             else:
                 setattr(user, key, value)
+                if key == "plan":
+                    if value == "pro":
+                        user.limite_preguntas = 200
+                    elif value == "full":
+                        user.limite_preguntas = None
 
     if "tags" in data:
         tags = data.get("tags")
