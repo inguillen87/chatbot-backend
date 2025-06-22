@@ -98,6 +98,13 @@ class MunicipioLogicTests(unittest.TestCase):
         resp = municipios.responder_municipio('hola buenos noches', user, None)
         self.assertIn('tu asistente digital del Municipio', resp['respuesta'])
 
+    def test_small_talk_municipio(self):
+        user = DummyUser()
+        with patch('services.logic.get_cohere_response', side_effect=['SI', '¡Hola! ¿Todo bien!']) as mock_llm:
+            resp = municipios.responder_municipio('¿Cómo te va?', user, None)
+            self.assertIn('Hola', resp['respuesta'])
+            self.assertEqual(mock_llm.call_count, 2)
+
     def test_tramite_selection_returns_string(self):
         """El texto de respuesta para un trámite debe ser una cadena."""
         user = DummyUser()

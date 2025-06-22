@@ -8,7 +8,11 @@ import difflib
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
-from .logic import _clasificar_intencion_con_llm
+from .logic import (
+    _clasificar_intencion_con_llm,
+    detectar_small_talk_con_llm,
+    generar_respuesta_small_talk,
+)
 from twilio.rest import Client
 from services.utils_placeholders import (
     reemplazar_placeholders,
@@ -303,6 +307,19 @@ class PoliteHandler(BaseMunicipioHandler):
                     {"texto": "Consultar estado de un trámite"},
                     {"texto": "Hablar con un agente"},
                 ],
+            }
+        return None
+
+
+class SmallTalkHandler(BaseMunicipioHandler):
+    """Responde cordialmente a consultas de small talk usando un LLM."""
+
+    def handle(self, pregunta: str) -> dict | None:
+        if detectar_small_talk_con_llm(pregunta):
+            respuesta = generar_respuesta_small_talk(pregunta)
+            return {
+                "respuesta": respuesta,
+                "fuente": "smalltalk_municipio_llm",
             }
         return None
 
@@ -1138,6 +1155,7 @@ def responder_municipio(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
         GreetingHandler,
         CancelHandler,
         PoliteHandler,
+        SmallTalkHandler,
         IntentClassifierHandler,
         HumanEscalationHandler,
         RecoleccionHandler,

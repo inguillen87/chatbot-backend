@@ -32,6 +32,49 @@ def es_rubro_publico(rubro) -> bool:
 
 from services.cohere_ai import get_cohere_response  # Asegúrate de que esta importación exista y sea correcta
 
+# --- Utilidades para small talk ---
+PROMPT_DETECT_SMALL_TALK = """
+Analiza la FRASE DEL USUARIO y responde únicamente "SI" o "NO".
+Responde "SI" si la frase es simplemente una charla casual o un saludo sin una
+solicitud específica. Responde "NO" en caso contrario.
+
+FRASE DEL USUARIO: "{pregunta_usuario}"
+"""
+
+PROMPT_RESPUESTA_SMALL_TALK = """
+Responde de manera cordial y breve en español a la FRASE DEL USUARIO y luego
+ofrece tu ayuda.
+
+FRASE DEL USUARIO: "{pregunta_usuario}"
+"""
+
+
+def detectar_small_talk_con_llm(pregunta: str) -> bool:
+    """Devuelve ``True`` si la pregunta parece small talk según el LLM."""
+    prompt = PROMPT_DETECT_SMALL_TALK.format(pregunta_usuario=pregunta)
+    try:
+        decision = get_cohere_response(
+            message=prompt,
+            preamble="Eres un clasificador de small talk. Responde solo SI o NO.",
+        )
+        return decision.strip().upper().startswith("SI")
+    except Exception as e:
+        logger.error(f"[SMALL_TALK] Error detectando small talk: {e}")
+        return False
+
+
+def generar_respuesta_small_talk(pregunta: str) -> str:
+    """Genera una respuesta cordial para una frase de small talk."""
+    prompt = PROMPT_RESPUESTA_SMALL_TALK.format(pregunta_usuario=pregunta)
+    try:
+        return get_cohere_response(
+            message=prompt,
+            preamble="Eres un asistente amigable que mantiene charlas casuales.",
+        ).strip()
+    except Exception as e:
+        logger.error(f"[SMALL_TALK] Error generando respuesta: {e}")
+        return "¡Hola! ¿En qué puedo ayudarte?"
+
 # Puedes ajustar este prompt según las intenciones que quieras clasificar
 PROMPT_CLASIFICACION_INTENCION = """
 Analiza la siguiente PREGUNTA DEL USUARIO y clasifica su INTENCIÓN.
