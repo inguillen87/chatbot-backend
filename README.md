@@ -35,8 +35,6 @@ variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
 `chatboc.ar` por defecto.
 
-n
-
 ## Uso correcto del rubro
 
 El archivo `services/logic.py` define el conjunto `RUBROS_PUBLICOS` con los rubros que se tratan como entes públicos, por ejemplo `"municipio"` y `"municipios"`.
