@@ -1,5 +1,12 @@
 from flask import Blueprint, request, jsonify, current_app
-from models import MunicipioTicket, PymeTicket, User, TicketComentario, db
+from models import (
+    MunicipioTicket,
+    PymeTicket,
+    User,
+    TicketComentario,
+    TicketSatisfaccion,
+    db,
+)
 from services.ticket_service import servicio_tickets
 from .auth import token_requerido, anon_o_token_requerido
 from collections import defaultdict
@@ -533,4 +540,49 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
         "latitud": ticket_obj.latitud,
         "longitud": ticket_obj.longitud,
         "direccion": ticket_obj.direccion
+    })
+
+# ---------- ENCUESTA DE SATISFACCION ----------
+@ticket_bp.route('/<string:tipo>/<int:ticket_id>/encuesta', methods=['POST'])
+@token_requerido
+def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
+    data = request.get_json(silent=True) or {}
+    puntuacion = data.get('puntuacion')
+    comentario = data.get('comentario')
+    if puntuacion is None:
+        return jsonify({"error": "Falta la puntuacion."}), 400
+
+    TicketModel = MunicipioTicket if tipo == 'municipio' else PymeTicket
+    ticket_obj = db.session.get(TicketModel, ticket_id)
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    es_dueño = ticket_obj.user_id == current_user.id
+    es_admin = False
+    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
+        es_admin = True
+    if tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+        es_admin = True
+
+    if not (es_dueño or es_admin):
+        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+    encuesta = servicio_tickets.guardar_encuesta(ticket_id, tipo, int(puntuacion), comentario)
+    if encuesta:
+        return jsonify({"success": True, "encuesta_id": encuesta.id})
+    return jsonify({"error": "No se pudo guardar"}), 500
+
+
+@ticket_bp.route('/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
+@token_requerido
+def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
+    encuesta = TicketSatisfaccion.query.filter_by(ticket_id=ticket_id, tipo=tipo).first()
+    if not encuesta:
+        return jsonify({})
+    return jsonify({
+        "ticket_id": encuesta.ticket_id,
+        "tipo": encuesta.tipo,
+        "puntuacion": encuesta.puntuacion,
+        "comentario": encuesta.comentario,
+        "fecha": encuesta.fecha.isoformat() if encuesta.fecha else None,
     })

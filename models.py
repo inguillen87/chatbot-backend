@@ -269,6 +269,15 @@ class Log(db.Model):
     pregunta = db.Column(db.String(500), nullable=False)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
 
+class TicketSatisfaccion(db.Model):
+    __tablename__ = "ticket_satisfaccion"
+    id = db.Column(db.Integer, primary_key=True)
+    ticket_id = db.Column(db.Integer, nullable=False)
+    tipo = db.Column(db.String(10), nullable=False)
+    puntuacion = db.Column(db.Integer, nullable=False)
+    comentario = db.Column(db.Text, nullable=True)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+
 def generate_token():
     return str(uuid.uuid4())
 

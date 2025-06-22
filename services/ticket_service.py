@@ -4,7 +4,13 @@ from datetime import datetime
 from typing import Dict, Any, Literal, Union
 import logging
 
-from models import MunicipioTicket, PymeTicket, TicketComentario, db
+from models import (
+    MunicipioTicket,
+    PymeTicket,
+    TicketComentario,
+    TicketSatisfaccion,
+    db,
+)
 from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
@@ -126,6 +132,30 @@ class ServicioTickets:
         except SQLAlchemyError as e:
             db.session.rollback()
             logger.error(f"Error de DB al crear comentario: {e}", exc_info=True)
+            return None
+
+    def guardar_encuesta(
+        self,
+        ticket_id: int,
+        tipo_ticket: Literal["municipio", "pyme"],
+        puntuacion: int,
+        comentario: str | None = None,
+    ) -> Union[TicketSatisfaccion, None]:
+        try:
+            encuesta = TicketSatisfaccion(
+                ticket_id=ticket_id,
+                tipo=tipo_ticket,
+                puntuacion=puntuacion,
+                comentario=comentario,
+            )
+            db.session.add(encuesta)
+            db.session.commit()
+            return encuesta
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            logger.error(
+                f"Error de DB al guardar encuesta: {e}", exc_info=True
+            )
             return None
 
     def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:

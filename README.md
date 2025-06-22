@@ -18,6 +18,8 @@ This project exposes several endpoints to process questions for different sector
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
 - `GET /crm/analytics` – basic stats of registered users and tickets.
 - `POST /crm/campanas/enviar` – mock endpoint to send campaigns to selected users.
+- `POST /tickets/<tipo>/<id>/encuesta` – submit satisfaction survey for a ticket.
+- `GET /tickets/<tipo>/<id>/encuesta` – retrieve survey results for a ticket.
 
 ## Variables de entorno
 
@@ -30,7 +32,6 @@ variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
 `chatboc.ar` por defecto.
 
-n
 
 ## Uso correcto del rubro
 

@@ -21,15 +21,26 @@ models_stub.Conversacion = _DummyModel
 models_stub.PymeTicket = _DummyModel
 models_stub.MunicipioTicket = _DummyModel
 models_stub.TicketComentario = _DummyModel
+models_stub.TicketSatisfaccion = _DummyModel
 models_stub.PymePedido = _DummyModel
 models_stub.Rubro = _DummyModel
 models_stub.SitioWebInfo = _DummyModel
 models_stub.User = _DummyModel
-models_stub.CatalogoItem = _DummyModel
+class _DummyQuery(list):
+    def filter_by(self, **kwargs):
+        return self
+    def all(self):
+        return []
+
+class DummyCatalogoItem:
+    query = _DummyQuery()
+
+models_stub.CatalogoItem = DummyCatalogoItem
 models_stub.CatalogoEmbedding = _DummyModel
 models_stub.QA = _DummyModel
 models_stub.db = SimpleNamespace(session=_DummySession())
 sys.modules['models'] = models_stub
+sys.modules.pop('services.catalogo_local', None)
 
 flask_stub = ModuleType('flask')
 flask_stub.session = {}
@@ -104,18 +115,20 @@ class PymeLogicTests(unittest.TestCase):
         mock_llm.return_value = 'RESPUESTA_VALIDA'
         self.assertFalse(pymes.es_pregunta_nueva('hola', 'el dato solicitado'))
 
+    @patch('services.catalogo_local.buscar_catalogo_local', return_value=[])
     @patch('services.pymes.servicio_tickets')
     @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='hablar_con_agente_pyme')
-    def test_human_escalation_pyme(self, mock_clf, mock_servicio):
+    def test_human_escalation_pyme(self, mock_clf, mock_servicio, mock_buscar):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         mock_servicio.crear_comentario.return_value = None
         user = DummyUser()
         resp = pymes.responder_pyme('Necesito hablar con un agente', user, None, viewer_user=user)
         self.assertIn('sala de chat', resp['respuesta'])
 
+    @patch('services.catalogo_local.buscar_catalogo_local', return_value=[])
     @patch('services.pymes.servicio_tickets')
     @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='hablar_con_agente_pyme')
-    def test_human_escalation_pyme_anonymous_requires_login(self, mock_clf, mock_servicio):
+    def test_human_escalation_pyme_anonymous_requires_login(self, mock_clf, mock_servicio, mock_buscar):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         resp = pymes.responder_pyme('Necesito hablar con un agente', DummyUser(), None, viewer_user=None)
         self.assertIn('iniciar sesión', resp['respuesta'])
