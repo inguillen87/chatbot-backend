@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from models import User
 from extensions import db
 from routes.auth import token_requerido
@@ -56,3 +56,70 @@ def actualizar_tags(current_user: User, cliente_id: int):
         db.session.rollback()
         return jsonify({"error": "Error al actualizar"}), 500
     return jsonify({"id": cliente.id, "tags": tags})
+
+
+@crm_bp.route('/analytics', methods=['GET'])
+@token_requerido
+def analytics(current_user: User):
+    """Devuelve métricas básicas de usuarios y tickets."""
+    if current_user.empresa_id is not None:
+        return jsonify({"error": "Permisos insuficientes"}), 403
+
+    total = User.query.filter_by(empresa_id=current_user.id).count()
+    marketing = User.query.filter_by(empresa_id=current_user.id, acepta_marketing=True).count()
+
+    abiertos_muni = db.session.execute(
+        db.text(
+            "SELECT COUNT(*) FROM municipio_ticket mt JOIN user u ON mt.user_id = u.id "
+            "WHERE u.empresa_id = :eid AND mt.estado != 'cerrado'"
+        ),
+        {"eid": current_user.id},
+    ).scalar() or 0
+
+    abiertos_pyme = db.session.execute(
+        db.text(
+            "SELECT COUNT(*) FROM pyme_ticket pt JOIN user u ON pt.user_id = u.id "
+            "WHERE u.empresa_id = :eid AND pt.estado != 'cerrado'"
+        ),
+        {"eid": current_user.id},
+    ).scalar() or 0
+
+    cerrados_muni = db.session.execute(
+        db.text(
+            "SELECT COUNT(*) FROM municipio_ticket mt JOIN user u ON mt.user_id = u.id "
+            "WHERE u.empresa_id = :eid AND mt.estado = 'cerrado'"
+        ),
+        {"eid": current_user.id},
+    ).scalar() or 0
+
+    cerrados_pyme = db.session.execute(
+        db.text(
+            "SELECT COUNT(*) FROM pyme_ticket pt JOIN user u ON pt.user_id = u.id "
+            "WHERE u.empresa_id = :eid AND pt.estado = 'cerrado'"
+        ),
+        {"eid": current_user.id},
+    ).scalar() or 0
+    return jsonify({
+        "total_clientes": total,
+        "aceptan_marketing": marketing,
+        "tickets_abiertos": abiertos_muni + abiertos_pyme,
+        "tickets_cerrados": cerrados_muni + cerrados_pyme,
+    })
+
+
+@crm_bp.route('/campanas/enviar', methods=['POST'])
+@token_requerido
+def enviar_campana(current_user: User):
+    """Mock de envío de campañas masivas."""
+    if current_user.empresa_id is not None:
+        return jsonify({"error": "Permisos insuficientes"}), 403
+    data = request.get_json(silent=True) or {}
+    mensaje = data.get('mensaje')
+    usuarios = data.get('usuarios', [])
+    if not mensaje or not isinstance(usuarios, list):
+        return jsonify({"error": "Datos inválidos"}), 400
+
+    clientes = User.query.filter(User.id.in_(usuarios), User.empresa_id == current_user.id).all()
+    for cli in clientes:
+        current_app.logger.info(f"[CRM] Enviar campaña a {cli.email}: {mensaje}")
+    return jsonify({"enviados": len(clientes)})
