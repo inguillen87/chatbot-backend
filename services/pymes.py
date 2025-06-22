@@ -1070,7 +1070,7 @@ class HumanEscalationPymeHandler(BaseHandler):
             # Si es un visitante anónimo, primero debe registrarse para
             # poder asociar el chat a su cuenta y guardar la información
             # de ubicación.
-            if not self.context.get('user_id'):
+            if not self.context.get('cliente_id'):
                 return {
                     "respuesta": (
                         "Para chatear con un agente necesitás registrarte o iniciar sesión."
@@ -1081,12 +1081,12 @@ class HumanEscalationPymeHandler(BaseHandler):
                     ],
                 }
 
-            logger.info(f"[HumanEscalationPyme] Usuario {self.context.get('user_id')} pide agente.")
+            logger.info(f"[HumanEscalationPyme] Usuario {self.context.get('cliente_id')} pide agente.")
             ticket_data = {
                 "asunto": "Solicitud de Chat en Vivo",
                 "categoria": "Chat en Vivo",
                 "detalles": f"El cliente solicitó chat en vivo: '{pregunta}'",
-                "user_id": self.context.get('user_id'),
+                "user_id": self.context.get('cliente_id'),
                 "estado": "esperando_agente_en_vivo",
                 "anon_id": self.context.get('anon_id'),
             }
@@ -1113,7 +1113,7 @@ class EngancheAnonimoHandler(BaseHandler):
     """Invita a registrarse si el usuario es anónimo."""
 
     def handle(self, pregunta: str) -> dict | None:
-        if not self.context.get('user_id') or self.context.get('plan') == 'anonimo':
+        if not self.context.get('cliente_id') or self.context.get('plan') == 'anonimo':
             return {
                 "respuesta": (
                     "Para seguir con la atención personalizada y guardar tu historial, registrate o iniciá sesión."),
@@ -1125,24 +1125,25 @@ class EngancheAnonimoHandler(BaseHandler):
         return None
 
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL (sin cambios) ---
-def responder_pyme(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
+def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_previo_valido = contexto_previo if contexto_previo is not None else {}
     contexto_pyme = contexto_previo_valido.get(CONTEXTO_PYME_SESION, {})
 
     context = {
         "contexto_pyme": contexto_pyme,
-        "user_obj": user_obj,
+        "user_obj": owner_user,
         "rubro_obj": rubro_obj,
-        "user_id": getattr(user_obj, "id", None),
+        "user_id": getattr(owner_user, "id", None),
+        "cliente_id": getattr(viewer_user, "id", None),
         "anon_id": anon_id,
-        "nombre_pyme": getattr(user_obj, "nombre_empresa", "la empresa") if user_obj else "la empresa",
-        "telefono": getattr(user_obj, "telefono", "") if user_obj else "",
-        "direccion": getattr(user_obj, "direccion", "") if user_obj else "",
-        "email": getattr(user_obj, "email", "") if user_obj else "",
-        "plan": getattr(user_obj, "plan", "anonimo") if user_obj else "anonimo",
-        "preguntas_usadas": getattr(user_obj, "preguntas_usadas", 0) if user_obj else 0,
-        "limite_preguntas": getattr(user_obj, "limite_preguntas", 10) if user_obj else 10,
+        "nombre_pyme": getattr(owner_user, "nombre_empresa", "la empresa") if owner_user else "la empresa",
+        "telefono": getattr(owner_user, "telefono", "") if owner_user else "",
+        "direccion": getattr(owner_user, "direccion", "") if owner_user else "",
+        "email": getattr(owner_user, "email", "") if owner_user else "",
+        "plan": getattr(owner_user, "plan", "anonimo") if owner_user else "anonimo",
+        "preguntas_usadas": getattr(owner_user, "preguntas_usadas", 0) if owner_user else 0,
+        "limite_preguntas": getattr(owner_user, "limite_preguntas", 10) if owner_user else 10,
         "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     }
