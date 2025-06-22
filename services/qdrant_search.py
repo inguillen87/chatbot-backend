@@ -6,7 +6,7 @@ from collections import OrderedDict
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
-from .utils import limpiar_texto_base, calcular_precio_por_unidad
+from .utils import limpiar_texto_base
 from .herramientas_municipio import normalizar_texto
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
@@ -97,7 +97,12 @@ def buscar_catalogo_qdrant(
             f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}"
         )
 
-        tokens = [t for t in normalizar_texto(pregunta_limpia).split() if len(t) > 2]
+        tokens_raw = normalizar_texto(pregunta_limpia).split()
+        tokens = []
+        tamanios = {"xs", "s", "m", "l", "xl", "xxl", "xxxl"}
+        for t in tokens_raw:
+            if len(t) > 2 or t in tamanios or t.isdigit():
+                tokens.append(t)
         if tokens:
             filtrados: List[qdrant_models.ScoredPoint] = []
             for hit in resultados:
@@ -182,57 +187,26 @@ def armar_respuesta_legible(
 
     lineas: List[str] = []
     for p in productos_agrupados[:max_items]:
-
-        nombre = str(p.get("nombre") or p.get("title") or "Producto sin nombre").strip()
-        sku = str(p.get("sku") or "").strip()
-        categoria = str(p.get("categoria_qdrant") or p.get("categoria") or "").strip()
-        moneda = str(p.get("moneda", "")).strip()
-        precio = str(
-            p.get("precio_str") or p.get("precio") or p.get("precio_unitario") or ""
-        ).strip()
+        nombre = str(p.get("nombre") or p.get("title") or "Producto").strip()
+        precio = str(p.get("precio_str") or p.get("precio") or "").strip()
         if not precio and p.get("precio_float") is not None:
             precio = f"{p.get('precio_float'):,.2f}"
         unidad = str(p.get("unidad") or p.get("presentacion") or "").strip()
-        descripcion = str(p.get("descripcion") or p.get("descripcion_corta") or "").strip()
-        precio_unitario_calc = None
-        try:
-            precio_base_float = float(p.get("precio_float")) if p.get("precio_float") is not None else None
-            precio_unitario_calc = calcular_precio_por_unidad(precio_base_float, unidad)
-        except Exception:
-            precio_unitario_calc = None
 
         campos: List[str] = []
-        if sku and sku.lower() not in nombre.lower() and sku.lower() != "n/a":
-            campos.append(f"SKU: {sku}")
         if unidad:
-            campos.append(f"Presentación: {unidad}")
-        if precio_unitario_calc:
-            if moneda:
-                campos.append(f"Precio por caja: {moneda} {precio}")
-                campos.append(f"Precio por unidad: {moneda} {precio_unitario_calc:,.2f}")
-            else:
-                campos.append(f"Precio por caja: {precio}")
-                campos.append(f"Precio por unidad: {precio_unitario_calc:,.2f}")
-        elif precio and precio not in {"0", "0.0", "$0", "$0.0"}:
+            campos.append(unidad)
+        if precio and precio not in {"0", "0.0", "$0", "$0.0"}:
+            moneda = str(p.get("moneda", "")).strip()
             if moneda and moneda.lower() not in precio.lower():
-                campos.append(f"Precio: {moneda} {precio}")
+                campos.append(f"{moneda} {precio}")
             else:
-                campos.append(f"Precio: {precio}")
-        if descripcion and descripcion.lower() not in nombre.lower():
-            desc_limpia = descripcion.replace("\n", " ").strip()
-            if len(desc_limpia) > 100:
-                desc_limpia = desc_limpia[:100] + "..."
-            campos.append(f"Descripción: {desc_limpia}")
-        if categoria:
-            campos.append(f"Categoría: {categoria}")
-        stock = str(p.get("cantidad") or p.get("stock") or "").strip()
-        if stock:
-            campos.append(f"Stock disponible: {stock}")
+                campos.append(precio)
 
         linea = f"- **{nombre}**"
         if campos:
-            linea += ": " + " | ".join(campos)
+            linea += " | " + " | ".join(campos)
 
         lineas.append(linea)
 
-    return "¡Sí! Esto encontré en el catálogo:\n\n" + "\n\n".join(lineas)
+    return "\n".join(lineas)
