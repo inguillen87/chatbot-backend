@@ -21,6 +21,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /tickets/<tipo>/<id>/encuesta` – submit satisfaction survey for a ticket.
 - `GET /tickets/<tipo>/<id>/encuesta` – retrieve survey results for a ticket.
 - `GET /tickets/<tipo>/mapa` – list open tickets with latitude and longitude.
+- `GET /estadisticas/reclamos` – statistics of tickets by category and type.
 - `GET /tramites` – list available municipal procedures, supports `?q=` filtering.
 - `GET /tramites/<nombre>` – detailed info for a specific procedure.
 
@@ -82,3 +83,5 @@ usuario.
   Nuevo módulo de validaciones que comprueba nombre, correo y teléfono usando librerías open source.
 - Si no puedes modificar `requirements.txt`, instala manualmente `email-validator` y `phonenumbers` para habilitar estas validaciones.
 - Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.
+- Nuevo endpoint `/estadisticas/reclamos` que resume los tickets por rubro y tipo, e informa el tiempo de respuesta promedio.
+- Las respuestas de agentes generan notificaciones automáticas por correo y SMS al ciudadano cuando su ticket recibe novedades.

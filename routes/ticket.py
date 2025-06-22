@@ -315,6 +315,21 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     ticket_obj.estado = nuevo_estado
     db.session.commit()
+    try:
+        from services.email_service import (
+            enviar_email_ticket_novedad,
+            enviar_sms_ticket_novedad,
+        )
+        enviar_email_ticket_novedad(
+            ticket_obj,
+            f"El estado de tu ticket ahora es '{nuevo_estado}'.",
+        )
+        enviar_sms_ticket_novedad(
+            ticket_obj,
+            f"Tu ticket {ticket_obj.nro_ticket} ahora está en '{nuevo_estado}'",
+        )
+    except Exception as e:  # pragma: no cover - ignore notif errors in tests
+        current_app.logger.error(f"Error notificando cambio de estado: {e}")
 
     comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
     ticket_data = {
