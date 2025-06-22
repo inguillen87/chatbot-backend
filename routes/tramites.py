@@ -1,5 +1,7 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_from_directory
 from services.tramites import buscar_tramites
+from services.municipios import MUNICIPIO_ID
+import os
 
 tramites_bp = Blueprint('tramites', __name__, url_prefix='/tramites')
 
@@ -19,3 +21,13 @@ def obtener_tramite(nombre: str):
         if item['nombre'].lower() == nombre.lower():
             return jsonify(item)
     return jsonify({}), 404
+
+
+@tramites_bp.route('/descargar', methods=['GET'])
+def descargar_tramites():
+    """Devuelve el archivo JSON original de trámites para su descarga."""
+    ruta = os.path.join('data', 'municipios', MUNICIPIO_ID, 'tramites.json')
+    directorio = os.path.dirname(ruta)
+    archivo = os.path.basename(ruta)
+    return send_from_directory(directorio, archivo, as_attachment=True)
+
