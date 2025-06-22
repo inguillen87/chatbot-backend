@@ -449,7 +449,9 @@ class FollowUpHandler(BaseHandler):
                     logger.error(f"Error enviando SMS/WhatsApp de pedido: {e}")
                 respuesta_final = (
                     f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. "
-                    "Te contactaremos pronto para coordinar el pago y la entrega. ¡Muchas gracias!"
+                    "Te contactaremos pronto para coordinar el pago y la entrega. "
+                    "Podés abonar con efectivo, tarjetas, MercadoPago o transferencia. "
+                    "¡Muchas gracias!"
                 )
                 link_web = getattr(self.context.get('user_obj'), 'link_web', None)
                 email_contacto = getattr(self.context.get('user_obj'), 'email', None)
@@ -459,6 +461,7 @@ class FollowUpHandler(BaseHandler):
                     {"texto": "Nuevo pedido"},
                     {"texto": "Consultar pedido"},
                     {"texto": "Hablar con un agente"},
+                    {"texto": "Formas de pago"},
                 ]
                 if link_web:
                     botones.append({"texto": "Ver tienda", "url": link_web})
@@ -500,6 +503,8 @@ class IntentClassifierPymeHandler(BaseHandler):
         "malbec",
     ]
 
+    SKU_PATTERN = re.compile(r"\b[a-zA-Z]{2}\d{3}[a-zA-Z]?\b", re.IGNORECASE)
+
     KEYWORDS_AGENTE = [
         "agente",
         "humano",
@@ -526,7 +531,7 @@ class IntentClassifierPymeHandler(BaseHandler):
             # Heurística simple si el clasificador no detecta la intención
             if intencion in {"general", "general_pyme"}:
                 texto = self._normalize(pregunta)
-                if any(kw in texto for kw in self.KEYWORDS_PEDIDO):
+                if any(kw in texto for kw in self.KEYWORDS_PEDIDO) or self.SKU_PATTERN.search(texto):
                     intencion = "iniciar_pedido"
                 elif self._has_keyword(pregunta, self.KEYWORDS_AGENTE):
                     intencion = "hablar_con_agente_pyme"
