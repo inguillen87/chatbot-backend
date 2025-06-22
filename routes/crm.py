@@ -118,6 +118,56 @@ def analytics(current_user: User):
     })
 
 
+def _obtener_interacciones(cliente: User):
+    """Compila el historial de chats y tickets de un cliente."""
+    chats = Conversacion.query.filter_by(user_id=cliente.id).all()
+    pymes = PymeTicket.query.filter_by(user_id=cliente.id).all()
+    munis = MunicipioTicket.query.filter_by(user_id=cliente.id).all()
+    historial = []
+    for c in chats:
+        historial.append({
+            "tipo": "chat",
+            "pregunta": c.pregunta,
+            "respuesta": c.respuesta,
+            "fecha": c.timestamp.isoformat(),
+        })
+    for t in pymes:
+        historial.append({
+            "tipo": "ticket_pyme",
+            "id": t.id,
+            "nro_ticket": t.nro_ticket,
+            "asunto": getattr(t, "asunto", "N/A"),
+            "estado": t.estado,
+            "fecha": t.fecha.isoformat(),
+            "archivo": getattr(t, "archivo_url", None),
+        })
+    for t in munis:
+        historial.append({
+            "tipo": "ticket_municipio",
+            "id": t.id,
+            "nro_ticket": t.nro_ticket,
+            "asunto": getattr(t, "asunto", "N/A"),
+            "estado": t.estado,
+            "fecha": t.fecha.isoformat(),
+            "archivo": getattr(t, "archivo_url", None),
+        })
+    historial.sort(key=lambda x: x["fecha"], reverse=True)
+    return historial
+
+
+@crm_bp.route('/clientes/<int:cliente_id>/interacciones', methods=['GET'])
+@token_requerido
+def historial_cliente(current_user: User, cliente_id: int):
+    """Devuelve consultas previas y tickets de un cliente."""
+    if current_user.empresa_id is not None:
+        return jsonify({"error": "Permisos insuficientes"}), 403
+    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    if not cliente:
+        return jsonify({"error": "Cliente no encontrado"}), 404
+    historial = _obtener_interacciones(cliente)
+    return jsonify(historial)
+
+
 @crm_bp.route('/campanas/enviar', methods=['POST'])
 @token_requerido
 def enviar_campana(current_user: User):
