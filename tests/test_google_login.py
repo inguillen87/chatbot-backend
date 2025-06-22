@@ -5,7 +5,6 @@ from unittest.mock import patch, MagicMock
 import sys
 from types import ModuleType
 import importlib
-from unittest.mock import patch
 
 
 # Crear stubs mínimos de models y sqlalchemy antes de importar
@@ -21,7 +20,7 @@ sqlalchemy_exc_stub = ModuleType('sqlalchemy.exc')
 sqlalchemy_stub.exc = sqlalchemy_exc_stub
 
 with patch.dict(sys.modules, {'models': models_stub, 'sqlalchemy': sqlalchemy_stub, 'sqlalchemy.exc': sqlalchemy_exc_stub}):
-n
+
     import services.google_auth as gauth
     importlib.reload(gauth)
 
@@ -63,6 +62,7 @@ class GoogleLoginTests(unittest.TestCase):
         self.assertEqual(user, existing)
         session.add.assert_not_called()
         session.commit.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
