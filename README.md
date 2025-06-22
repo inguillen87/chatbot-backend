@@ -42,8 +42,9 @@ El backend acepta el token en cualquiera de los siguientes lugares de la solicit
 
 1. Encabezado `Authorization` con formato `Bearer <token>`.
 2. Encabezado `X-Token`.
-3. Parámetro de query string `?token=...`.
-4. Campo `token` dentro del JSON o formulario enviado.
+3. Encabezado `X-Entity-Token` (compatibilidad con versiones previas).
+4. Parámetro de query string `?token=...`.
+5. Campo `token` dentro del JSON o formulario enviado.
 
 Esto permite embebidos del widget que envíen el token como atributo o en la URL sin necesidad de modificar el backend.
 
