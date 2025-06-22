@@ -11,6 +11,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /auth/widget/login` – login for end users without leaving the widget.
 - `POST /auth/google-login` – login o registro utilizando un ID token de Google.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
+- `GET /widget/attention` – short greeting message for the chat bubble.
 - `PUT /auth/me` – update the logged in user's profile.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
@@ -28,6 +29,9 @@ Para definir qué orígenes pueden realizar peticiones al backend, puedes usar l
 variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
 `chatboc.ar` por defecto.
+
+Para problemas de inicio de sesión con Google desde localhost revisa
+[`docs/google-login-troubleshooting.md`](docs/google-login-troubleshooting.md).
 
 ## Uso correcto del rubro
 
