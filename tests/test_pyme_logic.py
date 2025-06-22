@@ -146,6 +146,13 @@ class PymeLogicTests(unittest.TestCase):
             self.assertIn('Hola', resp['respuesta'])
             self.assertEqual(mock_llm.call_count, 2)
 
+    @patch('services.pymes.get_cohere_response', return_value='negativo')
+    def test_sentiment_handler(self, mock_llm):
+        user = DummyUser()
+        resp = pymes.responder_pyme('este servicio es horrible', user, None, viewer_user=user)
+        self.assertEqual(resp['fuente'], 'sentimiento_negativo')
+        self.assertIn('agente', resp['respuesta'].lower())
+
     def test_cancel_keywords(self):
         contexto = {
             'contexto_pyme': {
