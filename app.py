@@ -69,16 +69,22 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- 3. Configuración de CORS ---
-    # Permite todos los orígenes solo para pruebas (ajustar para prod si hace falta)
+    # Permitimos orígenes comunes en local para desarrollo
+    allowed_origins = [
+        "http://localhost",
+        "http://localhost:3000",
+        "http://localhost:8080",
+    ]
+
     CORS(
         app,
-        origins="*",
+        origins=allowed_origins,
         supports_credentials=True,
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=[
             "Authorization", "Content-Type", "Origin", "Accept",
             "Anon-Id", "x-entity-token"
-        ]
+        ],
     )
 
     # --- FIX UNIVERSAL DE HEADERS CUSTOM PARA CORS ---
