@@ -20,6 +20,12 @@ from .municipios import (
     enviar_notificacion_sms,
     enviar_notificacion_whatsapp_con_plantilla,
 )
+from utils.validators import (
+    validate_name,
+    validate_email_address,
+    normalize_phone,
+    validate_address,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +42,29 @@ class PedidoService:
                 logger.error(
                     "Datos mínimos faltantes para crear pedido: asunto, detalles o rubro."
                 )
+                return None
+
+            nombre = pedido_data.get("nombre_cliente")
+            if nombre and not validate_name(nombre):
+                logger.error("Nombre de cliente inválido")
+                return None
+
+            email = pedido_data.get("email_cliente")
+            if email and not validate_email_address(email):
+                logger.error("Email de cliente inválido")
+                return None
+
+            telefono = pedido_data.get("telefono_cliente")
+            if telefono:
+                telefono_normalizado = normalize_phone(telefono)
+                if not telefono_normalizado:
+                    logger.error("Teléfono de cliente inválido")
+                    return None
+                pedido_data["telefono_cliente"] = telefono_normalizado
+
+            direccion = pedido_data.get("direccion")
+            if direccion and not validate_address(direccion):
+                logger.error("Dirección inválida")
                 return None
 
             nuevo_pedido = PymePedido(
@@ -68,9 +97,7 @@ class PedidoService:
                 logger.error(f"Error enviando email al cliente: {e}")
             try:
                 if nuevo_pedido.telefono_cliente:
-                    telefono = re.sub(r"\D", "", nuevo_pedido.telefono_cliente)
-                    if not telefono.startswith("+") and len(telefono) > 8:
-                        telefono = "+549" + telefono
+                    telefono = nuevo_pedido.telefono_cliente
                     enviar_notificacion_sms(
                         telefono,
                         f"Hola {nuevo_pedido.nombre_cliente or ''}! Tu pedido {nuevo_pedido.nro_pedido} fue registrado.",
