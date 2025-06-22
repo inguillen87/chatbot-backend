@@ -40,6 +40,9 @@ def obtener_token():
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Permitir solicitudes OPTIONS (preflight CORS) sin autenticación
+        if request.method == "OPTIONS":
+            return "", 200
         token = obtener_token()
 
         if not token:

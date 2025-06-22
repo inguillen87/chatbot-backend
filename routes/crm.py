@@ -37,6 +37,17 @@ def listar_clientes(current_user: User):
     return jsonify(resultado)
 
 
+@crm_bp.route('/usuarios', methods=['GET'])
+@token_requerido
+def listar_usuarios(current_user: User):
+    """Alias de /clientes por compatibilidad."""
+    if current_user.empresa_id is not None:
+        return jsonify([])
+    tag = request.args.get('tag')
+    resultado = _obtener_clientes(current_user, tag)
+    return jsonify(resultado)
+
+
 @crm_bp.route('/clientes/<int:cliente_id>/tags', methods=['PUT'])
 @token_requerido
 def actualizar_tags(current_user: User, cliente_id: int):
