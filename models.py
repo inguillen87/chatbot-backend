@@ -278,6 +278,16 @@ class TicketSatisfaccion(db.Model):
     comentario = db.Column(db.Text, nullable=True)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Recordatorio(db.Model):
+    __tablename__ = "recordatorio"
+    id = db.Column(db.Integer, primary_key=True)
+    empresa_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    cliente_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    tipo = db.Column(db.String(20), nullable=False)
+    descripcion = db.Column(db.String(255), nullable=True)
+    fecha_vencimiento = db.Column(db.DateTime, nullable=False)
+    enviado = db.Column(db.Boolean, default=False)
+
 def generate_token():
     return str(uuid.uuid4())
 

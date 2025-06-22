@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request, current_app
-from models import User
+from models import User, Conversacion, PymeTicket, MunicipioTicket
 from extensions import db
 from routes.auth import token_requerido
 
@@ -134,3 +134,71 @@ def enviar_campana(current_user: User):
     for cli in clientes:
         current_app.logger.info(f"[CRM] Enviar campaña a {cli.email}: {mensaje}")
     return jsonify({"enviados": len(clientes)})
+
+
+def _obtener_historial_cliente(cliente_id: int) -> dict:
+    """Compila interacciones previas del cliente."""
+    convs = (
+        Conversacion.query.filter_by(user_id=cliente_id)
+        .order_by(Conversacion.timestamp.desc())
+        .all()
+    )
+    tickets_pyme = (
+        PymeTicket.query.filter_by(user_id=cliente_id)
+        .order_by(PymeTicket.fecha.desc())
+        .all()
+    )
+    tickets_muni = (
+        MunicipioTicket.query.filter_by(user_id=cliente_id)
+        .order_by(MunicipioTicket.fecha.desc())
+        .all()
+    )
+    archivos = [
+        t.archivo_url
+        for t in list(tickets_pyme) + list(tickets_muni)
+        if getattr(t, "archivo_url", None)
+    ]
+    return {
+        "consultas": [
+            {
+                "pregunta": c.pregunta,
+                "respuesta": c.respuesta,
+                "fecha": c.timestamp.isoformat(),
+            }
+            for c in convs
+        ],
+        "tickets": [
+            {
+                "id": t.id,
+                "tipo": "pyme",
+                "nro_ticket": t.nro_ticket,
+                "estado": t.estado,
+                "fecha": t.fecha.isoformat(),
+            }
+            for t in tickets_pyme
+        ]
+        + [
+            {
+                "id": t.id,
+                "tipo": "municipio",
+                "nro_ticket": t.nro_ticket,
+                "estado": t.estado,
+                "fecha": t.fecha.isoformat(),
+            }
+            for t in tickets_muni
+        ],
+        "archivos": archivos,
+    }
+
+
+@crm_bp.route('/clientes/<int:cliente_id>/historial', methods=['GET'])
+@token_requerido
+def historial_cliente(current_user: User, cliente_id: int):
+    if current_user.empresa_id is not None:
+        return jsonify({"error": "Permisos insuficientes"}), 403
+    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    if not cliente:
+        return jsonify({"error": "Cliente no encontrado"}), 404
+    datos = _obtener_historial_cliente(cliente.id)
+    return jsonify(datos)
+
