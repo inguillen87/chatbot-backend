@@ -1,7 +1,8 @@
 import logging
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
+from collections import OrderedDict
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
@@ -112,6 +113,13 @@ def _ordenar_por_precio(resultados: List[qdrant_models.ScoredPoint]) -> List[qdr
     return sorted(resultados, key=_precio)
 
 
+def _combinar_payload(destino: Dict[str, Any], fuente: Dict[str, Any]) -> None:
+    """Completa en ``destino`` los campos faltantes usando valores de ``fuente``."""
+    for k, v in fuente.items():
+        if v and not destino.get(k):
+            destino[k] = v
+
+
 def armar_respuesta_legible(
     resultados_qdrant: List[qdrant_models.ScoredPoint],
     max_items: int = DEFAULT_SEARCH_LIMIT,
@@ -133,25 +141,23 @@ def armar_respuesta_legible(
             resultados_qdrant, key=lambda r: getattr(r, "score", 0), reverse=True
         )
 
-    # -- Eliminar productos duplicados por SKU o nombre --
-    vistos = set()
-    resultados_unicos: List[qdrant_models.ScoredPoint] = []
+    # -- Combinar productos repetidos por SKU o nombre --
+    combinados: "OrderedDict[Tuple[str, str], Dict[str, Any]]" = OrderedDict()
     for hit in resultados_qdrant:
-        payload = getattr(hit, "payload", {}) or {}
+        payload = getattr(hit, "payload", hit) or {}
         key = (
             str(payload.get("sku") or "").lower(),
             str(payload.get("nombre") or payload.get("title") or "").lower(),
         )
-        if key in vistos:
-            continue
-        vistos.add(key)
-        resultados_unicos.append(hit)
+        if key not in combinados:
+            combinados[key] = payload.copy()
+        else:
+            _combinar_payload(combinados[key], payload)
 
-    resultados_qdrant = resultados_unicos
+    productos_agrupados = list(combinados.values())
 
     lineas: List[str] = []
-    for hit in resultados_qdrant[:max_items]:
-        p = getattr(hit, "payload", {}) or {}
+    for p in productos_agrupados[:max_items]:
 
         nombre = str(p.get("nombre") or p.get("title") or "Producto sin nombre").strip()
         sku = str(p.get("sku") or "").strip()
@@ -171,35 +177,38 @@ def armar_respuesta_legible(
         except Exception:
             precio_unitario_calc = None
 
-        datos_linea: List[str] = [f"- **{nombre}**"]
+        campos: List[str] = []
         if sku and sku.lower() not in nombre.lower() and sku.lower() != "n/a":
-            datos_linea.append(f"  - SKU: {sku}")
+            campos.append(f"SKU: {sku}")
         if unidad:
-            datos_linea.append(f"  - Presentación: {unidad}")
+            campos.append(f"Presentación: {unidad}")
         if precio_unitario_calc:
             if moneda:
-                datos_linea.append(f"  - Precio por caja: {moneda} {precio}")
-                datos_linea.append(f"  - Precio por unidad: {moneda} {precio_unitario_calc:,.2f}")
+                campos.append(f"Precio por caja: {moneda} {precio}")
+                campos.append(f"Precio por unidad: {moneda} {precio_unitario_calc:,.2f}")
             else:
-                datos_linea.append(f"  - Precio por caja: {precio}")
-                datos_linea.append(f"  - Precio por unidad: {precio_unitario_calc:,.2f}")
+                campos.append(f"Precio por caja: {precio}")
+                campos.append(f"Precio por unidad: {precio_unitario_calc:,.2f}")
         elif precio and precio not in {"0", "0.0", "$0", "$0.0"}:
             if moneda and moneda.lower() not in precio.lower():
-                datos_linea.append(f"  - Precio: {moneda} {precio}")
+                campos.append(f"Precio: {moneda} {precio}")
             else:
-                datos_linea.append(f"  - Precio: {precio}")
+                campos.append(f"Precio: {precio}")
         if descripcion and descripcion.lower() not in nombre.lower():
             desc_limpia = descripcion.replace("\n", " ").strip()
             if len(desc_limpia) > 100:
                 desc_limpia = desc_limpia[:100] + "..."
-            datos_linea.append(f"  - Descripción: {desc_limpia}")
+            campos.append(f"Descripción: {desc_limpia}")
         if categoria:
-            datos_linea.append(f"  - Categoría: {categoria}")
+            campos.append(f"Categoría: {categoria}")
         stock = str(p.get("cantidad") or p.get("stock") or "").strip()
         if stock:
-            datos_linea.append(f"  - Stock disponible: {stock}")
+            campos.append(f"Stock disponible: {stock}")
 
+        linea = f"- **{nombre}**"
+        if campos:
+            linea += ": " + " | ".join(campos)
 
-        lineas.append("\n".join(datos_linea))
+        lineas.append(linea)
 
     return "¡Sí! Esto encontré en el catálogo:\n\n" + "\n\n".join(lineas)
