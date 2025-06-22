@@ -157,7 +157,7 @@ def _obtener_interacciones(cliente: User):
 
 @crm_bp.route('/clientes/<int:cliente_id>/interacciones', methods=['GET'])
 @token_requerido
-def historial_cliente(current_user: User, cliente_id: int):
+def interacciones_cliente(current_user: User, cliente_id: int):
     """Devuelve consultas previas y tickets de un cliente."""
     if current_user.empresa_id is not None:
         return jsonify({"error": "Permisos insuficientes"}), 403
