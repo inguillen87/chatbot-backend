@@ -5,7 +5,7 @@ import numpy as np
 from models import CatalogoEmbedding 
 from services.cohere_ai import embed_textos # Asumiendo que es la misma función de embedding
 from sklearn.metrics.pairwise import cosine_similarity
-from .utils import limpiar_texto_base, parse_precio_flexible # Importar desde utils
+from .utils import limpiar_texto_base, parse_precio_flexible, unir_codigos_alfa_numericos # Importar desde utils
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,8 @@ def buscar_en_catalogo_semantico(pregunta_usuario: str, user_id: int, threshold:
     logger.info(f"[CATALOG_MATCH] Iniciando búsqueda semántica en CatalogoEmbedding para user_id={user_id}, pregunta='{pregunta_usuario[:50]}...'")
     
     try:
-        pregunta_limpia = limpiar_texto_base(pregunta_usuario)
+        pregunta_pre = unir_codigos_alfa_numericos(pregunta_usuario)
+        pregunta_limpia = limpiar_texto_base(pregunta_pre)
         if not pregunta_limpia:
             logger.warning("[CATALOG_MATCH] Pregunta limpia está vacía.")
             return None

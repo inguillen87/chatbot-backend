@@ -6,7 +6,7 @@ from collections import OrderedDict
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
-from .utils import limpiar_texto_base
+from .utils import limpiar_texto_base, unir_codigos_alfa_numericos
 from .herramientas_municipio import normalizar_texto
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
@@ -39,7 +39,8 @@ def buscar_catalogo_qdrant(
         return []
 
     try:
-        pregunta_limpia = limpiar_texto_base(pregunta.strip())
+        pregunta_pre = unir_codigos_alfa_numericos(pregunta.strip())
+        pregunta_limpia = limpiar_texto_base(pregunta_pre)
         if not pregunta_limpia:
             logger.warning("[QDRANT SEARCH] Pregunta para búsqueda vacía después de limpiar.")
             return []
