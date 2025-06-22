@@ -284,4 +284,7 @@ def widget_attention_options():
 @chat_bp.route("/widget/attention", methods=["GET"])
 def widget_attention():
     """Devuelve un mensaje breve para mostrar en el globito del chat."""
-    return jsonify({"mensaje": "¡Hola! ¿Necesitás ayuda?"})
+    mensaje = current_app.config.get(
+        "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
+    )
+    return jsonify({"mensaje": mensaje})
