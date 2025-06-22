@@ -52,6 +52,11 @@ def cargar_product_synonyms() -> Dict[str, List[str]]:
     return {
         "malbec": ["vino malbec", "vinos malbec", "malbek"],
         "caja": ["cajon", "pack"],
+        "remera": ["camiseta", "playera", "polera"],
+        "tornillo": ["perno", "rosca"],
+        "ladrillo": ["bloque", "block", "tabique"],
+        "paracetamol": ["acetaminofen", "tylenol"],
+        "martillo": ["mazo", "martillo de uña"],
     }
 
 PRODUCT_SYNONYMS: Dict[str, List[str]] = cargar_product_synonyms()

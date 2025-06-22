@@ -1,4 +1,9 @@
 {
   "malbec": ["vino malbec", "vinos malbec", "malbek"],
-  "caja": ["cajon", "pack"]
+  "caja": ["cajon", "pack"],
+  "remera": ["camiseta", "playera", "polera"],
+  "tornillo": ["perno", "rosca"],
+  "ladrillo": ["bloque", "block", "tabique"],
+  "paracetamol": ["acetaminofen", "tylenol"],
+  "martillo": ["mazo", "martillo de uña"]
 }
