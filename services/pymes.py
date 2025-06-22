@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 CONTEXTO_PYME_SESION = "contexto_pyme"
 MAX_HISTORIAL_CHAT = 30
+LAST_OWNER_SESION = "pyme_last_owner_id"
 
 
 class PymeConversationState(Enum):
@@ -1153,6 +1154,19 @@ class EngancheAnonimoHandler(BaseHandler):
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_previo_valido = contexto_previo if contexto_previo is not None else {}
+
+    # Si cambia el propietario asociado al token, reiniciamos la memoria para evitar
+    # mezclar catálogos de diferentes empresas en la misma sesión.
+    if owner_user:
+        last_id = flask_session.get(LAST_OWNER_SESION)
+        if last_id != owner_user.id:
+            flask_session[LAST_OWNER_SESION] = owner_user.id
+            flask_session[NOMBRE_HISTORIAL_SESION] = []
+            flask_session[CONTEXTO_PYME_SESION] = {}
+            contexto_previo_valido = {}
+    else:
+        flask_session.pop(LAST_OWNER_SESION, None)
+
     contexto_pyme = contexto_previo_valido.get(CONTEXTO_PYME_SESION, {})
 
     context = {
