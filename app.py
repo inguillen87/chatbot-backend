@@ -135,11 +135,8 @@ def create_app(config_class=Config):
     app.register_blueprint(pedidos_bp)
     app.register_blueprint(estadisticas_bp)
     app.register_blueprint(empleados_bp)
-<<<<<<< HEAD
     app.register_blueprint(recordatorios_bp)
-=======
     app.register_blueprint(presupuesto_bp)
->>>>>>> 9a6fa1e1476e9d8bdc074a6915f70d6f4d3ad87f
 
     # Registro de comandos CLI
     register_commands(app)
