@@ -128,6 +128,20 @@ class ServicioTickets:
                 nuevo_comentario.pyme_ticket = ticket
             db.session.add(nuevo_comentario)
             db.session.commit()
+            try:
+                from services.email_service import (
+                    enviar_email_ticket_novedad,
+                    enviar_sms_ticket_novedad,
+                    enviar_email_ticket_admin,
+                )
+                mensaje = comentario_data.get("comentario", "Nueva actualización")
+                if nuevo_comentario.es_admin:
+                    enviar_email_ticket_novedad(ticket, mensaje)
+                    enviar_sms_ticket_novedad(ticket, mensaje)
+                else:
+                    enviar_email_ticket_admin(ticket)
+            except Exception as e:  # pragma: no cover - not essential for tests
+                logger.error(f"Error enviando notificaciones: {e}")
             return nuevo_comentario
         except SQLAlchemyError as e:
             db.session.rollback()
