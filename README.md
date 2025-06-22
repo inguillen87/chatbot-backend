@@ -11,6 +11,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /auth/widget/login` – login for end users without leaving the widget.
 - `POST /auth/google-login` – login o registro utilizando un ID token de Google.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
+- `GET /widget/attention` – short greeting message for the chat bubble.
 - `PUT /auth/me` – update the logged in user's profile.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
