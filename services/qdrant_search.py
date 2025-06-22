@@ -6,6 +6,7 @@ from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
 from .utils import limpiar_texto_base, calcular_precio_por_unidad
+from .herramientas_municipio import normalizar_texto
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
@@ -42,8 +43,7 @@ def buscar_catalogo_qdrant(
             logger.warning("[QDRANT SEARCH] Pregunta para búsqueda vacía después de limpiar.")
             return []
 
-        from .sinonimos import aplicar_sinonimos, PRODUCT_SYNONYMS
-        pregunta_limpia = aplicar_sinonimos(pregunta_limpia, PRODUCT_SYNONYMS)
+        # Ya no aplicamos un diccionario de sinónimos fijo. Se procesa el texto tal cual.
         vector_pregunta_lista = embed_textos([pregunta_limpia], input_type="search_query")
         if not vector_pregunta_lista or not isinstance(vector_pregunta_lista[0], list):
             logger.error(f"[QDRANT SEARCH] No se pudo generar vector para pregunta: '{pregunta_limpia}'")
@@ -92,7 +92,31 @@ def buscar_catalogo_qdrant(
             limit=limite,
             score_threshold=score_min
         )
-        logger.info(f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}")
+        logger.info(
+            f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}"
+        )
+
+        tokens = [t for t in normalizar_texto(pregunta_limpia).split() if len(t) > 2]
+        if tokens:
+            filtrados: List[qdrant_models.ScoredPoint] = []
+            for hit in resultados:
+                payload = getattr(hit, "payload", {}) or {}
+                texto = " ".join(
+                    str(payload.get(k) or "")
+                    for k in [
+                        "nombre",
+                        "descripcion",
+                        "talles",
+                        "categoria",
+                        "categoria_qdrant",
+                        "colores",
+                    ]
+                )
+                texto_norm = normalizar_texto(texto)
+                if all(tok in texto_norm for tok in tokens):
+                    filtrados.append(hit)
+            resultados = filtrados
+
         return resultados
 
     except Exception as e_qdrant:
