@@ -58,5 +58,6 @@ usuario.
 ## Mejoras recientes
 
 - Los listados de productos del catálogo y los pedidos se ordenan por precio para que sea más fácil elegir.
+- Cada artículo consolida su código, descripción y precio en una sola línea para evitar datos fragmentados.
 - El historial de chat para pymes ahora conserva hasta 30 mensajes para dar más contexto en cada respuesta.
 
