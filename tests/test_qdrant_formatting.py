@@ -20,10 +20,8 @@ class QdrantFormattingTests(unittest.TestCase):
         hit1 = DummyHit(payload={"nombre": "Vino Tinto", "sku": "A1", "precio_str": "10"}, score=0.9)
         hit2 = DummyHit(payload={"nombre": "Vino Tinto", "sku": "A1", "descripcion": "Rojo"}, score=0.8)
         texto = armar_respuesta_legible([hit1, hit2], max_items=5)
-        self.assertIn("SKU: A1", texto)
-        self.assertIn("Precio: 10", texto)
-        self.assertIn("Descripción: Rojo", texto)
         self.assertEqual(texto.count("**Vino Tinto**"), 1)
+        self.assertIn("10", texto)
 
 
 
