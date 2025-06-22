@@ -108,23 +108,66 @@ def google_login():
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+
     if not data:
-        return jsonify({"error": "Solicitud JSON inválida."}), 400
+        return jsonify({
+            "error": "Solicitud JSON inválida.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 400
 
-    required_fields = ["name", "email", "password", "nombre_empresa", "rubro", "acepto_terminos"]
-    if not all(field in data and data[field] for field in required_fields):
-        return jsonify({"error": "Todos los campos son obligatorios."}), 400
+    # Permitir nombres alternativos para el rubro y términos
+    rubro_raw = data.get("rubro") or data.get("rubro_id") or data.get("sector")
+    terminos_flag = (
+        data.get("acepto_terminos")
+        if "acepto_terminos" in data
+        else data.get("acepta_terminos")
+        if "acepta_terminos" in data
+        else data.get("terminos")
+        if "terminos" in data
+        else data.get("terms")
+    )
 
-    if not data["acepto_terminos"]:
-        return jsonify({"error": "Es necesario aceptar los términos y condiciones."}), 400
-        
-    if User.query.filter_by(email=data['email'].strip().lower()).first():
-        return jsonify({"error": "Ya existe un usuario con ese correo electrónico."}), 409
+    required_campos = {
+        "name": data.get("name"),
+        "email": data.get("email"),
+        "password": data.get("password"),
+        "nombre_empresa": data.get("nombre_empresa"),
+        "rubro": rubro_raw,
+    }
 
-    rubro = Rubro.query.filter(func.lower(Rubro.nombre) == func.lower(data['rubro'].strip())).first()
+    missing = [k for k, v in required_campos.items() if not v]
+    if missing or terminos_flag is None:
+        return jsonify({
+            "error": "Todos los campos son obligatorios.",
+            "faltantes": missing + ([] if terminos_flag is not None else ["acepto_terminos"]),
+            "botones": [{"texto": "Volver al chat"}],
+        }), 400
+
+    if not bool(terminos_flag):
+        return jsonify({
+            "error": "Es necesario aceptar los términos y condiciones.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 400
+
+    if User.query.filter_by(email=required_campos["email"].strip().lower()).first():
+        return jsonify({
+            "error": "Ya existe un usuario con ese correo electrónico.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 409
+
+    # Buscar el rubro por nombre o ID
+    rubro = None
+    if isinstance(rubro_raw, int) or (isinstance(rubro_raw, str) and rubro_raw.isdigit()):
+        rubro = Rubro.query.filter_by(id=int(rubro_raw)).first()
+    elif isinstance(rubro_raw, str):
+        rubro = Rubro.query.filter(func.lower(Rubro.nombre) == func.lower(rubro_raw.strip())).first()
+
     if not rubro:
-        return jsonify({"error": f"El rubro '{data['rubro']}' no es válido."}), 400
+        return jsonify({
+            "error": f"El rubro '{rubro_raw}' no es válido.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 400
 
     acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
@@ -164,7 +207,10 @@ def register():
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Error al registrar usuario: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al guardar el usuario."}), 500
+        return jsonify({
+            "error": "Error interno al guardar el usuario.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 500
 
 
 @auth_bp.route('/widget/register', methods=['POST'])
@@ -180,10 +226,16 @@ def register_from_widget(owner_user):
     password = data.get('password')
     anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
     if not name or not email or not password:
-        return jsonify({"error": "Faltan datos obligatorios."}), 400
+        return jsonify({
+            "error": "Faltan datos obligatorios.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 400
 
     if User.query.filter_by(email=email.strip().lower()).first():
-        return jsonify({"error": "Email ya registrado."}), 409
+        return jsonify({
+            "error": "Email ya registrado.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 409
 
     acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
@@ -225,7 +277,10 @@ def register_from_widget(owner_user):
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Error en register_from_widget: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al registrar usuario."}), 500
+        return jsonify({
+            "error": "Error interno al registrar usuario.",
+            "botones": [{"texto": "Volver al chat"}],
+        }), 500
 
 @auth_bp.route('/widget/login', methods=['POST'])
 @token_requerido
