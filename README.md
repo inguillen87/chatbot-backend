@@ -18,6 +18,12 @@ This project exposes several endpoints to process questions for different sector
 - `GET /crm/analytics` – basic stats of registered users and tickets.
 - `POST /crm/campanas/enviar` – mock endpoint to send campaigns to selected users.
 
+## Variables de entorno
+
+Configura `GOOGLE_OAUTH_CLIENT_ID` con el ID de cliente de tu aplicación de
+Google (o varios separados por comas) para que el backend valide la audiencia
+de los tokens enviados a `/auth/google-login`.
+
 ## Uso correcto del rubro
 
 El archivo `services/logic.py` define el conjunto `RUBROS_PUBLICOS` con los rubros que se tratan como entes públicos, por ejemplo `"municipio"` y `"municipios"`.

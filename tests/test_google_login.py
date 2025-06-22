@@ -7,6 +7,7 @@ from types import ModuleType
 import importlib
 from unittest.mock import patch
 
+
 # Crear stubs mínimos de models y sqlalchemy antes de importar
 models_stub = ModuleType('models')
 class DummyUser(SimpleNamespace):
@@ -20,13 +21,14 @@ sqlalchemy_exc_stub = ModuleType('sqlalchemy.exc')
 sqlalchemy_stub.exc = sqlalchemy_exc_stub
 
 with patch.dict(sys.modules, {'models': models_stub, 'sqlalchemy': sqlalchemy_stub, 'sqlalchemy.exc': sqlalchemy_exc_stub}):
+n
     import services.google_auth as gauth
     importlib.reload(gauth)
 
 class GoogleLoginTests(unittest.TestCase):
     @patch.object(gauth.id_token, 'verify_oauth2_token')
     def test_crea_usuario_nuevo(self, mock_verify):
-        mock_verify.return_value = {'email': 'new@example.com', 'name': 'Nuevo'}
+
 
         dummy_user = SimpleNamespace(id=1, email='new@example.com', name='Nuevo', token='tok')
         query = MagicMock()
@@ -46,7 +48,7 @@ class GoogleLoginTests(unittest.TestCase):
 
     @patch.object(gauth.id_token, 'verify_oauth2_token')
     def test_usa_usuario_existente(self, mock_verify):
-        mock_verify.return_value = {'email': 'exist@example.com', 'name': 'Exist'}
+
 
         existing = SimpleNamespace(id=2, email='exist@example.com', name='Exist', token='tok2')
         query = MagicMock()
