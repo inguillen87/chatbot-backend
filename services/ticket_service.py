@@ -133,32 +133,12 @@ class ServicioTickets:
             db.session.rollback()
             logger.error(f"Error de DB al crear comentario: {e}", exc_info=True)
             return None
-
-    def guardar_encuesta(
-        self,
-        ticket_id: int,
-        tipo_ticket: Literal["municipio", "pyme"],
-        puntuacion: int,
-        comentario: str | None = None,
-    ) -> Union[TicketSatisfaccion, None]:
-        try:
-            encuesta = TicketSatisfaccion(
-                ticket_id=ticket_id,
-                tipo=tipo_ticket,
-                puntuacion=puntuacion,
-                comentario=comentario,
-            )
-            db.session.add(encuesta)
-            db.session.commit()
-            return encuesta
-        except SQLAlchemyError as e:
-            db.session.rollback()
-            logger.error(
-                f"Error de DB al guardar encuesta: {e}", exc_info=True
-            )
-            return None
         
+<<<<<<< HEAD
 def guardar_encuesta(
+=======
+    def guardar_encuesta(
+>>>>>>> 484247685f09ea6ac591de28019add6ccf7a7143
         self,
         ticket_id: int,
         tipo_ticket: Literal["municipio", "pyme"],
