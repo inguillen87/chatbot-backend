@@ -8,7 +8,14 @@ This project exposes several endpoints to process questions for different sector
 - `POST /ask/pyme` – optimized for small and medium companies (pymes).
 - `POST /ask/municipio` – optimized for municipalities and other public entities.
 - `POST /auth/widget/register` – quick sign up for end users using the widget.
+- `POST /auth/widget/login` – login for end users without leaving the widget.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
+- `PUT /auth/me` – update the logged in user's profile.
+- `GET /tickets/mios` – list the tickets created by the logged in user.
+- `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
+- `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
+- `GET /crm/analytics` – basic stats of registered users and tickets.
+- `POST /crm/campanas/enviar` – mock endpoint to send campaigns to selected users.
 
 ## Uso correcto del rubro
 
@@ -19,6 +26,8 @@ Si el rubro enviado pertenece a este conjunto, el tipo de chat correspondiente e
 ## Registro en el widget
 
 Las funciones premium como el chat en vivo o el guardado de la ubicación requieren que el usuario esté autenticado. El registro puede hacerse sin salir del chat enviando un `POST /auth/widget/register` con el token de la pyme o municipio en el encabezado `Authorization`. El backend asociará automáticamente al nuevo usuario con esa entidad y registrará si acepta recibir comunicaciones de marketing.
+
+Los tickets creados desde el widget ahora se asignan al usuario final (campo `cliente_id`) en lugar de al dueño del token, permitiendo que cada ciudadano o cliente consulte luego su historial.
 
 ### Formas de enviar el token
 

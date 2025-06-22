@@ -95,6 +95,13 @@ def register():
         return jsonify({"error": f"El rubro '{data['rubro']}' no es válido."}), 400
 
     acepta_marketing = bool(data.get('acepta_marketing'))
+    tags = data.get('tags')
+    if isinstance(tags, list):
+        tags_value = ','.join(tags)
+    elif isinstance(tags, str):
+        tags_value = tags
+    else:
+        tags_value = ''
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -106,7 +113,8 @@ def register():
         acepto_terminos=True,
         fecha_aceptacion_terminos=datetime.utcnow(),
         acepta_marketing=acepta_marketing,
-        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None
+        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+        tags=tags_value
     )
     user.set_password(data['password'])
 
@@ -146,6 +154,13 @@ def register_from_widget(owner_user):
         return jsonify({"error": "Email ya registrado."}), 409
 
     acepta_marketing = bool(data.get('acepta_marketing'))
+    tags = data.get('tags')
+    if isinstance(tags, list):
+        tags_value = ','.join(tags)
+    elif isinstance(tags, str):
+        tags_value = tags
+    else:
+        tags_value = ''
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
@@ -156,6 +171,7 @@ def register_from_widget(owner_user):
         rol="usuario",
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+        tags=tags_value,
     )
     nuevo.set_password(password)
     try:
@@ -178,6 +194,36 @@ def register_from_widget(owner_user):
         db.session.rollback()
         current_app.logger.error(f"Error en register_from_widget: {e}", exc_info=True)
         return jsonify({"error": "Error interno al registrar usuario."}), 500
+
+@auth_bp.route('/widget/login', methods=['POST'])
+@token_requerido
+def login_from_widget(owner_user):
+    """Login desde el widget asociado al token."""
+    data = request.get_json(silent=True)
+    if not data:
+        data = request.form.to_dict() if request.form else {}
+    email = data.get('email')
+    password = data.get('password')
+    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
+    if not email or not password:
+        return jsonify({"error": "Email y contraseña requeridos."}), 400
+
+    user = User.query.filter_by(
+        email=email.strip().lower(), empresa_id=owner_user.id
+    ).first()
+    if not user or not user.check_password(password):
+        return jsonify({"error": "Credenciales inválidas."}), 401
+
+    if anon_id:
+        from services.ticket_service import servicio_tickets
+        servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
+
+    return jsonify({
+        "id": user.id,
+        "token": user.token,
+        "name": user.name,
+        "email": user.email,
+    })
 
 @auth_bp.route('/me', methods=['GET'])
 @token_requerido
@@ -205,25 +251,45 @@ def token_info(user):
         "nombre_empresa": user.nombre_empresa,
     })
 
+@auth_bp.route('/me', methods=['PUT'])
 @auth_bp.route('/perfil', methods=['PUT'])
 @token_requerido
-def actualizar_perfil(user):
-    data = request.get_json()
+def actualizar_me(user):
+    """Permite que el usuario modifique sus datos personales."""
+    data = request.get_json(silent=True) or {}
     if not data:
         return jsonify({"error": "No se recibieron datos."}), 400
 
     for key, value in data.items():
-        if hasattr(user, key):
+        if key in {"tags", "acepta_marketing"}:
+            pass
+        elif hasattr(user, key):
             if key == "horario_json":
                 setattr(user, "horario", value)
             else:
                 setattr(user, key, value)
+
+    if "tags" in data:
+        tags = data.get("tags")
+        if isinstance(tags, list):
+            user.tags = ",".join(tags)
+        elif isinstance(tags, str):
+            user.tags = tags
+
+    if "acepta_marketing" in data:
+        nueva = bool(data.get("acepta_marketing"))
+        if nueva and not user.acepta_marketing:
+            user.fecha_aceptacion_marketing = datetime.utcnow()
+        user.acepta_marketing = nueva
+
     try:
         db.session.commit()
         return jsonify({"mensaje": "Perfil actualizado correctamente."})
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Error al actualizar perfil para {user.email}: {e}", exc_info=True)
+        current_app.logger.error(
+            f"Error al actualizar perfil para {user.email}: {e}", exc_info=True
+        )
         return jsonify({"error": "Error interno al guardar el perfil."}), 500
     
 def anon_o_token_requerido(f):
