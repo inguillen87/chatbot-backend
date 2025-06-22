@@ -20,6 +20,8 @@ This project exposes several endpoints to process questions for different sector
 - `POST /crm/campanas/enviar` – mock endpoint to send campaigns to selected users.
 - `POST /tickets/<tipo>/<id>/encuesta` – submit satisfaction survey for a ticket.
 - `GET /tickets/<tipo>/<id>/encuesta` – retrieve survey results for a ticket.
+- `GET /tramites` – list available municipal procedures, supports `?q=` filtering.
+- `GET /tramites/<nombre>` – detailed info for a specific procedure.
 
 ## Variables de entorno
 
