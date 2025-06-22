@@ -55,9 +55,13 @@ def mercadopago_webhook():
             return jsonify({"error": "Usuario no encontrado"}), 404
 
         # Actualizá datos del usuario
-        user.plan = plan
+        user.plan = plan.lower()
         user.preapproval_id = preapproval_id
         user.plan_status = status
+        if user.plan == "pro":
+            user.limite_preguntas = 200
+        elif user.plan == "full":
+            user.limite_preguntas = None
         db.session.commit()
         logging.info(f"Usuario {email} actualizado a plan {plan}, status {status}")
 

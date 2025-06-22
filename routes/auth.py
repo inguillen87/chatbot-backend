@@ -287,6 +287,8 @@ def actualizar_me(user):
             if key == "horario_json":
                 setattr(user, "horario", value)
             else:
+                if key == "plan" and isinstance(value, str):
+                    value = value.lower()
                 setattr(user, key, value)
                 if key == "plan":
                     if value == "pro":
