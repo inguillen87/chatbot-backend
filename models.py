@@ -60,6 +60,7 @@ class User(db.Model, UserMixin):
     fecha_aceptacion_terminos = db.Column(DateTime, nullable=True)
     acepta_marketing = db.Column(Boolean, default=False)
     fecha_aceptacion_marketing = db.Column(DateTime, nullable=True)
+    tags = db.Column(db.String(255), default="")
     horario = db.Column(db.String(100), nullable=True)
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)

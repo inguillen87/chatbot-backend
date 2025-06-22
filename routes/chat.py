@@ -98,6 +98,7 @@ def _authenticate_and_get_user():
 def _procesar_chat(
     tipo_chat_fijo: str | None = None,
     current_user=None,
+    owner_user=None,
     anon_id: str | None = None,
 ):
     """Procesa una pregunta garantizando coherencia entre rubro y tipo_chat.
@@ -120,8 +121,9 @@ def _procesar_chat(
         if error_response:
             return error_response, 400
 
-        user_obj = current_user if current_user is not None else _authenticate_and_get_user()
-        if not user_obj and not anon_id:
+        owner_obj = owner_user or current_user or _authenticate_and_get_user()
+        viewer_obj = current_user
+        if not owner_obj and not anon_id:
             return jsonify({"error": "No autenticado."}), 401
 
         if rubro_id:
@@ -131,7 +133,7 @@ def _procesar_chat(
                 func.lower(Rubro.clave) == rubro_clave.lower()
             ).first()
         else:
-            rubro_obj = user_obj.rubro if user_obj and user_obj.rubro else None
+            rubro_obj = owner_obj.rubro if owner_obj and owner_obj.rubro else None
 
         # Logueamos qué rubro se está usando para procesar la pregunta
         if rubro_obj:
@@ -143,15 +145,15 @@ def _procesar_chat(
             current_app.logger.info("Sin rubro asociado al usuario o en la petición")
 
         # --- CONTROL DE PLAN SOLO PARA USUARIOS AUTENTICADOS ---
-        if user_obj:
+        if owner_obj:
             if (
-                user_obj.plan != "full"
-                and user_obj.preguntas_usadas >= user_obj.limite_preguntas
+                owner_obj.plan != "full"
+                and owner_obj.preguntas_usadas >= owner_obj.limite_preguntas
             ):
                 return (
                     jsonify(
                         {
-                            "error": f"Alcanzaste el límite de preguntas de tu plan ({user_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
+                            "error": f"Alcanzaste el límite de preguntas de tu plan ({owner_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
                         }
                     ),
                     403,
@@ -160,7 +162,8 @@ def _procesar_chat(
         # Usamos la lógica centralizada que decide según el rubro
         resultado = responder_chatboc(
             pregunta,
-            user_obj=user_obj,
+            owner_user=owner_obj,
+            current_user=viewer_obj,
             rubro_obj=rubro_obj,
             rubro_nombre_frontend=rubro_clave,
             tipo_chat=tipo_chat,
@@ -172,21 +175,21 @@ def _procesar_chat(
         rubro_seleccionado = (
             rubro_obj
             or rubro_clave
-            or (user_obj.rubro if user_obj and getattr(user_obj, "rubro", None) else None)
+            or (owner_obj.rubro if owner_obj and getattr(owner_obj, "rubro", None) else None)
         )
         rubro_nombre = normalizar_rubro(rubro_seleccionado)
         es_publico = es_rubro_publico(rubro_seleccionado)
 
         current_app.logger.info(
-            f"[RUBROS] user.rubro={getattr(user_obj, 'rubro', None)} "
+            f"[RUBROS] user.rubro={getattr(owner_obj, 'rubro', None)} "
             f"rubroSeleccionado={rubro_seleccionado} "
             f"rubroNormalizado={rubro_nombre} esRubroPublico={es_publico}"
         )
 
 
         # --- INCREMENTAR CONTADOR SOLO SI TODO ESTÁ OK ---
-        if user_obj:
-            user_obj.preguntas_usadas += 1
+        if owner_obj:
+            owner_obj.preguntas_usadas += 1
             try:
                 from extensions import db
 
@@ -200,9 +203,9 @@ def _procesar_chat(
         # --- OPCIONAL: DEVOLVER CONTADOR ACTUALIZADO ---
         if isinstance(resultado, dict):
             resultado["es_publico"] = es_publico
-            if user_obj:
-                resultado["preguntas_usadas"] = user_obj.preguntas_usadas
-                resultado["limite_preguntas"] = user_obj.limite_preguntas
+            if owner_obj:
+                resultado["preguntas_usadas"] = owner_obj.preguntas_usadas
+                resultado["limite_preguntas"] = owner_obj.limite_preguntas
 
         return jsonify(resultado), 200
 
@@ -226,8 +229,8 @@ def ask(current_user=None, anon_id=None, owner_user=None):
     Si llegan cruzados, el backend ajustará o lanzará error para evitar
     mezclar la estética de pymes con la de municipios.
     """
-    user = current_user or owner_user
-    return _procesar_chat(current_user=user, anon_id=anon_id)
+    user = owner_user or current_user
+    return _procesar_chat(current_user=current_user, owner_user=user, anon_id=anon_id)
 
 
 # Handler para el preflight de CORS de /ask/pyme
@@ -245,8 +248,8 @@ def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     mezclar respuestas de municipio. Cualquier inconsistencia se registra y se
     corrige o se devuelve error.
     """
-    user = current_user or owner_user
-    return _procesar_chat("pyme", current_user=user, anon_id=anon_id)
+    user = owner_user or current_user
+    return _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
 
 
 # Preflight CORS handler for /ask/municipio
@@ -262,5 +265,5 @@ def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     Se valida que el rubro corresponda a un ente público y, de no ser así,
     se registrará un error. Esto previene mezclar lógicas de pyme y municipio.
     """
-    user = current_user or owner_user
-    return _procesar_chat("municipio", current_user=user, anon_id=anon_id)
+    user = owner_user or current_user
+    return _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)

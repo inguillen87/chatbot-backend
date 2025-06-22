@@ -110,25 +110,25 @@ class PymeLogicTests(unittest.TestCase):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         mock_servicio.crear_comentario.return_value = None
         user = DummyUser()
-        resp = pymes.responder_pyme('Necesito hablar con un agente', user, None)
+        resp = pymes.responder_pyme('Necesito hablar con un agente', user, None, viewer_user=user)
         self.assertIn('sala de chat', resp['respuesta'])
 
     @patch('services.pymes.servicio_tickets')
     @patch('services.pymes._clasificar_intencion_con_llm', return_value='hablar_con_agente_pyme')
     def test_human_escalation_pyme_anonymous_requires_login(self, mock_clf, mock_servicio):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
-        resp = pymes.responder_pyme('Necesito hablar con un agente', None, None)
+        resp = pymes.responder_pyme('Necesito hablar con un agente', DummyUser(), None, viewer_user=None)
         self.assertIn('iniciar sesión', resp['respuesta'])
 
     def test_greeting_with_typo(self):
         user = DummyUser()
-        resp = pymes.responder_pyme('holaa buenos noxes', user, None)
+        resp = pymes.responder_pyme('holaa buenos noxes', user, None, viewer_user=user)
         self.assertIn('¿En qué puedo ayudarte hoy', resp['respuesta'])
 
     def test_small_talk(self):
         user = DummyUser()
         with patch('services.logic.get_cohere_response', side_effect=['SI', '¡Hola! ¿Cómo estás?']) as mock_llm:
-            resp = pymes.responder_pyme('¿Cómo andas?', user, None)
+            resp = pymes.responder_pyme('¿Cómo andas?', user, None, viewer_user=user)
             self.assertEqual(resp['fuente'], 'smalltalk_pyme_llm')
             self.assertIn('Hola', resp['respuesta'])
             self.assertEqual(mock_llm.call_count, 2)
