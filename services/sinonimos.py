@@ -44,17 +44,15 @@ def _cargar_json(path: Path) -> Dict[str, List[str]]:
 
 
 def cargar_product_synonyms() -> Dict[str, List[str]]:
-    """Carga sinónimos de productos desde un archivo JSON."""
+    """Retorna un diccionario vacío. Los sinónimos de productos ya no se utilizan."""
     datos = _cargar_json(PRODUCT_SYNONYMS_PATH)
     if datos:
-        return datos
-    # Fallback por defecto si no se pudo cargar el archivo
-    return {
-        "malbec": ["vino malbec", "vinos malbec", "malbek"],
-        "caja": ["cajon", "pack"],
-    }
+        logger.warning(
+            "[SINONIMOS] Archivo de sinónimos de productos ya no es necesario. Ignorando contenido."
+        )
+    return {}
 
-PRODUCT_SYNONYMS: Dict[str, List[str]] = cargar_product_synonyms()
+PRODUCT_SYNONYMS: Dict[str, List[str]] = {}
 
 
 def aplicar_sinonimos(texto: str, mapa: Dict[str, List[str]]) -> str:
