@@ -2,13 +2,13 @@
 
 from flask import Blueprint, request, jsonify, current_app, g
 from sqlalchemy import func
-from werkzeug.security import check_password_hash # Importación que faltaba
 from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario
 from extensions import db
 from functools import wraps
 import uuid
 import json
 from datetime import datetime
+from services.google_auth import login_o_crear_usuario
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -80,6 +80,31 @@ def login():
         "email": user.email,
         "name": user.name,
     })
+
+@auth_bp.route('/google-login', methods=['POST'])
+def google_login():
+    """Inicia sesión utilizando un token de Google."""
+    data = request.get_json(silent=True) or {}
+    token_id = (
+        data.get('id_token')
+        or request.form.get('id_token')
+    )
+    if not token_id:
+        return jsonify({"error": "id_token requerido"}), 400
+    try:
+        user = login_o_crear_usuario(token_id)
+        current_app.logger.info(f"Login Google para: {user.email}")
+        return jsonify({
+            "id": user.id,
+            "token": user.token,
+            "name": user.name,
+            "email": user.email,
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:  # pragma: no cover - unexpected errors
+        current_app.logger.error(f"Error en google_login: {e}", exc_info=True)
+        return jsonify({"error": "Error interno"}), 500
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
