@@ -70,16 +70,20 @@ def create_app(config_class=Config):
 
     # --- 3. Configuración de CORS ---
     # Permitimos orígenes comunes en local para desarrollo
-    allowed_origins = [
-        "http://localhost",
-        "http://localhost:3000",
-        "http://localhost:8080",
-        # Dominios principales de producción
-        "https://chatboc.ar",
-        "https://www.chatboc.ar",
-        "https://api.chatboc.ar",
-        # Cualquier subdominio de chatboc.ar o de Vercel
-    ]
+    allowed_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS")
+    if allowed_origins_env:
+        allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
+    else:
+        allowed_origins = [
+            "http://localhost",
+            "http://localhost:3000",
+            "http://localhost:8080",
+            # Dominios principales de producción
+            "https://chatboc.ar",
+            "https://www.chatboc.ar",
+            "https://api.chatboc.ar",
+            # Cualquier subdominio de chatboc.ar o de Vercel
+        ]
 
     CORS(
         app,

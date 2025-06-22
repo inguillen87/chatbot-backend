@@ -24,6 +24,11 @@ Configura `GOOGLE_OAUTH_CLIENT_ID` con el ID de cliente de tu aplicación de
 Google (o varios separados por comas) para que el backend valide la audiencia
 de los tokens enviados a `/auth/google-login`.
 
+Para definir qué orígenes pueden realizar peticiones al backend, puedes usar la
+variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
+Si no se especifica, se permiten dominios locales y los subdominios de
+`chatboc.ar` por defecto.
+
 ## Uso correcto del rubro
 
 El archivo `services/logic.py` define el conjunto `RUBROS_PUBLICOS` con los rubros que se tratan como entes públicos, por ejemplo `"municipio"` y `"municipios"`.
