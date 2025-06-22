@@ -2,6 +2,8 @@ import os
 import logging
 import smtplib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from twilio.rest import Client
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,35 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str) -> bool:
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(mensaje)
         logger.info(f"[EMAIL] Enviado a {destino}")
+        return True
+    except Exception as e:
+        logger.error(f"[EMAIL] Error enviando correo: {e}")
+        return False
+
+
+def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre_archivo: str, contenido: bytes) -> bool:
+    """Envía un email con un archivo adjunto."""
+    if not all([SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, destino]):
+        logger.warning("[EMAIL] Faltan credenciales o destino.")
+        return False
+
+    mensaje = MIMEMultipart()
+    mensaje["Subject"] = asunto
+    mensaje["From"] = FROM_EMAIL
+    mensaje["To"] = destino
+    mensaje.attach(MIMEText(cuerpo_html, "html", "utf-8"))
+
+    if contenido:
+        adj = MIMEApplication(contenido, _subtype="pdf")
+        adj.add_header("Content-Disposition", "attachment", filename=nombre_archivo)
+        mensaje.attach(adj)
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(mensaje)
+        logger.info(f"[EMAIL] Enviado a {destino} con adjunto {nombre_archivo}")
         return True
     except Exception as e:
         logger.error(f"[EMAIL] Error enviando correo: {e}")
