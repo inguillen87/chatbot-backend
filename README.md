@@ -24,6 +24,10 @@ This project exposes several endpoints to process questions for different sector
 - `GET /estadisticas/reclamos` – statistics of tickets by category and type.
 - `GET /tramites` – list available municipal procedures, supports `?q=` filtering.
 - `GET /tramites/<nombre>` – detailed info for a specific procedure.
+- `GET /tramites/descargar` – download the full JSON catalog of procedures.
+- `GET /empleados` – list internal employees associated with the token.
+- `POST /empleados` – create a new internal employee.
+- `GET /empleados/<id>/historial` – list tickets handled by an employee.
 
 ## Variables de entorno
 
