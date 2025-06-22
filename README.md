@@ -61,4 +61,5 @@ usuario.
 - Los listados de productos del catálogo y los pedidos se ordenan por precio para que sea más fácil elegir.
 - Cada artículo consolida su código, descripción y precio en una sola línea para evitar datos fragmentados.
 - El historial de chat para pymes ahora conserva hasta 30 mensajes para dar más contexto en cada respuesta.
-
+  Nuevo módulo de validaciones que comprueba nombre, correo y teléfono usando librerías open source.
+- Si no puedes modificar `requirements.txt`, instala manualmente `email-validator` y `phonenumbers` para habilitar estas validaciones.

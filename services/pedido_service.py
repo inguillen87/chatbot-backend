@@ -1,17 +1,5 @@
-# src/services/pedido_service.py
-
 import logging
-import uuid
-from models import (
-    db,
-    PymePedido,
-)  # Asegúrate que PymePedido esté importado desde models
-import re
-from datetime import datetime
-from models import (
-    db,
-    PymePedido,
-)  # Asegúrate que PymePedido esté importado desde models
+from models import db, PymePedido  # Asegúrate que PymePedido esté importado desde models
 from .email_service import (
     enviar_email_pedido_admin,
     enviar_email_pedido_cliente,
@@ -81,9 +69,6 @@ class PedidoService:
             )
             db.session.add(nuevo_pedido)
             db.session.commit()
-            logger.info(
-                f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{nuevo_pedido.rubro}' por cliente '{nuevo_pedido.nombre_cliente}'"
-            )
             logger.info(
                 f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{nuevo_pedido.rubro}' por cliente '{nuevo_pedido.nombre_cliente}'"
             )
