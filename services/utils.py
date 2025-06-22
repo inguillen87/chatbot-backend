@@ -2,7 +2,13 @@
 import re
 import os
 import json
-import pandas as pd
+try:
+    import pandas as pd
+except Exception:  # pragma: no cover - pandas es opcional para tests
+    class _DummyPD:
+        class Series: ...
+        class DataFrame: ...
+    pd = _DummyPD()
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import quote_plus
@@ -18,6 +24,15 @@ def limpiar_texto_base(texto: Optional[Any]) -> str:
         try: texto = str(texto)
         except Exception: return ""
     return re.sub(r'\s+', ' ', texto).strip().lower()
+
+def unir_codigos_alfa_numericos(texto: str) -> str:
+    """Une secuencias alfanuméricas separadas por espacios (por ejemplo 'de 108 c' -> 'de108c')."""
+    if not isinstance(texto, str):
+        return ""
+    # Junta letras seguidas de números o viceversa cuando están separados solo por espacios
+    texto = re.sub(r'([A-Za-z])\s+(?=\d)', r"\1", texto)
+    texto = re.sub(r'(\d)\s+(?=[A-Za-z])', r"\1", texto)
+    return texto
 
 def parse_precio_flexible(texto_precio_input: Optional[Any]) -> Tuple[Optional[str], Optional[float], Optional[str]]:
     """Tu potente función para parsear precios. Se conserva intacta."""
