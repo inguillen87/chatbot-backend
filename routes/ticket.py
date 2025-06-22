@@ -73,6 +73,62 @@ def get_tickets_del_usuario(current_user: User):
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
 
+# ---------- LISTA DE MIS TICKETS (cliente) ----------
+@ticket_bp.route('/mios', methods=['GET'])
+@token_requerido
+def get_mis_tickets(current_user: User):
+    """Devuelve solo los tickets asociados al usuario autenticado."""
+    try:
+        tickets_muni = (
+            MunicipioTicket.query
+            .filter_by(user_id=current_user.id)
+            .order_by(MunicipioTicket.fecha.desc())
+            .all()
+        )
+        tickets_pyme = (
+            PymeTicket.query
+            .filter_by(user_id=current_user.id)
+            .order_by(PymeTicket.fecha.desc())
+            .all()
+        )
+
+        def serialize(t, tipo):
+            base = {
+                "id": t.id,
+                "tipo": tipo,
+                "nro_ticket": t.nro_ticket,
+                "asunto": getattr(t, "asunto", "N/A"),
+                "estado": t.estado,
+                "fecha": t.fecha.isoformat(),
+                "direccion": getattr(t, "direccion", None),
+                "latitud": getattr(t, "latitud", None),
+                "longitud": getattr(t, "longitud", None),
+            }
+            if tipo == "pyme":
+                base.update({
+                    "telefono": getattr(t, "telefono", None),
+                    "email": getattr(t, "email", None),
+                    "dni": getattr(t, "dni", None),
+                    "estado_cliente": getattr(t, "estado_cliente", None),
+                })
+            else:
+                base.update({
+                    "categoria": getattr(t, "categoria", None),
+                })
+            return base
+
+        todos = [serialize(t, "municipio") for t in tickets_muni] + [
+            serialize(t, "pyme") for t in tickets_pyme
+        ]
+        todos.sort(key=lambda x: x["fecha"], reverse=True)
+        return jsonify(todos)
+    except Exception as e:
+        current_app.logger.error(
+            f"Error en get_mis_tickets para user {getattr(current_user,'id','?')}: {e}",
+            exc_info=True,
+        )
+        return jsonify({"error": "Error interno al obtener tus tickets."}), 500
+
 # ---------- DETALLE DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @anon_o_token_requerido

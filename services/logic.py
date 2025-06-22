@@ -120,7 +120,8 @@ def _clasificar_intencion_con_llm(pregunta: str) -> str:
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
 def responder_chatboc(
     pregunta,
-    user_obj=None,
+    owner_user=None,
+    current_user=None,
     rubro_obj=None,
     session_obj=None,
     rubro_nombre_frontend=None,
@@ -140,17 +141,17 @@ def responder_chatboc(
         elif getattr(rubro_obj, "clave", None):
             rubro_nombre = str(rubro_obj.clave).strip().lower()
             fuente = "rubro_obj.clave"
-    elif user_obj and getattr(user_obj, "rubro", None):
-        rubro_value = user_obj.rubro
+    elif owner_user and getattr(owner_user, "rubro", None):
+        rubro_value = owner_user.rubro
         if hasattr(rubro_value, "nombre") and rubro_value.nombre:
             rubro_nombre = str(rubro_value.nombre).strip().lower()
-            fuente = "user_obj.rubro.nombre"
+            fuente = "owner_user.rubro.nombre"
         elif hasattr(rubro_value, "clave") and rubro_value.clave:
             rubro_nombre = str(rubro_value.clave).strip().lower()
-            fuente = "user_obj.rubro.clave"
+            fuente = "owner_user.rubro.clave"
         else:
             rubro_nombre = str(rubro_value).strip().lower()
-            fuente = "user_obj.rubro (str)"
+            fuente = "owner_user.rubro (str)"
     elif rubro_nombre_frontend:
         rubro_nombre = str(rubro_nombre_frontend).strip().lower()
         fuente = "rubro_nombre_frontend"
@@ -159,7 +160,7 @@ def responder_chatboc(
         fuente = "no_encontrado"
 
     logger.info(
-        f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(user_obj, 'id', None)})"
+        f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
     )
 
     # Si el rubro sugiere un tipo de chat distinto al provisto, ajustamos
@@ -186,12 +187,24 @@ def responder_chatboc(
     if tipo_chat == "municipio":
         from services.municipios import responder_municipio
         return responder_municipio(
-            pregunta, user_obj, rubro_obj, session_obj=session_obj, anon_id=anon_id, **kwargs
+            pregunta,
+            owner_user,
+            rubro_obj,
+            viewer_user=current_user,
+            session_obj=session_obj,
+            anon_id=anon_id,
+            **kwargs,
         )
     elif tipo_chat == "pyme":
         from services.pymes import responder_pyme
         return responder_pyme(
-            pregunta, user_obj, rubro_obj, session_obj=session_obj, anon_id=anon_id, **kwargs
+            pregunta,
+            owner_user,
+            rubro_obj,
+            viewer_user=current_user,
+            session_obj=session_obj,
+            anon_id=anon_id,
+            **kwargs,
         )
     else:
         raise ValueError(f"Tipo de chat no soportado: {tipo_chat}")
