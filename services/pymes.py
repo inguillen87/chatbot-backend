@@ -37,7 +37,6 @@ from services.herramientas_pyme import TOOL_REGISTRY_PYME
 from services.herramientas_municipio import normalizar_texto
 import unicodedata
 from .logic import (
-    _clasificar_intencion_con_llm,
     detectar_small_talk_con_llm,
     generar_respuesta_small_talk,
 )
@@ -126,6 +125,21 @@ PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 
 Tu respuesta debe ser SÓLO una de las INTENCIONES POSIBLES.
 """
+
+# --- Función para clasificar intención específica de Pyme ---
+def _clasificar_intencion_pyme_con_llm(pregunta: str) -> str:
+    """Clasifica la intención de una consulta en el contexto de una PyME."""
+    logger.info(f"[PYME_CLF] Clasificando intención para: '{pregunta}'")
+    prompt = PROMPT_CLASIFICACION_INTENCION_PYME.format(pregunta_usuario=pregunta)
+    try:
+        intencion = get_cohere_response(
+            message=prompt,
+            preamble="Sos un clasificador de intención de usuario para una pyme. Responde solo con la intención clasificada.",
+        )
+        return intencion.strip().lower()
+    except Exception as e:
+        logger.error(f"[PYME_CLF] Error al clasificar intención: {e}")
+        return "general_pyme"
 
 # --- Utilidad para decidir herramientas con LLM ---
 def crear_prompt_decision_herramienta_pyme(pregunta_usuario: str) -> str:
@@ -507,7 +521,7 @@ class IntentClassifierPymeHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get('contexto_pyme', {})
         if not memoria.get('estado_conversacion'):
-            intencion = _clasificar_intencion_con_llm(pregunta)
+            intencion = _clasificar_intencion_pyme_con_llm(pregunta)
 
             # Heurística simple si el clasificador no detecta la intención
             if intencion in {"general", "general_pyme"}:

@@ -105,7 +105,7 @@ class PymeLogicTests(unittest.TestCase):
         self.assertFalse(pymes.es_pregunta_nueva('hola', 'el dato solicitado'))
 
     @patch('services.pymes.servicio_tickets')
-    @patch('services.pymes._clasificar_intencion_con_llm', return_value='hablar_con_agente_pyme')
+    @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='hablar_con_agente_pyme')
     def test_human_escalation_pyme(self, mock_clf, mock_servicio):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         mock_servicio.crear_comentario.return_value = None
@@ -114,7 +114,7 @@ class PymeLogicTests(unittest.TestCase):
         self.assertIn('sala de chat', resp['respuesta'])
 
     @patch('services.pymes.servicio_tickets')
-    @patch('services.pymes._clasificar_intencion_con_llm', return_value='hablar_con_agente_pyme')
+    @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='hablar_con_agente_pyme')
     def test_human_escalation_pyme_anonymous_requires_login(self, mock_clf, mock_servicio):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         resp = pymes.responder_pyme('Necesito hablar con un agente', DummyUser(), None, viewer_user=None)
@@ -148,6 +148,13 @@ class PymeLogicTests(unittest.TestCase):
         handler = pymes.PedidoHandler(contexto)
         resp = handler.handle('cancelalo por favor')
         self.assertEqual(resp['fuente'], 'pedido_cancelado')
+
+    @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='iniciar_pedido')
+    def test_iniciar_pedido_flujo(self, mock_clf):
+        user = DummyUser()
+        resp = pymes.responder_pyme('quiero comprar', user, None, viewer_user=user)
+        self.assertEqual(resp['estado_respuesta'], 'pyme_pregunta_pedido')
+        self.assertIn('pedido', resp['respuesta'].lower())
 
 
 if __name__ == '__main__':
