@@ -273,3 +273,18 @@ def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     """
     user = owner_user or current_user
     return _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
+
+
+# Preflight CORS handler for /widget/attention
+@chat_bp.route("/widget/attention", methods=["OPTIONS"])
+def widget_attention_options():
+    return cors_options_response()
+
+
+@chat_bp.route("/widget/attention", methods=["GET"])
+def widget_attention():
+    """Devuelve un mensaje breve para mostrar en el globito del chat."""
+    mensaje = current_app.config.get(
+        "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
+    )
+    return jsonify({"mensaje": mensaje})

@@ -41,5 +41,10 @@ class Config:
     SESSION_TYPE = 'sqlalchemy'
     SESSION_SQLALCHEMY_TABLE = 'sessions'
 
+    # Texto opcional para el globito de atención del widget
+    ATTENTION_BUBBLE_TEXT = os.getenv(
+        "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
+    )
+
     # Base URL del frontend para generar links de productos
     TIENDA_BASE_URL = os.getenv("TIENDA_BASE_URL", "")
