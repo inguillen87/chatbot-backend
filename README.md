@@ -11,6 +11,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /auth/widget/login` – login for end users without leaving the widget.
 - `POST /auth/google-login` – login o registro utilizando un ID token de Google.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
+- `POST /subir_catalogo` – upload a product catalog (PDF, Excel or images).
 
 - `PUT /auth/me` – update the logged in user's profile.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
@@ -28,6 +29,7 @@ This project exposes several endpoints to process questions for different sector
 - `GET /empleados` – list internal employees associated with the token.
 - `POST /empleados` – create a new internal employee.
 - `GET /empleados/<id>/historial` – list tickets handled by an employee.
+- `POST /presupuestos/generar` – send a PDF quote to a client based on item data.
 
 ## Variables de entorno
 
@@ -85,7 +87,7 @@ usuario.
 - Cada artículo consolida su código, descripción y precio en una sola línea para evitar datos fragmentados.
 - El historial de chat para pymes ahora conserva hasta 30 mensajes para dar más contexto en cada respuesta.
   Nuevo módulo de validaciones que comprueba nombre, correo y teléfono usando librerías open source.
-- Si no puedes modificar `requirements.txt`, instala manualmente `email-validator` y `phonenumbers` para habilitar estas validaciones.
+- Si necesitas instalar dependencias manualmente, consulta el archivo `docs/dependencias.txt` para ver la lista completa de paquetes requeridos.
 - Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.
 - Nuevo endpoint `/estadisticas/reclamos` que resume los tickets por rubro y tipo, e informa el tiempo de respuesta promedio.
 - Las respuestas de agentes generan notificaciones automáticas por correo y SMS al ciudadano cuando su ticket recibe novedades.

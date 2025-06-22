@@ -9,7 +9,7 @@ from extensions import db
 from models import CatalogoItem, User, Rubro
 from services.cohere_ai import embed_textos
 
-from services.google_docai import procesar_catalogo_pdf_google
+from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
 
 from .utils import limpiar_texto_base
@@ -24,7 +24,7 @@ from typing import List, Dict, Any, Optional
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg"}
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")  # Esto anda en cualquier entorno
 
 def extension_valida(nombre_archivo: str) -> bool:
@@ -94,6 +94,9 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         if extension_archivo == ".pdf":
             logger.info(f"[UPLOAD_PROC] Procesando PDF con Google DocAI: {os.path.basename(path_archivo)}")
             registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id, pyme_rubro_nombre)
+        elif extension_archivo in [".png", ".jpg", ".jpeg"]:
+            logger.info(f"[UPLOAD_PROC] Procesando imagen con Google DocAI: {os.path.basename(path_archivo)}")
+            registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id, pyme_rubro_nombre)
         elif extension_archivo in [".xlsx", ".xls", ".csv"]:
             logger.info(f"[UPLOAD_PROC] Procesando EXCEL/CSV: {os.path.basename(path_archivo)}")
             registros_estructurados = procesar_catalogo_excel(path_archivo, user_id, pyme_rubro_nombre)
