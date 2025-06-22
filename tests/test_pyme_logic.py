@@ -125,6 +125,14 @@ class PymeLogicTests(unittest.TestCase):
         resp = pymes.responder_pyme('holaa buenos noxes', user, None)
         self.assertIn('¿En qué puedo ayudarte hoy', resp['respuesta'])
 
+    def test_small_talk(self):
+        user = DummyUser()
+        with patch('services.logic.get_cohere_response', side_effect=['SI', '¡Hola! ¿Cómo estás?']) as mock_llm:
+            resp = pymes.responder_pyme('¿Cómo andas?', user, None)
+            self.assertEqual(resp['fuente'], 'smalltalk_pyme_llm')
+            self.assertIn('Hola', resp['respuesta'])
+            self.assertEqual(mock_llm.call_count, 2)
+
     def test_cancel_keywords(self):
         contexto = {
             'contexto_pyme': {

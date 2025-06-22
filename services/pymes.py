@@ -35,7 +35,11 @@ from services.pedido_service import servicio_pedidos
 from services.herramientas_pyme import TOOL_REGISTRY_PYME
 from services.herramientas_municipio import normalizar_texto
 import unicodedata
-from .logic import _clasificar_intencion_con_llm
+from .logic import (
+    _clasificar_intencion_con_llm,
+    detectar_small_talk_con_llm,
+    generar_respuesta_small_talk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +316,18 @@ class GreetingHandler(BaseHandler):
             return {
                 "respuesta": "¡Hola! Soy Chatboc. ¿En qué puedo ayudarte hoy?",
                 "fuente": "saludo_pyme",
+            }
+        return None
+
+class SmallTalkHandler(BaseHandler):
+    """Detecta small talk con LLM y responde de forma cordial."""
+
+    def handle(self, pregunta: str) -> dict | None:
+        if detectar_small_talk_con_llm(pregunta):
+            respuesta = generar_respuesta_small_talk(pregunta)
+            return {
+                "respuesta": respuesta,
+                "fuente": "smalltalk_pyme_llm",
             }
         return None
 
@@ -1134,6 +1150,7 @@ def responder_pyme(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
     handler_chain = [
         LimitHandler,
         GreetingHandler,
+        SmallTalkHandler,
         FollowUpHandler,
         IntentClassifierPymeHandler, # 1. Clasifica la intención
         VectorCatalogHandler,      # 2. BUSCA EN EL CATÁLOGO VECTORIAL PRIMERO
