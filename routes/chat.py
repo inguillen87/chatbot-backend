@@ -146,14 +146,13 @@ def _procesar_chat(
 
         # --- CONTROL DE PLAN SOLO PARA USUARIOS AUTENTICADOS ---
         if owner_obj:
-            if (
-                owner_obj.plan != "full"
-                and owner_obj.preguntas_usadas >= owner_obj.limite_preguntas
-            ):
+            from utils.plan_limits import limite_para_usuario
+            limite = limite_para_usuario(owner_obj)
+            if limite is not None and owner_obj.preguntas_usadas >= limite:
                 return (
                     jsonify(
                         {
-                            "error": f"Alcanzaste el límite de preguntas de tu plan ({owner_obj.limite_preguntas}). Mejorá tu plan para seguir consultando."
+                            "error": f"Alcanzaste el límite de preguntas de tu plan ({limite}). Mejorá tu plan para seguir consultando."
                         }
                     ),
                     403,
@@ -204,8 +203,9 @@ def _procesar_chat(
         if isinstance(resultado, dict):
             resultado["es_publico"] = es_publico
             if owner_obj:
+                from utils.plan_limits import limite_para_usuario
                 resultado["preguntas_usadas"] = owner_obj.preguntas_usadas
-                resultado["limite_preguntas"] = owner_obj.limite_preguntas
+                resultado["limite_preguntas"] = limite_para_usuario(owner_obj)
 
         return jsonify(resultado), 200
 

@@ -12,6 +12,7 @@ from flask import session as flask_session
 from models import Conversacion, PymeTicket, TicketComentario, PymePedido, Rubro, SitioWebInfo, db
 from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro, calcular_monto_total_items
+from utils.plan_limits import limite_para_usuario
 from services.cohere_ai import get_cohere_response
 from services.vector_search import buscar_item_vectorizado
 from services.qdrant_search import (
@@ -333,8 +334,13 @@ class SmallTalkHandler(BaseHandler):
 
 class LimitHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
-        if self.context.get('preguntas_usadas', 0) >= self.context.get('limite_preguntas', 50):
-            return {"respuesta": "🔒 Límite de preguntas alcanzado. Actualizá tu plan para continuar.", "fuente": "sistema_limite", "estado_respuesta": "limite_alcanzado"}
+        limite = self.context.get('limite_preguntas')
+        if limite is not None and self.context.get('preguntas_usadas', 0) >= limite:
+            return {
+                "respuesta": "🔒 Límite de preguntas alcanzado. Actualizá tu plan para continuar.",
+                "fuente": "sistema_limite",
+                "estado_respuesta": "limite_alcanzado",
+            }
         return None
 
 # (Todos los demás handlers como FollowUpHandler, PedidoHandler, etc., se mantienen exactamente igual)
@@ -1162,7 +1168,7 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "email": getattr(owner_user, "email", "") if owner_user else "",
         "plan": getattr(owner_user, "plan", "anonimo") if owner_user else "anonimo",
         "preguntas_usadas": getattr(owner_user, "preguntas_usadas", 0) if owner_user else 0,
-        "limite_preguntas": getattr(owner_user, "limite_preguntas", 10) if owner_user else 10,
+        "limite_preguntas": limite_para_usuario(owner_user) if owner_user else None,
         "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     }
