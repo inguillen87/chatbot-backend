@@ -16,10 +16,16 @@ from flask import make_response
 
 def cors_options_response():
     resp = make_response('', 200)
-    # OJO: Si en producción no querés exponerlo a todos, cambiá el "*" por tu dominio
-    resp.headers['Access-Control-Allow-Origin'] = '*'
+    origin = request.headers.get('Origin')
+    if origin:
+        resp.headers['Access-Control-Allow-Origin'] = origin
+        resp.headers['Vary'] = 'Origin'
+    else:
+        resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
-    resp.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token'
+    resp.headers['Access-Control-Allow-Headers'] = (
+        'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token'
+    )
     resp.headers['Access-Control-Allow-Credentials'] = 'true'
     return resp
 
