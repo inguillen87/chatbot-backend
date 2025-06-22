@@ -165,7 +165,7 @@ def responder_chatboc(
 
     # Si el rubro indica un tipo específico de lógica, lo usamos siempre
     if rubro_nombre:
-        esperado = "municipio" if rubro_nombre in RUBROS_PUBLICOS else "pyme"
+        esperado = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
         if tipo_chat and tipo_chat != esperado:
             logger.warning(
                 "Tipo de chat '%s' no coincide con el rubro '%s'. Usando '%s'.",
