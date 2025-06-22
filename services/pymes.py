@@ -347,6 +347,69 @@ class SmallTalkHandler(BaseHandler):
             }
         return None
 
+PROMPT_ANALISIS_SENTIMIENTO = """
+Analiza la FRASE y respondé solo 'positivo', 'negativo' o 'neutro'.
+
+FRASE: "{frase}"
+"""
+
+
+def analizar_sentimiento_con_llm(frase: str) -> str:
+    try:
+        decision = get_cohere_response(
+            message=PROMPT_ANALISIS_SENTIMIENTO.format(frase=frase),
+            preamble="Sos un analizador de sentimiento. Respondé solo con positivo, negativo o neutro.",
+        )
+        return decision.strip().lower()
+    except Exception as e:
+        logger.error(f"[SENTIMIENTO] Error analizando: {e}")
+        return "neutro"
+
+
+class SentimentHandler(BaseHandler):
+    NEGATIVE_KEYWORDS = [
+        "pesimo",
+        "pésimo",
+        "horrible",
+        "desastre",
+        "engaño",
+        "estafa",
+        "odio",
+        "malisimo",
+        "malo",
+    ]
+    POSITIVE_KEYWORDS = [
+        "excelente",
+        "buen servicio",
+        "muy bueno",
+        "genial",
+        "gracias",
+        "felicitaciones",
+    ]
+
+    def handle(self, pregunta: str) -> dict | None:
+        texto = self._normalize(pregunta)
+        if any(kw in texto for kw in self.POSITIVE_KEYWORDS):
+            sentimiento = "positivo"
+        elif any(kw in texto for kw in self.NEGATIVE_KEYWORDS):
+            sentimiento = "negativo"
+        else:
+            sentimiento = analizar_sentimiento_con_llm(pregunta)
+
+        if sentimiento == "negativo":
+            self.context["intencion"] = "hablar_con_agente_pyme"
+            return {
+                "respuesta": "Lamento la mala experiencia. ¿Querés hablar con un agente?",
+                "fuente": "sentimiento_negativo",
+                "botones": [{"texto": "Hablar con un agente"}],
+            }
+        if sentimiento == "positivo":
+            return {
+                "respuesta": "¡Gracias por tu comentario! ¿Necesitás ayuda con algo más?",
+                "fuente": "sentimiento_positivo",
+            }
+        return None
+
 class LimitHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         limite = self.context.get('limite_preguntas')
@@ -1210,6 +1273,7 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         LimitHandler,
         GreetingHandler,
         SmallTalkHandler,
+        SentimentHandler,
         FollowUpHandler,
         IntentClassifierPymeHandler, # 1. Clasifica la intención
         VectorCatalogHandler,      # 2. BUSCA EN EL CATÁLOGO VECTORIAL PRIMERO
