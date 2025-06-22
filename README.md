@@ -93,3 +93,4 @@ usuario.
 - Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.
 - Nuevo endpoint `/estadisticas/reclamos` que resume los tickets por rubro y tipo, e informa el tiempo de respuesta promedio.
 - Las respuestas de agentes generan notificaciones automáticas por correo y SMS al ciudadano cuando su ticket recibe novedades.
+- El analizador de sentimiento ahora responde de forma positiva o negativa para mejorar la interacción con pymes.
