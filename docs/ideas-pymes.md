@@ -18,4 +18,4 @@ Este documento resume funcionalidades pensadas para negocios y emprendimientos q
 - El endpoint `GET /crm/analytics` devuelve estadísticas de clientes y tickets asociados a la empresa.
 - También puede consultarse `GET /metricas` para ver el uso reciente de preguntas y la fecha del último acceso.
 - Para obtener un resumen general de tickets por rubro y tipo, se puede llamar a `GET /estadisticas/reclamos`.
-- El `SentimentHandler` detecta comentarios positivos y negativos para generar respuestas más naturales.
+
