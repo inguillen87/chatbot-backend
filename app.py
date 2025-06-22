@@ -69,11 +69,18 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- 3. Configuración de CORS ---
-    # Permitimos orígenes comunes en local para desarrollo
+    # Permitimos orígenes de desarrollo y dominios desplegados
     allowed_origins = [
         "http://localhost",
         "http://localhost:3000",
         "http://localhost:8080",
+        # Dominios principales de producción
+        "https://chatboc.ar",
+        "https://www.chatboc.ar",
+        "https://api.chatboc.ar",
+        # Cualquier subdominio de chatboc.ar o de Vercel
+        r"https://*.chatboc.ar",
+        r"https://*.vercel.app",
     ]
 
     CORS(
