@@ -22,6 +22,10 @@ def obtener_token():
     if token:
         return token.strip()
 
+    token = request.headers.get("X-Entity-Token")
+    if token:
+        return token.strip()
+
     token = request.args.get("token")
     if token:
         return token.strip()
