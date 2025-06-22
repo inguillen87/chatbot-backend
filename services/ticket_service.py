@@ -134,11 +134,7 @@ class ServicioTickets:
             logger.error(f"Error de DB al crear comentario: {e}", exc_info=True)
             return None
         
-<<<<<<< HEAD
 def guardar_encuesta(
-=======
-    def guardar_encuesta(
->>>>>>> 484247685f09ea6ac591de28019add6ccf7a7143
         self,
         ticket_id: int,
         tipo_ticket: Literal["municipio", "pyme"],
