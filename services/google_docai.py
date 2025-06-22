@@ -84,6 +84,39 @@ def _tabla_docai_a_dataframe(table: documentai.Document.Page.Table, full_doc_tex
         
     return pd.DataFrame(filas_datos) if filas_datos else pd.DataFrame()
 
+
+def _consolidar_filas(df: pd.DataFrame) -> pd.DataFrame:
+    """Combina filas parciales que DocAI pudo haber separado por error."""
+    if df.empty:
+        return df
+
+    n_cols = df.shape[1]
+    filas: List[List[str]] = []
+    actual: List[str] | None = None
+
+    for _, row in df.iterrows():
+        celdas = [str(c).strip() for c in row.tolist()]
+        if actual is None:
+            actual = celdas
+            continue
+
+        non_empty = [c for c in celdas if c]
+        if len(non_empty) < n_cols / 2:
+            for idx, val in enumerate(celdas):
+                if val:
+                    if not actual[idx]:
+                        actual[idx] = val
+                    else:
+                        actual[idx] = f"{actual[idx]} {val}".strip()
+        else:
+            filas.append(actual)
+            actual = celdas
+
+    if actual is not None:
+        filas.append(actual)
+
+    return pd.DataFrame(filas, columns=df.columns)
+
 def _obtener_documento_ai(pdf_path: str) -> Optional[documentai.Document]:
     """Llama a la API de Google Document AI para procesar un PDF. Tu lógica original, intacta."""
     if not CREDENTIALS_LOADED_SUCCESSFULLY or not GOOGLE_CREDENTIALS:
@@ -166,6 +199,7 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
     for i, tabla_docai in enumerate(todas_las_tablas_docai):
         logger.info(f"--- Procesando Tabla PDF #{i+1} ---")
         df_tabla = _tabla_docai_a_dataframe(tabla_docai, document.text or "")
+        df_tabla = _consolidar_filas(df_tabla)
         if df_tabla.empty:
             logger.warning(f"Tabla PDF #{i+1} estaba vacía o no se pudo convertir. Saltando.")
             continue
