@@ -9,6 +9,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /ask/municipio` – optimized for municipalities and other public entities.
 - `POST /auth/widget/register` – quick sign up for end users using the widget.
 - `POST /auth/widget/login` – login for end users without leaving the widget.
+- `POST /auth/google-login` – login or register using a Google ID token.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
 - `PUT /auth/me` – update the logged in user's profile.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
