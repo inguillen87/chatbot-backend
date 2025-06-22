@@ -133,8 +133,8 @@ class ServicioTickets:
             db.session.rollback()
             logger.error(f"Error de DB al crear comentario: {e}", exc_info=True)
             return None
-        
-def guardar_encuesta(
+
+    def guardar_encuesta(
         self,
         ticket_id: int,
         tipo_ticket: Literal["municipio", "pyme"],
@@ -158,7 +158,7 @@ def guardar_encuesta(
             )
             return None
 
-def obtener_tickets_abiertos_con_ubicacion(
+    def obtener_tickets_abiertos_con_ubicacion(
         self, tipo_ticket: Literal["municipio", "pyme"]
     ) -> list[dict]:
         """Devuelve los tickets con ubicación que no estén cerrados."""
@@ -189,7 +189,7 @@ def obtener_tickets_abiertos_con_ubicacion(
             )
             return []
 
-def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:
+    def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:
         """Asigna a ``nuevo_user_id`` todos los tickets y comentarios
         vinculados al ``anon_id`` proporcionado."""
         if not anon_id or not nuevo_user_id:
