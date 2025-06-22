@@ -38,7 +38,14 @@ def recibir_sugerencia():
 # ✅ FIX CORS manual
 @sugerencia_bp.after_request
 def apply_cors(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,Anon-Id,x-entity-token"
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type,Authorization,Anon-Id,x-entity-token"
+    )
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
