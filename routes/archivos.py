@@ -16,6 +16,7 @@ def allowed_file(filename: str) -> bool:
 
 
 @archivos_bp.route('/subir', methods=['OPTIONS'])
+@archivos_bp.route('/subir/', methods=['OPTIONS'])
 def subir_archivo_options():
     """Manejo de preflight CORS para /archivos/subir."""
     return cors_options_response()
@@ -51,4 +52,5 @@ def apply_cors(response):
         'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token'
     )
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
     return response
