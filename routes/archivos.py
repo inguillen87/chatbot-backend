@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify, current_app
+from routes.chat import cors_options_response
 import os
 from werkzeug.utils import secure_filename
 from datetime import datetime
@@ -12,6 +13,12 @@ ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'pdf', 'xlsx', 'xls', 'csv', 'docx',
 
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@archivos_bp.route('/subir', methods=['OPTIONS'])
+def subir_archivo_options():
+    """Manejo de preflight CORS para /archivos/subir."""
+    return cors_options_response()
 
 
 @archivos_bp.route('/subir', methods=['POST'])
@@ -30,3 +37,18 @@ def subir_archivo(current_user):
         current_app.logger.info(f"Archivo subido por user {current_user.id}: {filename}")
         return jsonify({'mensaje': 'Archivo subido', 'filename': filename, 'url': f'/uploads/{filename}'}), 200
     return jsonify({'error': 'Formato no permitido.'}), 400
+
+
+@archivos_bp.after_request
+def apply_cors(response):
+    origin = request.headers.get('Origin')
+    if origin:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+    else:
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = (
+        'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token'
+    )
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+    return response
