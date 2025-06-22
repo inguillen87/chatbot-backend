@@ -1039,7 +1039,7 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             # Si el usuario es anónimo, pedimos que se registre antes de
             # iniciar el chat en vivo. Esto asegura que podamos asociar el
             # ticket a un usuario válido y guardar su ubicación.
-            if not self.context.get("user_id"):
+            if not self.context.get("cliente_id"):
                 return {
                     "respuesta": (
                         "Para hablar con un agente y registrar tu reclamo, \n"
@@ -1052,13 +1052,13 @@ class HumanEscalationHandler(BaseMunicipioHandler):
                 }
 
             logger.info(
-                f"[HumanEscalationHandler] Usuario {self.context.get('user_id')} pide agente."
+                f"[HumanEscalationHandler] Usuario {self.context.get('cliente_id')} pide agente."
             )
             ticket_data = {
                 "asunto": "Solicitud de Chat en Vivo",
                 "categoria": "Atención en Vivo",
                 "detalles": f"El vecino solicitó chat en vivo: '{pregunta}'",
-                "user_id": self.context.get("user_id"),
+                "user_id": self.context.get("cliente_id"),
                 "estado": "esperando_agente_en_vivo",
             }
             sala_de_chat = servicio_tickets.crear_nuevo_ticket(
@@ -1117,7 +1117,7 @@ BOTONES_COMANDOS_MUNICIPIO = {
 # Asume que todas las clases Handler y funciones auxiliares (como serializar_enum,
 # normalizar_texto, etc.) están definidas en el mismo archivo o importadas correctamente.
 
-def responder_municipio(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
+def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get("contexto_previo", {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     estado_guardado = contexto_municipio.get("estado_conversacion")
@@ -1131,8 +1131,9 @@ def responder_municipio(pregunta, user_obj, rubro_obj, anon_id=None, **kwargs):
             contexto_municipio["estado_conversacion"] = None
     context = {
         "contexto_municipio": contexto_municipio,
-        "user_obj": user_obj,
-        "user_id": getattr(user_obj, "id", None),
+        "user_obj": owner_user,
+        "user_id": getattr(owner_user, "id", None),
+        "cliente_id": getattr(viewer_user, "id", None),
         "intencion": None,
     }
     # --- INTERCEPTA COMANDOS DE BOTONES ---

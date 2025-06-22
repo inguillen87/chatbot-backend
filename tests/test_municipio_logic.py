@@ -82,7 +82,7 @@ class MunicipioLogicTests(unittest.TestCase):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         mock_servicio.crear_comentario.return_value = None
         user = DummyUser()
-        resp = municipios.responder_municipio('Hablar con un agente', user, None)
+        resp = municipios.responder_municipio('Hablar con un agente', user, None, viewer_user=user)
         self.assertIn('chat directa', resp['respuesta'])
 
     @patch('services.municipios.get_cohere_response', return_value='')
@@ -90,18 +90,18 @@ class MunicipioLogicTests(unittest.TestCase):
     @patch('services.municipios._clasificar_intencion_con_llm', return_value='hablar_con_agente')
     def test_human_escalation_anonymous_requires_login(self, mock_clf, mock_servicio, mock_llm):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
-        resp = municipios.responder_municipio('Hablar con un agente', None, None)
+        resp = municipios.responder_municipio('Hablar con un agente', DummyUser(), None, viewer_user=None)
         self.assertIn('iniciar sesión', resp['respuesta'])
 
     def test_greeting_variation(self):
         user = DummyUser()
-        resp = municipios.responder_municipio('hola buenos noches', user, None)
+        resp = municipios.responder_municipio('hola buenos noches', user, None, viewer_user=user)
         self.assertIn('tu asistente digital del Municipio', resp['respuesta'])
 
     def test_small_talk_municipio(self):
         user = DummyUser()
         with patch('services.logic.get_cohere_response', side_effect=['SI', '¡Hola! ¿Todo bien!']) as mock_llm:
-            resp = municipios.responder_municipio('¿Cómo te va?', user, None)
+            resp = municipios.responder_municipio('¿Cómo te va?', user, None, viewer_user=user)
             self.assertIn('Hola', resp['respuesta'])
             self.assertEqual(mock_llm.call_count, 2)
 
@@ -109,11 +109,11 @@ class MunicipioLogicTests(unittest.TestCase):
         """El texto de respuesta para un trámite debe ser una cadena."""
         user = DummyUser()
         # Primer paso: iniciar el flujo de trámites
-        resp1 = municipios.responder_municipio('Quiero hacer un tramite', user, None)
+        resp1 = municipios.responder_municipio('Quiero hacer un tramite', user, None, viewer_user=user)
         contexto = resp1.get('contexto_actualizado')
         self.assertIn('trámite', resp1['respuesta'].lower())
         # Seleccionamos un trámite específico
-        resp2 = municipios.responder_municipio('Rentas', user, None, contexto_previo=contexto)
+        resp2 = municipios.responder_municipio('Rentas', user, None, viewer_user=user, contexto_previo=contexto)
         self.assertIsInstance(resp2['respuesta'], str)
         self.assertIn('https://www.juninmendoza.gov.ar/vencimientos/', resp2['respuesta'])
         self.assertTrue(
