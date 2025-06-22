@@ -1076,8 +1076,8 @@ class HumanEscalationPymeHandler(BaseHandler):
                         "Para chatear con un agente necesitás registrarte o iniciar sesión."
                     ),
                     "botones": [
-                        {"texto": "Iniciar sesión", "url": "/login"},
-                        {"texto": "Registrarme Gratis", "url": "/register"},
+                        {"texto": "Iniciar sesión", "url": "/auth/widget/login"},
+                        {"texto": "Registrarme Gratis", "url": "/auth/widget/register"},
                     ],
                 }
 
@@ -1118,8 +1118,8 @@ class EngancheAnonimoHandler(BaseHandler):
                 "respuesta": (
                     "Para seguir con la atención personalizada y guardar tu historial, registrate o iniciá sesión."),
                 "botones": [
-                    {"texto": "Iniciar sesión", "url": "/login"},
-                    {"texto": "Registrarme Gratis", "url": "/register"}
+                    {"texto": "Iniciar sesión", "url": "/auth/widget/login"},
+                    {"texto": "Registrarme Gratis", "url": "/auth/widget/register"}
                 ]
             }
         return None
