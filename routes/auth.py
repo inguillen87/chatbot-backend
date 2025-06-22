@@ -2,7 +2,6 @@
 
 from flask import Blueprint, request, jsonify, current_app, g
 from sqlalchemy import func
-from werkzeug.security import check_password_hash # Importación que faltaba
 from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario
 from extensions import db
 from functools import wraps
@@ -83,11 +82,13 @@ def login():
     })
 
 @auth_bp.route('/google-login', methods=['POST'])
-@auth_bp.route('/google', methods=['POST'])
 def google_login():
     """Inicia sesión utilizando un token de Google."""
     data = request.get_json(silent=True) or {}
-    token_id = data.get('id_token')
+    token_id = (
+        data.get('id_token')
+        or request.form.get('id_token')
+    )
     if not token_id:
         return jsonify({"error": "id_token requerido"}), 400
     try:

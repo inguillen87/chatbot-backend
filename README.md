@@ -9,8 +9,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /ask/municipio` – optimized for municipalities and other public entities.
 - `POST /auth/widget/register` – quick sign up for end users using the widget.
 - `POST /auth/widget/login` – login for end users without leaving the widget.
-- `POST /auth/google-login` – login or register using a Google ID token.
-
+- `POST /auth/google-login` – login o registro utilizando un ID token de Google.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
 - `PUT /auth/me` – update the logged in user's profile.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
@@ -23,7 +22,7 @@ This project exposes several endpoints to process questions for different sector
 
 Configura `GOOGLE_OAUTH_CLIENT_ID` con el ID de cliente de tu aplicación de
 Google (o varios separados por comas) para que el backend valide la audiencia
-
+de los tokens enviados a `/auth/google-login`.
 
 ## Uso correcto del rubro
 
