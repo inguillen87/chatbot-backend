@@ -117,8 +117,8 @@ def _consolidar_filas(df: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame(filas, columns=df.columns)
 
-def _obtener_documento_ai(pdf_path: str) -> Optional[documentai.Document]:
-    """Llama a la API de Google Document AI para procesar un PDF. Tu lógica original, intacta."""
+def _obtener_documento_ai(path: str, mime_type: str = "application/pdf") -> Optional[documentai.Document]:
+    """Llama a la API de Google Document AI para procesar un archivo."""
     if not CREDENTIALS_LOADED_SUCCESSFULLY or not GOOGLE_CREDENTIALS:
         logger.error("[DOCAI-GET] Imposible procesar PDF: Credenciales Google no cargadas/inválidas.")
         return None
@@ -135,12 +135,13 @@ def _obtener_documento_ai(pdf_path: str) -> Optional[documentai.Document]:
         client = documentai.DocumentProcessorServiceClient(credentials=GOOGLE_CREDENTIALS, client_options=client_options)
         resource_name = client.processor_path(project_id, location, processor_id)
 
-        with open(pdf_path, "rb") as file: pdf_content = file.read()
-        raw_document_proto = documentai.RawDocument(content=pdf_content, mime_type="application/pdf")
+        with open(path, "rb") as file:
+            file_content = file.read()
+        raw_document_proto = documentai.RawDocument(content=file_content, mime_type=mime_type)
         
         request_doc_ai = documentai.ProcessRequest(name=resource_name, raw_document=raw_document_proto, skip_human_review=True)
         
-        logger.info(f"[DOCAI-GET] Enviando '{os.path.basename(pdf_path)}' a Document AI...")
+        logger.info(f"[DOCAI-GET] Enviando '{os.path.basename(path)}' a Document AI...")
         result = client.process_document(request=request_doc_ai)
         
         if result and result.document:
@@ -168,57 +169,49 @@ def _obtener_precio_desde_fila(row: pd.Series, mapa_columnas: Dict[str, str]) ->
                 moneda = moneda_2
     return precio_str, precio_float, moneda
 
-# --- 3. FUNCIÓN PRINCIPAL REFACTORIZADA PARA PDF ---
 
-def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre: str = "generico") -> List[Dict[str, Any]]:
-    """
-    Procesa un PDF con Google DocAI y usa el motor de mapeo inteligente para extraer productos de sus tablas.
-    """
-    base_filename = os.path.basename(pdf_path)
-    logger.info(f"[DOCAI_PROC] Iniciando NUEVO procesamiento PDF para: {base_filename}")
-    
-    document = _obtener_documento_ai(pdf_path)
-    if not document:
-        raise ValueError(f"Google DocAI no pudo procesar el documento: {base_filename}")
-
-    # Forma segura y correcta de recolectar todas las tablas
+def _procesar_documento_tablas(document: documentai.Document, base_filename: str, pyme_rubro_nombre: str) -> List[Dict[str, Any]]:
+    """Extrae productos de las tablas de un documento procesado."""
     todas_las_tablas_docai = []
     if document.pages:
         for page in document.pages:
-            if hasattr(page, 'tables') and page.tables:
+            if hasattr(page, "tables") and page.tables:
                 todas_las_tablas_docai.extend(page.tables)
 
     if not todas_las_tablas_docai:
-        logger.warning(f"No se encontraron tablas estructuradas en el PDF '{base_filename}'.")
+        logger.warning(
+            f"No se encontraron tablas estructuradas en el documento '{base_filename}'."
+        )
         return []
 
-    logger.info(f"Se encontraron {len(todas_las_tablas_docai)} tablas en el PDF. Analizando cada una con el cerebro...")
-    
+    logger.info(
+        f"Se encontraron {len(todas_las_tablas_docai)} tablas en el documento. Analizando cada una..."
+    )
+
     productos_extraidos_final: List[Dict[str, Any]] = []
-    
     for i, tabla_docai in enumerate(todas_las_tablas_docai):
-        logger.info(f"--- Procesando Tabla PDF #{i+1} ---")
+        logger.info(f"--- Procesando Tabla #{i+1} ---")
         df_tabla = _tabla_docai_a_dataframe(tabla_docai, document.text or "")
         df_tabla = _consolidar_filas(df_tabla)
         if df_tabla.empty:
-            logger.warning(f"Tabla PDF #{i+1} estaba vacía o no se pudo convertir. Saltando.")
+            logger.warning(f"Tabla #{i+1} estaba vacía o no se pudo convertir. Saltando.")
             continue
-            
+
         resultado_mapeo = crear_mapa_de_columnas_inteligente(df_tabla)
         if not resultado_mapeo:
-            logger.warning(f"El cerebro no pudo entender la Tabla PDF #{i+1}. Saltando.")
+            logger.warning(f"El cerebro no pudo entender la Tabla #{i+1}. Saltando.")
             continue
-            
+
         mapa_columnas, fila_inicio_datos = resultado_mapeo
-        
+
         df_datos = df_tabla.copy()
         df_datos.columns = df_datos.iloc[fila_inicio_datos - 1].tolist()
         df_datos = df_datos.iloc[fila_inicio_datos:].reset_index(drop=True)
-        df_datos.dropna(how='all', inplace=True)
-        
+        df_datos.dropna(how="all", inplace=True)
+
         for index, row in df_datos.iterrows():
             try:
-                nombre_prod = str(safe_row_get(row, mapa_columnas.get('nombre', ''))).strip()
+                nombre_prod = str(safe_row_get(row, mapa_columnas.get("nombre", ""))).strip()
                 precio_str, precio_float, moneda = _obtener_precio_desde_fila(row, mapa_columnas)
 
                 if not nombre_prod or len(nombre_prod) < 2:
@@ -230,25 +223,30 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
                 if not nombre_prod or precio_float is None:
                     continue
 
-                unidad_detectada, _ = extraer_unidades_y_tipos_precio(" ".join(str(c) for c in row.tolist()), pyme_rubro_nombre)
+                unidad_detectada, _ = extraer_unidades_y_tipos_precio(
+                    " ".join(str(c) for c in row.tolist()), pyme_rubro_nombre
+                )
 
-                precio_unitario_calc = calcular_precio_por_unidad(precio_float, unidad_detectada or str(safe_row_get(row, mapa_columnas.get('unidad')) or ''))
+                precio_unitario_calc = calcular_precio_por_unidad(
+                    precio_float,
+                    unidad_detectada or str(safe_row_get(row, mapa_columnas.get("unidad")) or ""),
+                )
 
                 producto = {
                     "nombre": nombre_prod,
                     "precio_str": precio_str,
                     "precio_float": precio_float,
                     "moneda": moneda,
-                    "sku": str(safe_row_get(row, mapa_columnas.get('sku'))).strip(),
-                    "descripcion": str(safe_row_get(row, mapa_columnas.get('descripcion'))).strip(),
-                    "marca": str(safe_row_get(row, mapa_columnas.get('marca'))).strip(),
-                    "categoria_qdrant": str(safe_row_get(row, mapa_columnas.get('categoria')) or pyme_rubro_nombre).strip(),
-                    "unidad": unidad_detectada or str(safe_row_get(row, mapa_columnas.get('unidad')) or 'unidad').strip(),
+                    "sku": str(safe_row_get(row, mapa_columnas.get("sku"))).strip(),
+                    "descripcion": str(safe_row_get(row, mapa_columnas.get("descripcion"))).strip(),
+                    "marca": str(safe_row_get(row, mapa_columnas.get("marca"))).strip(),
+                    "categoria_qdrant": str(
+                        safe_row_get(row, mapa_columnas.get("categoria")) or pyme_rubro_nombre
+                    ).strip(),
+                    "unidad": unidad_detectada
+                    or str(safe_row_get(row, mapa_columnas.get("unidad")) or "unidad").strip(),
                     "cantidad_disponible": str(
-                        parse_cantidad_flexible(
-                            safe_row_get(row, mapa_columnas.get('stock')) or '1'
-                        )
-                        or '0'
+                        parse_cantidad_flexible(safe_row_get(row, mapa_columnas.get("stock")) or "1") or "0"
                     ).strip(),
                 }
                 if precio_unitario_calc is not None:
@@ -256,9 +254,39 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
                 productos_extraidos_final.append(producto)
             except Exception as e_row:
                 logger.warning(
-                    f"⚠️ Error procesando una fila de la Tabla PDF #{i+1}. Fila: {index}. Error: {e_row}"
+                    f"⚠️ Error procesando una fila de la Tabla #{i+1}. Fila:{index}. Error: {e_row}"
                 )
                 continue
 
-    logger.info(f"✅ Proceso de PDF completado. Total productos finales de todas las tablas: {len(productos_extraidos_final)}")
+    logger.info(
+        f"✅ Proceso de documento completado. Total productos finales de todas las tablas: {len(productos_extraidos_final)}"
+    )
     return productos_extraidos_final
+
+# --- 3. FUNCIÓN PRINCIPAL REFACTORIZADA PARA PDF ---
+
+def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre: str = "generico") -> List[Dict[str, Any]]:
+    """Procesa un PDF para extraer productos."""
+    base_filename = os.path.basename(pdf_path)
+    logger.info(f"[DOCAI_PROC] Iniciando NUEVO procesamiento PDF para: {base_filename}")
+
+    document = _obtener_documento_ai(pdf_path, mime_type="application/pdf")
+    if not document:
+        raise ValueError(f"Google DocAI no pudo procesar el documento: {base_filename}")
+
+    return _procesar_documento_tablas(document, base_filename, pyme_rubro_nombre)
+
+
+def procesar_catalogo_imagen_google(image_path: str, user_id: int, pyme_rubro_nombre: str = "generico") -> List[Dict[str, Any]]:
+    """Procesa una imagen (PNG o JPG) para extraer productos usando DocAI."""
+    base_filename = os.path.basename(image_path)
+    logger.info(f"[DOCAI_PROC] Iniciando procesamiento de imagen para: {base_filename}")
+    ext = os.path.splitext(image_path)[1].lower()
+    mime = "image/png" if ext == ".png" else "image/jpeg"
+
+    document = _obtener_documento_ai(image_path, mime_type=mime)
+    if not document:
+        raise ValueError(f"Google DocAI no pudo procesar la imagen: {base_filename}")
+
+    return _procesar_documento_tablas(document, base_filename, pyme_rubro_nombre)
+
