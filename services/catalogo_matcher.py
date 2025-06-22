@@ -165,8 +165,11 @@ def buscar_en_catalogo_semantico(pregunta_usuario: str, user_id: int, threshold:
             logger.info(f"[CATALOG_MATCH] Respuesta formateada (parcial): {respuesta_final[:200]}...")
             return respuesta_final
         
-        return None # No se encontraron o formatearon resultados
+        return None  # No se encontraron o formatearon resultados
 
     except Exception as e:
-        logger.error(f"❌ Error general en buscar_en_catalogo_semantico (CatalogoEmbedding) para '{pregunta_usuario}', user_id={user_id}: {e}", exc_info=True)
+        logger.error(
+            f"❌ Error general en buscar_en_catalogo_semantico (CatalogoEmbedding) para '{pregunta_usuario}', user_id={user_id}: {e}",
+            exc_info=True,
+        )
         return None
