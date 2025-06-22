@@ -74,6 +74,11 @@ def create_app(config_class=Config):
         "http://localhost",
         "http://localhost:3000",
         "http://localhost:8080",
+        # Dominios principales de producción
+        "https://chatboc.ar",
+        "https://www.chatboc.ar",
+        "https://api.chatboc.ar",
+        # Cualquier subdominio de chatboc.ar o de Vercel
     ]
 
     CORS(
