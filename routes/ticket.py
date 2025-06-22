@@ -586,3 +586,9 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
         "comentario": encuesta.comentario,
         "fecha": encuesta.fecha.isoformat() if encuesta.fecha else None,
     })
+# ---------- MAPA DE TICKETS ABIERTOS ----------
+@ticket_bp.route('/<string:tipo>/mapa', methods=['GET'])
+def mapa_de_tickets(tipo: str):
+    """Devuelve los tickets abiertos con latitud y longitud."""
+    datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo)
+    return jsonify(datos)

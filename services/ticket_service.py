@@ -157,6 +157,61 @@ class ServicioTickets:
                 f"Error de DB al guardar encuesta: {e}", exc_info=True
             )
             return None
+        
+         def guardar_encuesta(
+        self,
+        ticket_id: int,
+        tipo_ticket: Literal["municipio", "pyme"],
+        puntuacion: int,
+        comentario: str | None = None,
+    ) -> Union[TicketSatisfaccion, None]:
+        try:
+            encuesta = TicketSatisfaccion(
+                ticket_id=ticket_id,
+                tipo=tipo_ticket,
+                puntuacion=puntuacion,
+                comentario=comentario,
+            )
+            db.session.add(encuesta)
+            db.session.commit()
+            return encuesta
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            logger.error(
+                f"Error de DB al guardar encuesta: {e}", exc_info=True
+            )
+            return None
+
+    def obtener_tickets_abiertos_con_ubicacion(
+        self, tipo_ticket: Literal["municipio", "pyme"]
+    ) -> list[dict]:
+        """Devuelve los tickets con ubicación que no estén cerrados."""
+        Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
+        try:
+            tickets = Model.query.all()
+            resultado = []
+            for t in tickets:
+                if (
+                    getattr(t, "estado", "") != "cerrado"
+                    and getattr(t, "latitud", None) is not None
+                    and getattr(t, "longitud", None) is not None
+                ):
+                    resultado.append(
+                        {
+                            "id": t.id,
+                            "latitud": t.latitud,
+                            "longitud": t.longitud,
+                            "categoria": getattr(t, "categoria", None),
+                            "estado": t.estado,
+                            "direccion": getattr(t, "direccion", None),
+                        }
+                    )
+            return resultado
+        except SQLAlchemyError as e:
+            logger.error(
+                f"Error de DB al obtener tickets para mapa: {e}", exc_info=True
+            )
+            return []
 
     def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:
         """Asigna a ``nuevo_user_id`` todos los tickets y comentarios
