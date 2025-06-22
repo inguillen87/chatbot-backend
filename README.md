@@ -11,8 +11,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /auth/widget/login` – login for end users without leaving the widget.
 - `POST /auth/google-login` – login o registro utilizando un ID token de Google.
 - `GET /auth/token-info` – returns the company and sector linked to a token.
-- `GET /widget/attention` – returns a short greeting for the attention bubble
-  shown by the widget. The text can be customized via `ATTENTION_BUBBLE_TEXT`.
+
 - `PUT /auth/me` – update the logged in user's profile.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
@@ -31,8 +30,7 @@ variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
 `chatboc.ar` por defecto.
 
-Usa `ATTENTION_BUBBLE_TEXT` para personalizar el mensaje del globito de ayuda
-devuelto por `/widget/attention`.
+n
 
 ## Uso correcto del rubro
 
