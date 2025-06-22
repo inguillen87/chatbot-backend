@@ -66,3 +66,10 @@ class GoogleLoginTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+    @patch('routes.auth.login_o_crear_usuario')
+    def test_get_method(self, mock_login):
+        mock_login.return_value = SimpleNamespace(id=4, token='tok', name='Bar', email='bar@example.com')
+        resp = self.client.get('/auth/google?id_token=xyz')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['email'], 'bar@example.com')
+

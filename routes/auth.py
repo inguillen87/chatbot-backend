@@ -82,12 +82,16 @@ def login():
         "name": user.name,
     })
 
-@auth_bp.route('/google-login', methods=['POST'])
-@auth_bp.route('/google', methods=['POST'])
+@auth_bp.route('/google-login', methods=['GET', 'POST'])
+@auth_bp.route('/google', methods=['GET', 'POST'])
 def google_login():
     """Inicia sesión utilizando un token de Google."""
     data = request.get_json(silent=True) or {}
-    token_id = data.get('id_token')
+    token_id = (
+        data.get('id_token')
+        or request.args.get('id_token')
+        or request.form.get('id_token')
+    )
     if not token_id:
         return jsonify({"error": "id_token requerido"}), 400
     try:
