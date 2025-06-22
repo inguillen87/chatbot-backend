@@ -64,5 +64,6 @@ class GoogleLoginTests(unittest.TestCase):
         session.commit.assert_not_called()
 
 
+
 if __name__ == '__main__':
     unittest.main()
