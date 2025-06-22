@@ -83,6 +83,7 @@ def login():
     })
 
 @auth_bp.route('/google-login', methods=['POST'])
+@auth_bp.route('/google', methods=['POST'])
 def google_login():
     """Inicia sesión utilizando un token de Google."""
     data = request.get_json(silent=True) or {}
