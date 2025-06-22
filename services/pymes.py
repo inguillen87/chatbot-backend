@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # --- Constantes ---
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 CONTEXTO_PYME_SESION = "contexto_pyme"
-MAX_HISTORIAL_CHAT = 14
+MAX_HISTORIAL_CHAT = 30
 
 
 class PymeConversationState(Enum):
@@ -560,6 +560,9 @@ class PedidoHandler(BaseHandler):
                     if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
                         productos_mostrados.append(hit.payload)
                 if productos_mostrados:
+                    productos_mostrados.sort(
+                        key=lambda p: float(p.get('precio_float') or 0)
+                    )
                     contexto_pyme['productos_mostrados_catalogo'] = productos_mostrados
                     respuesta = armar_respuesta_legible(resultados, order_by="price")
                     if respuesta:
@@ -569,10 +572,17 @@ class PedidoHandler(BaseHandler):
                             "estado_respuesta": "mostrar_catalogo",
                         }
                 return {"respuesta": "No pude identificar los productos que mencionas. Por favor, sé más específico sobre lo que te interesa de nuestro catálogo.", "fuente": "handler_pedido_error_productos", "estado_respuesta": "pyme_error_productos"}
-            contexto_pyme['productos_solicitados_temp'] = detalles_estructurados
+            detalles_ordenados = sorted(
+                detalles_estructurados,
+                key=lambda d: (
+                    float(d.get('precio', d.get('precio_float', 0)) or 0),
+                    (d.get('nombre') or '').lower(),
+                )
+            )
+            contexto_pyme['productos_solicitados_temp'] = detalles_ordenados
             contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
             resumen_productos_confirmacion = "Resumen de tu pedido:\n\n"
-            for p in detalles_estructurados:
+            for p in detalles_ordenados:
                 cantidad = float(p.get('cantidad', 1))
                 precio_unit = float(p.get('precio', 0.0))
                 precio_str = p.get('precio_str') or (f"${precio_unit:,.2f}" if precio_unit else "Consultar")
@@ -844,6 +854,9 @@ class VectorCatalogHandler(BaseHandler):
                     productos_mostrados.append(hit.payload)
 
             if productos_mostrados:
+                productos_mostrados.sort(
+                    key=lambda p: float(p.get('precio_float') or 0)
+                )
                 self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
                 respuesta = armar_respuesta_legible(resultados, order_by="price")
                 if respuesta:
@@ -857,6 +870,9 @@ class VectorCatalogHandler(BaseHandler):
             from services.catalogo_local import buscar_catalogo_local
             productos_mostrados = buscar_catalogo_local(user_id, pregunta, limite=DEFAULT_SEARCH_LIMIT)
             if productos_mostrados:
+                productos_mostrados.sort(
+                    key=lambda p: float(p.get('precio_float') or 0)
+                )
                 self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
                 resumen = "\n".join([
                     f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in productos_mostrados
@@ -886,6 +902,9 @@ class VectorCatalogHandler(BaseHandler):
 
                 if productos:
                     productos_mostrados = productos[:DEFAULT_SEARCH_LIMIT]
+                    productos_mostrados.sort(
+                        key=lambda p: float(p.get('precio_float') or 0)
+                    )
                     self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
                     resumen = "\n".join([
                         f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in productos_mostrados

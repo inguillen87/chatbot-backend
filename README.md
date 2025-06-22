@@ -55,3 +55,8 @@ header `Anon-Id` durante la llamada a `POST /auth/widget/register`, el backend
 migrará automáticamente esos tickets y comentarios para que pertenezcan al nuevo
 usuario.
 
+## Mejoras recientes
+
+- Los listados de productos del catálogo y los pedidos se ordenan por precio para que sea más fácil elegir.
+- El historial de chat para pymes ahora conserva hasta 30 mensajes para dar más contexto en cada respuesta.
+
