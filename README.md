@@ -94,7 +94,7 @@ Esto permite embebidos del widget que envíen el token como atributo o en la URL
 
 ## Registro desde el panel
 
-Para usuarios finales que acceden al panel web existe `POST /chatuserregisterpanel` que crea la cuenta asociada al `empresa_token` indicado. El inicio de sesión se realiza con `POST /chatuserloginpanel`. Así no es necesario usar los formularios de administrador `/register` y `/login`.
+Para usuarios finales que acceden al panel web existe `POST /chatuserregisterpanel` que crea la cuenta asociada al `empresa_token` indicado. El inicio de sesión se realiza con `POST /chatuserloginpanel`. Los formularios tradicionales `/register` y `/login` son exclusivos para administradores y **no deben mostrarse** a los usuarios finales.
 
 
 ### Migración de tickets anónimos
