@@ -138,6 +138,7 @@ def create_app(config_class=Config):
     app.register_blueprint(recordatorios_bp)
     app.register_blueprint(historial_bp)
 
+
     # Registro de comandos CLI
     register_commands(app)
 

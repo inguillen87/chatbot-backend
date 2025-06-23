@@ -5,6 +5,7 @@ from routes.crm import _obtener_historial_cliente
 
 historial_bp = Blueprint('historial', __name__)
 
+
 @historial_bp.route('/historial', methods=['GET'])
 @token_requerido
 def historial_actual(current_user: User):
