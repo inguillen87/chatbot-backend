@@ -1,6 +1,7 @@
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, request, jsonify, current_app, g
+from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario
@@ -97,6 +98,10 @@ def login():
         return jsonify({"error": "Email o contraseña incorrectos."}), 401
 
     current_app.logger.info(f"Login exitoso para: {user.email}")
+
+    rubro_nombre = user.rubro.nombre if user.rubro else "General"
+    tipo_chat = "municipio" if es_rubro_publico(user.rubro) else "pyme"
+
     return jsonify({
         "mensaje": "Login exitoso",
         "id": user.id,
@@ -105,6 +110,8 @@ def login():
         "name": user.name,
         "rol": user.rol,
         "empresa_id": user.empresa_id,
+        "rubro": rubro_nombre,
+        "tipo_chat": tipo_chat,
     })
 
 @auth_bp.route('/google-client-id', methods=['GET'])
@@ -127,6 +134,10 @@ def google_login():
     try:
         user = login_o_crear_usuario(token_id)
         current_app.logger.info(f"Login Google para: {user.email}")
+
+        rubro_nombre = user.rubro.nombre if user.rubro else "General"
+        tipo_chat = "municipio" if es_rubro_publico(user.rubro) else "pyme"
+
         return jsonify({
             "id": user.id,
             "token": user.token,
@@ -134,6 +145,8 @@ def google_login():
             "email": user.email,
             "rol": user.rol,
             "empresa_id": user.empresa_id,
+            "rubro": rubro_nombre,
+            "tipo_chat": tipo_chat,
         })
     except ValueError as e:
         return jsonify({"error": str(e)}), 401
@@ -344,6 +357,9 @@ def login_from_widget(owner_user):
         from services.ticket_service import servicio_tickets
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
+    rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
+    tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+
     return jsonify({
         "id": user.id,
         "token": user.token,
@@ -351,6 +367,8 @@ def login_from_widget(owner_user):
         "email": user.email,
         "rol": user.rol,
         "empresa_id": user.empresa_id,
+        "rubro": rubro_nombre,
+        "tipo_chat": tipo_chat,
     })
 
 
@@ -468,6 +486,9 @@ def chatuser_login_panel():
         from services.ticket_service import servicio_tickets
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
+    rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
+    tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+
     return jsonify({
         "id": user.id,
         "token": user.token,
@@ -475,6 +496,8 @@ def chatuser_login_panel():
         "email": user.email,
         "rol": user.rol,
         "empresa_id": user.empresa_id,
+        "rubro": rubro_nombre,
+        "tipo_chat": tipo_chat,
     })
 
 @auth_bp.route('/me', methods=['GET'])
