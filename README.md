@@ -13,9 +13,14 @@ This project exposes several endpoints to process questions for different sector
 - `POST /chatuserloginpanel` – login a chat user specifying the company token.
 - `POST /google-login` – login o registro utilizando un ID token de Google.
 - `GET /token-info` – returns the company and sector linked to a token.
+- Returned JSON now includes `rol` and `empresa_id` so the frontend can show the
+  appropriate admin or employee options.
+- New decorators `require_role` and `require_municipio_access` help secure endpoints that depend on the user's municipality.
 - `POST /subir_catalogo` – upload a product catalog (PDF, Excel or images).
 
 - `PUT /me` – update the logged in user's profile.
+- `GET /me` – retrieve the full profile. The response includes the user's role
+  (`rol`) and associated company (`empresa_id`).
 - `GET /tickets/mios` – list the tickets created by the logged in user.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
