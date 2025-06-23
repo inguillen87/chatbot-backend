@@ -7,13 +7,13 @@ This project exposes several endpoints to process questions for different sector
 - `POST /ask` – generic handler that decides the logic according to the provided sector (`rubro`).
 - `POST /ask/pyme` – optimized for small and medium companies (pymes).
 - `POST /ask/municipio` – optimized for municipalities and other public entities.
-- `POST /auth/widget/register` – quick sign up for end users using the widget.
-- `POST /auth/widget/login` – login for end users without leaving the widget.
-- `POST /auth/google-login` – login o registro utilizando un ID token de Google.
-- `GET /auth/token-info` – returns the company and sector linked to a token.
+- `POST /widget/register` – quick sign up for end users using the widget.
+- `POST /widget/login` – login for end users without leaving the widget.
+- `POST /google-login` – login o registro utilizando un ID token de Google.
+- `GET /token-info` – returns the company and sector linked to a token.
 - `POST /subir_catalogo` – upload a product catalog (PDF, Excel or images).
 
-- `PUT /auth/me` – update the logged in user's profile.
+- `PUT /me` – update the logged in user's profile.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
@@ -34,13 +34,22 @@ This project exposes several endpoints to process questions for different sector
 - `GET /notifications` – list pending notifications for the authenticated user.
 - `POST /presupuestos/generar` – send a PDF quote to a client based on item data.
 
+**Nota:** el blueprint de autenticación se registra sin el prefijo `/auth`. Por ello las rutas anteriores se invocan directamente (por ejemplo `/login` en lugar de `/auth/login`).
+
 ## Variables de entorno
 
 Configura `GOOGLE_OAUTH_CLIENT_ID` con el ID de cliente de tu aplicación de
 Google (o varios separados por comas) para que el backend valide la audiencia
-de los tokens enviados a `/auth/google-login`.  El primer ID configurado también
-puede consultarse en el endpoint `/auth/google-client-id`, pensado para que el
+de los tokens enviados a `/google-login`.  El primer ID configurado también
+puede consultarse en el endpoint `/google-client-id`, pensado para que el
 frontend obtenga el valor de forma dinámica cuando sea necesario.
+
+Si usas el frontend basado en Vite, recuerda definir `VITE_GOOGLE_CLIENT_ID` con
+el mismo valor para que el botón de inicio de sesión de Google funcione
+correctamente.  Vite lee las variables de entorno al compilar, por lo que debes
+asegurarte de que `VITE_GOOGLE_CLIENT_ID` esté disponible en el proceso de
+`npm run build`.  La falta de esta variable suele provocar errores 400 al
+cargar `accounts.google.com/gsi/button`.
 
 Para definir qué orígenes pueden realizar peticiones al backend, puedes usar la
 variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
@@ -62,7 +71,7 @@ un error claro.
 
 ## Registro en el widget
 
-Las funciones premium como el chat en vivo o el guardado de la ubicación requieren que el usuario esté autenticado. El registro puede hacerse sin salir del chat enviando un `POST /auth/widget/register` con el token de la pyme o municipio en el encabezado `Authorization`. El backend asociará automáticamente al nuevo usuario con esa entidad y registrará si acepta recibir comunicaciones de marketing.
+Las funciones premium como el chat en vivo o el guardado de la ubicación requieren que el usuario esté autenticado. El registro puede hacerse sin salir del chat enviando un `POST /widget/register` con el token de la pyme o municipio en el encabezado `Authorization`. El backend asociará automáticamente al nuevo usuario con esa entidad y registrará si acepta recibir comunicaciones de marketing.
 
 Los tickets creados desde el widget ahora se asignan al usuario final (campo `cliente_id`) en lugar de al dueño del token, permitiendo que cada ciudadano o cliente consulte luego su historial.
 
@@ -82,7 +91,7 @@ Esto permite embebidos del widget que envíen el token como atributo o en la URL
 
 Si el usuario crea tickets en el widget antes de registrarse, guarda un
 identificador anónimo en el navegador (`Anon-Id`). Al enviar ese valor en el
-header `Anon-Id` durante la llamada a `POST /auth/widget/register`, el backend
+header `Anon-Id` durante la llamada a `POST /widget/register`, el backend
 migrará automáticamente esos tickets y comentarios para que pertenezcan al nuevo
 usuario.
 

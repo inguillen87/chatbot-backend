@@ -896,8 +896,8 @@ class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
                     "¿Querés seguir como invitado? Solo podés consultar info general o iniciar sesión para más funciones."
                 ),
                 "botones": [
-                    {"texto": "Iniciar sesión", "url": "/auth/widget/login"},
-                    {"texto": "Registrarme Gratis", "url": "/auth/widget/register"},
+                    {"texto": "Iniciar sesión", "url": "/widget/login"},
+                    {"texto": "Registrarme Gratis", "url": "/widget/register"},
                     {"texto": "Consultar info general"},
                 ],
             }
@@ -1046,8 +1046,8 @@ class HumanEscalationHandler(BaseMunicipioHandler):
                         "necesitás iniciar sesión o registrarte."
                     ),
                     "botones": [
-                        {"texto": "Iniciar sesión", "url": "/auth/widget/login"},
-                        {"texto": "Registrarme Gratis", "url": "/auth/widget/register"},
+                        {"texto": "Iniciar sesión", "url": "/widget/login"},
+                        {"texto": "Registrarme Gratis", "url": "/widget/register"},
                     ],
                 }
 

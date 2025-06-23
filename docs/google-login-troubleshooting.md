@@ -4,10 +4,20 @@ If you see console errors such as:
 
 ```
 [GSI_LOGGER]: The given origin is not allowed for the given client ID.
-login:1 Access to fetch at 'https://api.chatboc.ar/auth/google-login' from origin 'http://localhost:8080' has been blocked by CORS policy
+login:1 Access to fetch at 'https://api.chatboc.ar/google-login' from origin 'http://localhost:8080' has been blocked by CORS policy
 ```
 
 it usually means your OAuth client ID is not authorised for the origin where the front-end is running.
+
+Another common error is:
+
+```
+[GSI_LOGGER]: Parameter client_id is not set correctly.
+```
+
+This happens when the front-end does not set the `VITE_GOOGLE_CLIENT_ID` variable or its value does not match the backend's `GOOGLE_OAUTH_CLIENT_ID`.
+Remember that Vite embeds these variables during build time. If you change
+`VITE_GOOGLE_CLIENT_ID` later, rebuild the front-end so the new value is used.
 
 To test locally:
 
