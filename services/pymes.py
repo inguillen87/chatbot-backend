@@ -726,6 +726,20 @@ class EnvioResumenHandler(BaseHandler):
 
         return None
 
+class PostVentaHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if any(kw in pregunta.lower() for kw in ["gracias", "recibí", "llegó mi pedido"]):
+            return {
+                "respuesta": "¡Nos alegra que hayas recibido tu pedido! ¿Quedaste conforme? Si necesitas ayuda o querés hacer otro pedido, estoy para ayudarte. ¿Te gustaría responder una breve encuesta de satisfacción?",
+                "fuente": "post_venta_pyme",
+                "botones": [
+                    {"texto": "Hacer otro pedido", "action": "iniciar_pedido"},
+                    {"texto": "Responder encuesta", "action": "encuesta_satisfaccion"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
+
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL MEJORADA ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
@@ -778,6 +792,9 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         HumanEscalationPymeHandler,
         SalesEngageHandler,
         CrossSellHandler,
+        RecomendacionHandler,   # <--- nuevo
+        UpsellHandler,          # <--- nuevo
+        PostVentaHandler,       # <--- nuevo
         LLMHandler,
         IntentHandler,
         EngancheAnonimoHandler,
@@ -1119,4 +1136,48 @@ class IntentClassifierPymeHandler(BaseHandler):
             self.context["intencion"] = "continuar_flujo"
 
         logger.info(f"[PYME] Intención (final): {self.context.get('intencion')}")
+        return None
+
+class RecomendacionHandler(BaseHandler):
+    """Sugiere productos recomendados según historial, ticket promedio y catálogo."""
+    def handle(self, pregunta: str) -> dict | None:
+        productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+        if not productos:
+            return None
+        # Ejemplo: sugiere los más vendidos o destacados
+        recomendados = [p for p in productos if p.get("destacado")] or productos[:3]
+        if recomendados:
+            texto = "Te recomiendo estos productos que eligen otros clientes:"
+            lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in recomendados])
+            return {
+                "respuesta": f"{texto}\n{lista}\n¿Te gustaría agregarlos al pedido o ver más detalles?",
+                "fuente": "recomendacion_pyme",
+                "botones": [
+                    {"texto": "Agregar recomendados", "action": "add_to_cart"},
+                    {"texto": "Ver más productos", "action": "ver_mas"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
+
+class UpsellHandler(BaseHandler):
+    """Sugiere versiones premium, packs o mayores cantidades para aumentar el ticket."""
+    def handle(self, pregunta: str) -> dict | None:
+        productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+        if not productos:
+            return None
+        # Ejemplo: si el usuario pide un producto barato, sugiere el premium
+        baratos = [p for p in productos if float(p.get("precio_float", 0)) < 5000]
+        premium = [p for p in productos if float(p.get("precio_float", 0)) > 10000]
+        if baratos and premium:
+            texto = "¿Sabías que tenemos versiones premium o packs con mejor precio por unidad?"
+            lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in premium[:2]])
+            return {
+                "respuesta": f"{texto}\n{lista}\n¿Te gustaría conocer más o agregarlos al pedido?",
+                "fuente": "upsell_pyme",
+                "botones": [
+                    {"texto": "Ver packs premium", "action": "ver_premium"},
+                    {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                ]
+            }
         return None
