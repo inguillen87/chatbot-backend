@@ -865,35 +865,30 @@ class VectorCatalogHandler(BaseHandler):
                     productos_mostrados.append(hit.payload)
 
         if productos_mostrados:
+            # Ordena primero por relevancia (si existe), luego por precio
+            productos_mostrados.sort(key=lambda p: (p.get("relevancia", 0), float(p.get("precio_float") or p.get("precio") or 0)), reverse=True)
             self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
 
-            # Si el usuario pide comparar, muestra tabla comparativa
-            if "comparar" in pregunta.lower() or "diferencia" in pregunta.lower():
-                respuesta = armar_tabla_comparativa(productos_mostrados)
-                return {
-                    'respuesta': "🔎 Tabla comparativa de productos:\n" + respuesta + "\n\n¿Querés agregar alguno al pedido o ver más detalles?",
-                    'fuente': 'catalogo_comparativa',
-                    'estado_respuesta': 'mostrar_comparativa',
-                    'botones': [
-                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                        {"texto": "Ver más productos", "action": "ver_mas"},
-                        {"texto": "Consultar stock", "action": "consultar_stock"},
-                    ]
-                }
+            # Agrupa por categoría si hay muchas opciones
+            categorias = {}
+            for p in productos_mostrados:
+                cat = p.get("categoria_qdrant") or p.get("categoria") or "Otros"
+                categorias.setdefault(cat, []).append(p)
 
-            # Agrupa, ordena y destaca productos, muestra botones de acción
-            respuesta = "Estos son los productos que encontré para vos:\n"
-            for idx, p in enumerate(productos_mostrados[:7], 1):
-                nombre = p.get("nombre", "Producto")
-                precio = p.get("precio_str") or f"${p.get('precio', 'Consultar')}"
-                desc = p.get("descripcion", "")
-                respuesta += f"{idx}. **{nombre}** — {precio}\n"
-                if desc:
-                    respuesta += f"    _{desc[:60]}_\n"
-            if len(productos_mostrados) > 7:
-                respuesta += f"...y {len(productos_mostrados)-7} más. ¿Querés verlos?\n"
+            respuesta = "Estos son los productos más relevantes que encontré para vos:\n"
+            for categoria, items in categorias.items():
+                respuesta += f"\n🗂️ **{categoria.title()}**\n"
+                for idx, p in enumerate(items[:3], 1):
+                    nombre = p.get("nombre", "Producto")
+                    precio = p.get("precio_str") or f"${p.get('precio', 'Consultar')}"
+                    desc = p.get("descripcion", "")
+                    respuesta += f"{idx}. **{nombre}** — {precio}\n"
+                    if desc:
+                        respuesta += f"    _{desc[:60]}_\n"
+                if len(items) > 3:
+                    respuesta += f"...y {len(items)-3} más en esta categoría.\n"
 
-            respuesta += "\n¿Te gustaría agregar alguno al pedido? Decime el número o nombre del producto y la cantidad."
+            respuesta += "\n¿Te gustaría agregar alguno al pedido? Decime el número o nombre del producto y la cantidad. Si querés ver más opciones, decímelo o pedí ayuda."
 
             return {
                 'respuesta': respuesta,
@@ -901,9 +896,9 @@ class VectorCatalogHandler(BaseHandler):
                 'estado_respuesta': 'mostrar_catalogo',
                 'botones': [
                     {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                    {"texto": "Comparar productos", "action": "comparar"},
                     {"texto": "Ver más productos", "action": "ver_mas"},
                     {"texto": "Consultar stock", "action": "consultar_stock"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
                 ]
             }
 
@@ -913,7 +908,6 @@ class PedidoHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         if self.context.get('intencion') == 'iniciar_pedido':
             productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
-            # Busca si el usuario mencionó un producto por nombre o código
             seleccionados = []
             for p in productos:
                 nombre = p.get("nombre", "").lower()
@@ -923,7 +917,7 @@ class PedidoHandler(BaseHandler):
             if seleccionados:
                 nombres = ", ".join([p.get("nombre") for p in seleccionados])
                 return {
-                    "respuesta": f"Perfecto, seleccionaste: {nombres}. ¿Cuántas unidades querés de cada uno? Decime el número o escribí '1' si es solo uno.",
+                    "respuesta": f"¡Genial! Seleccionaste: {nombres}. ¿Cuántas unidades querés de cada uno? Decime el número o escribí '1' si es solo uno. Cuando termines, podés finalizar el pedido o agregar más productos.",
                     "fuente": "pedido_pyme_seleccion",
                     "botones": [
                         {"texto": "Agregar más productos", "action": "ver_catalogo"},
@@ -931,7 +925,6 @@ class PedidoHandler(BaseHandler):
                         {"texto": "Hablar con un agente", "action": "escalar"},
                     ]
                 }
-            # Si no detecta producto, pide que elija del catálogo mostrado
             if productos:
                 lista = "\n".join([f"{idx+1}. {p.get('nombre')}" for idx, p in enumerate(productos[:7])])
                 return {
