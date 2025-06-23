@@ -1,5 +1,3 @@
-# app.py
-
 import os
 import logging
 import sys
@@ -32,13 +30,14 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # --- Bloque de Diagnóstico (lo dejamos temporalmente) ---
+    # --- Diagnóstico de Sesión ---
     print("--- DIAGNÓSTICO DE SESIÓN ---")
     print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
     print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
     print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
     print(f"SESSION_TYPE: {app.config.get('SESSION_TYPE')}")
     print("-----------------------------")
+
     # --- RUTAS DE PRUEBA PARA DEPURAR LA SESIÓN ---
     @app.route('/poner-memoria')
     def poner_memoria():
@@ -51,9 +50,8 @@ def create_app(config_class=Config):
         from flask import session
         valor = session.get('clave_de_prueba', '¡LA MEMORIA ESTÁ VACÍA!')
         return f"<h1>El valor guardado en la memoria es: {valor}</h1>"
-    # --- FIN DE RUTAS DE PRUEBA ---
 
-    # --- 2. Inicialización de Extensiones ---
+    # --- Inicialización de Extensiones ---
     db.init_app(app)
     migrate.init_app(app, db)
 
@@ -74,8 +72,7 @@ def create_app(config_class=Config):
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
-    # --- 3. Configuración de CORS ---
-    # Permitimos orígenes comunes en local para desarrollo
+    # --- Configuración de CORS ---
     allowed_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS")
     if allowed_origins_env:
         allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
@@ -84,11 +81,9 @@ def create_app(config_class=Config):
             "http://localhost",
             "http://localhost:3000",
             "http://localhost:8080",
-            # Dominios principales de producción
             "https://chatboc.ar",
             "https://www.chatboc.ar",
-            "https://api.chatboc.ar",
-            # Cualquier subdominio de chatboc.ar o de Vercel
+            "https://api.chatboc.ar"
         ]
 
     CORS(
@@ -102,7 +97,7 @@ def create_app(config_class=Config):
         ],
     )
 
-    # --- FIX UNIVERSAL DE HEADERS CUSTOM PARA CORS ---
+    # --- Fix universal de headers custom para CORS ---
     @app.after_request
     def ensure_custom_cors_headers(resp):
         """
@@ -110,7 +105,6 @@ def create_app(config_class=Config):
         queden siempre incluidos en Access-Control-Allow-Headers de la respuesta,
         para que ningún preflight se los rechace, no importa si Flask-CORS los olvidó.
         """
-        # Define la lista completa de headers custom que podés llegar a necesitar (sumá acá si agregás más)
         needed = [
             "Authorization", "Content-Type", "Origin", "Accept",
             "Anon-Id", "x-entity-token"
@@ -124,15 +118,7 @@ def create_app(config_class=Config):
         resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
         return resp
 
-    @app.before_request
-    def catch_all_options():
-        """Handle any CORS preflight with a basic response."""
-        from flask import request
-        if request.method == "OPTIONS":
-            from routes.chat import cors_options_response
-            return cors_options_response()
 
-    # --- 4. Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
@@ -148,10 +134,10 @@ def create_app(config_class=Config):
     app.register_blueprint(historial_bp)
     app.register_blueprint(notifications_bp)
 
-    # Registro de comandos CLI
+    # --- Registro de comandos CLI ---
     register_commands(app)
 
-    # --- 5. La función devuelve la app al final de todo ---
+    # --- Devolución de la app ---
     return app
 
 # --- Creación de la instancia de la aplicación ---
