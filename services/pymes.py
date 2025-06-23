@@ -792,9 +792,9 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         HumanEscalationPymeHandler,
         SalesEngageHandler,
         CrossSellHandler,
-        RecomendacionHandler,   # <--- nuevo
-        UpsellHandler,          # <--- nuevo
-        PostVentaHandler,       # <--- nuevo
+        RecomendacionHandler,   
+        UpsellHandler,          
+        PostVentaHandler,       
         LLMHandler,
         IntentHandler,
         EngancheAnonimoHandler,
