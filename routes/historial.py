@@ -1,4 +1,5 @@
 from routes.crm import _obtener_historial_cliente
+from flask import Blueprint, request, jsonify
 
 historial_bp = Blueprint('historial', __name__)
 
