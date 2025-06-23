@@ -25,6 +25,7 @@ from routes.catalogo import catalogo_bp
 from routes.estadisticas import estadisticas_bp
 from routes.empleados import empleados_bp
 from routes.recordatorios import recordatorios_bp
+from routes.historial import historial_bp
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -135,6 +136,7 @@ def create_app(config_class=Config):
     app.register_blueprint(estadisticas_bp)
     app.register_blueprint(empleados_bp)
     app.register_blueprint(recordatorios_bp)
+    app.register_blueprint(historial_bp)
 
     # Registro de comandos CLI
     register_commands(app)
