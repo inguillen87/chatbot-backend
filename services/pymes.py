@@ -225,8 +225,8 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         else: 
             for item_llm in parsed_json:
                 identificador = item_llm.get('producto_identificador', '').strip()
-                cantidad = item_llm.get('cantidad', 1)
-                unidad = item_llm.get('unidad', 'unidad')
+                cantidad = item_llam.get('cantidad', 1)
+                unidad = item_llam.get('unidad', 'unidad')
 
                 matched_product = None
                 for p_raw in productos_disponibles_raw:
@@ -816,4 +816,141 @@ class TicketStatusHandler(BaseHandler):
                     {"texto": "Hablar con un agente", "action": "escalar"},
                 ]
             }
+        return None
+
+class FollowUpHandler(BaseHandler):
+    """
+    Handler de seguimiento inteligente: detecta si el usuario está en medio de un flujo (pedido, reclamo, etc.)
+    y lo guía para concretar la acción, cerrar ventas o resolver dudas, evitando que abandone el proceso.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+
+        # Si el usuario está confirmando un pedido
+        if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
+            if "cancelar" in pregunta.lower() or "no quiero" in pregunta.lower():
+                contexto_pyme.clear()
+                return {
+                    "respuesta": "Entendido, no se generará el pedido. ¿Te gustaría ver otros productos o recibir asesoramiento?",
+                    "fuente": "pedido_cancelado",
+                    "botones": [
+                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                        {"texto": "Hablar con un agente", "action": "escalar"},
+                    ]
+                }
+            return {
+                "respuesta": "¿Confirmás tu pedido? Si necesitas modificarlo o agregar productos, avisame. También podés hablar con un agente.",
+                "fuente": "seguimiento_confirmacion_pedido",
+                "botones": [
+                    {"texto": "Confirmar pedido", "action": "confirmar_pedido"},
+                    {"texto": "Agregar productos", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+
+        # Si el usuario está en otro flujo, puedes agregar más lógica aquí
+        if estado == PymeConversationState.ESPERANDO_DETALLES_PEDIDO:
+            return {
+                "respuesta": "¿Qué producto y cantidad te gustaría pedir? Si necesitas ayuda, puedo recomendarte los más vendidos.",
+                "fuente": "seguimiento_detalles_pedido",
+                "botones": [
+                    {"texto": "Ver productos recomendados", "action": "recomendar"},
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+
+        # Si el usuario está en espera de número de pedido o ticket
+        if estado in [PymeConversationState.ESPERANDO_NUMERO_PEDIDO, PymeConversationState.ESPERANDO_NUMERO_TICKET]:
+            return {
+                "respuesta": "Por favor, indicame el número correspondiente para poder ayudarte.",
+                "fuente": "seguimiento_numero_pedido_ticket",
+                "botones": [
+                    {"texto": "No lo tengo", "action": "no_tengo_numero"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+
+        # Si no hay flujo activo, no responde
+        return None
+
+class IntentClassifierPymeHandler(BaseHandler):
+    """
+    Clasifica la intención del usuario usando LLM y contexto, para enrutar la consulta al handler adecuado.
+    Potenciado para ventas, reclamos, consultas y acciones comerciales.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        memoria = contexto_pyme
+        texto_normalizado = normalizar_texto(pregunta)
+
+        # Palabras clave para agente humano
+        KEYWORDS_AGENTE = [
+            "agente", "humano", "persona", "representante", "operador", "hablar con alguien", "atención humana"
+        ]
+        if any(kw in texto_normalizado for kw in KEYWORDS_AGENTE):
+            self.context["intencion"] = "hablar_con_agente_pyme"
+            memoria.clear()
+            logger.info(f"[PYME] Intención: hablar_con_agente_pyme (por palabra clave)")
+            return None
+
+        # Palabras clave para pedido
+        KEYWORDS_PEDIDO = [
+            "comprar", "pedido", "cotización", "encargar", "quiero pedir", "quiero comprar", "ordenar", "solicitar"
+        ]
+        if any(kw in texto_normalizado for kw in KEYWORDS_PEDIDO):
+            self.context["intencion"] = "iniciar_pedido"
+            memoria.clear()
+            logger.info(f"[PYME] Intención: iniciar_pedido (por palabra clave)")
+            return None
+
+        # Palabras clave para estado de pedido/ticket
+        KEYWORDS_ESTADO = [
+            "estado", "seguimiento", "dónde está mi pedido", "cómo va mi pedido", "ticket", "reclamo"
+        ]
+        if any(kw in texto_normalizado for kw in KEYWORDS_ESTADO):
+            self.context["intencion"] = "consultar_estado_pedido"
+            memoria.clear()
+            logger.info(f"[PYME] Intención: consultar_estado_pedido (por palabra clave)")
+            return None
+
+        # Palabras clave para stock
+        KEYWORDS_STOCK = [
+            "stock", "hay", "disponible", "queda", "tienen", "disponibilidad"
+        ]
+        if any(kw in texto_normalizado for kw in KEYWORDS_STOCK):
+            self.context["intencion"] = "consultar_stock"
+            memoria.clear()
+            logger.info(f"[PYME] Intención: consultar_stock (por palabra clave)")
+            return None
+
+        # Palabras clave para horarios
+        KEYWORDS_HORARIO = [
+            "horario", "a qué hora", "cuándo abren", "cuándo cierran", "horarios"
+        ]
+        if any(kw in texto_normalizado for kw in KEYWORDS_HORARIO):
+            self.context["intencion"] = "consultar_horario"
+            memoria.clear()
+            logger.info(f"[PYME] Intención: consultar_horario (por palabra clave)")
+            return None
+
+        # Palabras clave para ubicación
+        KEYWORDS_UBICACION = [
+            "dónde están", "dirección", "ubicación", "cómo llego", "dónde queda"
+        ]
+        if any(kw in texto_normalizado for kw in KEYWORDS_UBICACION):
+            self.context["intencion"] = "consultar_ubicacion"
+            memoria.clear()
+            logger.info(f"[PYME] Intención: consultar_ubicacion (por palabra clave)")
+            return None
+
+        # Si no hubo match, usa LLM para clasificar intención
+        if not memoria.get("estado_conversacion"):
+            intencion_llm = _clasificar_intencion_pyme_con_llm(pregunta)
+            self.context["intencion"] = intencion_llam
+        else:
+            self.context["intencion"] = "continuar_flujo"
+
+        logger.info(f"[PYME] Intención (final): {self.context.get('intencion')}")
         return None
