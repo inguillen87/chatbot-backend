@@ -29,9 +29,9 @@ This project exposes several endpoints to process questions for different sector
 - `GET /tramites` – list available municipal procedures, supports `?q=` filtering.
 - `GET /tramites/<nombre>` – detailed info for a specific procedure.
 - `GET /tramites/descargar` – download the full JSON catalog of procedures.
-- `GET /empleados` – list internal employees associated with the token.
-- `POST /empleados` – create a new internal employee.
-- `GET /empleados/<id>/historial` – list tickets handled by an employee.
+- `GET /empleados` – list internal employees associated with the token **(admin only)**.
+- `POST /empleados` – create a new internal employee **(admin only)**.
+- `GET /empleados/<id>/historial` – list tickets handled by an employee **(admin only)**.
 - `GET /historial` – retrieve the logged user's full history of chats and tickets.
 - `POST /archivos/subir` – upload a file associated with chats or tickets.
   Only images, PDFs, spreadsheets and text documents up to 10MB are accepted.

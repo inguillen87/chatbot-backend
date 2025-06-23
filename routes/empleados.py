@@ -1,16 +1,15 @@
 from flask import Blueprint, request, jsonify
 from models import User, TicketComentario, db
-from routes.auth import token_requerido
+from routes.auth import token_requerido, solo_admin_requerido
 import uuid
 
 empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')
 
 @empleados_bp.route('', methods=['GET'])
 @token_requerido
+@solo_admin_requerido
 def listar_empleados(current_user: User):
     """Lista los empleados asociados al usuario actual."""
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
     empleados = (
         User.query.filter_by(empresa_id=current_user.id, rol='empleado')
         .order_by(User.name.asc())
@@ -24,10 +23,9 @@ def listar_empleados(current_user: User):
 
 @empleados_bp.route('', methods=['POST'])
 @token_requerido
+@solo_admin_requerido
 def crear_empleado(current_user: User):
     """Crea un nuevo empleado asociado al usuario actual."""
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
     data = request.get_json(silent=True) or {}
     name = data.get('name')
     email = data.get('email')
@@ -50,10 +48,9 @@ def crear_empleado(current_user: User):
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
 @token_requerido
+@solo_admin_requerido
 def historial_empleado(current_user: User, emp_id: int):
     """Devuelve el historial de atención del empleado."""
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
     empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
     if not empleado:
         return jsonify({"error": "Empleado no encontrado"}), 404
