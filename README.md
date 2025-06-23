@@ -36,7 +36,9 @@ This project exposes several endpoints to process questions for different sector
 
 Configura `GOOGLE_OAUTH_CLIENT_ID` con el ID de cliente de tu aplicación de
 Google (o varios separados por comas) para que el backend valide la audiencia
-de los tokens enviados a `/auth/google-login`.
+de los tokens enviados a `/auth/google-login`.  El primer ID configurado también
+puede consultarse en el endpoint `/auth/google-client-id`, pensado para que el
+frontend obtenga el valor de forma dinámica cuando sea necesario.
 
 Para definir qué orígenes pueden realizar peticiones al backend, puedes usar la
 variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
