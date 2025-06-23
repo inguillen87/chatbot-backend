@@ -330,7 +330,7 @@ def chatuser_register_panel():
     if not data:
         data = request.form.to_dict() if request.form else {}
 
-    empresa_token = data.get('empresa_token')
+    empresa_token = data.get('empresa_token') or obtener_token()
     if not empresa_token:
         return jsonify({"error": "Falta empresa_token"}), 400
 
@@ -405,7 +405,7 @@ def chatuser_login_panel():
     if not data:
         data = request.form.to_dict() if request.form else {}
 
-    empresa_token = data.get('empresa_token')
+    empresa_token = data.get('empresa_token') or obtener_token()
     if not empresa_token:
         return jsonify({"error": "Falta empresa_token"}), 400
 
