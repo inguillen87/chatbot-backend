@@ -118,12 +118,7 @@ def create_app(config_class=Config):
         resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
         return resp
 
-    # --- Endpoint universal para OPTIONS ---
-    @app.route('/<path:path>', methods=['OPTIONS'])
-    def options_catch_all(path):
-        return '', 200
 
-    # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
