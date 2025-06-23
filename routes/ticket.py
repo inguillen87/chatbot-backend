@@ -140,48 +140,47 @@ def get_mis_tickets(current_user: User):
 # ---------- DETALLE DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @anon_o_token_requerido
-def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = None, anon_id: str | None = None, owner_user: User | None = None):
+def detalle_ticket(current_user, tipo, ticket_id):
+    """
+    Devuelve el detalle de un ticket, reforzando la lógica de permisos para admins, empleados y usuarios.
+    """
+    anon_id = request.headers.get("Anon-Id")
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket = db.session.get(TicketModel, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    log_ticket_debug("get_detalle_ticket", ticket_id, anon_id, ticket)
+    # --- PERMISOS ---
+    is_dueño = current_user and ticket.user_id == current_user.id
+    is_admin_muni = (
+        current_user
+        and tipo == "municipio"
+        and getattr(current_user, "rubro", None)
+        and current_user.rubro.nombre.lower().strip() == "municipios"
+        and hasattr(current_user, "municipio_id")
+        and getattr(ticket, "municipio_id", None) == current_user.municipio_id
+    )
+    is_admin_pyme = (
+        current_user
+        and tipo == "pyme"
+        and getattr(current_user, "rubro_id", None)
+        and getattr(ticket, "rubro_id", None) == current_user.rubro_id
+    )
+    is_anon = anon_id and getattr(ticket, "anon_id", None) == anon_id
 
-    is_admin_muni = False
-    is_dueño = False
-    is_admin_pyme = False
-    if current_user:
-        is_admin_muni = (
-            tipo == "municipio"
-            and current_user.rubro
-            and current_user.rubro.nombre.lower().strip() == "municipios"
+    if not (is_dueño or is_admin_muni or is_admin_pyme or is_anon):
+        current_app.logger.warning(
+            f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={ticket_id} | anon_id_recibido={anon_id} | anon_id_ticket={getattr(ticket,'anon_id', None)} | user_id={getattr(current_user,'id', None)} | ticket_user_id={getattr(ticket,'user_id', None)} | estado={getattr(ticket,'estado', None)}"
         )
-        is_dueño = ticket.user_id == current_user.id
-        is_admin_pyme = (
-            tipo == "pyme"
-            and current_user.rubro_id
-            and getattr(ticket, "rubro_id", None) == current_user.rubro_id
-        )
-    if not (is_admin_muni or is_dueño or is_admin_pyme):
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
-    else:
-        if getattr(ticket, "anon_id", None) != anon_id:
-            current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
 
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket.estado == "cerrado":
-            current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
+    if ticket.estado == "cerrado" and not (is_admin_muni or is_admin_pyme):
+        return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-
+    # --- SERIALIZACIÓN ---
     detalles = getattr(ticket, 'detalles', '') or ''
     nombre, tel, email = "No especificado", "No especificado", "No especificado"
-    direccion = getattr(ticket, 'direccion', None)
-    if not direccion:
-        direccion = "No especificada"
+    direccion = getattr(ticket, 'direccion', None) or "No especificada"
     if "Nombre:" in detalles: nombre = detalles.split("Nombre:")[1].split("\n")[0].strip()
     if "Teléfono:" in detalles: tel = detalles.split("Teléfono:")[1].split("\n")[0].strip()
     if "Email:" in detalles: email = detalles.split("Email:")[1].split("\n")[0].strip()
@@ -239,6 +238,22 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
         if getattr(ticket_obj, 'rubro_id', None) and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id:
             has_permission_to_respond = True
+
+    # Refuerzo de permisos:
+    if tipo == 'municipio':
+        if not (
+            current_user.rubro and
+            current_user.rubro.nombre.lower().strip() == 'municipios' and
+            hasattr(current_user, "municipio_id") and
+            ticket_obj.municipio_id == current_user.municipio_id
+        ):
+            return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
+    elif tipo == 'pyme':
+        if not (
+            current_user.rubro_id and
+            ticket_obj.rubro_id == current_user.rubro_id
+        ):
+            return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
     if not has_permission_to_respond:
         current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
@@ -521,14 +536,11 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     has_perm = False
     if current_user.id == ticket_obj.user_id:
         has_perm = True
-    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
+    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
         has_perm = True
     elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         has_perm = True
-
-    if not has_perm:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
+    else:
         return jsonify({"error": "No tienes permiso para modificar este ticket."}), 403
 
     log_ticket_debug(

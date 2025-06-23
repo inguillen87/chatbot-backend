@@ -50,10 +50,9 @@ def crear_empleado(current_user: User):
 @token_requerido
 @solo_admin_requerido
 def historial_empleado(current_user: User, emp_id: int):
-    """Devuelve el historial de atención del empleado."""
     empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
     if not empleado:
-        return jsonify({"error": "Empleado no encontrado"}), 404
+        return jsonify({'error': 'Empleado no encontrado o no pertenece a su empresa'}), 404
     comentarios = (
         TicketComentario.query.filter_by(user_id=emp_id, es_admin=True)
         .order_by(TicketComentario.fecha.desc())
