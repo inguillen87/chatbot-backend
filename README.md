@@ -125,6 +125,7 @@ usuario.
 - El historial de chat para pymes ahora conserva hasta 30 mensajes para dar más contexto en cada respuesta.
   Nuevo módulo de validaciones que comprueba nombre, correo y teléfono usando librerías open source.
 - Si necesitas instalar dependencias manualmente, consulta el archivo `docs/dependencias.txt` para ver la lista completa de paquetes requeridos.
+- Si tienes problemas para obtener la ubicación del usuario en el widget, revisa `docs/geolocalizacion-troubleshooting.md`.
 - Para más ideas orientadas a pequeñas y medianas empresas revisa `docs/ideas-pymes.md`.
 - Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.
 - Nuevo endpoint `/estadisticas/reclamos` que resume los tickets por rubro y tipo, e informa el tiempo de respuesta promedio.
