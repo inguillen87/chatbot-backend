@@ -612,16 +612,88 @@ class OfertaPersonalizadaHandler(BaseHandler):
         return None
 
 class EnvioResumenHandler(BaseHandler):
+    """
+    Ofrece y realiza el envío del resumen de pedido por WhatsApp, email o SMS,
+    reutilizando la lógica existente y guiando al usuario a concretar la compra.
+    """
     def handle(self, pregunta: str) -> dict | None:
-        if "whatsapp" in pregunta.lower() or "email" in pregunta.lower():
+        texto = pregunta.lower()
+        user = self.context.get('user_obj')
+        pedido = self.context['contexto_pyme'].get('pedido_actual')  # Debes guardar el pedido en contexto cuando se genera
+
+        # Detecta preferencia de canal
+        if "whatsapp" in texto or "wasap" in texto:
+            if user and user.telefono:
+                try:
+                    enviar_whatsapp(user.telefono, f"Resumen de tu pedido: {pedido}")
+                    respuesta = "¡Listo! Te envié el resumen de tu pedido por WhatsApp. ¿Querés finalizar la compra o agregar algo más?"
+                except Exception as e:
+                    logger.error(f"[PYME] Error enviando WhatsApp: {e}")
+                    respuesta = "Hubo un problema enviando el WhatsApp. ¿Querés que lo intente por email o SMS?"
+            else:
+                respuesta = "No tengo tu número de WhatsApp registrado. ¿Querés ingresarlo o prefieres recibir el resumen por email?"
             return {
-                "respuesta": "¿Querés que te envíe el resumen de tu pedido por WhatsApp o email?",
+                "respuesta": respuesta,
+                "fuente": "envio_resumen_pyme",
+                "botones": [
+                    {"texto": "Finalizar compra", "action": "finalizar_pedido"},
+                    {"texto": "Agregar productos", "action": "ver_catalogo"},
+                    {"texto": "Recibir por email", "action": "enviar_email"},
+                ]
+            }
+
+        if "email" in texto or "correo" in texto:
+            if user and user.email:
+                try:
+                    enviar_email_pedido_cliente(user.email, pedido)
+                    respuesta = "¡Listo! Te envié el resumen de tu pedido por email. ¿Querés finalizar la compra o agregar algo más?"
+                except Exception as e:
+                    logger.error(f"[PYME] Error enviando email: {e}")
+                    respuesta = "Hubo un problema enviando el email. ¿Querés que lo intente por WhatsApp o SMS?"
+            else:
+                respuesta = "No tengo tu email registrado. ¿Querés ingresarlo o prefieres recibir el resumen por WhatsApp?"
+            return {
+                "respuesta": respuesta,
+                "fuente": "envio_resumen_pyme",
+                "botones": [
+                    {"texto": "Finalizar compra", "action": "finalizar_pedido"},
+                    {"texto": "Agregar productos", "action": "ver_catalogo"},
+                    {"texto": "Recibir por WhatsApp", "action": "enviar_whatsapp"},
+                ]
+            }
+
+        if "sms" in texto or "mensaje" in texto:
+            if user and user.telefono:
+                try:
+                    enviar_sms(user.telefono, f"Resumen de tu pedido: {pedido}")
+                    respuesta = "¡Listo! Te envié el resumen de tu pedido por SMS. ¿Querés finalizar la compra o agregar algo más?"
+                except Exception as e:
+                    logger.error(f"[PYME] Error enviando SMS: {e}")
+                    respuesta = "Hubo un problema enviando el SMS. ¿Querés que lo intente por WhatsApp o email?"
+            else:
+                respuesta = "No tengo tu número de teléfono registrado. ¿Querés ingresarlo o prefieres recibir el resumen por email?"
+            return {
+                "respuesta": respuesta,
+                "fuente": "envio_resumen_pyme",
+                "botones": [
+                    {"texto": "Finalizar compra", "action": "finalizar_pedido"},
+                    {"texto": "Agregar productos", "action": "ver_catalogo"},
+                    {"texto": "Recibir por email", "action": "enviar_email"},
+                ]
+            }
+
+        # Si solo pregunta por resumen, ofrece todos los canales disponibles
+        if "resumen" in texto or "pedido" in texto:
+            return {
+                "respuesta": "¿Por qué canal preferís recibir el resumen de tu pedido?",
                 "fuente": "envio_resumen_pyme",
                 "botones": [
                     {"texto": "WhatsApp", "action": "enviar_whatsapp"},
                     {"texto": "Email", "action": "enviar_email"},
+                    {"texto": "SMS", "action": "enviar_sms"},
                 ]
             }
+
         return None
 
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL MEJORADA ---
