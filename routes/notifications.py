@@ -17,3 +17,4 @@ def notifications_options():
 def get_notifications(current_user: User):
     """Devuelve notificaciones pendientes del usuario actual (placeholder)."""
     # TODO: hook into real notification logic once available
+    return jsonify([])
