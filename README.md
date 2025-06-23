@@ -76,6 +76,8 @@ un error claro.
 
 Las funciones premium como el chat en vivo o el guardado de la ubicación requieren que el usuario esté autenticado. El registro puede hacerse sin salir del chat enviando un `POST /widget/register` con el token de la pyme o municipio en el encabezado `Authorization`. El backend asociará automáticamente al nuevo usuario con esa entidad y registrará si acepta recibir comunicaciones de marketing.
 
+Las respuestas que invitan a registrarse o iniciar sesión ahora incluyen botones con `{"action": "login"}` y `{"action": "register"}`. El frontend debe mostrar los paneles `ChatUserLoginPanel` o `ChatUserRegisterPanel` según corresponda, sin abandonar el widget.
+
 Los tickets creados desde el widget ahora se asignan al usuario final (campo `cliente_id`) en lugar de al dueño del token, permitiendo que cada ciudadano o cliente consulte luego su historial.
 
 ### Formas de enviar el token

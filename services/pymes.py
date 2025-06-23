@@ -1324,6 +1324,7 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
 
     return {
         "respuesta": respuesta_final.get('respuesta', "Error: respuesta mal formada."),
+        "botones": respuesta_final.get('botones', []),
         "fuente": respuesta_final.get('fuente', 'desconocida'),
         "contexto_actualizado": {CONTEXTO_PYME_SESION: contexto_pyme},
         "estado_respuesta": respuesta_final.get('estado_respuesta', 'no_entendido'),
