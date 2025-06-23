@@ -34,6 +34,8 @@ This project exposes several endpoints to process questions for different sector
 - `GET /notifications` – list pending notifications for the authenticated user.
 - `POST /presupuestos/generar` – send a PDF quote to a client based on item data.
 
+**Nota:** el blueprint de autenticación se registra sin el prefijo `/auth`. Por ello las rutas anteriores se invocan directamente (por ejemplo `/login` en lugar de `/auth/login`).
+
 ## Variables de entorno
 
 Configura `GOOGLE_OAUTH_CLIENT_ID` con el ID de cliente de tu aplicación de
