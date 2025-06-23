@@ -8,7 +8,7 @@ from models import (
     db,
 )
 from services.ticket_service import servicio_tickets
-from .auth import token_requerido, anon_o_token_requerido
+from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from collections import defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
@@ -30,6 +30,7 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
 # ---------- LISTA DE TICKETS (logueado) ----------
 @ticket_bp.route('/', methods=['GET'])
 @token_requerido
+@admin_o_empleado_requerido
 def get_tickets_del_usuario(current_user: User):
     if not current_user or not current_user.rubro:
         return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
@@ -216,6 +217,7 @@ def get_detalle_ticket(tipo: str, ticket_id: int, current_user: User | None = No
 # ---------- RESPONDER A TICKET (AGENTE) ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
 @token_requerido
+@admin_o_empleado_requerido
 def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     data = request.get_json()
     if not data or not data.get("comentario"):
@@ -283,6 +285,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 # ---------- CAMBIAR ESTADO DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
 @token_requerido
+@admin_o_empleado_requerido
 def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     data = request.get_json()
     nuevo_estado = data.get("estado")
@@ -494,6 +497,7 @@ def get_panel_por_categoria(current_user: User):
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido
+@admin_o_empleado_requerido
 def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     """Actualiza la ubicación geográfica asociada a un ticket."""
     data = request.get_json() or {}

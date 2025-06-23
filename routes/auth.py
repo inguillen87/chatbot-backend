@@ -64,6 +64,16 @@ def token_requerido(f):
         return f(user, *args, **kwargs)
     return decorated
 
+def admin_o_empleado_requerido(f):
+    """Permite solo a admins (empresa_id None) o empleados."""
+    @wraps(f)
+    def decorated(user: User, *args, **kwargs):
+        if user.empresa_id is not None and user.rol != "empleado":
+            return jsonify({"error": "Permisos insuficientes"}), 403
+        return f(user, *args, **kwargs)
+
+    return decorated
+
 @auth_bp.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
