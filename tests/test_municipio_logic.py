@@ -93,6 +93,9 @@ class MunicipioLogicTests(unittest.TestCase):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         resp = municipios.responder_municipio('Hablar con un agente', DummyUser(), None, viewer_user=None)
         self.assertIn('iniciar sesión', resp['respuesta'])
+        botones = resp.get('botones', [])
+        self.assertTrue(any(b.get('action') == 'login' for b in botones))
+        self.assertTrue(any(b.get('action') == 'register' for b in botones))
 
     def test_greeting_variation(self):
         user = DummyUser()
