@@ -30,6 +30,8 @@ This project exposes several endpoints to process questions for different sector
 - `GET /empleados` – list internal employees associated with the token.
 - `POST /empleados` – create a new internal employee.
 - `GET /empleados/<id>/historial` – list tickets handled by an employee.
+- `GET /historial` – retrieve the logged user's full history of chats and tickets.
+- `GET /notifications` – list pending notifications for the authenticated user.
 - `POST /presupuestos/generar` – send a PDF quote to a client based on item data.
 
 ## Variables de entorno

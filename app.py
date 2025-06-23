@@ -25,6 +25,8 @@ from routes.catalogo import catalogo_bp
 from routes.estadisticas import estadisticas_bp
 from routes.empleados import empleados_bp
 from routes.recordatorios import recordatorios_bp
+from routes.historial import historial_bp
+from routes.notifications import notifications_bp
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -122,6 +124,14 @@ def create_app(config_class=Config):
         resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
         return resp
 
+    @app.before_request
+    def catch_all_options():
+        """Handle any CORS preflight with a basic response."""
+        from flask import request
+        if request.method == "OPTIONS":
+            from routes.chat import cors_options_response
+            return cors_options_response()
+
     # --- 4. Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
@@ -135,6 +145,8 @@ def create_app(config_class=Config):
     app.register_blueprint(estadisticas_bp)
     app.register_blueprint(empleados_bp)
     app.register_blueprint(recordatorios_bp)
+    app.register_blueprint(historial_bp)
+    app.register_blueprint(notifications_bp)
 
     # Registro de comandos CLI
     register_commands(app)
