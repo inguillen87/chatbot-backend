@@ -43,7 +43,11 @@ def crear_empleado(current_user: User):
     )
     nuevo.set_password(password)
     db.session.add(nuevo)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Error al crear"}), 500
     return jsonify({"id": nuevo.id, "name": nuevo.name, "email": nuevo.email, "rol": nuevo.rol}), 201
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
@@ -70,4 +74,60 @@ def historial_empleado(current_user: User, emp_id: int):
             "fecha": c.fecha.isoformat()
         })
     return jsonify(historial)
+
+
+# --- Nuevas rutas para gestionar empleados ---
+
+@empleados_bp.route('/<int:emp_id>', methods=['GET'])
+@token_requerido
+@solo_admin_requerido
+def obtener_empleado(current_user: User, emp_id: int):
+    """Devuelve los datos de un empleado específico."""
+    empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
+    if not empleado:
+        return jsonify({"error": "Empleado no encontrado"}), 404
+    return jsonify({"id": empleado.id, "name": empleado.name, "email": empleado.email, "rol": empleado.rol})
+
+
+@empleados_bp.route('/<int:emp_id>', methods=['PUT'])
+@token_requerido
+@solo_admin_requerido
+def actualizar_empleado(current_user: User, emp_id: int):
+    """Actualiza los datos básicos de un empleado."""
+    empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
+    if not empleado:
+        return jsonify({"error": "Empleado no encontrado"}), 404
+    data = request.get_json(silent=True) or {}
+    if 'name' in data:
+        empleado.name = data['name'].strip()
+    if 'email' in data:
+        nuevo_email = data['email'].strip().lower()
+        if nuevo_email != empleado.email and User.query.filter_by(email=nuevo_email).first():
+            return jsonify({"error": "Email ya registrado"}), 400
+        empleado.email = nuevo_email
+    if 'password' in data and data['password']:
+        empleado.set_password(data['password'])
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Error al actualizar"}), 500
+    return jsonify({"id": empleado.id, "name": empleado.name, "email": empleado.email, "rol": empleado.rol})
+
+
+@empleados_bp.route('/<int:emp_id>', methods=['DELETE'])
+@token_requerido
+@solo_admin_requerido
+def eliminar_empleado(current_user: User, emp_id: int):
+    """Elimina un empleado de la empresa."""
+    empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
+    if not empleado:
+        return jsonify({"error": "Empleado no encontrado"}), 404
+    db.session.delete(empleado)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Error al eliminar"}), 500
+    return jsonify({"mensaje": "Empleado eliminado"})
 
