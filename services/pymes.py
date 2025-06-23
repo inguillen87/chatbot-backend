@@ -427,23 +427,10 @@ def analizar_sentimiento_con_llm(frase: str) -> str:
 
 class SentimentHandler(BaseHandler):
     NEGATIVE_KEYWORDS = [
-        "pesimo",
-        "pésimo",
-        "horrible",
-        "desastre",
-        "engaño",
-        "estafa",
-        "odio",
-        "malisimo",
-        "malo",
+        "pesimo", "pésimo", "horrible", "desastre", "engaño", "estafa", "odio", "malisimo", "malo",
     ]
     POSITIVE_KEYWORDS = [
-        "excelente",
-        "buen servicio",
-        "muy bueno",
-        "genial",
-        "gracias",
-        "felicitaciones",
+        "excelente", "buen servicio", "muy bueno", "genial", "gracias", "felicitaciones",
     ]
 
     def handle(self, pregunta: str) -> dict | None:
@@ -487,1596 +474,88 @@ class LimitHandler(BaseHandler):
             }
         return None
 
-# (Todos los demás handlers como FollowUpHandler, PedidoHandler, etc., se mantienen exactamente igual)
-class FollowUpHandler(BaseHandler):
+# --- HANDLERS FALTANTES: PLANTILLAS INTELIGENTES ---
+
+class FaqHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        if estado == PymeConversationState.ESPERANDO_DETALLES_RECLAMO:
-            if es_pregunta_nueva(pregunta, "el dato solicitado"):
-                contexto_pyme.clear()
-                return None
-            ticket_id = contexto_pyme.pop('ticket_id_reclamo', None)
-            ticket = db.session.get(PymeTicket, ticket_id)
-            if ticket:
-                servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": pregunta, "user_id": self.context['user_id']})
-                return {
-                    "respuesta": "Perfecto, he añadido tus comentarios al reclamo.",
-                    "fuente": "detalle_reclamo_agregado",
-                    "estado_respuesta": "exito_seguimiento",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-        elif estado == PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO:
-            if es_pregunta_nueva(pregunta, "el dato solicitado"):
-                contexto_pyme.clear()
-                return None
-            ticket_id = contexto_pyme.pop('ticket_id_roto', None)
-            ticket = db.session.get(PymeTicket, ticket_id)
-            if ticket:
-                servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": f"Info adicional del cliente: {pregunta}", "user_id": self.context['user_id']})
-                return {"respuesta": "Recibido. Gracias por la información. Ya estamos procesando el envío de tu reemplazo.", "fuente": "datos_reemplazo_recibidos", "estado_respuesta": "exito_seguimiento"}
-        elif estado == PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2:
-            if es_pregunta_nueva(pregunta, "el dato solicitado"):
-                contexto_pyme.clear()
-                return None
-            productos_a_confirmar = contexto_pyme.pop('productos_a_confirmar_en_paso_2')
-            productos_a_confirmar = sorted(productos_a_confirmar, key=lambda p: (p.get('nombre') or '').lower())
-            monto_total_final = contexto_pyme.pop('monto_total_final_en_paso_2', 0.0)
-            nombre, email, telefono = None, None, None
-            email_match = re.search(r'[\w\.-]+@[\w\.-]+', pregunta)
-            if email_match:
-                email = email_match.group(0)
-            phone_match = re.search(r'(\+?\d{1,3}[-.\s]?)?(\(?\d{2,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{4,8}', pregunta)
-            if phone_match:
-                telefono = phone_match.group(0)
-            temp_pregunta = pregunta
-            if email:
-                temp_pregunta = temp_pregunta.replace(email, "").strip()
-            if telefono:
-                temp_pregunta = temp_pregunta.replace(telefono, "").strip()
-            nombre = temp_pregunta if temp_pregunta else None
-
-            if not nombre:
-                nombre = getattr(self.context.get('user_obj'), 'name', None)
-            if not email:
-                email = getattr(self.context.get('user_obj'), 'email', None)
-            if not telefono:
-                telefono = getattr(self.context.get('user_obj'), 'telefono', None)
-
-            if not nombre:
-                nombre = "Cliente Anónimo"
-            pedido_data = {
-                "asunto": f"Pedido Web: {contexto_pyme.get('pregunta_original_pedido', 'Solicitud de Producto')}",
-                "detalles": json.dumps(productos_a_confirmar, indent=2, ensure_ascii=False),
-                "rubro": self.context.get("rubro_nombre", "general_pyme"), 
-                "nombre_cliente": nombre, "email_cliente": email, "telefono_cliente": telefono,
-                "user_id": self.context.get("user_id"), "monto_total": monto_total_final
-            }
-            nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_data)
-            self.context['contexto_pyme'].clear()
-            if nuevo_pedido:
-                try:
-                    if nuevo_pedido.email_cliente:
-                        enviar_email_pedido_cliente(nuevo_pedido)
-                except Exception as e:
-                    logger.error(f"Error enviando email de pedido: {e}")
-                try:
-                    if nuevo_pedido.telefono_cliente:
-                        tel = re.sub(r"\D", "", nuevo_pedido.telefono_cliente)
-                        if not tel.startswith("+") and len(tel) > 8:
-                            tel = "+549" + tel
-                        msg = (
-                            f"¡Muchas gracias! Tu pedido {nuevo_pedido.nro_pedido} fue ingresado."
-                        )
-                        enviar_sms(tel, msg)
-                        enviar_whatsapp(tel, msg)
-                except Exception as e:
-                    logger.error(f"Error enviando SMS/WhatsApp de pedido: {e}")
-                respuesta_final = (
-                    f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. "
-                    "Te contactaremos pronto para coordinar el pago y la entrega. "
-                    "Podés abonar con efectivo, tarjetas, MercadoPago o transferencia. "
-                    "¡Muchas gracias!"
-                )
-                link_web = getattr(self.context.get('user_obj'), 'link_web', None)
-                email_contacto = getattr(self.context.get('user_obj'), 'email', None)
-                if email_contacto:
-                    respuesta_final += f"\n\nContacto: {email_contacto}"
-                botones = [
-                    {"texto": "Nuevo pedido"},
-                    {"texto": "Consultar pedido"},
-                    {"texto": "Hablar con un agente"},
-                    {"texto": "Formas de pago"},
-                ]
-                if link_web:
-                    botones.append({"texto": "Ver tienda", "url": link_web})
-                return {
-                    "respuesta": respuesta_final,
-                    "fuente": "handler_pedido_creado",
-                    "estado_respuesta": "exito_pedido_creado",
-                    "pedido_data": nuevo_pedido.to_dict(),
-                    "botones": botones,
-                }
-            else:
-                return {"respuesta": "Disculpa, hubo un problema técnico al registrar tu pedido.", "fuente": "handler_pedido_error", "estado_respuesta": "error_pedido"}
-        elif estado == PymeConversationState.ESPERANDO_CIUDAD_ENVIO:
-            if es_pregunta_nueva(pregunta, "una ciudad o localidad"):
-                contexto_pyme.clear(); return None
-            resultado = TOOL_REGISTRY_PYME['calcular_envio']['funcion'](pregunta.strip())
-            contexto_pyme.clear()
-            return json.loads(resultado)
-        elif estado == PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK:
-            if es_pregunta_nueva(pregunta, "un producto"):
-                contexto_pyme.clear(); return None
-            resultado = TOOL_REGISTRY_PYME['verificar_stock']['funcion'](pregunta.strip(), self.context.get('user_id'))
-            contexto_pyme.clear()
-            return json.loads(resultado)
-        return None
-
-class IntentClassifierPymeHandler(BaseHandler):
-    """Clasifica la intención y aplica un fallback por palabras clave."""
-
-    KEYWORDS_PEDIDO = [
-        "comprar",
-        "pedido",
-        "ordenar",
-        "cotizar",
-        "precio",
-        "encargar",
-        "solicitar",
-        "adquirir",
-        "malbec",
-    ]
-
-    SKU_PATTERN = re.compile(r"\b[a-zA-Z]{2}\d{3}[a-zA-Z]?\b", re.IGNORECASE)
-
-    KEYWORDS_AGENTE = [
-        "agente",
-        "humano",
-        "persona",
-        "represent",
-        "operador",
-        "emplead",
-        "municipal",
-        "representante",
-        "asesor",
-        "consultor",
-        "soporte",
-        "atencion",
-        "operador real",
-        "persona real",
-        "agente humano",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get('contexto_pyme', {})
-        if not memoria.get('estado_conversacion'):
-            intencion = _clasificar_intencion_pyme_con_llm(pregunta)
-
-            # Heurística simple si el clasificador no detecta la intención
-            if intencion in {"general", "general_pyme"}:
-                texto = self._normalize(pregunta)
-                if any(kw in texto for kw in self.KEYWORDS_PEDIDO) or self.SKU_PATTERN.search(texto):
-                    intencion = "iniciar_pedido"
-                elif self._has_keyword(pregunta, self.KEYWORDS_AGENTE):
-                    intencion = "hablar_con_agente_pyme"
-
-            self.context['intencion'] = intencion
-        else:
-            self.context['intencion'] = 'continuar_flujo_pyme'
-
-        logger.info(f"[PYME] Intención clasificada: {self.context.get('intencion')}")
-        return None
-
-class PedidoHandler(BaseHandler):
-    CANCEL_KEYWORDS = [
-        "cancelar",
-        "cancelalo",
-        "cancela",
-        "anular",
-        "olvidalo",
-        "deja",
-        "no importa",
-        "no quiero",
-        "detener",
-        "stop",
-        "rechazar",
-        "descartar",
-    ]
-    def handle(self, pregunta: str) -> dict | None:
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado_conversacion = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        if self.context.get('intencion') == 'iniciar_pedido' and not estado_conversacion:
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_PEDIDO)
-            contexto_pyme['pregunta_original_pedido'] = pregunta
-            productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
-            if productos_referencia:
-                resumen_productos = "\n".join([f"- **{p.get('nombre', '')}** (SKU: {p.get('sku', 'N/A')}): ${p.get('precio_str', 'Consultar')}" for p in productos_referencia])
-                return {"respuesta": f"¡Claro! Encontré estos productos:\n{resumen_productos}\n\n¿Cuáles y cuántos te gustaría pedir? Por ejemplo: '1 caja de Malbec y 2 de Cabernet'.", "fuente": "handler_pedido_iniciado_con_catalogo", "estado_respuesta": "pyme_pregunta_pedido"}
-            else:
-                return {"respuesta": "¡Claro! Para tu pedido, contame qué productos o servicios te interesan y en qué cantidad.", "fuente": "handler_pedido_iniciado_generico", "estado_respuesta": "pyme_pregunta_pedido"}
-        elif estado_conversacion == PymeConversationState.ESPERANDO_DETALLES_PEDIDO:
-            productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
-            detalles_estructurados = _extraer_cantidades_con_llm(pregunta, productos_referencia)
-            if not detalles_estructurados:
-                # Nuevo: intentar buscar en el catálogo si no se pudieron extraer cantidades
-                resultados = buscar_catalogo_qdrant(
-                    user_id=self.context.get('user_id'),
-                    pregunta=pregunta,
-                    limite=DEFAULT_SEARCH_LIMIT,
-                    categoria=self.context.get('rubro_nombre'),
-                )
-                productos_mostrados = []
-                for hit in resultados:
-                    if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
-                        productos_mostrados.append(hit.payload)
-                if productos_mostrados:
-                    productos_mostrados.sort(
-                        key=lambda p: float(p.get('precio_float') or 0)
-                    )
-                    contexto_pyme['productos_mostrados_catalogo'] = productos_mostrados
-                    respuesta = armar_respuesta_legible(resultados, order_by="price")
-                    if respuesta:
-                        return {
-                            "respuesta": respuesta,
-                            "fuente": "catalogo_vector_en_pedido",
-                            "estado_respuesta": "mostrar_catalogo",
-                        }
-                return {"respuesta": "No pude identificar los productos que mencionas. Por favor, sé más específico sobre lo que te interesa de nuestro catálogo.", "fuente": "handler_pedido_error_productos", "estado_respuesta": "pyme_error_productos"}
-            detalles_ordenados = sorted(
-                detalles_estructurados,
-                key=lambda d: (
-                    float(d.get('precio', d.get('precio_float', 0)) or 0),
-                    (d.get('nombre') or '').lower(),
-                )
-            )
-            contexto_pyme['productos_solicitados_temp'] = detalles_ordenados
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
-            resumen_productos_confirmacion = "Resumen de tu pedido:\n\n"
-            for p in detalles_ordenados:
-                cantidad = float(p.get('cantidad', 1))
-                precio_unit = float(p.get('precio', 0.0))
-                precio_str = p.get('precio_str') or (f"${precio_unit:,.2f}" if precio_unit else "Consultar")
-                unidad = p.get('unidad', 'u')
-                nombre = p.get('nombre', 'Producto')
-                if precio_unit:
-                    subtotal = cantidad * precio_unit
-                    resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str} = ${subtotal:,.2f}\n"
-                else:
-                    resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str}\n"
-
-            monto_total_temp = calcular_monto_total_items(detalles_estructurados)
-            if monto_total_temp:
-                resumen_productos_confirmacion += f"\n**Total estimado: ${monto_total_temp:,.2f}**"
-            else:
-                resumen_productos_confirmacion += "\n**Total estimado: Consultar**"
-            resumen_productos_confirmacion += "\n\n¿Confirmás este pedido? Por favor, indicame tu nombre, teléfono y email para avanzar con la compra."
-            contexto_pyme['monto_total_temp'] = monto_total_temp
-            return {"respuesta": resumen_productos_confirmacion, "fuente": "handler_pedido_detalles_para_confirmar", "estado_respuesta": "pyme_confirmar_pedido"}
-        elif estado_conversacion == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            if self._has_keyword(pregunta, self.CANCEL_KEYWORDS):
-                contexto_pyme.clear()
-                return {"respuesta": "Entendido. No se generará el pedido. ¿Hay algo más en lo que pueda ayudarte?", "fuente": "pedido_cancelado"}
-
-            contexto_pyme['productos_a_confirmar_en_paso_2'] = contexto_pyme.pop('productos_solicitados_temp')
-            contexto_pyme['monto_total_final_en_paso_2'] = contexto_pyme.pop('monto_total_temp')
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2)
-            return {
-                "respuesta": "¡Excelente! Estoy procesando los últimos detalles. Por favor, confirmame tu nombre y un contacto (teléfono o email) para finalizar.",
-                "fuente": "pedido_confirmado_paso_1",
-                "estado_respuesta": "pyme_pregunta_contacto"
-            }
-        elif estado_conversacion == PymeConversationState.ESPERANDO_NUMERO_PEDIDO:
-            pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
-            if not pedido_match:
-                return {"respuesta": "No entendí el número de pedido. ¿Podés repetirlo?", "fuente": "pedido_falta_numero"}
-            nro_pedido_str = pedido_match.group(2).upper()
-            pedido = servicio_pedidos.obtener_pedido_por_nro(nro_pedido_str)
-            contexto_pyme.clear()
-            if pedido:
-                return {"respuesta": f"El pedido **Nº {pedido.nro_pedido}** se encuentra en estado: **{pedido.estado}**.", "fuente": "consulta_estado_pedido_ok", "estado_respuesta": "mostrar_pedido_en_panel", "pedido_data": pedido.to_dict()}
-            else:
-                return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
-        elif self.context.get('intencion') == 'consultar_estado_pedido':
-            pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
-            if pedido_match:
-                nro_pedido_str = pedido_match.group(2).upper()
-                pedido = servicio_pedidos.obtener_pedido_por_nro(nro_pedido_str)
-                if pedido:
-                    return {"respuesta": f"El pedido **Nº {pedido.nro_pedido}** se encuentra en estado: **{pedido.estado}**.", "fuente": "consulta_estado_pedido_ok", "estado_respuesta": "mostrar_pedido_en_panel", "pedido_data": pedido.to_dict()}
-                else:
-                    return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
-            else:
-                contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_PEDIDO)
-                return {"respuesta": "Para consultar, por favor, decime el número de pedido.", "fuente": "pedido_falta_numero"}
-        return None
-
-class TicketStatusHandler(BaseHandler):
-    """Permite consultar el estado de un ticket de soporte de la PyME."""
-
-    def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(memoria.get('estado_conversacion'))
-
-        if estado == PymeConversationState.ESPERANDO_NUMERO_TICKET:
-            match = re.search(r"\d{5,}", pregunta)
-            if not match:
-                return {"respuesta": "No entendí el número de ticket. ¿Podés repetirlo?", "fuente": "ticket_falta_numero"}
-            nro = int(match.group(0))
-            ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
-            memoria.clear()
-            if ticket:
-                return {
-                    "respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.",
-                    "fuente": "ticket_ok",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-            return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
-
-        if self.context.get('intencion') == 'consultar_estado_ticket':
-            match = re.search(r"\d{5,}", pregunta)
-            if match:
-                nro = int(match.group(0))
-                ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
-                if ticket:
-                    return {
-                        "respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.",
-                        "fuente": "ticket_ok",
-                        "botones": [
-                            {"texto": "Nuevo pedido"},
-                            {"texto": "Consultar pedido"},
-                            {"texto": "Hablar con un agente"}
-                        ]
-                    }
-                return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
-            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_TICKET)
-            return {"respuesta": "Decime el número de ticket que querés consultar.", "fuente": "ticket_pedir_numero"}
-
-        return None
-
-class BrokenProductHandler(BaseHandler):
-    """Registra un reclamo por producto roto y solicita más información."""
-
-    PALABRAS_CLAVE = [
-        "roto",
-        "quebrado",
-        "defectuoso",
-        "dañado",
-        "estropeado",
-        "deteriorado",
-        "partido",
-        "mal estado",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get('contexto_pyme', {})
-
-        estado = deserialize_state(memoria.get('estado_conversacion'))
-        if estado == PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO:
-            ticket_id = memoria.pop('ticket_id_roto', None)
-            if ticket_id:
-                servicio_tickets.crear_comentario(
-                    ticket_id=ticket_id,
-                    tipo_ticket="pyme",
-                    comentario_data={"comentario": pregunta, "user_id": self.context.get('user_id')}
-                )
-                memoria.clear()
-                return {
-                    "respuesta": "Gracias, registramos el detalle de tu reclamo y pronto te contactaremos.",
-                    "fuente": "reclamo_roto_comentado",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-            return None
-
-        if self._has_keyword(pregunta, self.PALABRAS_CLAVE):
-            ticket = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="pyme",
-                ticket_data={
-                    "asunto": "Producto roto",
-                    "categoria": "producto_roto",
-                    "pregunta": pregunta,
-                    "user_id": self.context.get('user_id'),
-                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None),
-                    "anon_id": self.context.get('anon_id')
-                }
-            )
-            if ticket:
-                try:
-                    enviar_email_ticket_admin(ticket)
-                    enviar_email_ticket_cliente(ticket)
-                except Exception as e:
-                    logger.error(f"Error enviando email de ticket roto: {e}")
-                try:
-                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
-                    if telefono:
-                        tel = re.sub(r"\D", "", telefono)
-                        if not tel.startswith("+") and len(tel) > 8:
-                            tel = "+549" + tel
-                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                        enviar_whatsapp(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                except Exception as e:
-                    logger.error(f"Error enviando SMS/WhatsApp de ticket roto: {e}")
-                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO)
-                memoria['ticket_id_roto'] = ticket.id
-                return {
-                    "respuesta": f"Lamentamos lo ocurrido. Creamos el ticket **{ticket.nro_ticket}**. ¿Podés contarnos más detalles o enviar una foto?",
-                    "fuente": "reclamo_roto",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-        return None
-
-class ClaimHandler(BaseHandler):
-    """Genera un ticket de reclamo general."""
-
-    PALABRAS_CLAVE = [
-        "reclamo",
-        "queja",
-        "mala atencion",
-        "mala atención",
-        "problema",
-        "inconveniente",
-        "insatisfaccion",
-        "reclamar",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        if self._has_keyword(pregunta, self.PALABRAS_CLAVE):
-            ticket = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="pyme",
-                ticket_data={
-                    "asunto": _generar_asunto_con_llm(pregunta),
-                    "categoria": "reclamo",
-                    "pregunta": pregunta,
-                    "user_id": self.context.get('user_id'),
-                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None),
-                    "anon_id": self.context.get('anon_id')
-                }
-            )
-            if ticket:
-                try:
-                    enviar_email_ticket_admin(ticket)
-                    enviar_email_ticket_cliente(ticket)
-                except Exception as e:
-                    logger.error(f"Error enviando email de ticket: {e}")
-                try:
-                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
-                    if telefono:
-                        tel = re.sub(r"\D", "", telefono)
-                        if not tel.startswith("+") and len(tel) > 8:
-                            tel = "+549" + tel
-                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                        enviar_whatsapp(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                except Exception as e:
-                    logger.error(f"Error enviando SMS/WhatsApp de ticket: {e}")
-                memoria = self.context.get('contexto_pyme', {})
-                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
-                memoria['ticket_id_reclamo'] = ticket.id
-                return {
-                    "respuesta": f"Registré tu reclamo con número **{ticket.nro_ticket}**. ¿Podés brindarme más detalles?",
-                    "fuente": "reclamo_registrado",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-        return None
-
-class VectorCatalogHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        user_id = self.context.get('user_id')
-        if not user_id:
-            return None
-
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        if self.context.get('intencion') == 'iniciar_pedido' or estado in {
-            PymeConversationState.ESPERANDO_DETALLES_PEDIDO,
-            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
-            PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2,
-        }:
-            return None
-
-        resultados = buscar_catalogo_qdrant(
-            user_id=user_id,
-            pregunta=pregunta,
-            limite=DEFAULT_SEARCH_LIMIT,
-            categoria=self.context.get('rubro_nombre'),
-        )
-        productos_mostrados = []
-        if resultados:
-            for hit in resultados:
-                if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
-                    productos_mostrados.append(hit.payload)
-
-        # INTELIGENCIA: Si el usuario pide comparar, mostrar tabla comparativa
-        if productos_mostrados:
-            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-            if "comparar" in pregunta.lower() or "diferencia" in pregunta.lower():
-                respuesta = armar_tabla_comparativa(productos_mostrados)
-                return {
-                    'respuesta': "🔎 Tabla comparativa de productos:\n" + respuesta + "\n\n¿Querés agregar alguno al pedido o ver más detalles?",
-                    'fuente': 'catalogo_comparativa',
-                    'estado_respuesta': 'mostrar_comparativa',
-                    'botones': [
-                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                        {"texto": "Ver más productos", "action": "ver_mas"},
-                        {"texto": "Consultar stock", "action": "consultar_stock"},
-                    ]
-                }
-            # Agrupar y destacar productos, mostrar botones de acción
-            respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
-            botones = [
-                {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                {"texto": "Comparar productos", "action": "comparar"},
-                {"texto": "Consultar stock", "action": "consultar_stock"},
-                {"texto": "Ver más productos", "action": "ver_mas"},
-            ]
-            # Si hay productos destacados, resáltalos
-            destacados = [p for p in productos_mostrados if p.get("destacado")]
-            if destacados:
-                respuesta = "🌟 **Productos Destacados:**\n" + "\n".join(
-                    [f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in destacados]
-                ) + "\n\n" + respuesta
-            # Sugerencia de acción para venta
-            respuesta += "\n\n¿Te gustaría pedir alguno o ver más detalles? Si necesitas ayuda, puedo recomendarte según tus preferencias."
-            return {
-                'respuesta': respuesta,
-                'fuente': 'catalogo_vector',
-                'estado_respuesta': 'mostrar_catalogo',
-                'botones': botones
-            }
-
-        # Fallback a catálogo local, con agrupación y botones
-        if not productos_mostrados:
-            from services.catalogo_local import buscar_catalogo_local
-            productos_mostrados = buscar_catalogo_local(user_id, pregunta, limite=DEFAULT_SEARCH_LIMIT)
-            if productos_mostrados:
-                productos_mostrados.sort(
-                    key=lambda p: float(p.get('precio_float') or 0)
-                )
-                self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-                respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
-                return {
-                    'respuesta': f"Estos son algunos productos que encontré en nuestro catálogo:\n{respuesta}\n\n¿Querés agregar alguno al pedido o comparar productos?",
-                    'fuente': 'catalogo_local',
-                    'estado_respuesta': 'mostrar_catalogo',
-                    'botones': [
-                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                        {"texto": "Comparar productos", "action": "comparar"},
-                        {"texto": "Ver más productos", "action": "ver_mas"},
-                    ]
-                }
-
-        # Fallback a scraping web, agrupando y mostrando botones
-        user_obj = self.context.get('user_obj')
-        if user_obj and getattr(user_obj, 'link_web', None):
-            try:
-                productos = []
-                contenidos = SitioWebInfo.query.filter_by(user_id=user_obj.id).all()
-                for item in contenidos:
-                    datos = json.loads(item.datos_json)
-                    if datos.get('tipo') == 'productos':
-                        productos.extend(datos.get('productos', []))
-
-                if not productos:
-                    datos_scrape = extraer_productos_de_url(user_obj.link_web)
-                    if datos_scrape.get('productos'):
-                        guardar_info_web(user_id=user_obj.id, rubro_id=user_obj.rubro_id, url=user_obj.link_web, data_dict=datos_scrape)
-                        productos = datos_scrape['productos']
-
-                if productos:
-                    productos_mostrados = productos[:DEFAULT_SEARCH_LIMIT]
-                    productos_mostrados.sort(
-                        key=lambda p: float(p.get('precio_float') or 0)
-                    )
-                    self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-                    respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
-                    return {
-                        'respuesta': f"Estos son algunos productos que encontré en nuestra tienda:\n{respuesta}\n\n¿Te gustaría pedir alguno o comparar productos?",
-                        'fuente': 'catalogo_scraper',
-                        'estado_respuesta': 'mostrar_catalogo',
-                        'botones': [
-                            {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                            {"texto": "Comparar productos", "action": "comparar"},
-                            {"texto": "Ver más productos", "action": "ver_mas"},
-                        ]
-                    }
-            except Exception as e:
-                logger.error(f"[VectorCatalogHandler] Error en fallback scraper: {e}")
-
-        # Si no hay productos, sugiere ayuda humana o búsqueda avanzada
-        return {
-            'respuesta': "No pude encontrar productos relacionados. ¿Querés que te ayude un agente humano o buscar de otra forma?",
-            'fuente': 'catalogo_no_encontrado',
-            'estado_respuesta': 'no_encontrado',
-            'botones': [
-                {"texto": "Hablar con un agente", "action": "escalar"},
-                {"texto": "Intentar otra búsqueda", "action": "buscar_otra"},
-            ]
-        }
-
-class SalesEngageHandler(BaseHandler):
-    """Ofrece sugerencias comerciales inteligentes y personalizadas."""
-
-    def handle(self, pregunta: str) -> dict | None:
-        sugerencias = sugerencias_por_rubro(self.context.get('rubro_nombre'))
-        historial = self.context.get('mensajes_previos', [])
-        ultima_interaccion = historial[-2]['content'] if len(historial) > 1 else ""
-        # Si el usuario mostró interés en productos, sugiere concretar la compra
-        if "producto" in ultima_interaccion.lower() or "catálogo" in ultima_interaccion.lower():
-            return {
-                "respuesta": "¿Te gustaría que te ayude a armar tu pedido? Puedo recomendarte los productos más elegidos o ayudarte a comparar opciones.",
-                "fuente": "venta_sugerencia_accion",
-                "botones": [
-                    {"texto": "Quiero recomendaciones", "action": "recomendar"},
-                    {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                ]
-            }
-        if sugerencias:
-            texto = reemplazar_placeholders(random.choice(sugerencias), self.context.get('user_obj'))
-            return {
-                "respuesta": texto + "\n¿Te gustaría recibir una oferta personalizada o ayuda para tu compra?",
-                "fuente": "sugerencia_venta",
-                "botones": [
-                    {"texto": "Ver ofertas", "action": "ofertas"},
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                ]
-            }
-        return None
-
-class SentimentHandler(BaseHandler):
-    NEGATIVE_KEYWORDS = [
-        "pesimo", "pésimo", "horrible", "desastre", "engaño", "estafa", "odio", "malisimo", "malo",
-    ]
-    POSITIVE_KEYWORDS = [
-        "excelente", "buen servicio", "muy bueno", "genial", "gracias", "felicitaciones",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        texto = self._normalize(pregunta)
-        if any(kw in texto for kw in self.POSITIVE_KEYWORDS):
-            sentimiento = "positivo"
-        elif any(kw in texto for kw in self.NEGATIVE_KEYWORDS):
-            sentimiento = "negativo"
-        else:
-            sentimiento = analizar_sentimiento_con_llm(pregunta)
-
-        if sentimiento == "negativo":
-            self.context["intencion"] = "hablar_con_agente_pyme"
-            return {
-                "respuesta": "Lamento la mala experiencia. ¿Querés hablar con un agente o preferís que te recomiende productos con mejor valoración?",
-                "fuente": "sentimiento_negativo",
-                "botones": [
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                    {"texto": "Ver productos recomendados", "action": "recomendar"},
-                ],
-            }
-        if sentimiento == "positivo":
-            return {
-                "respuesta": "¡Gracias por tu comentario! ¿Te gustaría aprovechar una oferta especial o recibir recomendaciones personalizadas?",
-                "fuente": "sentimiento_positivo",
-                "botones": [
-                    {"texto": "Ver ofertas", "action": "ofertas"},
-                    {"texto": "Recomiéndame productos", "action": "recomendar"},
-                ]
-            }
-        return None
-
-class GreetingHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        def _normalize_for_greeting(text: str) -> str:
-            text = "".join(
-                c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c)
-            )
-            text = text.lower()
-            text = re.sub(r"[!.,?]", "", text)
-            text = re.sub(r"(\w)\1+", r"\1", text)
-            return re.sub(r"\s+", " ", text).strip()
-
-        texto = _normalize_for_greeting(pregunta)
-        saludos = [
-            "hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "que tal", "buenas",
-            "buen dia", "hola hola", "hola que tal", "saludos",
-        ]
-        tokens = texto.split()
-        set_saludo = {
-            "hola", "buenos", "dias", "buenas", "tardes", "noches", "hey", "que", "tal", "saludos", "dia",
-        }
-
-        def token_es_saludo(tok: str) -> bool:
-            if tok in set_saludo:
-                return True
-            return any(difflib.SequenceMatcher(None, tok, s).ratio() >= 0.7 for s in set_saludo)
-
-        es_saludo = texto in saludos or (
-            0 < len(tokens) <= 3 and all(token_es_saludo(t) for t in tokens)
-        )
-
-        if not es_saludo:
-            for saludo in saludos:
-                if difflib.SequenceMatcher(None, texto, saludo).ratio() >= 0.85:
-                    es_saludo = True
-                    break
-
-        if es_saludo:
-            nombre = getattr(self.context.get('user_obj'), 'nombre_empresa', None)
-            if nombre:
-                return {
-                    "respuesta": f"¡Hola! Soy Chatboc, tu asistente para {nombre}. ¿En qué puedo ayudarte hoy? ¿Buscás algún producto o necesitás asesoramiento?",
-                    "fuente": "saludo_pyme",
-                    "botones": [
-                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "escalar"},
-                    ]
-                }
-            return {
-                "respuesta": "¡Hola! Soy Chatboc. ¿En qué puedo ayudarte hoy?",
-                "fuente": "saludo_pyme",
-                "botones": [
-                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                ]
-            }
-        return None
-
-class FollowUpHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        # Si el usuario está en un flujo de pedido, sugiere concretar o ayuda
-        if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            if "cancelar" in pregunta.lower() or "no quiero" in pregunta.lower():
-                contexto_pyme.clear()
-                return {
-                    "respuesta": "Entendido, no se generará el pedido. ¿Te gustaría ver otros productos o recibir asesoramiento?",
-                    "fuente": "pedido_cancelado",
-                    "botones": [
-                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "escalar"},
-                    ]
-                }
-        # Si el usuario está en otro flujo, sigue la lógica original
-        return super().handle(pregunta) if hasattr(super(), "handle") else None
-
-# --- ARQUITECTURA DE HANDLERS (sin cambios en la mayoría) ---
-
-class BaseHandler:
-    def __init__(self, context):
-        self.context = context
-    def handle(self, pregunta: str) -> dict | None:
-        raise NotImplementedError
-
-    # -- utilidades de coincidencia robusta --
-    def _normalize(self, text: str) -> str:
-        if not isinstance(text, str):
-            return ""
-        return normalizar_texto(text)
-
-    def _has_keyword(self, text: str, keywords: list[str]) -> bool:
-        texto_norm = self._normalize(text)
-        return any(kw in texto_norm for kw in keywords)
-
-
-class GreetingHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        def _normalize_for_greeting(text: str) -> str:
-            text = "".join(
-                c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c)
-            )
-            text = text.lower()
-            text = re.sub(r"[!.,?]", "", text)
-            text = re.sub(r"(\w)\1+", r"\1", text)
-            return re.sub(r"\s+", " ", text).strip()
-
-        texto = _normalize_for_greeting(pregunta)
-        saludos = [
-            "hola",
-            "buenos dias",
-            "buenas tardes",
-            "buenas noches",
-            "hey",
-            "que tal",
-            "buenas",
-            "buen dia",
-            "hola hola",
-            "hola que tal",
-            "saludos",
-        ]
-        tokens = texto.split()
-        set_saludo = {
-            "hola",
-            "buenos",
-            "dias",
-            "buenas",
-            "tardes",
-            "noches",
-            "hey",
-            "que",
-            "tal",
-            "saludos",
-            "dia",
-        }
-
-        def token_es_saludo(tok: str) -> bool:
-            if tok in set_saludo:
-                return True
-            return any(difflib.SequenceMatcher(None, tok, s).ratio() >= 0.7 for s in set_saludo)
-
-        es_saludo = texto in saludos or (
-            0 < len(tokens) <= 3 and all(token_es_saludo(t) for t in tokens)
-        )
-
-        if not es_saludo:
-            for saludo in saludos:
-                if difflib.SequenceMatcher(None, texto, saludo).ratio() >= 0.85:
-                    es_saludo = True
-                    break
-
-        if es_saludo:
-            nombre = getattr(self.context.get('user_obj'), 'nombre_empresa', None)
-            if nombre:
-                return {
-                    "respuesta": f"¡Hola! Soy Chatboc, tu asistente para {nombre}. ¿En qué puedo ayudarte hoy? ¿Buscás algún producto o necesitás asesoramiento?",
-                    "fuente": "saludo_pyme",
-                    "botones": [
-                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "escalar"},
-                    ]
-                }
-            return {
-                "respuesta": "¡Hola! Soy Chatboc. ¿En qué puedo ayudarte hoy?",
-                "fuente": "saludo_pyme",
-                "botones": [
-                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                ]
-            }
-        return None
-
-class SmallTalkHandler(BaseHandler):
-    """Detecta small talk con LLM y responde de forma cordial."""
-
-    def handle(self, pregunta: str) -> dict | None:
-        if detectar_small_talk_con_llm(pregunta):
-            respuesta = generar_respuesta_small_talk(pregunta)
+        respuesta = buscar_en_faq_spacy(pregunta, self.context.get('user_id'))
+        if respuesta:
             return {
                 "respuesta": respuesta,
-                "fuente": "smalltalk_pyme_llm",
-            }
-        return None
-
-PROMPT_ANALISIS_SENTIMIENTO = """
-Analiza la FRASE y respondé solo 'positivo', 'negativo' o 'neutro'.
-
-FRASE: "{frase}"
-"""
-
-
-def analizar_sentimiento_con_llm(frase: str) -> str:
-    try:
-        decision = get_cohere_response(
-            message=PROMPT_ANALISIS_SENTIMIENTO.format(frase=frase),
-            preamble="Sos un analizador de sentimiento. Respondé solo con positivo, negativo o neutro.",
-        )
-        return decision.strip().lower()
-    except Exception as e:
-        logger.error(f"[SENTIMIENTO] Error analizando: {e}")
-        return "neutro"
-
-
-class SentimentHandler(BaseHandler):
-    NEGATIVE_KEYWORDS = [
-        "pesimo",
-        "pésimo",
-        "horrible",
-        "desastre",
-        "engaño",
-        "estafa",
-        "odio",
-        "malisimo",
-        "malo",
-    ]
-    POSITIVE_KEYWORDS = [
-        "excelente",
-        "buen servicio",
-        "muy bueno",
-        "genial",
-        "gracias",
-        "felicitaciones",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        texto = self._normalize(pregunta)
-        if any(kw in texto for kw in self.POSITIVE_KEYWORDS):
-            sentimiento = "positivo"
-        elif any(kw in texto for kw in self.NEGATIVE_KEYWORDS):
-            sentimiento = "negativo"
-        else:
-            sentimiento = analizar_sentimiento_con_llm(pregunta)
-
-        if sentimiento == "negativo":
-            self.context["intencion"] = "hablar_con_agente_pyme"
-            return {
-                "respuesta": "Lamento la mala experiencia. ¿Querés hablar con un agente o preferís que te recomiende productos con mejor valoración?",
-                "fuente": "sentimiento_negativo",
+                "fuente": "faq_pyme",
                 "botones": [
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
                     {"texto": "Hablar con un agente", "action": "escalar"},
-                    {"texto": "Ver productos recomendados", "action": "recomendar"},
-                ],
+                ]
             }
-        if sentimiento == "positivo":
+        return None
+
+class ToolHandlerPyme(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if "stock" in pregunta.lower():
             return {
-                "respuesta": "¡Gracias por tu comentario! ¿Te gustaría aprovechar una oferta especial o recibir recomendaciones personalizadas?",
-                "fuente": "sentimiento_positivo",
+                "respuesta": "Puedo ayudarte a verificar el stock. ¿Qué producto te interesa?",
+                "fuente": "tool_pyme_stock",
                 "botones": [
-                    {"texto": "Ver ofertas", "action": "ofertas"},
-                    {"texto": "Recomiéndame productos", "action": "recomendar"},
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
                 ]
             }
         return None
 
-class LimitHandler(BaseHandler):
+class HumanEscalationPymeHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
-        limite = self.context.get('limite_preguntas')
-        if limite is not None and self.context.get('preguntas_usadas', 0) >= limite:
+        if "agente" in pregunta.lower() or "humano" in pregunta.lower():
             return {
-                "respuesta": "🔒 Límite de preguntas alcanzado. Actualizá tu plan para continuar.",
-                "fuente": "sistema_limite",
-                "estado_respuesta": "limite_alcanzado",
-            }
-        return None
-
-# (Todos los demás handlers como FollowUpHandler, PedidoHandler, etc., se mantienen exactamente igual)
-class FollowUpHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        if estado == PymeConversationState.ESPERANDO_DETALLES_RECLAMO:
-            if es_pregunta_nueva(pregunta, "el dato solicitado"):
-                contexto_pyme.clear()
-                return None
-            ticket_id = contexto_pyme.pop('ticket_id_reclamo', None)
-            ticket = db.session.get(PymeTicket, ticket_id)
-            if ticket:
-                servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": pregunta, "user_id": self.context['user_id']})
-                return {
-                    "respuesta": "Perfecto, he añadido tus comentarios al reclamo.",
-                    "fuente": "detalle_reclamo_agregado",
-                    "estado_respuesta": "exito_seguimiento",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-        elif estado == PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO:
-            if es_pregunta_nueva(pregunta, "el dato solicitado"):
-                contexto_pyme.clear()
-                return None
-            ticket_id = contexto_pyme.pop('ticket_id_roto', None)
-            ticket = db.session.get(PymeTicket, ticket_id)
-            if ticket:
-                servicio_tickets.crear_comentario(ticket_id=ticket.id, tipo_ticket="pyme", comentario_data={"comentario": f"Info adicional del cliente: {pregunta}", "user_id": self.context['user_id']})
-                return {"respuesta": "Recibido. Gracias por la información. Ya estamos procesando el envío de tu reemplazo.", "fuente": "datos_reemplazo_recibidos", "estado_respuesta": "exito_seguimiento"}
-        elif estado == PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2:
-            if es_pregunta_nueva(pregunta, "el dato solicitado"):
-                contexto_pyme.clear()
-                return None
-            productos_a_confirmar = contexto_pyme.pop('productos_a_confirmar_en_paso_2')
-            productos_a_confirmar = sorted(productos_a_confirmar, key=lambda p: (p.get('nombre') or '').lower())
-            monto_total_final = contexto_pyme.pop('monto_total_final_en_paso_2', 0.0)
-            nombre, email, telefono = None, None, None
-            email_match = re.search(r'[\w\.-]+@[\w\.-]+', pregunta)
-            if email_match:
-                email = email_match.group(0)
-            phone_match = re.search(r'(\+?\d{1,3}[-.\s]?)?(\(?\d{2,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{4,8}', pregunta)
-            if phone_match:
-                telefono = phone_match.group(0)
-            temp_pregunta = pregunta
-            if email:
-                temp_pregunta = temp_pregunta.replace(email, "").strip()
-            if telefono:
-                temp_pregunta = temp_pregunta.replace(telefono, "").strip()
-            nombre = temp_pregunta if temp_pregunta else None
-
-            if not nombre:
-                nombre = getattr(self.context.get('user_obj'), 'name', None)
-            if not email:
-                email = getattr(self.context.get('user_obj'), 'email', None)
-            if not telefono:
-                telefono = getattr(self.context.get('user_obj'), 'telefono', None)
-
-            if not nombre:
-                nombre = "Cliente Anónimo"
-            pedido_data = {
-                "asunto": f"Pedido Web: {contexto_pyme.get('pregunta_original_pedido', 'Solicitud de Producto')}",
-                "detalles": json.dumps(productos_a_confirmar, indent=2, ensure_ascii=False),
-                "rubro": self.context.get("rubro_nombre", "general_pyme"), 
-                "nombre_cliente": nombre, "email_cliente": email, "telefono_cliente": telefono,
-                "user_id": self.context.get("user_id"), "monto_total": monto_total_final
-            }
-            nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_data)
-            self.context['contexto_pyme'].clear()
-            if nuevo_pedido:
-                try:
-                    if nuevo_pedido.email_cliente:
-                        enviar_email_pedido_cliente(nuevo_pedido)
-                except Exception as e:
-                    logger.error(f"Error enviando email de pedido: {e}")
-                try:
-                    if nuevo_pedido.telefono_cliente:
-                        tel = re.sub(r"\D", "", nuevo_pedido.telefono_cliente)
-                        if not tel.startswith("+") and len(tel) > 8:
-                            tel = "+549" + tel
-                        msg = (
-                            f"¡Muchas gracias! Tu pedido {nuevo_pedido.nro_pedido} fue ingresado."
-                        )
-                        enviar_sms(tel, msg)
-                        enviar_whatsapp(tel, msg)
-                except Exception as e:
-                    logger.error(f"Error enviando SMS/WhatsApp de pedido: {e}")
-                respuesta_final = (
-                    f"¡Excelente! Tu pedido **Nº {nuevo_pedido.nro_pedido}** fue registrado. "
-                    "Te contactaremos pronto para coordinar el pago y la entrega. "
-                                       "Podés abonar con efectivo, tarjetas, MercadoPago o transferencia. "
-                    "¡Muchas gracias!"
-                )
-                link_web = getattr(self.context.get('user_obj'), 'link_web', None)
-                email_contacto = getattr(self.context.get('user_obj'), 'email', None)
-                if email_contacto:
-                    respuesta_final += f"\n\nContacto: {email_contacto}"
-                botones = [
-                    {"texto": "Nuevo pedido"},
-                    {"texto": "Consultar pedido"},
-                    {"texto": "Hablar con un agente"},
-                    {"texto": "Formas de pago"},
+                "respuesta": "Te comunico con un agente humano. Por favor, aguardá un momento.",
+                "fuente": "escalamiento_humano_pyme",
+                "botones": [
+                    {"texto": "Cancelar", "action": "cancelar"},
                 ]
-                if link_web:
-                    botones.append({"texto": "Ver tienda", "url": link_web})
-                return {
-                    "respuesta": respuesta_final,
-                    "fuente": "handler_pedido_creado",
-                    "estado_respuesta": "exito_pedido_creado",
-                    "pedido_data": nuevo_pedido.to_dict(),
-                    "botones": botones,
-                }
-            else:
-                return {"respuesta": "Disculpa, hubo un problema técnico al registrar tu pedido.", "fuente": "handler_pedido_error", "estado_respuesta": "error_pedido"}
-        elif estado == PymeConversationState.ESPERANDO_CIUDAD_ENVIO:
-            if es_pregunta_nueva(pregunta, "una ciudad o localidad"):
-                contexto_pyme.clear(); return None
-            resultado = TOOL_REGISTRY_PYME['calcular_envio']['funcion'](pregunta.strip())
-            contexto_pyme.clear()
-            return json.loads(resultado)
-        elif estado == PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK:
-            if es_pregunta_nueva(pregunta, "un producto"):
-                contexto_pyme.clear(); return None
-            resultado = TOOL_REGISTRY_PYME['verificar_stock']['funcion'](pregunta.strip(), self.context.get('user_id'))
-            contexto_pyme.clear()
-            return json.loads(resultado)
-        return None
-
-class IntentClassifierPymeHandler(BaseHandler):
-    """Clasifica la intención y aplica un fallback por palabras clave."""
-
-    KEYWORDS_PEDIDO = [
-        "comprar",
-        "pedido",
-        "ordenar",
-        "cotizar",
-        "precio",
-        "encargar",
-        "solicitar",
-        "adquirir",
-        "malbec",
-    ]
-
-    SKU_PATTERN = re.compile(r"\b[a-zA-Z]{2}\d{3}[a-zA-Z]?\b", re.IGNORECASE)
-
-    KEYWORDS_AGENTE = [
-        "agente",
-        "humano",
-        "persona",
-        "represent",
-        "operador",
-        "emplead",
-        "municipal",
-        "representante",
-        "asesor",
-        "consultor",
-        "soporte",
-        "atencion",
-        "operador real",
-        "persona real",
-        "agente humano",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get('contexto_pyme', {})
-        if not memoria.get('estado_conversacion'):
-            intencion = _clasificar_intencion_pyme_con_llm(pregunta)
-
-            # Heurística simple si el clasificador no detecta la intención
-            if intencion in {"general", "general_pyme"}:
-                texto = self._normalize(pregunta)
-                if any(kw in texto for kw in self.KEYWORDS_PEDIDO) or self.SKU_PATTERN.search(texto):
-                    intencion = "iniciar_pedido"
-                elif self._has_keyword(pregunta, self.KEYWORDS_AGENTE):
-                    intencion = "hablar_con_agente_pyme"
-
-            self.context['intencion'] = intencion
-        else:
-            self.context['intencion'] = 'continuar_flujo_pyme'
-
-        logger.info(f"[PYME] Intención clasificada: {self.context.get('intencion')}")
-        return None
-
-class PedidoHandler(BaseHandler):
-    CANCEL_KEYWORDS = [
-        "cancelar",
-        "cancelalo",
-        "cancela",
-        "anular",
-        "olvidalo",
-        "deja",
-        "no importa",
-        "no quiero",
-        "detener",
-        "stop",
-        "rechazar",
-        "descartar",
-    ]
-    def handle(self, pregunta: str) -> dict | None:
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado_conversacion = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        if self.context.get('intencion') == 'iniciar_pedido' and not estado_conversacion:
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_PEDIDO)
-            contexto_pyme['pregunta_original_pedido'] = pregunta
-            productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
-            if productos_referencia:
-                resumen_productos = "\n".join([f"- **{p.get('nombre', '')}** (SKU: {p.get('sku', 'N/A')}): ${p.get('precio_str', 'Consultar')}" for p in productos_referencia])
-                return {"respuesta": f"¡Claro! Encontré estos productos:\n{resumen_productos}\n\n¿Cuáles y cuántos te gustaría pedir? Por ejemplo: '1 caja de Malbec y 2 de Cabernet'.", "fuente": "handler_pedido_iniciado_con_catalogo", "estado_respuesta": "pyme_pregunta_pedido"}
-            else:
-                return {"respuesta": "¡Claro! Para tu pedido, contame qué productos o servicios te interesan y en qué cantidad.", "fuente": "handler_pedido_iniciado_generico", "estado_respuesta": "pyme_pregunta_pedido"}
-        elif estado_conversacion == PymeConversationState.ESPERANDO_DETALLES_PEDIDO:
-            productos_referencia = contexto_pyme.get('productos_mostrados_catalogo', [])
-            detalles_estructurados = _extraer_cantidades_con_llm(pregunta, productos_referencia)
-            if not detalles_estructurados:
-                # Nuevo: intentar buscar en el catálogo si no se pudieron extraer cantidades
-                resultados = buscar_catalogo_qdrant(
-                    user_id=self.context.get('user_id'),
-                    pregunta=pregunta,
-                    limite=DEFAULT_SEARCH_LIMIT,
-                    categoria=self.context.get('rubro_nombre'),
-                )
-                productos_mostrados = []
-                for hit in resultados:
-                    if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
-                        productos_mostrados.append(hit.payload)
-                if productos_mostrados:
-                    productos_mostrados.sort(
-                        key=lambda p: float(p.get('precio_float') or 0)
-                    )
-                    contexto_pyme['productos_mostrados_catalogo'] = productos_mostrados
-                    respuesta = armar_respuesta_legible(resultados, order_by="price")
-                    if respuesta:
-                        return {
-                            "respuesta": respuesta,
-                            "fuente": "catalogo_vector_en_pedido",
-                            "estado_respuesta": "mostrar_catalogo",
-                        }
-                return {"respuesta": "No pude identificar los productos que mencionas. Por favor, sé más específico sobre lo que te interesa de nuestro catálogo.", "fuente": "handler_pedido_error_productos", "estado_respuesta": "pyme_error_productos"}
-            detalles_ordenados = sorted(
-                detalles_estructurados,
-                key=lambda d: (
-                    float(d.get('precio', d.get('precio_float', 0)) or 0),
-                    (d.get('nombre') or '').lower(),
-                )
-            )
-            contexto_pyme['productos_solicitados_temp'] = detalles_ordenados
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
-            resumen_productos_confirmacion = "Resumen de tu pedido:\n\n"
-            for p in detalles_ordenados:
-                cantidad = float(p.get('cantidad', 1))
-                precio_unit = float(p.get('precio', 0.0))
-                precio_str = p.get('precio_str') or (f"${precio_unit:,.2f}" if precio_unit else "Consultar")
-                unidad = p.get('unidad', 'u')
-                nombre = p.get('nombre', 'Producto')
-                if precio_unit:
-                    subtotal = cantidad * precio_unit
-                    resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str} = ${subtotal:,.2f}\n"
-                else:
-                    resumen_productos_confirmacion += f"- {int(cantidad)} {unidad} de **{nombre}** @ {precio_str}\n"
-
-            monto_total_temp = calcular_monto_total_items(detalles_estructurados)
-            if monto_total_temp:
-                resumen_productos_confirmacion += f"\n**Total estimado: ${monto_total_temp:,.2f}**"
-            else:
-                resumen_productos_confirmacion += "\n**Total estimado: Consultar**"
-            resumen_productos_confirmacion += "\n\n¿Confirmás este pedido? Por favor, indicame tu nombre, teléfono y email para avanzar con la compra."
-            contexto_pyme['monto_total_temp'] = monto_total_temp
-            return {"respuesta": resumen_productos_confirmacion, "fuente": "handler_pedido_detalles_para_confirmar", "estado_respuesta": "pyme_confirmar_pedido"}
-        elif estado_conversacion == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            if self._has_keyword(pregunta, self.CANCEL_KEYWORDS):
-                contexto_pyme.clear()
-                return {"respuesta": "Entendido. No se generará el pedido. ¿Hay algo más en lo que pueda ayudarte?", "fuente": "pedido_cancelado"}
-
-            contexto_pyme['productos_a_confirmar_en_paso_2'] = contexto_pyme.pop('productos_solicitados_temp')
-            contexto_pyme['monto_total_final_en_paso_2'] = contexto_pyme.pop('monto_total_temp')
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2)
-            return {
-                "respuesta": "¡Excelente! Estoy procesando los últimos detalles. Por favor, confirmame tu nombre y un contacto (teléfono o email) para finalizar.",
-                "fuente": "pedido_confirmado_paso_1",
-                "estado_respuesta": "pyme_pregunta_contacto"
             }
-        elif estado_conversacion == PymeConversationState.ESPERANDO_NUMERO_PEDIDO:
-            pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
-            if not pedido_match:
-                return {"respuesta": "No entendí el número de pedido. ¿Podés repetirlo?", "fuente": "pedido_falta_numero"}
-            nro_pedido_str = pedido_match.group(2).upper()
-            pedido = servicio_pedidos.obtener_pedido_por_nro(nro_pedido_str)
-            contexto_pyme.clear()
-            if pedido:
-                return {"respuesta": f"El pedido **Nº {pedido.nro_pedido}** se encuentra en estado: **{pedido.estado}**.", "fuente": "consulta_estado_pedido_ok", "estado_respuesta": "mostrar_pedido_en_panel", "pedido_data": pedido.to_dict()}
-            else:
-                return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
-        elif self.context.get('intencion') == 'consultar_estado_pedido':
-            pedido_match = re.search(r"(pedido|orden)\s*#?\s*([a-zA-Z0-9-]+)", pregunta, re.IGNORECASE)
-            if pedido_match:
-                nro_pedido_str = pedido_match.group(2).upper()
-                pedido = servicio_pedidos.obtener_pedido_por_nro(nro_pedido_str)
-                if pedido:
-                    return {"respuesta": f"El pedido **Nº {pedido.nro_pedido}** se encuentra en estado: **{pedido.estado}**.", "fuente": "consulta_estado_pedido_ok", "estado_respuesta": "mostrar_pedido_en_panel", "pedido_data": pedido.to_dict()}
-                else:
-                    return {"respuesta": f"No se encontró ningún pedido con el número #{nro_pedido_str}.", "fuente": "pedido_no_encontrado"}
-            else:
-                contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_PEDIDO)
-                return {"respuesta": "Para consultar, por favor, decime el número de pedido.", "fuente": "pedido_falta_numero"}
         return None
 
-class TicketStatusHandler(BaseHandler):
-    """Permite consultar el estado de un ticket de soporte de la PyME."""
-
+class LLMHandler(BaseHandler):
+    """Fallback de IA generativa para consultas generales."""
     def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(memoria.get('estado_conversacion'))
-
-        if estado == PymeConversationState.ESPERANDO_NUMERO_TICKET:
-            match = re.search(r"\d{5,}", pregunta)
-            if not match:
-                return {"respuesta": "No entendí el número de ticket. ¿Podés repetirlo?", "fuente": "ticket_falta_numero"}
-            nro = int(match.group(0))
-            ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
-            memoria.clear()
-            if ticket:
-                return {
-                    "respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.",
-                    "fuente": "ticket_ok",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-            return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
-
-        if self.context.get('intencion') == 'consultar_estado_ticket':
-            match = re.search(r"\d{5,}", pregunta)
-            if match:
-                nro = int(match.group(0))
-                ticket = PymeTicket.query.filter_by(nro_ticket=nro).first()
-                if ticket:
-                    return {
-                        "respuesta": f"El ticket **{ticket.nro_ticket}** está en estado **{ticket.estado}**.",
-                        "fuente": "ticket_ok",
-                        "botones": [
-                            {"texto": "Nuevo pedido"},
-                            {"texto": "Consultar pedido"},
-                            {"texto": "Hablar con un agente"}
-                        ]
-                    }
-                return {"respuesta": f"No encontré ticket {nro}.", "fuente": "ticket_no_encontrado"}
-            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_TICKET)
-            return {"respuesta": "Decime el número de ticket que querés consultar.", "fuente": "ticket_pedir_numero"}
-
-        return None
-
-class BrokenProductHandler(BaseHandler):
-    """Registra un reclamo por producto roto y solicita más información."""
-
-    PALABRAS_CLAVE = [
-        "roto",
-        "quebrado",
-        "defectuoso",
-        "dañado",
-        "estropeado",
-        "deteriorado",
-        "partido",
-        "mal estado",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get('contexto_pyme', {})
-
-        estado = deserialize_state(memoria.get('estado_conversacion'))
-        if estado == PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO:
-            ticket_id = memoria.pop('ticket_id_roto', None)
-            if ticket_id:
-                servicio_tickets.crear_comentario(
-                    ticket_id=ticket_id,
-                    tipo_ticket="pyme",
-                    comentario_data={"comentario": pregunta, "user_id": self.context.get('user_id')}
-                )
-                memoria.clear()
-                return {
-                    "respuesta": "Gracias, registramos el detalle de tu reclamo y pronto te contactaremos.",
-                    "fuente": "reclamo_roto_comentado",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-            return None
-
-        if self._has_keyword(pregunta, self.PALABRAS_CLAVE):
-            ticket = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="pyme",
-                ticket_data={
-                    "asunto": "Producto roto",
-                    "categoria": "producto_roto",
-                    "pregunta": pregunta,
-                    "user_id": self.context.get('user_id'),
-                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None),
-                    "anon_id": self.context.get('anon_id')
-                }
-            )
-            if ticket:
-                try:
-                    enviar_email_ticket_admin(ticket)
-                    enviar_email_ticket_cliente(ticket)
-                except Exception as e:
-                    logger.error(f"Error enviando email de ticket roto: {e}")
-                try:
-                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
-                    if telefono:
-                        tel = re.sub(r"\D", "", telefono)
-                        if not tel.startswith("+") and len(tel) > 8:
-                            tel = "+549" + tel
-                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                        enviar_whatsapp(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                except Exception as e:
-                    logger.error(f"Error enviando SMS/WhatsApp de ticket roto: {e}")
-                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DATOS_RECLAMO_ROTO)
-                memoria['ticket_id_roto'] = ticket.id
-                return {
-                    "respuesta": f"Lamentamos lo ocurrido. Creamos el ticket **{ticket.nro_ticket}**. ¿Podés contarnos más detalles o enviar una foto?",
-                    "fuente": "reclamo_roto",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-        return None
-
-class ClaimHandler(BaseHandler):
-    """Genera un ticket de reclamo general."""
-
-    PALABRAS_CLAVE = [
-        "reclamo",
-        "queja",
-        "mala atencion",
-        "mala atención",
-        "problema",
-        "inconveniente",
-        "insatisfaccion",
-        "reclamar",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        if self._has_keyword(pregunta, self.PALABRAS_CLAVE):
-            ticket = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="pyme",
-                ticket_data={
-                    "asunto": _generar_asunto_con_llm(pregunta),
-                    "categoria": "reclamo",
-                    "pregunta": pregunta,
-                    "user_id": self.context.get('user_id'),
-                    "rubro_id": getattr(self.context.get('rubro_obj'), 'id', None),
-                    "anon_id": self.context.get('anon_id')
-                }
-            )
-            if ticket:
-                try:
-                    enviar_email_ticket_admin(ticket)
-                    enviar_email_ticket_cliente(ticket)
-                except Exception as e:
-                    logger.error(f"Error enviando email de ticket: {e}")
-                try:
-                    telefono = getattr(self.context.get('user_obj'), 'telefono', '')
-                    if telefono:
-                        tel = re.sub(r"\D", "", telefono)
-                        if not tel.startswith("+") and len(tel) > 8:
-                            tel = "+549" + tel
-                        enviar_sms(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                        enviar_whatsapp(tel, f"Tu reclamo {ticket.nro_ticket} fue registrado")
-                except Exception as e:
-                    logger.error(f"Error enviando SMS/WhatsApp de ticket: {e}")
-                memoria = self.context.get('contexto_pyme', {})
-                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
-                memoria['ticket_id_reclamo'] = ticket.id
-                return {
-                    "respuesta": f"Registré tu reclamo con número **{ticket.nro_ticket}**. ¿Podés brindarme más detalles?",
-                    "fuente": "reclamo_registrado",
-                    "botones": [
-                        {"texto": "Nuevo pedido"},
-                        {"texto": "Consultar pedido"},
-                        {"texto": "Hablar con un agente"}
-                    ]
-                }
-        return None
-
-class VectorCatalogHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        user_id = self.context.get('user_id')
-        if not user_id:
-            return None
-
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        if self.context.get('intencion') == 'iniciar_pedido' or estado in {
-            PymeConversationState.ESPERANDO_DETALLES_PEDIDO,
-            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
-            PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2,
-        }:
-            return None
-
-        resultados = buscar_catalogo_qdrant(
-            user_id=user_id,
-            pregunta=pregunta,
-            limite=DEFAULT_SEARCH_LIMIT,
-            categoria=self.context.get('rubro_nombre'),
-        )
-        productos_mostrados = []
-        if resultados:
-            for hit in resultados:
-                if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
-                    productos_mostrados.append(hit.payload)
-
-        # INTELIGENCIA: Si el usuario pide comparar, mostrar tabla comparativa
-        if productos_mostrados:
-            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-            if "comparar" in pregunta.lower() or "diferencia" in pregunta.lower():
-                respuesta = armar_tabla_comparativa(productos_mostrados)
-                return {
-                    'respuesta': "🔎 Tabla comparativa de productos:\n" + respuesta + "\n\n¿Querés agregar alguno al pedido o ver más detalles?",
-                    'fuente': 'catalogo_comparativa',
-                    'estado_respuesta': 'mostrar_comparativa',
-                    'botones': [
-                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                        {"texto": "Ver más productos", "action": "ver_mas"},
-                        {"texto": "Consultar stock", "action": "consultar_stock"},
-                    ]
-                }
-            # Agrupar y destacar productos, mostrar botones de acción
-            respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
-            botones = [
-                {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                {"texto": "Comparar productos", "action": "comparar"},
-                {"texto": "Consultar stock", "action": "consultar_stock"},
-                {"texto": "Ver más productos", "action": "ver_mas"},
-            ]
-            # Si hay productos destacados, resáltalos
-            destacados = [p for p in productos_mostrados if p.get("destacado")]
-            if destacados:
-                respuesta = "🌟 **Productos Destacados:**\n" + "\n".join(
-                    [f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in destacados]
-                ) + "\n\n" + respuesta
-            # Sugerencia de acción para venta
-            respuesta += "\n\n¿Te gustaría pedir alguno o ver más detalles? Si necesitas ayuda, puedo recomendarte según tus preferencias."
+        respuesta = get_cohere_response(message=pregunta)
+        if respuesta:
             return {
-                'respuesta': respuesta,
-                'fuente': 'catalogo_vector',
-                'estado_respuesta': 'mostrar_catalogo',
-                'botones': botones
+                "respuesta": respuesta,
+                "fuente": "llm_pyme",
             }
+        return None
 
-        # Fallback a catálogo local, con agrupación y botones
-        if not productos_mostrados:
-            from services.catalogo_local import buscar_catalogo_local
-            productos_mostrados = buscar_catalogo_local(user_id, pregunta, limite=DEFAULT_SEARCH_LIMIT)
-            if productos_mostrados:
-                productos_mostrados.sort(
-                    key=lambda p: float(p.get('precio_float') or 0)
-                )
-                self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-                respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
-                return {
-                    'respuesta': f"Estos son algunos productos que encontré en nuestro catálogo:\n{respuesta}\n\n¿Querés agregar alguno al pedido o comparar productos?",
-                    'fuente': 'catalogo_local',
-                    'estado_respuesta': 'mostrar_catalogo',
-                    'botones': [
-                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                        {"texto": "Comparar productos", "action": "comparar"},
-                        {"texto": "Ver más productos", "action": "ver_mas"},
-                    ]
-                }
+class IntentHandler(BaseHandler):
+    """Maneja intenciones específicas no cubiertas por otros handlers."""
+    def handle(self, pregunta: str) -> dict | None:
+        # Ejemplo: si la intención es 'consultar_horario'
+        if self.context.get('intencion') == 'consultar_horario':
+            return {
+                "respuesta": "Nuestro horario de atención es de lunes a viernes de 9 a 18 hs.",
+                "fuente": "intencion_horario",
+            }
+        return None
 
-        # Fallback a scraping web, agrupando y mostrando botones
-        user_obj = self.context.get('user_obj')
-        if user_obj and getattr(user_obj, 'link_web', None):
-            try:
-                productos = []
-                contenidos = SitioWebInfo.query.filter_by(user_id=user_obj.id).all()
-                for item in contenidos:
-                    datos = json.loads(item.datos_json)
-                    if datos.get('tipo') == 'productos':
-                        productos.extend(datos.get('productos', []))
-
-                if not productos:
-                    datos_scrape = extraer_productos_de_url(user_obj.link_web)
-                    if datos_scrape.get('productos'):
-                        guardar_info_web(user_id=user_obj.id, rubro_id=user_obj.rubro_id, url=user_obj.link_web, data_dict=datos_scrape)
-                        productos = datos_scrape['productos']
-
-                if productos:
-                    productos_mostrados = productos[:DEFAULT_SEARCH_LIMIT]
-                    productos_mostrados.sort(
-                        key=lambda p: float(p.get('precio_float') or 0)
-                    )
-                    self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-                    respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
-                    return {
-                        'respuesta': f"Estos son algunos productos que encontré en nuestra tienda:\n{respuesta}\n\n¿Te gustaría pedir alguno o comparar productos?",
-                        'fuente': 'catalogo_scraper',
-                        'estado_respuesta': 'mostrar_catalogo',
-                        'botones': [
-                            {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                            {"texto": "Comparar productos", "action": "comparar"},
-                            {"texto": "Ver más productos", "action": "ver_mas"},
-                        ]
-                    }
-            except Exception as e:
-                logger.error(f"[VectorCatalogHandler] Error en fallback scraper: {e}")
-
-        # Si no hay productos, sugiere ayuda humana o búsqueda avanzada
-        return {
-            'respuesta': "No pude encontrar productos relacionados. ¿Querés que te ayude un agente humano o buscar de otra forma?",
-            'fuente': 'catalogo_no_encontrado',
-            'estado_respuesta': 'no_encontrado',
-            'botones': [
-                {"texto": "Hablar con un agente", "action": "escalar"},
-                {"texto": "Intentar otra búsqueda", "action": "buscar_otra"},
-            ]
-        }
+class EngancheAnonimoHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if not self.context.get('user_id'):
+            return {
+                "respuesta": "Para ver precios exclusivos y hacer pedidos, por favor registrate o ingresá tus datos.",
+                "fuente": "enganche_anonimo",
+                "botones": [
+                    {"texto": "Registrarme", "action": "registrar"},
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                ]
+            }
+        return None
 
 class SalesEngageHandler(BaseHandler):
     """Ofrece sugerencias comerciales inteligentes y personalizadas."""
-
     def handle(self, pregunta: str) -> dict | None:
         sugerencias = sugerencias_por_rubro(self.context.get('rubro_nombre'))
         historial = self.context.get('mensajes_previos', [])
         ultima_interaccion = historial[-2]['content'] if len(historial) > 1 else ""
-        # Si el usuario mostró interés en productos, sugiere concretar la compra
         if "producto" in ultima_interaccion.lower() or "catálogo" in ultima_interaccion.lower():
             return {
                 "respuesta": "¿Te gustaría que te ayude a armar tu pedido? Puedo recomendarte los productos más elegidos o ayudarte a comparar opciones.",
@@ -2099,127 +578,11 @@ class SalesEngageHandler(BaseHandler):
             }
         return None
 
-class SentimentHandler(BaseHandler):
-    NEGATIVE_KEYWORDS = [
-        "pesimo", "pésimo", "horrible", "desastre", "engaño", "estafa", "odio", "malisimo", "malo",
-    ]
-    POSITIVE_KEYWORDS = [
-        "excelente", "buen servicio", "muy bueno", "genial", "gracias", "felicitaciones",
-    ]
-
-    def handle(self, pregunta: str) -> dict | None:
-        texto = self._normalize(pregunta)
-        if any(kw in texto for kw in self.POSITIVE_KEYWORDS):
-            sentimiento = "positivo"
-        elif any(kw in texto for kw in self.NEGATIVE_KEYWORDS):
-            sentimiento = "negativo"
-        else:
-            sentimiento = analizar_sentimiento_con_llm(pregunta)
-
-        if sentimiento == "negativo":
-            self.context["intencion"] = "hablar_con_agente_pyme"
-            return {
-                "respuesta": "Lamento la mala experiencia. ¿Querés hablar con un agente o preferís que te recomiende productos con mejor valoración?",
-                "fuente": "sentimiento_negativo",
-                "botones": [
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                    {"texto": "Ver productos recomendados", "action": "recomendar"},
-                ],
-            }
-        if sentimiento == "positivo":
-            return {
-                "respuesta": "¡Gracias por tu comentario! ¿Te gustaría aprovechar una oferta especial o recibir recomendaciones personalizadas?",
-                "fuente": "sentimiento_positivo",
-                "botones": [
-                    {"texto": "Ver ofertas", "action": "ofertas"},
-                    {"texto": "Recomiéndame productos", "action": "recomendar"},
-                ]
-            }
-        return None
-
-class GreetingHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        def _normalize_for_greeting(text: str) -> str:
-            text = "".join(
-                c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c)
-            )
-            text = text.lower()
-            text = re.sub(r"[!.,?]", "", text)
-            text = re.sub(r"(\w)\1+", r"\1", text)
-            return re.sub(r"\s+", " ", text).strip()
-
-        texto = _normalize_for_greeting(pregunta)
-        saludos = [
-            "hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "que tal", "buenas",
-            "buen dia", "hola hola", "hola que tal", "saludos",
-        ]
-        tokens = texto.split()
-        set_saludo = {
-            "hola", "buenos", "dias", "buenas", "tardes", "noches", "hey", "que", "tal", "saludos", "dia",
-        }
-
-        def token_es_saludo(tok: str) -> bool:
-            if tok in set_saludo:
-                return True
-            return any(difflib.SequenceMatcher(None, tok, s).ratio() >= 0.7 for s in set_saludo)
-
-        es_saludo = texto in saludos or (
-            0 < len(tokens) <= 3 and all(token_es_saludo(t) for t in tokens)
-        )
-
-        if not es_saludo:
-            for saludo in saludos:
-                if difflib.SequenceMatcher(None, texto, saludo).ratio() >= 0.85:
-                    es_saludo = True
-                    break
-
-        if es_saludo:
-            nombre = getattr(self.context.get('user_obj'), 'nombre_empresa', None)
-            if nombre:
-                return {
-                    "respuesta": f"¡Hola! Soy Chatboc, tu asistente para {nombre}. ¿En qué puedo ayudarte hoy? ¿Buscás algún producto o necesitás asesoramiento?",
-                    "fuente": "saludo_pyme",
-                    "botones": [
-                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "escalar"},
-                    ]
-                }
-            return {
-                "respuesta": "¡Hola! Soy Chatboc. ¿En qué puedo ayudarte hoy?",
-                "fuente": "saludo_pyme",
-                "botones": [
-                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                ]
-            }
-        return None
-
-class FollowUpHandler(BaseHandler):
-    def handle(self, pregunta: str) -> dict | None:
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        # Si el usuario está en un flujo de pedido, sugiere concretar o ayuda
-        if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            if "cancelar" in pregunta.lower() or "no quiero" in pregunta.lower():
-                contexto_pyme.clear()
-                return {
-                    "respuesta": "Entendido, no se generará el pedido. ¿Te gustaría ver otros productos o recibir asesoramiento?",
-                    "fuente": "pedido_cancelado",
-                    "botones": [
-                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "escalar"},
-                    ]
-                }
-        # Si el usuario está en otro flujo, sigue la lógica original
-        return super().handle(pregunta) if hasattr(super(), "handle") else None
-
-# --- FUNCIÓN ORQUESTADORA PRINCIPAL (sin cambios) ---
+# --- FUNCIÓN ORQUESTADORA PRINCIPAL MEJORADA ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
     contexto_previo_valido = contexto_previo if contexto_previo is not None else {}
 
-    # Si cambia el propietario asociado al token, reiniciamos la memoria para evitar
-    # mezclar catálogos de diferentes empresas en la misma sesión.
     if owner_user:
         last_id = flask_session.get(LAST_OWNER_SESION)
         if last_id != owner_user.id:
@@ -2249,24 +612,25 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     }
-    
+
     handler_chain = [
         LimitHandler,
         GreetingHandler,
         SmallTalkHandler,
         SentimentHandler,
         FollowUpHandler,
-        IntentClassifierPymeHandler, # 1. Clasifica la intención
-        VectorCatalogHandler,      # 2. BUSCA EN EL CATÁLOGO VECTORIAL PRIMERO
-        PedidoHandler,             # 3. Ahora sí, gestiona el pedido con el contexto de productos
+        IntentClassifierPymeHandler,
+        VectorCatalogHandler,
+        PedidoHandler,
         BrokenProductHandler,
         ClaimHandler,
+        TicketStatusHandler,
         FaqHandler,
         ToolHandlerPyme,
         HumanEscalationPymeHandler,
-        LLMHandler,                # Este ahora es un excelente fallback inteligente
-        IntentHandler,
         SalesEngageHandler,
+        LLMHandler,
+        IntentHandler,
         EngancheAnonimoHandler,
     ]
 
@@ -2277,25 +641,33 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         if respuesta_final:
             if not isinstance(respuesta_final, dict):
                 logging.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_final)}")
-                respuesta_final = None 
+                respuesta_final = None
             else:
-                break 
+                break
 
     if not respuesta_final:
-        respuesta_final = {"respuesta": "Disculpa, no pude procesar tu solicitud. Por favor, intenta de nuevo.", "fuente": "error_no_handler", "estado_respuesta": "error_critico"}
-    
+        respuesta_final = {
+            "respuesta": "Disculpa, no pude procesar tu solicitud. Por favor, intenta de nuevo o consulta nuestro catálogo.",
+            "fuente": "error_no_handler",
+            "estado_respuesta": "error_critico",
+            "botones": [
+                {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                {"texto": "Hablar con un agente", "action": "escalar"},
+            ]
+        }
+
     historial = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     historial.append({"role": "user", "content": pregunta})
-    asistente_content = str(respuesta_final.get('respuesta','')) 
+    asistente_content = str(respuesta_final.get('respuesta',''))
     historial.append({"role": "assistant", "content": asistente_content})
-    flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:] 
-    
+    flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:]
+
     try:
-        if context['user_id']: 
+        if context['user_id']:
             db.session.add(Conversacion(
-                user_id=context['user_id'], pregunta=pregunta, 
-                respuesta=respuesta_final.get('respuesta', ''), 
-                fuente=respuesta_final.get('fuente', 'desconocida'), 
+                user_id=context['user_id'], pregunta=pregunta,
+                respuesta=respuesta_final.get('respuesta', ''),
+                fuente=respuesta_final.get('fuente', 'desconocida'),
                 rubro=context['rubro_nombre']
             ))
             db.session.commit()
@@ -2308,5 +680,140 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "fuente": respuesta_final.get('fuente', 'desconocida'),
         "contexto_actualizado": {CONTEXTO_PYME_SESION: contexto_pyme},
         "estado_respuesta": respuesta_final.get('estado_respuesta', 'no_entendido'),
-        "pedido_data": respuesta_final.get('pedido_data', None)
+        "pedido_data": respuesta_final.get('pedido_data', None),
+        "botones": respuesta_final.get('botones', []),
     }
+
+class VectorCatalogHandler(BaseHandler):
+    """
+    Muestra productos agrupados, ordenados y con botones de acción para maximizar ventas.
+    Usa contexto, historial y preferencias si están disponibles.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        user_id = self.context.get('user_id')
+        if not user_id:
+            return None
+
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+        if self.context.get('intencion') == 'iniciar_pedido' or estado in {
+            PymeConversationState.ESPERANDO_DETALLES_PEDIDO,
+            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
+            PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2,
+        }:
+            return None
+
+        resultados = buscar_catalogo_qdrant(
+            user_id=user_id,
+            pregunta=pregunta,
+            limite=DEFAULT_SEARCH_LIMIT,
+            categoria=self.context.get('rubro_nombre'),
+        )
+        productos_mostrados = []
+        if resultados:
+            for hit in resultados:
+                if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
+                    productos_mostrados.append(hit.payload)
+
+        if productos_mostrados:
+            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+            # Si el usuario pide comparar, muestra tabla comparativa
+            if "comparar" in pregunta.lower() or "diferencia" in pregunta.lower():
+                respuesta = armar_tabla_comparativa(productos_mostrados)
+                return {
+                    'respuesta': "🔎 Tabla comparativa de productos:\n" + respuesta + "\n\n¿Querés agregar alguno al pedido o ver más detalles?",
+                    'fuente': 'catalogo_comparativa',
+                    'estado_respuesta': 'mostrar_comparativa',
+                    'botones': [
+                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                        {"texto": "Ver más productos", "action": "ver_mas"},
+                        {"texto": "Consultar stock", "action": "consultar_stock"},
+                    ]
+                }
+            # Agrupa, ordena y destaca productos, muestra botones de acción
+            respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
+            botones = [
+                {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                {"texto": "Comparar productos", "action": "comparar"},
+                {"texto": "Consultar stock", "action": "consultar_stock"},
+                {"texto": "Ver más productos", "action": "ver_mas"},
+            ]
+            destacados = [p for p in productos_mostrados if p.get("destacado")]
+            if destacados:
+                respuesta = "🌟 **Productos Destacados:**\n" + "\n".join(
+                    [f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in destacados]
+                ) + "\n\n" + respuesta
+            respuesta += "\n\n¿Te gustaría pedir alguno o ver más detalles? Si necesitas ayuda, puedo recomendarte según tus preferencias."
+            return {
+                'respuesta': respuesta,
+                'fuente': 'catalogo_vector',
+                'estado_respuesta': 'mostrar_catalogo',
+                'botones': botones
+            }
+
+        # Fallback a catálogo local, scraping, etc. (igual que antes)
+        # ... (puedes mantener tu lógica de scraping y catálogo local aquí) ...
+
+        return None
+
+class PedidoHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if self.context.get('intencion') == 'iniciar_pedido':
+            productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+            if productos:
+                return {
+                    "respuesta": "¿Qué producto y cantidad te gustaría pedir? Puedes elegir de los que te mostré o decirme uno nuevo.",
+                    "fuente": "pedido_pyme",
+                    "botones": [
+                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                        {"texto": "Hablar con un agente", "action": "escalar"},
+                    ]
+                }
+            return {
+                "respuesta": "¿Qué producto te gustaría pedir? Puedes ver nuestro catálogo para elegir.",
+                "fuente": "pedido_pyme",
+                "botones": [
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
+
+class BrokenProductHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if self.context.get('intencion') == 'consultar_estado_pedido':
+            return {
+                "respuesta": "Para consultar el estado de tu pedido, por favor proporcioname el número de pedido.",
+                "fuente": "estado_pedido_pyme",
+                "botones": [
+                    {"texto": "Consultar estado", "action": "consultar_estado_pedido"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
+
+class ClaimHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if self.context.get('intencion') == 'consultar_estado_pedido':
+            return {
+                "respuesta": "Si tenés un reclamo, por favor indicame el número de ticket o pedido relacionado.",
+                "fuente": "reclamo_pyme",
+                "botones": [
+                    {"texto": "Consultar reclamo", "action": "consultar_reclamo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
+
+class TicketStatusHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if self.context.get('intencion') == 'consultar_estado_pedido':
+            return {
+                "respuesta": "Para verificar el estado de tu ticket, por favor proporcioname el número de ticket.",
+                "fuente": "estado_ticket_pyme",
+                "botones": [
+                    {"texto": "Consultar estado de ticket", "action": "consultar_estado_ticket"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
