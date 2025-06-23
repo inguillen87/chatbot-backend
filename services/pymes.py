@@ -866,6 +866,7 @@ class VectorCatalogHandler(BaseHandler):
 
         if productos_mostrados:
             self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+
             # Si el usuario pide comparar, muestra tabla comparativa
             if "comparar" in pregunta.lower() or "diferencia" in pregunta.lower():
                 respuesta = armar_tabla_comparativa(productos_mostrados)
@@ -879,29 +880,32 @@ class VectorCatalogHandler(BaseHandler):
                         {"texto": "Consultar stock", "action": "consultar_stock"},
                     ]
                 }
+
             # Agrupa, ordena y destaca productos, muestra botones de acción
-            respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados, max_por_categoria=7)
-            botones = [
-                {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                {"texto": "Comparar productos", "action": "comparar"},
-                {"texto": "Consultar stock", "action": "consultar_stock"},
-                {"texto": "Ver más productos", "action": "ver_mas"},
-            ]
-            destacados = [p for p in productos_mostrados if p.get("destacado")]
-            if destacados:
-                respuesta = "🌟 **Productos Destacados:**\n" + "\n".join(
-                    [f"- **{p.get('nombre','')}**: {p.get('precio_str','Consultar')}" for p in destacados]
-                ) + "\n\n" + respuesta
-            respuesta += "\n\n¿Te gustaría pedir alguno o ver más detalles? Si necesitas ayuda, puedo recomendarte según tus preferencias."
+            respuesta = "Estos son los productos que encontré para vos:\n"
+            for idx, p in enumerate(productos_mostrados[:7], 1):
+                nombre = p.get("nombre", "Producto")
+                precio = p.get("precio_str") or f"${p.get('precio', 'Consultar')}"
+                desc = p.get("descripcion", "")
+                respuesta += f"{idx}. **{nombre}** — {precio}\n"
+                if desc:
+                    respuesta += f"    _{desc[:60]}_\n"
+            if len(productos_mostrados) > 7:
+                respuesta += f"...y {len(productos_mostrados)-7} más. ¿Querés verlos?\n"
+
+            respuesta += "\n¿Te gustaría agregar alguno al pedido? Decime el número o nombre del producto y la cantidad."
+
             return {
                 'respuesta': respuesta,
                 'fuente': 'catalogo_vector',
                 'estado_respuesta': 'mostrar_catalogo',
-                'botones': botones
+                'botones': [
+                    {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                    {"texto": "Comparar productos", "action": "comparar"},
+                    {"texto": "Ver más productos", "action": "ver_mas"},
+                    {"texto": "Consultar stock", "action": "consultar_stock"},
+                ]
             }
-
-        # Fallback a catálogo local, scraping, etc. (igual que antes)
-        # ... (puedes mantener tu lógica de scraping y catálogo local aquí) ...
 
         return None
 
@@ -909,9 +913,29 @@ class PedidoHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         if self.context.get('intencion') == 'iniciar_pedido':
             productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
-            if productos:
+            # Busca si el usuario mencionó un producto por nombre o código
+            seleccionados = []
+            for p in productos:
+                nombre = p.get("nombre", "").lower()
+                sku = p.get("sku", "").lower()
+                if nombre in pregunta.lower() or sku in pregunta.lower():
+                    seleccionados.append(p)
+            if seleccionados:
+                nombres = ", ".join([p.get("nombre") for p in seleccionados])
                 return {
-                    "respuesta": "¿Qué producto y cantidad te gustaría pedir? Puedes elegir de los que te mostré o decirme uno nuevo.",
+                    "respuesta": f"Perfecto, seleccionaste: {nombres}. ¿Cuántas unidades querés de cada uno? Decime el número o escribí '1' si es solo uno.",
+                    "fuente": "pedido_pyme_seleccion",
+                    "botones": [
+                        {"texto": "Agregar más productos", "action": "ver_catalogo"},
+                        {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
+                        {"texto": "Hablar con un agente", "action": "escalar"},
+                    ]
+                }
+            # Si no detecta producto, pide que elija del catálogo mostrado
+            if productos:
+                lista = "\n".join([f"{idx+1}. {p.get('nombre')}" for idx, p in enumerate(productos[:7])])
+                return {
+                    "respuesta": f"¿Qué producto y cantidad te gustaría pedir? Elegí de los siguientes o decime el nombre/código:\n{lista}",
                     "fuente": "pedido_pyme",
                     "botones": [
                         {"texto": "Ver catálogo", "action": "ver_catalogo"},
