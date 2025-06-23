@@ -254,6 +254,51 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         logger.error(f"[PYMES] Error al extraer cantidades con LLM: {e}", exc_info=True)
         return []
 
+def armar_respuesta_catalogo_agrupado(productos: list, max_por_categoria=5) -> str:
+    """
+    Organiza y presenta productos agrupados por categoría, mostrando los más relevantes primero.
+    """
+    if not productos:
+        return "No se encontraron productos en el catálogo."
+
+    # Agrupar por categoría
+    categorias = {}
+    for p in productos:
+        cat = p.get("categoria_qdrant") or p.get("categoria") or "Otros"
+        categorias.setdefault(cat, []).append(p)
+
+    respuesta = ""
+    for categoria, items in categorias.items():
+        respuesta += f"\n🗂️ **{categoria.title()}**\n"
+        # Ordenar por precio si existe, sino por nombre
+        items_ordenados = sorted(
+            items, key=lambda x: float(x.get("precio_float") or x.get("precio") or 0)
+        )
+        for p in items_ordenados[:max_por_categoria]:
+            nombre = p.get("nombre", "Producto")
+            precio = p.get("precio_str") or f"${p.get('precio', 'Consultar')}"
+            unidad = p.get("unidad", "unidad")
+            desc = p.get("descripcion", "")
+            respuesta += f"- **{nombre}** ({unidad}) — {precio}\n"
+            if desc:
+                respuesta += f"  _{desc[:60]}_\n"
+        if len(items_ordenados) > max_por_categoria:
+            respuesta += f"  ...y {len(items_ordenados) - max_por_categoria} más en esta categoría.\n"
+    return respuesta.strip()
+
+def armar_tabla_comparativa(productos: list) -> str:
+    if not productos:
+        return ""
+    header = "| Producto | Precio | Unidad | Descripción |\n|---|---|---|---|\n"
+    filas = []
+    for p in productos[:10]:
+        nombre = p.get("nombre", "")
+        precio = p.get("precio_str") or f"${p.get('precio', 'Consultar')}"
+        unidad = p.get("unidad", "unidad")
+        desc = (p.get("descripcion", "") or "")[:40]
+        filas.append(f"| {nombre} | {precio} | {unidad} | {desc} |")
+    return header + "\n".join(filas)
+
 # --- ARQUITECTURA DE HANDLERS (sin cambios en la mayoría) ---
 
 class BaseHandler:
@@ -918,8 +963,6 @@ class VectorCatalogHandler(BaseHandler):
         if not user_id:
             return None
 
-        # Si el usuario está iniciando o continuando un pedido,
-        # dejamos que el PedidoHandler maneje el flujo
         contexto_pyme = self.context.get('contexto_pyme', {})
         estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
         if self.context.get('intencion') == 'iniciar_pedido' or estado in {
@@ -936,24 +979,28 @@ class VectorCatalogHandler(BaseHandler):
             categoria=self.context.get('rubro_nombre'),
         )
         productos_mostrados = []
-
         if resultados:
             for hit in resultados:
                 if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
                     productos_mostrados.append(hit.payload)
 
-            if productos_mostrados:
-                productos_mostrados.sort(
-                    key=lambda p: float(p.get('precio_float') or 0)
-                )
-                self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
-                respuesta = armar_respuesta_legible(resultados, order_by="price")
-                if respuesta:
-                    return {
-                        'respuesta': respuesta,
-                        'fuente': 'catalogo_vector',
-                        'estado_respuesta': 'mostrar_catalogo'
-                    }
+        if productos_mostrados:
+            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+            if "comparar" in pregunta.lower():
+                respuesta = armar_tabla_comparativa(productos_mostrados)
+                return {
+                    'respuesta': "Tabla comparativa de productos:\n" + respuesta,
+                    'fuente': 'catalogo_comparativa',
+                    'estado_respuesta': 'mostrar_comparativa'
+                }
+            else:
+                respuesta = armar_respuesta_catalogo_agrupado(productos_mostrados)
+                return {
+                    'respuesta': respuesta,
+                    'fuente': 'catalogo_vector',
+                    'estado_respuesta': 'mostrar_catalogo'
+                }
+        # ...resto del código...
 
         if not productos_mostrados:
             from services.catalogo_local import buscar_catalogo_local
