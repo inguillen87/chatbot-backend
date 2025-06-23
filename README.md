@@ -18,6 +18,7 @@ This project exposes several endpoints to process questions for different sector
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
 - `GET /crm/clientes/<id>/interacciones` – history of chats and tickets for a client.
+- `GET /crm/clientes/<id>/historial` – detailed timeline with messages and files.
 - `GET /crm/analytics` – basic stats of registered users and tickets.
 - `POST /crm/campanas/enviar` – mock endpoint to send campaigns to selected users.
 - `POST /tickets/<tipo>/<id>/encuesta` – submit satisfaction survey for a ticket.
