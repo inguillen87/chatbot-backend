@@ -9,6 +9,8 @@ This project exposes several endpoints to process questions for different sector
 - `POST /ask/municipio` – optimized for municipalities and other public entities.
 - `POST /widget/register` – quick sign up for end users using the widget.
 - `POST /widget/login` – login for end users without leaving the widget.
+- `POST /chatuserregisterpanel` – register a chat user selecting the company token.
+- `POST /chatuserloginpanel` – login a chat user specifying the company token.
 - `POST /google-login` – login o registro utilizando un ID token de Google.
 - `GET /token-info` – returns the company and sector linked to a token.
 - `POST /subir_catalogo` – upload a product catalog (PDF, Excel or images).
@@ -89,6 +91,11 @@ El backend acepta el token en cualquiera de los siguientes lugares de la solicit
 5. Campo `token` dentro del JSON o formulario enviado.
 
 Esto permite embebidos del widget que envíen el token como atributo o en la URL sin necesidad de modificar el backend.
+
+## Registro desde el panel
+
+Para usuarios finales que acceden al panel web existe `POST /chatuserregisterpanel` que crea la cuenta asociada al `empresa_token` indicado. El inicio de sesión se realiza con `POST /chatuserloginpanel`. Así no es necesario usar los formularios de administrador `/register` y `/login`.
+
 
 ### Migración de tickets anónimos
 
