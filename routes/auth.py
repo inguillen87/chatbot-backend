@@ -15,9 +15,12 @@ auth_bp = Blueprint('auth', __name__)
 
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return auth_header.split(" ", 1)[1]
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header:
+        if auth_header.lower().startswith("bearer "):
+            return auth_header.split(" ", 1)[1]
+        # Aceptar tokens enviados sin el prefijo "Bearer " para mayor compatibilidad
+        return auth_header
 
     token = request.headers.get("X-Token")
     if token:
