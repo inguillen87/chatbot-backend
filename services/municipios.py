@@ -28,6 +28,7 @@ from .herramientas_municipio import (
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
+import math
 
 logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio"
@@ -1111,8 +1112,211 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Hablar con un agente": "hablar_con_agente",
     "Nuevo reclamo": "iniciar_reclamo",
 }
+# ...existing imports...
+import math
 
+# ...existing code...
 
+class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
+    """
+    Muestra dependencias/oficinas/servicios municipales agrupados, ordenados y con botones de acción.
+    Usa geolocalización si está disponible.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        user_obj = self.context.get("user_obj")
+        if not user_obj:
+            return None
+
+        keywords_catalogo = [
+            "oficina", "dependencia", "servicio", "centro", "hospital", "salud", "atención",
+            "punto", "ubicación", "dónde queda", "cómo llego", "mapa", "dirección", "municipalidad", "delegación"
+        ]
+        if not any(kw in pregunta.lower() for kw in keywords_catalogo):
+            return None
+
+        try:
+            contenidos = SitioWebInfo.query.filter_by(user_id=user_obj.id).all()
+            dependencias = []
+            for item in contenidos:
+                datos = json.loads(item.datos_json)
+                if datos.get("tipo") in ("dependencias", "oficinas", "servicios"):
+                    dependencias.extend(datos.get("items", []))
+            if not dependencias:
+                return None
+
+            ubicacion_usuario = self.context.get("ubicacion_usuario")
+            if ubicacion_usuario:
+                def distancia(dep):
+                    lat, lon = dep.get("lat"), dep.get("lon")
+                    if lat is not None and lon is not None:
+                        return (lat - ubicacion_usuario["lat"])**2 + (lon - ubicacion_usuario["lon"])**2
+                    return float("inf")
+                dependencias.sort(key=distancia)
+            else:
+                dependencias.sort(key=lambda d: d.get("nombre", ""))
+
+            agrupadas = {}
+            for dep in dependencias:
+                cat = dep.get("categoria") or dep.get("tipo") or "Otros"
+                agrupadas.setdefault(cat, []).append(dep)
+
+            respuesta = ""
+            for cat, deps in agrupadas.items():
+                respuesta += f"\n🏢 **{cat.title()}**\n"
+                for d in deps[:5]:
+                    nombre = d.get("nombre", "Dependencia")
+                    direccion = d.get("direccion", "Dirección no informada")
+                    tel = d.get("telefono", "")
+                    horario = d.get("horario", "")
+                    ubicacion = f"({d.get('lat','')}, {d.get('lon','')})" if d.get("lat") and d.get("lon") else ""
+                    respuesta += f"- **{nombre}** — {direccion} {ubicacion}\n"
+                    if tel:
+                        respuesta += f"  Tel: {tel}\n"
+                    if horario:
+                        respuesta += f"  Horario: {horario}\n"
+                if len(deps) > 5:
+                    respuesta += f"  ...y {len(deps)-5} más en esta categoría.\n"
+
+            botones = [{"texto": "Ver en mapa", "action": "abrir_mapa"}]
+            return {
+                "respuesta": respuesta.strip() + "\n\n¿Querés ver la ubicación en el mapa o recibir indicaciones?",
+                "fuente": "catalogo_dependencias",
+                "estado_respuesta": "mostrar_dependencias",
+                "botones": botones
+            }
+        except Exception as e:
+            logger.error(f"[VectorMunicipioCatalogHandler] Error: {e}")
+            return None
+
+class TramiteInteligenteHandler(BaseMunicipioHandler):
+    """
+    Detecta trámites por scraping, fuzzy match, y muestra requisitos, pasos, costos, links y botones.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        intencion = self.context.get("intencion")
+        estado = memoria.get("estado_conversacion")
+        keywords_tramite = [
+            "requisito", "documento", "necesito", "cómo hago", "pasos", "turno", "costo", "precio",
+            "arancel", "dónde", "lugar", "horario", "duración", "tramite", "trámite"
+        ]
+        if not any(kw in pregunta.lower() for kw in keywords_tramite) and intencion != "consultar_tramite":
+            return None
+        if estado:
+            return None
+
+        user_obj = self.context.get("user_obj")
+        try:
+            contenidos = SitioWebInfo.query.filter_by(user_id=user_obj.id).all()
+            tramites = []
+            for item in contenidos:
+                datos = json.loads(item.datos_json)
+                if datos.get("tipo") == "tramites":
+                    tramites.extend(datos.get("tramites", []))
+            if not tramites:
+                return None
+
+            import difflib
+            pregunta_norm = pregunta.lower()
+            nombres_tramites = [t.get("nombre", "").lower() for t in tramites]
+            mejor_match = difflib.get_close_matches(pregunta_norm, nombres_tramites, n=1, cutoff=0.5)
+            tramite = None
+            if mejor_match:
+                idx = nombres_tramites.index(mejor_match[0])
+                tramite = tramites[idx]
+            else:
+                for t in tramites:
+                    if any(kw in pregunta_norm for kw in t.get("nombre", "").lower().split()):
+                        tramite = t
+                        break
+            if not tramite:
+                return None
+
+            nombre = tramite.get("nombre", "Trámite")
+            requisitos = tramite.get("requisitos", "No informados")
+            pasos = tramite.get("pasos", "")
+            costo = tramite.get("costo", "Consultar")
+            lugar = tramite.get("lugar", "")
+            horario = tramite.get("horario", "")
+            link = tramite.get("link", "")
+            respuesta = f"**{nombre.title()}**\n"
+            if requisitos:
+                respuesta += f"**Requisitos:** {requisitos}\n"
+            if pasos:
+                respuesta += f"**Pasos:** {pasos}\n"
+            if costo:
+                respuesta += f"**Costo:** {costo}\n"
+            if lugar:
+                respuesta += f"**Lugar:** {lugar}\n"
+            if horario:
+                respuesta += f"**Horario:** {horario}\n"
+            if link:
+                respuesta += f"[Más información]({link})\n"
+
+            botones = [{"texto": "Sacar turno", "action": "sacar_turno"}] if "turno" in requisitos.lower() or "turno" in pasos.lower() else []
+            botones.append({"texto": "Ver todos los trámites", "action": "ver_tramites"})
+            return {
+                "respuesta": respuesta.strip(),
+                "fuente": "tramite_inteligente",
+                "estado_respuesta": "mostrar_tramite",
+                "botones": botones
+            }
+        except Exception as e:
+            logger.error(f"[TramiteInteligenteHandler] Error: {e}")
+            return None
+
+class ReclamoGeoHandler(BaseMunicipioHandler):
+    """
+    Permite reclamos con ubicación GPS y adjuntar fotos, priorizando la resolución.
+    """
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        intencion = self.context.get("intencion")
+        if intencion != "iniciar_reclamo" and not any(kw in pregunta.lower() for kw in ["reclamo", "denuncia", "problema", "reportar", "queja"]):
+            return None
+        if estado:
+            return None
+
+        ubicacion = self.context.get("ubicacion_usuario")
+        foto_url = self.context.get("foto_url")
+        detalles = f"Reclamo recibido: {pregunta}\n"
+        if ubicacion:
+            detalles += f"Ubicación GPS: {ubicacion.get('lat')}, {ubicacion.get('lon')}\n"
+        if foto_url:
+            detalles += f"Foto adjunta: {foto_url}\n"
+
+        categoria = "General"
+        nombre = self.context.get("nombre_usuario", "Vecino/a")
+        telefono = self.context.get("telefono_usuario", "")
+        ticket = servicio_tickets.crear_nuevo_ticket(
+            tipo_ticket="municipio",
+            ticket_data={
+                "asunto": f"Reclamo ciudadano",
+                "categoria": categoria,
+                "detalles": detalles,
+                "user_id": self.context.get("user_id"),
+            },
+        )
+        if ticket:
+            if telefono:
+                enviar_notificacion_sms(telefono, f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} fue generado.")
+            return {
+                "respuesta": (
+                    f"¡Listo! Tu reclamo fue generado con éxito. El número de ticket es **M-{ticket.nro_ticket}**. "
+                    "¿Querés adjuntar una foto o compartir tu ubicación para agilizar la resolución?"
+                ),
+                "botones": [
+                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
+                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                    {"texto": "Nuevo reclamo"},
+                    {"texto": "Consultar estado de ticket"},
+                ],
+                "ticket_id": ticket.id,
+            }
+        return None
+
+# ...el resto del código permanece igual...
 # Contenido COMPLETO y FINAL de la función responder_municipio con las mejoras.
 # Asume que todas las clases Handler y funciones auxiliares (como serializar_enum,
 # normalizar_texto, etc.) están definidas en el mismo archivo o importadas correctamente.
@@ -1159,15 +1363,17 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         SmallTalkHandler,
         IntentClassifierHandler,
         HumanEscalationHandler,
+        VectorMunicipioCatalogHandler,      # NUEVO: catálogo de dependencias/servicios
+        TramiteInteligenteHandler,          # NUEVO: trámites inteligentes
+        ReclamoGeoHandler,                  # NUEVO: reclamos con ubicación/foto
         RecoleccionHandler,
-        # 4. Otros handlers de flujo específico
         TicketStatusHandler,
         ReclamoHandler,
         TramitesHandler,
         ImpuestosHandler,
-        ToolHandler, # Herramientas generales
-        GeneralHandler, # LLM de fallback con contexto de DB
-        EngancheAnonimoMunicipioHandler, # Enganche si el usuario es anónimo y no hubo otra respuesta
+        ToolHandler,
+        GeneralHandler,
+        EngancheAnonimoMunicipioHandler,
     ]
     respuesta_final = None
     for handler_class in handler_chain:
@@ -1175,33 +1381,23 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
             handler_instance = handler_class(context)
             respuesta_parcial = handler_instance.handle(pregunta)
             if respuesta_parcial:
-                # Asegurarse de que la respuesta sea un diccionario.
-                # Ya tienes una verificación similar al inicio de responder_pyme.
                 if not isinstance(respuesta_parcial, dict):
                     logger.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_parcial)}. Pregunta: '{pregunta}'")
-                    # Podrías querer devolver una respuesta de error genérica aquí o simplemente None
                     respuesta_parcial = None 
-                
-                if respuesta_parcial: # Si la respuesta parcial es válida
+                if respuesta_parcial:
                     respuesta_final = respuesta_parcial
-                    break # Detener la ejecución de handlers si uno ya dio una respuesta
+                    break
         except Exception as e:
             logger.error(
                 f"Error en handler {handler_class.__name__}: {e}", exc_info=True
             )
-    
-    # Fallback si ningún handler proporcionó una respuesta final
     if not respuesta_final:
-        if not context.get("user_id"): # Si no hay usuario logueado
-            # Este es el último recurso para usuarios anónimos
+        if not context.get("user_id"):
             respuesta_final = EngancheAnonimoMunicipioHandler(context).handle(pregunta)
         else:
-            # Fallback para usuarios logueados si nada coincidió
             respuesta_final = {
                 "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción."
             }
-    
-    # Lógica de actualización de contexto y placeholders (se mantiene)
     estado_despues = contexto_municipio.get("estado_conversacion")
     texto_respuesta = respuesta_final.get("respuesta", "")
     FRASES_EXITO = [
@@ -1214,28 +1410,17 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         "Tu número de chat es",
     ]
     es_cierre_flujo = any(frase in texto_respuesta for frase in FRASES_EXITO)
-    
-    # Esta lógica ajusta la respuesta si un flujo se cerró exitosamente y no es un "cierre de éxito" reconocido.
-    # No la modifico, asumo que es intencional.
     if estado_antes and not estado_despues and texto_respuesta and not es_cierre_flujo:
-        # Se asume que respuesta_final ya es un dict
         respuesta_final["respuesta"] = texto_respuesta
-    
-    # Reemplaza cualquier placeholder presente en la respuesta final
-    # Asegúrate de que `reemplazar_placeholders` pueda manejar un `user_obj` que es None para anónimos
     texto_respuesta_procesada = reemplazar_placeholders(
         respuesta_final.get("respuesta", ""), context.get("user_obj")
     )
     texto_respuesta_procesada = reemplazar_placeholders(texto_respuesta_procesada, contexto_municipio)
     respuesta_final["respuesta"] = texto_respuesta_procesada
-
-    # Serializa el estado del contexto municipal para guardarlo en la sesión
     contexto_para_guardar = serializar_enum(context["contexto_municipio"])
-    
     return {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
-        # Asegúrate de pasar el ticket_id si existe en respuesta_final
-        "ticket_id": respuesta_final.get("ticket_id", None) 
+        "ticket_id": respuesta_final.get("ticket_id", None)
     }
