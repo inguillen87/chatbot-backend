@@ -103,6 +103,8 @@ def login():
         "token": user.token,
         "email": user.email,
         "name": user.name,
+        "rol": user.rol,
+        "empresa_id": user.empresa_id,
     })
 
 @auth_bp.route('/google-client-id', methods=['GET'])
@@ -130,6 +132,8 @@ def google_login():
             "token": user.token,
             "name": user.name,
             "email": user.email,
+            "rol": user.rol,
+            "empresa_id": user.empresa_id,
         })
     except ValueError as e:
         return jsonify({"error": str(e)}), 401
@@ -234,6 +238,8 @@ def register():
             "token": user.token,
             "name": user.name,
             "email": user.email,
+            "rol": user.rol,
+            "empresa_id": user.empresa_id,
         }), 201
     except Exception as e:
         db.session.rollback()
@@ -304,6 +310,8 @@ def register_from_widget(owner_user):
             "token": nuevo.token,
             "name": nuevo.name,
             "email": nuevo.email,
+            "rol": nuevo.rol,
+            "empresa_id": nuevo.empresa_id,
         }), 201
     except Exception as e:
         db.session.rollback()
@@ -341,6 +349,8 @@ def login_from_widget(owner_user):
         "token": user.token,
         "name": user.name,
         "email": user.email,
+        "rol": user.rol,
+        "empresa_id": user.empresa_id,
     })
 
 
@@ -409,7 +419,14 @@ def chatuser_register_panel():
             servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
 
         return (
-            jsonify({"id": nuevo.id, "token": nuevo.token, "name": nuevo.name, "email": nuevo.email}),
+            jsonify({
+                "id": nuevo.id,
+                "token": nuevo.token,
+                "name": nuevo.name,
+                "email": nuevo.email,
+                "rol": nuevo.rol,
+                "empresa_id": nuevo.empresa_id,
+            }),
             201,
         )
     except Exception as e:  # pragma: no cover - por si falla la DB
@@ -451,7 +468,14 @@ def chatuser_login_panel():
         from services.ticket_service import servicio_tickets
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
-    return jsonify({"id": user.id, "token": user.token, "name": user.name, "email": user.email})
+    return jsonify({
+        "id": user.id,
+        "token": user.token,
+        "name": user.name,
+        "email": user.email,
+        "rol": user.rol,
+        "empresa_id": user.empresa_id,
+    })
 
 @auth_bp.route('/me', methods=['GET'])
 @token_requerido
@@ -465,6 +489,8 @@ def get_current_user(user):
         "token": user.token,
         "rubro": rubro_nombre,
         "nombre_empresa": user.nombre_empresa,
+        "rol": user.rol,
+        "empresa_id": user.empresa_id,
         "telefono": user.telefono,
         "direccion": user.direccion,
         "ciudad": user.ciudad,
@@ -490,6 +516,8 @@ def token_info(user):
         "id": user.id,
         "rubro": rubro_nombre,
         "nombre_empresa": user.nombre_empresa,
+        "rol": user.rol,
+        "empresa_id": user.empresa_id,
     })
 
 @auth_bp.route('/me', methods=['PUT'])
