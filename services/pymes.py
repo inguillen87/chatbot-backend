@@ -578,6 +578,52 @@ class SalesEngageHandler(BaseHandler):
             }
         return None
 
+class CrossSellHandler(BaseHandler):
+    """Sugiere productos complementarios o más vendidos para aumentar el ticket promedio."""
+    def handle(self, pregunta: str) -> dict | None:
+        productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+        if productos:
+            # Ejemplo: sugiere productos de otra categoría o los más vendidos
+            sugeridos = [p for p in productos if p.get("destacado") or p.get("categoria") == "Accesorios"]
+            if sugeridos:
+                texto = "¿Te interesan también estos productos que suelen comprar otros clientes?"
+                lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in sugeridos[:3]])
+                return {
+                    "respuesta": f"{texto}\n{lista}",
+                    "fuente": "cross_sell_pyme",
+                    "botones": [
+                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                        {"texto": "Ver más accesorios", "action": "ver_mas"},
+                    ]
+                }
+        return None
+
+class OfertaPersonalizadaHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if self.context.get('user_obj') and self.context['user_obj'].plan != "anonimo":
+            return {
+                "respuesta": "¡Por ser cliente frecuente, tenés un 10% de descuento en tu próxima compra! ¿Querés aprovecharlo ahora?",
+                "fuente": "oferta_personalizada",
+                "botones": [
+                    {"texto": "Sí, quiero el descuento", "action": "usar_descuento"},
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                ]
+            }
+        return None
+
+class EnvioResumenHandler(BaseHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        if "whatsapp" in pregunta.lower() or "email" in pregunta.lower():
+            return {
+                "respuesta": "¿Querés que te envíe el resumen de tu pedido por WhatsApp o email?",
+                "fuente": "envio_resumen_pyme",
+                "botones": [
+                    {"texto": "WhatsApp", "action": "enviar_whatsapp"},
+                    {"texto": "Email", "action": "enviar_email"},
+                ]
+            }
+        return None
+
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL MEJORADA ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
@@ -629,6 +675,7 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         ToolHandlerPyme,
         HumanEscalationPymeHandler,
         SalesEngageHandler,
+        CrossSellHandler,
         LLMHandler,
         IntentHandler,
         EngancheAnonimoHandler,
