@@ -31,6 +31,9 @@ This project exposes several endpoints to process questions for different sector
 - `POST /empleados` – create a new internal employee.
 - `GET /empleados/<id>/historial` – list tickets handled by an employee.
 - `GET /historial` – retrieve the logged user's full history of chats and tickets.
+- `POST /archivos/subir` – upload a file associated with chats or tickets.
+  Only images, PDFs, spreadsheets and text documents up to 10MB are accepted.
+- `GET /archivos/<nombre>` – download a previously uploaded file (requires authentication).
 - `GET /notifications` – list pending notifications for the authenticated user.
 - `POST /presupuestos/generar` – send a PDF quote to a client based on item data.
 

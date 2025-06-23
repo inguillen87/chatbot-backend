@@ -210,6 +210,24 @@ class TicketComentario(db.Model):
     pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
     municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
 
+
+class ArchivoAdjunto(db.Model):
+    __tablename__ = "archivo_adjunto"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    session_id = db.Column(db.String(36), nullable=True)
+    filename = db.Column(db.String(255), nullable=False)
+    nombre_original = db.Column(db.String(255), nullable=True)
+    mime = db.Column(db.String(100), nullable=True)
+    tamano = db.Column(db.Integer, nullable=True)
+    tipo = db.Column(db.String(50), nullable=True)
+    pyme_ticket_id = db.Column(db.Integer, db.ForeignKey("pyme_ticket.id"), nullable=True)
+    municipio_ticket_id = db.Column(
+        db.Integer, db.ForeignKey("municipio_ticket.id"), nullable=True
+    )
+    url = db.Column(db.String(255), nullable=False)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
