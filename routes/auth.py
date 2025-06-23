@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 from services.google_auth import login_o_crear_usuario
 
-auth_bp = Blueprint('auth', __name__)
+auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
