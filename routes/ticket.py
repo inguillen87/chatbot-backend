@@ -497,7 +497,6 @@ def get_panel_por_categoria(current_user: User):
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido
-@admin_o_empleado_requerido
 def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     """Actualiza la ubicación geográfica asociada a un ticket."""
     data = request.get_json() or {}
