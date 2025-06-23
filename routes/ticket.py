@@ -37,7 +37,8 @@ def get_tickets_del_usuario(current_user: User):
 
     try:
         if current_user.rubro.nombre.lower().strip() == 'municipios':
-            tickets = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).all()
+            # Solo tickets de su municipio
+            tickets = MunicipioTicket.query.filter_by(municipio_id=current_user.municipio_id).order_by(MunicipioTicket.fecha.desc()).all()
             tipo = 'municipio'
             def serialize_ticket(t):
                 return {
@@ -53,6 +54,7 @@ def get_tickets_del_usuario(current_user: User):
                     "longitud": getattr(t, 'longitud', None)
                 }
         else:
+            # Solo tickets de su empresa/rubro
             if current_user.rubro_id:
                 tickets = PymeTicket.query.filter_by(rubro_id=current_user.rubro_id).order_by(PymeTicket.fecha.desc()).all()
             else:
@@ -228,16 +230,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     if ticket_obj.estado == "cerrado":
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-
-    has_permission_to_respond = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
-        has_permission_to_respond = True
-    elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
-        if getattr(ticket_obj, 'rubro_id', None) and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id:
-            has_permission_to_respond = True
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
@@ -254,11 +247,6 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             ticket_obj.rubro_id == current_user.rubro_id
         ):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
-
-    if not has_permission_to_respond:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | anon_id_recibido={locals().get('anon_id', None)} | anon_id_ticket={getattr(locals().get('ticket', None),'anon_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
-        return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
     log_ticket_debug(
         "responder_agente",
@@ -312,17 +300,21 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    has_permission_to_change_state = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
-        has_permission_to_change_state = True
-    elif tipo == 'pyme' and current_user.rubro.nombre.lower().strip() != 'municipios':
-        if getattr(ticket_obj, 'rubro_id', None) and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id:
-            has_permission_to_change_state = True
-
-    if not has_permission_to_change_state:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
-        return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
+    # Refuerzo de permisos:
+    if tipo == 'municipio':
+        if not (
+            current_user.rubro and
+            current_user.rubro.nombre.lower().strip() == 'municipios' and
+            hasattr(current_user, "municipio_id") and
+            ticket_obj.municipio_id == current_user.municipio_id
+        ):
+            return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
+    elif tipo == 'pyme':
+        if not (
+            current_user.rubro_id and
+            ticket_obj.rubro_id == current_user.rubro_id
+        ):
+            return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
 
     log_ticket_debug(
         "cambiar_estado",
@@ -361,9 +353,9 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         "email": getattr(ticket_obj, 'email', None),
         "dni": getattr(ticket_obj, 'dni', None),
         "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
-        "archivo_url": getattr(ticket_obj, 'archivo_url', None)
-        ,"latitud": getattr(ticket_obj, 'latitud', None)
-        ,"longitud": getattr(ticket_obj, 'longitud', None)
+        "archivo_url": getattr(ticket_obj, 'archivo_url', None),
+        "latitud": getattr(ticket_obj, 'latitud', None),
+        "longitud": getattr(ticket_obj, 'longitud', None)
     }
     return jsonify(ticket_data)
 
@@ -443,13 +435,9 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     log_ticket_debug("responder_ciudadano", ticket_id, None, sala_de_chat)
 
     if sala_de_chat.user_id is None or not es_dueño:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
     if sala_de_chat.estado == "cerrado":
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)} | ticket_user_id={getattr(locals().get('ticket', None),'user_id', None)} | estado={getattr(locals().get('ticket', None),'estado', None)}")
-
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     user_id_para_comentario = current_user.id if current_user else None
@@ -474,11 +462,10 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
 def get_panel_por_categoria(current_user: User):
     es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
     if not es_agente_municipal:
-        current_app.logger.warning(f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={locals().get('ticket_id', None)} | user_id={getattr(locals().get('current_user', None),'id', None)}")
         return jsonify({"error": "No tienes permiso para acceder a este panel."}), 403
 
     try:
-        tickets = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).all()
+        tickets = MunicipioTicket.query.filter_by(municipio_id=current_user.municipio_id).order_by(MunicipioTicket.fecha.desc()).all()
         tickets_agrupados = defaultdict(list)
 
         for ticket in tickets:
@@ -508,7 +495,6 @@ def get_panel_por_categoria(current_user: User):
         current_app.logger.error(f"Error en get_panel_por_categoria: {e}", exc_info=True)
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
 
-
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido
@@ -533,13 +519,13 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    has_perm = False
+    # Refuerzo de permisos:
     if current_user.id == ticket_obj.user_id:
-        has_perm = True
+        pass
     elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
-        has_perm = True
+        pass
     elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
-        has_perm = True
+        pass
     else:
         return jsonify({"error": "No tienes permiso para modificar este ticket."}), 403
 
@@ -589,7 +575,7 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
 
     es_dueño = ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios':
+    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
         es_admin = True
     if tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         es_admin = True
@@ -602,13 +588,24 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"success": True, "encuesta_id": encuesta.id})
     return jsonify({"error": "No se pudo guardar"}), 500
 
-
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
 @token_requerido
 def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     encuesta = TicketSatisfaccion.query.filter_by(ticket_id=ticket_id, tipo=tipo).first()
     if not encuesta:
         return jsonify({})
+    # Permiso: solo dueño o admin/empleado de la empresa/municipio
+    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
+    ticket_obj = db.session.get(TicketModel, ticket_id)
+    es_dueño = ticket_obj and ticket_obj.user_id == current_user.id
+    es_admin = False
+    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj and ticket_obj.municipio_id == current_user.municipio_id:
+        es_admin = True
+    if tipo == 'pyme' and current_user.rubro_id and ticket_obj and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+        es_admin = True
+    if not (es_dueño or es_admin):
+        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
     return jsonify({
         "ticket_id": encuesta.ticket_id,
         "tipo": encuesta.tipo,
@@ -616,9 +613,21 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
         "comentario": encuesta.comentario,
         "fecha": encuesta.fecha.isoformat() if encuesta.fecha else None,
     })
+
 # ---------- MAPA DE TICKETS ABIERTOS ----------
 @ticket_bp.route('/<string:tipo>/mapa', methods=['GET'])
-def mapa_de_tickets(tipo: str):
-    """Devuelve los tickets abiertos con latitud y longitud."""
-    datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo)
+@token_requerido
+@admin_o_empleado_requerido
+def mapa_de_tickets(current_user: User, tipo: str):
+    """Devuelve los tickets abiertos con latitud y longitud solo para agentes de la empresa/municipio."""
+    if tipo == "municipio":
+        # Solo tickets de su municipio
+        if not (current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id")):
+            return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
+        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo, municipio_id=current_user.municipio_id)
+    else:
+        # Solo tickets de su empresa/rubro
+        if not current_user.rubro_id:
+            return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
+        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo, rubro_id=current_user.rubro_id)
     return jsonify(datos)
