@@ -1,14 +1,44 @@
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from routes.chat import cors_options_response
+from extensions import db
+from models import ArchivoAdjunto, User
 import os
+import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from routes.auth import token_requerido
 
 archivos_bp = Blueprint('archivos_bp', __name__, url_prefix='/archivos')
 
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'pdf', 'xlsx', 'xls', 'csv', 'docx', 'txt'}
+UPLOAD_FOLDER = os.path.join('data', 'archivos')
+# Extensiones permitidas para evitar archivos ejecutables sospechosos
+ALLOWED_EXTENSIONS = {
+    'jpg',
+    'jpeg',
+    'png',
+    'pdf',
+    'xlsx',
+    'xls',
+    'csv',
+    'docx',
+    'txt',
+}
+
+# Tipos MIME aceptados; cualquier otro se rechaza por seguridad
+ALLOWED_MIME_PREFIXES = [
+    'image/',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.',
+    'text/plain',
+]
+
+# Tamaño máximo de archivo (10 MB)
+MAX_FILE_SIZE = 10 * 1024 * 1024
+
+
+def allowed_mime(mime: str) -> bool:
+    return any(mime == pre or mime.startswith(pre) for pre in ALLOWED_MIME_PREFIXES)
 
 
 def allowed_file(filename: str) -> bool:
@@ -30,14 +60,52 @@ def subir_archivo(current_user):
     file = request.files['archivo']
     if file.filename == '':
         return jsonify({'error': 'Nombre de archivo vacío.'}), 400
-    if file and allowed_file(file.filename):
-        filename = secure_filename(f"{current_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}")
-        save_path = os.path.join(UPLOAD_FOLDER, filename)
+    if request.content_length and request.content_length > MAX_FILE_SIZE:
+        return jsonify({'error': 'Archivo demasiado grande (máx 10MB).'}), 400
+    if file and allowed_file(file.filename) and allowed_mime(file.mimetype):
+        original = secure_filename(file.filename)
+        unique = f"{uuid.uuid4().hex}_{original}"
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        save_path = os.path.join(UPLOAD_FOLDER, unique)
         file.save(save_path)
-        current_app.logger.info(f"Archivo subido por user {current_user.id}: {filename}")
-        return jsonify({'mensaje': 'Archivo subido', 'filename': filename, 'url': f'/uploads/{filename}'}), 200
-    return jsonify({'error': 'Formato no permitido.'}), 400
+        tamano = os.path.getsize(save_path)
+        url = f"/archivos/{unique}"
+        session_id = request.form.get("session_id") or request.headers.get("X-Session-Id")
+        tipo = request.form.get("tipo", "chat")
+        pyme_ticket_id = request.form.get("pyme_ticket_id")
+        municipio_ticket_id = request.form.get("municipio_ticket_id")
+        db.session.add(
+            ArchivoAdjunto(
+                user_id=current_user.id,
+                session_id=session_id,
+                filename=unique,
+                nombre_original=original,
+                mime=file.mimetype,
+                tamano=tamano,
+                tipo=tipo,
+                pyme_ticket_id=pyme_ticket_id,
+                municipio_ticket_id=municipio_ticket_id,
+                url=url,
+            )
+        )
+        db.session.commit()
+        current_app.logger.info(
+            f"Archivo subido por user {current_user.id}: {unique} ({original})"
+        )
+        return jsonify({'mensaje': 'Archivo subido', 'filename': unique, 'url': url}), 200
+    return jsonify({'error': 'Formato no permitido o tipo no permitido.'}), 400
+
+
+@archivos_bp.route('/<path:filename>', methods=['GET'])
+@token_requerido
+def obtener_archivo(current_user: User, filename):
+    """Devuelve el archivo subido anteriormente."""
+    adj = ArchivoAdjunto.query.filter_by(filename=filename).first()
+    if not adj:
+        return jsonify({'error': 'Archivo no encontrado'}), 404
+    if adj.user_id != current_user.id and current_user.rol == 'usuario':
+        return jsonify({'error': 'Acceso denegado'}), 403
+    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
 
 
 @archivos_bp.after_request

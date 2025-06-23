@@ -1,5 +1,12 @@
 from flask import Blueprint, jsonify, request, current_app
-from models import User, Conversacion, PymeTicket, MunicipioTicket
+from models import (
+    User,
+    Conversacion,
+    PymeTicket,
+    MunicipioTicket,
+    TicketComentario,
+    ArchivoAdjunto,
+)
 from extensions import db
 from routes.auth import token_requerido
 
@@ -186,8 +193,21 @@ def enviar_campana(current_user: User):
     return jsonify({"enviados": len(clientes)})
 
 
+def _detalles_archivo(adjunto: ArchivoAdjunto, relacion: dict) -> dict:
+    """Devuelve metadatos simples del archivo."""
+    return {
+        "nombre": adjunto.nombre_original or adjunto.filename,
+        "tipo": adjunto.mime,
+        "tamano": adjunto.tamano,
+        "fecha": adjunto.fecha.isoformat() if adjunto.fecha else None,
+        "usuario_id": adjunto.user_id,
+        "url": adjunto.url,
+        "relacion": relacion,
+    }
+
+
 def _obtener_historial_cliente(cliente_id: int) -> dict:
-    """Compila interacciones previas del cliente."""
+    """Compila interacciones previas del cliente con mayor detalle."""
     convs = (
         Conversacion.query.filter_by(user_id=cliente_id)
         .order_by(Conversacion.timestamp.desc())
@@ -203,41 +223,90 @@ def _obtener_historial_cliente(cliente_id: int) -> dict:
         .order_by(MunicipioTicket.fecha.desc())
         .all()
     )
-    archivos = [
-        t.archivo_url
-        for t in list(tickets_pyme) + list(tickets_muni)
-        if getattr(t, "archivo_url", None)
-    ]
-    return {
-        "consultas": [
+
+    consultas = []
+    tickets = []
+    archivos = []
+    timeline = []
+
+    adjuntos_chat = (
+        ArchivoAdjunto.query.filter_by(user_id=cliente_id, tipo="chat")
+        .order_by(ArchivoAdjunto.fecha.desc())
+        .all()
+    )
+
+    for c in convs:
+        consulta = {
+            "id": c.id,
+            "pregunta": c.pregunta,
+            "respuesta": c.respuesta,
+            "fecha": c.timestamp.isoformat(),
+            "fuente": c.fuente,
+            "rubro": c.rubro,
+        }
+        consultas.append(consulta)
+        timeline.append({"tipo": "consulta", **consulta})
+
+    def _comentarios(ticket, field_name):
+        return [
             {
-                "pregunta": c.pregunta,
-                "respuesta": c.respuesta,
-                "fecha": c.timestamp.isoformat(),
+                "id": com.id,
+                "texto": com.comentario,
+                "fecha": com.fecha.isoformat(),
+                "user_id": com.user_id,
+                "es_admin": com.es_admin,
             }
-            for c in convs
-        ],
-        "tickets": [
-            {
-                "id": t.id,
-                "tipo": "pyme",
-                "nro_ticket": t.nro_ticket,
-                "estado": t.estado,
-                "fecha": t.fecha.isoformat(),
-            }
-            for t in tickets_pyme
+            for com in ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
         ]
-        + [
-            {
-                "id": t.id,
-                "tipo": "municipio",
-                "nro_ticket": t.nro_ticket,
-                "estado": t.estado,
-                "fecha": t.fecha.isoformat(),
-            }
-            for t in tickets_muni
-        ],
+
+    for t in tickets_pyme:
+        ticket_data = {
+            "id": t.id,
+            "tipo": "pyme",
+            "nro_ticket": t.nro_ticket,
+            "estado": t.estado,
+            "fecha": t.fecha.isoformat(),
+            "archivo_url": getattr(t, "archivo_url", None),
+            "mensajes": _comentarios(t, "pyme_ticket_id"),
+        }
+        tickets.append(ticket_data)
+        timeline.append({"tipo": "ticket_pyme", **ticket_data})
+        adjuntos_ticket = ArchivoAdjunto.query.filter_by(pyme_ticket_id=t.id).all()
+        for a in adjuntos_ticket:
+            meta = _detalles_archivo(a, {"tipo": "ticket_pyme", "id": t.id})
+            archivos.append(meta)
+            timeline.append({"tipo": "archivo_ticket_pyme", **meta})
+
+    for t in tickets_muni:
+        ticket_data = {
+            "id": t.id,
+            "tipo": "municipio",
+            "nro_ticket": t.nro_ticket,
+            "estado": t.estado,
+            "fecha": t.fecha.isoformat(),
+            "archivo_url": getattr(t, "archivo_url", None),
+            "mensajes": _comentarios(t, "municipio_ticket_id"),
+        }
+        tickets.append(ticket_data)
+        timeline.append({"tipo": "ticket_municipio", **ticket_data})
+        adjuntos_ticket = ArchivoAdjunto.query.filter_by(municipio_ticket_id=t.id).all()
+        for a in adjuntos_ticket:
+            meta = _detalles_archivo(a, {"tipo": "ticket_municipio", "id": t.id})
+            archivos.append(meta)
+            timeline.append({"tipo": "archivo_ticket_municipio", **meta})
+
+    for a in adjuntos_chat:
+        meta = _detalles_archivo(a, {"tipo": "chat", "session_id": a.session_id})
+        archivos.append(meta)
+        timeline.append({"tipo": "archivo_chat", **meta})
+
+    timeline.sort(key=lambda x: x["fecha"], reverse=True)
+
+    return {
+        "consultas": consultas,
+        "tickets": tickets,
         "archivos": archivos,
+        "timeline": timeline,
     }
 
 
