@@ -323,6 +323,116 @@ def login_from_widget(owner_user):
         "email": user.email,
     })
 
+
+# Nuevos endpoints para el panel de usuarios de chat
+
+@auth_bp.route('/chatuserregisterpanel', methods=['POST'])
+def chatuser_register_panel():
+    """Permite registrar un usuario final indicando el token de la entidad."""
+    data = request.get_json(silent=True)
+    if not data:
+        data = request.form.to_dict() if request.form else {}
+
+    empresa_token = data.get('empresa_token')
+    if not empresa_token:
+        return jsonify({"error": "Falta empresa_token"}), 400
+
+    owner_user = User.query.filter_by(token=empresa_token.strip()).first()
+    if not owner_user:
+        return jsonify({"error": "Token de empresa inválido"}), 404
+
+    name = data.get('name')
+    email = data.get('email')
+    password = data.get('password')
+    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
+
+    if not name or not email or not password:
+        return (
+            jsonify({"error": "Faltan datos obligatorios.", "botones": [{"texto": "Volver al chat"}]}),
+            400,
+        )
+
+    if User.query.filter_by(email=email.strip().lower()).first():
+        return (
+            jsonify({"error": "Email ya registrado.", "botones": [{"texto": "Volver al chat"}]}),
+            409,
+        )
+
+    acepta_marketing = bool(data.get('acepta_marketing'))
+    tags = data.get('tags')
+    if isinstance(tags, list):
+        tags_value = ','.join(tags)
+    elif isinstance(tags, str):
+        tags_value = tags
+    else:
+        tags_value = ''
+
+    nuevo = User(
+        name=name.strip(),
+        email=email.strip().lower(),
+        token=str(uuid.uuid4()),
+        rubro_id=owner_user.rubro_id,
+        empresa_id=owner_user.id,
+        plan="gratis",
+        rol="usuario",
+        acepta_marketing=acepta_marketing,
+        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+        tags=tags_value,
+    )
+    nuevo.set_password(password)
+    try:
+        db.session.add(nuevo)
+        db.session.commit()
+
+        if anon_id:
+            from services.ticket_service import servicio_tickets
+            servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+
+        return (
+            jsonify({"id": nuevo.id, "token": nuevo.token, "name": nuevo.name, "email": nuevo.email}),
+            201,
+        )
+    except Exception as e:  # pragma: no cover - por si falla la DB
+        db.session.rollback()
+        current_app.logger.error(f"Error en chatuser_register_panel: {e}", exc_info=True)
+        return (
+            jsonify({"error": "Error interno al registrar usuario.", "botones": [{"texto": "Volver al chat"}]}),
+            500,
+        )
+
+
+@auth_bp.route('/chatuserloginpanel', methods=['POST'])
+def chatuser_login_panel():
+    """Login de usuarios finales indicando el token de la empresa."""
+    data = request.get_json(silent=True)
+    if not data:
+        data = request.form.to_dict() if request.form else {}
+
+    empresa_token = data.get('empresa_token')
+    if not empresa_token:
+        return jsonify({"error": "Falta empresa_token"}), 400
+
+    owner_user = User.query.filter_by(token=empresa_token.strip()).first()
+    if not owner_user:
+        return jsonify({"error": "Token de empresa inválido"}), 404
+
+    email = data.get('email')
+    password = data.get('password')
+    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
+
+    if not email or not password:
+        return jsonify({"error": "Email y contraseña requeridos."}), 400
+
+    user = User.query.filter_by(email=email.strip().lower(), empresa_id=owner_user.id).first()
+    if not user or not user.check_password(password):
+        return jsonify({"error": "Credenciales inválidas."}), 401
+
+    if anon_id:
+        from services.ticket_service import servicio_tickets
+        servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
+
+    return jsonify({"id": user.id, "token": user.token, "name": user.name, "email": user.email})
+
 @auth_bp.route('/me', methods=['GET'])
 @token_requerido
 def get_current_user(user):
