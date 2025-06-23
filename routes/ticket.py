@@ -9,6 +9,7 @@ from models import (
 )
 from services.ticket_service import servicio_tickets
 from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
+from utils.permissions import require_role, require_municipio_access
 from collections import defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
@@ -38,7 +39,12 @@ def get_tickets_del_usuario(current_user: User):
     try:
         if current_user.rubro.nombre.lower().strip() == 'municipios':
             # Solo tickets de su municipio
-            tickets = MunicipioTicket.query.filter_by(municipio_id=current_user.municipio_id).order_by(MunicipioTicket.fecha.desc()).all()
+            tickets = (
+                MunicipioTicket.query
+                .filter_by(municipio_id=current_user.municipio_id)
+                .order_by(MunicipioTicket.fecha.desc())
+                .all()
+            )
             tipo = 'municipio'
             def serialize_ticket(t):
                 return {
@@ -459,13 +465,20 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
 # ---------- PANEL POR CATEGORÍA (AGENTES MUNICIPALES) ----------
 @ticket_bp.route('/panel_por_categoria', methods=['GET'])
 @token_requerido
+@require_role('admin', 'empleado')
+@require_municipio_access
 def get_panel_por_categoria(current_user: User):
     es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
     if not es_agente_municipal:
         return jsonify({"error": "No tienes permiso para acceder a este panel."}), 403
 
     try:
-        tickets = MunicipioTicket.query.filter_by(municipio_id=current_user.municipio_id).order_by(MunicipioTicket.fecha.desc()).all()
+        tickets = (
+            MunicipioTicket.query
+            .filter_by(municipio_id=current_user.municipio_id)
+            .order_by(MunicipioTicket.fecha.desc())
+            .all()
+        )
         tickets_agrupados = defaultdict(list)
 
         for ticket in tickets:
@@ -621,7 +634,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
 def mapa_de_tickets(current_user: User, tipo: str):
     """Devuelve los tickets abiertos con latitud y longitud solo para agentes de la empresa/municipio."""
     if tipo == "municipio":
-        # Solo tickets de su municipio
+        # Solo tickets municipales
         if not (current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id")):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
         datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo, municipio_id=current_user.municipio_id)

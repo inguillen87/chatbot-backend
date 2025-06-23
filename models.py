@@ -47,6 +47,17 @@ class User(db.Model, UserMixin):
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255), nullable=True)
     rol = db.Column(db.String(30), default="usuario")
+    # Alias de conveniencia para frameworks externos
+    @property
+    def role(self):
+        return self.rol
+
+    @role.setter
+    def role(self, value: str):
+        self.rol = value
+    # Campos opcionales para controlar la pertenencia a una pyme o municipio
+    pyme_id = db.Column(db.Integer, nullable=True)
+    municipio_id = db.Column(db.Integer, nullable=True)
     nombre_empresa = db.Column(db.String(150), nullable=True)
     direccion = db.Column(db.String(200), nullable=True)
     ciudad = db.Column(db.String(100), nullable=True)
