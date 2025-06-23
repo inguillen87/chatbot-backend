@@ -1,5 +1,3 @@
-# app.py
-
 import os
 import logging
 import sys
@@ -52,53 +50,7 @@ def create_app(config_class=Config):
         valor = session.get('clave_de_prueba', '¡LA MEMORIA ESTÁ VACÍA!')
         return f"<h1>El valor guardado en la memoria es: {valor}</h1>"
     # --- FIN DE RUTAS DE PRUEBA ---
-
-    # --- 2. Inicialización de Extensiones ---
-    db.init_app(app)
-    migrate.init_app(app, db)
-
-    # Configuración y activación de Sesiones en el Servidor
-    app.config['SESSION_SQLALCHEMY'] = db
-    Session(app)
-
-    # --- Configuración de Logging ---
-    log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-        "%Y-%m-%d %H:%M:%S"
-    ))
-    app.logger.handlers.clear()
-    app.logger.addHandler(handler)
-    app.logger.setLevel(log_level)
-    app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
-    app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
-
-    # --- 3. Configuración de CORS ---
-    # Permitimos orígenes comunes en local para desarrollo
-    allowed_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS")
-    if allowed_origins_env:
-        allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
-    else:
-        allowed_origins = [
-            "http://localhost",
-            "http://localhost:3000",
-            "http://localhost:8080",
-            # Dominios principales de producción
-            "https://chatboc.ar",
-            "https://www.chatboc.ar",
-            "https://api.chatboc.ar",
-            # Cualquier subdominio de chatboc.ar o de Vercel
-        ]
-
-    CORS(
-        app,
-        origins=allowed_origins,
-        supports_credentials=True,
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Authorization", "Content-Type", "Origin", "Accept",
-            "Anon-Id", "x-entity-token"
+@@ -100,50 +102,60 @@ def create_app(config_class=Config):
         ],
     )
 
@@ -123,6 +75,14 @@ def create_app(config_class=Config):
                 actual.append(n)
         resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
         return resp
+
+    @app.before_request
+    def catch_all_options():
+        """Handle any CORS preflight with a basic response."""
+        from flask import request
+        if request.method == "OPTIONS":
+            from routes.chat import cors_options_response
+            return cors_options_response()
 
     # --- 4. Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
