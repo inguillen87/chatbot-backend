@@ -38,16 +38,10 @@ def get_tickets_del_usuario(current_user: User):
 
     try:
         if current_user.rubro.nombre.lower().strip() == 'municipios':
-<<<<<<< HEAD
             # Solo tickets de su municipio
             tickets = (
                 MunicipioTicket.query
                 .filter_by(municipio_id=current_user.municipio_id)
-=======
-            # Tickets municipales (no filtrados por municipio_id)
-            tickets = (
-                MunicipioTicket.query
->>>>>>> a1c0ad7cd9c94bda01cbd703a9c353ec2ac496a2
                 .order_by(MunicipioTicket.fecha.desc())
                 .all()
             )
@@ -481,10 +475,7 @@ def get_panel_por_categoria(current_user: User):
     try:
         tickets = (
             MunicipioTicket.query
-<<<<<<< HEAD
             .filter_by(municipio_id=current_user.municipio_id)
-=======
->>>>>>> a1c0ad7cd9c94bda01cbd703a9c353ec2ac496a2
             .order_by(MunicipioTicket.fecha.desc())
             .all()
         )
@@ -644,20 +635,12 @@ def mapa_de_tickets(current_user: User, tipo: str):
     """Devuelve los tickets abiertos con latitud y longitud solo para agentes de la empresa/municipio."""
     if tipo == "municipio":
         # Solo tickets municipales
-<<<<<<< HEAD
         if not (current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id")):
-=======
-        if not (current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'):
->>>>>>> a1c0ad7cd9c94bda01cbd703a9c353ec2ac496a2
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
         datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo)
     else:
         # Solo tickets de su empresa/rubro
         if not current_user.rubro_id:
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
-<<<<<<< HEAD
         datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo, rubro_id=current_user.rubro_id)
-=======
-        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo)
->>>>>>> a1c0ad7cd9c94bda01cbd703a9c353ec2ac496a2
     return jsonify(datos)
