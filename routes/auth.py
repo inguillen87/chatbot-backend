@@ -1,6 +1,7 @@
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, request, jsonify, current_app, g
+import os
 from sqlalchemy import func
 from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario
 from extensions import db
@@ -80,6 +81,13 @@ def login():
         "email": user.email,
         "name": user.name,
     })
+
+@auth_bp.route('/google-client-id', methods=['GET'])
+def get_google_client_id():
+    """Devuelve el primer Google Client ID configurado."""
+    ids = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+    first = ids.split(',')[0].strip() if ids else ""
+    return jsonify({"client_id": first})
 
 @auth_bp.route('/google-login', methods=['POST'])
 def google_login():
