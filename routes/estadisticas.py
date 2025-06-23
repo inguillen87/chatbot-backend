@@ -1,16 +1,15 @@
 from flask import Blueprint, jsonify
 from sqlalchemy import text
-from routes.auth import token_requerido
+from routes.auth import token_requerido, admin_o_empleado_requerido
 from models import db
 
 estadisticas_bp = Blueprint('estadisticas', __name__, url_prefix='/estadisticas')
 
 @estadisticas_bp.route('/reclamos', methods=['GET'])
 @token_requerido
+@admin_o_empleado_requerido
 def estadisticas_reclamos(current_user):
     """Devuelve métricas básicas de tickets y tiempo de respuesta."""
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
 
     datos = {}
 

@@ -8,7 +8,7 @@ from models import (
     ArchivoAdjunto,
 )
 from extensions import db
-from routes.auth import token_requerido
+from routes.auth import token_requerido, admin_o_empleado_requerido
 
 crm_bp = Blueprint('crm', __name__, url_prefix='/crm')
 
@@ -35,10 +35,9 @@ def _obtener_clientes(current_user: User, tag: str | None = None):
 
 @crm_bp.route('/clientes', methods=['GET'])
 @token_requerido
+@admin_o_empleado_requerido
 def listar_clientes(current_user: User):
     """Devuelve los usuarios asociados a la empresa o municipio del token."""
-    if current_user.empresa_id is not None:
-        return jsonify([])
     tag = request.args.get('tag')
     resultado = _obtener_clientes(current_user, tag)
     return jsonify(resultado)
@@ -46,10 +45,9 @@ def listar_clientes(current_user: User):
 
 @crm_bp.route('/usuarios', methods=['GET'])
 @token_requerido
+@admin_o_empleado_requerido
 def listar_usuarios(current_user: User):
     """Alias de /clientes por compatibilidad."""
-    if current_user.empresa_id is not None:
-        return jsonify([])
     tag = request.args.get('tag')
     resultado = _obtener_clientes(current_user, tag)
     return jsonify(resultado)
@@ -57,9 +55,8 @@ def listar_usuarios(current_user: User):
 
 @crm_bp.route('/clientes/<int:cliente_id>/tags', methods=['PUT'])
 @token_requerido
+@admin_o_empleado_requerido
 def actualizar_tags(current_user: User, cliente_id: int):
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
     cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
@@ -78,10 +75,9 @@ def actualizar_tags(current_user: User, cliente_id: int):
 
 @crm_bp.route('/analytics', methods=['GET'])
 @token_requerido
+@admin_o_empleado_requerido
 def analytics(current_user: User):
     """Devuelve métricas básicas de usuarios y tickets."""
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
 
     total = User.query.filter_by(empresa_id=current_user.id).count()
     marketing = User.query.filter_by(empresa_id=current_user.id, acepta_marketing=True).count()
@@ -164,10 +160,9 @@ def _obtener_interacciones(cliente: User):
 
 @crm_bp.route('/clientes/<int:cliente_id>/interacciones', methods=['GET'])
 @token_requerido
+@admin_o_empleado_requerido
 def interacciones_cliente(current_user: User, cliente_id: int):
     """Devuelve consultas previas y tickets de un cliente."""
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
     cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
@@ -177,10 +172,9 @@ def interacciones_cliente(current_user: User, cliente_id: int):
 
 @crm_bp.route('/campanas/enviar', methods=['POST'])
 @token_requerido
+@admin_o_empleado_requerido
 def enviar_campana(current_user: User):
     """Mock de envío de campañas masivas."""
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
     data = request.get_json(silent=True) or {}
     mensaje = data.get('mensaje')
     usuarios = data.get('usuarios', [])
@@ -312,9 +306,8 @@ def _obtener_historial_cliente(cliente_id: int) -> dict:
 
 @crm_bp.route('/clientes/<int:cliente_id>/historial', methods=['GET'])
 @token_requerido
+@admin_o_empleado_requerido
 def historial_cliente(current_user: User, cliente_id: int):
-    if current_user.empresa_id is not None:
-        return jsonify({"error": "Permisos insuficientes"}), 403
     cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
