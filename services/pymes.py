@@ -615,18 +615,31 @@ class EnvioResumenHandler(BaseHandler):
     """
     Ofrece y realiza el envío del resumen de pedido por WhatsApp, email o SMS,
     reutilizando la lógica existente y guiando al usuario a concretar la compra.
+    Ahora también genera y envía un link de pago si el pedido está listo.
     """
     def handle(self, pregunta: str) -> dict | None:
         texto = pregunta.lower()
         user = self.context.get('user_obj')
         pedido = self.context['contexto_pyme'].get('pedido_actual')  # Debes guardar el pedido en contexto cuando se genera
 
+        # Simulación de generación de link de pago (puedes reemplazar por tu integración real)
+        def generar_link_pago(pedido):
+            if not pedido:
+                return None
+            # Aquí deberías integrar con tu pasarela de pagos real
+            return f"https://pagos.tupyme.com/pagar?pedido={pedido.get('id', 'demo')}"
+
         # Detecta preferencia de canal
         if "whatsapp" in texto or "wasap" in texto:
             if user and user.telefono:
                 try:
                     enviar_whatsapp(user.telefono, f"Resumen de tu pedido: {pedido}")
-                    respuesta = "¡Listo! Te envié el resumen de tu pedido por WhatsApp. ¿Querés finalizar la compra o agregar algo más?"
+                    link_pago = generar_link_pago(pedido)
+                    respuesta = "¡Listo! Te envié el resumen de tu pedido por WhatsApp."
+                    if link_pago:
+                        enviar_whatsapp(user.telefono, f"Podés pagar tu pedido aquí: {link_pago}")
+                        respuesta += " Además, te envié el link de pago para que puedas abonar de forma segura."
+                    respuesta += " ¿Querés finalizar la compra o agregar algo más?"
                 except Exception as e:
                     logger.error(f"[PYME] Error enviando WhatsApp: {e}")
                     respuesta = "Hubo un problema enviando el WhatsApp. ¿Querés que lo intente por email o SMS?"
@@ -639,6 +652,7 @@ class EnvioResumenHandler(BaseHandler):
                     {"texto": "Finalizar compra", "action": "finalizar_pedido"},
                     {"texto": "Agregar productos", "action": "ver_catalogo"},
                     {"texto": "Recibir por email", "action": "enviar_email"},
+                    {"texto": "Pagar ahora", "action": "link_pago"},
                 ]
             }
 
@@ -646,7 +660,12 @@ class EnvioResumenHandler(BaseHandler):
             if user and user.email:
                 try:
                     enviar_email_pedido_cliente(user.email, pedido)
-                    respuesta = "¡Listo! Te envié el resumen de tu pedido por email. ¿Querés finalizar la compra o agregar algo más?"
+                    link_pago = generar_link_pago(pedido)
+                    respuesta = "¡Listo! Te envié el resumen de tu pedido por email."
+                    if link_pago:
+                        enviar_email_pedido_cliente(user.email, {"mensaje": f"Podés pagar tu pedido aquí: {link_pago}"})
+                        respuesta += " Además, te envié el link de pago para que puedas abonar de forma segura."
+                    respuesta += " ¿Querés finalizar la compra o agregar algo más?"
                 except Exception as e:
                     logger.error(f"[PYME] Error enviando email: {e}")
                     respuesta = "Hubo un problema enviando el email. ¿Querés que lo intente por WhatsApp o SMS?"
@@ -659,6 +678,7 @@ class EnvioResumenHandler(BaseHandler):
                     {"texto": "Finalizar compra", "action": "finalizar_pedido"},
                     {"texto": "Agregar productos", "action": "ver_catalogo"},
                     {"texto": "Recibir por WhatsApp", "action": "enviar_whatsapp"},
+                    {"texto": "Pagar ahora", "action": "link_pago"},
                 ]
             }
 
@@ -666,7 +686,12 @@ class EnvioResumenHandler(BaseHandler):
             if user and user.telefono:
                 try:
                     enviar_sms(user.telefono, f"Resumen de tu pedido: {pedido}")
-                    respuesta = "¡Listo! Te envié el resumen de tu pedido por SMS. ¿Querés finalizar la compra o agregar algo más?"
+                    link_pago = generar_link_pago(pedido)
+                    respuesta = "¡Listo! Te envié el resumen de tu pedido por SMS."
+                    if link_pago:
+                        enviar_sms(user.telefono, f"Podés pagar tu pedido aquí: {link_pago}")
+                        respuesta += " Además, te envié el link de pago para que puedas abonar de forma segura."
+                    respuesta += " ¿Querés finalizar la compra o agregar algo más?"
                 except Exception as e:
                     logger.error(f"[PYME] Error enviando SMS: {e}")
                     respuesta = "Hubo un problema enviando el SMS. ¿Querés que lo intente por WhatsApp o email?"
@@ -679,19 +704,24 @@ class EnvioResumenHandler(BaseHandler):
                     {"texto": "Finalizar compra", "action": "finalizar_pedido"},
                     {"texto": "Agregar productos", "action": "ver_catalogo"},
                     {"texto": "Recibir por email", "action": "enviar_email"},
+                    {"texto": "Pagar ahora", "action": "link_pago"},
                 ]
             }
 
-        # Si solo pregunta por resumen, ofrece todos los canales disponibles
-        if "resumen" in texto or "pedido" in texto:
+        # Si solo pregunta por resumen, ofrece todos los canales disponibles y el link de pago si existe
+        if "resumen" in texto or "pedido" in texto or "pagar" in texto:
+            link_pago = generar_link_pago(pedido)
+            botones = [
+                {"texto": "WhatsApp", "action": "enviar_whatsapp"},
+                {"texto": "Email", "action": "enviar_email"},
+                {"texto": "SMS", "action": "enviar_sms"},
+            ]
+            if link_pago:
+                botones.append({"texto": "Pagar ahora", "action": "link_pago", "url": link_pago})
             return {
-                "respuesta": "¿Por qué canal preferís recibir el resumen de tu pedido?",
+                "respuesta": "¿Por qué canal preferís recibir el resumen de tu pedido? Y si querés, podés pagar ahora mismo con el link seguro.",
                 "fuente": "envio_resumen_pyme",
-                "botones": [
-                    {"texto": "WhatsApp", "action": "enviar_whatsapp"},
-                    {"texto": "Email", "action": "enviar_email"},
-                    {"texto": "SMS", "action": "enviar_sms"},
-                ]
+                "botones": botones
             }
 
         return None
