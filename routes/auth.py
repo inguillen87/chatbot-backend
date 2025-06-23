@@ -553,8 +553,9 @@ def actualizar_me(user):
         return jsonify({"error": "No se recibieron datos."}), 400
 
     for key, value in data.items():
-        if key in {"tags", "acepta_marketing"}:
-            pass
+        if key in {"tags", "acepta_marketing", "rol", "role", "empresa_id"}:
+            # Evitar cambios críticos que permitirían escalar privilegios
+            continue
         elif hasattr(user, key):
             if key == "horario_json":
                 setattr(user, "horario", value)
