@@ -596,7 +596,9 @@ def dashboard_info(user):
     tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
     panels = ["perfil"]
-    if user.rol in ("admin", "empleado"):
+    if user.rol == "admin":
+        panels.extend(["tickets", "crm", "empleados"])
+    elif user.rol == "empleado":
         panels.extend(["tickets", "crm"])
     if user.municipio_id:
         panels.append("municipio")

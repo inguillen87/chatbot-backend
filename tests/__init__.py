@@ -11,7 +11,13 @@ if venv_site.exists() and str(venv_site) not in sys.path:
 
 sys.modules.setdefault('google', ModuleType('google'))
 sys.modules.setdefault('google.cloud', ModuleType('google.cloud'))
-sys.modules.setdefault('google.cloud.documentai', ModuleType('google.cloud.documentai'))
+docai_mod = ModuleType('google.cloud.documentai')
+DocStub = type('Document', (), {
+    'TextAnchor': object,
+    'Page': type('Page', (), {'Table': object})
+})
+docai_mod.Document = DocStub
+sys.modules.setdefault('google.cloud.documentai', docai_mod)
 sys.modules.setdefault('google.cloud.documentai_v1', ModuleType('google.cloud.documentai_v1'))
 sys.modules.setdefault('google.api_core', ModuleType('google.api_core'))
 sys.modules.setdefault('google.api_core.gapic_v1', ModuleType('google.api_core.gapic_v1'))
