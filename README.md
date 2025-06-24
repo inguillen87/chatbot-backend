@@ -85,7 +85,9 @@ rubro indicado corresponde a un municipio, se utilizará la lógica de municipio
 aun cuando el `tipo_chat` recibido sea "pyme". De igual manera, un rubro de pyme
 forzará el uso de la lógica de pyme. No existe un tipo por defecto: si no se
 puede determinar el rubro ni se envía un `tipo_chat` válido, la petición devuelve
-un error claro.
+un error claro. El cambio de lógica se registrará como mensaje informativo en los
+logs, pero no interrumpe la respuesta. Para evitar el aviso simplemente envía
+`tipo_chat: "municipio"` o utiliza directamente el endpoint `/ask/municipio`.
 
 ## Registro en el widget
 
