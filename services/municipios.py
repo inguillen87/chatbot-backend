@@ -684,6 +684,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "categoria": categoria,
                     "detalles": detalles,
                     "user_id": self.context.get("user_id"),
+                    "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
                 },
             )
             memoria.clear()
@@ -1060,6 +1061,7 @@ class HumanEscalationHandler(BaseMunicipioHandler):
                 "categoria": "Atención en Vivo",
                 "detalles": f"El vecino solicitó chat en vivo: '{pregunta}'",
                 "user_id": self.context.get("cliente_id"),
+                "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
                 "estado": "esperando_agente_en_vivo",
             }
             sala_de_chat = servicio_tickets.crear_nuevo_ticket(
@@ -1296,6 +1298,7 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
                 "categoria": categoria,
                 "detalles": detalles,
                 "user_id": self.context.get("user_id"),
+                "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
             },
         )
         if ticket:
