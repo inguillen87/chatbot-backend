@@ -1,10 +1,23 @@
 from flask import Blueprint, request, jsonify
-from models import CatalogoItem
+from models import CatalogoItem, QA
 from routes.auth import token_requerido
-from services.qdrant_search import buscar_catalogo_qdrant, DEFAULT_SEARCH_LIMIT
-from services.utils import calcular_precio_por_unidad
+from services.qdrant_search import (
+    buscar_catalogo_qdrant,
+    DEFAULT_SEARCH_LIMIT,
+    coleccion_catalogo_para_rubro,
+    CATALOGO_PYME,
+    CATALOGO_MUNICIPIO,
+)
+from services.upload_processor import subir_catalogo as _subir_catalogo
+from services.utils import calcular_precio_por_unidad, limpiar_texto_base
 
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
+
+
+@catalogo_bp.route('/cargar', methods=['POST'])
+def cargar_catalogo():
+    """Alias que reutiliza la lógica de ``subir_catalogo``."""
+    return _subir_catalogo()
 
 
 def _formatear_producto(data: dict) -> dict:
@@ -91,9 +104,39 @@ def buscar_en_catalogo(user):
     consulta = request.args.get('q', '')
     if not consulta:
         return jsonify([])
-    resultados = buscar_catalogo_qdrant(user.id, consulta, limite=DEFAULT_SEARCH_LIMIT)
+    coleccion = coleccion_catalogo_para_rubro(user.rubro)
+    resultados = buscar_catalogo_qdrant(
+        user.id,
+        consulta,
+        limite=DEFAULT_SEARCH_LIMIT,
+        coleccion=coleccion,
+    )
     productos = []
     for hit in resultados:
         if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
             productos.append(_formatear_producto(hit.payload))
     return jsonify(productos)
+
+
+@catalogo_bp.route('/faq_texto', methods=['GET'])
+@token_requerido
+def faq_texto(user):
+    """Devuelve las preguntas y respuestas de las FAQs en texto limpio."""
+    if not getattr(user, 'rubro_id', None):
+        return jsonify([])
+    faqs = QA.query.filter_by(rubro_id=user.rubro_id).all()
+    textos = []
+    for faq in faqs:
+        if faq.question and faq.answer:
+            texto = f"{faq.question} {faq.answer}"
+            textos.append(limpiar_texto_base(texto))
+    return jsonify(textos)
+
+
+@catalogo_bp.route('/textos_perfil', methods=['GET'])
+@token_requerido
+def textos_perfil(user):
+    """Devuelve los textos de catálogo preparados para el ranker."""
+    items = CatalogoItem.query.filter_by(user_id=user.id).all()
+    textos = [limpiar_texto_base(it.texto) for it in items if getattr(it, 'texto', None)]
+    return jsonify(textos)
