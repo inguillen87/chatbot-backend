@@ -45,6 +45,51 @@ def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def _tiene_permiso(user: User, adj: ArchivoAdjunto) -> bool:
+    """Replica las verificaciones de obtener_archivo para chequear acceso."""
+    if user.rol == 'admin':
+        if hasattr(user, 'empresa_id') and adj.user_id != user.id:
+            from models import User as UserModel
+            owner = UserModel.query.filter_by(id=adj.user_id).first()
+            if not owner or owner.empresa_id != user.id:
+                return False
+        return True
+    elif user.rol == 'empleado':
+        from models import PymeTicket, MunicipioTicket, User as UserModel
+        if adj.pyme_ticket_id:
+            ticket = PymeTicket.query.filter_by(id=adj.pyme_ticket_id).first()
+            if not ticket or ticket.empresa_id != user.empresa_id:
+                return False
+        elif adj.municipio_ticket_id:
+            ticket = MunicipioTicket.query.filter_by(id=adj.municipio_ticket_id).first()
+            if not ticket or ticket.municipio_id != getattr(user, 'municipio_id', None):
+                return False
+        elif adj.user_id != user.id:
+            owner = UserModel.query.filter_by(id=adj.user_id).first()
+            if not owner or (
+                owner.empresa_id != user.empresa_id
+                and getattr(owner, 'municipio_id', None)
+                != getattr(user, 'municipio_id', None)
+            ):
+                return False
+        return True
+    elif user.rol == 'usuario':
+        return adj.user_id == user.id
+    return False
+
+
+def _meta_archivo(adj: ArchivoAdjunto) -> dict:
+    return {
+        "nombre": adj.nombre_original or adj.filename,
+        "tipo": adj.mime,
+        "tamano": adj.tamano,
+        "fecha": adj.fecha.isoformat() if adj.fecha else None,
+        "usuario_id": adj.user_id,
+        "session_id": adj.session_id,
+        "url": adj.url,
+    }
+
+
 @archivos_bp.route('/subir', methods=['OPTIONS'])
 @archivos_bp.route('/subir/', methods=['OPTIONS'])
 def subir_archivo_options():
@@ -156,6 +201,26 @@ def obtener_archivo(current_user: User, filename):
         return jsonify({'error': 'Permiso denegado.'}), 403
 
     return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
+
+
+@archivos_bp.route('/sesion/<session_id>', methods=['OPTIONS'])
+@archivos_bp.route('/sesion/<session_id>/', methods=['OPTIONS'])
+def archivos_sesion_options(session_id):
+    """Manejo de preflight CORS para /archivos/sesion/<id>."""
+    return cors_options_response()
+
+
+@archivos_bp.route('/sesion/<session_id>', methods=['GET'])
+@token_requerido
+def archivos_por_sesion(current_user: User, session_id: str):
+    """Lista los archivos de chat asociados a la sesión indicada."""
+    adjuntos = (
+        ArchivoAdjunto.query.filter_by(session_id=session_id, tipo="chat")
+        .order_by(ArchivoAdjunto.fecha.asc())
+        .all()
+    )
+    visibles = [_meta_archivo(a) for a in adjuntos if _tiene_permiso(current_user, a)]
+    return jsonify(visibles)
 
 
 @archivos_bp.after_request
