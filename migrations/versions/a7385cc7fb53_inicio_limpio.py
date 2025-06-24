@@ -1,8 +1,8 @@
-"""initial
+"""Inicio limpio
 
-Revision ID: 9ae4c8f5ab4d
+Revision ID: a7385cc7fb53
 Revises: 
-Create Date: 2025-06-23 22:20:44.825233
+Create Date: 2025-06-24 00:20:03.433292
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
-revision = '9ae4c8f5ab4d'
+revision = 'a7385cc7fb53'
 down_revision = None
 branch_labels = None
 depends_on = None
