@@ -1,8 +1,8 @@
-"""Creacion inicial de la base de datos
+"""initial
 
-Revision ID: 0ebfcfc75560
+Revision ID: 9ae4c8f5ab4d
 Revises: 
-Create Date: 2025-06-07 23:36:04.076106
+Create Date: 2025-06-23 22:20:44.825233
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
-revision = '0ebfcfc75560'
+revision = '9ae4c8f5ab4d'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -32,12 +32,21 @@ def upgrade():
     sa.Column('categoria', sa.String(length=100), nullable=True),
     sa.Column('user_id', sa.Integer(), nullable=True),
     sa.Column('estado', sa.String(length=30), nullable=True),
+    sa.Column('anon_id', sa.String(length=80), nullable=True),
+    sa.Column('ultima_actividad', sa.DateTime(), nullable=True),
     sa.Column('nro_ticket', sa.Integer(), nullable=False),
+    sa.Column('detalles', sa.Text(), nullable=True),
+    sa.Column('direccion', sa.String(length=255), nullable=True),
+    sa.Column('latitud', sa.Float(), nullable=True),
+    sa.Column('longitud', sa.Float(), nullable=True),
     sa.Column('fecha', sa.DateTime(), nullable=True),
     sa.Column('archivo_url', sa.String(length=255), nullable=True),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('nro_ticket')
     )
+    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_municipio_ticket_anon_id'), ['anon_id'], unique=False)
+
     op.create_table('rubro',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('clave', sa.String(length=50), nullable=False),
@@ -48,6 +57,15 @@ def upgrade():
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('clave')
     )
+    op.create_table('ticket_satisfaccion',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('ticket_id', sa.Integer(), nullable=False),
+    sa.Column('tipo', sa.String(length=10), nullable=False),
+    sa.Column('puntuacion', sa.Integer(), nullable=False),
+    sa.Column('comentario', sa.Text(), nullable=True),
+    sa.Column('fecha', sa.DateTime(), nullable=True),
+    sa.PrimaryKeyConstraint('id')
+    )
     op.create_table('pyme_ticket',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('pregunta', sa.Text(), nullable=False),
@@ -55,6 +73,7 @@ def upgrade():
     sa.Column('categoria', sa.String(length=100), nullable=True),
     sa.Column('user_id', sa.Integer(), nullable=True),
     sa.Column('estado', sa.String(length=30), nullable=True),
+    sa.Column('anon_id', sa.String(length=80), nullable=True),
     sa.Column('nro_ticket', sa.Integer(), nullable=False),
     sa.Column('fecha', sa.DateTime(), nullable=True),
     sa.Column('rubro_id', sa.Integer(), nullable=True),
@@ -63,10 +82,16 @@ def upgrade():
     sa.Column('email', sa.String(length=120), nullable=True),
     sa.Column('dni', sa.String(length=20), nullable=True),
     sa.Column('estado_cliente', sa.String(length=30), nullable=True),
+    sa.Column('direccion', sa.String(length=255), nullable=True),
+    sa.Column('latitud', sa.Float(), nullable=True),
+    sa.Column('longitud', sa.Float(), nullable=True),
     sa.ForeignKeyConstraint(['rubro_id'], ['rubro.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('nro_ticket')
     )
+    with op.batch_alter_table('pyme_ticket', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_pyme_ticket_anon_id'), ['anon_id'], unique=False)
+
     op.create_table('qa',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=True),
@@ -92,6 +117,9 @@ def upgrade():
     sa.Column('email', sa.String(length=120), nullable=False),
     sa.Column('password_hash', sa.String(length=128), nullable=False),
     sa.Column('token', sa.String(length=255), nullable=True),
+    sa.Column('rol', sa.String(length=30), nullable=True),
+    sa.Column('pyme_id', sa.Integer(), nullable=True),
+    sa.Column('municipio_id', sa.Integer(), nullable=True),
     sa.Column('nombre_empresa', sa.String(length=150), nullable=True),
     sa.Column('direccion', sa.String(length=200), nullable=True),
     sa.Column('ciudad', sa.String(length=100), nullable=True),
@@ -103,15 +131,39 @@ def upgrade():
     sa.Column('link_web', sa.String(length=255), nullable=True),
     sa.Column('acepto_terminos', sa.Boolean(), nullable=True),
     sa.Column('fecha_aceptacion_terminos', sa.DateTime(), nullable=True),
+    sa.Column('acepta_marketing', sa.Boolean(), nullable=True),
+    sa.Column('fecha_aceptacion_marketing', sa.DateTime(), nullable=True),
+    sa.Column('tags', sa.String(length=255), nullable=True),
+    sa.Column('ticket_categorias', sa.String(length=255), nullable=True),
     sa.Column('horario', sa.String(length=100), nullable=True),
     sa.Column('plan', sa.String(length=20), nullable=True),
     sa.Column('preguntas_usadas', sa.Integer(), nullable=True),
     sa.Column('limite_preguntas', sa.Integer(), nullable=True),
     sa.Column('last_reset', sa.DateTime(), nullable=True),
+    sa.Column('empresa_id', sa.Integer(), nullable=True),
     sa.Column('rubro_id', sa.Integer(), nullable=True),
+    sa.ForeignKeyConstraint(['empresa_id'], ['user.id'], ),
     sa.ForeignKeyConstraint(['rubro_id'], ['rubro.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('email')
+    )
+    op.create_table('archivo_adjunto',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=True),
+    sa.Column('session_id', sa.String(length=36), nullable=True),
+    sa.Column('filename', sa.String(length=255), nullable=False),
+    sa.Column('nombre_original', sa.String(length=255), nullable=True),
+    sa.Column('mime', sa.String(length=100), nullable=True),
+    sa.Column('tamano', sa.Integer(), nullable=True),
+    sa.Column('tipo', sa.String(length=50), nullable=True),
+    sa.Column('pyme_ticket_id', sa.Integer(), nullable=True),
+    sa.Column('municipio_ticket_id', sa.Integer(), nullable=True),
+    sa.Column('url', sa.String(length=255), nullable=False),
+    sa.Column('fecha', sa.DateTime(), nullable=True),
+    sa.ForeignKeyConstraint(['municipio_ticket_id'], ['municipio_ticket.id'], ),
+    sa.ForeignKeyConstraint(['pyme_ticket_id'], ['pyme_ticket.id'], ),
+    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id')
     )
     op.create_table('catalogo_embedding',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -162,15 +214,35 @@ def upgrade():
 
     op.create_table('pyme_pedido',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=True),
     sa.Column('nro_pedido', sa.String(length=50), nullable=False),
+    sa.Column('asunto', sa.String(length=255), nullable=True),
     sa.Column('estado', sa.String(length=30), nullable=True),
     sa.Column('detalles', sa.Text(), nullable=True),
     sa.Column('monto_total', sa.Float(), nullable=True),
     sa.Column('fecha', sa.DateTime(), nullable=True),
+    sa.Column('nombre_cliente', sa.String(length=100), nullable=True),
+    sa.Column('email_cliente', sa.String(length=100), nullable=True),
+    sa.Column('telefono_cliente', sa.String(length=50), nullable=True),
+    sa.Column('rubro', sa.String(length=100), nullable=True),
+    sa.Column('direccion', sa.String(length=255), nullable=True),
+    sa.Column('latitud', sa.Float(), nullable=True),
+    sa.Column('longitud', sa.Float(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('nro_pedido')
+    )
+    op.create_table('recordatorio',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('empresa_id', sa.Integer(), nullable=False),
+    sa.Column('cliente_id', sa.Integer(), nullable=False),
+    sa.Column('tipo', sa.String(length=20), nullable=False),
+    sa.Column('descripcion', sa.String(length=255), nullable=True),
+    sa.Column('fecha_vencimiento', sa.DateTime(), nullable=False),
+    sa.Column('enviado', sa.Boolean(), nullable=True),
+    sa.ForeignKeyConstraint(['cliente_id'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['empresa_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id')
     )
     op.create_table('sitio_web_info',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -191,18 +263,26 @@ def upgrade():
     sa.Column('comentario', sa.Text(), nullable=False),
     sa.Column('fecha', sa.DateTime(), nullable=True),
     sa.Column('user_id', sa.Integer(), nullable=True),
+    sa.Column('anon_id', sa.String(length=80), nullable=True),
     sa.Column('es_admin', sa.Boolean(), nullable=True),
     sa.ForeignKeyConstraint(['municipio_ticket_id'], ['municipio_ticket.id'], ),
     sa.ForeignKeyConstraint(['pyme_ticket_id'], ['pyme_ticket.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    with op.batch_alter_table('ticket_comentario', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_ticket_comentario_anon_id'), ['anon_id'], unique=False)
+
     # ### end Alembic commands ###
 
 
 def downgrade():
     # ### commands auto generated by Alembic - please adjust! ###
+    with op.batch_alter_table('ticket_comentario', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_ticket_comentario_anon_id'))
+
     op.drop_table('ticket_comentario')
     op.drop_table('sitio_web_info')
+    op.drop_table('recordatorio')
     op.drop_table('pyme_pedido')
     with op.batch_alter_table('conversacion', schema=None) as batch_op:
         batch_op.drop_index('ix_conversacion_session_id')
@@ -214,11 +294,19 @@ def downgrade():
 
     op.drop_table('catalogo_item')
     op.drop_table('catalogo_embedding')
+    op.drop_table('archivo_adjunto')
     op.drop_table('user')
     op.drop_table('sugerencia')
     op.drop_table('qa')
+    with op.batch_alter_table('pyme_ticket', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_pyme_ticket_anon_id'))
+
     op.drop_table('pyme_ticket')
+    op.drop_table('ticket_satisfaccion')
     op.drop_table('rubro')
+    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_municipio_ticket_anon_id'))
+
     op.drop_table('municipio_ticket')
     op.drop_table('logs')
     # ### end Alembic commands ###

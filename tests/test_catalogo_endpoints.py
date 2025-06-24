@@ -5,10 +5,7 @@ import sys
 
 # -- Stub heavy dependencies before importing the module under test --
 sys.modules.setdefault('cohere', ModuleType('cohere'))
-pandas_stub = ModuleType('pandas')
-pandas_stub.Series = object
-pandas_stub.DataFrame = object
-sys.modules.setdefault('pandas', pandas_stub)
+
 
 models_stub = ModuleType('models')
 models_stub.CatalogoItem = type('CatalogoItem', (), {'query': None})
@@ -29,9 +26,7 @@ sys.modules.setdefault('qdrant_client.http', ModuleType('qdrant_client.http'))
 models_mod = ModuleType('qdrant_client.http.models')
 models_mod.ScoredPoint = object
 sys.modules.setdefault('qdrant_client.http.models', models_mod)
-upload_stub = ModuleType('services.upload_processor')
-upload_stub.subir_catalogo = lambda: None
-sys.modules.setdefault('services.upload_processor', upload_stub)
+
 
 from routes.catalogo import faq_texto, textos_perfil
 
