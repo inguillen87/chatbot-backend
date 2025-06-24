@@ -15,6 +15,24 @@ significa que la página no tiene permisos para solicitar la ubicación. Comprue
 ```
 
 2. Si tu servidor define el encabezado `Permissions-Policy`, incluye `geolocation=(self)` o el dominio que corresponda. Esto habilita la API de geolocalización dentro de la página.
+   En Flask puedes agregarlo con:
+
+   ```python
+   @app.after_request
+   def add_permissions_policy(resp):
+       resp.headers.setdefault("Permissions-Policy", "geolocation=(self)")
+       return resp
+   ```
+3. Si cargas el `window-provider.js` con una etiqueta `<script>`, coloca el atributo `allow="geolocation"` en el contenedor que lo aloja (por ejemplo otro `<iframe>`). Ejemplo:
+
+   ```html
+   <iframe src="about:blank" id="loader" allow="geolocation"></iframe>
+   <script>
+     const doc = document.getElementById('loader').contentWindow.document;
+     doc.write('<script src="https://www.chatboc.ar/window-provider.js"<\/script>');
+   </script>
+   ```
+
 
 Además, Google recomienda reemplazar `google.maps.places.AutocompleteService` por `google.maps.places.AutocompleteSuggestion`. Consulta la [guía de migración](https://developers.google.com/maps/documentation/javascript/places-migration-overview) para actualizar tu código.
 

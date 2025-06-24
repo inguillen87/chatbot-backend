@@ -131,6 +131,7 @@ usuario.
   Nuevo módulo de validaciones que comprueba nombre, correo y teléfono usando librerías open source.
 - Si necesitas instalar dependencias manualmente, consulta el archivo `docs/dependencias.txt` para ver la lista completa de paquetes requeridos.
 - Si tienes problemas para obtener la ubicación del usuario en el widget, revisa `docs/geolocalizacion-troubleshooting.md`.
+- Si al cargar `window-provider.js` el navegador muestra "Invalid or unexpected token", consulta `docs/window-provider-syntaxerror.md`.
 - Si al entrar a la pantalla de login la aplicación se rompe con un "Error" genérico, revisa `docs/react-login-troubleshooting.md`.
 - Para más ideas orientadas a pequeñas y medianas empresas revisa `docs/ideas-pymes.md`.
 - Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.

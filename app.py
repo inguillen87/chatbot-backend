@@ -118,6 +118,12 @@ def create_app(config_class=Config):
         resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
         return resp
 
+    @app.after_request
+    def add_permissions_policy(resp):
+        """Ensure geolocation is allowed inside iframes."""
+        resp.headers.setdefault("Permissions-Policy", "geolocation=(self)")
+        return resp
+
     @app.before_request
     def catch_all_options():
         """Handle any CORS preflight with a basic response."""
