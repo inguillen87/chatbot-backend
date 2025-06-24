@@ -26,6 +26,7 @@ from routes.categorias import categorias_bp
 from routes.recordatorios import recordatorios_bp
 from routes.historial import historial_bp
 from routes.notifications import notifications_bp
+from routes.municipal_legacy import municipal_bp
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -149,6 +150,7 @@ def create_app(config_class=Config):
     app.register_blueprint(recordatorios_bp)
     app.register_blueprint(historial_bp)
     app.register_blueprint(notifications_bp)
+    app.register_blueprint(municipal_bp)
 
     # --- Registro de comandos CLI ---
     register_commands(app)
