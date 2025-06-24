@@ -39,11 +39,15 @@ class GoogleLoginTests(unittest.TestCase):
 
         session = MagicMock()
         with patch.object(gauth, 'User', UserMock), patch.object(gauth, 'db', SimpleNamespace(session=session)):
-            user = gauth.login_o_crear_usuario('idtoken')
+            user = gauth.login_o_crear_usuario('idtoken', rol='admin', tipo_chat='municipio')
 
         self.assertEqual(user, dummy_user)
         session.add.assert_called_once_with(dummy_user)
         session.commit.assert_called_once()
+        UserMock.assert_called_once()
+        args, kwargs = UserMock.call_args
+        self.assertEqual(kwargs.get('rol'), 'admin')
+        self.assertEqual(kwargs.get('tipo_chat'), 'municipio')
 
     @patch.object(gauth.id_token, 'verify_oauth2_token')
     def test_usa_usuario_existente(self, mock_verify):
@@ -57,7 +61,7 @@ class GoogleLoginTests(unittest.TestCase):
 
         session = MagicMock()
         with patch.object(gauth, 'User', UserMock), patch.object(gauth, 'db', SimpleNamespace(session=session)):
-            user = gauth.login_o_crear_usuario('idtoken')
+            user = gauth.login_o_crear_usuario('idtoken', rol='admin', tipo_chat='pyme')
 
         self.assertEqual(user, existing)
         session.add.assert_not_called()
