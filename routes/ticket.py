@@ -83,6 +83,9 @@ def get_tickets_del_usuario(current_user: User):
                     "latitud": getattr(t, 'latitud', None),
                     "longitud": getattr(t, 'longitud', None)
                 }
+        if current_user.rol == 'empleado' and current_user.ticket_categorias:
+            cats = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            tickets = [t for t in tickets if (getattr(t, 'categoria', '') or '').lower() in cats]
         resultado = [serialize_ticket(t) for t in tickets]
         return jsonify(resultado)
     except Exception as e:
@@ -479,6 +482,9 @@ def get_panel_por_categoria(current_user: User):
             .order_by(MunicipioTicket.fecha.desc())
             .all()
         )
+        if current_user.rol == 'empleado' and current_user.ticket_categorias:
+            cats = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            tickets = [t for t in tickets if (t.categoria or '').lower() in cats]
         tickets_agrupados = defaultdict(list)
 
         for ticket in tickets:

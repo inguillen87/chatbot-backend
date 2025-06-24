@@ -22,7 +22,8 @@ This project exposes several endpoints to process questions for different sector
 
 - `PUT /me` – update the logged in user's profile.
 - `GET /me` – retrieve the full profile. The response includes the user's role
-  (`rol`) and associated company (`empresa_id`).
+  (`rol`), associated company (`empresa_id`) and the ticket categories assigned
+  to the account (`categorias`).
 - `GET /tickets/mios` – list the tickets created by the logged in user.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
@@ -43,8 +44,10 @@ This project exposes several endpoints to process questions for different sector
 - `POST /empleados` – create a new internal employee **(admin only)**.
 - `GET /empleados/<id>/historial` – list tickets handled by an employee **(admin only)**.
 - `GET /empleados/<id>` – retrieve a single employee's info **(admin only)**.
-- `PUT /empleados/<id>` – update name, email or password of an employee **(admin only)**.
+- `PUT /empleados/<id>` – update name, email, password or categories of an employee **(admin only)**.
 - `DELETE /empleados/<id>` – remove an employee **(admin only)**.
+- Employees can be limited to specific ticket categories using the `categorias`
+  field when creating or updating them.
 - `GET /historial` – retrieve the logged user's full history of chats and tickets.
 - `POST /archivos/subir` – upload a file associated with chats or tickets.
   Only images, PDFs, spreadsheets and text documents up to 10MB are accepted.
