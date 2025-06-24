@@ -42,6 +42,7 @@ This project exposes several endpoints to process questions for different sector
 - `GET /tramites` – list available municipal procedures, supports `?q=` filtering.
 - `GET /tramites/<nombre>` – detailed info for a specific procedure.
 - `GET /tramites/descargar` – download the full JSON catalog of procedures.
+- `GET /municipal/incidents` – list open municipal incidents for the authenticated user's municipality.
 
 ### Employee management
 

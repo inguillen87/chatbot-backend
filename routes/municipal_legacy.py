@@ -5,6 +5,7 @@ from routes.crm import _obtener_clientes
 from services.municipios import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from routes.estadisticas import estadisticas_reclamos
+from models import MunicipioTicket
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -40,3 +41,35 @@ def municipal_tramites():
 @municipal_bp.route('/tramites/<string:nombre>', methods=['GET'])
 def municipal_tramite(nombre):
     return obtener_tramite(nombre)
+
+
+@municipal_bp.route('/incidents', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_incidents(current_user):
+    """Lista los tickets municipales abiertos para el municipio del usuario."""
+
+    tickets = (
+        MunicipioTicket.query
+        .filter_by(municipio_id=current_user.municipio_id)
+        .filter(MunicipioTicket.estado != 'cerrado')
+        .order_by(MunicipioTicket.fecha.desc())
+        .all()
+    )
+
+    resultado = [
+        {
+            "id": t.id,
+            "nro_ticket": t.nro_ticket,
+            "asunto": getattr(t, "asunto", "N/A"),
+            "categoria": getattr(t, "categoria", None),
+            "estado": t.estado,
+            "fecha": t.fecha.isoformat(),
+            "direccion": getattr(t, "direccion", None),
+            "latitud": getattr(t, "latitud", None),
+            "longitud": getattr(t, "longitud", None),
+        }
+        for t in tickets
+    ]
+
+    return jsonify(resultado)
