@@ -167,11 +167,11 @@ def responder_chatboc(
     if rubro_nombre:
         esperado = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
         if tipo_chat and tipo_chat != esperado:
-            logger.warning(
-                "Tipo de chat '%s' no coincide con el rubro '%s'. Usando '%s'.",
+            logger.info(
+                "Ajustando tipo_chat de '%s' a '%s' por rubro público '%s'",
                 tipo_chat,
-                rubro_nombre,
                 esperado,
+                rubro_nombre,
             )
         tipo_chat = esperado
     elif tipo_chat not in ("municipio", "pyme"):
