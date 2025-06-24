@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 from models import db, Rubro, QA, Sugerencia, User
 from werkzeug.security import generate_password_hash
+from services.logic import es_rubro_publico
 from faq_questions import faq_data
 
 def crear_rubro_si_no_existe(clave, nombre=None, descripcion=None, parent_clave=None):
@@ -140,7 +141,8 @@ def cargar_usuarios_demo():
             plan="gratis",
             preguntas_usadas=0,
             limite_preguntas=50,
-            rubro_id=rubro.id
+            rubro_id=rubro.id,
+            tipo_chat="municipio" if es_rubro_publico(rubro) else "pyme",
         )
         db.session.add(nuevo_user)
         print(f"✅ Usuario demo creado: {data['email']}")

@@ -100,7 +100,7 @@ def login():
     current_app.logger.info(f"Login exitoso para: {user.email}")
 
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
-    tipo_chat = "municipio" if es_rubro_publico(user.rubro) else "pyme"
+    tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
 
     return jsonify({
         "mensaje": "Login exitoso",
@@ -137,7 +137,7 @@ def google_login():
         current_app.logger.info(f"Login Google para: {user.email}")
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
-        tipo_chat = "municipio" if es_rubro_publico(user.rubro) else "pyme"
+        tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
 
         return jsonify({
             "id": user.id,
@@ -184,6 +184,7 @@ def register():
         "password": data.get("password"),
         "nombre_empresa": data.get("nombre_empresa"),
         "rubro": rubro_raw,
+        "tipo_chat": data.get("tipo_chat") or data.get("tipo") or data.get("tipo_empresa"),
     }
 
     missing = [k for k, v in required_campos.items() if not v]
@@ -227,6 +228,31 @@ def register():
         tags_value = tags
     else:
         tags_value = ''
+
+    tipo_chat_in = required_campos['tipo_chat']
+    sinonimos = {
+        'muni': 'municipio',
+        'municipios': 'municipio',
+        'municipio': 'municipio',
+        'pymes': 'pyme',
+        'pyme': 'pyme',
+    }
+    tipo_chat_normalizado = sinonimos.get(str(tipo_chat_in).strip().lower()) if tipo_chat_in else None
+    if tipo_chat_normalizado not in ('pyme', 'municipio'):
+        return jsonify({
+            'error': "tipo_chat inválido",
+            'botones': [{"texto": "Volver al chat"}],
+        }), 400
+
+    empresa_existente = User.query.filter(
+        func.lower(User.nombre_empresa) == func.lower(required_campos['nombre_empresa'])
+    ).filter_by(empresa_id=None).first()
+    if empresa_existente:
+        rol_asignado = 'usuario'
+        empresa_id = empresa_existente.id
+    else:
+        rol_asignado = 'admin'
+        empresa_id = None
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -234,12 +260,14 @@ def register():
         nombre_empresa=data['nombre_empresa'].strip(),
         rubro_id=rubro.id,
         plan="gratis",
-        rol="admin",
+        rol=rol_asignado,
+        empresa_id=empresa_id,
         acepto_terminos=True,
         fecha_aceptacion_terminos=datetime.utcnow(),
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
-        tags=tags_value
+        tags=tags_value,
+        tipo_chat=tipo_chat_normalizado,
     )
     user.set_password(data['password'])
 
@@ -254,6 +282,7 @@ def register():
             "name": user.name,
             "email": user.email,
             "rol": user.rol,
+            "tipo_chat": user.tipo_chat,
             "empresa_id": user.empresa_id,
         }), 201
     except Exception as e:
@@ -305,6 +334,7 @@ def register_from_widget(owner_user):
         empresa_id=owner_user.id,
         plan="gratis",
         rol="usuario",
+        tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -326,6 +356,7 @@ def register_from_widget(owner_user):
             "name": nuevo.name,
             "email": nuevo.email,
             "rol": nuevo.rol,
+            "tipo_chat": nuevo.tipo_chat,
             "empresa_id": nuevo.empresa_id,
         }), 201
     except Exception as e:
@@ -360,7 +391,7 @@ def login_from_widget(owner_user):
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
-    tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+    tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
     return jsonify({
         "id": user.id,
@@ -426,6 +457,7 @@ def chatuser_register_panel():
         empresa_id=owner_user.id,
         plan="gratis",
         rol="usuario",
+        tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -446,6 +478,7 @@ def chatuser_register_panel():
                 "name": nuevo.name,
                 "email": nuevo.email,
                 "rol": nuevo.rol,
+                "tipo_chat": nuevo.tipo_chat,
                 "empresa_id": nuevo.empresa_id,
             }),
             201,
@@ -490,7 +523,7 @@ def chatuser_login_panel():
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
-    tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+    tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
     return jsonify({
         "id": user.id,
@@ -508,7 +541,7 @@ def chatuser_login_panel():
 def get_current_user(user):
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
     from utils.plan_limits import limite_para_usuario
-    tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
     catalogo_label = (
         "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
     )
@@ -551,6 +584,7 @@ def token_info(user):
         "nombre_empresa": user.nombre_empresa,
         "rol": user.rol,
         "empresa_id": user.empresa_id,
+        "tipo_chat": getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme"),
     })
 
 @auth_bp.route('/me', methods=['PUT'])

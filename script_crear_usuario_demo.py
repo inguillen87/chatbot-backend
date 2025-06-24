@@ -18,7 +18,8 @@ with app.app_context():
             plan="demo",
             preguntas_usadas=0,
             limite_preguntas=15,
-            rubro_id=1
+            rubro_id=1,
+            tipo_chat="pyme",
         )
         db.session.add(user)
         db.session.commit()

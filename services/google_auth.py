@@ -49,6 +49,7 @@ def login_o_crear_usuario(token_id: str) -> User:
             rubro_id=None,
             plan="gratis",
             rol="usuario",
+            tipo_chat="pyme",
             acepto_terminos=True,
             fecha_aceptacion_terminos=datetime.utcnow(),
         )

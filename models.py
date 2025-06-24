@@ -47,6 +47,7 @@ class User(db.Model, UserMixin):
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255), nullable=True)
     rol = db.Column(db.String(30), default="usuario")
+    tipo_chat = db.Column(db.String(20), nullable=True)
     # Alias de conveniencia para frameworks externos
     @property
     def role(self):
