@@ -2,11 +2,12 @@
 
 from .qdrant_utils import get_qdrant_client
 from .cohere_ai import embed_textos
+from services.qdrant_search import CATALOGO_PYME
 # ... otras importaciones
 
-QDRANT_COLLECTION_NAME = "catalogos"
+QDRANT_COLLECTION_NAME = CATALOGO_PYME
 
-def buscar_item_vectorizado(pregunta: str, user_id: int):
+def buscar_item_vectorizado(pregunta: str, user_id: int, collection_name: str = QDRANT_COLLECTION_NAME):
     """
     Busca ítems en el catálogo de un usuario específico usando búsqueda vectorial en Qdrant.
 
@@ -45,7 +46,7 @@ def buscar_item_vectorizado(pregunta: str, user_id: int):
 
         # 3. Realizar la búsqueda en Qdrant
         search_result = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
+            collection_name=collection_name,
             query_vector=query_vector[0],
             query_filter=search_filter,
             limit=3 # Traer los 3 mejores resultados

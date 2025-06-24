@@ -508,6 +508,10 @@ def chatuser_login_panel():
 def get_current_user(user):
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
     from utils.plan_limits import limite_para_usuario
+    tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+    catalogo_label = (
+        "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
+    )
     return jsonify({
         "id": user.id,
         "email": user.email,
@@ -531,6 +535,8 @@ def get_current_user(user):
         "horario_json": user.horario_json,
         "logo_url": getattr(user, "logo_url", ""),
         "categorias": user.ticket_categorias or "",
+        "tipo_chat": tipo_chat,
+        "catalogo_label": catalogo_label,
     })
 
 # Nueva ruta para obtener información básica del token

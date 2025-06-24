@@ -18,6 +18,8 @@ from services.qdrant_utils import (
     get_qdrant_client,
     verificar_y_crear_coleccion_qdrant,
 )
+from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO
+from services.logic import es_rubro_publico
 from qdrant_client import models as qdrant_models
 from typing import List, Dict, Any, Optional
 
@@ -30,14 +32,14 @@ UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")  # Esto anda en cualqu
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
 
-def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]]):
+def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]], coleccion: str):
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
         logger.error(f"[QDRANT_SAVE] No se pudo obtener cliente Qdrant para user_id={user_id}.")
         raise ConnectionError("No se pudo conectar a Qdrant para guardar los datos.")
 
     vector_dim = len(vectores[0]) if vectores else 1024
-    if not verificar_y_crear_coleccion_qdrant("catalogos", vector_dim, create_indexes=True):
+    if not verificar_y_crear_coleccion_qdrant(coleccion, vector_dim, create_indexes=True):
         raise ConnectionError("No se pudo inicializar la colección en Qdrant.")
 
     puntos_para_insertar: List[qdrant_models.PointStruct] = []
@@ -75,7 +77,7 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
     if puntos_para_insertar:
         try:
             logger.info(f"[QDRANT_SAVE] Intentando upsert de {len(puntos_para_insertar)} puntos para user_id={user_id}...")
-            qdrant_cli.upsert(collection_name="catalogos", points=puntos_para_insertar, wait=True)
+            qdrant_cli.upsert(collection_name=coleccion, points=puntos_para_insertar, wait=True)
             logger.info(f"✅ {len(puntos_para_insertar)} ítems guardados/actualizados en Qdrant para user_id={user_id}")
         except Exception as e_qdrant_upsert:
             logger.error(f"❌ Error durante upsert a Qdrant para user_id={user_id}: {e_qdrant_upsert}", exc_info=True)
@@ -83,7 +85,7 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
     else:
         logger.warning(f"[QDRANT_SAVE] No se prepararon puntos válidos para Qdrant para user_id={user_id}. Ningún ítem fue enviado.")
 
-def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nombre: str = "generico") -> int:
+def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nombre: str = "generico", coleccion: str = CATALOGO_PYME) -> int:
     logger.info(f"[UPLOAD_PROC] Iniciando procesamiento y embedding de catálogo: '{os.path.basename(path_archivo)}' para user_id={user_id}, rubro Pyme='{pyme_rubro_nombre}'")
     registros_estructurados: List[Dict[str, Any]] = []
 
@@ -166,7 +168,7 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
 
         logger.info(f"🧬 Vectores generados: {len(vectores)}. Dimensión del primer vector (si existe): {len(vectores[0]) if vectores and isinstance(vectores[0], list) else 'N/A'}")
 
-        guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores)
+        guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores, coleccion)
 
         items_para_db_sql: List[CatalogoItem] = []
         for prod_dict_final in productos_finales_para_qdrant_y_db:
@@ -247,7 +249,11 @@ def subir_catalogo():
                 pyme_rubro_nombre = rubro_obj.nombre.lower().strip()
         logger.info(f"[UPLOAD_PROC] Rubro de la Pyme para procesamiento: {pyme_rubro_nombre}")
 
-        if not verificar_y_crear_coleccion_qdrant("catalogos", 1024, create_indexes=True):
+        coleccion = (
+            CATALOGO_MUNICIPIO if user.municipio_id or es_rubro_publico(user.rubro)
+            else CATALOGO_PYME
+        )
+        if not verificar_y_crear_coleccion_qdrant(coleccion, 1024, create_indexes=True):
             logger.error("[UPLOAD_PROC] No se pudo preparar la colección en Qdrant")
             return jsonify({"error": "Error de infraestructura al preparar el catálogo."}), 500
 
@@ -256,7 +262,7 @@ def subir_catalogo():
             qdrant_cli = get_qdrant_client()
             if qdrant_cli:
                 qdrant_cli.delete(
-                    collection_name="catalogos",
+                    collection_name=coleccion,
                     points_selector=qdrant_models.FilterSelector(
                         filter=qdrant_models.Filter(
                             must=[qdrant_models.FieldCondition(key="user_id", match=qdrant_models.MatchValue(value=user.id))]
@@ -270,7 +276,12 @@ def subir_catalogo():
         except Exception as e_delete_qdrant:
             logger.error(f"⚠️ Error al intentar eliminar catálogo anterior en Qdrant para user_id={user.id}: {e_delete_qdrant}", exc_info=True)
 
-        cantidad_procesada = procesar_y_embedear_catalogo(ruta_guardado_temporal, user.id, pyme_rubro_nombre=pyme_rubro_nombre)
+        cantidad_procesada = procesar_y_embedear_catalogo(
+            ruta_guardado_temporal,
+            user.id,
+            pyme_rubro_nombre=pyme_rubro_nombre,
+            coleccion=coleccion,
+        )
 
         mensaje_exito = f"✅ Catálogo procesado. Se { 'han' if cantidad_procesada != 1 else 'ha'} encontrado e indexado {cantidad_procesada} { 'producto' if cantidad_procesada == 1 else 'productos'}."
         if cantidad_procesada == 0:

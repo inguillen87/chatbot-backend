@@ -6,6 +6,7 @@ import sys
 # -- Stub heavy dependencies before importing the module under test --
 sys.modules.setdefault('cohere', ModuleType('cohere'))
 
+
 models_stub = ModuleType('models')
 models_stub.CatalogoItem = type('CatalogoItem', (), {'query': None})
 models_stub.QA = type('QA', (), {'query': None})
@@ -25,6 +26,7 @@ sys.modules.setdefault('qdrant_client.http', ModuleType('qdrant_client.http'))
 models_mod = ModuleType('qdrant_client.http.models')
 models_mod.ScoredPoint = object
 sys.modules.setdefault('qdrant_client.http.models', models_mod)
+
 
 from routes.catalogo import faq_texto, textos_perfil
 

@@ -4,6 +4,7 @@ import re
 from typing import List, Optional, Dict, Any, Tuple
 from collections import OrderedDict
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
+from services.logic import es_rubro_publico
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
 from .utils import limpiar_texto_base, unir_codigos_alfa_numericos
@@ -11,6 +12,14 @@ from .herramientas_municipio import normalizar_texto
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
+
+# Colecciones separadas para cada tipo de usuario
+CATALOGO_PYME = "catalogo_pyme"
+CATALOGO_MUNICIPIO = "catalogo_municipio"
+
+def coleccion_catalogo_para_rubro(rubro) -> str:
+    """Devuelve el nombre de colección Qdrant según el rubro."""
+    return CATALOGO_MUNICIPIO if es_rubro_publico(rubro) else CATALOGO_PYME
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +29,7 @@ def buscar_catalogo_qdrant(
     limite: int = DEFAULT_SEARCH_LIMIT,
     score_min: float = 0.30,
     categoria: str | None = None,
+    coleccion: str = CATALOGO_PYME,
 ) -> List[qdrant_models.ScoredPoint]:
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
@@ -29,7 +39,7 @@ def buscar_catalogo_qdrant(
     # Aseguramos que la colección exista y tenga los índices necesarios.
     # Esto previene fallos 403 cuando no existe el índice 'categoria_qdrant'.
     if not verificar_y_crear_coleccion_qdrant(
-        "catalogos",
+        coleccion,
         vector_size=1024,
         create_indexes=True,
     ):
@@ -88,7 +98,7 @@ def buscar_catalogo_qdrant(
             # Si tuvieras un campo catálogo_público, acá le podés meter ese filtro
 
         resultados = qdrant_cli.search(
-            collection_name="catalogos",
+            collection_name=coleccion,
             query_vector=vector_q,
             query_filter=search_filter,
             limit=limite,
