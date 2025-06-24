@@ -1,8 +1,8 @@
 from flask import Blueprint, request, jsonify
-from models import CatalogoItem
+from models import CatalogoItem, QA
 from routes.auth import token_requerido
 from services.qdrant_search import buscar_catalogo_qdrant, DEFAULT_SEARCH_LIMIT
-from services.utils import calcular_precio_por_unidad
+from services.utils import calcular_precio_por_unidad, limpiar_texto_base
 
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
@@ -97,3 +97,27 @@ def buscar_en_catalogo(user):
         if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
             productos.append(_formatear_producto(hit.payload))
     return jsonify(productos)
+
+
+@catalogo_bp.route('/faq_texto', methods=['GET'])
+@token_requerido
+def faq_texto(user):
+    """Devuelve las preguntas y respuestas de las FAQs en texto limpio."""
+    if not getattr(user, 'rubro_id', None):
+        return jsonify([])
+    faqs = QA.query.filter_by(rubro_id=user.rubro_id).all()
+    textos = []
+    for faq in faqs:
+        if faq.question and faq.answer:
+            texto = f"{faq.question} {faq.answer}"
+            textos.append(limpiar_texto_base(texto))
+    return jsonify(textos)
+
+
+@catalogo_bp.route('/textos_perfil', methods=['GET'])
+@token_requerido
+def textos_perfil(user):
+    """Devuelve los textos de catálogo preparados para el ranker."""
+    items = CatalogoItem.query.filter_by(user_id=user.id).all()
+    textos = [limpiar_texto_base(it.texto) for it in items if getattr(it, 'texto', None)]
+    return jsonify(textos)
