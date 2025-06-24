@@ -1316,7 +1316,16 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
             }
         return None
 
-# ...el resto del código permanece igual...
+def safe_llm_call(prompt, preamble, fallback=None):
+    try:
+        resp = get_cohere_response(message=prompt, preamble=preamble)
+        if not resp or "no tengo información" in resp.lower():
+            raise ValueError("Respuesta vacía o genérica")
+        return resp
+    except Exception as e:
+        logger.error(f"[LLM_FALLBACK] Error: {e}")
+        return fallback or "No tengo información específica, pero podés consultar al municipio o elegir otra opción."
+
 # Contenido COMPLETO y FINAL de la función responder_municipio con las mejoras.
 # Asume que todas las clases Handler y funciones auxiliares (como serializar_enum,
 # normalizar_texto, etc.) están definidas en el mismo archivo o importadas correctamente.

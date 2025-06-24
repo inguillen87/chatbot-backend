@@ -46,29 +46,19 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
     """
     Usa el LLM para obtener una lista de categorías sugeridas basadas en el texto del usuario.
     """
-    # Obtenemos la lista única de todas las categorías posibles desde nuestro diccionario
     todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
-    
-    # Creamos el prompt especializado
     prompt = crear_prompt_sugerir_categorias(texto_usuario, todas_las_categorias)
-    
     try:
-        # Llamamos al LLM
         respuesta_llm = get_cohere_response(message=prompt, preamble="Eres un experto clasificador. Responde solo con el JSON solicitado.")
-        
-        # Parseamos la respuesta JSON
         resultado = json.loads(respuesta_llm)
         sugerencias = resultado.get("sugerencias", [])
-        
-        # Devolvemos solo las primeras 3 sugerencias, si las hay
-        if isinstance(sugerencias, list):
+        if isinstance(sugerencias, list) and sugerencias:
             return sugerencias[:3]
-            
-    except (json.JSONDecodeError, TypeError, Exception) as e:
+    except Exception as e:
         logger.error(f"[sugerir_categorias] Error al procesar sugerencias del LLM: {e}")
-        return [] # En caso de error, devolvemos una lista vacía
-
-    return []
+    # Fallback: usa matcher clásico si el LLM no responde bien
+    fallback = categorizar_reclamo_por_palabra_clave(texto_usuario)
+    return [fallback] if fallback and fallback != "Otros" else []
    
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
@@ -235,7 +225,8 @@ TOOL_REGISTRY = {
                 "type": "string",
                 "description": f"La dirección completa del lugar. Ejemplo: '{CONFIG_MUNICIPIO.get('ejemplo_direccion', 'Av. Siempreviva 123')}'."
             }
-        }
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
     
     # --- NUEVA HERRAMIENTA REGISTRADA ---
@@ -244,6 +235,10 @@ TOOL_REGISTRY = {
         "descripcion": "Consulta la agenda de eventos culturales, recitales o actividades municipales para una fecha específica, como 'hoy', 'mañana' o 'el sábado'.",
         "parametros": {
             "fecha": {"type": "string", "description": "La fecha de la consulta. Puede ser una palabra como 'hoy', 'mañana', 'este fin de semana', o una fecha específica como '15 de junio'."}
-        }
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }
 }
+
+def log_uso_herramienta(nombre, usuario, parametros, resultado):
+    logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
