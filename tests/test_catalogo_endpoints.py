@@ -17,7 +17,7 @@ models_stub.PymeTicket = type('PymeTicket', (), {})
 models_stub.TicketComentario = type('TicketComentario', (), {})
 models_stub.TicketSatisfaccion = type('TicketSatisfaccion', (), {})
 models_stub.db = SimpleNamespace(session=None)
-sys.modules['models'] = models_stub
+sys.modules.setdefault('models', models_stub)
 sys.modules.setdefault('qdrant_client', ModuleType('qdrant_client'))
 qdrant_stub = sys.modules['qdrant_client']
 qdrant_stub.QdrantClient = object
@@ -26,6 +26,12 @@ sys.modules.setdefault('qdrant_client.http', ModuleType('qdrant_client.http'))
 models_mod = ModuleType('qdrant_client.http.models')
 models_mod.ScoredPoint = object
 sys.modules.setdefault('qdrant_client.http.models', models_mod)
+
+# Stub pandas to avoid heavy import
+pandas_stub = ModuleType('pandas')
+pandas_stub.DataFrame = object
+pandas_stub.Series = object
+sys.modules.setdefault('pandas', pandas_stub)
 
 
 from routes.catalogo import faq_texto, textos_perfil

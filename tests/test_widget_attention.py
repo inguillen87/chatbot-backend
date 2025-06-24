@@ -2,8 +2,6 @@ import unittest
 import sys
 
 try:
-    if 'flask' in sys.modules:
-        del sys.modules['flask']
     from app import create_app
 except Exception:
     create_app = None
