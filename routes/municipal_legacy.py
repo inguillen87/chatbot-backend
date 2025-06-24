@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from routes.auth import token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
@@ -49,13 +49,17 @@ def municipal_tramite(nombre):
 def municipal_incidents(current_user):
     """Lista los tickets municipales abiertos para el municipio del usuario."""
 
-    tickets = (
-        MunicipioTicket.query
-        .filter_by(municipio_id=current_user.municipio_id)
-        .filter(MunicipioTicket.estado != 'cerrado')
-        .order_by(MunicipioTicket.fecha.desc())
-        .all()
-    )
+    try:
+        tickets = (
+            MunicipioTicket.query
+            .filter_by(municipio_id=current_user.municipio_id)
+            .filter(MunicipioTicket.estado != 'cerrado')
+            .order_by(MunicipioTicket.fecha.desc())
+            .all()
+        )
+    except Exception:
+        current_app.logger.exception("Error fetching municipal incidents")
+        tickets = []
 
     resultado = [
         {
@@ -64,7 +68,7 @@ def municipal_incidents(current_user):
             "asunto": getattr(t, "asunto", "N/A"),
             "categoria": getattr(t, "categoria", None),
             "estado": t.estado,
-            "fecha": t.fecha.isoformat(),
+            "fecha": t.fecha.isoformat() if getattr(t, "fecha", None) else None,
             "direccion": getattr(t, "direccion", None),
             "latitud": getattr(t, "latitud", None),
             "longitud": getattr(t, "longitud", None),
