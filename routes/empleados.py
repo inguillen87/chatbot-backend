@@ -16,7 +16,13 @@ def listar_empleados(current_user: User):
         .all()
     )
     datos = [
-        {"id": e.id, "name": e.name, "email": e.email, "rol": e.rol}
+        {
+            "id": e.id,
+            "name": e.name,
+            "email": e.email,
+            "rol": e.rol,
+            "categorias": e.ticket_categorias or "",
+        }
         for e in empleados
     ]
     return jsonify(datos)
@@ -30,6 +36,7 @@ def crear_empleado(current_user: User):
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
+    categorias = data.get('categorias')
     if not all([name, email, password]):
         return jsonify({"error": "Datos inválidos"}), 400
     if User.query.filter_by(email=email.strip().lower()).first():
@@ -40,6 +47,7 @@ def crear_empleado(current_user: User):
         token=str(uuid.uuid4()),
         rol='empleado',
         empresa_id=current_user.id,
+        ticket_categorias=(','.join(categorias) if isinstance(categorias, list) else categorias) if categorias else None,
     )
     nuevo.set_password(password)
     db.session.add(nuevo)
@@ -48,7 +56,13 @@ def crear_empleado(current_user: User):
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Error al crear"}), 500
-    return jsonify({"id": nuevo.id, "name": nuevo.name, "email": nuevo.email, "rol": nuevo.rol}), 201
+    return jsonify({
+        "id": nuevo.id,
+        "name": nuevo.name,
+        "email": nuevo.email,
+        "rol": nuevo.rol,
+        "categorias": nuevo.ticket_categorias or "",
+    }), 201
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
 @token_requerido
@@ -85,7 +99,13 @@ def obtener_empleado(current_user: User, emp_id: int):
     empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
     if not empleado:
         return jsonify({"error": "Empleado no encontrado"}), 404
-    return jsonify({"id": empleado.id, "name": empleado.name, "email": empleado.email, "rol": empleado.rol})
+    return jsonify({
+        "id": empleado.id,
+        "name": empleado.name,
+        "email": empleado.email,
+        "rol": empleado.rol,
+        "categorias": empleado.ticket_categorias or "",
+    })
 
 
 @empleados_bp.route('/<int:emp_id>', methods=['PUT'])
@@ -106,12 +126,23 @@ def actualizar_empleado(current_user: User, emp_id: int):
         empleado.email = nuevo_email
     if 'password' in data and data['password']:
         empleado.set_password(data['password'])
+    if 'categorias' in data:
+        cats = data['categorias']
+        empleado.ticket_categorias = (
+            ','.join(cats) if isinstance(cats, list) else cats
+        )
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Error al actualizar"}), 500
-    return jsonify({"id": empleado.id, "name": empleado.name, "email": empleado.email, "rol": empleado.rol})
+    return jsonify({
+        "id": empleado.id,
+        "name": empleado.name,
+        "email": empleado.email,
+        "rol": empleado.rol,
+        "categorias": empleado.ticket_categorias or "",
+    })
 
 
 @empleados_bp.route('/<int:emp_id>', methods=['DELETE'])

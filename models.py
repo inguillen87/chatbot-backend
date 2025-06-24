@@ -72,6 +72,7 @@ class User(db.Model, UserMixin):
     acepta_marketing = db.Column(Boolean, default=False)
     fecha_aceptacion_marketing = db.Column(DateTime, nullable=True)
     tags = db.Column(db.String(255), default="")
+    ticket_categorias = db.Column(db.String(255), nullable=True)
     horario = db.Column(db.String(100), nullable=True)
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
@@ -98,6 +99,21 @@ class User(db.Model, UserMixin):
             except json.JSONDecodeError:
                 return None
         return None
+
+    @property
+    def categorias_lista(self) -> list[str]:
+        if not self.ticket_categorias:
+            return []
+        return [c.strip() for c in self.ticket_categorias.split(',') if c.strip()]
+
+    @categorias_lista.setter
+    def categorias_lista(self, value):
+        if isinstance(value, list):
+            self.ticket_categorias = ','.join(value)
+        elif isinstance(value, str):
+            self.ticket_categorias = value
+        else:
+            self.ticket_categorias = None
 
     def __repr__(self):
         return f"<User {self.email}>"

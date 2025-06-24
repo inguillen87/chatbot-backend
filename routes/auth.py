@@ -112,6 +112,7 @@ def login():
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
+        "categorias": user.ticket_categorias or "",
     })
 
 @auth_bp.route('/google-client-id', methods=['GET'])
@@ -147,6 +148,7 @@ def google_login():
             "empresa_id": user.empresa_id,
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
+            "categorias": user.ticket_categorias or "",
         })
     except ValueError as e:
         return jsonify({"error": str(e)}), 401
@@ -369,6 +371,7 @@ def login_from_widget(owner_user):
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
+        "categorias": user.ticket_categorias or "",
     })
 
 
@@ -527,6 +530,7 @@ def get_current_user(user):
         "limite_preguntas": limite_para_usuario(user),
         "horario_json": user.horario_json,
         "logo_url": getattr(user, "logo_url", ""),
+        "categorias": user.ticket_categorias or "",
     })
 
 # Nueva ruta para obtener información básica del token
