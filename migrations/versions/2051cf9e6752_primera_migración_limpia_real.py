@@ -1,8 +1,8 @@
-"""init full reset
+"""Primera migración limpia real
 
-Revision ID: 36e6d0ec0e51
+Revision ID: 2051cf9e6752
 Revises: 
-Create Date: 2025-06-24 01:05:45.759031
+Create Date: 2025-06-24 01:29:57.952133
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
-revision = '36e6d0ec0e51'
+revision = '2051cf9e6752'
 down_revision = None
 branch_labels = None
 depends_on = None
