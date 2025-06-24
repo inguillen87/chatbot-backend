@@ -122,6 +122,13 @@ def get_google_client_id():
     first = ids.split(',')[0].strip() if ids else ""
     return jsonify({"client_id": first})
 
+
+@auth_bp.route('/google-maps-key', methods=['GET'])
+def get_google_maps_key():
+    """Retorna la API key de Google Maps si está configurada."""
+    key = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    return jsonify({"api_key": key})
+
 @auth_bp.route('/google-login', methods=['POST'])
 def google_login():
     """Inicia sesión utilizando un token de Google."""
