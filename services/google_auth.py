@@ -18,11 +18,24 @@ if env_ids:
 
 logger = logging.getLogger(__name__)
 
-def login_o_crear_usuario(token_id: str) -> User:
+def _normalizar_tipo(tipo: str | None) -> str | None:
+    if not tipo:
+        return None
+    sinonimos = {
+        "muni": "municipio",
+        "municipios": "municipio",
+        "municipio": "municipio",
+        "pymes": "pyme",
+        "pyme": "pyme",
+    }
+    return sinonimos.get(str(tipo).strip().lower())
+
+def login_o_crear_usuario(token_id: str, *, rol: str | None = None, tipo_chat: str | None = None) -> User:
     """Verifica el token de Google y devuelve un usuario existente o nuevo.
 
     El/los ID de cliente permitidos se establecen con la variable de entorno
     ``GOOGLE_OAUTH_CLIENT_ID``. Se pueden separar múltiples IDs con coma.
+    ``rol`` y ``tipo_chat`` se aplican sólo cuando se crea un usuario nuevo.
     """
     try:
         info = id_token.verify_oauth2_token(token_id, google_requests.Request())
@@ -41,6 +54,8 @@ def login_o_crear_usuario(token_id: str) -> User:
 
     user = User.query.filter_by(email=email.lower()).first()
     if not user:
+        tipo_normalizado = _normalizar_tipo(tipo_chat) or "pyme"
+        rol_final = rol if rol in {"admin", "usuario"} else "usuario"
         user = User(
             name=name.strip(),
             email=email.lower(),
@@ -48,8 +63,8 @@ def login_o_crear_usuario(token_id: str) -> User:
             nombre_empresa="",
             rubro_id=None,
             plan="gratis",
-            rol="usuario",
-            tipo_chat="pyme",
+            rol=rol_final,
+            tipo_chat=tipo_normalizado,
             acepto_terminos=True,
             fecha_aceptacion_terminos=datetime.utcnow(),
         )

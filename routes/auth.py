@@ -122,6 +122,13 @@ def get_google_client_id():
     first = ids.split(',')[0].strip() if ids else ""
     return jsonify({"client_id": first})
 
+
+@auth_bp.route('/google-maps-key', methods=['GET'])
+def get_google_maps_key():
+    """Retorna la API key de Google Maps si está configurada."""
+    key = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    return jsonify({"api_key": key})
+
 @auth_bp.route('/google-login', methods=['POST'])
 def google_login():
     """Inicia sesión utilizando un token de Google."""
@@ -130,11 +137,20 @@ def google_login():
         data.get('id_token')
         or request.form.get('id_token')
     )
+    tipo_chat = data.get('tipo_chat') or request.form.get('tipo_chat')
+    rol = data.get('rol') or request.form.get('rol')
     if not token_id:
         return jsonify({"error": "id_token requerido"}), 400
     try:
-        user = login_o_crear_usuario(token_id)
+        user = login_o_crear_usuario(token_id, rol=rol, tipo_chat=tipo_chat)
         current_app.logger.info(f"Login Google para: {user.email}")
+
+        if not getattr(user, "rubro_id", None):
+            return jsonify({
+                "status": "falta_rubro",
+                "token": user.token,
+                "email": user.email,
+            })
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
         tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
@@ -596,7 +612,9 @@ def dashboard_info(user):
     tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
     panels = ["perfil"]
-    if user.rol in ("admin", "empleado"):
+    if user.rol == "admin":
+        panels.extend(["tickets", "crm", "empleados"])
+    elif user.rol == "empleado":
         panels.extend(["tickets", "crm"])
     if user.municipio_id:
         panels.append("municipio")

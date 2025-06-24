@@ -11,7 +11,12 @@ This project exposes several endpoints to process questions for different sector
 - `POST /widget/login` – login for end users without leaving the widget.
 - `POST /chatuserregisterpanel` – register a chat user selecting the company token.
 - `POST /chatuserloginpanel` – login a chat user specifying the company token.
-- `POST /google-login` – login o registro utilizando un ID token de Google.
+- `POST /google-login` – login o registro utilizando un ID token de Google. Si
+  el correo no existe se crea un usuario nuevo y puede enviarse `rol` y
+  `tipo_chat` para definir sus permisos (`admin` o `usuario`) y el tipo de chat
+  (`pyme` o `municipio`).  Cuando el usuario aún no tiene rubro asociado la
+  respuesta será `{"status": "falta_rubro", "token": "...", "email": "..."}`
+  para que el frontend redirija a la selección de rubro.
 - `GET /token-info` – returns the company and sector linked to a token.
 - Returned JSON now includes `rol` and `empresa_id` so the frontend can show the
   appropriate admin or employee options. Login endpoints also return the user's
@@ -77,6 +82,9 @@ Para definir qué orígenes pueden realizar peticiones al backend, puedes usar l
 variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
 `chatboc.ar` por defecto.
+
+Define también `GOOGLE_MAPS_API_KEY` si el frontend usa el widget de mapa.
+El valor se obtiene desde `/google-maps-key` para inicializar Google Maps.
 
 Para ajustar la zona horaria de los tickets puedes definir `TIMEZONE_OFFSET` con
 la diferencia respecto a UTC en horas (por ejemplo `-3` para Argentina).
