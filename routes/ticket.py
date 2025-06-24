@@ -9,7 +9,7 @@ from models import (
 )
 from services.ticket_service import servicio_tickets
 from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
-from utils.permissions import require_role, require_municipio_access
+from utils.permissions import require_role
 from collections import defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
@@ -469,18 +469,13 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
 @ticket_bp.route('/panel_por_categoria', methods=['GET'])
 @token_requerido
 @require_role('admin', 'empleado')
-@require_municipio_access
 def get_panel_por_categoria(current_user: User):
-    if not getattr(current_user, "municipio_id", None):
-        return jsonify({"error": "Acceso restringido a usuarios de municipios."}), 403
 
     try:
-        tickets = (
-            MunicipioTicket.query
-            .filter_by(municipio_id=current_user.municipio_id)
-            .order_by(MunicipioTicket.fecha.desc())
-            .all()
-        )
+        query = MunicipioTicket.query
+        if getattr(current_user, "municipio_id", None):
+            query = query.filter_by(municipio_id=current_user.municipio_id)
+        tickets = query.order_by(MunicipioTicket.fecha.desc()).all()
         if current_user.rol == 'empleado' and current_user.ticket_categorias:
             cats = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
             tickets = [t for t in tickets if (t.categoria or '').lower() in cats]
