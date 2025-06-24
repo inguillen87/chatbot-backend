@@ -52,6 +52,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /archivos/subir` – upload a file associated with chats or tickets.
   Only images, PDFs, spreadsheets and text documents up to 10MB are accepted.
 - `GET /archivos/<nombre>` – download a previously uploaded file (requires authentication).
+- `GET /archivos/sesion/<id>` – list all chat files for the given session.
 - `GET /notifications` – list pending notifications for the authenticated user.
 - `POST /presupuestos/generar` – send a PDF quote to a client based on item data.
 
