@@ -78,6 +78,9 @@ variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
 `chatboc.ar` por defecto.
 
+Define también `GOOGLE_MAPS_API_KEY` si el frontend usa el widget de mapa.
+El valor se obtiene desde `/google-maps-key` para inicializar Google Maps.
+
 Para ajustar la zona horaria de los tickets puedes definir `TIMEZONE_OFFSET` con
 la diferencia respecto a UTC en horas (por ejemplo `-3` para Argentina).
 Si no se indica, se asume `-3`.
