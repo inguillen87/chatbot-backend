@@ -3,6 +3,7 @@ import os
 
 # Directorio base de la aplicación
 basedir = os.path.abspath(os.path.dirname(__file__))
+TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
 
 class Config:
     """

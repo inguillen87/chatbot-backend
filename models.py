@@ -1,4 +1,5 @@
 from datetime import datetime
+from utils.time_utils import get_local_now
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
 from sqlalchemy import Index
 from sqlalchemy.dialects.sqlite import JSON
@@ -134,7 +135,7 @@ class MunicipioTicket(db.Model):
     direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
-    fecha = db.Column(db.DateTime, default=db.func.now())
+    fecha = db.Column(db.DateTime, default=get_local_now)
     archivo_url = db.Column(db.String(255), nullable=True)
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
 
@@ -148,7 +149,7 @@ class PymeTicket(db.Model):
     estado = db.Column(db.String(30), default="nuevo")
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
-    fecha = db.Column(db.DateTime, default=db.func.now())
+    fecha = db.Column(db.DateTime, default=get_local_now)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     archivo_url = db.Column(db.String(255), nullable=True)
     telefono = db.Column(db.String(30), nullable=True)
