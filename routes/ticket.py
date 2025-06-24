@@ -471,9 +471,8 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
 @require_role('admin', 'empleado')
 @require_municipio_access
 def get_panel_por_categoria(current_user: User):
-    es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
-    if not es_agente_municipal:
-        return jsonify({"error": "No tienes permiso para acceder a este panel."}), 403
+    if not getattr(current_user, "municipio_id", None):
+        return jsonify({"error": "Acceso restringido a usuarios de municipios."}), 403
 
     try:
         tickets = (

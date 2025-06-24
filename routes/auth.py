@@ -587,6 +587,27 @@ def token_info(user):
         "tipo_chat": getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme"),
     })
 
+
+@auth_bp.route('/me/dashboard', methods=['GET'])
+@token_requerido
+def dashboard_info(user):
+    """Devuelve las secciones disponibles para el usuario actual."""
+    rubro_nombre = user.rubro.nombre if user.rubro else "General"
+    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
+
+    panels = ["perfil"]
+    if user.rol in ("admin", "empleado"):
+        panels.extend(["tickets", "crm"])
+    if user.municipio_id:
+        panels.append("municipio")
+
+    return jsonify({
+        "id": user.id,
+        "rol": user.rol,
+        "tipo_chat": tipo_chat,
+        "panels": panels,
+    })
+
 @auth_bp.route('/me', methods=['PUT'])
 @auth_bp.route('/perfil', methods=['PUT'])
 @token_requerido
