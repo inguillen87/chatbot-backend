@@ -234,7 +234,7 @@ def register():
         nombre_empresa=data['nombre_empresa'].strip(),
         rubro_id=rubro.id,
         plan="gratis",
-        rol="usuario",
+        rol="admin",
         acepto_terminos=True,
         fecha_aceptacion_terminos=datetime.utcnow(),
         acepta_marketing=acepta_marketing,
