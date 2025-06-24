@@ -126,6 +126,7 @@ class MunicipioTicket(db.Model):
     pregunta = db.Column(db.Text, nullable=False)
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
+    municipio_id = db.Column(db.Integer, nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     municipio_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
