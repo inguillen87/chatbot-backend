@@ -225,8 +225,8 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         else: 
             for item_llm in parsed_json:
                 identificador = item_llm.get('producto_identificador', '').strip()
-                cantidad = item_llam.get('cantidad', 1)
-                unidad = item_llam.get('unidad', 'unidad')
+                cantidad = item_llm.get('cantidad', 1)
+                unidad = item_llm.get('unidad', 'unidad')
 
                 matched_product = None
                 for p_raw in productos_disponibles_raw:
@@ -253,6 +253,17 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
     except Exception as e:
         logger.error(f"[PYMES] Error al extraer cantidades con LLM: {e}", exc_info=True)
         return []
+
+
+def ordenar_productos_para_venta(productos: list[dict]) -> list[dict]:
+    """Ordena productos priorizando destacados, relevancia y mejor precio."""
+    def _key(p):
+        destacado = 0 if p.get("destacado") else 1
+        relevancia = -float(p.get("relevancia", 0))
+        precio = float(p.get("precio_float") or p.get("precio") or 0)
+        return (destacado, relevancia, precio)
+
+    return sorted(productos, key=_key)
 
 def armar_respuesta_catalogo_agrupado(productos: list, max_por_categoria=5) -> str:
     """
@@ -583,10 +594,11 @@ class CrossSellHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
         if productos:
-            # Ejemplo: sugiere productos de otra categoría o los más vendidos
+            # Sugiere productos de otra categoría o los más vendidos
             sugeridos = [p for p in productos if p.get("destacado") or p.get("categoria") == "Accesorios"]
+            sugeridos = ordenar_productos_para_venta(sugeridos)
             if sugeridos:
-                texto = "¿Te interesan también estos productos que suelen comprar otros clientes?"
+                texto = "Muchos clientes también llevan estos productos complementarios. ¡Aprovechá para agregarlos a tu compra!"
                 lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in sugeridos[:3]])
                 return {
                     "respuesta": f"{texto}\n{lista}",
@@ -882,8 +894,8 @@ class VectorCatalogHandler(BaseHandler):
                     productos_mostrados.append(hit.payload)
 
         if productos_mostrados:
-            # Ordena primero por relevancia (si existe), luego por precio
-            productos_mostrados.sort(key=lambda p: (p.get("relevancia", 0), float(p.get("precio_float") or p.get("precio") or 0)), reverse=True)
+            # Ordena usando un algoritmo que prioriza destacados y relevancia
+            productos_mostrados = ordenar_productos_para_venta(productos_mostrados)
             self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
 
             # Agrupa por categoría si hay muchas opciones
@@ -1131,7 +1143,7 @@ class IntentClassifierPymeHandler(BaseHandler):
         # Si no hubo match, usa LLM para clasificar intención
         if not memoria.get("estado_conversacion"):
             intencion_llm = _clasificar_intencion_pyme_con_llm(pregunta)
-            self.context["intencion"] = intencion_llam
+            self.context["intencion"] = intencion_llm
         else:
             self.context["intencion"] = "continuar_flujo"
 
@@ -1146,8 +1158,9 @@ class RecomendacionHandler(BaseHandler):
             return None
         # Ejemplo: sugiere los más vendidos o destacados
         recomendados = [p for p in productos if p.get("destacado")] or productos[:3]
+        recomendados = ordenar_productos_para_venta(recomendados)
         if recomendados:
-            texto = "Te recomiendo estos productos que eligen otros clientes:"
+            texto = "Nuestros clientes aman estos productos. ¿Te gustaría probarlos?"
             lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in recomendados])
             return {
                 "respuesta": f"{texto}\n{lista}\n¿Te gustaría agregarlos al pedido o ver más detalles?",
@@ -1169,8 +1182,9 @@ class UpsellHandler(BaseHandler):
         # Ejemplo: si el usuario pide un producto barato, sugiere el premium
         baratos = [p for p in productos if float(p.get("precio_float", 0)) < 5000]
         premium = [p for p in productos if float(p.get("precio_float", 0)) > 10000]
+        premium = ordenar_productos_para_venta(premium)
         if baratos and premium:
-            texto = "¿Sabías que tenemos versiones premium o packs con mejor precio por unidad?"
+            texto = "Tenemos opciones premium y packs con mayor valor agregado. ¡Ideal para sacar el máximo provecho!"
             lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in premium[:2]])
             return {
                 "respuesta": f"{texto}\n{lista}\n¿Te gustaría conocer más o agregarlos al pedido?",
