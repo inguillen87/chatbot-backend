@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from models import User, TicketComentario, db
 from routes.auth import token_requerido, solo_admin_requerido
+from services.logic import es_rubro_publico
 import uuid
 
 empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')
@@ -47,6 +48,10 @@ def crear_empleado(current_user: User):
         token=str(uuid.uuid4()),
         rol='empleado',
         empresa_id=current_user.id,
+        tipo_chat=current_user.tipo_chat
+        or (
+            "municipio" if es_rubro_publico(current_user.rubro) else "pyme"
+        ),
         ticket_categorias=(','.join(categorias) if isinstance(categorias, list) else categorias) if categorias else None,
     )
     nuevo.set_password(password)
