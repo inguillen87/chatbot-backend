@@ -35,5 +35,25 @@ class EmpleadosRouteTests(unittest.TestCase):
             resp = crear_empleado(SimpleNamespace(id=1))
             self.assertEqual(resp[1], 400)
 
+    def test_crear_empleado_con_categorias(self):
+        data = {
+            "name": "Nuevo",
+            "email": "nuevo@e.com",
+            "password": "123",
+            "categorias": ["A", "B"],
+        }
+
+        class NewDummyUser(DummyUser):
+            query = DummyQuery(None)
+
+        session = DummySession()
+        with patch('routes.empleados.request', SimpleNamespace(get_json=lambda silent=True: data)), \
+             patch('routes.empleados.User', NewDummyUser), \
+             patch('routes.empleados.db', SimpleNamespace(session=session)):
+            resp = crear_empleado(SimpleNamespace(id=1))
+            self.assertEqual(resp[1], 201)
+            created = session.added[0]
+            self.assertEqual(created.ticket_categorias, 'A,B')
+
 if __name__ == '__main__':
     unittest.main()
