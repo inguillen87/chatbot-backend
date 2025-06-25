@@ -101,6 +101,7 @@ class ConversationState(Enum):
     ESPERANDO_DESCRIPCION_RECLAMO = auto()    # <--- AGREGA ESTO
     ESPERANDO_ADJUNTOS_RECLAMO = auto()       # <--- AGREGA ESTO
     ESPERANDO_CONFIRMACION_RECLAMO = auto()   # <--- AGREGA ESTO
+    ESPERANDO_CONFIRMACION_CANCELACION = auto()
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
 
@@ -284,10 +285,17 @@ class CancelHandler(BaseMunicipioHandler):
 
     def handle(self, pregunta: str) -> dict | None:
         texto = normalizar_texto(pregunta)
+        memoria = self.context.get("contexto_municipio", {})
         if any(kw in texto for kw in self.CANCEL_KEYWORDS):
-            self.context.get("contexto_municipio", {}).clear()
+            if memoria.get("estado_conversacion"):
+                memoria["estado_anterior"] = memoria.get("estado_conversacion")
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_CANCELACION
+                return {
+                    "respuesta": "¿Querés cancelar el trámite en curso?",
+                    "botones": [{"texto": "Sí"}, {"texto": "No"}],
+                }
             return {
-                "respuesta": "Operación cancelada. ¿Necesitás ayuda con otro trámite o reclamo?",
+                "respuesta": "No hay un trámite en curso. ¿Necesitás algo más?",
                 "botones": [
                     {"texto": "Hacer un reclamo"},
                     {"texto": "Consultar estado de ticket"},
@@ -305,7 +313,6 @@ class PoliteHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         texto = normalizar_texto(pregunta)
         if texto in self.KEYWORDS:
-            self.context.get("contexto_municipio", {}).clear()
             return {
                 "respuesta": "¡De nada! ¿Necesitás ayuda con algo más?",
                 "botones": [
@@ -650,11 +657,25 @@ class ReclamoHandler(BaseMunicipioHandler):
         # 2. Dirección
         if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
             if not direccion_es_valida(pregunta):
+                memoria.setdefault("intentos_direccion", 0)
+                memoria["intentos_direccion"] += 1
+                if memoria["intentos_direccion"] >= 2:
+                    return {
+                        "respuesta": (
+                            "No logré identificar una dirección válida. ¿Querés ingresar la dirección igual como la escribiste, o reintentarlo otra vez?"
+                        ),
+                        "botones": [
+                            {"texto": "Usar como está", "action": "usar_direccion_manual"},
+                            {"texto": "Reintentar", "action": "reintentar_direccion"},
+                            {"texto": "Cancelar reclamo", "action": "cancelar_reclamo"}
+                        ]
+                    }
                 return {
-                    "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}"
+                    "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}. Intentá de nuevo."
                 }
             memoria["direccion_reclamo"] = pregunta
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
+            memoria.pop("intentos_direccion", None)
             return {"respuesta": "¡Gracias! Ahora tu nombre completo."}
 
         # 3. Nombre
