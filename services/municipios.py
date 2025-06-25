@@ -224,6 +224,27 @@ class BaseMunicipioHandler:
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
 
+    def build_detalles_memoria(self, memoria: dict) -> str:
+        """Arma un pequeño resumen de los datos del reclamo."""
+        partes = []
+        if memoria.get("categoria"):
+            partes.append(f"Categoría: {memoria['categoria']}")
+        if memoria.get("direccion"):
+            partes.append(f"Dirección: {memoria['direccion']}")
+        if memoria.get("nombre"):
+            partes.append(f"Nombre: {memoria['nombre']}")
+        if memoria.get("telefono"):
+            partes.append(f"Teléfono: {memoria['telefono']}")
+        if memoria.get("email"):
+            partes.append(f"Email: {memoria['email']}")
+        if memoria.get("descripcion"):
+            partes.append(f"Descripción: {memoria['descripcion']}")
+        if memoria.get("ubicacion"):
+            partes.append("Ubicación adjunta")
+        if memoria.get("foto_url"):
+            partes.append("Foto adjunta")
+        return "\n".join(partes)
+
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -639,40 +660,18 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                 "descripcion": "¿Podés describir brevemente el problema?",
             }
             return {"respuesta": prompts[campo]}
-
-        # 3. Generar el ticket en DB
-        try:
-            ticket = MunicipioTicket(
-                asunto=f"Reclamo de {memoria['categoria']}",
-                categoria=memoria['categoria'],
-                detalles=memoria['descripcion'],
-                direccion=memoria['direccion'],
-                nombre_vecino=memoria['nombre'],
-                telefono_vecino=memoria['telefono'],
-                email_vecino=memoria['email'],
-                estado="nuevo",
-            )
-            db.session.add(ticket)
-            db.session.commit()
-            memoria["ticket_creado"] = ticket.nro_ticket
-
-            # (Acá agregá notificación SMS/WhatsApp si querés)
+        if estado != ConversationState.ESPERANDO_ADJUNTOS_RECLAMO and estado != ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
             return {
-                "respuesta": f"¡Listo! Tu reclamo fue registrado con éxito. Número de ticket: **M-{ticket.nro_ticket}**. Vas a recibir novedades por email o WhatsApp.",
+                "respuesta": "¿Querés adjuntar una foto o compartir tu ubicación?",
                 "botones": [
-                    {"texto": "Nuevo reclamo"},
-                    {"texto": "Consultar estado de ticket"},
+                    {"texto": "Adjuntar foto"},
+                    {"texto": "Compartir ubicación"},
+                    {"texto": "No, continuar"},
                 ],
-                "ticket_id": ticket.id
             }
-        except Exception as e:
-            logger.error(f"[ReclamoInteligenteMunicipioHandler] Error al guardar ticket: {e}")
-            return {
-                "respuesta": "Hubo un error técnico al registrar tu reclamo. Probá más tarde o comunicate con el municipio.",
-                "botones": [
-                    {"texto": "Hablar con un agente"}
-                ]
-            }
+
+        return None
 
     def extraer_datos_llm(self, mensaje):
         """
@@ -1077,6 +1076,11 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Consultar otro ticket": "consultar_estado_ticket",
     "Hablar con un agente": "hablar_con_agente",
     "Nuevo reclamo": "iniciar_reclamo",
+    "Adjuntar foto": "adjuntar_foto",
+    "Compartir ubicación": "compartir_ubicacion",
+    "No, continuar": "no_continuar",
+    "Confirmar reclamo": "confirmar_reclamo",
+    "Editar datos": "editar_reclamo",
 }
 
 class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
@@ -1256,6 +1260,50 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
             ]
         }
 
+
+class ConfirmarReclamoHandler(BaseMunicipioHandler):
+    def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        if memoria.get("estado_conversacion") != ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
+            return None
+
+        texto = normalizar_texto(pregunta)
+        if "editar" in texto:
+            memoria.clear()
+            return {"respuesta": "De acuerdo, iniciemos de nuevo el reclamo. ¿Cuál es la categoría?", "botones": BOTONES_TODAS_CATEGORIAS}
+
+        if "confirmar" not in texto and "si" not in texto:
+            resumen = self.build_detalles_memoria(memoria)
+            return {"respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}"}
+
+        ticket_data = {
+            "pregunta": memoria.get("descripcion", ""),
+            "asunto": f"Reclamo de {memoria.get('categoria')}",
+            "categoria": memoria.get("categoria"),
+            "detalles": memoria.get("descripcion"),
+            "direccion": memoria.get("direccion"),
+            "user_id": self.context.get("cliente_id"),
+            "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
+            "anon_id": self.context.get("anon_id"),
+            "latitud": memoria.get("ubicacion", {}).get("lat") if isinstance(memoria.get("ubicacion"), dict) else None,
+            "longitud": memoria.get("ubicacion", {}).get("lon") if isinstance(memoria.get("ubicacion"), dict) else None,
+            "archivo_url": memoria.get("foto_url"),
+        }
+        ticket = servicio_tickets.crear_nuevo_ticket("municipio", ticket_data)
+        if not ticket:
+            memoria.clear()
+            return {"respuesta": "Hubo un error técnico al registrar tu reclamo. Probá más tarde."}
+
+        memoria.clear()
+        return {
+            "respuesta": f"¡Listo! Tu reclamo fue registrado con éxito. Número de ticket: **M-{ticket.nro_ticket}**.",
+            "botones": [
+                {"texto": "Nuevo reclamo"},
+                {"texto": "Consultar estado de ticket"},
+            ],
+            "ticket_id": ticket.id,
+        }
+
 def safe_llm_call(prompt, preamble, fallback=None):
     try:
         resp = get_cohere_response(message=prompt, preamble=preamble)
@@ -1308,6 +1356,8 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     SmallTalkHandler,
     IntentClassifierHandler,
     ReclamoInteligenteMunicipioHandler,
+    ReclamoGeoHandler,
+    ConfirmarReclamoHandler,
     HumanEscalationHandler,
     RecoleccionHandler,
     TicketStatusHandler,
