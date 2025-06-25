@@ -395,99 +395,80 @@ class RecoleccionHandler(BaseMunicipioHandler):
 
 class IntentClassifierHandler(BaseMunicipioHandler):
     KEYWORDS_AGENTE = [
-        "agente",
-        "humano",
-        "persona",
-        "representante",
-        "operador",
-        "empleado",
-        "atención",
-        "real",
-        "chat real",
-        "soporte",
-        "ayuda humana",
-        "hablar con alguien",
-        "asesor",
-        "consultor",
-        "soporte técnico",
-        "atender",
-        "personal",
-        "comunicarme", # Añadir sinónimos comunes
-        "llamar",
-        "contacto",
-        "quiero hablar",
-        "hablame con"
+        "agente", "humano", "persona", "representante", "operador", "empleado", "atención", 
+        "real", "chat real", "soporte", "ayuda humana", "hablar con alguien", "asesor",
+        "consultor", "soporte técnico", "atender", "personal", "comunicarme", 
+        "llamar", "contacto", "quiero hablar", "hablame con"
     ]
-    # Otras palabras clave para reclamo, trámite, etc. si quieres un fallback rápido sin LLM
     KEYWORDS_RECLAMO = [
         "reclamo", "reclamos", "queja", "quejas", "problema", "problemas",
         "denuncia", "denuncias", "reportar", "arbol caido", "árbol caído", "arbol", "caido"
     ]
     KEYWORDS_TRAMITE = ["trámite", "tramite", "gestión", "consulta de trámite"]
-    
-def handle(self, pregunta: str) -> dict | None:
-    logger.info(f"[INTENT] Analizando intención para: {pregunta}")
-    memoria = self.context.get("contexto_municipio", {})
-    texto_normalizado = normalizar_texto(pregunta)
-    tokens = texto_normalizado.split()
 
-    # 1. AGENTE - keywords una palabra y frases
-    for kw in self.KEYWORDS_AGENTE:
-        kw_norm = kw.lower()
-        if " " in kw_norm:  # Frase
-            if kw_norm in texto_normalizado:
-                self.context["intencion"] = "hablar_con_agente"
-                memoria.clear()
-                logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword/frase '{kw}')")
-                return None
-        else:  # Palabra suelta
-            if kw_norm in tokens:
-                self.context["intencion"] = "hablar_con_agente"
-                memoria.clear()
-                logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword palabra '{kw}')")
-                return None
+    def handle(self, pregunta: str) -> dict | None:
+        logger.info(f"[INTENT] Analizando intención para: {pregunta}")
+        memoria = self.context.get("contexto_municipio", {})
+        texto_normalizado = normalizar_texto(pregunta)
+        tokens = texto_normalizado.split()
 
-    # 2. RECLAMO
-    for kw in self.KEYWORDS_RECLAMO:
-        kw_norm = kw.lower()
-        if " " in kw_norm:
-            if kw_norm in texto_normalizado:
-                self.context["intencion"] = "iniciar_reclamo"
-                memoria.clear()
-                logger.info(f"[MUNICIPIO] Intención detectada: {self.context['intencion']}")
-                return None
+        # 1. AGENTE - keywords una palabra y frases
+        for kw in self.KEYWORDS_AGENTE:
+            kw_norm = kw.lower()
+            if " " in kw_norm:  
+                if kw_norm in texto_normalizado:
+                    self.context["intencion"] = "hablar_con_agente"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword/frase '{kw}')")
+                    return None
+            else:  
+                if kw_norm in tokens:
+                    self.context["intencion"] = "hablar_con_agente"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword palabra '{kw}')")
+                    return None
+
+        # 2. RECLAMO
+        for kw in self.KEYWORDS_RECLAMO:
+            kw_norm = kw.lower()
+            if " " in kw_norm:
+                if kw_norm in texto_normalizado:
+                    self.context["intencion"] = "iniciar_reclamo"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención detectada: {self.context['intencion']}")
+                    return None
+            else:
+                if kw_norm in tokens:
+                    self.context["intencion"] = "iniciar_reclamo"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por keyword palabra '{kw}')")
+                    return None
+
+        # 3. TRÁMITE
+        for kw in self.KEYWORDS_TRAMITE:
+            kw_norm = kw.lower()
+            if " " in kw_norm:
+                if kw_norm in texto_normalizado:
+                    self.context["intencion"] = "consultar_tramite"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por keyword/frase '{kw}')")
+                    return None
+            else:
+                if kw_norm in tokens:
+                    self.context["intencion"] = "consultar_tramite"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por keyword palabra '{kw}')")
+                    return None
+
+        # 4. LLM fallback
+        if not memoria.get("estado_conversacion"):
+            intencion_llm = _clasificar_intencion_con_llm(pregunta)
+            self.context["intencion"] = intencion_llm
         else:
-            if kw_norm in tokens:
-                self.context["intencion"] = "iniciar_reclamo"
-                memoria.clear()
-                logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por keyword palabra '{kw}')")
-                return None
+            self.context["intencion"] = "continuar_flujo"
 
-    # 3. TRÁMITE
-    for kw in self.KEYWORDS_TRAMITE:
-        kw_norm = kw.lower()
-        if " " in kw_norm:
-            if kw_norm in texto_normalizado:
-                self.context["intencion"] = "consultar_tramite"
-                memoria.clear()
-                logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por keyword/frase '{kw}')")
-                return None
-        else:
-            if kw_norm in tokens:
-                self.context["intencion"] = "consultar_tramite"
-                memoria.clear()
-                logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por keyword palabra '{kw}')")
-                return None
-
-    # 4. LLM fallback
-    if not memoria.get("estado_conversacion"):
-        intencion_llm = _clasificar_intencion_con_llm(pregunta)
-        self.context["intencion"] = intencion_llm
-    else:
-        self.context["intencion"] = "continuar_flujo"
-
-    logger.info(f"[MUNICIPIO] Intención (final): {self.context.get('intencion')}")
-    return None
+        logger.info(f"[MUNICIPIO] Intención (final): {self.context.get('intencion')}")
+        return None
 
 class TicketStatusHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -1337,7 +1318,6 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     GeneralHandler,
     EngancheAnonimoMunicipioHandler,
     VectorMunicipioCatalogHandler,
-    ReclamoGeoHandler,
 ]
 
     respuesta_final = None
