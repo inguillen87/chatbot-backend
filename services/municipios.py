@@ -5,8 +5,6 @@ import os
 from enum import Enum, auto
 import unicodedata
 import difflib
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s - %(message)s')
-
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
@@ -658,15 +656,17 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
 
         # Solo si NO hay un flujo de reclamo ya iniciado (estado_conversacion de reclamo)
         # y la intención es iniciar un reclamo. Esto evita que se active en medio de un reclamo paso a paso.
-        if memoria.get("estado_conversacion") and "RECLAMO" in memoria["estado_conversacion"].name:
-            return None
+        # IMPORTANTE: ReclamoInteligenteMunicipioHandler NO debe tener un 'estado' que lo haga "dueño" del flujo
+        # si ya se inició un reclamo paso a paso por ReclamoHandler. Si su handle responde, lo pasa.
+        if memoria.get("estado_conversacion") and memoria["estado_conversacion"] in RECLAMO_STATES:
+            return None # Si ya estamos en un estado específico de reclamo, no intentar el inteligente de nuevo
         
         if self.context.get("intencion") != "iniciar_reclamo":
             return None
 
-        # Si ya tenemos la intención de iniciar reclamo, pero no hay datos aún, o estamos en el inicio del flujo
-        # e intentamos extraer todo de golpe.
-        if not memoria.get("categoria") and not memoria.get("direccion"): # Solo si no hemos empezado a colectar datos
+        # Si no hay datos iniciales de reclamo en memoria, intentar la extracción inteligente.
+        # Esto previene que se re-ejecute el LLM en cada paso del reclamo.
+        if not memoria.get("categoria_reclamo") and not memoria.get("direccion_reclamo"):
             prompt = f"""
             Extraé del siguiente mensaje los siguientes datos si están presentes, si algún campo no está presente, simplemente omitilo:
             - categoria (motivo del reclamo, ej: basura, agua, semáforo, etc. Usá las categorías: {", ".join(CATEGORIAS_RECLAMO)})
@@ -727,263 +727,37 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                             logger.warning(f"Email '{datos[campo]}' no válido. Se pedirá.")
                             pass
                     else:
-                        memoria[f"{campo}_vecino" if campo in ["nombre", "telefono", "email"] else f"{campo}_reclamo"] = datos[campo].strip()
-            
-            # Si al menos se obtuvo una categoría o descripción inicial, se considera que estamos en este flujo
-            if memoria.get("categoria_reclamo") or memoria.get("descripcion_reclamo"):
-                self.context["intencion"] = "iniciar_reclamo" # Asegurar que la intención se mantiene
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Forzar el inicio del reclamo paso a paso
-                # Caerá al ReclamoHandler que se encargará de pedir lo que falta
-
-        # Si ya estamos en un flujo inteligente (aunque sea el primer paso)
-        # Re-evaluar qué falta y pedirlo
-        faltantes = []
-        if not memoria.get("categoria_reclamo"):
-            faltantes.append(("categoria_reclamo", "¿Cuál es la **categoría** del reclamo? (Ej: basura, luminaria, agua, etc.)", ConversationState.ESPERANDO_CATEGORIA_RECLAMO, CATEGORIAS_RECLAMO))
-        if not memoria.get("direccion_reclamo"):
-            faltantes.append(("direccion_reclamo", f"¿Cuál es la **dirección exacta** donde ocurre el problema? (Ej: {EJEMPLO_DIRECCION})", ConversationState.ESPERANDO_DIRECCION_RECLAMO, None))
-        if not memoria.get("nombre_vecino"):
-            faltantes.append(("nombre_vecino", "¿Cuál es tu **nombre completo**?", ConversationState.ESPERANDO_NOMBRE_VECINO, None))
-        if not memoria.get("telefono_vecino"):
-            faltantes.append(("telefono_vecino", "¿Me pasás tu **teléfono con código de área**?", ConversationState.ESPERANDO_TELEFONO_VECINO, None))
-        if not memoria.get("email_vecino"):
-            faltantes.append(("email_vecino", "¿Cuál es tu **email**? (Te notificaremos el estado del reclamo)", ConversationState.ESPERANDO_EMAIL_VECINO, None))
-        if not memoria.get("descripcion_reclamo"):
-            faltantes.append(("descripcion_reclamo", "¿Podés **describir brevemente** el problema?", ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, None))
-
-        # Procesar entrada actual
-        current_state = memoria.get("estado_conversacion")
-        if current_state:
-            if current_state == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-                texto_normalizado = normalizar_texto(pregunta)
-                matched_category = None
-                for cat in CATEGORIAS_RECLAMO:
-                    if normalizar_texto(cat) == texto_normalizado:
-                        matched_category = cat
-                        break
-                
-                if matched_category:
-                    memoria["categoria_reclamo"] = matched_category
-                else:
-                    sugeridas = sugerir_categorias_relevantes(pregunta)
-                    botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
-                    respuesta_texto = "Esa categoría no es válida. Por favor, seleccioná una de las opciones o escribí una similar a las sugeridas."
-                    if sugeridas:
-                        respuesta_texto += "\nOpciones sugeridas:"
-                    else:
-                        respuesta_texto = "¿Qué categoría describe mejor tu reclamo?"
-                    return {"respuesta": respuesta_texto, "botones": botones}
-                
-                # Avanzar al siguiente paso si la categoría es válida
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
-                return {"respuesta": f"Perfecto, categoría: **{memoria['categoria_reclamo']}**. ¿La **dirección exacta**?\n{EJEMPLO_DIRECCION}"}
-
-            elif current_state == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
-                if not direccion_es_valida(pregunta):
-                    return {"respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}"}
-                memoria["direccion_reclamo"] = pregunta.strip()
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
-                return {"respuesta": "¡Gracias! Ahora tu **nombre completo**."}
-
-            elif current_state == ConversationState.ESPERANDO_NOMBRE_VECINO:
-                memoria["nombre_vecino"] = pregunta.strip()
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
-                return {"respuesta": f"Gracias, {memoria['nombre_vecino']}. ¿Me pasás tu **teléfono con código de área**?"}
-
-            elif current_state == ConversationState.ESPERANDO_TELEFONO_VECINO:
-                telefono = pregunta.strip()
-                if not validar_telefono(telefono):
-                    return {"respuesta": "El teléfono ingresado no parece válido. Ingresalo de nuevo (solo números)."}
-                memoria["telefono_vecino"] = telefono
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO
-                return {"respuesta": "¿Cuál es tu **email**? (Te notificaremos el estado del reclamo)"}
-
-            elif current_state == ConversationState.ESPERANDO_EMAIL_VECINO:
-                email = pregunta.strip()
-                if not validar_email(email):
-                    return {"respuesta": "El email ingresado no parece válido. Ingresalo nuevamente."}
-                memoria["email_vecino"] = email
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
-                return {"respuesta": "Contame brevemente el **problema**. Podés adjuntar una foto o ubicación después."}
-
-            elif current_state == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
-                memoria["descripcion_reclamo"] = pregunta.strip()
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-                return {
-                    "respuesta": "¿Querés **adjuntar una foto o compartir tu ubicación**?",
-                    "botones": [
-                        {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                        {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                        {"texto": "No, continuar", "action": "sin_adjuntos"}
-                    ]
-                }
-            
-            elif current_state == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
-                accion = kwargs.get("action", "").lower() or normalizar_texto(pregunta)
-                
-                if accion in ["sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias"]:
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-                    resumen = self.build_detalles_memoria(memoria)
-                    return {
-                        "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
-                        "botones": [
-                            {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                            {"texto": "Editar datos", "action": "editar_reclamo"}
-                        ]
-                    }
-                
-                # Procesar adjuntos si el usuario los envía directamente o presiona los botones
-                if kwargs.get("es_foto") and kwargs.get("archivo_url"):
-                    memoria["foto_url"] = kwargs.get("archivo_url")
-                    logger.info(f"Foto adjunta: {memoria['foto_url']}")
-                
-                if kwargs.get("es_ubicacion") and self.context.get("ubicacion_usuario"):
-                    memoria["ubicacion_gps"] = self.context.get("ubicacion_usuario")
-                    logger.info(f"Ubicación adjunta: {memoria['ubicacion_gps']}")
-                
-                if memoria.get("foto_url") or memoria.get("ubicacion_gps"):
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-                    resumen = self.build_detalles_memoria(memoria)
-                    return {
-                        "respuesta": f"¡Adjuntos recibidos! ¿Confirmás el reclamo con estos datos?\n{resumen}",
-                        "botones": [
-                            {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                            {"texto": "Editar datos", "action": "editar_reclamo"}
-                        ]
-                    }
-                
-                # Si no es "no continuar" y no hay adjunto, volver a pedir
-                return {
-                    "respuesta": "No recibí ningún adjunto válido. ¿Querés adjuntar una foto o compartir tu ubicación?",
-                    "botones": [
-                        {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                        {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                        {"texto": "No, continuar", "action": "sin_adjuntos"}
-                    ]
-                }
-            
-            elif current_state == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
-                accion = kwargs.get("action", "").lower() or normalizar_texto(pregunta)
-
-                if accion in ["confirmar_reclamo", "confirmar", "si", "sí"]:
-                    # Asegurar que todos los campos obligatorios estén presentes antes de crear el ticket
-                    if not all(memoria.get(f"{campo}_reclamo" if campo not in ["nombre", "telefono", "email"] else f"{campo}_vecino") for campo in ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]):
-                        # Esto no debería pasar si el flujo guía correctamente, pero es un fallback
-                        logger.error("[ReclamoInteligenteHandler] Faltan datos para confirmar el reclamo.")
-                        memoria.clear()
-                        return {
-                            "respuesta": "Parece que falta información para completar el reclamo. Volvamos a empezar. ¿Querés hacer un reclamo?",
-                            "botones": [{"texto": "Hacer un reclamo"}]
-                        }
-                    
-                    try:
-                        categoria = memoria.get("categoria_reclamo", "General")
-                        nombre = memoria.get("nombre_vecino", "")
-                        telefono_raw = memoria.get("telefono_vecino", "")
-                        email = memoria.get("email_vecino", "")
-                        
-                        ticket_data = {
-                            "asunto": f"Reclamo de {categoria}",
-                            "categoria": categoria,
-                            "detalles": memoria.get("descripcion_reclamo", ""),
-                            "direccion": memoria.get("direccion_reclamo", ""),
-                            "nombre_vecino": nombre,
-                            "telefono_vecino": telefono_raw,
-                            "email": email,
-                            "estado": "nuevo",
-                            "user_id": self.context.get("user_id"),
-                            "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
-                            "ubicacion": memoria.get("ubicacion_gps"),
-                            "foto_url": memoria.get("foto_url"),
-                        }
-                        
-                        ticket = servicio_tickets.crear_nuevo_ticket(
-                            tipo_ticket="municipio",
-                            ticket_data=ticket_data,
-                        )
-                        
-                        if ticket:
-                            telefono_e164 = formatear_telefono_e164(telefono_raw)
-                            if telefono_e164: # Solo enviar si el teléfono es válido para E.164
-                                enviar_notificacion_whatsapp_con_plantilla(
-                                    telefono_e164,
-                                    nombre,
-                                    ticket.nro_ticket,
-                                    categoria,
-                                )
-                                enviar_notificacion_sms(
-                                    telefono_e164,
-                                    f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado."
-                                )
-                            
-                            memoria.clear() # Limpiar memoria después de crear el ticket
-                            return {
-                                "respuesta": (
-                                    f"¡Listo! Tu reclamo fue registrado con éxito. Número de ticket: **M-{ticket.nro_ticket}**. "
-                                    "Vas a recibir novedades por email o WhatsApp."
-                                ),
-                                "botones": [
-                                    {"texto": "Nuevo reclamo"},
-                                    {"texto": "Consultar estado de ticket"},
-                                ],
-                                "ticket_id": ticket.id
-                            }
+                        # Asegurarse de que el campo se guarda con el nombre correcto en memoria
+                        if campo == "nombre":
+                            memoria["nombre_vecino"] = datos[campo].strip()
+                        elif campo == "descripcion":
+                            memoria["descripcion_reclamo"] = datos[campo].strip()
                         else:
-                            raise Exception("Fallo la creación del ticket")
-
-                    except Exception as e:
-                        logger.error(f"[ReclamoInteligenteMunicipioHandler] Error al guardar ticket: {e}", exc_info=True)
-                        memoria.clear() # Limpiar memoria en caso de error para evitar bucles
-                        return {
-                            "respuesta": "Hubo un error técnico al registrar tu reclamo. Por favor, probá más tarde o comunicate con el municipio.",
-                            "botones": [{"texto": "Hablar con un agente"}]
-                        }
-
-                elif accion in ["editar_datos", "editar", "no"]: # "no" como "no quiero confirmar, quiero editar"
-                    # Resetear a un estado anterior o preguntar qué quiere editar
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO # Por ejemplo, volver al último paso
+                             memoria[campo] = datos[campo].strip() # Para otros campos si los hubiera
+            
+            # Si al menos se obtuvo una categoría o descripción inicial, o cualquier dato de reclamo,
+            # forzamos el inicio del flujo paso a paso si no se pudo completar de una.
+            # Esto evita que ReclamoInteligenteIntente cada vez.
+            if any(memoria.get(f"{c}_reclamo") or memoria.get(f"{c}_vecino") for c in self.CAMPOS_RECLAMO):
+                # Si tenemos todos los datos, procedemos a la confirmación final para crear el ticket
+                if all(memoria.get(f"{c}_reclamo" if c not in ["nombre", "telefono", "email"] else f"{c}_vecino") for c in self.CAMPOS_RECLAMO):
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+                    resumen = self.build_detalles_memoria(memoria)
                     return {
-                        "respuesta": "¿Qué dato querés editar? Por favor, decime qué información está incorrecta (categoría, dirección, nombre, etc.) o volvé a ingresar la descripción si querés corregirla.",
-                    }
-                else:
-                    return {
-                        "respuesta": "Por favor, confirmá el reclamo o elegí editar los datos.",
+                        "respuesta": f"Parece que tenemos todos los datos. ¿Confirmás el reclamo con estos datos?\n{resumen}",
                         "botones": [
                             {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
                             {"texto": "Editar datos", "action": "editar_reclamo"}
                         ]
                     }
+                else:
+                    # Si faltan datos, transferir el control al ReclamoHandler paso a paso
+                    # Se iniciará en ESPERANDO_CATEGORIA_RECLAMO y el ReclamoHandler se encargará.
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+                    # No devolver una respuesta aquí, dejar que el ReclamoHandler se ejecute inmediatamente después.
+                    return None 
 
-        # Si aún hay faltantes, pedir el siguiente
-        if faltantes:
-            campo, pregunta_texto, next_state, opciones = faltantes[0]
-            memoria["estado_conversacion"] = next_state
-            
-            if opciones: # Si hay opciones predefinidas (como categorías)
-                botones = [{"texto": o.title()} for o in opciones]
-                return {"respuesta": pregunta_texto, "botones": botones}
-            else:
-                return {"respuesta": pregunta_texto}
-        
-        # Si llegamos acá y no hay un estado activo ni faltantes, significa que ya tenemos todo.
-        # Esto es un fallback en caso de que la lógica anterior falle al generar el ticket.
-        if memoria.get("categoria_reclamo") and memoria.get("direccion_reclamo") and \
-           memoria.get("nombre_vecino") and memoria.get("telefono_vecino") and \
-           memoria.get("email_vecino") and memoria.get("descripcion_reclamo"):
-           
-            # Forzar el paso de confirmación si no se ha llegado a él (útil si el usuario lo dijo todo de una)
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-            resumen = self.build_detalles_memoria(memoria)
-            return {
-                "respuesta": f"Parece que tenemos todos los datos. ¿Confirmás el reclamo con estos datos?\n{resumen}",
-                "botones": [
-                    {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                    {"texto": "Editar datos", "action": "editar_reclamo"}
-                ]
-            }
-
-        return None # Si no hay intención de reclamo o ya se manejó el flujo
-
+        return None # Este handler solo responde si completó o inició el reclamo.
 
 class ReclamoHandler(BaseMunicipioHandler):
     """
@@ -997,13 +771,9 @@ class ReclamoHandler(BaseMunicipioHandler):
         intencion = self.context.get("intencion")
 
         # SOLO activar este handler si la intención es "iniciar_reclamo"
-        # y si ReclamoInteligente NO lo manejó completamente (es decir, ya hay un estado de reclamo activo
-        # o se necesita iniciar el flujo paso a paso).
-        # También lo activamos si el usuario respondió a un paso específico de reclamo.
-        if intencion != "iniciar_reclamo" and not (estado and "RECLAMO" in estado.name):
-            return None
-
-        # --- INICIO AUTOMÁTICO DEL FLUJO DE RECLAMO (si la intención es iniciar reclamo y no hay estado activo) ---
+        # y el estado actual es uno de los pasos del reclamo.
+        # Si la intención es "iniciar_reclamo" y NO hay un estado de reclamo activo,
+        # lo inicializamos en ESPERANDO_CATEGORIA_RECLAMO.
         if intencion == "iniciar_reclamo" and not estado:
             memoria.clear() # Limpiar memoria para un nuevo reclamo
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
@@ -1016,6 +786,13 @@ class ReclamoHandler(BaseMunicipioHandler):
                 "respuesta": texto_respuesta,
                 "botones": botones
             }
+        
+        # Si el estado de conversación actual NO es uno de los estados de reclamo,
+        # este handler no debe procesar, a menos que la intención sea iniciar reclamo
+        # y no se haya inicializado el flujo aún (caso de arriba).
+        if estado not in RECLAMO_STATES:
+            return None
+
 
         # 1. Selección de categoría
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
@@ -1323,7 +1100,9 @@ class TramitesHandler(BaseMunicipioHandler):
 
             # Si no se encontró ningún trámite por nombre o fuzzy match, pero la pregunta es sobre licencia de conducir
             if "conducir" in texto and ("licencia" in texto or "carnet" in texto):
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
+                memoria["estado_conversacion"] = (
+                    ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
+                )
                 return {
                     "respuesta": obtener_respuesta_municipio("curso_licencia_info"),
                     "botones": [
@@ -1335,7 +1114,6 @@ class TramitesHandler(BaseMunicipioHandler):
                     ],
                 }
 
-            # Si no se encontró nada y no es de licencia
             memoria.clear() # Limpiar memoria si no se encontró el trámite y no es un flujo específico
             opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
             return {
@@ -1527,7 +1305,7 @@ class ToolHandler(BaseMunicipioHandler):
         estado = memoria.get("estado_conversacion")
         
         # Bloquear si hay un flujo de reclamo en curso
-        if estado and hasattr(estado, "name") and "RECLAMO" in estado.name:
+        if estado and estado in RECLAMO_STATES: # Usar RECLAMO_STATES aquí también
             return None
 
         # Si el estado actual indica que estamos esperando un parámetro para una herramienta específica (ej: recolección)
@@ -1681,6 +1459,19 @@ CATEGORIAS_RECLAMO = [
 ]
 categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
 
+# Definir los estados de reclamo para una mejor legibilidad y mantenimiento
+RECLAMO_STATES = [
+    ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
+    ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+    ConversationState.ESPERANDO_NOMBRE_VECINO,
+    ConversationState.ESPERANDO_TELEFONO_VECINO,
+    ConversationState.ESPERANDO_EMAIL_VECINO,
+    ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+    ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+    ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+]
+
+
 def serializar_enum(obj):
     if isinstance(obj, Enum):
         return obj.name
@@ -1716,7 +1507,7 @@ class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str, **kwargs) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        if estado and hasattr(estado, "name") and "RECLAMO" in estado.name:
+        if estado and estado in RECLAMO_STATES: # Usar RECLAMO_STATES aquí también
             return None
         
         user_obj = self.context.get("user_obj")
@@ -1811,7 +1602,7 @@ class TramiteInteligenteHandler(BaseMunicipioHandler):
         estado = memoria.get("estado_conversacion")
         
         # Bloquear si hay un flujo de reclamo en curso
-        if estado and hasattr(estado, "name") and "RECLAMO" in estado.name:
+        if estado and estado in RECLAMO_STATES: # Usar RECLAMO_STATES aquí también
             return None
         
         intencion = self.context.get("intencion")
@@ -1959,6 +1750,64 @@ def safe_llm_call(prompt, preamble, fallback=None):
         logger.error(f"[LLM_FALLBACK] Error en llamada a LLM: {e}")
         return fallback or "No tengo información específica en este momento. ¿Te puedo ayudar con algo más?"
 
+# --- Categorías válidas para reclamos ---
+CATEGORIAS_RECLAMO = [
+    "arbol caido",
+    "arreglo de calle",
+    "castracion de mascota",
+    "falta de agua, rotura de caño",
+    "fumigacion",
+    "inspeccion de comercio",
+    "limpieza",
+    "luminaria",
+    "riego de calle",
+    "rotura de semaforo",
+    "tramites de obras privadas",
+    "otro motivo",
+]
+categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
+
+# Definir los estados de reclamo para una mejor legibilidad y mantenimiento
+RECLAMO_STATES = [
+    ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
+    ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+    ConversationState.ESPERANDO_NOMBRE_VECINO,
+    ConversationState.ESPERANDO_TELEFONO_VECINO,
+    ConversationState.ESPERANDO_EMAIL_VECINO,
+    ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+    ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+    ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+]
+
+
+def serializar_enum(obj):
+    if isinstance(obj, Enum):
+        return obj.name
+    elif isinstance(obj, dict):
+        return {k: serializar_enum(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [serializar_enum(v) for v in obj]
+    else:
+        return obj
+
+
+BOTONES_COMANDOS_MUNICIPIO = {
+    "Hacer un reclamo": "iniciar_reclamo",
+    "Consultar estado de un trámite": "consultar_estado_ticket",
+    "Consultar estado de ticket": "consultar_estado_ticket",
+    "Consultar otro ticket": "consultar_estado_ticket",
+    "Hablar con un agente": "hablar_con_agente",
+    "Nuevo reclamo": "iniciar_reclamo",
+    "Adjuntar foto": "adjuntar_foto",
+    "Compartir ubicación": "compartir_ubicacion",
+    "No, continuar": "no_continuar",
+    "Confirmar reclamo": "confirmar_reclamo",
+    "Editar datos": "editar_reclamo",
+    "Sí, solucionado": "confirmar_cierre_ticket",
+    "No, aún no": "no_cerrar_ticket",
+}
+
+
 def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     logger.info(f"[INICIO] Pregunta recibida: '{pregunta}'")
     
@@ -2049,8 +1898,6 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     for handler_class in handler_chain:
         try:
             handler_instance = handler_class(context)
-            # Solo llamar al handler si no está en un estado específico que le corresponde a otro
-            # O si el handler actual es el que debe manejar ese estado.
             
             # Lógica para evitar que handlers "generales" interrumpan flujos específicos
             current_state_in_context = context["contexto_municipio"].get("estado_conversacion")
@@ -2067,8 +1914,10 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
             # Solo el handler que está diseñado para ese estado (o el que lo inició) debe procesar.
             if current_state_in_context:
                 # Si el handler actual es el "dueño" del estado, lo dejamos procesar
+                # NOTA: Se actualizó la condición para incluir `RECLAMO_STATES` correctamente.
+                # También se ajustó la condición de TicketStatusHandler para ser más precisa.
                 if (isinstance(handler_instance, ReclamoHandler) and current_state_in_context in RECLAMO_STATES) or \
-                   (isinstance(handler_instance, TicketStatusHandler) and "TICKET" in current_state_in_context.name) or \
+                   (isinstance(handler_instance, TicketStatusHandler) and current_state_in_context.name.startswith("ESPERANDO_") and "TICKET" in current_state_in_context.name) or \
                    (isinstance(handler_instance, RecoleccionHandler) and current_state_in_context == ConversationState.ESPERANDO_PARAM_RECOLECCION) or \
                    (isinstance(handler_instance, TramitesHandler) and current_state_in_context in [ConversationState.ESPERANDO_SELECCION_TRAMITE, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA]):
                     
