@@ -101,7 +101,6 @@ class ConversationState(Enum):
     ESPERANDO_DESCRIPCION_RECLAMO = auto()    # <--- AGREGA ESTO
     ESPERANDO_ADJUNTOS_RECLAMO = auto()       # <--- AGREGA ESTO
     ESPERANDO_CONFIRMACION_RECLAMO = auto()   # <--- AGREGA ESTO
-    ESPERANDO_CONFIRMACION_CANCELACION = auto()
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
 
@@ -285,17 +284,10 @@ class CancelHandler(BaseMunicipioHandler):
 
     def handle(self, pregunta: str) -> dict | None:
         texto = normalizar_texto(pregunta)
-        memoria = self.context.get("contexto_municipio", {})
         if any(kw in texto for kw in self.CANCEL_KEYWORDS):
-            if memoria.get("estado_conversacion"):
-                memoria["estado_anterior"] = memoria.get("estado_conversacion")
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_CANCELACION
-                return {
-                    "respuesta": "¿Querés cancelar el trámite en curso?",
-                    "botones": [{"texto": "Sí"}, {"texto": "No"}],
-                }
+            self.context.get("contexto_municipio", {}).clear()
             return {
-                "respuesta": "No hay un trámite en curso. ¿Necesitás algo más?",
+                "respuesta": "Operación cancelada. ¿Necesitás ayuda con otro trámite o reclamo?",
                 "botones": [
                     {"texto": "Hacer un reclamo"},
                     {"texto": "Consultar estado de ticket"},
@@ -313,6 +305,7 @@ class PoliteHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         texto = normalizar_texto(pregunta)
         if texto in self.KEYWORDS:
+            self.context.get("contexto_municipio", {}).clear()
             return {
                 "respuesta": "¡De nada! ¿Necesitás ayuda con algo más?",
                 "botones": [
@@ -657,33 +650,29 @@ class ReclamoHandler(BaseMunicipioHandler):
         # 2. Dirección
         if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
             if not direccion_es_valida(pregunta):
-                memoria.setdefault("intentos_direccion", 0)
-                memoria["intentos_direccion"] += 1
-                if memoria["intentos_direccion"] >= 2:
-                    return {
-                        "respuesta": (
-                            "No logré identificar una dirección válida. ¿Querés ingresar la dirección igual como la escribiste, o reintentarlo otra vez?"
-                        ),
-                        "botones": [
-                            {"texto": "Usar como está", "action": "usar_direccion_manual"},
-                            {"texto": "Reintentar", "action": "reintentar_direccion"},
-                            {"texto": "Cancelar reclamo", "action": "cancelar_reclamo"}
-                        ]
-                    }
                 return {
-                    "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}. Intentá de nuevo."
+                    "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}"
                 }
             memoria["direccion_reclamo"] = pregunta
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
-            memoria.pop("intentos_direccion", None)
             return {"respuesta": "¡Gracias! Ahora tu nombre completo."}
 
         # 3. Nombre
         if estado == ConversationState.ESPERANDO_NOMBRE_VECINO:
-            memoria["nombre_vecino"] = pregunta.strip()
+            nombre = pregunta.strip()
+            if len(nombre.split()) < 2 and nombre.lower() != "seguir":
+                # SUGIERE pero AVANZA igual
+                memoria["nombre_vecino"] = nombre
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
+                return {
+                    "respuesta": f"Gracias, {nombre}. Si querés podés agregar tu apellido. ¿Me pasás tu teléfono con código de área?"
+                }
+            if nombre.lower() == "seguir":
+                nombre = memoria.get("nombre_vecino", "Vecino")
+            memoria["nombre_vecino"] = nombre
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
             return {
-                "respuesta": f"Gracias, {pregunta}. ¿Me pasás tu teléfono con código de área?"
+                "respuesta": f"Gracias, {nombre}. ¿Me pasás tu teléfono con código de área?"
             }
 
         # 4. Teléfono
@@ -805,6 +794,9 @@ class TramitesHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
+        # BLOQUEO si hay flujo de reclamo en curso
+        if estado and "RECLAMO" in str(estado):
+            return None
         intencion = self.context.get("intencion")
 
         if intencion == "consultar_tramite" and not estado:
@@ -891,6 +883,10 @@ class TramitesHandler(BaseMunicipioHandler):
 
 class ImpuestosHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        if estado and "RECLAMO" in str(estado):
+            return None
         intencion = self.context.get("intencion")
         if intencion == "consultar_impuestos":
             self.context.get("contexto_municipio", {}).clear()
@@ -903,6 +899,10 @@ class ImpuestosHandler(BaseMunicipioHandler):
 
 class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        if estado and "RECLAMO" in str(estado):
+            return None
         logger.info("[GeneralHandler] Consulta general con contexto de DB.")
         user_obj = self.context.get("user_obj")
         memoria = self.context.get("contexto_municipio", {})
@@ -1001,7 +1001,6 @@ class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        # Si hay un flujo de reclamo en curso, no responder
         if estado and "RECLAMO" in str(estado):
             return None
 
@@ -1159,6 +1158,10 @@ class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
     Usa geolocalización si está disponible.
     """
     def handle(self, pregunta: str) -> dict | None:
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        if estado and "RECLAMO" in str(estado):
+            return None
         user_obj = self.context.get("user_obj")
         if not user_obj:
             return None
