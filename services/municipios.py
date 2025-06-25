@@ -740,17 +740,9 @@ class ReclamoHandler(BaseMunicipioHandler):
         # 7. Adjuntos (sólo en este paso podés aceptar foto/ubicación)
         if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             accion = kwargs.get("action", "").lower() if kwargs.get("action") else ""
-            if accion == "adjuntar_foto":
-                kwargs["action"] = None
-                return {
-                    "respuesta": "Por favor, adjuntá la foto del problema.",
-                }
-            elif accion == "compartir_ubicacion":
-                kwargs["action"] = None
-                return {
-                    "respuesta": "Por favor, compartí tu ubicación actual.",
-                }
-            elif accion == "sin_adjuntos" or accion == "no, continuar":
+            texto_normalizado = normalizar_texto(pregunta)
+            # Detectar variantes de "no, continuar"
+            if accion == "sin_adjuntos" or accion == "no, continuar" or texto_normalizado in {"no", "no gracias", "no gracias.", "no, gracias"}:
                 kwargs["action"] = None
                 # Avanza directo a la confirmación
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
