@@ -1326,38 +1326,47 @@ def safe_llm_call(prompt, preamble, fallback=None):
 # normalizar_texto, etc.) están definidas en el mismo archivo o importadas correctamente.
 
 def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+    CONTEXTO_MUNICIPIO = "contexto_municipio"
     contexto_previo = kwargs.get("contexto_previo", {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     estado_guardado = contexto_municipio.get("estado_conversacion")
+    # --- Si viene como string (serialización vieja), convertir a Enum ---
     if estado_guardado and isinstance(estado_guardado, str):
         try:
             contexto_municipio["estado_conversacion"] = ConversationState[estado_guardado]
         except KeyError:
             logger.warning(f"Estado inválido en el contexto: {estado_guardado}")
             contexto_municipio["estado_conversacion"] = None
+
     context = {
         "contexto_municipio": contexto_municipio,
         "user_obj": owner_user,
         "user_id": getattr(owner_user, "id", None),
         "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
         "intencion": None,
     }
-    # --- INTERCEPTA COMANDOS DE BOTONES ---
+
+    # 1. --- INTERCEPTA BOTONES PRINCIPALES ---
+    BOTONES_COMANDOS_MUNICIPIO = {
+        "Hacer un reclamo": "iniciar_reclamo",
+        "Consultar estado de un trámite": "consultar_estado_ticket",
+        "Consultar estado de ticket": "consultar_estado_ticket",
+        "Consultar otro ticket": "consultar_estado_ticket",
+        "Hablar con un agente": "hablar_con_agente",
+        "Nuevo reclamo": "iniciar_reclamo",
+    }
     comando = BOTONES_COMANDOS_MUNICIPIO.get(pregunta.strip())
     if comando:
         context["intencion"] = comando
         if comando == "iniciar_reclamo":
-            # Directamente llama al handler si es por botón
             return ReclamoHandler(context).handle("Quiero hacer un reclamo")
         elif comando == "consultar_estado_ticket":
-            # Directamente llama al handler si es por botón
             return TicketStatusHandler(context).handle("Consultar estado de ticket")
         elif comando == "hablar_con_agente":
-            # Directamente llama al HumanEscalationHandler si es por botón
             return HumanEscalationHandler(context).handle(pregunta)
 
-    # --- SIGUE EL FLUJO NORMAL ---
-    estado_antes = contexto_municipio.get("estado_conversacion")
+    # 2. --- ARMADO DE CADENA DE HANDLERS (ORIGINAL Y ORDEN SEGURO) ---
     handler_chain = [
         GreetingHandler,
         CancelHandler,
@@ -1369,38 +1378,47 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         TramiteInteligenteHandler,
         RecoleccionHandler,
         TicketStatusHandler,
-        ReclamoHandler,          # <--- ¡PONER AQUÍ!
-        ReclamoGeoHandler,       # <--- ¡DESPUÉS!
+        ReclamoHandler,          # <<<<--- SIEMPRE ANTES que Tool y General
+        ReclamoGeoHandler,
         TramitesHandler,
         ImpuestosHandler,
         ToolHandler,
         GeneralHandler,
         EngancheAnonimoMunicipioHandler,
     ]
-    respuesta_final = None
-    for handler_class in handler_chain:
-        try:
-            handler_instance = handler_class(context)
-            respuesta_parcial = handler_instance.handle(pregunta)
-            if respuesta_parcial:
-                if not isinstance(respuesta_parcial, dict):
-                    logger.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_parcial)}. Pregunta: '{pregunta}'")
-                    respuesta_parcial = None 
+
+    # 3. --- FLUJO ROBUSTO: Si está en flujo de RECLAMO, SOLO maneja con ReclamoHandler ---
+    estado = contexto_municipio.get("estado_conversacion")
+    if estado and hasattr(estado, "name") and "RECLAMO" in estado.name:
+        # Mando el control EXCLUSIVO al ReclamoHandler y corto la cadena
+        respuesta_final = ReclamoHandler(context).handle(pregunta, **kwargs)
+    else:
+        respuesta_final = None
+        for handler_class in handler_chain:
+            try:
+                handler_instance = handler_class(context)
+                respuesta_parcial = handler_instance.handle(pregunta)
                 if respuesta_parcial:
-                    respuesta_final = respuesta_parcial
-                    break
-        except Exception as e:
-            logger.error(
-                f"Error en handler {handler_class.__name__}: {e}", exc_info=True
-            )
-    if not respuesta_final:
-        if not context.get("user_id"):
-            respuesta_final = EngancheAnonimoMunicipioHandler(context).handle(pregunta)
-        else:
-            respuesta_final = {
-                "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción."
-            }
-    estado_despues = contexto_municipio.get("estado_conversacion")
+                    if not isinstance(respuesta_parcial, dict):
+                        logger.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_parcial)}. Pregunta: '{pregunta}'")
+                        respuesta_parcial = None
+                    if respuesta_parcial:
+                        respuesta_final = respuesta_parcial
+                        break
+            except Exception as e:
+                logger.error(
+                    f"Error en handler {handler_class.__name__}: {e}", exc_info=True
+                )
+        # Si no respondió nada, mando por defecto a Enganche o mensaje base
+        if not respuesta_final:
+            if not context.get("user_id"):
+                respuesta_final = EngancheAnonimoMunicipioHandler(context).handle(pregunta)
+            else:
+                respuesta_final = {
+                    "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción."
+                }
+
+    # 4. --- PROCESADO DE RESPUESTA Y SERIALIZACIÓN DE CONTEXTO ---
     texto_respuesta = respuesta_final.get("respuesta", "")
     FRASES_EXITO = [
         "Tu reclamo fue generado",
@@ -1411,14 +1429,33 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         "Abrimos una sala de chat directa",
         "Tu número de chat es",
     ]
+    # Cierre de contexto si el flujo terminó, salvo éxito
+    estado_antes = contexto_municipio.get("estado_conversacion")
+    estado_despues = contexto_municipio.get("estado_conversacion")
     es_cierre_flujo = any(frase in texto_respuesta for frase in FRASES_EXITO)
     if estado_antes and not estado_despues and texto_respuesta and not es_cierre_flujo:
         respuesta_final["respuesta"] = texto_respuesta
+
+    # Reemplazo de placeholders con datos actuales (empresa/municipio/contexto)
     texto_respuesta_procesada = reemplazar_placeholders(
         respuesta_final.get("respuesta", ""), context.get("user_obj")
     )
-    texto_respuesta_procesada = reemplazar_placeholders(texto_respuesta_procesada, contexto_municipio)
+    texto_respuesta_procesada = reemplazar_placeholders(
+        texto_respuesta_procesada, contexto_municipio
+    )
     respuesta_final["respuesta"] = texto_respuesta_procesada
+
+    # Serializo el contexto con enums a string
+    def serializar_enum(obj):
+        if isinstance(obj, Enum):
+            return obj.name
+        elif isinstance(obj, dict):
+            return {k: serializar_enum(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [serializar_enum(v) for v in obj]
+        else:
+            return obj
+
     contexto_para_guardar = serializar_enum(context["contexto_municipio"])
     return {
         "respuesta": respuesta_final.get("respuesta"),
