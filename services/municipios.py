@@ -224,6 +224,26 @@ class BaseMunicipioHandler:
     def handle(self, pregunta: str) -> dict | None:
         raise NotImplementedError
 
+    def build_detalles_memoria(self, memoria: dict) -> str:
+        """Arma un pequeño resumen de los datos del reclamo."""
+        partes = []
+        if memoria.get("categoria"):
+            partes.append(f"Categoría: {memoria['categoria']}")
+        if memoria.get("direccion"):
+            partes.append(f"Dirección: {memoria['direccion']}")
+        if memoria.get("nombre"):
+            partes.append(f"Nombre: {memoria['nombre']}")
+        if memoria.get("telefono"):
+            partes.append(f"Teléfono: {memoria['telefono']}")
+        if memoria.get("email"):
+            partes.append(f"Email: {memoria['email']}")
+        if memoria.get("descripcion"):
+            partes.append(f"Descripción: {memoria['descripcion']}")
+        if memoria.get("ubicacion"):
+            partes.append("Ubicación adjunta")
+        if memoria.get("foto_url"):
+            partes.append("Foto adjunta")
+        return "\n".join(partes)
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
@@ -423,33 +443,56 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         "reclamo", "reclamos", "queja", "quejas", "problema", "problemas",
         "denuncia", "denuncias", "reportar", "arbol caido", "árbol caído", "arbol", "caido"
     ]
-    KEYWORDS_TRAMITE = ["trámite", "tramite", "gestión", "consulta de trámite"]
-    
+    KEYWORDS_TRAMITE = [
+        "trámite",
+        "tramite",
+        "trámites",
+        "tramites",
+        "gestión",
+        "gestiones",
+        "consulta de trámite",
+        "turno",
+        "certificado",
+    ]
     def handle(self, pregunta: str) -> dict | None:
+        logger.info(f"[INTENT] Analizando intención para: {pregunta}")
         memoria = self.context.get("contexto_municipio", {})
         texto_normalizado = normalizar_texto(pregunta)
+        tokens = texto_normalizado.split()
 
-        # 1. Prioridad: AGENTE por keywords
-        if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE):
-            self.context["intencion"] = "hablar_con_agente"
-            memoria.clear()
-            logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por palabra clave)")
-            return None # <-- Aquí el handler devuelve None, para que el próximo handler lo procese
+        # 1. AGENTE - keywords una palabra y frases
+        for kw in self.KEYWORDS_AGENTE:
+            kw_norm = kw.lower()
+            if " " in kw_norm:  
+                if kw_norm in texto_normalizado:
+                    self.context["intencion"] = "hablar_con_agente"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword/frase '{kw}')")
+                    return None
+            else:  
+                if kw_norm in tokens:
+                    self.context["intencion"] = "hablar_con_agente"
+                    memoria.clear()
+                    logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword palabra '{kw}')")
+                    return None
 
-        # 2. Otras keywords (Reclamo, Trámite)
-        if any(kw in texto_normalizado for kw in self.KEYWORDS_RECLAMO):
-            self.context["intencion"] = "iniciar_reclamo"
-            memoria.clear()
-            logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por palabra clave)")
-            return None
+        # 2. RECLAMO
+        for kw in self.KEYWORDS_RECLAMO:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "iniciar_reclamo"
+                memoria.clear()
+                logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por palabra clave '{kw}')")
+                return None
 
-        if any(kw in texto_normalizado for kw in self.KEYWORDS_TRAMITE):
-            self.context["intencion"] = "consultar_tramite"
-            memoria.clear()
-            logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por palabra clave)")
-            return None
+        # 3. Trámite
+        for kw in self.KEYWORDS_TRAMITE:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "consultar_tramite"
+                memoria.clear()
+                logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por palabra clave '{kw}')")
+                return None
 
-        # 3. Clasificación con LLM si no hubo match con keywords
+        # 4. Clasificación con LLM si no hubo match con keywords
         if not memoria.get("estado_conversacion"):
             intencion_llm = _clasificar_intencion_con_llm(pregunta)
             self.context["intencion"] = intencion_llm
@@ -1218,6 +1261,11 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Consultar otro ticket": "consultar_estado_ticket",
     "Hablar con un agente": "hablar_con_agente",
     "Nuevo reclamo": "iniciar_reclamo",
+    "Adjuntar foto": "adjuntar_foto",
+    "Compartir ubicación": "compartir_ubicacion",
+    "No, continuar": "no_continuar",
+    "Confirmar reclamo": "confirmar_reclamo",
+    "Editar datos": "editar_reclamo",
 }
 
 class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
