@@ -1326,49 +1326,33 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
-        if intencion != "iniciar_reclamo" and not any(kw in pregunta.lower() for kw in ["reclamo", "denuncia", "problema", "reportar", "queja"]):
-            return None
-        if estado:
+
+        # SOLO actúa si estamos esperando adjuntos (foto/ubicación) en el flujo profesional
+        if estado != "ESPERANDO_ADJUNTOS_RECLAMO":
             return None
 
-        ubicacion = self.context.get("ubicacion_usuario")
-        foto_url = self.context.get("foto_url")
-        detalles = f"Reclamo recibido: {pregunta}\n"
-        if ubicacion:
-            detalles += f"Ubicación GPS: {ubicacion.get('lat')}, {ubicacion.get('lon')}\n"
-        if foto_url:
-            detalles += f"Foto adjunta: {foto_url}\n"
-
-        categoria = "General"
-        nombre = self.context.get("nombre_usuario", "Vecino/a")
-        telefono = self.context.get("telefono_usuario", "")
-        ticket = servicio_tickets.crear_nuevo_ticket(
-            tipo_ticket="municipio",
-            ticket_data={
-                "asunto": f"Reclamo ciudadano",
-                "categoria": categoria,
-                "detalles": detalles,
-                "user_id": self.context.get("user_id"),
-                "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
-            },
+        # Aquí puedes manejar la lógica de guardar la foto/ubicación en memoria,
+        # y luego pasar al paso de confirmación, por ejemplo:
+        if "foto" in pregunta.lower():
+            memoria["foto_url"] = self.context.get("foto_url")
+        if "ubicacion" in pregunta.lower():
+            memoria["ubicacion"] = self.context.get("ubicacion_usuario")
+        memoria["estado_conversacion"] = "ESPERANDO_CONFIRMACION_RECLAMO"
+        resumen = (
+            f"Categoría: {memoria.get('categoria_reclamo')}\n"
+            f"Dirección: {memoria.get('direccion_reclamo')}\n"
+            f"Nombre: {memoria.get('nombre_vecino')}\n"
+            f"Teléfono: {memoria.get('telefono_vecino')}\n"
+            f"Email: {memoria.get('email_vecino')}\n"
+            f"Descripción: {memoria.get('descripcion_reclamo')}\n"
         )
-        if ticket:
-            if telefono:
-                enviar_notificacion_sms(telefono, f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} fue generado.")
-            return {
-                "respuesta": (
-                    f"¡Listo! Tu reclamo fue generado con éxito. El número de ticket es **M-{ticket.nro_ticket}**. "
-                    "¿Querés adjuntar una foto o compartir tu ubicación para agilizar la resolución?"
-                ),
-                "botones": [
-                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                    {"texto": "Nuevo reclamo"},
-                    {"texto": "Consultar estado de ticket"},
-                ],
-                "ticket_id": ticket.id,
-            }
-        return None
+        return {
+            "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
+            "botones": [
+                {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                {"texto": "Editar datos", "action": "editar_reclamo"}
+            ]
+        }
 
 def safe_llm_call(prompt, preamble, fallback=None):
     try:
