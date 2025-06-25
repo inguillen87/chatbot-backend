@@ -64,6 +64,10 @@ CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
 
+# Listado de categorías normalizadas para validar la selección de reclamos.
+CATEGORIAS_VALIDAS = TODAS_LAS_CATEGORIAS_UNICAS
+CATEGORIAS_NORMALIZADAS = {normalizar_texto(cat): cat for cat in CATEGORIAS_VALIDAS}
+
 MINI_FAQ_TRAMITES = cargar_configuracion_municipio(
     MUNICIPIO_ID, "mini_faq_tramites.json"
 )
@@ -616,14 +620,14 @@ class ReclamoHandler(BaseMunicipioHandler):
             memoria.clear()
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
             sugeridas = sugerir_categorias_relevantes(pregunta)
-            botones = [{"texto": c.title()} for c in (sugeridas or categorias_validas)]
+            botones = [{"texto": c.title()} for c in (sugeridas or CATEGORIAS_VALIDAS)]
             texto = "Elegí la categoría del reclamo" if sugeridas else "¿Qué categoría describe mejor tu reclamo?"
             return {"respuesta": texto, "botones": botones}
 
         # 1. Selección de categoría (solo acepta texto, nunca archivos)
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
             texto_normalizado = normalizar_texto(pregunta)
-            if texto_normalizado in categorias_normalizadas:
+            if texto_normalizado in CATEGORIAS_NORMALIZADAS:
                 categoria_final = pregunta.strip().capitalize()
                 memoria["categoria_reclamo"] = categoria_final
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
@@ -635,7 +639,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             else:
                 return {
                     "respuesta": "Por favor, seleccioná una de las opciones. Si tu motivo es otro, elegí 'Otro motivo'.",
-                    "botones": [{"texto": c.title()} for c in categorias_validas]
+                    "botones": [{"texto": c.title()} for c in CATEGORIAS_VALIDAS]
                 }
 
         # 2. Dirección (sólo acepta dirección válida, no avanza por nada hasta que se ingrese bien)
