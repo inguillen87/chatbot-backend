@@ -28,7 +28,11 @@ from .herramientas_municipio import (
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
-from services.utils import validar_email, validar_telefono
+from services.utils import (
+    validar_email,
+    validar_telefono,
+    formatear_telefono_e164,
+)
 import math
 
 logger = logging.getLogger(__name__)
@@ -708,14 +712,7 @@ class ReclamoHandler(BaseMunicipioHandler):
         # 7. Adjuntos
         if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-            resumen = (
-                f"Categoría: {memoria.get('categoria_reclamo')}\n"
-                f"Dirección: {memoria.get('direccion_reclamo')}\n"
-                f"Nombre: {memoria.get('nombre_vecino')}\n"
-                f"Teléfono: {memoria.get('telefono_vecino')}\n"
-                f"Email: {memoria.get('email_vecino')}\n"
-                f"Descripción: {memoria.get('descripcion_reclamo')}\n"
-            )
+            resumen = self.build_detalles_memoria(memoria)
             return {
                 "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
                 "botones": [
@@ -731,11 +728,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             nombre = memoria.get("nombre_vecino", "")
             telefono_raw = memoria.get("telefono_vecino", "")
             email = memoria.get("email_vecino", "")
-            telefono_limpio = re.sub(r"\D", "", telefono_raw)
-            if not telefono_limpio.startswith("+") and len(telefono_limpio) > 8:
-                telefono_e164 = "+549" + telefono_limpio
-            else:
-                telefono_e164 = telefono_limpio
+            telefono_e164 = formatear_telefono_e164(telefono_raw)
             ticket = servicio_tickets.crear_nuevo_ticket(
                 tipo_ticket="municipio",
                 ticket_data={
@@ -769,7 +762,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "botones": [
                         {"texto": "Nuevo reclamo"},
                         {"texto": "Consultar estado de ticket"},
-                        {"texto": "Hablar con un agente"},
                     ],
                     "ticket_id": ticket.id,
                 }
@@ -778,6 +770,21 @@ class ReclamoHandler(BaseMunicipioHandler):
                 "botones": [{"texto": "Hablar con un agente"}],
             }
         return None
+
+    def build_detalles_memoria(self, memoria: dict) -> str:
+        """Devuelve un resumen textual con todos los datos del reclamo."""
+        partes = [
+            f"Categoría: {memoria.get('categoria_reclamo')}",
+            f"Dirección: {memoria.get('direccion_reclamo')}",
+            f"Nombre: {memoria.get('nombre_vecino')}",
+            f"Teléfono: {formatear_telefono_e164(memoria.get('telefono_vecino', ''))}",
+            f"Email: {memoria.get('email_vecino')}",
+            f"Descripción: {memoria.get('descripcion_reclamo')}",
+        ]
+        ubic = memoria.get('ubicacion')
+        if isinstance(ubic, dict) and 'lat' in ubic and 'lon' in ubic:
+            partes.append(f"Ubicación: {ubic['lat']}, {ubic['lon']}")
+        return "\n".join(partes)
 
 
 def buscar_en_faqs(pregunta, tramite):
@@ -1322,14 +1329,7 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
         if "ubicacion" in pregunta.lower():
             memoria["ubicacion"] = self.context.get("ubicacion_usuario")
         memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-        resumen = (
-            f"Categoría: {memoria.get('categoria_reclamo')}\n"
-            f"Dirección: {memoria.get('direccion_reclamo')}\n"
-            f"Nombre: {memoria.get('nombre_vecino')}\n"
-            f"Teléfono: {memoria.get('telefono_vecino')}\n"
-            f"Email: {memoria.get('email_vecino')}\n"
-            f"Descripción: {memoria.get('descripcion_reclamo')}\n"
-        )
+        resumen = self.build_detalles_memoria(memoria)
         return {
             "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
             "botones": [
@@ -1374,14 +1374,13 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     if comando:
         context["intencion"] = comando
         if comando == "iniciar_reclamo":
-            # Directamente llama al handler si es por botón
-            return ReclamoHandler(context).handle("Quiero hacer un reclamo")
+            # Ajusta la pregunta para iniciar el flujo pero deja que siga el procesamiento normal
+            pregunta = "Quiero hacer un reclamo"
         elif comando == "consultar_estado_ticket":
-            # Directamente llama al handler si es por botón
-            return TicketStatusHandler(context).handle("Consultar estado de ticket")
+            pregunta = "Consultar estado de ticket"
         elif comando == "hablar_con_agente":
-            # Directamente llama al HumanEscalationHandler si es por botón
-            return HumanEscalationHandler(context).handle(pregunta)
+            # Mantiene la pregunta original para iniciar el chat en vivo
+            pass
 
     # --- SIGUE EL FLUJO NORMAL ---
     estado_antes = contexto_municipio.get("estado_conversacion")
