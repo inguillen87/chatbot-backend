@@ -1368,24 +1368,25 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
 
     # 2. --- ARMADO DE CADENA DE HANDLERS (ORIGINAL Y ORDEN SEGURO) ---
     handler_chain = [
-        GreetingHandler,
-        CancelHandler,
-        PoliteHandler,
-        SmallTalkHandler,
-        IntentClassifierHandler,
-        HumanEscalationHandler,
-        VectorMunicipioCatalogHandler,
-        TramiteInteligenteHandler,
-        RecoleccionHandler,
-        TicketStatusHandler,
-        ReclamoHandler,          # <<<<--- SIEMPRE ANTES que Tool y General
-        ReclamoGeoHandler,
-        TramitesHandler,
-        ImpuestosHandler,
-        ToolHandler,
-        GeneralHandler,
-        EngancheAnonimoMunicipioHandler,
-    ]
+    GreetingHandler,
+    CancelHandler,
+    PoliteHandler,
+    SmallTalkHandler,
+    IntentClassifierHandler,
+    HumanEscalationHandler,
+    VectorMunicipioCatalogHandler,
+    TramiteInteligenteHandler,
+    RecoleccionHandler,
+    ReclamoHandler,          # <-- ANTES de TicketStatusHandler!
+    ReclamoGeoHandler,
+    TicketStatusHandler,
+    TramitesHandler,
+    ImpuestosHandler,
+    ToolHandler,
+    GeneralHandler,
+    EngancheAnonimoMunicipioHandler,
+]
+
 
     # 3. --- FLUJO ROBUSTO: Si está en flujo de RECLAMO, SOLO maneja con ReclamoHandler ---
     estado = contexto_municipio.get("estado_conversacion")
