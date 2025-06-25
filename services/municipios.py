@@ -146,7 +146,7 @@ def enviar_notificacion_whatsapp_con_plantilla(
         logger.error(f"[NOTIFICACION WHATSAPP] Error: {e}", exc_info=True)
 
 
-def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
+def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str, categorias_validas=None) -> bool:
     """Determina si el usuario cambió de tema o respondió lo esperado.
 
     Se intenta primero con heurísticas sencillas para evitar falsos positivos
@@ -573,31 +573,13 @@ class TicketStatusHandler(BaseMunicipioHandler):
 
 
 class ReclamoHandler(BaseMunicipioHandler):
-    def build_detalles_memoria(self, memoria: dict) -> str:
-        return (
-            f"Consulta original: {memoria.get('pregunta_original', '')}\n"
-            f"Categoría: {memoria.get('categoria_reclamo', '')}\n"
-            f"Dirección: {memoria.get('direccion_reclamo', '')}\n"
-            f"Nombre: {memoria.get('nombre_vecino', '')}\n"
-            f"Teléfono: {memoria.get('telefono_vecino', '')}\n"
-            f"Email: {memoria.get('email_vecino', '')}"
-        )
-
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
+        categorias_validas = [b["texto"].lower() for b in BOTONES_TODAS_CATEGORIAS] + ["otro motivo"]
 
         # Si el usuario cambia de tema, resetea
-        if estado in [
-            ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
-            ConversationState.ESPERANDO_DIRECCION_RECLAMO,
-            ConversationState.ESPERANDO_NOMBRE_VECINO,
-            ConversationState.ESPERANDO_TELEFONO_VECINO,
-            "ESPERANDO_EMAIL_VECINO",
-            "ESPERANDO_DESCRIPCION_RECLAMO",
-            "ESPERANDO_ADJUNTOS_RECLAMO",
-            "ESPERANDO_CONFIRMACION_RECLAMO"
-        ] and es_pregunta_nueva(pregunta, "el dato solicitado"):
+        if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO and es_pregunta_nueva(pregunta, "el dato solicitado", categorias_validas):
             memoria.clear()
             return {
                 "respuesta": (
