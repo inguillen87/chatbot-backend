@@ -1426,12 +1426,12 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         SmallTalkHandler,
         IntentClassifierHandler,
         HumanEscalationHandler,
-        VectorMunicipioCatalogHandler,      # NUEVO: catálogo de dependencias/servicios
-        TramiteInteligenteHandler,          # NUEVO: trámites inteligentes
-        ReclamoGeoHandler,                  # NUEVO: reclamos con ubicación/foto
+        VectorMunicipioCatalogHandler,
+        TramiteInteligenteHandler,
         RecoleccionHandler,
         TicketStatusHandler,
-        ReclamoHandler,
+        ReclamoHandler,          # <--- ¡PONER AQUÍ!
+        ReclamoGeoHandler,       # <--- ¡DESPUÉS!
         TramitesHandler,
         ImpuestosHandler,
         ToolHandler,
