@@ -35,7 +35,11 @@ from services.utils import (
 )
 import math
 
+# --- Configuración de Logging (Asegúrate de que esto esté al inicio de tu aplicación o en un archivo de configuración de logging) ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s - %(message)s')
 logger = logging.getLogger(__name__)
+# ---------------------------------------------------------------------------------------------------
+
 CONTEXTO_MUNICIPIO = "contexto_municipio"
 
 # Regex para detectar URLs en texto
@@ -55,8 +59,8 @@ def agregar_botones_para_links(texto: str, botones: list) -> list:
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
-TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886" # Este debería ser tu número de Twilio WhatsApp
+TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID") # SID de tu plantilla aprobada
 
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
@@ -137,7 +141,7 @@ def enviar_notificacion_whatsapp_con_plantilla(
             TWILIO_WHATSAPP_CONTENT_SID,
         ]
     ):
-        logger.error("[NOTIFICACION WHATSAPP] Faltan credenciales de Twilio.")
+        logger.error("[NOTIFICACION WHATSAPP] Faltan credenciales de Twilio WhatsApp (SID/Token/Number/Content_SID).")
         return
     destinatario_whatsapp = f"whatsapp:{numero_destino}"
     try:
@@ -151,7 +155,7 @@ def enviar_notificacion_whatsapp_con_plantilla(
         )
         logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
     except Exception as e:
-        logger.error(f"[NOTIFICACION WHATSAPP] Error: {e}", exc_info=True)
+        logger.error(f"[NOTIFICACION WHATSAPP] Error al enviar plantilla: {e}", exc_info=True)
 
 
 def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str, categorias_validas=None) -> bool:
@@ -202,7 +206,8 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str, categorias_validas
         logger.info(f"[Guardián de Flujo] Decisión: {decision.strip()}")
         return "PREGUNTA_NUEVA" in decision
     except Exception as e:
-        logger.error(f"[Guardián de Flujo] Error: {e}")
+        logger.error(f"[Guardián de Flujo] Error al clasificar pregunta nueva: {e}", exc_info=True)
+        # En caso de error, asumir que no es una pregunta nueva para no romper el flujo
         return False
 
 
@@ -240,9 +245,11 @@ class BaseMunicipioHandler:
         if memoria.get("descripcion_reclamo"):
             partes.append(f"Descripción: {memoria['descripcion_reclamo']}")
         if memoria.get("ubicacion_gps"):
-            partes.append("Ubicación adjunta")
+            lat = memoria['ubicacion_gps'].get('lat', 'N/A')
+            lon = memoria['ubicacion_gps'].get('lon', 'N/A')
+            partes.append(f"Ubicación GPS: Lat {lat}, Lon {lon}")
         if memoria.get("foto_url"):
-            partes.append("Foto adjunta")
+            partes.append("Foto adjunta: Sí")
         return "\n".join(partes)
 
 
@@ -308,6 +315,8 @@ class CancelHandler(BaseMunicipioHandler):
         "salir",
         "cancelar reclamo",
         "no quiero continuar",
+        "parar",
+        "detener",
     ]
 
     def handle(self, pregunta: str, **kwargs) -> dict | None:
@@ -328,7 +337,7 @@ class CancelHandler(BaseMunicipioHandler):
 class PoliteHandler(BaseMunicipioHandler):
     """Responde brevemente ante agradecimientos u otras expresiones corteses."""
 
-    KEYWORDS = {"gracias", "ok", "ok gracias", "muchas gracias", "dale", "perfecto"}
+    KEYWORDS = {"gracias", "ok", "ok gracias", "muchas gracias", "dale", "perfecto", "genial"}
 
     def handle(self, pregunta: str, **kwargs) -> dict | None:
         texto = normalizar_texto(pregunta)
@@ -499,7 +508,7 @@ class TicketStatusHandler(BaseMunicipioHandler):
         estado_conversacion = memoria.get("estado_conversacion")
 
         # No interferir si estamos en un flujo de reclamo activo (ESPERANDO_..._RECLAMO)
-        if estado_conversacion and hasattr(estado_conversacion, "name") and "RECLAMO" in estado_conversacion.name:
+        if estado_conversacion and estado_conversacion in RECLAMO_STATES:
             return None
 
         # Flujo de confirmación de cierre
@@ -693,7 +702,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                 datos = json.loads(resp) if resp else {}
                 logger.info(f"[ReclamoInteligenteHandler] Datos extraídos por LLM: {datos}")
             except Exception as e:
-                logger.error(f"[ReclamoInteligenteMunicipioHandler] Error Cohere/JSON: {e}")
+                logger.error(f"[ReclamoInteligenteMunicipioHandler] Error Cohere/JSON: {e}", exc_info=True)
                 datos = {}
             
             # Limpiar memoria al iniciar un reclamo inteligente para asegurar que empezamos de cero
@@ -798,23 +807,31 @@ class ReclamoHandler(BaseMunicipioHandler):
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
             texto_normalizado = normalizar_texto(pregunta)
             categoria_final = None
-            for cat in CATEGORIAS_RECLAMO:
-                if normalizar_texto(cat) == texto_normalizado:
-                    categoria_final = cat
-                    break
-            
+
+            # Intentar un match exacto con las categorías normalizadas
+            if texto_normalizado in categorias_normalizadas:
+                idx = categorias_normalizadas.index(texto_normalizado)
+                categoria_final = CATEGORIAS_RECLAMO[idx]
+            else:
+                # Si no hay match exacto, intentar con fuzzy matching
+                from difflib import get_close_matches
+                matches = get_close_matches(texto_normalizado, categorias_normalizadas, n=1, cutoff=0.7)
+                if matches:
+                    idx = categorias_normalizadas.index(matches[0])
+                    categoria_final = CATEGORIAS_RECLAMO[idx]
+
             if categoria_final:
                 memoria["categoria_reclamo"] = categoria_final
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                 return {
                     "respuesta": (
-                        f"Perfecto, categoría: **{categoria_final}**. ¿La **dirección exacta**?\n{EJEMPLO_DIRECCION}"
+                        f"Perfecto, categoría: **{categoria_final.title()}**. ¿La **dirección exacta**?\n{EJEMPLO_DIRECCION}"
                     )
                 }
             else:
                 sugeridas = sugerir_categorias_relevantes(pregunta)
                 botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
-                respuesta_texto = "Por favor, seleccioná una de las opciones. Si tu motivo es otro, elegí 'Otro motivo'."
+                respuesta_texto = "Esa categoría no es válida o no la entendí. Por favor, seleccioná una de las opciones o escribí una similar."
                 if sugeridas:
                     respuesta_texto += "\nOpciones sugeridas:"
                 return {
@@ -1044,7 +1061,7 @@ class TramitesHandler(BaseMunicipioHandler):
         estado = memoria.get("estado_conversacion")
         
         # BLOQUEO si hay flujo de reclamo en curso
-        if estado and hasattr(estado, "name") and "RECLAMO" in estado.name:
+        if estado and estado in RECLAMO_STATES: # Usar RECLAMO_STATES aquí también
             return None
         
         intencion = self.context.get("intencion")
@@ -1146,7 +1163,7 @@ class ImpuestosHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str, **kwargs) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        if estado and hasattr(estado, "name") and "RECLAMO" in estado.name:
+        if estado and estado in RECLAMO_STATES: # Usar RECLAMO_STATES aquí también
             return None
         intencion = self.context.get("intencion")
         if intencion == "consultar_impuestos":
@@ -1162,7 +1179,7 @@ class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str, **kwargs) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        if estado and hasattr(estado, "name") and "RECLAMO" in estado.name:
+        if estado and estado in RECLAMO_STATES: # Usar RECLAMO_STATES aquí también
             return None
         
         logger.info("[GeneralHandler] Consulta general con contexto de DB.")
@@ -1373,73 +1390,76 @@ class ToolHandler(BaseMunicipioHandler):
 
 class HumanEscalationHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str, **kwargs) -> dict | None:
-        if self.context.get("intencion") == "hablar_con_agente":
-            # Si el usuario es anónimo, pedir que se registre/inicie sesión
-            if not self.context.get("cliente_id"): # cliente_id es viewer_user.id
-                return {
-                    "respuesta": (
-                        "Para hablar con un agente y que podamos dar seguimiento a tu consulta, \n"
-                        "necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo?"
-                    ),
-                    "botones": [
-                        {"texto": "Iniciar sesión", "action": "login"},
-                        {"texto": "Registrarme Gratis", "action": "register"},
-                    ],
-                }
+        # Este handler solo actúa si la intención es "hablar_con_agente" o si el LLM lo indica directamente.
+        if self.context.get("intencion") != "hablar_con_agente":
+            return None
+            
+        # Si el usuario es anónimo, pedir que se registre/inicie sesión
+        if not self.context.get("cliente_id"): # cliente_id es viewer_user.id
+            return {
+                "respuesta": (
+                    "Para hablar con un agente y que podamos dar seguimiento a tu consulta, \n"
+                    "necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo?"
+                ),
+                "botones": [
+                    {"texto": "Iniciar sesión", "action": "login"},
+                    {"texto": "Registrarme Gratis", "action": "register"},
+                ],
+            }
 
-            logger.info(
-                f"[HumanEscalationHandler] Usuario {self.context.get('cliente_id')} pide agente."
+        logger.info(
+            f"[HumanEscalationHandler] Usuario {self.context.get('cliente_id')} pide agente."
+        )
+        
+        # Crear el ticket de escalación
+        ticket_data = {
+            "asunto": "Solicitud de Chat en Vivo",
+            "categoria": "Atención en Vivo",
+            "detalles": f"El vecino solicitó chat en vivo con la pregunta: '{pregunta}'",
+            "user_id": self.context.get("cliente_id"),
+            "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
+            "estado": "esperando_agente_en_vivo",
+            "ubicacion": self.context.get("ubicacion_usuario"),
+        }
+        
+        try:
+            sala_de_chat = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="municipio", ticket_data=ticket_data
             )
             
-            # Crear el ticket de escalación
-            ticket_data = {
-                "asunto": "Solicitud de Chat en Vivo",
-                "categoria": "Atención en Vivo",
-                "detalles": f"El vecino solicitó chat en vivo con la pregunta: '{pregunta}'",
-                "user_id": self.context.get("cliente_id"),
-                "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
-                "estado": "esperando_agente_en_vivo",
-                "ubicacion": self.context.get("ubicacion_usuario"),
-            }
+            if not sala_de_chat:
+                raise Exception("No se pudo crear el ticket de sala de chat.")
             
-            try:
-                sala_de_chat = servicio_tickets.crear_nuevo_ticket(
-                    tipo_ticket="municipio", ticket_data=ticket_data
-                )
-                
-                if not sala_de_chat:
-                    raise Exception("No se pudo crear el ticket de sala de chat.")
-                
-                # Agregar el mensaje original del usuario como comentario en el ticket
-                servicio_tickets.crear_comentario(
-                    ticket_id=sala_de_chat.id,
-                    tipo_ticket="municipio",
-                    comentario_data={
-                        "comentario": pregunta,
-                        "es_admin": False,
-                        "user_id": self.context.get("cliente_id"),
-                        "anon_id": self.context.get("anon_id"),
-                    },
-                )
-                
-                logger.info(
-                    f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada."
-                )
-                
-                self.context.get("contexto_municipio", {}).clear() # Limpiar contexto al escalar a un agente
-                return {
-                    "respuesta": (
-                        f"¡Listo! Abrimos una sala de chat directa con el equipo.\n"
-                        f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. Esperá, un agente se conecta en breve."
-                    ),
-                    "ticket_id": sala_de_chat.id,
-                }
-            except Exception as e:
-                logger.error(f"[HumanEscalationHandler] Error al escalar a agente: {e}", exc_info=True)
-                return {
-                    "respuesta": "No pudimos conectar con un agente en este momento. Probá más tarde o llamá al municipio.",
-                    "botones": [{"texto": "Hablar con un agente"}],
-                }
+            # Agregar el mensaje original del usuario como comentario en el ticket
+            servicio_tickets.crear_comentario(
+                ticket_id=sala_de_chat.id,
+                tipo_ticket="municipio",
+                comentario_data={
+                    "comentario": pregunta,
+                    "es_admin": False,
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id"),
+                },
+            )
+            
+            logger.info(
+                f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada."
+            )
+            
+            self.context.get("contexto_municipio", {}).clear() # Limpiar contexto al escalar a un agente
+            return {
+                "respuesta": (
+                    f"¡Listo! Abrimos una sala de chat directa con el equipo.\n"
+                    f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. Esperá, un agente se conecta en breve."
+                ),
+                "ticket_id": sala_de_chat.id,
+            }
+        except Exception as e:
+            logger.error(f"[HumanEscalationHandler] Error al escalar a agente: {e}", exc_info=True)
+            return {
+                "respuesta": "No pudimos conectar con un agente en este momento. Probá más tarde o llamá al municipio.",
+                "botones": [{"texto": "Hablar con un agente"}],
+            }
         return None
 
 # --- Categorías válidas para reclamos ---
@@ -1498,6 +1518,7 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Sí, solucionado": "confirmar_cierre_ticket",
     "No, aún no": "no_cerrar_ticket",
 }
+
 
 class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
     """
@@ -1747,7 +1768,7 @@ def safe_llm_call(prompt, preamble, fallback=None):
             raise ValueError("Respuesta vacía o genérica del LLM")
         return resp
     except Exception as e:
-        logger.error(f"[LLM_FALLBACK] Error en llamada a LLM: {e}")
+        logger.error(f"[LLM_FALLBACK] Error en llamada a LLM: {e}", exc_info=True)
         return fallback or "No tengo información específica en este momento. ¿Te puedo ayudar con algo más?"
 
 # --- Categorías válidas para reclamos ---
@@ -1860,37 +1881,32 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     estado_antes = context["contexto_municipio"].get("estado_conversacion")
     logger.info(f"[CONTEXTO] Estado previo: {estado_antes.name if estado_antes else 'None'}")
     
-    # Cadena de Handlers: el orden es CRÍTICO
+    # Cadena de Handlers: el orden es CRÍTICO. Definido AQUI para asegurar que todas las clases existan.
     handler_chain = [
         CancelHandler, # Primero: Permite cancelar cualquier flujo
         PoliteHandler, # Segundo: Respuestas corteses simples
         SmallTalkHandler, # Tercero: Conversación trivial
-        # Clasificador de intención DEBE ir antes de los handlers de flujos para establecer la intención principal
-        IntentClassifierHandler, 
+        IntentClassifierHandler, # Clasificador de intención DEBE ir antes de los handlers de flujos
         
         # Manejo de flujos específicos (priorizar antes que la consulta general)
-        HumanEscalationHandler, # Chat con agente (debe ir antes que reclamo/trámite si la intención es esa)
+        HumanEscalationHandler, # Chat con agente
         TicketStatusHandler, # Consulta de estado de ticket
         RecoleccionHandler, # Consulta de recolección de residuos
         
         # Reclamo Inteligente DEBE ir antes del ReclamoHandler "paso a paso"
-        # para intentar resolver todo de una, y si no, dejar que el ReclamoHandler normal lo continúe.
         ReclamoInteligenteMunicipioHandler, 
-        ReclamoHandler, # Flujo paso a paso de reclamo (si ReclamoInteligente no lo resolvió)
-        # ReclamoGeoHandler es redundante con ReclamoHandler.es_adjuntos_reclamo, se puede sacar
+        ReclamoHandler, # Flujo paso a paso de reclamo
+        # ReclamoGeoHandler es redundante, se puede eliminar si se integra su lógica
         
         TramitesHandler, # Flujo de trámites (general y licencia)
         TramiteInteligenteHandler, # Búsqueda inteligente de trámites
         ImpuestosHandler, # Consulta de impuestos
-        ToolHandler, # Ejecución de otras herramientas específicas (ej: recolectar más datos para ellas)
+        ToolHandler, # Ejecución de otras herramientas específicas
         VectorMunicipioCatalogHandler, # Consulta de catálogo de dependencias/oficinas
         GeneralHandler, # Respuestas generales basadas en contenido de la web scrapeada (LLM)
         
-        # Enganche anónimo al final para capturar cualquier consulta de usuario no logueado
-        # que no haya sido resuelta por handlers más específicos.
-        EngancheAnonimoMunicipioHandler, 
-        GreetingHandler, # El saludo inicial DEBE ir muy temprano, pero si se activa un flujo, se limpia el contexto.
-                         # Lo dejo aquí como último recurso si el usuario vuelve a saludar o el flujo se limpia.
+        EngancheAnonimoMunicipioHandler, # Enganche anónimo al final
+        GreetingHandler, # Saludo inicial (último recurso si no hay match)
     ]
 
     respuesta_final = None
@@ -1914,8 +1930,6 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
             # Solo el handler que está diseñado para ese estado (o el que lo inició) debe procesar.
             if current_state_in_context:
                 # Si el handler actual es el "dueño" del estado, lo dejamos procesar
-                # NOTA: Se actualizó la condición para incluir `RECLAMO_STATES` correctamente.
-                # También se ajustó la condición de TicketStatusHandler para ser más precisa.
                 if (isinstance(handler_instance, ReclamoHandler) and current_state_in_context in RECLAMO_STATES) or \
                    (isinstance(handler_instance, TicketStatusHandler) and current_state_in_context.name.startswith("ESPERANDO_") and "TICKET" in current_state_in_context.name) or \
                    (isinstance(handler_instance, RecoleccionHandler) and current_state_in_context == ConversationState.ESPERANDO_PARAM_RECOLECCION) or \
@@ -1972,10 +1986,17 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     # Serializar el contexto para guardar el estado actualizado
     contexto_para_guardar = serializar_enum(context["contexto_municipio"])
 
+    # --- INCLUIR media_url Y location_data EN LA RESPUESTA FINAL AL FRONTEND ---
+    media_url_to_send = contexto_municipio.get("foto_url")
+    location_data_to_send = contexto_municipio.get("ubicacion_gps")
+    # -------------------------------------------------------------------------
+
     logger.info(f"[FIN] Respuesta final: '{respuesta_final.get('respuesta')}'")
     return {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
-        "ticket_id": respuesta_final.get("ticket_id", None)
+        "ticket_id": respuesta_final.get("ticket_id", None),
+        "media_url": media_url_to_send,        # <-- AÑADIDO
+        "location_data": location_data_to_send # <-- AÑADIDO
     }
