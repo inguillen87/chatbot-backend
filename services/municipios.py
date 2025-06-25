@@ -1317,14 +1317,16 @@ def safe_llm_call(prompt, preamble, fallback=None):
         return fallback or "No tengo información específica, pero podés consultar al municipio o elegir otra opción."
 
 def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+    logger.info(f"[INICIO] Pregunta recibida: '{pregunta}'")
     contexto_previo = kwargs.get("contexto_previo", {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
     estado_guardado = contexto_municipio.get("estado_conversacion")
+
     if estado_guardado and isinstance(estado_guardado, str):
         try:
             contexto_municipio["estado_conversacion"] = ConversationState[estado_guardado]
         except KeyError:
-            logger.warning(f"Estado inválido en el contexto: {estado_guardado}")
+            logger.warning(f"[CONTEXTO] Estado inválido en el contexto: {estado_guardado}")
             contexto_municipio["estado_conversacion"] = None
 
     context = {
@@ -1335,19 +1337,20 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         "intencion": None,
     }
 
-    # --- INTERCEPTA COMANDOS DE BOTONES ---
     comando = BOTONES_COMANDOS_MUNICIPIO.get(pregunta.strip())
     if comando:
         context["intencion"] = comando
+        logger.info(f"[BOTON] Comando detectado: '{comando}'")
         if comando == "iniciar_reclamo":
             pregunta = "Quiero hacer un reclamo"
         elif comando == "consultar_estado_ticket":
             pregunta = "Consultar estado de ticket"
         elif comando == "hablar_con_agente":
-            pass
+            pass  # Mantener pregunta original
 
-    # --- SIGUE EL FLUJO NORMAL ---
     estado_antes = contexto_municipio.get("estado_conversacion")
+    logger.info(f"[CONTEXTO] Estado previo: {estado_antes}")
+    
     handler_chain = [
         GreetingHandler,
         CancelHandler,
@@ -1373,18 +1376,19 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     for handler_class in handler_chain:
         try:
             handler_instance = handler_class(context)
+            logger.info(f"[HANDLER] Procesando con {handler_class.__name__}")
             respuesta_parcial = handler_instance.handle(pregunta)
-            if respuesta_parcial:
-                if not isinstance(respuesta_parcial, dict):
-                    logger.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_parcial)}. Pregunta: '{pregunta}'")
-                    respuesta_parcial = None
-                if respuesta_parcial:
-                    respuesta_final = respuesta_parcial
-                    break
+            if respuesta_parcial and isinstance(respuesta_parcial, dict):
+                logger.info(f"[HANDLER] {handler_class.__name__} respondió correctamente.")
+                respuesta_final = respuesta_parcial
+                break
+            else:
+                logger.info(f"[HANDLER] {handler_class.__name__} no generó respuesta válida.")
         except Exception as e:
-            continue  # Si un handler rompe, sigue
+            logger.error(f"[ERROR] Handler '{handler_class.__name__}' falló: {e}")
 
     if not respuesta_final:
+        logger.info("[RESPUESTA] No se encontró respuesta. Usando fallback.")
         respuesta_final = {
             "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción.",
             "botones": [
@@ -1394,35 +1398,23 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
             ]
         }
 
-    try:
-        # --- Agregado: robustez extra por si respuesta_final no es dict ---
-        if not isinstance(respuesta_final, dict):
-            logger.error(f"[RESPONDER_MUNICIPIO] respuesta_final no es dict: {type(respuesta_final)}")
-            respuesta_final = {
-                "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción.",
-                "botones": [
-                    {"texto": "Hacer un reclamo"},
-                    {"texto": "Consultar estado de un trámite"},
-                    {"texto": "Hablar con un agente"},
-                ]
-            }
-        contexto_para_guardar = serializar_enum(context["contexto_municipio"])
-        return {
-            "respuesta": respuesta_final.get("respuesta"),
-            "botones": respuesta_final.get("botones", []),
-            "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
-            "ticket_id": respuesta_final.get("ticket_id", None)
-        }
-    except Exception as e:
-        logger.error(f"[RESPONDER_MUNICIPIO] Error crítico al serializar contexto: {e}", exc_info=True)
-        return {
-            "respuesta": "¡Ups! Hubo un error inesperado. Probá de nuevo más tarde.",
-            "botones": [
-                {"texto": "Hacer un reclamo"},
-                {"texto": "Consultar estado de un trámite"},
-                {"texto": "Hablar con un agente"},
-            ],
-            "contexto_actualizado": {},
-            "ticket_id": None
-        }
+    def serializar_enum(obj):
+        from enum import Enum
+        if isinstance(obj, Enum):
+            return obj.name
+        elif isinstance(obj, dict):
+            return {k: serializar_enum(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [serializar_enum(v) for v in obj]
+        else:
+            return obj
 
+    contexto_para_guardar = serializar_enum(context["contexto_municipio"])
+
+    logger.info(f"[FIN] Respuesta final: '{respuesta_final.get('respuesta')}'")
+    return {
+        "respuesta": respuesta_final.get("respuesta"),
+        "botones": respuesta_final.get("botones", []),
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
+        "ticket_id": respuesta_final.get("ticket_id", None)
+    }
