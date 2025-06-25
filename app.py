@@ -5,6 +5,10 @@ from flask import Flask
 from flask_cors import CORS
 from flask_session import Session
 
+# Reuse the same Session extension across multiple app instances to avoid
+# redefining the 'Session' model when tests create the app several times.
+session_ext = Session()
+
 from config import Config
 from extensions import db, migrate
 from models import User
@@ -59,7 +63,8 @@ def create_app(config_class=Config):
 
     # Configuración y activación de Sesiones en el Servidor
     app.config['SESSION_SQLALCHEMY'] = db
-    Session(app)
+    # Usar solo session_ext para evitar redefinición en tests o múltiples apps
+    session_ext.init_app(app)
 
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
