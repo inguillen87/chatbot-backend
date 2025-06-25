@@ -2067,7 +2067,7 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
             # Solo el handler que está diseñado para ese estado (o el que lo inició) debe procesar.
             if current_state_in_context:
                 # Si el handler actual es el "dueño" del estado, lo dejamos procesar
-                if (isinstance(handler_instance, ReclamoHandler) and "RECLAMO" in current_state_in_context.name) or \
+                if (isinstance(handler_instance, ReclamoHandler) and current_state_in_context in RECLAMO_STATES) or \
                    (isinstance(handler_instance, TicketStatusHandler) and "TICKET" in current_state_in_context.name) or \
                    (isinstance(handler_instance, RecoleccionHandler) and current_state_in_context == ConversationState.ESPERANDO_PARAM_RECOLECCION) or \
                    (isinstance(handler_instance, TramitesHandler) and current_state_in_context in [ConversationState.ESPERANDO_SELECCION_TRAMITE, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA]):
@@ -2076,9 +2076,10 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
                     respuesta_parcial = handler_instance.handle(pregunta, **kwargs)
                     if respuesta_parcial:
                         respuesta_final = respuesta_parcial
-                        break # Si responde, salir del bucle de handlers
-                    else: # Si el handler del estado activo no responde, podría ser una pregunta nueva.
-                          # Permitir que IntentClassifier lo detecte.
+                        break
+                    else: 
+                        # Si el handler del estado activo no responde, podría ser una pregunta nueva.
+                        # Permitir que IntentClassifier lo detecte.
                         logger.warning(f"[HANDLER] Handler {handler_class.__name__} (estado activo) no respondió. Posible pregunta nueva.")
                         
                         # Si el LLM determina que es una pregunta nueva, limpiar el estado y reiniciar la clasificación
