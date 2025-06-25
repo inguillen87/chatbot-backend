@@ -579,195 +579,333 @@ class TicketStatusHandler(BaseMunicipioHandler):
         return None
 
 
-class ReclamoHandler(BaseMunicipioHandler):
-    """
-    Handler robusto para reclamos municipales, sin mezclar con trámites ni chat en vivo.
-    Pide nombre, teléfono, email, descripción, ubicación (opcional) y confirma antes de crear el ticket.
-    Todo validado y limpio.
-    """
-    def handle(self, pregunta: str) -> dict | None:
-        memoria = self.context.get("contexto_municipio", {})
-        estado = memoria.get("estado_conversacion")
+# En tu handler de ReclamoHandler, reemplazá lo siguiente:
 
-        # Definir categorías válidas (actualiza según el municipio)
-        categorias_validas = [
-            "arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño",
-            "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle",
-            "rotura de semaforo", "tramites de obras privadas", "otro motivo"
-        ]
-        categorias_normalizadas = [normalizar_texto_categoria(c) for c in categorias_validas]
+def handle(self, pregunta: str, **kwargs) -> dict | None:
+    memoria = self.context.get("contexto_municipio", {})
+    estado = memoria.get("estado_conversacion")
+    categorias_validas = [
+        "arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño",
+        "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle",
+        "rotura de semaforo", "tramites de obras privadas", "otro motivo"
+    ]
+    categorias_normalizadas = [normalizar_texto_categoria(c) for c in categorias_validas]
 
-        # 1. Inicio: Detecta intención de reclamo
-        if self.context.get("intencion") == "iniciar_reclamo" and not estado:
-            memoria.clear()
-            memoria["pregunta_original"] = pregunta
-            categoria_adivinada = categorizar_reclamo_por_palabra_clave(pregunta)
-            if categoria_adivinada != "Otros":
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
-                memoria["categoria_reclamo"] = categoria_adivinada
-                return {
-                    "respuesta": (
-                        f"Ok, el reclamo es sobre **{categoria_adivinada}**. ¿Me pasás la dirección exacta del problema?\n{EJEMPLO_DIRECCION}"
-                    )
-                }
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+    # FLUJO RECLAMO CORRECTO, SIN ATARDEOS NI MEZCLAS
+
+    # 1. Selección de categoría (solo acepta texto, nunca archivos)
+    if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
+        texto_normalizado = normalizar_texto_categoria(pregunta)
+        if texto_normalizado in categorias_normalizadas:
+            categoria_final = pregunta.strip().capitalize()
+            memoria["categoria_reclamo"] = categoria_final
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
             return {
-                "respuesta": "Seleccioná la categoría que mejor describa tu reclamo:",
-                "botones": [{"texto": c.title()} for c in categorias_validas],
+                "respuesta": (
+                    f"Perfecto, categoría: **{categoria_final}**. ¿La dirección exacta?\n{EJEMPLO_DIRECCION}"
+                )
+            }
+        else:
+            return {
+                "respuesta": "Por favor, seleccioná una de las opciones. Si tu motivo es otro, elegí 'Otro motivo'.",
+                "botones": [{"texto": c.title()} for c in categorias_validas]
             }
 
-        # 2. Selección de categoría (desde botón o texto)
-        if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-            texto_normalizado = normalizar_texto_categoria(pregunta)
-            if texto_normalizado in categorias_normalizadas:
-                memoria["categoria_reclamo"] = pregunta.strip().capitalize()
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
-                return {
-                    "respuesta": (
-                        f"Perfecto, categoría: **{memoria['categoria_reclamo']}**. ¿La dirección exacta?\n{EJEMPLO_DIRECCION}"
-                    )
-                }
-            # Si no es categoría válida, sugerir de nuevo (no reiniciar)
+    # 2. Dirección (sólo acepta dirección válida, no avanza por nada hasta que se ingrese bien)
+    if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
+        # Si es archivo (foto/ubicación) lo ignora y pide dirección de nuevo
+        if kwargs.get("es_archivo") or kwargs.get("es_foto") or kwargs.get("es_ubicacion"):
             return {
-                "respuesta": "No entendí la categoría. Elegí una de la lista:",
-                "botones": [{"texto": c.title()} for c in categorias_validas],
+                "respuesta": "Primero necesito la dirección exacta del problema (ejemplo: San Martín 123, Junín). Después vas a poder adjuntar foto o ubicación.",
             }
-
-        # 3. Dirección (debe tener números y texto)
-        if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
-            if not direccion_es_valida(pregunta):
-                return {
-                    "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}"
-                }
-            memoria["direccion_reclamo"] = pregunta.strip()
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
-            return {"respuesta": "¡Gracias! Ahora tu nombre completo (puede ser solo nombre, pero podés agregar apellido si querés)."}
-
-        # 4. Nombre (acepta nombre solo, sugiere apellido)
-        if estado == ConversationState.ESPERANDO_NOMBRE_VECINO:
-            nombre = pregunta.strip()
-            memoria["nombre_vecino"] = nombre
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
-            if len(nombre.split()) < 2:
-                return {
-                    "respuesta": f"Gracias, {nombre}. Si querés podés agregar tu apellido, o pasame tu teléfono con código de área.",
-                }
+        if not direccion_es_valida(pregunta):
             return {
-                "respuesta": f"Gracias, {nombre}. ¿Me pasás tu teléfono con código de área?"
+                "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}"
             }
+        memoria["direccion_reclamo"] = pregunta.strip()
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
+        return {"respuesta": "¡Gracias! Ahora tu nombre completo."}
 
-        # 5. Teléfono (valida que sea de Argentina)
-        if estado == ConversationState.ESPERANDO_TELEFONO_VECINO:
-            telefono = pregunta.strip()
-            if not validar_telefono(telefono):
-                return {"respuesta": "El teléfono ingresado no parece válido. Ingresalo de nuevo (solo números, con código de área)."}
-            telefono_limpio = re.sub(r"\D", "", telefono)
-            if not telefono_limpio.startswith("54"):
-                telefono_e164 = "+54" + telefono_limpio[-10:]
-            else:
-                telefono_e164 = "+" + telefono_limpio
-            memoria["telefono_vecino"] = telefono_e164
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO
-            return {"respuesta": "¿Cuál es tu email? (Te notificaremos el estado del reclamo)"}
+    # 3. Nombre
+    if estado == ConversationState.ESPERANDO_NOMBRE_VECINO:
+        nombre = pregunta.strip()
+        memoria["nombre_vecino"] = nombre
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
+        return {
+            "respuesta": f"Gracias, {nombre}. ¿Me pasás tu teléfono con código de área?"
+        }
 
-        # 6. Email (valida formato simple)
-        if estado == ConversationState.ESPERANDO_EMAIL_VECINO:
-            email = pregunta.strip()
-            if not validar_email(email):
-                return {"respuesta": "El email ingresado no parece válido. Ingresalo nuevamente (ejemplo: juan@dominio.com)."}
-            memoria["email_vecino"] = email
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
-            return {"respuesta": "Contame brevemente el problema. Podés adjuntar una foto o ubicación después."}
+    # 4. Teléfono
+    if estado == ConversationState.ESPERANDO_TELEFONO_VECINO:
+        telefono = pregunta.strip()
+        if not validar_telefono(telefono):
+            return {"respuesta": "El teléfono ingresado no parece válido. Ingresalo de nuevo (solo números)."}
+        memoria["telefono_vecino"] = telefono
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO
+        return {"respuesta": "¿Cuál es tu email? (Te notificaremos el estado del reclamo)"}
 
-        # 7. Descripción del reclamo
-        if estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
-            memoria["descripcion_reclamo"] = pregunta.strip()
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-            return {
-                "respuesta": "¿Querés adjuntar una foto o compartir tu ubicación GPS?",
-                "botones": [
-                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                    {"texto": "No, continuar", "action": "sin_adjuntos"}
-                ]
-            }
+    # 5. Email
+    if estado == ConversationState.ESPERANDO_EMAIL_VECINO:
+        email = pregunta.strip()
+        if not validar_email(email):
+            return {"respuesta": "El email ingresado no parece válido. Ingresalo nuevamente."}
+        memoria["email_vecino"] = email
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
+        return {"respuesta": "Contame brevemente el problema. Podés adjuntar una foto o ubicación después."}
 
-        # 8. Adjuntos (opcional GPS/foto, guarda ubicación si llega)
-        if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
-            # Guardar ubicación si viene
-            if "ubicacion" in pregunta.lower() or self.context.get("ubicacion_usuario"):
-                memoria["ubicacion_gps"] = self.context.get("ubicacion_usuario")
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-            resumen = (
-                f"Categoría: {memoria.get('categoria_reclamo')}\n"
-                f"Dirección: {memoria.get('direccion_reclamo')}\n"
-                f"Nombre: {memoria.get('nombre_vecino')}\n"
-                f"Teléfono: {memoria.get('telefono_vecino')}\n"
-                f"Email: {memoria.get('email_vecino')}\n"
-                f"Descripción: {memoria.get('descripcion_reclamo')}\n"
-                f"Ubicación GPS: {memoria.get('ubicacion_gps', 'No enviada')}\n"
+    # 6. Descripción
+    if estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
+        memoria["descripcion_reclamo"] = pregunta.strip()
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
+        return {
+            "respuesta": "¿Querés adjuntar una foto o compartir tu ubicación?",
+            "botones": [
+                {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
+                {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                {"texto": "No, continuar", "action": "sin_adjuntos"}
+            ]
+        }
+
+    # 7. Adjuntos (sólo en este paso podés aceptar foto/ubicación)
+    if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
+        if kwargs.get("es_archivo") or kwargs.get("es_foto"):
+            memoria["foto_url"] = kwargs.get("archivo_url")
+        if kwargs.get("es_ubicacion") or self.context.get("ubicacion_usuario"):
+            memoria["ubicacion_gps"] = self.context.get("ubicacion_usuario")
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+        resumen = (
+            f"Categoría: {memoria.get('categoria_reclamo')}\n"
+            f"Dirección: {memoria.get('direccion_reclamo')}\n"
+            f"Nombre: {memoria.get('nombre_vecino')}\n"
+            f"Teléfono: {memoria.get('telefono_vecino')}\n"
+            f"Email: {memoria.get('email_vecino')}\n"
+            f"Descripción: {memoria.get('descripcion_reclamo')}\n"
+        )
+        return {
+            "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
+            "botones": [
+                {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                {"texto": "Editar datos", "action": "editar_reclamo"}
+            ]
+        }
+
+    # 8. Confirmación y creación de ticket
+    if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
+        # Armá bien los detalles y creá el ticket
+        detalles = self.build_detalles_memoria(memoria)
+        categoria = memoria.get("categoria_reclamo", "General")
+        nombre = memoria.get("nombre_vecino", "")
+        telefono_raw = memoria.get("telefono_vecino", "")
+        email = memoria.get("email_vecino", "")
+        telefono_limpio = re.sub(r"\D", "", telefono_raw)
+        if not telefono_limpio.startswith("+") and len(telefono_limpio) > 8:
+            telefono_e164 = "+549" + telefono_limpio
+        else:
+            telefono_e164 = telefono_limpio
+        ticket = servicio_tickets.crear_nuevo_ticket(
+            tipo_ticket="municipio",
+            ticket_data={
+                "asunto": f"Reclamo de {categoria}",
+                "categoria": categoria,
+                "detalles": detalles,
+                "user_id": self.context.get("user_id"),
+                "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
+                "email": email,
+            },
+        )
+        memoria.clear()
+        if ticket:
+            enviar_notificacion_whatsapp_con_plantilla(
+                telefono_e164,
+                nombre,
+                ticket.nro_ticket,
+                categoria,
+            )
+            enviar_notificacion_sms(
+                telefono_e164,
+                f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado.",
             )
             return {
-                "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
+                "respuesta": (
+                    f"¡Listo! Tu reclamo fue generado con éxito. El número de ticket es **M-{ticket.nro_ticket}**. "
+                    "Vas a recibir notificaciones por email o WhatsApp."
+                ),
                 "botones": [
-                    {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                    {"texto": "Editar datos", "action": "editar_reclamo"}
-                ]
+                    {"texto": "Nuevo reclamo"},
+                    {"texto": "Consultar estado de ticket"},
+                    {"texto": "Hablar con un agente"},
+                ],
+                "ticket_id": ticket.id,
             }
+        return {
+            "respuesta": obtener_respuesta_municipio("reclamo_error"),
+            "botones": [{"texto": "Hablar con un agente"}],
+        }
 
-        # 9. Confirmación (crea ticket, valida TODO antes de notificar)
-        if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
-            detalles = self.build_detalles_memoria(memoria)
-            categoria = memoria.get("categoria_reclamo", "General")
-            nombre = memoria.get("nombre_vecino", "")
-            telefono = memoria.get("telefono_vecino", "")
-            email = memoria.get("email_vecino", "")
-            ubicacion_gps = memoria.get("ubicacion_gps", None)
+    return None
 
-            ticket = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="municipio",
-                ticket_data={
-                    "asunto": f"Reclamo de {categoria}",
-                    "categoria": categoria,
-                    "detalles": detalles,
-                    "user_id": self.context.get("user_id"),
-                    "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
-                    "email": email,
-                    "telefono": telefono,
-                    "ubicacion_gps": ubicacion_gps,
-                },
-            )
-            memoria.clear()
-            if ticket:
-                # Notificar solo si se creó el ticket real
-                enviar_notificacion_whatsapp_con_plantilla(
-                    telefono,
-                    nombre,
-                    ticket.nro_ticket,
-                    categoria,
-                )
-                enviar_notificacion_sms(
-                    telefono,
-                    f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado.",
-                )
-                return {
-                    "respuesta": (
-                        f"¡Listo! Tu reclamo fue generado con éxito. El número de ticket es **M-{ticket.nro_ticket}**. "
-                        "Vas a recibir notificaciones por email o WhatsApp."
-                    ),
-                    "botones": [
-                        {"texto": "Nuevo reclamo"},
-                        {"texto": "Consultar estado de ticket"},
-                        {"texto": "Hablar con un agente"},
-                    ],
-                    "ticket_id": ticket.id,
-                }
+def handle(self, pregunta: str, **kwargs) -> dict | None:
+    memoria = self.context.get("contexto_municipio", {})
+    estado = memoria.get("estado_conversacion")
+    categorias_validas = [
+        "arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño",
+        "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle",
+        "rotura de semaforo", "tramites de obras privadas", "otro motivo"
+    ]
+    categorias_normalizadas = [normalizar_texto_categoria(c) for c in categorias_validas]
+
+    # FLUJO RECLAMO CORRECTO, SIN ATARDEOS NI MEZCLAS
+
+    # 1. Selección de categoría (solo acepta texto, nunca archivos)
+    if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
+        texto_normalizado = normalizar_texto_categoria(pregunta)
+        if texto_normalizado in categorias_normalizadas:
+            categoria_final = pregunta.strip().capitalize()
+            memoria["categoria_reclamo"] = categoria_final
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
             return {
-                "respuesta": obtener_respuesta_municipio("reclamo_error"),
-                "botones": [{"texto": "Hablar con un agente"}],
+                "respuesta": (
+                    f"Perfecto, categoría: **{categoria_final}**. ¿La dirección exacta?\n{EJEMPLO_DIRECCION}"
+                )
+            }
+        else:
+            return {
+                "respuesta": "Por favor, seleccioná una de las opciones. Si tu motivo es otro, elegí 'Otro motivo'.",
+                "botones": [{"texto": c.title()} for c in categorias_validas]
             }
 
-        return None
+    # 2. Dirección (sólo acepta dirección válida, no avanza por nada hasta que se ingrese bien)
+    if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
+        # Si es archivo (foto/ubicación) lo ignora y pide dirección de nuevo
+        if kwargs.get("es_archivo") or kwargs.get("es_foto") or kwargs.get("es_ubicacion"):
+            return {
+                "respuesta": "Primero necesito la dirección exacta del problema (ejemplo: San Martín 123, Junín). Después vas a poder adjuntar foto o ubicación.",
+            }
+        if not direccion_es_valida(pregunta):
+            return {
+                "respuesta": f"No pude identificar una dirección válida. Ejemplo: {EJEMPLO_DIRECCION}"
+            }
+        memoria["direccion_reclamo"] = pregunta.strip()
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
+        return {"respuesta": "¡Gracias! Ahora tu nombre completo."}
+
+    # 3. Nombre
+    if estado == ConversationState.ESPERANDO_NOMBRE_VECINO:
+        nombre = pregunta.strip()
+        memoria["nombre_vecino"] = nombre
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
+        return {
+            "respuesta": f"Gracias, {nombre}. ¿Me pasás tu teléfono con código de área?"
+        }
+
+    # 4. Teléfono
+    if estado == ConversationState.ESPERANDO_TELEFONO_VECINO:
+        telefono = pregunta.strip()
+        if not validar_telefono(telefono):
+            return {"respuesta": "El teléfono ingresado no parece válido. Ingresalo de nuevo (solo números)."}
+        memoria["telefono_vecino"] = telefono
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO
+        return {"respuesta": "¿Cuál es tu email? (Te notificaremos el estado del reclamo)"}
+
+    # 5. Email
+    if estado == ConversationState.ESPERANDO_EMAIL_VECINO:
+        email = pregunta.strip()
+        if not validar_email(email):
+            return {"respuesta": "El email ingresado no parece válido. Ingresalo nuevamente."}
+        memoria["email_vecino"] = email
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
+        return {"respuesta": "Contame brevemente el problema. Podés adjuntar una foto o ubicación después."}
+
+    # 6. Descripción
+    if estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
+        memoria["descripcion_reclamo"] = pregunta.strip()
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
+        return {
+            "respuesta": "¿Querés adjuntar una foto o compartir tu ubicación?",
+            "botones": [
+                {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
+                {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                {"texto": "No, continuar", "action": "sin_adjuntos"}
+            ]
+        }
+
+    # 7. Adjuntos (sólo en este paso podés aceptar foto/ubicación)
+    if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
+        if kwargs.get("es_archivo") or kwargs.get("es_foto"):
+            memoria["foto_url"] = kwargs.get("archivo_url")
+        if kwargs.get("es_ubicacion") or self.context.get("ubicacion_usuario"):
+            memoria["ubicacion_gps"] = self.context.get("ubicacion_usuario")
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+        resumen = (
+            f"Categoría: {memoria.get('categoria_reclamo')}\n"
+            f"Dirección: {memoria.get('direccion_reclamo')}\n"
+            f"Nombre: {memoria.get('nombre_vecino')}\n"
+            f"Teléfono: {memoria.get('telefono_vecino')}\n"
+            f"Email: {memoria.get('email_vecino')}\n"
+            f"Descripción: {memoria.get('descripcion_reclamo')}\n"
+        )
+        return {
+            "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
+            "botones": [
+                {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                {"texto": "Editar datos", "action": "editar_reclamo"}
+            ]
+        }
+
+    # 8. Confirmación y creación de ticket
+    if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
+        # Armá bien los detalles y creá el ticket
+        detalles = self.build_detalles_memoria(memoria)
+        categoria = memoria.get("categoria_reclamo", "General")
+        nombre = memoria.get("nombre_vecino", "")
+        telefono_raw = memoria.get("telefono_vecino", "")
+        email = memoria.get("email_vecino", "")
+        telefono_limpio = re.sub(r"\D", "", telefono_raw)
+        if not telefono_limpio.startswith("+") and len(telefono_limpio) > 8:
+            telefono_e164 = "+549" + telefono_limpio
+        else:
+            telefono_e164 = telefono_limpio
+        ticket = servicio_tickets.crear_nuevo_ticket(
+            tipo_ticket="municipio",
+            ticket_data={
+                "asunto": f"Reclamo de {categoria}",
+                "categoria": categoria,
+                "detalles": detalles,
+                "user_id": self.context.get("user_id"),
+                "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
+                "email": email,
+            },
+        )
+        memoria.clear()
+        if ticket:
+            enviar_notificacion_whatsapp_con_plantilla(
+                telefono_e164,
+                nombre,
+                ticket.nro_ticket,
+                categoria,
+            )
+            enviar_notificacion_sms(
+                telefono_e164,
+                f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado.",
+            )
+            return {
+                "respuesta": (
+                    f"¡Listo! Tu reclamo fue generado con éxito. El número de ticket es **M-{ticket.nro_ticket}**. "
+                    "Vas a recibir notificaciones por email o WhatsApp."
+                ),
+                "botones": [
+                    {"texto": "Nuevo reclamo"},
+                    {"texto": "Consultar estado de ticket"},
+                    {"texto": "Hablar con un agente"},
+                ],
+                "ticket_id": ticket.id,
+            }
+        return {
+            "respuesta": obtener_respuesta_municipio("reclamo_error"),
+            "botones": [{"texto": "Hablar con un agente"}],
+        }
+
+    return None
 
 
 
