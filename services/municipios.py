@@ -419,7 +419,10 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         "hablame con"
     ]
     # Otras palabras clave para reclamo, trámite, etc. si quieres un fallback rápido sin LLM
-    KEYWORDS_RECLAMO = ["reclamo", "queja", "problema", "denuncia", "reportar"]
+    KEYWORDS_RECLAMO = [
+        "reclamo", "reclamos", "queja", "quejas", "problema", "problemas",
+        "denuncia", "denuncias", "reportar", "arbol caido", "árbol caído", "arbol", "caido"
+    ]
     KEYWORDS_TRAMITE = ["trámite", "tramite", "gestión", "consulta de trámite"]
     
     def handle(self, pregunta: str) -> dict | None:
@@ -982,6 +985,9 @@ class ToolHandler(BaseMunicipioHandler):
                 preamble="Sos experto en decidir si una pregunta requiere una herramienta. Respondé JSON o 'null'.",
             )
             if not respuesta_llm_str or respuesta_llm_str.strip().lower() == "null":
+                # Si la intención es iniciar reclamo, dejá que siga el flujo
+                if self.context.get("intencion") == "iniciar_reclamo":
+                    return None
                 return {
                     "respuesta": (
                         "No tengo una herramienta directa para esa consulta, pero decime más detalles o elegí otra opción:"
@@ -1388,18 +1394,18 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
             ]
         }
 
-    def serializar_enum(obj):
-        from enum import Enum
-        if isinstance(obj, Enum):
-            return obj.name
-        elif isinstance(obj, dict):
-            return {k: serializar_enum(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [serializar_enum(v) for v in obj]
-        else:
-            return obj
-
     try:
+        # --- Agregado: robustez extra por si respuesta_final no es dict ---
+        if not isinstance(respuesta_final, dict):
+            logger.error(f"[RESPONDER_MUNICIPIO] respuesta_final no es dict: {type(respuesta_final)}")
+            respuesta_final = {
+                "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción.",
+                "botones": [
+                    {"texto": "Hacer un reclamo"},
+                    {"texto": "Consultar estado de un trámite"},
+                    {"texto": "Hablar con un agente"},
+                ]
+            }
         contexto_para_guardar = serializar_enum(context["contexto_municipio"])
         return {
             "respuesta": respuesta_final.get("respuesta"),
