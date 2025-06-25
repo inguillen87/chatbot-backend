@@ -749,7 +749,6 @@ class ReclamoHandler(BaseMunicipioHandler):
 
 
 
-
 def buscar_en_faqs(pregunta, tramite):
     if tramite not in MINI_FAQ_TRAMITES:
         return None

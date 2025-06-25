@@ -352,3 +352,16 @@ def validar_telefono(telefono: str) -> bool:
         return False
     solo_numeros = re.sub(r"\D", "", telefono)
     return len(solo_numeros) >= 8
+
+def formatear_telefono_e164(telefono: str, codigo_pais: str = "54") -> str:
+    """Devuelve el teléfono en formato E164 o cadena vacía si no es válido."""
+    if not telefono:
+        return ""
+    telefono = telefono.strip()
+    if telefono.startswith("+"):
+        return telefono
+    solo_numeros = re.sub(r"\D", "", telefono)
+    if len(solo_numeros) < 8:
+        return ""
+    solo_numeros = solo_numeros.lstrip("0")
+    return f"+{codigo_pais}{solo_numeros}"
