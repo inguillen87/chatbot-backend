@@ -97,6 +97,10 @@ class ConversationState(Enum):
     ESPERANDO_DIRECCION_RECLAMO = auto()
     ESPERANDO_NOMBRE_VECINO = auto()
     ESPERANDO_TELEFONO_VECINO = auto()
+    ESPERANDO_EMAIL_VECINO = auto()           # <--- AGREGA ESTO
+    ESPERANDO_DESCRIPCION_RECLAMO = auto()    # <--- AGREGA ESTO
+    ESPERANDO_ADJUNTOS_RECLAMO = auto()       # <--- AGREGA ESTO
+    ESPERANDO_CONFIRMACION_RECLAMO = auto()   # <--- AGREGA ESTO
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
 
@@ -660,22 +664,22 @@ class ReclamoHandler(BaseMunicipioHandler):
             if not validar_telefono(telefono):
                 return {"respuesta": "El teléfono ingresado no parece válido. Por favor, ingresalo nuevamente (solo números)."}
             memoria["telefono_vecino"] = telefono
-            memoria["estado_conversacion"] = "ESPERANDO_EMAIL_VECINO"
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO   # <--- Enum, no string
             return {"respuesta": "¿Cuál es tu email? (Te notificaremos el estado del reclamo)"}
 
         # 5. Email
-        if estado == "ESPERANDO_EMAIL_VECINO":
+        if estado == ConversationState.ESPERANDO_EMAIL_VECINO:   # <--- Enum, no string
             email = pregunta.strip()
             if not validar_email(email):
                 return {"respuesta": "El email ingresado no parece válido. Por favor, ingresalo nuevamente."}
             memoria["email_vecino"] = email
-            memoria["estado_conversacion"] = "ESPERANDO_DESCRIPCION_RECLAMO"
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO  # <--- Enum
             return {"respuesta": "Contame brevemente el problema. Podés adjuntar una foto o ubicación después."}
 
         # 6. Descripción
-        if estado == "ESPERANDO_DESCRIPCION_RECLAMO":
+        if estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:  # <--- Enum
             memoria["descripcion_reclamo"] = pregunta.strip()
-            memoria["estado_conversacion"] = "ESPERANDO_ADJUNTOS_RECLAMO"
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO  # <--- Enum
             return {
                 "respuesta": "¿Querés adjuntar una foto o compartir tu ubicación?",
                 "botones": [
@@ -685,9 +689,9 @@ class ReclamoHandler(BaseMunicipioHandler):
                 ]
             }
 
-        # 7. Adjuntos (puedes expandir lógica aquí si quieres guardar foto/ubicación)
-        if estado == "ESPERANDO_ADJUNTOS_RECLAMO":
-            memoria["estado_conversacion"] = "ESPERANDO_CONFIRMACION_RECLAMO"
+        # 7. Adjuntos
+        if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:  # <--- Enum
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO  # <--- Enum
             resumen = (
                 f"Categoría: {memoria.get('categoria_reclamo')}\n"
                 f"Dirección: {memoria.get('direccion_reclamo')}\n"
@@ -705,7 +709,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             }
 
         # 8. Confirmación y creación de ticket
-        if estado == "ESPERANDO_CONFIRMACION_RECLAMO":
+        if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:  # <--- Enum
             detalles = self.build_detalles_memoria(memoria)
             categoria = memoria.get("categoria_reclamo", "General")
             nombre = memoria.get("nombre_vecino", "")
