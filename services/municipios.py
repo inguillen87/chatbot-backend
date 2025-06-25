@@ -1310,10 +1310,6 @@ def safe_llm_call(prompt, preamble, fallback=None):
         logger.error(f"[LLM_FALLBACK] Error: {e}")
         return fallback or "No tengo información específica, pero podés consultar al municipio o elegir otra opción."
 
-# Contenido COMPLETO y FINAL de la función responder_municipio con las mejoras.
-# Asume que todas las clases Handler y funciones auxiliares (como serializar_enum,
-# normalizar_texto, etc.) están definidas en el mismo archivo o importadas correctamente.
-
 def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get("contexto_previo", {})
     contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
@@ -1324,6 +1320,7 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         except KeyError:
             logger.warning(f"Estado inválido en el contexto: {estado_guardado}")
             contexto_municipio["estado_conversacion"] = None
+
     context = {
         "contexto_municipio": contexto_municipio,
         "user_obj": owner_user,
@@ -1331,17 +1328,16 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         "cliente_id": getattr(viewer_user, "id", None),
         "intencion": None,
     }
+
     # --- INTERCEPTA COMANDOS DE BOTONES ---
     comando = BOTONES_COMANDOS_MUNICIPIO.get(pregunta.strip())
     if comando:
         context["intencion"] = comando
         if comando == "iniciar_reclamo":
-            # Ajusta la pregunta para iniciar el flujo pero deja que siga el procesamiento normal
             pregunta = "Quiero hacer un reclamo"
         elif comando == "consultar_estado_ticket":
             pregunta = "Consultar estado de ticket"
         elif comando == "hablar_con_agente":
-            # Mantiene la pregunta original para iniciar el chat en vivo
             pass
 
     # --- SIGUE EL FLUJO NORMAL ---
@@ -1357,15 +1353,17 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         TramiteInteligenteHandler,
         RecoleccionHandler,
         TicketStatusHandler,
-        ReclamoHandler,          # <--- ¡PONER AQUÍ!
-        ReclamoGeoHandler,       # <--- ¡DESPUÉS!
+        ReclamoHandler,
+        ReclamoGeoHandler,
         TramitesHandler,
         ImpuestosHandler,
         ToolHandler,
         GeneralHandler,
         EngancheAnonimoMunicipioHandler,
     ]
+
     respuesta_final = None
+
     for handler_class in handler_chain:
         try:
             handler_instance = handler_class(context)
@@ -1373,57 +1371,39 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
             if respuesta_parcial:
                 if not isinstance(respuesta_parcial, dict):
                     logger.error(f"[HANDLER_ERROR] Handler '{handler_class.__name__}' devolvió tipo incorrecto: {type(respuesta_parcial)}. Pregunta: '{pregunta}'")
-                    respuesta_parcial = None 
+                    respuesta_parcial = None
                 if respuesta_parcial:
-                    if not isinstance(respuesta_parcial, dict):
-                        respuesta_parcial = None
-                    if respuesta_parcial:
-                        respuesta_final = respuesta_parcial
-                        break
+                    respuesta_final = respuesta_parcial
+                    break
         except Exception as e:
             continue  # Si un handler rompe, sigue
 
-        if not respuesta_final:
-            # Devuelve una respuesta siempre, JAMÁS None
-            respuesta_final = {
-                "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción.",
-                "botones": [
-                    {"texto": "Hacer un reclamo"},
-                    {"texto": "Consultar estado de un trámite"},
-                    {"texto": "Hablar con un agente"},
-                ]
-            }
-
-        # Serializa contexto actualizado siempre, aunque esté vacío
-        def serializar_enum(obj):
-            from enum import Enum
-            if isinstance(obj, Enum):
-                return obj.name
-            elif isinstance(obj, dict):
-                return {k: serializar_enum(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [serializar_enum(v) for v in obj]
-            else:
-                return obj
-
-        contexto_para_guardar = serializar_enum(context["contexto_municipio"])
-
-        return {
-            "respuesta": respuesta_final.get("respuesta"),
-            "botones": respuesta_final.get("botones", []),
-            "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
-            "ticket_id": respuesta_final.get("ticket_id", None)
-        }
-
-    except Exception as err:
-        # Si TODO se rompe, devolvé igual una respuesta simple
-    return {
-            "respuesta": "¡Ups! Hubo un error interno. Intentá de nuevo o elegí una opción.",
+    if not respuesta_final:
+        respuesta_final = {
+            "respuesta": "No entendí tu consulta. Reformulá la pregunta o elegí una opción.",
             "botones": [
                 {"texto": "Hacer un reclamo"},
                 {"texto": "Consultar estado de un trámite"},
                 {"texto": "Hablar con un agente"},
-            ],
-            "contexto_actualizado": {},
-            "ticket_id": None
+            ]
         }
+
+    def serializar_enum(obj):
+        from enum import Enum
+        if isinstance(obj, Enum):
+            return obj.name
+        elif isinstance(obj, dict):
+            return {k: serializar_enum(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [serializar_enum(v) for v in obj]
+        else:
+            return obj
+
+    contexto_para_guardar = serializar_enum(context["contexto_municipio"])
+
+    return {
+        "respuesta": respuesta_final.get("respuesta"),
+        "botones": respuesta_final.get("botones", []),
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
+        "ticket_id": respuesta_final.get("ticket_id", None)
+    }
