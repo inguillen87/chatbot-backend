@@ -337,3 +337,18 @@ def sugerencias_por_rubro(rubro):
     if not sugerencias:
         sugerencias = ["Consultá nuestro catálogo", "Contactá a un asesor", "Visitá nuestra web para más info"]
     return sugerencias
+
+import re
+
+def validar_email(email: str) -> bool:
+    """Valida formato básico de email."""
+    if not isinstance(email, str):
+        return False
+    return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
+
+def validar_telefono(telefono: str) -> bool:
+    """Valida que el teléfono tenga solo números y al menos 8 dígitos."""
+    if not isinstance(telefono, str):
+        return False
+    solo_numeros = re.sub(r"\D", "", telefono)
+    return len(solo_numeros) >= 8
