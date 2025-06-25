@@ -1399,11 +1399,24 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
         else:
             return obj
 
-    contexto_para_guardar = serializar_enum(context["contexto_municipio"])
+    try:
+        contexto_para_guardar = serializar_enum(context["contexto_municipio"])
+        return {
+            "respuesta": respuesta_final.get("respuesta"),
+            "botones": respuesta_final.get("botones", []),
+            "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
+            "ticket_id": respuesta_final.get("ticket_id", None)
+        }
+    except Exception as e:
+        logger.error(f"[RESPONDER_MUNICIPIO] Error crítico al serializar contexto: {e}", exc_info=True)
+        return {
+            "respuesta": "¡Ups! Hubo un error inesperado. Probá de nuevo más tarde.",
+            "botones": [
+                {"texto": "Hacer un reclamo"},
+                {"texto": "Consultar estado de un trámite"},
+                {"texto": "Hablar con un agente"},
+            ],
+            "contexto_actualizado": {},
+            "ticket_id": None
+        }
 
-    return {
-        "respuesta": respuesta_final.get("respuesta"),
-        "botones": respuesta_final.get("botones", []),
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
-        "ticket_id": respuesta_final.get("ticket_id", None)
-    }
