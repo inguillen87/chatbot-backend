@@ -663,17 +663,13 @@ class ReclamoHandler(BaseMunicipioHandler):
         # 3. Nombre
         if estado == ConversationState.ESPERANDO_NOMBRE_VECINO:
             nombre = pregunta.strip()
+            # Permitir avanzar aunque sea solo un nombre
+            memoria["nombre_vecino"] = nombre
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
             if len(nombre.split()) < 2 and nombre.lower() != "seguir":
-                # SUGIERE pero AVANZA igual
-                memoria["nombre_vecino"] = nombre
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
                 return {
                     "respuesta": f"Gracias, {nombre}. Si querés podés agregar tu apellido. ¿Me pasás tu teléfono con código de área?"
                 }
-            if nombre.lower() == "seguir":
-                nombre = memoria.get("nombre_vecino", "Vecino")
-            memoria["nombre_vecino"] = nombre
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
             return {
                 "respuesta": f"Gracias, {nombre}. ¿Me pasás tu teléfono con código de área?"
             }
