@@ -590,35 +590,29 @@ class ReclamoHandler(BaseMunicipioHandler):
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
 
+        categorias_validas = TODAS_LAS_CATEGORIAS_UNICAS + ["Otro motivo"]
+        categorias_normalizadas = {
+            normalizar_texto(cat): cat for cat in categorias_validas
+        }
+
         # --- INICIO AUTOMÁTICO DEL FLUJO DE RECLAMO ---
         if self.context.get("intencion") == "iniciar_reclamo" and not estado:
             memoria.clear()
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
-            return {
-                "respuesta": "¿Sobre qué categoría es tu reclamo?",
-                "botones": [
-                    {"texto": "Arbol caido"},
-                    {"texto": "Arreglo de calle"},
-                    {"texto": "Castracion de mascota"},
-                    {"texto": "Falta de agua, rotura de caño"},
-                    {"texto": "Fumigacion"},
-                    {"texto": "Inspeccion de comercio"},
-                    {"texto": "Limpieza"},
-                    {"texto": "Luminaria"},
-                    {"texto": "Riego de calle"},
-                    {"texto": "Rotura de semaforo"},
-                    {"texto": "Tramites de obras privadas"},
-                    {"texto": "Otro motivo"},
-                ]
-            }
-
-        if not estado and self.context.get("intencion") == "iniciar_reclamo":
-            memoria.clear()
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
             sugeridas = sugerir_categorias_relevantes(pregunta)
-            botones = [{"texto": c.title()} for c in (sugeridas or categorias_validas)]
-            texto = "Elegí la categoría del reclamo" if sugeridas else "¿Qué categoría describe mejor tu reclamo?"
+            botones = (
+                [{"texto": c.title()} for c in sugeridas]
+                if sugeridas
+                else BOTONES_TODAS_CATEGORIAS + [{"texto": "Otro motivo"}]
+            )
+            texto = (
+                "Elegí la categoría del reclamo"
+                if sugeridas
+                else "¿Qué categoría describe mejor tu reclamo?"
+            )
             return {"respuesta": texto, "botones": botones}
+
+
 
         # 1. Selección de categoría (solo acepta texto, nunca archivos)
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:

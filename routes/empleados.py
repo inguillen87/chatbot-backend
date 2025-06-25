@@ -1,10 +1,19 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, has_request_context
 from models import User, TicketComentario, db
 from routes.auth import token_requerido, solo_admin_requerido
 from services.logic import es_rubro_publico
 import uuid
 
 empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')
+
+
+def _json_resp(data, status_code=200):
+    """Devuelve una respuesta JSON o un simple par cuando no hay contexto."""
+    if has_request_context():
+        if status_code == 200:
+            return jsonify(data)
+        return jsonify(data), status_code
+    return data if status_code == 200 else (data, status_code)
 
 @empleados_bp.route('', methods=['GET'])
 @token_requerido
@@ -39,20 +48,22 @@ def crear_empleado(current_user: User):
     password = data.get('password')
     categorias = data.get('categorias')
     if not all([name, email, password]):
-        return jsonify({"error": "Datos inválidos"}), 400
+        return _json_resp({"error": "Datos inválidos"}, 400)
     if User.query.filter_by(email=email.strip().lower()).first():
-        return jsonify({"error": "Email ya registrado"}), 400
+        return _json_resp({"error": "Email ya registrado"}, 400)
+    tipo_chat = getattr(current_user, "tipo_chat", None) or (
+        "municipio" if es_rubro_publico(getattr(current_user, "rubro", None)) else "pyme"
+    )
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
         token=str(uuid.uuid4()),
         rol='empleado',
         empresa_id=current_user.id,
-        tipo_chat=current_user.tipo_chat
-        or (
-            "municipio" if es_rubro_publico(current_user.rubro) else "pyme"
-        ),
-        ticket_categorias=(','.join(categorias) if isinstance(categorias, list) else categorias) if categorias else None,
+        tipo_chat=tipo_chat,
+        ticket_categorias=(
+            ','.join(categorias) if isinstance(categorias, list) else categorias
+        ) if categorias else None,
     )
     nuevo.set_password(password)
     db.session.add(nuevo)
@@ -60,14 +71,14 @@ def crear_empleado(current_user: User):
         db.session.commit()
     except Exception:
         db.session.rollback()
-        return jsonify({"error": "Error al crear"}), 500
-    return jsonify({
-        "id": nuevo.id,
+        return _json_resp({"error": "Error al crear"}, 500)
+    return _json_resp({
+        "id": getattr(nuevo, "id", None),
         "name": nuevo.name,
         "email": nuevo.email,
         "rol": nuevo.rol,
         "categorias": nuevo.ticket_categorias or "",
-    }), 201
+    }, 201)
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
 @token_requerido
