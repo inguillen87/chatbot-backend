@@ -425,7 +425,17 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         "reclamo", "reclamos", "queja", "quejas", "problema", "problemas",
         "denuncia", "denuncias", "reportar", "arbol caido", "árbol caído", "arbol", "caido"
     ]
-    KEYWORDS_TRAMITE = ["trámite", "tramite", "gestión", "consulta de trámite"]
+    KEYWORDS_TRAMITE = [
+        "trámite",
+        "tramite",
+        "trámites",
+        "tramites",
+        "gestión",
+        "gestiones",
+        "consulta de trámite",
+        "turno",
+        "certificado",
+    ]
 
     def handle(self, pregunta: str) -> dict | None:
         logger.info(f"[INTENT] Analizando intención para: {pregunta}")
@@ -1246,19 +1256,34 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
         estado = memoria.get("estado_conversacion")
         if estado != ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             return None
-        if "foto" in pregunta.lower():
-            memoria["foto_url"] = self.context.get("foto_url")
-        if "ubicacion" in pregunta.lower():
-            memoria["ubicacion"] = self.context.get("ubicacion_usuario")
-        memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-        resumen = self.build_detalles_memoria(memoria)
-        return {
-            "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
-            "botones": [
-                {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                {"texto": "Editar datos", "action": "editar_reclamo"}
-            ]
-        }
+
+        intencion = self.context.get("intencion")
+        texto = normalizar_texto(pregunta)
+
+        if intencion == "adjuntar_foto" or "foto" in texto:
+            foto = self.context.get("foto_url")
+            if foto:
+                memoria["foto_url"] = foto
+
+        if intencion == "compartir_ubicacion" or "ubicacion" in texto:
+            ubic = self.context.get("ubicacion_usuario")
+            if ubic:
+                memoria["ubicacion"] = ubic
+
+        if intencion in ("adjuntar_foto", "compartir_ubicacion", "no_continuar") or any(
+            kw in texto for kw in ["foto", "ubicacion", "continuar"]
+        ):
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+            resumen = self.build_detalles_memoria(memoria)
+            return {
+                "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
+                "botones": [
+                    {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                    {"texto": "Editar datos", "action": "editar_reclamo"},
+                ],
+            }
+
+        return None
 
 
 class ConfirmarReclamoHandler(BaseMunicipioHandler):
