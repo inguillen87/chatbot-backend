@@ -589,6 +589,18 @@ class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str, **kwargs) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
+        palabras_clave_inicio = [
+            "reclamo",
+            "reclamos",
+            "queja",
+            "denuncia",
+            "denuncias",
+            "problema",
+            "problemas",
+            "reportar",
+            "arbol",
+            "caido",
+        ]
         categorias_validas = [
             "arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño",
             "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle",
@@ -596,13 +608,24 @@ class ReclamoHandler(BaseMunicipioHandler):
         ]
         categorias_normalizadas = [normalizar_texto(c) for c in categorias_validas]
 
-        if not estado and self.context.get("intencion") == "iniciar_reclamo":
-            memoria.clear()
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
-            sugeridas = sugerir_categorias_relevantes(pregunta)
-            botones = [{"texto": c.title()} for c in (sugeridas or categorias_validas)]
-            texto = "Elegí la categoría del reclamo" if sugeridas else "¿Qué categoría describe mejor tu reclamo?"
-            return {"respuesta": texto, "botones": botones}
+        if not estado:
+            texto_norm = normalizar_texto(pregunta)
+            if (
+                self.context.get("intencion") == "iniciar_reclamo"
+                or any(kw in texto_norm for kw in palabras_clave_inicio)
+            ):
+                memoria.clear()
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+                sugeridas = sugerir_categorias_relevantes(pregunta)
+                botones = [
+                    {"texto": c.title()} for c in (sugeridas or categorias_validas)
+                ]
+                texto = (
+                    "Elegí la categoría del reclamo"
+                    if sugeridas
+                    else "¿Qué categoría describe mejor tu reclamo?"
+                )
+                return {"respuesta": texto, "botones": botones}
 
         # 1. Selección de categoría (solo acepta texto, nunca archivos)
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
