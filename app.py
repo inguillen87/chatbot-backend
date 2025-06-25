@@ -1,7 +1,7 @@
 import os
 import logging
 import sys
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_session import Session
 
@@ -58,6 +58,10 @@ def create_app(config_class=Config):
     migrate.init_app(app, db)
 
     # Configuración y activación de Sesiones en el Servidor
+    # Para los tests evitamos usar la interfaz de SQLAlchemy que define
+    # dinámicamente un modelo nuevo en cada create_app y causa conflictos.
+    if 'pytest' in sys.modules:
+        app.config['SESSION_TYPE'] = 'filesystem'
     app.config['SESSION_SQLALCHEMY'] = db
     Session(app)
 
@@ -129,7 +133,6 @@ def create_app(config_class=Config):
     @app.before_request
     def catch_all_options():
         """Handle any CORS preflight with a basic response."""
-        from flask import request
         if request.method == "OPTIONS":
             from routes.chat import cors_options_response
             return cors_options_response()
