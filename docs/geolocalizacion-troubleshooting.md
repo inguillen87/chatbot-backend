@@ -44,4 +44,6 @@ PUT /tickets/<tipo>/<ticket_id>/ubicacion
 
 Donde `<tipo>` es `municipio` o `pyme` y debes enviar un token válido. Si se devuelve `"Ticket no encontrado"` asegúrate de que el `ticket_id` exista y pertenezca al usuario autenticado.
 
+Si el ticket se creó de forma anónima y acabas de registrar al usuario, envía también el header `Anon-Id` con el mismo valor utilizado al crear el ticket. El endpoint vinculará automáticamente ese ticket al nuevo usuario al recibir la ubicación.
+
 Los mensajes relacionados con `ethereum` son generados por extensiones del navegador y no afectan al funcionamiento de la aplicación.

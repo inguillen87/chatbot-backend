@@ -532,8 +532,31 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
+    anon_id_header = request.headers.get("Anon-Id")
+
+    # Si el ticket aún es anónimo pero coincide el Anon-Id, lo asignamos al usuario
+    if (
+        anon_id_header
+        and ticket_obj.anon_id
+        and ticket_obj.user_id is None
+        and ticket_obj.anon_id == anon_id_header
+    ):
+        current_app.logger.info(
+            "Asignando ticket %s del anon_id %s al usuario %s por ubicacion",
+            ticket_id,
+            anon_id_header,
+            current_user.id,
+        )
+        ticket_obj.user_id = current_user.id
+
     # Refuerzo de permisos:
     if current_user.id == ticket_obj.user_id:
+        pass
+    elif (
+        anon_id_header
+        and ticket_obj.anon_id
+        and ticket_obj.anon_id == anon_id_header
+    ):
         pass
     elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
         pass
