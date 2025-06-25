@@ -11,6 +11,8 @@ class Config:
     Contiene todas las variables de configuración.
     """
 
+    DEBUG = True  # <--- AGREGÁ ESTA LÍNEA
+
     # 1. LLAVE SECRETA: Crucial para la seguridad de la sesión.
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
 

@@ -589,12 +589,28 @@ class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str, **kwargs) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        categorias_validas = [
-            "arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño",
-            "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle",
-            "rotura de semaforo", "tramites de obras privadas", "otro motivo"
-        ]
-        categorias_normalizadas = [normalizar_texto(c) for c in categorias_validas]
+
+        # --- INICIO AUTOMÁTICO DEL FLUJO DE RECLAMO ---
+        if self.context.get("intencion") == "iniciar_reclamo" and not estado:
+            memoria.clear()
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+            return {
+                "respuesta": "¿Sobre qué categoría es tu reclamo?",
+                "botones": [
+                    {"texto": "Arbol caido"},
+                    {"texto": "Arreglo de calle"},
+                    {"texto": "Castracion de mascota"},
+                    {"texto": "Falta de agua, rotura de caño"},
+                    {"texto": "Fumigacion"},
+                    {"texto": "Inspeccion de comercio"},
+                    {"texto": "Limpieza"},
+                    {"texto": "Luminaria"},
+                    {"texto": "Riego de calle"},
+                    {"texto": "Rotura de semaforo"},
+                    {"texto": "Tramites de obras privadas"},
+                    {"texto": "Otro motivo"},
+                ]
+            }
 
         # 1. Selección de categoría (solo acepta texto, nunca archivos)
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
