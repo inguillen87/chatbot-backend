@@ -745,9 +745,11 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "user_id": self.context.get("user_id"),
                     "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
                     "email": email,
+                    "ubicacion": memoria.get("ubicacion"),  # <-- Agrega esto si tu modelo lo soporta
                 },
             )
             memoria.clear()
+            self.context["intencion"] = None  # <-- Agrega esto
             if ticket:
                 enviar_notificacion_whatsapp_con_plantilla(
                     telefono_e164,
@@ -1100,9 +1102,9 @@ class HumanEscalationHandler(BaseMunicipioHandler):
                 "user_id": self.context.get("cliente_id"),
                 "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
                 "estado": "esperando_agente_en_vivo",
+                "ubicacion": self.context.get("ubicacion_usuario"),  # <-- Agrega esto
             }
-            sala_de_chat = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="municipio", ticket_data=ticket_data
+            sala_de_chat = servicio_tickets.crear_nuevo_ticket(                tipo_ticket="municipio", ticket_data=ticket_data
             )
             if not sala_de_chat:
                 return {
