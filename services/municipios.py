@@ -455,6 +455,9 @@ class IntentClassifierHandler(BaseMunicipioHandler):
 class TicketStatusHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        if estado and hasattr(estado, "name") and estado.name.startswith("ESPERANDO_") and "RECLAMO" in estado.name:
+            return None
         estado_conversacion = memoria.get("estado_conversacion")
         if estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_CIERRE:
             if es_pregunta_nueva(pregunta, "una confirmación (sí o no)"):
@@ -795,7 +798,7 @@ class TramitesHandler(BaseMunicipioHandler):
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
         # BLOQUEO si hay flujo de reclamo en curso
-        if estado and "RECLAMO" in str(estado):
+        if estado and hasattr(estado, "name") and estado.name.startswith("ESPERANDO_") and "RECLAMO" in estado.name:
             return None
         intencion = self.context.get("intencion")
 
@@ -840,6 +843,7 @@ class TramitesHandler(BaseMunicipioHandler):
                     "botones": botones,
                 }
 
+            # SOLO SI NO SE ENCONTRÓ NADA, chequea si es licencia de conducir
             if re.search(r"(licencia|carnet).*conducir", texto):
                 memoria["estado_conversacion"] = (
                     ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA
@@ -885,7 +889,7 @@ class ImpuestosHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        if estado and "RECLAMO" in str(estado):
+        if estado and hasattr(estado, "name") and estado.name.startswith("ESPERANDO_") and "RECLAMO" in estado.name:
             return None
         intencion = self.context.get("intencion")
         if intencion == "consultar_impuestos":
@@ -901,7 +905,7 @@ class GeneralHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        if estado and "RECLAMO" in str(estado):
+        if estado and hasattr(estado, "name") and estado.name.startswith("ESPERANDO_") and "RECLAMO" in estado.name:
             return None
         logger.info("[GeneralHandler] Consulta general con contexto de DB.")
         user_obj = self.context.get("user_obj")
@@ -1001,7 +1005,7 @@ class ToolHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        if estado and "RECLAMO" in str(estado):
+        if estado and hasattr(estado, "name") and estado.name.startswith("ESPERANDO_") and "RECLAMO" in estado.name:
             return None
 
         prompt = crear_prompt_decision_herramienta(pregunta)
@@ -1160,7 +1164,7 @@ class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        if estado and "RECLAMO" in str(estado):
+        if estado and hasattr(estado, "name") and estado.name.startswith("ESPERANDO_") and "RECLAMO" in estado.name:
             return None
         user_obj = self.context.get("user_obj")
         if not user_obj:
@@ -1233,8 +1237,10 @@ class TramiteInteligenteHandler(BaseMunicipioHandler):
     """
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
-        intencion = self.context.get("intencion")
         estado = memoria.get("estado_conversacion")
+        if estado and hasattr(estado, "name") and estado.name.startswith("ESPERANDO_") and "RECLAMO" in estado.name:
+            return None
+        intencion = self.context.get("intencion")
         keywords_tramite = [
             "requisito", "documento", "necesito", "cómo hago", "pasos", "turno", "costo", "precio",
             "arancel", "dónde", "lugar", "horario", "duración", "tramite", "trámite"
