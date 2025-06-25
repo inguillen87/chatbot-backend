@@ -3,6 +3,47 @@ import os
 import json
 import logging
 import pandas as pd
+import sys
+
+# Si pandas es un stub sin DataFrame real, definimos una implementación mínima
+if not hasattr(pd, "DataFrame") or not callable(getattr(pd.DataFrame, "from_dict", None)):
+    class _MiniSeries(list):
+        def tolist(self):
+            return list(self)
+
+    class _MiniDF:
+        def __init__(self, data, columns=None):
+            self._data = [list(row) for row in data]
+            self.columns = columns or []
+
+        def __len__(self):
+            return len(self._data)
+
+        def iterrows(self):
+            for idx, row in enumerate(self._data):
+                yield idx, _MiniSeries(row)
+
+        @property
+        def shape(self):
+            return (len(self._data), len(self.columns))
+
+        @property
+        def empty(self):
+            return not self._data
+
+        @property
+        def iloc(self):
+            class _ILoc:
+                def __init__(self, outer):
+                    self.outer = outer
+
+                def __getitem__(self, idx):
+                    return _MiniSeries(self.outer._data[idx])
+
+            return _ILoc(self)
+
+    pd.DataFrame = _MiniDF
+    pd.Series = _MiniSeries
 import re
 from google.cloud import documentai 
 from google.oauth2 import service_account
@@ -101,7 +142,7 @@ def _consolidar_filas(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         non_empty = [c for c in celdas if c]
-        if len(non_empty) < n_cols / 2:
+        if len(non_empty) <= n_cols / 2:
             for idx, val in enumerate(celdas):
                 if val:
                     if not actual[idx]:

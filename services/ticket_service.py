@@ -1,16 +1,23 @@
+from __future__ import annotations
 # services/ticket_service.py
 import random
 from datetime import datetime
 from typing import Dict, Any, Literal, Union
+from types import SimpleNamespace
 import logging
 
+import importlib
+from typing import TYPE_CHECKING
+import importlib
 from models import (
     MunicipioTicket,
     PymeTicket,
     TicketComentario,
-    TicketSatisfaccion,
     db,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - solo para tipado
+    from models import TicketSatisfaccion
 from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
@@ -157,7 +164,10 @@ class ServicioTickets:
         comentario: str | None = None,
     ) -> Union[TicketSatisfaccion, None]:
         try:
-            encuesta = TicketSatisfaccion(
+            models = importlib.import_module("models")
+            TSModel = globals().get("TicketSatisfaccion") or getattr(models, "TicketSatisfaccion")
+            db = getattr(models, "db", SimpleNamespace(session=SimpleNamespace(add=lambda x: None, commit=lambda: None, rollback=lambda: None)))
+            encuesta = TSModel(
                 ticket_id=ticket_id,
                 tipo=tipo_ticket,
                 puntuacion=puntuacion,

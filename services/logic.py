@@ -106,12 +106,30 @@ def _clasificar_intencion_con_llm(pregunta: str) -> str:
         # para tu API de Cohere o el LLM que estés usando.
         # El preamble aquí es opcional, pero ayuda a guiar el LLM.
         intencion = get_cohere_response(
-            message=prompt, 
+            message=prompt,
             preamble="Eres un clasificador de intención de usuario. Responde solo con la intención clasificada."
         )
-        # Limpia cualquier espacio en blanco o caracter especial
+        # Limpia espacios y normaliza
         intencion_limpia = intencion.strip().lower()
-        logger.info(f"[CLASIFICADOR INTENCION] Intención detectada: '{intencion_limpia}'")
+
+        intents_validos = {
+            "iniciar_reclamo",
+            "consultar_estado_ticket",
+            "consultar_impuestos",
+            "consultar_tramite",
+            "hablar_con_agente",
+            "general",
+        }
+
+        if intencion_limpia not in intents_validos:
+            logger.warning(
+                f"[CLASIFICADOR INTENCION] Respuesta fuera de catálogo: '{intencion_limpia}'."
+            )
+            return "general"
+
+        logger.info(
+            f"[CLASIFICADOR INTENCION] Intención detectada: '{intencion_limpia}'"
+        )
         return intencion_limpia
     except Exception as e:
         logger.error(f"[CLASIFICADOR INTENCION] Error al clasificar intención con LLM: {e}")

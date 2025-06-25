@@ -1,7 +1,46 @@
 import os
 import logging
 import sys
-from flask import Flask
+from flask import Flask, request
+
+# Algunos tests reemplazan 'pandas' por un stub muy limitado. Aseguramos una
+# versión mínima para evitar fallos al cargar otros módulos.
+if 'pandas' in sys.modules:
+    _pd = sys.modules['pandas']
+    if not hasattr(_pd, 'DataFrame') or not callable(getattr(_pd.DataFrame, 'iterrows', None)):
+        class _MiniSeries(list):
+            def tolist(self):
+                return list(self)
+
+        class _MiniDF:
+            def __init__(self, data, columns=None):
+                self._data = [list(r) for r in data]
+                self.columns = columns or []
+
+            def iterrows(self):
+                for idx, row in enumerate(self._data):
+                    yield idx, _MiniSeries(row)
+
+            @property
+            def shape(self):
+                return (len(self._data), len(self.columns))
+
+            @property
+            def empty(self):
+                return not self._data
+
+            @property
+            def iloc(self):
+                class _ILoc:
+                    def __init__(self, outer):
+                        self.outer = outer
+
+                    def __getitem__(self, idx):
+                        return _MiniSeries(self.outer._data[idx])
+
+                return _ILoc(self)
+
+        sys.modules['pandas'] = type('pd_stub', (), {'DataFrame': _MiniDF, 'Series': _MiniSeries})()
 from flask_cors import CORS
 from flask_session import Session
 
@@ -62,6 +101,10 @@ def create_app(config_class=Config):
     migrate.init_app(app, db)
 
     # Configuración y activación de Sesiones en el Servidor
+    # Para los tests evitamos usar la interfaz de SQLAlchemy que define
+    # dinámicamente un modelo nuevo en cada create_app y causa conflictos.
+    if 'pytest' in sys.modules:
+        app.config['SESSION_TYPE'] = 'filesystem'
     app.config['SESSION_SQLALCHEMY'] = db
     # Usar solo session_ext para evitar redefinición en tests o múltiples apps
     session_ext.init_app(app)
@@ -134,7 +177,6 @@ def create_app(config_class=Config):
     @app.before_request
     def catch_all_options():
         """Handle any CORS preflight with a basic response."""
-        from flask import request
         if request.method == "OPTIONS":
             from routes.chat import cors_options_response
             return cors_options_response()

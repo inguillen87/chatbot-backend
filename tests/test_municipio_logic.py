@@ -124,6 +124,18 @@ class MunicipioLogicTests(unittest.TestCase):
             any(b.get('url') == 'https://www.juninmendoza.gov.ar/vencimientos/' for b in resp2.get('botones', []))
         )
 
+    @patch('services.municipios.get_cohere_response', return_value='')
+    def test_reclamo_flow_basic(self, mock_llm):
+        user = DummyUser()
+        resp1 = municipios.responder_municipio('Quiero hacer un reclamo', user, None, viewer_user=user)
+        self.assertIn('categoría', resp1['respuesta'].lower())
+        botones = [b.get('texto', '').lower() for b in resp1.get('botones', [])]
+        self.assertIn('luminaria', ' '.join(botones))
+
+        contexto = resp1.get('contexto_actualizado')
+        resp2 = municipios.responder_municipio('Luminaria', user, None, viewer_user=user, contexto_previo=contexto)
+        self.assertIn('dirección', resp2['respuesta'].lower())
+
 
 
 if __name__ == '__main__':
