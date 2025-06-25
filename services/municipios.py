@@ -631,6 +631,7 @@ class ReclamoHandler(BaseMunicipioHandler):
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
             categoria_final = categorizar_reclamo_por_palabra_clave(pregunta)
             if categoria_final == "Otros":
+                # Si no matchea, acepta igual el texto del botón como categoría
                 categoria_final = pregunta.strip().capitalize()
             memoria["categoria_reclamo"] = categoria_final
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
@@ -1364,9 +1365,7 @@ def responder_municipio(pregunta, owner_user, rubro_obj, viewer_user=None, anon_
     estado_guardado = contexto_municipio.get("estado_conversacion")
     if estado_guardado and isinstance(estado_guardado, str):
         try:
-            contexto_municipio["estado_conversacion"] = ConversationState[
-                estado_guardado
-            ]
+            contexto_municipio["estado_conversacion"] = ConversationState[estado_guardado]
         except KeyError:
             logger.warning(f"Estado inválido en el contexto: {estado_guardado}")
             contexto_municipio["estado_conversacion"] = None
