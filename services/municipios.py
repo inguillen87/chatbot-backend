@@ -576,7 +576,11 @@ class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, pregunta: str) -> dict | None:
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
-        categorias_validas = [b["texto"].lower() for b in BOTONES_TODAS_CATEGORIAS] + ["otro motivo"]
+        categorias_validas = [
+            "arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño",
+            "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle",
+            "rotura de semaforo", "tramites de obras privadas", "otro motivo"
+        ]
 
         # Si el usuario cambia de tema, resetea
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO and es_pregunta_nueva(pregunta, "el dato solicitado", categorias_validas):
