@@ -587,11 +587,11 @@ class ReclamoHandler(BaseMunicipioHandler):
             "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle",
             "rotura de semaforo", "tramites de obras privadas", "otro motivo"
         ]
-        categorias_normalizadas = [normalizar_texto_categoria(c) for c in categorias_validas]
+        categorias_normalizadas = [normalizar_texto(c) for c in categorias_validas]
 
         # 1. Selección de categoría (solo acepta texto, nunca archivos)
         if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-            texto_normalizado = normalizar_texto_categoria(pregunta)
+            texto_normalizado = normalizar_texto(pregunta)
             if texto_normalizado in categorias_normalizadas:
                 categoria_final = pregunta.strip().capitalize()
                 memoria["categoria_reclamo"] = categoria_final
