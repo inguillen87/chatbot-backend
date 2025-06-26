@@ -37,14 +37,16 @@ def get_tickets_del_usuario(current_user: User):
         return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
 
     try:
+        estado = request.args.get("estado")
+        categoria = request.args.get("categoria")
         if current_user.rubro.nombre.lower().strip() == 'municipios':
             # Solo tickets de su municipio
-            tickets = (
-                MunicipioTicket.query
-                .filter_by(municipio_id=current_user.municipio_id)
-                .order_by(MunicipioTicket.fecha.desc())
-                .all()
-            )
+            query = MunicipioTicket.query.filter_by(municipio_id=current_user.municipio_id)
+            if estado:
+                query = query.filter_by(estado=estado)
+            if categoria:
+                query = query.filter(MunicipioTicket.categoria == categoria)
+            tickets = query.order_by(MunicipioTicket.fecha.desc()).all()
             tipo = 'municipio'
             def serialize_ticket(t):
                 return {
@@ -62,9 +64,14 @@ def get_tickets_del_usuario(current_user: User):
         else:
             # Solo tickets de su empresa/rubro
             if current_user.rubro_id:
-                tickets = PymeTicket.query.filter_by(rubro_id=current_user.rubro_id).order_by(PymeTicket.fecha.desc()).all()
+                query = PymeTicket.query.filter_by(rubro_id=current_user.rubro_id)
             else:
-                tickets = PymeTicket.query.filter_by(user_id=current_user.id).order_by(PymeTicket.fecha.desc()).all()
+                query = PymeTicket.query.filter_by(user_id=current_user.id)
+            if estado:
+                query = query.filter_by(estado=estado)
+            if categoria:
+                query = query.filter(PymeTicket.categoria == categoria)
+            tickets = query.order_by(PymeTicket.fecha.desc()).all()
             tipo = 'pyme'
             def serialize_ticket(t):
                 return {
@@ -98,18 +105,18 @@ def get_tickets_del_usuario(current_user: User):
 def get_mis_tickets(current_user: User):
     """Devuelve solo los tickets asociados al usuario autenticado."""
     try:
-        tickets_muni = (
-            MunicipioTicket.query
-            .filter_by(user_id=current_user.id)
-            .order_by(MunicipioTicket.fecha.desc())
-            .all()
-        )
-        tickets_pyme = (
-            PymeTicket.query
-            .filter_by(user_id=current_user.id)
-            .order_by(PymeTicket.fecha.desc())
-            .all()
-        )
+        estado = request.args.get("estado")
+        categoria = request.args.get("categoria")
+        query_muni = MunicipioTicket.query.filter_by(user_id=current_user.id)
+        query_pyme = PymeTicket.query.filter_by(user_id=current_user.id)
+        if estado:
+            query_muni = query_muni.filter_by(estado=estado)
+            query_pyme = query_pyme.filter_by(estado=estado)
+        if categoria:
+            query_muni = query_muni.filter(MunicipioTicket.categoria == categoria)
+            query_pyme = query_pyme.filter(PymeTicket.categoria == categoria)
+        tickets_muni = query_muni.order_by(MunicipioTicket.fecha.desc()).all()
+        tickets_pyme = query_pyme.order_by(PymeTicket.fecha.desc()).all()
 
         def serialize(t, tipo):
             base = {
