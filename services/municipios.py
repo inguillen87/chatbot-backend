@@ -920,8 +920,14 @@ class ReclamoHandler(BaseMunicipioHandler):
         # 7. Adjuntos (solo en este paso podés aceptar foto/ubicación)
         if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
-            
-            if accion in ["sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias"]:
+
+            SIN_ADJUNTOS_KEYWORDS = [
+                "sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias",
+                "completar", "completar reclamo", "completar el reclamo",
+                "terminar", "terminar reclamo", "quiero completar", "quiero terminar",
+            ]
+
+            if any(kw in accion for kw in SIN_ADJUNTOS_KEYWORDS):
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
                 resumen = self.build_detalles_memoria(memoria)
                 return {
@@ -984,7 +990,19 @@ class ReclamoHandler(BaseMunicipioHandler):
             texto_normalizado = normalizar_texto(pregunta_str)
             accion = payload.get("action", "").lower() or texto_normalizado
 
-            if accion in ["confirmar_reclamo", "confirmar", "finalizar", "finalizar reclamo", "si", "sí"]:
+            if accion in [
+                "confirmar_reclamo",
+                "confirmar",
+                "confirmar reclamo",
+                "confirmo",
+                "confirmado",
+                "si confirmo",
+                "sí confirmo",
+                "finalizar",
+                "finalizar reclamo",
+                "si",
+                "sí",
+            ]:
                 # Armar bien los detalles y crear el ticket
                 # Asegurarse de que los datos estén presentes antes de crear
                 if not all(memoria.get(f"{campo}_reclamo" if campo not in ["nombre", "telefono", "email"] else f"{campo}_vecino") for campo in ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]):
@@ -1560,9 +1578,14 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Foto": "adjuntar_foto",
     "Ubicación": "compartir_ubicacion",
     "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
+    "Completar reclamo": "sin_adjuntos",
     "Confirmar reclamo": "confirmar_reclamo",
     "Finalizar": "confirmar_reclamo",
     "Finalizar reclamo": "confirmar_reclamo",
+    "Confirmar": "confirmar_reclamo",
+    "Confirmado": "confirmar_reclamo",
+    "Si confirmo": "confirmar_reclamo",
+    "Sí confirmo": "confirmar_reclamo",
     "Editar datos": "editar_reclamo",
     "Sí, solucionado": "confirmar_cierre_ticket",
     "No, aún no": "no_cerrar_ticket",
@@ -1875,9 +1898,14 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Foto": "adjuntar_foto",
     "Ubicación": "compartir_ubicacion",
     "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
+    "Completar reclamo": "sin_adjuntos",
     "Confirmar reclamo": "confirmar_reclamo",
     "Finalizar": "confirmar_reclamo",
     "Finalizar reclamo": "confirmar_reclamo",
+    "Confirmar": "confirmar_reclamo",
+    "Confirmado": "confirmar_reclamo",
+    "Si confirmo": "confirmar_reclamo",
+    "Sí confirmo": "confirmar_reclamo",
     "Editar datos": "editar_reclamo",
     "Sí, solucionado": "confirmar_cierre_ticket",
     "No, aún no": "no_cerrar_ticket",
@@ -1940,7 +1968,10 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     comando_from_text = BOTONES_COMANDOS_MUNICIPIO.get(pregunta_str.strip())
     if comando_from_text and not context.get("action"):
         context["action"] = comando_from_text
-        logger.info(f"[BOTON] Comando detectado: '{comando_from_text}' (desde texto del botón)")
+        received_payload["action"] = comando_from_text
+        logger.info(
+            f"[BOTON] Comando detectado: '{comando_from_text}' (desde texto del botón)"
+        )
     elif context.get("action"): # Si la acción ya vino en el payload
         logger.info(f"[BOTON] Comando detectado: '{context['action']}' (desde payload.action)")
     elif context.get("es_foto") or context.get("es_ubicacion"):
