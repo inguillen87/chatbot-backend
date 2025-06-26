@@ -255,6 +255,24 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         return []
 
 
+def _generar_respuesta_contextual(nombre_pyme: str, contexto_scraped: str, pregunta_usuario: str) -> str:
+    """Genera una respuesta usando Cohere LLM basada en información scrapeada."""
+    prompt = PROMPT_PYME_CON_CONTEXTO.format(
+        nombre_pyme=nombre_pyme,
+        contexto_scraped=contexto_scraped,
+        pregunta_usuario=pregunta_usuario,
+    )
+    try:
+        respuesta = get_cohere_response(
+            message=prompt,
+            preamble="Sos un asistente experto en productos y ventas para una pyme.",
+        )
+        return respuesta.strip()
+    except Exception as e:
+        logger.error(f"[PYMES] Error generando respuesta contextual: {e}")
+        return ""
+
+
 def ordenar_productos_para_venta(productos: list[dict]) -> list[dict]:
     """Ordena productos priorizando destacados, relevancia y mejor precio."""
     def _key(p):
@@ -517,8 +535,16 @@ class ToolHandlerPyme(BaseHandler):
 class HumanEscalationPymeHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
         if "agente" in pregunta.lower() or "humano" in pregunta.lower():
+            if not self.context.get("cliente_id"):
+                return {
+                    "respuesta": "Para hablar con un agente necesitas iniciar sesión.",
+                    "fuente": "escalamiento_humano_pyme",
+                    "botones": [
+                        {"texto": "Iniciar sesión", "action": "login"},
+                    ]
+                }
             return {
-                "respuesta": "Te comunico con un agente humano. Por favor, aguardá un momento.",
+                "respuesta": "Te comunico con un agente humano en nuestra sala de chat. Por favor, aguardá un momento.",
                 "fuente": "escalamiento_humano_pyme",
                 "botones": [
                     {"texto": "Cancelar", "action": "cancelar"},
@@ -752,6 +778,45 @@ class PostVentaHandler(BaseHandler):
             }
         return None
 
+
+class ContextualLLMHandler(BaseHandler):
+    """Genera respuestas con LLM usando información web almacenada."""
+
+    def handle(self, pregunta: str) -> dict | None:
+        known = {
+            'iniciar_pedido',
+            'consultar_estado_pedido',
+            'consultar_stock',
+            'consultar_horario',
+            'consultar_ubicacion',
+            'hablar_con_agente_pyme',
+        }
+        intencion = self.context.get('intencion')
+        if intencion and intencion in known:
+            return None
+        user = self.context.get('user_obj')
+        user_id = self.context.get('user_id')
+        url = getattr(user, 'link_web', None) if user else None
+        if not (user_id and url):
+            return None
+
+        datos = obtener_info_web(user_id, url)
+        if not datos:
+            return None
+
+        respuesta = _generar_respuesta_contextual(
+            self.context.get('nombre_pyme', 'la empresa'),
+            json.dumps(datos, ensure_ascii=False),
+            pregunta,
+        )
+
+        if respuesta:
+            return {
+                'respuesta': respuesta,
+                'fuente': 'llm_contextual_pyme',
+            }
+        return None
+
 # --- FUNCIÓN ORQUESTADORA PRINCIPAL MEJORADA ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     contexto_previo = kwargs.get('contexto_previo', {})
@@ -805,8 +870,9 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         SalesEngageHandler,
         CrossSellHandler,
         RecomendacionHandler,   
-        UpsellHandler,          
-        PostVentaHandler,       
+        UpsellHandler,
+        PostVentaHandler,
+        ContextualLLMHandler,
         LLMHandler,
         IntentHandler,
         EngancheAnonimoHandler,
@@ -935,6 +1001,21 @@ class VectorCatalogHandler(BaseHandler):
 
 class PedidoHandler(BaseHandler):
     def handle(self, pregunta: str) -> dict | None:
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+        if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
+            texto = pregunta.lower()
+            if any(k in texto for k in ["cancelar", "cancelalo", "no quiero", "cancel"]):
+                contexto_pyme.clear()
+                return {
+                    "respuesta": "Entendido, no se generará el pedido. ¿Te gustaría ver otros productos o recibir asesoramiento?",
+                    "fuente": "pedido_cancelado",
+                    "botones": [
+                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                        {"texto": "Hablar con un agente", "action": "escalar"},
+                    ],
+                }
+
         if self.context.get('intencion') == 'iniciar_pedido':
             productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
             seleccionados = []
@@ -965,8 +1046,9 @@ class PedidoHandler(BaseHandler):
                     ]
                 }
             return {
-                "respuesta": "¿Qué producto te gustaría pedir? Puedes ver nuestro catálogo para elegir.",
+                "respuesta": "¿Qué producto te gustaría pedir para tu pedido? Puedes ver nuestro catálogo para elegir.",
                 "fuente": "pedido_pyme",
+                "estado_respuesta": "pyme_pregunta_pedido",
                 "botones": [
                     {"texto": "Ver catálogo", "action": "ver_catalogo"},
                     {"texto": "Hablar con un agente", "action": "escalar"},
@@ -1024,7 +1106,8 @@ class FollowUpHandler(BaseHandler):
 
         # Si el usuario está confirmando un pedido
         if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            if "cancelar" in pregunta.lower() or "no quiero" in pregunta.lower():
+            texto = pregunta.lower()
+            if any(k in texto for k in ["cancelar", "cancelalo", "no quiero", "cancel"]):
                 contexto_pyme.clear()
                 return {
                     "respuesta": "Entendido, no se generará el pedido. ¿Te gustaría ver otros productos o recibir asesoramiento?",
