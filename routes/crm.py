@@ -8,6 +8,7 @@ from models import (
     ArchivoAdjunto,
 )
 from extensions import db
+from sqlalchemy import or_
 from routes.auth import token_requerido, admin_o_empleado_requerido
 from sqlalchemy import or_
 

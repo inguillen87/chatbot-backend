@@ -29,8 +29,10 @@ This project exposes several endpoints to process questions for different sector
 - `GET /me` – retrieve the full profile. The response includes the user's role
   (`rol`), associated company (`empresa_id`) and the ticket categories assigned
   to the account (`categorias`).
+- `GET /tickets` – for admins or employees, list all tickets for the company or
+  municipality. Supports optional `?estado=` and `?categoria=` filters.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
-- `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
+- `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering and now `?q=` search by name or email plus `?marketing=true|false`. The same data is available at `/municipal/usuarios`.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
 - `GET /crm/clientes/<id>/interacciones` – history of chats and tickets for a client.
 - `GET /crm/analytics` – basic stats of registered users and tickets.
@@ -43,6 +45,15 @@ This project exposes several endpoints to process questions for different sector
 - `GET /tramites/<nombre>` – detailed info for a specific procedure.
 - `GET /tramites/descargar` – download the full JSON catalog of procedures.
 - `GET /municipal/incidents` – list open municipal incidents for the authenticated user's municipality.
+- `GET /municipal/stats` – professional analytics of municipal tickets including totals, categories and response time.
+
+### Municipal incidents
+
+Admins and municipal employees can consult all open tickets of their
+municipality with `GET /municipal/incidents`. The JSON response contains
+fields like `id`, `nro_ticket`, `asunto`, `categoria`, `estado`, `fecha`,
+`direccion`, `latitud`, `longitud`, as well as the original `pregunta`, any
+`detalles` provided and the `archivo_url` if the ticket incluye un adjunto.
 
 ### Employee management
 

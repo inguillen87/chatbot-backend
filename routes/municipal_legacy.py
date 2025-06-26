@@ -4,8 +4,8 @@ from utils.permissions import require_role
 from routes.crm import _obtener_clientes
 from services.municipios import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
-from routes.estadisticas import estadisticas_reclamos
-from models import MunicipioTicket
+from models import MunicipioTicket, db
+from sqlalchemy import text
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -43,7 +43,61 @@ def municipal_categorias(current_user):
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_stats(current_user):
-    return estadisticas_reclamos.__wrapped__(current_user)
+    """Estadísticas profesionales del municipio del usuario."""
+
+    mid = current_user.municipio_id
+
+    abiertos = db.session.execute(
+        text(
+            "SELECT COUNT(*) FROM municipio_ticket "
+            "WHERE municipio_id = :mid AND estado != 'cerrado'"
+        ),
+        {"mid": mid},
+    ).scalar() or 0
+
+    cerrados = db.session.execute(
+        text(
+            "SELECT COUNT(*) FROM municipio_ticket "
+            "WHERE municipio_id = :mid AND estado = 'cerrado'"
+        ),
+        {"mid": mid},
+    ).scalar() or 0
+
+    rows = db.session.execute(
+        text(
+            "SELECT categoria, "
+            "SUM(CASE WHEN estado != 'cerrado' THEN 1 ELSE 0 END) AS abiertos, "
+            "SUM(CASE WHEN estado = 'cerrado' THEN 1 ELSE 0 END) AS cerrados "
+            "FROM municipio_ticket WHERE municipio_id = :mid GROUP BY categoria"
+        ),
+        {"mid": mid},
+    ).fetchall()
+    por_categoria = [
+        {
+            "categoria": r.categoria,
+            "abiertos": r.abiertos,
+            "cerrados": r.cerrados,
+        }
+        for r in rows
+    ]
+
+    tiempo_respuesta = db.session.execute(
+        text(
+            "SELECT AVG(julianday(tc.fecha) - julianday(mt.fecha)) * 86400 "
+            "FROM municipio_ticket mt JOIN ticket_comentario tc "
+            "ON tc.municipio_ticket_id = mt.id "
+            "WHERE tc.es_admin = 1 AND mt.municipio_id = :mid"
+        ),
+        {"mid": mid},
+    ).scalar()
+
+    datos = {
+        "totales": {"abiertos": abiertos, "cerrados": cerrados},
+        "por_categoria": por_categoria,
+        "tiempo_respuesta_promedio_segundos": round(tiempo_respuesta or 0, 2),
+    }
+
+    return jsonify(datos)
 
 @municipal_bp.route('/stats/filters', methods=['GET'])
 @token_requerido
@@ -86,9 +140,12 @@ def municipal_incidents(current_user):
             "categoria": getattr(t, "categoria", None),
             "estado": t.estado,
             "fecha": t.fecha.isoformat() if getattr(t, "fecha", None) else None,
+            "pregunta": getattr(t, "pregunta", None),
+            "detalles": getattr(t, "detalles", None),
             "direccion": getattr(t, "direccion", None),
             "latitud": getattr(t, "latitud", None),
             "longitud": getattr(t, "longitud", None),
+            "archivo_url": getattr(t, "archivo_url", None),
         }
         for t in tickets
     ]

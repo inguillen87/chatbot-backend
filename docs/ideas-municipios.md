@@ -37,6 +37,34 @@ curl https://midominio.com/tickets/municipio/mapa
 
 La respuesta puede cargarse en el visor de mapas que utilice el municipio.
 
+## Consulta de incidentes abiertos
+
+El endpoint `GET /municipal/incidents` permite listar todos los tickets
+abiertos asociados al municipio del usuario autenticado (administrador o
+empleado). Esto facilita revisar los reclamos pendientes desde un panel o
+integrar la información con otras herramientas.
+
+Ejemplo de respuesta:
+
+```json
+[
+  {
+    "id": 8,
+    "nro_ticket": 1020,
+    "asunto": "Arreglo de luminaria",
+    "categoria": "Iluminación",
+    "estado": "nuevo",
+    "fecha": "2024-05-01T10:00:00",
+    "pregunta": "El poste de la esquina está apagado",
+    "detalles": null,
+    "direccion": "Av. Siempreviva 456",
+    "latitud": -34.61,
+    "longitud": -58.38,
+    "archivo_url": null
+  }
+]
+```
+
 ## Integración con sistemas municipales
 
 - El módulo `services/integracion_municipal.py` contiene un stub de la función
