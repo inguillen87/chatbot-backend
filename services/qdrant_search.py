@@ -139,14 +139,13 @@ def armar_respuesta_legible(
     order_by: str | None = None,
     consulta_usuario: str = "",
 ) -> str:
-    """
-    Convierte los resultados de Qdrant en un mensaje legible, ordenando y agrupando pro.
-    """
-
     if not resultados_qdrant:
-        return "No hay productos en el catálogo que coincidan con tu búsqueda. Probá con otro término o revisá que esté bien escrito."
+        return (
+            "No hay productos en el catálogo que coincidan con tu búsqueda. "
+            "¿Querés ver el catálogo completo?"
+        )
 
-    # Ordenar: score DESC, luego destacado, luego precio ascendente, luego nombre.
+    # Ordená por score Qdrant, luego por destacado, luego por precio.
     def _key(p):
         payload = getattr(p, "payload", p) or {}
         score = getattr(p, "score", 0)
@@ -156,42 +155,25 @@ def armar_respuesta_legible(
         return (-score, destacado, precio, nombre)
 
     productos_ordenados = sorted(resultados_qdrant, key=_key)
+    lineas = []
 
-    # Agrupar por categoria_qdrant si tiene sentido, sino tira todo plano.
-    productos_x_categoria: Dict[str, list] = {}
-    for p in productos_ordenados:
-        payload = getattr(p, "payload", p) or {}
-        categoria = payload.get("categoria_qdrant") or "Productos"
-        productos_x_categoria.setdefault(categoria, []).append(payload)
-
-    lineas: List[str] = []
-    for categoria, items in productos_x_categoria.items():
-        if len(productos_x_categoria) > 1:
-            lineas.append(f"\n<b>{categoria.title()}</b>")
-        for i, prod in enumerate(items[:max_items]):
-            nombre = prod.get("nombre") or "Producto"
-            precio = prod.get("precio_str") or prod.get("precio") or ""
-            if not precio and prod.get("precio_float") is not None:
-                precio = f"${prod['precio_float']:,.2f}"
-            if not precio:
-                precio = "Consultar"
-            unidad = prod.get("unidad", "")
-            desc = prod.get("descripcion", "")
-            estrella = ""
-            if consulta_usuario and consulta_usuario.lower() in nombre.lower():
-                estrella = "⭐"
-            linea = f"- {estrella}<b>{nombre}</b>"
-            if unidad:
-                linea += f" ({unidad})"
-            linea += f" — <b>{precio}</b>"
-            if desc:
-                linea += f" | {desc[:60]}{'...' if len(desc)>60 else ''}"
-            lineas.append(linea)
-        if len(items) > max_items:
-            lineas.append(f"…y {len(items)-max_items} más en esta categoría.")
-
-    # Si trajo muy pocos productos, tirale un CTA vendedor:
-    if len(lineas) < 2:
-        lineas.append("\n¿Buscás algo específico o querés ver el catálogo completo? Pedilo por nombre, tipo o código.")
-
+    for prod in productos_ordenados[:max_items]:
+        payload = getattr(prod, "payload", prod) or {}
+        nombre = payload.get("nombre", "Producto")
+        precio = payload.get("precio_str") or payload.get("precio") or ""
+        if not precio and payload.get("precio_float") is not None:
+            precio = f"${payload['precio_float']:,.2f}"
+        if not precio:
+            precio = "Consultar"
+        unidad = payload.get("unidad", "")
+        desc = payload.get("descripcion", "")
+        res = f"- <b>{nombre}</b>"
+        if unidad:
+            res += f" ({unidad})"
+        res += f" — <b>{precio}</b>"
+        if desc:
+            res += f" | {desc[:60]}{'...' if len(desc)>60 else ''}"
+        lineas.append(res)
+    if len(productos_ordenados) > max_items:
+        lineas.append(f"…y {len(productos_ordenados)-max_items} productos más.")
     return "\n".join(lineas)
