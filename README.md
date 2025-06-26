@@ -49,6 +49,7 @@ This project exposes several endpoints to process questions for different sector
 - `GET /tramites/<nombre>` – detailed info for a specific procedure.
 - `GET /tramites/descargar` – download the full JSON catalog of procedures.
 - `GET /catalogo/descargar` – download the latest catalog file of the authenticated company.
+- `GET /catalogo/resumen` – summary of products grouped by category.
 - `GET /municipal/incidents` – list open municipal incidents for the authenticated user's municipality.
 - `GET /municipal/stats` – professional analytics of municipal tickets including totals, categories and response time.
 
