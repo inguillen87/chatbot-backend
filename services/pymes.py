@@ -17,6 +17,7 @@ from services.webinfo import obtener_info_web
 
 logger = logging.getLogger(__name__)
 
+CONTEXTO_PYME = "contexto_pyme"
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 MAX_HISTORIAL_CHAT = 30
 CANCEL_KEYWORDS = {"cancel", "cancelar", "cancelalo", "anular", "borrar", "no gracias"}
@@ -28,8 +29,7 @@ def tiene_archivo_catalogo(user_id: int) -> bool:
         return False
     try:
         return (
-            ArchivoAdjunto.query.filter_by(user_id=user_id, tipo="catalogo")
-            .first()
+            ArchivoAdjunto.query.filter_by(user_id=user_id, tipo="catalogo").first()
             is not None
         )
     except Exception:
@@ -43,14 +43,17 @@ def url_descargar_catalogo() -> str:
     base = request.url_root.rstrip("/")
     return f"{base}/catalogo/descargar"
 
+
 class PymeConversationState(Enum):
     SIN_ESTADO = auto()
     CONFIRMANDO_PEDIDO = auto()
     ESPERANDO_CONTACTO = auto()
     CONFIRMANDO_PEDIDO_TEMP = auto()
 
+
 def serialize_state(state):
     return state.name if state else None
+
 
 def deserialize_state(value):
     if not value:
@@ -59,6 +62,7 @@ def deserialize_state(value):
         return PymeConversationState[value]
     except KeyError:
         return None
+
 
 PROMPT_CLASIFICAR_INTENCION = """
 Sos el cerebro comercial de un chatbot para una pyme. Analizá la PREGUNTA DEL USUARIO y respondé sólo con una de estas intenciones:
@@ -75,6 +79,7 @@ PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 INTENCIÓN:
 """
 
+
 def clasificar_intencion_llm(pregunta):
     prompt = PROMPT_CLASIFICAR_INTENCION.format(pregunta_usuario=pregunta)
     try:
@@ -83,6 +88,7 @@ def clasificar_intencion_llm(pregunta):
     except Exception as e:
         logger.error(f"[PYME] Error clasificando intención: {e}")
         return "pregunta_ambigua"
+
 
 def _clasificar_intencion_pyme_con_llm(pregunta: str) -> str:
     """Versión explícita para compatibilidad con tests."""
@@ -96,11 +102,14 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
         return True
     if any(kw in texto for kw in {"agente", "humano", "persona", "operador"}):
         return True
-    if re.search(r"\d", texto) and tipo_esperado in {"el dato solicitado", "una dirección"}:
+    if re.search(r"\d", texto) and tipo_esperado in {
+        "el dato solicitado",
+        "una dirección",
+    }:
         return False
     prompt = (
         f"Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.\n"
-        f"RESPUESTA DEL USUARIO: \"{texto_usuario}\"\n"
+        f'RESPUESTA DEL USUARIO: "{texto_usuario}"\n'
         "Si responde lo esperado contestá 'RESPUESTA_VALIDA'. Si cambia de tema contestá 'PREGUNTA_NUEVA'."
     )
     try:
@@ -127,56 +136,72 @@ def analizar_sentimiento_llm(texto: str) -> str:
         logger.error(f"[PYME] Error analizando sentimiento: {e}")
         return "neutral"
 
+
 # --- HANDLERS ---
 class BaseHandler:
-    def __init__(self, context): self.context = context
-    def handle(self, pregunta): raise NotImplementedError
+    def __init__(self, context):
+        self.context = context
+
+    def handle(self, pregunta):
+        raise NotImplementedError
+
 
 class SaludoHandler(BaseHandler):
     def handle(self, pregunta):
-        nombre = self.context.get('nombre_pyme', 'la empresa')
+        nombre = self.context.get("nombre_pyme", "la empresa")
         return {
             "respuesta": f"¡Hola! Soy tu asistente para {nombre}. ¿En qué puedo ayudarte hoy?",
             "fuente": "saludo",
             "botones": [
                 {"texto": "Ver catálogo", "action": "ver_catalogo"},
                 {"texto": "Ver ofertas", "action": "ver_ofertas"},
-            ]
+            ],
         }
+
 
 class CatalogoHandler(BaseHandler):
     def handle(self, pregunta):
-        user_id = self.context.get('user_id')
+        user_id = self.context.get("user_id")
         if not user_id:
-            return {"respuesta": "Iniciá sesión para ver el catálogo.", "fuente": "catalogo_sin_login"}
+            return {
+                "respuesta": "Iniciá sesión para ver el catálogo.",
+                "fuente": "catalogo_sin_login",
+            }
         # Se busca SIEMPRE aunque la pregunta sea vaga
-        resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=self.context.get('rubro_nombre'))
+        resultados = buscar_catalogo_qdrant(
+            user_id=user_id,
+            pregunta=pregunta,
+            categoria=self.context.get("rubro_nombre"),
+        )
         botones_base = []
         if resultados:
             respuesta_legible = armar_respuesta_legible(resultados, max_items=5)
-            mensaje = (
-                f"Estos son algunos productos que tenemos:\n{respuesta_legible}\n¿Te interesa alguno o querés ver más opciones?"
-            )
+            mensaje = f"Estos son algunos productos que tenemos:\n{respuesta_legible}\n¿Te interesa alguno o querés ver más opciones?"
             fuente = "catalogo_vector"
             botones_base = [
                 {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
                 {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
             ]
         else:
-            mensaje = (
-                "No encontré productos que coincidan exactamente con tu búsqueda, pero mirá estas sugerencias:"
-            )
+            mensaje = "No encontré productos que coincidan exactamente con tu búsqueda, pero mirá estas sugerencias:"
             fuente = "catalogo_vacio"
             botones_base = [
                 {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
                 {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
             ]
 
-        if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
-            botones_base.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
-            mensaje += f"\n\nDescargá el catálogo completo aquí: {url_descargar_catalogo()}"
+        if tiene_archivo_catalogo(user_id) and any(
+            k in pregunta.lower() for k in ["descargar", "pdf"]
+        ):
+            botones_base.append(
+                {"texto": "Descargar catálogo", "action": "descargar_catalogo"}
+            )
+            mensaje += (
+                f"\n\nDescargá el catálogo completo aquí: {url_descargar_catalogo()}"
+            )
 
         return {"respuesta": mensaje, "fuente": fuente, "botones": botones_base}
+
 
 class OfertasHandler(BaseHandler):
     def handle(self, pregunta):
@@ -186,8 +211,9 @@ class OfertasHandler(BaseHandler):
             "botones": [
                 {"texto": "Quiero el combo Malbec", "action": "iniciar_pedido"},
                 {"texto": "Ver catálogo", "action": "ver_catalogo"},
-            ]
+            ],
         }
+
 
 class SmallTalkHandler(BaseHandler):
     def handle(self, pregunta):
@@ -196,6 +222,7 @@ class SmallTalkHandler(BaseHandler):
             "respuesta": respuesta,
             "fuente": "smalltalk_pyme_llm",
         }
+
 
 class SentimentHandler(BaseHandler):
     def __init__(self, context, sentimiento):
@@ -207,7 +234,9 @@ class SentimentHandler(BaseHandler):
             return {
                 "respuesta": "Lamentamos la experiencia. Te contactaré con un agente para ayudarte.",
                 "fuente": "sentimiento_negativo",
-                "botones": [{"texto": "Hablar con un agente", "action": "hablar_con_agente"}],
+                "botones": [
+                    {"texto": "Hablar con un agente", "action": "hablar_con_agente"}
+                ],
             }
         return {
             "respuesta": "¡Gracias por tu comentario!",
@@ -215,22 +244,44 @@ class SentimentHandler(BaseHandler):
             "botones": [{"texto": "Ver ofertas", "action": "ver_ofertas"}],
         }
 
+
 class PedidoHandler(BaseHandler):
     def handle(self, pregunta):
-        ctx = self.context.get("contexto_pyme", {})
+        ctx = self.context.setdefault(
+            CONTEXTO_PYME, flask_session.get(CONTEXTO_PYME, {})
+        )
         estado = deserialize_state(ctx.get("estado_conversacion"))
+
         if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
             texto = pregunta.lower()
             if any(k in texto for k in CANCEL_KEYWORDS):
                 ctx.clear()
+                flask_session[CONTEXTO_PYME] = ctx
                 return {
                     "respuesta": "Pedido cancelado. ¿Necesitás otra cosa?",
                     "fuente": "pedido_cancelado",
                     "botones": [
                         {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                        {
+                            "texto": "Hablar con un agente",
+                            "action": "hablar_con_agente",
+                        },
                     ],
                 }
+            flask_session[CONTEXTO_PYME] = ctx
+            return {
+                "respuesta": "Continuemos con tu pedido. Indicame producto y cantidad o escribí 'finalizar pedido'.",
+                "fuente": "pedido_en_progreso",
+                "estado_respuesta": "pyme_pregunta_pedido",
+                "botones": [
+                    {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
+                ],
+            }
+
+        ctx["estado_conversacion"] = serialize_state(
+            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP
+        )
+        flask_session[CONTEXTO_PYME] = ctx
         return {
             "respuesta": "¿Qué producto y cuántas unidades querés pedir? Decime el nombre o el código. Cuando termines, escribí 'finalizar pedido'.",
             "fuente": "pedido",
@@ -241,34 +292,45 @@ class PedidoHandler(BaseHandler):
             ],
         }
 
+
 class FaqHandler(BaseHandler):
     def handle(self, pregunta):
-        respuesta_faq = buscar_en_faq_spacy(pregunta, self.context.get('user_id'))
+        respuesta_faq = buscar_en_faq_spacy(pregunta, self.context.get("user_id"))
         if respuesta_faq:
             return {"respuesta": respuesta_faq, "fuente": "faq"}
         return None
+
 
 class HumanHandler(BaseHandler):
     def handle(self, pregunta):
         return {
             "respuesta": "Te paso con un agente humano. Aguardá un momento.",
-            "fuente": "escalamiento_humano"
+            "fuente": "escalamiento_humano",
         }
+
 
 class FallbackHandler(BaseHandler):
     def handle(self, pregunta):
-        user_id = self.context.get('user_id')
-        rubro = self.context.get('rubro_nombre')
-        resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=rubro)
+        user_id = self.context.get("user_id")
+        rubro = self.context.get("rubro_nombre")
+        resultados = buscar_catalogo_qdrant(
+            user_id=user_id, pregunta=pregunta, categoria=rubro
+        )
         if resultados:
             respuesta_legible = armar_respuesta_legible(resultados, max_items=3)
             botones = [
                 {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
                 {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
             ]
-            if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
-                botones.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
-                respuesta_legible += f"\n\nDescargá el catálogo aquí: {url_descargar_catalogo()}"
+            if tiene_archivo_catalogo(user_id) and any(
+                k in pregunta.lower() for k in ["descargar", "pdf"]
+            ):
+                botones.append(
+                    {"texto": "Descargar catálogo", "action": "descargar_catalogo"}
+                )
+                respuesta_legible += (
+                    f"\n\nDescargá el catálogo aquí: {url_descargar_catalogo()}"
+                )
             return {
                 "respuesta": f"No estoy seguro de haber entendido, pero mirá estos productos recomendados:\n{respuesta_legible}\n¿Te interesa alguno?",
                 "fuente": "fallback_catalogo",
@@ -282,9 +344,13 @@ class FallbackHandler(BaseHandler):
                 "botones": [
                     {"texto": "Ver ofertas", "action": "ver_ofertas"},
                     {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
-                ]
+                ],
             }
-        info_web = obtener_info_web(user_id, self.context.get('nombre_pyme')) if user_id else {}
+        info_web = (
+            obtener_info_web(user_id, self.context.get("nombre_pyme"))
+            if user_id
+            else {}
+        )
         if info_web:
             mensaje = ", ".join(f"{k}: {v}" for k, v in info_web.items())
             return {
@@ -297,11 +363,14 @@ class FallbackHandler(BaseHandler):
             "botones": [
                 {"texto": "Ver catálogo", "action": "ver_catalogo"},
                 {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
-            ]
+            ],
         }
 
+
 # --- ROUTER PRINCIPAL ---
-def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+def responder_pyme(
+    pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs
+):
     """Procesa un mensaje del flujo pyme.
 
     Si ``owner_user`` es ``None`` pero ``viewer_user`` pertenece a una empresa,
@@ -314,7 +383,9 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         user_id = getattr(owner_user, "id", None)
         nombre_pyme = getattr(owner_user, "nombre_empresa", "la empresa")
     elif viewer_user:
-        user_id = getattr(viewer_user, "empresa_id", None) or getattr(viewer_user, "id", None)
+        user_id = getattr(viewer_user, "empresa_id", None) or getattr(
+            viewer_user, "id", None
+        )
         nombre_pyme = getattr(viewer_user, "nombre_empresa", "la empresa")
     else:
         user_id = None
@@ -323,8 +394,13 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
     context = {
         "user_id": user_id,
         "nombre_pyme": nombre_pyme,
-        "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
+        "rubro_nombre": (
+            getattr(rubro_obj, "nombre", "empresa").lower()
+            if rubro_obj
+            else "desconocido"
+        ),
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, []),
+        CONTEXTO_PYME: flask_session.get(CONTEXTO_PYME, {}),
     }
 
     intencion = _clasificar_intencion_pyme_con_llm(pregunta)
@@ -348,7 +424,22 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
             handler = SentimentHandler(context, sentimiento)
         else:
             # Extra: si la intención es ambigua pero la pregunta contiene palabras de compra, forzá búsqueda en catálogo.
-            palabras_compra = ["comprar", "vender", "precio", "tenés", "hay", "malbec", "oferta", "promo", "descuento", "unidades", "sku", "stock", "vino", "caja"]
+            palabras_compra = [
+                "comprar",
+                "vender",
+                "precio",
+                "tenés",
+                "hay",
+                "malbec",
+                "oferta",
+                "promo",
+                "descuento",
+                "unidades",
+                "sku",
+                "stock",
+                "vino",
+                "caja",
+            ]
             es_pregunta_compra = any(pal in pregunta.lower() for pal in palabras_compra)
 
             if intencion == "pregunta_ambigua" and es_pregunta_compra:
@@ -358,32 +449,40 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
 
             handler = handler_cls(context)
 
-    respuesta_final = handler.handle(pregunta) or FallbackHandler(context).handle(pregunta)
+    respuesta_final = handler.handle(pregunta) or FallbackHandler(context).handle(
+        pregunta
+    )
 
     # Guardar historial sesión
     historial = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     historial.append({"role": "user", "content": pregunta})
-    historial.append({"role": "assistant", "content": respuesta_final.get('respuesta','')})
+    historial.append(
+        {"role": "assistant", "content": respuesta_final.get("respuesta", "")}
+    )
     flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:]
 
     # Guardar conversación en DB (si hay user)
     try:
-        if context['user_id']:
-            db.session.add(Conversacion(
-                user_id=context['user_id'],
-                pregunta=pregunta,
-                respuesta=respuesta_final.get('respuesta', ''),
-                fuente=respuesta_final.get('fuente', 'desconocida'),
-                rubro=context['rubro_nombre']
-            ))
+        if context["user_id"]:
+            db.session.add(
+                Conversacion(
+                    user_id=context["user_id"],
+                    pregunta=pregunta,
+                    respuesta=respuesta_final.get("respuesta", ""),
+                    fuente=respuesta_final.get("fuente", "desconocida"),
+                    rubro=context["rubro_nombre"],
+                )
+            )
             db.session.commit()
     except Exception as e:
         logger.error(f"[PYMES] Error guardando conversación en DB: {e}")
         db.session.rollback()
 
+    flask_session[CONTEXTO_PYME] = context.get(CONTEXTO_PYME, {})
+
     return {
-        "respuesta": respuesta_final.get('respuesta', "Ocurrió un error."),
-        "fuente": respuesta_final.get('fuente', 'desconocida'),
-        "botones": respuesta_final.get('botones', []),
-        "contexto_actualizado": {},
+        "respuesta": respuesta_final.get("respuesta", "Ocurrió un error."),
+        "fuente": respuesta_final.get("fuente", "desconocida"),
+        "botones": respuesta_final.get("botones", []),
+        "contexto_actualizado": {CONTEXTO_PYME: context.get(CONTEXTO_PYME, {})},
     }
