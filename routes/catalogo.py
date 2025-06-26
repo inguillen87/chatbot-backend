@@ -255,3 +255,26 @@ def textos_perfil(user):
     items = CatalogoItem.query.filter_by(user_id=user.id).all()
     textos = [limpiar_texto_base(it.texto) for it in items if getattr(it, 'texto', None)]
     return jsonify(textos)
+
+
+@catalogo_bp.route('/resumen', methods=['GET'])
+@token_requerido
+def resumen_catalogo(user):
+    """Devuelve un resumen del catálogo agrupado por categoría."""
+    items = CatalogoItem.query.filter_by(user_id=user.id).all()
+    if not items:
+        return jsonify({"total": 0, "categorias": []})
+
+    categorias: dict[str, int] = {}
+    for it in items:
+        cat = it.categoria or "Sin categoría"
+        categorias[cat] = categorias.get(cat, 0) + 1
+
+    data = {
+        "total": len(items),
+        "categorias": [
+            {"nombre": nombre, "cantidad": cantidad}
+            for nombre, cantidad in sorted(categorias.items())
+        ],
+    }
+    return jsonify(data)

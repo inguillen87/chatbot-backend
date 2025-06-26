@@ -10,6 +10,7 @@ sys.modules.setdefault('cohere', ModuleType('cohere'))
 models_stub = ModuleType('models')
 models_stub.CatalogoItem = type('CatalogoItem', (), {'query': None})
 models_stub.QA = type('QA', (), {'query': None})
+models_stub.ArchivoAdjunto = type('ArchivoAdjunto', (), {'query': None})
 models_stub.User = type('User', (), {})
 models_stub.Rubro = type('Rubro', (), {})
 models_stub.MunicipioTicket = type('MunicipioTicket', (), {})
@@ -34,7 +35,7 @@ pandas_stub.Series = object
 sys.modules.setdefault('pandas', pandas_stub)
 
 
-from routes.catalogo import faq_texto, textos_perfil
+from routes.catalogo import faq_texto, textos_perfil, resumen_catalogo
 
 class DummyQuery(list):
     def filter_by(self, **kwargs):
@@ -60,6 +61,20 @@ class CatalogoEndpointsTests(unittest.TestCase):
                 with patch('routes.catalogo.jsonify', lambda x: x):
                     resp = textos_perfil.__wrapped__(user)
         self.assertEqual(resp, ['uno', 'dos'])
+
+    def test_resumen_catalogo_counts_by_category(self):
+        user = SimpleNamespace(id=7)
+        items = [
+            SimpleNamespace(categoria='vino'),
+            SimpleNamespace(categoria='vino'),
+            SimpleNamespace(categoria='cerveza'),
+        ]
+        with patch('routes.catalogo.CatalogoItem', SimpleNamespace(query=DummyQuery(items))):
+            with patch('routes.catalogo.jsonify', lambda x: x):
+                resp = resumen_catalogo.__wrapped__(user)
+        self.assertEqual(resp['total'], 3)
+        self.assertIn({'nombre': 'vino', 'cantidad': 2}, resp['categorias'])
+        self.assertIn({'nombre': 'cerveza', 'cantidad': 1}, resp['categorias'])
 
 if __name__ == '__main__':
     unittest.main()
