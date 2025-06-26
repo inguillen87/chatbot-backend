@@ -150,6 +150,7 @@ usuario.
 - Si al entrar a la pantalla de login la aplicación se rompe con un "Error" genérico, revisa `docs/react-login-troubleshooting.md`.
 - Para más ideas orientadas a pequeñas y medianas empresas revisa `docs/ideas-pymes.md`.
 - Para un ejemplo de perfil inteligente según el estado de sesión mira `docs/perfil-inteligente.md`.
+- Para validar el envío de mensajes revisa `docs/whatsapp-sms-checklist.md`.
 - Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.
 - Nuevo endpoint `/estadisticas/reclamos` que resume los tickets por rubro y tipo, e informa el tiempo de respuesta promedio.
 - Las respuestas de agentes generan notificaciones automáticas por correo y SMS al ciudadano cuando su ticket recibe novedades.
