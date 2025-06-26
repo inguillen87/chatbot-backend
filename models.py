@@ -337,6 +337,16 @@ class Recordatorio(db.Model):
     fecha_vencimiento = db.Column(db.DateTime, nullable=False)
     enviado = db.Column(db.Boolean, default=False)
 
+class Reaccion(db.Model):
+    __tablename__ = "reaccion"
+    id = db.Column(db.Integer, primary_key=True)
+    conversacion_id = db.Column(db.Integer, db.ForeignKey("conversacion.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    emoji = db.Column(db.String(5), nullable=False)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    conversacion = db.relationship("Conversacion", backref="reacciones")
+    user = db.relationship("User")
+
 def generate_token():
     return str(uuid.uuid4())
 
