@@ -3,10 +3,11 @@ import uuid
 import logging
 import traceback
 import re
+import shutil
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
-from models import CatalogoItem, User, Rubro
+from models import CatalogoItem, User, Rubro, ArchivoAdjunto
 from services.cohere_ai import embed_textos
 
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg"}
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")  # Esto anda en cualquier entorno
+CATALOGO_FOLDER = os.path.join("data", "catalogos")
 
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
@@ -288,6 +290,26 @@ def subir_catalogo():
             pyme_rubro_nombre=pyme_rubro_nombre,
             coleccion=coleccion,
         )
+
+        # Guardar el archivo original para descargas futuras
+        os.makedirs(CATALOGO_FOLDER, exist_ok=True)
+        ruta_final = os.path.join(CATALOGO_FOLDER, nombre_archivo_unico)
+        shutil.move(ruta_guardado_temporal, ruta_final)
+        ruta_guardado_temporal = None
+        tamano = os.path.getsize(ruta_final)
+        url = f"/catalogo/archivo/{nombre_archivo_unico}"
+        db.session.add(
+            ArchivoAdjunto(
+                user_id=user.id,
+                filename=nombre_archivo_unico,
+                nombre_original=archivo.filename,
+                mime=archivo.mimetype,
+                tamano=tamano,
+                tipo="catalogo",
+                url=url,
+            )
+        )
+        db.session.commit()
 
         mensaje_exito = f"✅ Catálogo procesado. Se { 'han' if cantidad_procesada != 1 else 'ha'} encontrado e indexado {cantidad_procesada} { 'producto' if cantidad_procesada == 1 else 'productos'}."
         if cantidad_procesada == 0:
