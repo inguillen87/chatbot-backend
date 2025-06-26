@@ -848,7 +848,10 @@ class ReclamoHandler(BaseMunicipioHandler):
             else:
                 sugeridas = sugerir_categorias_relevantes(pregunta_str)
                 botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
-                respuesta_texto = "Esa categoría no es válida o no la entendí. Por favor, seleccioná una de las opciones o escribí una similar."
+                respuesta_texto = (
+                    "¡Ups! No encontré esa categoría, pero estas opciones podrían ayudarte. "
+                    "Si no te sirve ninguna, contame un poco más y lo intento de nuevo."
+                )
                 if sugeridas:
                     respuesta_texto += "\nOpciones sugeridas:"
                 return {
@@ -918,16 +921,14 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         # Paso 7: Adjuntos (acepta acción por botón o texto)
         if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
-            accion = (payload.get("action", "") or pregunta_str).lower()
-            accion = normalizar_texto(accion)
+            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
+
             SIN_ADJUNTOS_KEYWORDS = [
                 "sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias",
-                "completar el reclamo", "quiero terminar", "quiero completar",
-                "terminar reclamo", "completar reclamo", "listo", "listo ya está",
-                "finalizar", "finalizar reclamo", "completar"
+                "completar", "completar reclamo", "completar el reclamo",
+                "terminar", "terminar reclamo", "quiero completar", "quiero terminar",
             ]
 
-            # Si reconoce "no quiero adjuntar nada", avanza
             if any(kw in accion for kw in SIN_ADJUNTOS_KEYWORDS):
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
                 resumen = self.build_detalles_memoria(memoria)
@@ -1004,21 +1005,28 @@ class ReclamoHandler(BaseMunicipioHandler):
         # Paso 8: Confirmación y creación de ticket
         if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
             texto_normalizado = normalizar_texto(pregunta_str)
-            accion = (payload.get("action", "") or texto_normalizado).lower()
-            CONFIRM_KEYWORDS = [
-                "confirmar_reclamo", "confirmar", "finalizar", "finalizar reclamo", 
-                "si", "sí", "confirmado", "confirmo", "si confirmo", "ok", "dale"
-            ]
-            EDIT_KEYWORDS = ["editar_datos", "editar", "no"]
+            accion = payload.get("action", "").lower() or texto_normalizado
 
-            # Si el texto coincide con confirmación
-            if any(kw in accion for kw in CONFIRM_KEYWORDS):
-                # Check data
-                campos = ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]
-                if not all(memoria.get(f"{c}_reclamo" if c not in ["nombre", "telefono", "email"] else f"{c}_vecino") for c in campos):
-                    memoria.clear()
-                    return {
-                        "respuesta": "Hubo un problema al recopilar toda la información necesaria. ¿Querés hacer un reclamo?",
+            if accion in [
+                "confirmar_reclamo",
+                "confirmar",
+                "confirmar reclamo",
+                "confirmo",
+                "confirmado",
+                "si confirmo",
+                "sí confirmo",
+                "finalizar",
+                "finalizar reclamo",
+                "si",
+                "sí",
+            ]:
+                # Armar bien los detalles y crear el ticket
+                # Asegurarse de que los datos estén presentes antes de crear
+                if not all(memoria.get(f"{campo}_reclamo" if campo not in ["nombre", "telefono", "email"] else f"{campo}_vecino") for campo in ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]):
+                     logger.error("[ReclamoHandler] Faltan datos críticos para la creación del ticket.")
+                     memoria.clear()
+                     return {
+                        "respuesta": "Hubo un problema al recopilar toda la información necesaria. Por favor, intentemos de nuevo. ¿Querés hacer un reclamo?",
                         "botones": [{"texto": "Hacer un reclamo"}]
                     }
                 try:
@@ -1524,68 +1532,6 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             }
         return None
 
-# --- Categorías válidas para reclamos ---
-CATEGORIAS_RECLAMO = [
-    "arbol caido",
-    "arreglo de calle",
-    "castracion de mascota",
-    "falta de agua, rotura de caño",
-    "fumigacion",
-    "inspeccion de comercio",
-    "limpieza",
-    "luminaria",
-    "riego de calle",
-    "rotura de semaforo",
-    "tramites de obras privadas",
-    "otro motivo",
-]
-categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
-
-# Definir los estados de reclamo para una mejor legibilidad y mantenimiento
-RECLAMO_STATES = [
-    ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
-    ConversationState.ESPERANDO_DIRECCION_RECLAMO,
-    ConversationState.ESPERANDO_NOMBRE_VECINO,
-    ConversationState.ESPERANDO_TELEFONO_VECINO,
-    ConversationState.ESPERANDO_EMAIL_VECINO,
-    ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
-    ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
-    ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
-]
-
-
-def serializar_enum(obj):
-    if isinstance(obj, Enum):
-        return obj.name
-    elif isinstance(obj, dict):
-        return {k: serializar_enum(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [serializar_enum(v) for v in obj]
-    else:
-        return obj
-
-
-BOTONES_COMANDOS_MUNICIPIO = {
-    "Hacer un reclamo": "iniciar_reclamo",
-    "Consultar estado de un trámite": "consultar_estado_ticket",
-    "Consultar estado de ticket": "consultar_estado_ticket",
-    "Consultar otro ticket": "consultar_estado_ticket",
-    "Hablar con un agente": "hablar_con_agente",
-    "Nuevo reclamo": "iniciar_reclamo",
-    "Adjuntar foto": "adjuntar_foto",
-    "Compartir ubicación": "compartir_ubicacion",
-    "Foto": "adjuntar_foto",
-    "Ubicación": "compartir_ubicacion",
-    "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
-    "Confirmar reclamo": "confirmar_reclamo",
-    "Finalizar": "confirmar_reclamo",
-    "Finalizar reclamo": "confirmar_reclamo",
-    "Editar datos": "editar_reclamo",
-    "Sí, solucionado": "confirmar_cierre_ticket",
-    "No, aún no": "no_cerrar_ticket",
-}
-
-
 class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
@@ -1891,10 +1837,15 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Compartir ubicación": "compartir_ubicacion",
     "Foto": "adjuntar_foto",
     "Ubicación": "compartir_ubicacion",
-    "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
+    "No, continuar": "sin_adjuntos",  # Renombrado para mayor claridad en el backend
+    "Completar reclamo": "sin_adjuntos",
     "Confirmar reclamo": "confirmar_reclamo",
     "Finalizar": "confirmar_reclamo",
     "Finalizar reclamo": "confirmar_reclamo",
+    "Confirmar": "confirmar_reclamo",
+    "Confirmado": "confirmar_reclamo",
+    "Si confirmo": "confirmar_reclamo",
+    "Sí confirmo": "confirmar_reclamo",
     "Editar datos": "editar_reclamo",
     "Sí, solucionado": "confirmar_cierre_ticket",
     "No, aún no": "no_cerrar_ticket",
@@ -1957,7 +1908,10 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     comando_from_text = BOTONES_COMANDOS_MUNICIPIO.get(pregunta_str.strip())
     if comando_from_text and not context.get("action"):
         context["action"] = comando_from_text
-        logger.info(f"[BOTON] Comando detectado: '{comando_from_text}' (desde texto del botón)")
+        received_payload["action"] = comando_from_text
+        logger.info(
+            f"[BOTON] Comando detectado: '{comando_from_text}' (desde texto del botón)"
+        )
     elif context.get("action"): # Si la acción ya vino en el payload
         logger.info(f"[BOTON] Comando detectado: '{context['action']}' (desde payload.action)")
     elif context.get("es_foto") or context.get("es_ubicacion"):
