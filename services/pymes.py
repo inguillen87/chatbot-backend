@@ -455,6 +455,37 @@ class SentimentHandler(BaseHandler):
             }
         return None
 
+
+class CancelHandler(BaseHandler):
+    """Permite cancelar el flujo actual si el usuario lo solicita."""
+
+    CANCEL_KEYWORDS = [
+        "cancelar",
+        "olvidalo",
+        "deja",
+        "no importa",
+        "volver",
+        "salir",
+        "cancelar reclamo",
+        "no quiero continuar",
+        "parar",
+        "detener",
+    ]
+
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        texto = self._normalize(pregunta_str)
+        if any(kw in texto for kw in self.CANCEL_KEYWORDS) or payload.get("action") == "cancelar":
+            self.context.get("contexto_pyme", {}).clear()
+            return {
+                "respuesta": "Operación cancelada. ¿Necesitás ayuda con otro pedido o consulta?",
+                "botones": [
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ],
+            }
+        return None
+
 class LimitHandler(BaseHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
@@ -712,6 +743,53 @@ class CrossSellHandler(BaseHandler):
                         {"texto": "Ver más accesorios", "action": "ver_mas"},
                     ]
                 }
+        return None
+
+class RecomendacionHandler(BaseHandler):
+    """Sugiere productos recomendados según historial, ticket promedio y catálogo."""
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+        if not productos:
+            return None
+        recomendados = [p for p in productos if p.get("destacado")] or productos[:3]
+        recomendados = ordenar_productos_para_venta(recomendados)
+        if recomendados:
+            texto = "Nuestros clientes aman estos productos. ¿Te gustaría probarlos?"
+            lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in recomendados])
+            return {
+                "respuesta": f"{texto}\n{lista}\n¿Te gustaría agregarlos al pedido o ver más detalles?",
+                "fuente": "recomendacion_pyme",
+                "botones": [
+                    {"texto": "Agregar recomendados", "action": "add_to_cart"},
+                    {"texto": "Ver más productos", "action": "ver_mas"},
+                    {"texto": "Consultar stock", "action": "consultar_stock"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
+
+class UpsellHandler(BaseHandler):
+    """Sugiere versiones premium o packs para aumentar el ticket promedio."""
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+        if not productos:
+            return None
+        baratos = [p for p in productos if float(p.get('precio_float', p.get('precio', 0)) or 0) < 5000]
+        premium = [p for p in productos if float(p.get('precio_float', p.get('precio', 0)) or 0) > 10000]
+        premium = ordenar_productos_para_venta(premium)
+        if baratos and premium:
+            texto = "Tenemos opciones premium y packs con mayor valor agregado. ¡Ideal para aprovechar al máximo!"
+            lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in premium[:2]])
+            return {
+                "respuesta": f"{texto}\n{lista}\n¿Te gustaría conocer más o agregarlos al pedido?",
+                "fuente": "upsell_pyme",
+                "botones": [
+                    {"texto": "Ver packs premium", "action": "ver_premium"},
+                    {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                ]
+            }
         return None
 
 class OfertaPersonalizadaHandler(BaseHandler):
@@ -1121,10 +1199,25 @@ class VectorCatalogHandler(BaseHandler):
 class PedidoHandler(BaseHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
+        if not isinstance(payload, dict):
+            payload = {"pregunta": str(payload)}
         pregunta_str = payload.get("pregunta", "")
         contexto_pyme = self.context.get('contexto_pyme', {})
         estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
         user_id = self.context.get('user_id')
+
+        if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP and (
+            "cancel" in pregunta_str.lower() or "no quiero" in pregunta_str.lower() or payload.get("action") == "cancelar_pedido"
+        ):
+            contexto_pyme.clear()
+            return {
+                "respuesta": "Entendido, no se generará el pedido. ¿Te gustaría ver otros productos o recibir asesoramiento?",
+                "fuente": "pedido_cancelado",
+                "botones": [
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ],
+            }
 
         # Acción: Iniciar pedido
         if self.context.get('intencion') == 'iniciar_pedido' and not estado:
