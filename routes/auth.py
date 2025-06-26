@@ -557,7 +557,9 @@ def chatuser_login_panel():
 def get_current_user(user):
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
     from utils.plan_limits import limite_para_usuario
-    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
+    tipo_chat = getattr(user, "tipo_chat", None) or (
+        "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+    )
     catalogo_label = (
         "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
     )
@@ -583,6 +585,9 @@ def get_current_user(user):
         "limite_preguntas": limite_para_usuario(user),
         "horario_json": user.horario_json,
         "logo_url": getattr(user, "logo_url", ""),
+        "color_primario": getattr(user, "color_primario", None),
+        "color_secundario": getattr(user, "color_secundario", None),
+        "badge_tipo": getattr(user, "badge_tipo", None),
         "categorias": user.ticket_categorias or "",
         "tipo_chat": tipo_chat,
         "catalogo_label": catalogo_label,
