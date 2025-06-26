@@ -268,11 +268,29 @@ class FallbackHandler(BaseHandler):
 
 # --- ROUTER PRINCIPAL ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+    """Procesa un mensaje del flujo pyme.
+
+    Si ``owner_user`` es ``None`` pero ``viewer_user`` pertenece a una empresa,
+    se utilizará ``viewer_user.empresa_id`` para acceder al catálogo. De esta
+    forma, administradores y empleados pueden probar el chat sin que el bot les
+    solicite iniciar sesión nuevamente.
+    """
+
+    if owner_user:
+        user_id = getattr(owner_user, "id", None)
+        nombre_pyme = getattr(owner_user, "nombre_empresa", "la empresa")
+    elif viewer_user:
+        user_id = getattr(viewer_user, "empresa_id", None) or getattr(viewer_user, "id", None)
+        nombre_pyme = getattr(viewer_user, "nombre_empresa", "la empresa")
+    else:
+        user_id = None
+        nombre_pyme = "la empresa"
+
     context = {
-        "user_id": getattr(owner_user, "id", None),
-        "nombre_pyme": getattr(owner_user, "nombre_empresa", "la empresa"),
+        "user_id": user_id,
+        "nombre_pyme": nombre_pyme,
         "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
-        "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
+        "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, []),
     }
 
     intencion = _clasificar_intencion_pyme_con_llm(pregunta)

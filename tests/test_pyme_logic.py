@@ -194,6 +194,20 @@ class PymeLogicTests(unittest.TestCase):
         self.assertEqual(resp['fuente'], 'llm_contextual_pyme')
         self.assertIn('en el dia', resp['respuesta'])
 
+    @patch('services.pymes.armar_respuesta_legible', return_value='Malbec $1000')
+    @patch('services.pymes.buscar_catalogo_qdrant', return_value=['vino'])
+    @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='ver_catalogo')
+    def test_admin_viewer_bypasses_login_for_catalogo(self, mock_clf, mock_buscar, mock_format):
+        """El catálogo debe mostrarse al empleado sin pedir login extra."""
+        owner = DummyUser()
+        admin = DummyUser()
+        admin.id = 2
+        admin.empresa_id = owner.id
+        admin.nombre_empresa = owner.nombre_empresa
+
+        resp = pymes.responder_pyme('ver catalogo', None, owner.rubro, viewer_user=admin)
+        self.assertNotIn('iniciá sesión', resp['respuesta'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()
