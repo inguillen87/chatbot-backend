@@ -29,6 +29,8 @@ This project exposes several endpoints to process questions for different sector
 - `GET /me` – retrieve the full profile. The response includes the user's role
   (`rol`), associated company (`empresa_id`) and the ticket categories assigned
   to the account (`categorias`).
+- `GET /tickets` – for admins or employees, list all tickets for the company or
+  municipality. Supports optional `?estado=` and `?categoria=` filters.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
