@@ -187,7 +187,7 @@ class PymeLogicTests(unittest.TestCase):
     @patch('services.pymes.sugerencias_por_rubro', return_value=[])
     @patch('services.pymes.buscar_en_faq_spacy', return_value=None)
     @patch('services.pymes.obtener_info_web', return_value={'envios': 'en el dia'})
-    @patch('services.pymes.robust_chat', return_value='Enviamos en el dia')
+
     def test_contextual_llm_handler(self, mock_llm, mock_web, mock_faq, mock_sug):
         user = DummyUser()
         resp = pymes.responder_pyme('costo de envio?', user, None, viewer_user=user)
