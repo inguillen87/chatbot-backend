@@ -11,16 +11,21 @@ from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legib
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro
+from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_talk
+from services.ticket_service import servicio_tickets
+from services.webinfo import obtener_info_web
 
 logger = logging.getLogger(__name__)
 
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 MAX_HISTORIAL_CHAT = 30
+CANCEL_KEYWORDS = {"cancel", "cancelar", "cancelalo", "anular", "borrar", "no gracias"}
 
 class PymeConversationState(Enum):
     SIN_ESTADO = auto()
     CONFIRMANDO_PEDIDO = auto()
     ESPERANDO_CONTACTO = auto()
+    CONFIRMANDO_PEDIDO_TEMP = auto()
 
 def serialize_state(state):
     return state.name if state else None
@@ -56,6 +61,49 @@ def clasificar_intencion_llm(pregunta):
     except Exception as e:
         logger.error(f"[PYME] Error clasificando intención: {e}")
         return "pregunta_ambigua"
+
+def _clasificar_intencion_pyme_con_llm(pregunta: str) -> str:
+    """Versión explícita para compatibilidad con tests."""
+    return clasificar_intencion_llm(pregunta)
+
+
+def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
+    """Determina con heurísticas simples y LLM si el usuario cambió de tema."""
+    texto = texto_usuario.strip().lower()
+    if texto in {"ok", "gracias"}:
+        return True
+    if any(kw in texto for kw in {"agente", "humano", "persona", "operador"}):
+        return True
+    if re.search(r"\d", texto) and tipo_esperado in {"el dato solicitado", "una dirección"}:
+        return False
+    prompt = (
+        f"Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.\n"
+        f"RESPUESTA DEL USUARIO: \"{texto_usuario}\"\n"
+        "Si responde lo esperado contestá 'RESPUESTA_VALIDA'. Si cambia de tema contestá 'PREGUNTA_NUEVA'."
+    )
+    try:
+        decision = robust_chat(message=prompt)
+        return "PREGUNTA_NUEVA" in decision
+    except Exception as e:
+        logger.error(f"[PYME] Error clasificando pregunta nueva: {e}")
+        return False
+
+
+def analizar_sentimiento_llm(texto: str) -> str:
+    """Devuelve 'positivo', 'negativo' o 'neutral'"""
+    prompt = (
+        "Analiza el sentimiento del siguiente texto y responde solo 'positivo', 'negativo' o 'neutral'.\n"
+        f"TEXTO: '{texto}'\nSENTIMIENTO:"
+    )
+    try:
+        res = robust_chat(message=prompt)
+        sentimiento = res.strip().lower()
+        if sentimiento in {"positivo", "negativo"}:
+            return sentimiento
+        return "neutral"
+    except Exception as e:
+        logger.error(f"[PYME] Error analizando sentimiento: {e}")
+        return "neutral"
 
 # --- HANDLERS ---
 class BaseHandler:
@@ -111,15 +159,56 @@ class OfertasHandler(BaseHandler):
             ]
         }
 
+class SmallTalkHandler(BaseHandler):
+    def handle(self, pregunta):
+        respuesta = generar_respuesta_small_talk(pregunta)
+        return {
+            "respuesta": respuesta,
+            "fuente": "smalltalk_pyme_llm",
+        }
+
+class SentimentHandler(BaseHandler):
+    def __init__(self, context, sentimiento):
+        super().__init__(context)
+        self.sentimiento = sentimiento
+
+    def handle(self, pregunta):
+        if self.sentimiento == "negativo":
+            return {
+                "respuesta": "Lamentamos la experiencia. Te contactaré con un agente para ayudarte.",
+                "fuente": "sentimiento_negativo",
+                "botones": [{"texto": "Hablar con un agente", "action": "hablar_con_agente"}],
+            }
+        return {
+            "respuesta": "¡Gracias por tu comentario!",
+            "fuente": "sentimiento_positivo",
+            "botones": [{"texto": "Ver ofertas", "action": "ver_ofertas"}],
+        }
+
 class PedidoHandler(BaseHandler):
     def handle(self, pregunta):
+        ctx = self.context.get("contexto_pyme", {})
+        estado = deserialize_state(ctx.get("estado_conversacion"))
+        if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
+            texto = pregunta.lower()
+            if any(k in texto for k in CANCEL_KEYWORDS):
+                ctx.clear()
+                return {
+                    "respuesta": "Pedido cancelado. ¿Necesitás otra cosa?",
+                    "fuente": "pedido_cancelado",
+                    "botones": [
+                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                    ],
+                }
         return {
             "respuesta": "¿Qué producto y cuántas unidades querés pedir? Decime el nombre o el código. Cuando termines, escribí 'finalizar pedido'.",
             "fuente": "pedido",
+            "estado_respuesta": "pyme_pregunta_pedido",
             "botones": [
                 {"texto": "Agregar más productos", "action": "ver_catalogo"},
                 {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
-            ]
+            ],
         }
 
 class FaqHandler(BaseHandler):
@@ -161,6 +250,13 @@ class FallbackHandler(BaseHandler):
                     {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
                 ]
             }
+        info_web = obtener_info_web(user_id, self.context.get('nombre_pyme')) if user_id else {}
+        if info_web:
+            mensaje = ", ".join(f"{k}: {v}" for k, v in info_web.items())
+            return {
+                "respuesta": mensaje,
+                "fuente": "llm_contextual_pyme",
+            }
         return {
             "respuesta": "No entendí tu consulta. ¿Querés ver el catálogo o hablar con un agente?",
             "fuente": "fallback_generico",
@@ -179,7 +275,7 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     }
 
-    intencion = clasificar_intencion_llm(pregunta)
+    intencion = _clasificar_intencion_pyme_con_llm(pregunta)
     logger.info(f"[PYME] Intención detectada: {intencion}")
 
     # Mapeo profesional de intents. Si la pregunta parece compra, SIEMPRE busca catálogo.
@@ -192,16 +288,24 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "hablar_con_agente": HumanHandler,
     }
 
-    # Extra: si la intención es ambigua pero la pregunta contiene palabras de compra, forzá búsqueda en catálogo.
-    palabras_compra = ["comprar", "vender", "precio", "tenés", "hay", "malbec", "oferta", "promo", "descuento", "unidades", "sku", "stock", "vino", "caja"]
-    es_pregunta_compra = any(pal in pregunta.lower() for pal in palabras_compra)
-
-    if intencion == "pregunta_ambigua" and es_pregunta_compra:
-        handler_cls = CatalogoHandler
+    if detectar_small_talk_con_llm(pregunta):
+        handler = SmallTalkHandler(context)
     else:
-        handler_cls = INTENT_MAP.get(intencion, FallbackHandler)
+        sentimiento = analizar_sentimiento_llm(pregunta)
+        if sentimiento in {"positivo", "negativo"}:
+            handler = SentimentHandler(context, sentimiento)
+        else:
+            # Extra: si la intención es ambigua pero la pregunta contiene palabras de compra, forzá búsqueda en catálogo.
+            palabras_compra = ["comprar", "vender", "precio", "tenés", "hay", "malbec", "oferta", "promo", "descuento", "unidades", "sku", "stock", "vino", "caja"]
+            es_pregunta_compra = any(pal in pregunta.lower() for pal in palabras_compra)
 
-    handler = handler_cls(context)
+            if intencion == "pregunta_ambigua" and es_pregunta_compra:
+                handler_cls = CatalogoHandler
+            else:
+                handler_cls = INTENT_MAP.get(intencion, FallbackHandler)
+
+            handler = handler_cls(context)
+
     respuesta_final = handler.handle(pregunta) or FallbackHandler(context).handle(pregunta)
 
     # Guardar historial sesión
