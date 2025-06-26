@@ -44,6 +44,14 @@ This project exposes several endpoints to process questions for different sector
 - `GET /tramites/descargar` – download the full JSON catalog of procedures.
 - `GET /municipal/incidents` – list open municipal incidents for the authenticated user's municipality.
 
+### Municipal incidents
+
+Admins and municipal employees can consult all open tickets of their
+municipality with `GET /municipal/incidents`. The JSON response contains
+fields like `id`, `nro_ticket`, `asunto`, `categoria`, `estado`, `fecha`,
+`direccion`, `latitud`, `longitud`, as well as the original `pregunta`, any
+`detalles` provided and the `archivo_url` if the ticket incluye un adjunto.
+
 ### Employee management
 
 - `GET /empleados` – list internal employees associated with the token **(admin only)**.
