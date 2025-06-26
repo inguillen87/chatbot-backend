@@ -14,21 +14,18 @@ from services.utils import sugerencias_por_rubro
 
 logger = logging.getLogger(__name__)
 
-# --- CONSTANTES Y SESIONES ---
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
-CONTEXTO_PYME_SESION = "contexto_pyme"
 MAX_HISTORIAL_CHAT = 30
 
-# --- ENUM DE ESTADOS (modificá o ampliá lo que realmente uses) ---
 class PymeConversationState(Enum):
     SIN_ESTADO = auto()
     CONFIRMANDO_PEDIDO = auto()
     ESPERANDO_CONTACTO = auto()
 
-def serialize_state(state: PymeConversationState | None) -> str | None:
+def serialize_state(state):
     return state.name if state else None
 
-def deserialize_state(value: str | None) -> PymeConversationState | None:
+def deserialize_state(value):
     if not value:
         return None
     try:
@@ -36,7 +33,6 @@ def deserialize_state(value: str | None) -> PymeConversationState | None:
     except KeyError:
         return None
 
-# --- PROMPT DE CLASIFICACIÓN DE INTENCIÓN ---
 PROMPT_CLASIFICAR_INTENCION = """
 Sos el cerebro comercial de un chatbot para una pyme. Analizá la PREGUNTA DEL USUARIO y respondé sólo con una de estas intenciones:
 - saludo
@@ -52,7 +48,7 @@ PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 INTENCIÓN:
 """
 
-def clasificar_intencion_llm(pregunta: str) -> str:
+def clasificar_intencion_llm(pregunta):
     prompt = PROMPT_CLASIFICAR_INTENCION.format(pregunta_usuario=pregunta)
     try:
         res = robust_chat(message=prompt)
@@ -62,10 +58,9 @@ def clasificar_intencion_llm(pregunta: str) -> str:
         return "pregunta_ambigua"
 
 # --- HANDLERS ---
-
 class BaseHandler:
     def __init__(self, context): self.context = context
-    def handle(self, pregunta: str): raise NotImplementedError
+    def handle(self, pregunta): raise NotImplementedError
 
 class SaludoHandler(BaseHandler):
     def handle(self, pregunta):
@@ -84,15 +79,23 @@ class CatalogoHandler(BaseHandler):
         user_id = self.context.get('user_id')
         if not user_id:
             return {"respuesta": "Iniciá sesión para ver el catálogo.", "fuente": "catalogo_sin_login"}
+        # Se busca SIEMPRE aunque la pregunta sea vaga
         resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=self.context.get('rubro_nombre'))
-        if not resultados:
-            return {"respuesta": "No encontré productos que coincidan con tu búsqueda.", "fuente": "catalogo_vacio"}
-        respuesta_legible = armar_respuesta_legible(resultados)
+        if resultados:
+            respuesta_legible = armar_respuesta_legible(resultados, max_items=5)
+            return {
+                "respuesta": f"Estos son algunos productos que tenemos:\n{respuesta_legible}\n¿Te interesa alguno o querés ver más opciones?",
+                "fuente": "catalogo_vector",
+                "botones": [
+                    {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
+                    {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
+                ]
+            }
         return {
-            "respuesta": f"Aquí tenés los productos:\n{respuesta_legible}\n¿Querés iniciar un pedido?",
-            "fuente": "catalogo_vector",
+            "respuesta": "No encontré productos que coincidan exactamente con tu búsqueda, pero mirá estas sugerencias:",
+            "fuente": "catalogo_vacio",
             "botones": [
-                {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
+                {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
                 {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
             ]
         }
@@ -100,7 +103,7 @@ class CatalogoHandler(BaseHandler):
 class OfertasHandler(BaseHandler):
     def handle(self, pregunta):
         return {
-            "respuesta": "Estas son las ofertas de la semana: Combo Malbec 15% OFF, 2x1 en Espumante, Envío gratis desde $50.000.",
+            "respuesta": "Ofertas de la semana: Combo Malbec 15% OFF, 2x1 en Espumante, Envío gratis desde $50.000.",
             "fuente": "ofertas",
             "botones": [
                 {"texto": "Quiero el combo Malbec", "action": "iniciar_pedido"},
@@ -135,7 +138,20 @@ class HumanHandler(BaseHandler):
 
 class FallbackHandler(BaseHandler):
     def handle(self, pregunta):
-        sugerencias = sugerencias_por_rubro(self.context.get('rubro_nombre'))
+        user_id = self.context.get('user_id')
+        rubro = self.context.get('rubro_nombre')
+        resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=rubro)
+        if resultados:
+            respuesta_legible = armar_respuesta_legible(resultados, max_items=3)
+            return {
+                "respuesta": f"No estoy seguro de haber entendido, pero mirá estos productos recomendados:\n{respuesta_legible}\n¿Te interesa alguno?",
+                "fuente": "fallback_catalogo",
+                "botones": [
+                    {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                ]
+            }
+        sugerencias = sugerencias_por_rubro(rubro)
         if sugerencias:
             return {
                 "respuesta": f"{random.choice(sugerencias)} ¿Querés una oferta personalizada o ayuda para comprar?",
@@ -163,11 +179,10 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, [])
     }
 
-    # Clasificá la intención
     intencion = clasificar_intencion_llm(pregunta)
     logger.info(f"[PYME] Intención detectada: {intencion}")
 
-    # Mapear la intención a handler
+    # Mapeo profesional de intents. Si la pregunta parece compra, SIEMPRE busca catálogo.
     INTENT_MAP = {
         "saludo": SaludoHandler,
         "ver_catalogo": CatalogoHandler,
@@ -176,7 +191,16 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "pregunta_faq": FaqHandler,
         "hablar_con_agente": HumanHandler,
     }
-    handler_cls = INTENT_MAP.get(intencion, FallbackHandler)
+
+    # Extra: si la intención es ambigua pero la pregunta contiene palabras de compra, forzá búsqueda en catálogo.
+    palabras_compra = ["comprar", "vender", "precio", "tenés", "hay", "malbec", "oferta", "promo", "descuento", "unidades", "sku", "stock", "vino", "caja"]
+    es_pregunta_compra = any(pal in pregunta.lower() for pal in palabras_compra)
+
+    if intencion == "pregunta_ambigua" and es_pregunta_compra:
+        handler_cls = CatalogoHandler
+    else:
+        handler_cls = INTENT_MAP.get(intencion, FallbackHandler)
+
     handler = handler_cls(context)
     respuesta_final = handler.handle(pregunta) or FallbackHandler(context).handle(pregunta)
 
@@ -205,5 +229,5 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "respuesta": respuesta_final.get('respuesta', "Ocurrió un error."),
         "fuente": respuesta_final.get('fuente', 'desconocida'),
         "botones": respuesta_final.get('botones', []),
-        "contexto_actualizado": {},  # si querés pasar estado, agregalo acá
+        "contexto_actualizado": {},
     }
