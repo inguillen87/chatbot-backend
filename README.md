@@ -93,6 +93,8 @@ Si no se indica, se asume `-3`.
 Si quieres rotar frases en el globito del chat puedes definir
 `ATTENTION_BUBBLE_CHOICES` con una lista separada por barras verticales
 (`|`). Por ejemplo `"Hola|¿Necesitas ayuda?|¿Querés hacer un reclamo?"`.
+Consulta `docs/attention-bubble.md` para más detalles sobre el endpoint
+`/widget/attention` y cómo configurarlo.
 
 ## Uso correcto del rubro
 
@@ -155,6 +157,7 @@ usuario.
 - Para un ejemplo de perfil inteligente según el estado de sesión mira `docs/perfil-inteligente.md`.
 - Para validar el envío de mensajes revisa `docs/whatsapp-sms-checklist.md`.
 - Si quieres añadir dictado por voz en el chat consulta `docs/dictado-por-voz.md`.
+- Para personalizar el globito de atención revisa `docs/attention-bubble.md`.
 - Nuevo módulo `services/integracion_municipal.py` con un stub para enviar tickets a sistemas externos como SIGEM.
 - Nuevo endpoint `/estadisticas/reclamos` que resume los tickets por rubro y tipo, e informa el tiempo de respuesta promedio.
 - Las respuestas de agentes generan notificaciones automáticas por correo y SMS al ciudadano cuando su ticket recibe novedades.
