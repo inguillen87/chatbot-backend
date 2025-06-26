@@ -45,10 +45,11 @@ def url_descargar_catalogo() -> str:
 
 
 class PymeConversationState(Enum):
-    SIN_ESTADO = auto()
+    IDLE = auto()
+    ESPERANDO_PRODUCTO = auto()
     CONFIRMANDO_PEDIDO = auto()
+    PEDIDO_FINALIZADO = auto()
     ESPERANDO_CONTACTO = auto()
-    CONFIRMANDO_PEDIDO_TEMP = auto()
 
 
 def serialize_state(state):
@@ -250,27 +251,36 @@ class PedidoHandler(BaseHandler):
         ctx = self.context.setdefault(
             CONTEXTO_PYME, flask_session.get(CONTEXTO_PYME, {})
         )
-        estado = deserialize_state(ctx.get("estado_conversacion"))
+        estado = deserialize_state(ctx.get("estado_conversacion")) or PymeConversationState.IDLE
+        texto = pregunta.lower()
 
-        if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            texto = pregunta.lower()
+        if estado == PymeConversationState.ESPERANDO_PRODUCTO:
             if any(k in texto for k in CANCEL_KEYWORDS):
                 ctx.clear()
+                ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
                 flask_session[CONTEXTO_PYME] = ctx
                 return {
                     "respuesta": "Pedido cancelado. ¿Necesitás otra cosa?",
                     "fuente": "pedido_cancelado",
                     "botones": [
                         {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {
-                            "texto": "Hablar con un agente",
-                            "action": "hablar_con_agente",
-                        },
+                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                    ],
+                }
+            if "finalizar" in texto:
+                ctx["estado_conversacion"] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
+                flask_session[CONTEXTO_PYME] = ctx
+                return {
+                    "respuesta": "¿Confirmás tu pedido?",
+                    "fuente": "confirmando_pedido",
+                    "botones": [
+                        {"texto": "Sí, confirmar", "action": "confirmar_pedido"},
+                        {"texto": "Cancelar", "action": "cancelar_pedido"},
                     ],
                 }
             flask_session[CONTEXTO_PYME] = ctx
             return {
-                "respuesta": "Continuemos con tu pedido. Indicame producto y cantidad o escribí 'finalizar pedido'.",
+                "respuesta": "Producto agregado. Indicá otro o escribí 'finalizar pedido'.",
                 "fuente": "pedido_en_progreso",
                 "estado_respuesta": "pyme_pregunta_pedido",
                 "botones": [
@@ -278,9 +288,41 @@ class PedidoHandler(BaseHandler):
                 ],
             }
 
-        ctx["estado_conversacion"] = serialize_state(
-            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP
-        )
+        if estado == PymeConversationState.CONFIRMANDO_PEDIDO:
+            if any(k in texto for k in CANCEL_KEYWORDS):
+                ctx.clear()
+                ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+                flask_session[CONTEXTO_PYME] = ctx
+                return {
+                    "respuesta": "Pedido cancelado. ¿Necesitás otra cosa?",
+                    "fuente": "pedido_cancelado",
+                    "botones": [
+                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                    ],
+                }
+            if texto.strip() in {"si", "sí", "confirmo", "confirmar"}:
+                ctx["estado_conversacion"] = serialize_state(PymeConversationState.PEDIDO_FINALIZADO)
+                flask_session[CONTEXTO_PYME] = ctx
+                return {
+                    "respuesta": "¡Listo! Tu pedido fue registrado.",
+                    "fuente": "pedido_finalizado",
+                }
+            flask_session[CONTEXTO_PYME] = ctx
+            return {
+                "respuesta": "¿Confirmás tu pedido? Escribí 'sí' para confirmar o 'cancelar' para anular.",
+                "fuente": "confirmando_pedido",
+            }
+
+        if estado == PymeConversationState.PEDIDO_FINALIZADO:
+            ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+            flask_session[CONTEXTO_PYME] = ctx
+            return {
+                "respuesta": "Tu pedido ya fue finalizado. ¿Necesitás algo más?",
+                "fuente": "pedido_finalizado",
+            }
+
+        ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_PRODUCTO)
         flask_session[CONTEXTO_PYME] = ctx
         return {
             "respuesta": "¿Qué producto y cuántas unidades querés pedir? Decime el nombre o el código. Cuando termines, escribí 'finalizar pedido'.",
