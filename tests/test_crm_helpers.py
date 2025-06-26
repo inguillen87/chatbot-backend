@@ -1,28 +1,17 @@
 import unittest
 from types import SimpleNamespace
 
-class DummyQuery(list):
-    def filter_by(self, **kwargs):
-        filtered = [u for u in self if all(getattr(u, k) == v for k, v in kwargs.items())]
-        return DummyQuery(filtered)
-
-    def filter(self, condition):
-        like = condition.right.value.strip('%')
-        filtered = [u for u in self if like in (u.tags or '')]
-        return DummyQuery(filtered)
-
-    def order_by(self, *a, **k):
-        return self
-
-    def all(self):
-        return list(self)
-
-def _obtener_clientes(query_user, tag=None):
-    query = DummyQuery(query_user)
+def _obtener_clientes(clientes, tag=None, q=None, marketing=None):
+    resultados = list(clientes)
     if tag:
-        like = tag
-        query = query.filter(SimpleNamespace(right=SimpleNamespace(value=f"%{like}%")))
-    clientes = query.order_by(None).all()
+        tag_l = tag.lower()
+        resultados = [u for u in resultados if tag_l in (u.tags or '').lower()]
+    if q:
+        q_l = q.lower()
+        resultados = [u for u in resultados if q_l in u.name.lower() or q_l in u.email.lower()]
+    if marketing is not None:
+        resultados = [u for u in resultados if u.acepta_marketing == marketing]
+    resultados.sort(key=lambda u: u.name)
     return [
         {
             "id": c.id,
@@ -34,7 +23,7 @@ def _obtener_clientes(query_user, tag=None):
             "longitud": c.longitud,
             "tags": c.tags.split(',') if c.tags else [],
         }
-        for c in clientes
+        for c in resultados
     ]
 
 
@@ -46,6 +35,20 @@ class CRMHelperTests(unittest.TestCase):
         res = _obtener_clientes([u1, u2], tag='vip')
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]['id'], 2)
+
+    def test_obtener_clientes_filtra_busqueda(self):
+        u1 = SimpleNamespace(id=1, name='Juan', email='juan@test.com', telefono='1', acepta_marketing=True, latitud=None, longitud=None, tags='', empresa_id=1)
+        u2 = SimpleNamespace(id=2, name='Ana', email='ana@test.com', telefono='2', acepta_marketing=True, latitud=None, longitud=None, tags='', empresa_id=1)
+        res = _obtener_clientes([u1, u2], q='juan')
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]['id'], 1)
+
+    def test_obtener_clientes_filtra_marketing(self):
+        u1 = SimpleNamespace(id=1, name='J', email='j@test.com', telefono='1', acepta_marketing=True, latitud=None, longitud=None, tags='', empresa_id=1)
+        u2 = SimpleNamespace(id=2, name='K', email='k@test.com', telefono='2', acepta_marketing=False, latitud=None, longitud=None, tags='', empresa_id=1)
+        res = _obtener_clientes([u1, u2], marketing=True)
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]['id'], 1)
 
 if __name__ == '__main__':
     unittest.main()

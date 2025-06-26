@@ -8,16 +8,23 @@ from models import (
     ArchivoAdjunto,
 )
 from extensions import db
+from sqlalchemy import or_
 from routes.auth import token_requerido, admin_o_empleado_requerido
 
 crm_bp = Blueprint('crm', __name__, url_prefix='/crm')
 
 
-def _obtener_clientes(current_user: User, tag: str | None = None):
+def _obtener_clientes(current_user: User, tag: str | None = None, q: str | None = None, marketing: str | None = None):
     query = User.query.filter_by(empresa_id=current_user.id)
     if tag:
         like = f"%{tag}%"
         query = query.filter(User.tags.ilike(like))
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(User.name.ilike(like), User.email.ilike(like)))
+    if marketing is not None:
+        val = str(marketing).lower() in {"1", "true", "yes", "t", "y"}
+        query = query.filter(User.acepta_marketing.is_(val))
     clientes = query.order_by(User.name.asc()).all()
     return [
         {
@@ -39,7 +46,9 @@ def _obtener_clientes(current_user: User, tag: str | None = None):
 def listar_clientes(current_user: User):
     """Devuelve los usuarios asociados a la empresa o municipio del token."""
     tag = request.args.get('tag')
-    resultado = _obtener_clientes(current_user, tag)
+    q = request.args.get('q')
+    marketing = request.args.get('marketing')
+    resultado = _obtener_clientes(current_user, tag, q, marketing)
     return jsonify(resultado)
 
 
@@ -49,7 +58,9 @@ def listar_clientes(current_user: User):
 def listar_usuarios(current_user: User):
     """Alias de /clientes por compatibilidad."""
     tag = request.args.get('tag')
-    resultado = _obtener_clientes(current_user, tag)
+    q = request.args.get('q')
+    marketing = request.args.get('marketing')
+    resultado = _obtener_clientes(current_user, tag, q, marketing)
     return jsonify(resultado)
 
 
