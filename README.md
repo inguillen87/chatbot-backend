@@ -24,6 +24,8 @@ This project exposes several endpoints to process questions for different sector
   select the correct chat flow.
 - New decorators `require_role` and `require_municipio_access` help secure endpoints that depend on the user's municipality.
 - `POST /subir_catalogo` – upload a product catalog (PDF, Excel or images).
+- Universal catalog search formats results for any industry using
+  `armar_respuesta_legible_multi_rubro`.
 
 - `PUT /me` – update the logged in user's profile.
 - `GET /me` – retrieve the full profile. The response includes the user's role
