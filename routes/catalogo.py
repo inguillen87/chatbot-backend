@@ -49,6 +49,20 @@ def listar_archivos(user):
     return jsonify(data)
 
 
+@catalogo_bp.route('/descargar', methods=['GET'])
+@token_requerido
+def descargar_catalogo(user):
+    """Descarga el archivo de catálogo más reciente del usuario."""
+    adj = (
+        ArchivoAdjunto.query.filter_by(user_id=user.id, tipo="catalogo")
+        .order_by(ArchivoAdjunto.fecha.desc())
+        .first()
+    )
+    if not adj:
+        return jsonify({"error": "No hay catálogo disponible"}), 404
+    return send_from_directory(CATALOGO_FOLDER, adj.filename, as_attachment=True)
+
+
 @catalogo_bp.route('/archivo/<path:filename>', methods=['GET'])
 @token_requerido
 def descargar_archivo(user, filename):
