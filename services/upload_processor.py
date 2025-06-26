@@ -60,6 +60,8 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
             "unidad": producto_dict.get("unidad", ""),
             "marca": producto_dict.get("marca", ""),
             "sku": producto_dict.get("sku", ""),
+            "talles": producto_dict.get("talles", ""),
+            "colores": producto_dict.get("colores", ""),
             "texto_original_para_embedding": producto_dict.get("texto_para_embedding", "")
         }
         payload_limpio = {k: v for k, v in payload.items() if v is not None and (not isinstance(v, str) or v.strip() != "")}
@@ -130,6 +132,8 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
             marca = str(prod_dict.get("marca", "")).strip()
             sku = str(prod_dict.get("sku", "")).strip()
             unidad = str(prod_dict.get("unidad", "")).strip()
+            talles = str(prod_dict.get("talles", "")).strip()
+            colores = str(prod_dict.get("colores", "")).strip()
 
             partes_texto_embed = []
             if nombre: partes_texto_embed.append(f"Producto: {nombre}")
@@ -138,6 +142,8 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
             if marca: partes_texto_embed.append(f"Marca: {marca}")
             if categoria: partes_texto_embed.append(f"Categoría: {categoria}")
             if unidad: partes_texto_embed.append(f"Presentación: {unidad}")
+            if talles: partes_texto_embed.append(f"Talles: {talles}")
+            if colores: partes_texto_embed.append(f"Colores: {colores}")
             if sku: partes_texto_embed.append(f"Código/SKU: {sku}")
 
             descripcion_limpia = limpiar_texto_base(descripcion)

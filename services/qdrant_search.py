@@ -26,7 +26,7 @@ def buscar_catalogo_qdrant(
     user_id: Optional[int],
     pregunta: str,
     limite: int = DEFAULT_SEARCH_LIMIT,
-    score_min: float = 0.30,
+    score_min: float = 0.20,
     categoria: str | None = None,
     coleccion: str = CATALOGO_PYME,
 ) -> List[qdrant_models.ScoredPoint]:
@@ -89,6 +89,14 @@ def buscar_catalogo_qdrant(
             limit=limite,
             score_threshold=score_min,
         )
+
+        if not resultados:
+            resultados = qdrant_cli.search(
+                collection_name=coleccion,
+                query_vector=vector_q,
+                query_filter=search_filter,
+                limit=limite,
+            )
 
         logger.info(
             f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}"
@@ -176,4 +184,48 @@ def armar_respuesta_legible(
         lineas.append(res)
     if len(productos_ordenados) > max_items:
         lineas.append(f"…y {len(productos_ordenados)-max_items} productos más.")
+    return "\n".join(lineas)
+
+
+def armar_respuesta_legible_multi_rubro(
+    resultados: List[qdrant_models.ScoredPoint],
+    max_items: int = DEFAULT_SEARCH_LIMIT,
+):
+    """Formatea los productos de forma amigable para cualquier rubro."""
+    if not resultados:
+        return (
+            "No encontramos productos exactos para tu búsqueda. ¿Querés ver otras opciones? "
+            "Podés consultar el catálogo completo o pedir ayuda a un agente."
+        )
+
+    lineas = []
+    for prod in resultados[:max_items]:
+        pl = getattr(prod, "payload", {}) or {}
+        nombre = str(pl.get("nombre", "")).strip().capitalize()
+        precio = str(pl.get("precio_str", "") or pl.get("precio", "")).strip()
+        unidad = str(pl.get("unidad", "")).strip()
+        marca = str(pl.get("marca", "")).strip()
+        desc = str(pl.get("descripcion", "")).strip()
+        talles = str(pl.get("talles", "")).strip()
+        colores = str(pl.get("colores", "")).strip()
+
+        extras = []
+        if marca:
+            extras.append(f"Marca: {marca}")
+        if talles:
+            extras.append(f"Talles: {talles}")
+        if colores:
+            extras.append(f"Colores: {colores}")
+        if desc:
+            extras.append(desc)
+
+        linea = f"- **{nombre}**"
+        if unidad:
+            linea += f" ({unidad})"
+        if precio:
+            linea += f" - {precio}"
+        if extras:
+            linea += " | " + " | ".join(extras)
+        lineas.append(linea)
+
     return "\n".join(lineas)
