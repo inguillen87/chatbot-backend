@@ -1525,73 +1525,6 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             }
         return None
 
-# --- Categorías válidas para reclamos ---
-CATEGORIAS_RECLAMO = [
-    "arbol caido",
-    "arreglo de calle",
-    "castracion de mascota",
-    "falta de agua, rotura de caño",
-    "fumigacion",
-    "inspeccion de comercio",
-    "limpieza",
-    "luminaria",
-    "riego de calle",
-    "rotura de semaforo",
-    "tramites de obras privadas",
-    "otro motivo",
-]
-categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
-
-# Definir los estados de reclamo para una mejor legibilidad y mantenimiento
-RECLAMO_STATES = [
-    ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
-    ConversationState.ESPERANDO_DIRECCION_RECLAMO,
-    ConversationState.ESPERANDO_NOMBRE_VECINO,
-    ConversationState.ESPERANDO_TELEFONO_VECINO,
-    ConversationState.ESPERANDO_EMAIL_VECINO,
-    ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
-    ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
-    ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
-]
-
-
-def serializar_enum(obj):
-    if isinstance(obj, Enum):
-        return obj.name
-    elif isinstance(obj, dict):
-        return {k: serializar_enum(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [serializar_enum(v) for v in obj]
-    else:
-        return obj
-
-
-BOTONES_COMANDOS_MUNICIPIO = {
-    "Hacer un reclamo": "iniciar_reclamo",
-    "Consultar estado de un trámite": "consultar_estado_ticket",
-    "Consultar estado de ticket": "consultar_estado_ticket",
-    "Consultar otro ticket": "consultar_estado_ticket",
-    "Hablar con un agente": "hablar_con_agente",
-    "Nuevo reclamo": "iniciar_reclamo",
-    "Adjuntar foto": "adjuntar_foto",
-    "Compartir ubicación": "compartir_ubicacion",
-    "Foto": "adjuntar_foto",
-    "Ubicación": "compartir_ubicacion",
-    "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
-    "Completar reclamo": "sin_adjuntos",
-    "Confirmar reclamo": "confirmar_reclamo",
-    "Finalizar": "confirmar_reclamo",
-    "Finalizar reclamo": "confirmar_reclamo",
-    "Confirmar": "confirmar_reclamo",
-    "Confirmado": "confirmar_reclamo",
-    "Si confirmo": "confirmar_reclamo",
-    "Sí confirmo": "confirmar_reclamo",
-    "Editar datos": "editar_reclamo",
-    "Sí, solucionado": "confirmar_cierre_ticket",
-    "No, aún no": "no_cerrar_ticket",
-}
-
-
 class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
@@ -1897,7 +1830,7 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Compartir ubicación": "compartir_ubicacion",
     "Foto": "adjuntar_foto",
     "Ubicación": "compartir_ubicacion",
-    "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
+    "No, continuar": "sin_adjuntos",  # Renombrado para mayor claridad en el backend
     "Completar reclamo": "sin_adjuntos",
     "Confirmar reclamo": "confirmar_reclamo",
     "Finalizar": "confirmar_reclamo",
