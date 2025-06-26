@@ -31,11 +31,17 @@ class _DummyQuery(list):
         return self
     def all(self):
         return []
+    def first(self):
+        return self[0] if self else None
 
 class DummyCatalogoItem:
     query = _DummyQuery()
 
+class DummyArchivoAdjunto:
+    query = _DummyQuery()
+
 models_stub.CatalogoItem = DummyCatalogoItem
+models_stub.ArchivoAdjunto = DummyArchivoAdjunto
 models_stub.CatalogoEmbedding = _DummyModel
 models_stub.QA = _DummyModel
 models_stub.db = SimpleNamespace(session=_DummySession())

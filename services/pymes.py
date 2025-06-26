@@ -6,7 +6,7 @@ from enum import Enum, auto
 from flask import session as flask_session
 
 from services.cohere_ai import robust_chat
-from models import Conversacion, db
+from models import Conversacion, db, ArchivoAdjunto
 from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import reemplazar_placeholders
@@ -20,6 +20,20 @@ logger = logging.getLogger(__name__)
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 MAX_HISTORIAL_CHAT = 30
 CANCEL_KEYWORDS = {"cancel", "cancelar", "cancelalo", "anular", "borrar", "no gracias"}
+
+
+def tiene_archivo_catalogo(user_id: int) -> bool:
+    """Verifica si el usuario tiene un catálogo cargado."""
+    if not user_id:
+        return False
+    try:
+        return (
+            ArchivoAdjunto.query.filter_by(user_id=user_id, tipo="catalogo")
+            .first()
+            is not None
+        )
+    except Exception:
+        return False
 
 class PymeConversationState(Enum):
     SIN_ESTADO = auto()
@@ -129,24 +143,31 @@ class CatalogoHandler(BaseHandler):
             return {"respuesta": "Iniciá sesión para ver el catálogo.", "fuente": "catalogo_sin_login"}
         # Se busca SIEMPRE aunque la pregunta sea vaga
         resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=self.context.get('rubro_nombre'))
+        botones_base = []
         if resultados:
             respuesta_legible = armar_respuesta_legible(resultados, max_items=5)
-            return {
-                "respuesta": f"Estos son algunos productos que tenemos:\n{respuesta_legible}\n¿Te interesa alguno o querés ver más opciones?",
-                "fuente": "catalogo_vector",
-                "botones": [
-                    {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
-                    {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
-                ]
-            }
-        return {
-            "respuesta": "No encontré productos que coincidan exactamente con tu búsqueda, pero mirá estas sugerencias:",
-            "fuente": "catalogo_vacio",
-            "botones": [
+            mensaje = (
+                f"Estos son algunos productos que tenemos:\n{respuesta_legible}\n¿Te interesa alguno o querés ver más opciones?"
+            )
+            fuente = "catalogo_vector"
+            botones_base = [
+                {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
+                {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
+            ]
+        else:
+            mensaje = (
+                "No encontré productos que coincidan exactamente con tu búsqueda, pero mirá estas sugerencias:"
+            )
+            fuente = "catalogo_vacio"
+            botones_base = [
                 {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
                 {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
             ]
-        }
+
+        if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
+            botones_base.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
+
+        return {"respuesta": mensaje, "fuente": fuente, "botones": botones_base}
 
 class OfertasHandler(BaseHandler):
     def handle(self, pregunta):
@@ -232,13 +253,16 @@ class FallbackHandler(BaseHandler):
         resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=rubro)
         if resultados:
             respuesta_legible = armar_respuesta_legible(resultados, max_items=3)
+            botones = [
+                {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
+                {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+            ]
+            if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
+                botones.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
             return {
                 "respuesta": f"No estoy seguro de haber entendido, pero mirá estos productos recomendados:\n{respuesta_legible}\n¿Te interesa alguno?",
                 "fuente": "fallback_catalogo",
-                "botones": [
-                    {"texto": "Ver catálogo completo", "action": "ver_catalogo"},
-                    {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
-                ]
+                "botones": botones,
             }
         sugerencias = sugerencias_por_rubro(rubro)
         if sugerencias:
