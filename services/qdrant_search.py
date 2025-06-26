@@ -22,7 +22,6 @@ def coleccion_catalogo_para_rubro(rubro) -> str:
     return CATALOGO_MUNICIPIO if es_rubro_publico(rubro) else CATALOGO_PYME
 
 logger = logging.getLogger(__name__)
-
 def buscar_catalogo_qdrant(
     user_id: Optional[int],
     pregunta: str,
@@ -31,21 +30,20 @@ def buscar_catalogo_qdrant(
     categoria: str | None = None,
     coleccion: str = CATALOGO_PYME,
 ) -> List[qdrant_models.ScoredPoint]:
+    """
+    Busca productos en el catálogo vectorial Qdrant de una PyME, maximizando relevancia comercial y minimizando falsos negativos.
+    Retorna una lista de resultados ordenados por score y enriquecidos para experiencia de usuario.
+    """
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
         logger.error("[QDRANT SEARCH] No se pudo obtener cliente Qdrant.")
         return []
 
-    # Aseguramos que la colección exista y tenga los índices necesarios.
-    # Esto previene fallos 403 cuando no existe el índice 'categoria_qdrant'.
+    # Verifica que la colección e índices existen.
     if not verificar_y_crear_coleccion_qdrant(
-        coleccion,
-        vector_size=1024,
-        create_indexes=True,
+        coleccion, vector_size=1024, create_indexes=True,
     ):
-        logger.error(
-            "[QDRANT SEARCH] No se pudo inicializar colección/indexes en Qdrant."
-        )
+        logger.error("[QDRANT SEARCH] No se pudo inicializar colección/indexes en Qdrant.")
         return []
 
     try:
@@ -55,7 +53,6 @@ def buscar_catalogo_qdrant(
             logger.warning("[QDRANT SEARCH] Pregunta para búsqueda vacía después de limpiar.")
             return []
 
-        # Ya no aplicamos un diccionario de sinónimos fijo. Se procesa el texto tal cual.
         vector_pregunta_lista = embed_textos([pregunta_limpia], input_type="search_query")
         if not vector_pregunta_lista or not isinstance(vector_pregunta_lista[0], list):
             logger.error(f"[QDRANT SEARCH] No se pudo generar vector para pregunta: '{pregunta_limpia}'")
@@ -68,70 +65,45 @@ def buscar_catalogo_qdrant(
     try:
         search_filter = None
         id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
-
-        if user_id is not None or categoria:
-            must_conditions = []
-            if user_id is not None:
-                must_conditions.append(
-                    qdrant_models.FieldCondition(
-                        key="user_id",
-                        match=qdrant_models.MatchValue(value=user_id),
-                    )
-                )
-            if categoria:
-                must_conditions.append(
-                    qdrant_models.FieldCondition(
-                        key="categoria_qdrant",
-                        match=qdrant_models.MatchValue(value=categoria.lower()),
-                    )
-                )
-            search_filter = qdrant_models.Filter(must=must_conditions)
+        must_conditions = []
 
         if user_id is not None:
-            logger.info(
-                f"[QDRANT SEARCH] Buscando en catálogo PRIVADO para {id_log}, pregunta '{pregunta_limpia}', categoria='{categoria}'"
+            must_conditions.append(
+                qdrant_models.FieldCondition(key="user_id", match=qdrant_models.MatchValue(value=user_id))
             )
-        else:
-            logger.info(
-                f"[QDRANT SEARCH] Buscando en catálogo GENERAL para {id_log}, pregunta '{pregunta_limpia}', categoria='{categoria}'"
+        if categoria:
+            must_conditions.append(
+                qdrant_models.FieldCondition(key="categoria_qdrant", match=qdrant_models.MatchValue(value=categoria.lower()))
             )
-            # Si tuvieras un campo catálogo_público, acá le podés meter ese filtro
+        if must_conditions:
+            search_filter = qdrant_models.Filter(must=must_conditions)
+
+        logger.info(
+            f"[QDRANT SEARCH] Buscando en catálogo ({coleccion}) para {id_log}, pregunta '{pregunta_limpia}', categoria='{categoria}'"
+        )
 
         resultados = qdrant_cli.search(
             collection_name=coleccion,
             query_vector=vector_q,
             query_filter=search_filter,
             limit=limite,
-            score_threshold=score_min
+            score_threshold=score_min,
         )
+
         logger.info(
             f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}"
         )
 
-        tokens_raw = normalizar_texto(pregunta_limpia).split()
-        tokens = []
-        tamanios = {"xs", "s", "m", "l", "xl", "xxl", "xxxl"}
-        for t in tokens_raw:
-            if len(t) > 2 or t in tamanios or t.isdigit():
-                tokens.append(t)
-        if tokens:
-            filtrados: List[qdrant_models.ScoredPoint] = []
-            for hit in resultados:
-                payload = getattr(hit, "payload", {}) or {}
-                texto = " ".join(
-                    str(payload.get(k) or "")
-                    for k in [
-                        "nombre",
-                        "descripcion",
-                        "talles",
-                        "categoria",
-                        "categoria_qdrant",
-                        "colores",
-                    ]
-                )
-                texto_norm = normalizar_texto(texto)
-                if all(tok in texto_norm for tok in tokens):
-                    filtrados.append(hit)
+        # --- FILTRADO INTELIGENTE Y FLEXIBLE (opcional, solo si querés más control) ---
+        # Si querés filtrar resultados basura, lo mejor es filtrar solo productos sin nombre/código o con precio 0:
+        filtrados = []
+        for hit in resultados:
+            payload = getattr(hit, "payload", {}) or {}
+            nombre = payload.get("nombre", "") or payload.get("title", "")
+            precio = payload.get("precio_float") or payload.get("precio")
+            if nombre and (precio is None or precio == "" or float(precio) > 0):
+                filtrados.append(hit)
+        if filtrados:
             resultados = filtrados
 
         return resultados
@@ -140,6 +112,7 @@ def buscar_catalogo_qdrant(
         id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
         logger.error(f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}", exc_info=True)
         return []
+
 
 def _ordenar_por_precio(resultados: List[qdrant_models.ScoredPoint]) -> List[qdrant_models.ScoredPoint]:
     """Ordena la lista de resultados por el campo ``precio_float`` ascendente."""
@@ -164,60 +137,61 @@ def armar_respuesta_legible(
     resultados_qdrant: List[qdrant_models.ScoredPoint],
     max_items: int = DEFAULT_SEARCH_LIMIT,
     order_by: str | None = None,
+    consulta_usuario: str = "",
 ) -> str:
-    """Convierte una lista de resultados Qdrant en un texto legible."""
+    """
+    Convierte los resultados de Qdrant en un mensaje legible, ordenando y agrupando pro.
+    """
 
     if not resultados_qdrant:
-        logger.info("[QDRANT FORMAT] No hay resultados Qdrant para formatear.")
-        return (
-            "No hay productos cargados en el catálogo. "
-            "Contactá a la empresa para más info."
-        )
+        return "No hay productos en el catálogo que coincidan con tu búsqueda. Probá con otro término o revisá que esté bien escrito."
 
-    if order_by == "price":
-        resultados_qdrant = _ordenar_por_precio(resultados_qdrant)
-    else:
-        resultados_qdrant = sorted(
-            resultados_qdrant, key=lambda r: getattr(r, "score", 0), reverse=True
-        )
+    # Ordenar: score DESC, luego destacado, luego precio ascendente, luego nombre.
+    def _key(p):
+        payload = getattr(p, "payload", p) or {}
+        score = getattr(p, "score", 0)
+        destacado = 0 if payload.get("destacado") else 1
+        precio = float(payload.get("precio_float") or 0)
+        nombre = (payload.get("nombre") or "").lower()
+        return (-score, destacado, precio, nombre)
 
-    # -- Combinar productos repetidos por SKU o nombre --
-    combinados: "OrderedDict[Tuple[str, str], Dict[str, Any]]" = OrderedDict()
-    for hit in resultados_qdrant:
-        payload = getattr(hit, "payload", hit) or {}
-        key = (
-            str(payload.get("sku") or "").lower(),
-            str(payload.get("nombre") or payload.get("title") or "").lower(),
-        )
-        if key not in combinados:
-            combinados[key] = payload.copy()
-        else:
-            _combinar_payload(combinados[key], payload)
+    productos_ordenados = sorted(resultados_qdrant, key=_key)
 
-    productos_agrupados = list(combinados.values())
+    # Agrupar por categoria_qdrant si tiene sentido, sino tira todo plano.
+    productos_x_categoria: Dict[str, list] = {}
+    for p in productos_ordenados:
+        payload = getattr(p, "payload", p) or {}
+        categoria = payload.get("categoria_qdrant") or "Productos"
+        productos_x_categoria.setdefault(categoria, []).append(payload)
 
     lineas: List[str] = []
-    for p in productos_agrupados[:max_items]:
-        nombre = str(p.get("nombre") or p.get("title") or "Producto").strip()
-        precio = str(p.get("precio_str") or p.get("precio") or "").strip()
-        if not precio and p.get("precio_float") is not None:
-            precio = f"{p.get('precio_float'):,.2f}"
-        unidad = str(p.get("unidad") or p.get("presentacion") or "").strip()
+    for categoria, items in productos_x_categoria.items():
+        if len(productos_x_categoria) > 1:
+            lineas.append(f"\n<b>{categoria.title()}</b>")
+        for i, prod in enumerate(items[:max_items]):
+            nombre = prod.get("nombre") or "Producto"
+            precio = prod.get("precio_str") or prod.get("precio") or ""
+            if not precio and prod.get("precio_float") is not None:
+                precio = f"${prod['precio_float']:,.2f}"
+            if not precio:
+                precio = "Consultar"
+            unidad = prod.get("unidad", "")
+            desc = prod.get("descripcion", "")
+            estrella = ""
+            if consulta_usuario and consulta_usuario.lower() in nombre.lower():
+                estrella = "⭐"
+            linea = f"- {estrella}<b>{nombre}</b>"
+            if unidad:
+                linea += f" ({unidad})"
+            linea += f" — <b>{precio}</b>"
+            if desc:
+                linea += f" | {desc[:60]}{'...' if len(desc)>60 else ''}"
+            lineas.append(linea)
+        if len(items) > max_items:
+            lineas.append(f"…y {len(items)-max_items} más en esta categoría.")
 
-        campos: List[str] = []
-        if unidad:
-            campos.append(unidad)
-        if precio and precio not in {"0", "0.0", "$0", "$0.0"}:
-            moneda = str(p.get("moneda", "")).strip()
-            if moneda and moneda.lower() not in precio.lower():
-                campos.append(f"{moneda} {precio}")
-            else:
-                campos.append(precio)
-
-        linea = f"- **{nombre}**"
-        if campos:
-            linea += " | " + " | ".join(campos)
-
-        lineas.append(linea)
+    # Si trajo muy pocos productos, tirale un CTA vendedor:
+    if len(lineas) < 2:
+        lineas.append("\n¿Buscás algo específico o querés ver el catálogo completo? Pedilo por nombre, tipo o código.")
 
     return "\n".join(lineas)
