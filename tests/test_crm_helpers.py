@@ -16,10 +16,16 @@ class DummyQuery(list):
         key = column.element.name
         return DummyQuery(sorted(self, key=lambda u: getattr(u, key), reverse=reverse))
 
+    def offset(self, n):
+        return DummyQuery(list(self)[int(n):])
+
+    def limit(self, n):
+        return DummyQuery(list(self)[: int(n)])
+
     def all(self):
         return list(self)
 
-def _obtener_clientes(query_user, tag=None, q=None, acepta_marketing=None, sort=None, order=None):
+def _obtener_clientes(query_user, tag=None, q=None, acepta_marketing=None, sort=None, order=None, limit=None, offset=None):
     query = DummyQuery(query_user)
     if tag:
         like = tag
@@ -30,10 +36,14 @@ def _obtener_clientes(query_user, tag=None, q=None, acepta_marketing=None, sort=
     if acepta_marketing is not None:
         val = acepta_marketing in ("1", "true", "t", "yes", "si")
         query = DummyQuery([u for u in query if u.acepta_marketing == val])
-    if sort not in {"name", "email", "telefono"}:
+    if sort not in {"name", "email", "telefono", "id"}:
         sort = "name"
     reverse = order == "desc"
     query = query.order_by(SimpleNamespace(element=SimpleNamespace(name=sort), direction="desc" if reverse else "asc"))
+    if offset is not None:
+        query = query.offset(int(offset))
+    if limit is not None:
+        query = query.limit(int(limit))
     clientes = query.all()
     return [
         {
@@ -77,6 +87,15 @@ class CRMHelperTests(unittest.TestCase):
         u2 = SimpleNamespace(id=2, name='Bob', email='b', telefono='2', acepta_marketing=True, latitud=None, longitud=None, tags='', empresa_id=1)
         res = _obtener_clientes([u1, u2], sort='name', order='desc')
         self.assertEqual(res[0]['name'], 'Bob')
+
+    def test_obtener_clientes_paginado(self):
+        u1 = SimpleNamespace(id=1, name='A', email='a', telefono='1', acepta_marketing=True, latitud=None, longitud=None, tags='', empresa_id=1)
+        u2 = SimpleNamespace(id=2, name='B', email='b', telefono='2', acepta_marketing=True, latitud=None, longitud=None, tags='', empresa_id=1)
+        u3 = SimpleNamespace(id=3, name='C', email='c', telefono='3', acepta_marketing=True, latitud=None, longitud=None, tags='', empresa_id=1)
+        res = _obtener_clientes([u1, u2, u3], sort='id', limit=2, offset=1)
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[0]['id'], 2)
+        self.assertEqual(res[1]['id'], 3)
 
 if __name__ == '__main__':
     unittest.main()

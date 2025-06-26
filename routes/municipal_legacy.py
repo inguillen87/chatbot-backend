@@ -18,6 +18,8 @@ def municipal_usuarios(current_user):
     marketing = request.args.get('acepta_marketing')
     sort = request.args.get('sort')
     order = request.args.get('order')
+    limit = request.args.get('limit')
+    offset = request.args.get('offset')
     return jsonify(
         _obtener_clientes(
             current_user,
@@ -26,6 +28,8 @@ def municipal_usuarios(current_user):
             acepta_marketing=marketing,
             sort=sort,
             order=order,
+            limit=limit,
+            offset=offset,
         )
     )
 

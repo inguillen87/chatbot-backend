@@ -21,8 +21,21 @@ def _obtener_clientes(
     acepta_marketing: str | None = None,
     sort: str | None = None,
     order: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ):
-    """Obtiene los clientes permitiendo búsqueda y filtros opcionales."""
+    """Obtiene los clientes permitiendo búsqueda y filtros opcionales.
+
+    Args:
+        current_user: Usuario dueño de los clientes.
+        tag: Filtrar por tag existente.
+        q: Término de búsqueda en nombre, email o teléfono.
+        acepta_marketing: 'true' / 'false' para filtrar por suscripción.
+        sort: Campo por el cual ordenar (name, email, telefono).
+        order: 'asc' o 'desc'.
+        limit: Cantidad máxima de registros a devolver.
+        offset: Desplazamiento inicial de los resultados.
+    """
     query = User.query.filter_by(empresa_id=current_user.id)
     if tag:
         like = f"%{tag}%"
@@ -35,13 +48,27 @@ def _obtener_clientes(
     if acepta_marketing is not None:
         val = acepta_marketing.lower() in {"1", "true", "t", "yes", "si"}
         query = query.filter(User.acepta_marketing == val)
-    if sort not in {"name", "email", "telefono"}:
+    if sort not in {"name", "email", "telefono", "id"}:
         sort = "name"
     columna = getattr(User, sort)
     if order == "desc":
         query = query.order_by(columna.desc())
     else:
         query = query.order_by(columna.asc())
+    if offset is not None:
+        try:
+            offset_val = int(offset)
+            if offset_val >= 0:
+                query = query.offset(offset_val)
+        except (TypeError, ValueError):
+            pass
+    if limit is not None:
+        try:
+            limit_val = int(limit)
+            if limit_val >= 0:
+                query = query.limit(limit_val)
+        except (TypeError, ValueError):
+            pass
     clientes = query.all()
     return [
         {
@@ -67,6 +94,8 @@ def listar_clientes(current_user: User):
     marketing = request.args.get('acepta_marketing')
     sort = request.args.get('sort')
     order = request.args.get('order')
+    limit = request.args.get('limit')
+    offset = request.args.get('offset')
     resultado = _obtener_clientes(
         current_user,
         tag,
@@ -74,6 +103,8 @@ def listar_clientes(current_user: User):
         acepta_marketing=marketing,
         sort=sort,
         order=order,
+        limit=limit,
+        offset=offset,
     )
     return jsonify(resultado)
 
@@ -88,6 +119,8 @@ def listar_usuarios(current_user: User):
     marketing = request.args.get('acepta_marketing')
     sort = request.args.get('sort')
     order = request.args.get('order')
+    limit = request.args.get('limit')
+    offset = request.args.get('offset')
     resultado = _obtener_clientes(
         current_user,
         tag,
@@ -95,6 +128,8 @@ def listar_usuarios(current_user: User):
         acepta_marketing=marketing,
         sort=sort,
         order=order,
+        limit=limit,
+        offset=offset,
     )
     return jsonify(resultado)
 
