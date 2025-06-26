@@ -35,6 +35,14 @@ def tiene_archivo_catalogo(user_id: int) -> bool:
     except Exception:
         return False
 
+
+def url_descargar_catalogo() -> str:
+    """Construye el enlace absoluto al endpoint de descarga."""
+    from flask import request
+
+    base = request.url_root.rstrip("/")
+    return f"{base}/catalogo/descargar"
+
 class PymeConversationState(Enum):
     SIN_ESTADO = auto()
     CONFIRMANDO_PEDIDO = auto()
@@ -166,6 +174,7 @@ class CatalogoHandler(BaseHandler):
 
         if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
             botones_base.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
+            mensaje += f"\n\nDescargá el catálogo completo aquí: {url_descargar_catalogo()}"
 
         return {"respuesta": mensaje, "fuente": fuente, "botones": botones_base}
 
@@ -259,6 +268,7 @@ class FallbackHandler(BaseHandler):
             ]
             if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
                 botones.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
+                respuesta_legible += f"\n\nDescargá el catálogo aquí: {url_descargar_catalogo()}"
             return {
                 "respuesta": f"No estoy seguro de haber entendido, pero mirá estos productos recomendados:\n{respuesta_legible}\n¿Te interesa alguno?",
                 "fuente": "fallback_catalogo",
