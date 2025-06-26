@@ -58,7 +58,6 @@ class PymeConversationState(Enum):
     ESPERANDO_DATOS_RECLAMO_ROTO = auto()
     ESPERANDO_CIUDAD_ENVIO = auto()
     ESPERANDO_NOMBRE_PRODUCTO_STOCK = auto()
-    # NUEVOS ESTADOS PARA FLUJO DE ARCHIVOS Y UBICACION (si aplica en PYME)
     ESPERANDO_ADJUNTOS_RECLAMO_PYME = auto() 
     ESPERANDO_CONFIRMACION_RECLAMO_PYME = auto()
 
@@ -75,7 +74,7 @@ def deserialize_state(value: str | None) -> PymeConversationState | None:
     except KeyError:
         return None
 
-
+# --- Funciones Auxiliares (que no dependen de Handlers específicos) ---
 def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
     """Determina si el usuario cambió de tema cuando se esperaba un dato."""
     texto = texto_usuario.strip().lower()
@@ -93,7 +92,7 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str) -> bool:
     except Exception:
         return False
 
-# MODIFICACIÓN 2: Definimos el nuevo prompt inteligente para Pymes, que usará el contexto de la DB
+
 PROMPT_PYME_CON_CONTEXTO = """
 Eres "Chatboc", un agente de ventas y atención al cliente experto para la empresa "{nombre_pyme}".
 Tu tarea principal es responder la PREGUNTA DEL USUARIO de forma clara y útil, basándote ESTRICTAMENTE en la INFORMACIÓN DE CONTEXTO extraída de la página web oficial de la empresa.
@@ -108,14 +107,13 @@ PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 Respuesta:
 """
 
-# --- PROMPT PARA CLASIFICACIÓN DE INTENCIÓN DE PYME ---
 PROMPT_CLASIFICACION_INTENCION_PYME = """
 Analiza la siguiente PREGUNTA DEL USUARIO y clasifica su INTENCIÓN en el contexto de una PYME.
 Si la pregunta no encaja en ninguna de las categorías, clasifícala como 'general_pyme'.
 
 INTENCIONES POSIBLES:
 - iniciar_pedido: El usuario quiere hacer un pedido, solicitar un producto, cotización, o información para compra. (ej. "quiero pedir 5 cajas de vino", "cotización de este producto", "cómo compro", "quiero encargar")
-- consultar_estado_pedido: El usuario quiere saber el estado de un pedido existente. (ej. "estado de mi reclamo", "cómo va mi ticket 12345")
+- consultar_estado_pedido: El usuario quiere saber el estado de un pedido existente. (ej. "estado de mi reclamo", "cómo va mi pedido 12345")
 - consultar_stock: El usuario pregunta sobre la disponibilidad de un producto o stock.
 - consultar_horario: El usuario pregunta sobre horarios de atención.
 - consultar_ubicacion: El usuario pregunta por la dirección física.
@@ -128,7 +126,6 @@ PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 Tu respuesta debe ser SÓLO una de las INTENCIONES POSIBLES.
 """
 
-# --- Función para clasificar intención específica de Pyme ---
 def _clasificar_intencion_pyme_con_llm(pregunta: str) -> str:
     """Clasifica la intención de una consulta en el contexto de una PyME."""
     logger.info(f"[PYME_CLF] Clasificando intención para: '{pregunta}'")
@@ -143,7 +140,7 @@ def _clasificar_intencion_pyme_con_llm(pregunta: str) -> str:
         logger.error(f"[PYME_CLF] Error al clasificar intención: {e}")
         return "general_pyme"
 
-# --- Utilidad para decidir herramientas con LLM ---
+
 def crear_prompt_decision_herramienta_pyme(pregunta_usuario: str) -> str:
     descripcion_herramientas = {}
     for nombre, det in TOOL_REGISTRY_PYME.items():
@@ -162,7 +159,7 @@ PREGUNTA: "{pregunta_usuario}"
 """
     return prompt
 
-# --- Funciones Auxiliares (sin cambios en su lógica interna) ---
+
 def _generar_asunto_con_llm(pregunta: str) -> str:
     try:
         prompt = f"Resume la siguiente consulta de un cliente en un título breve de 4 a 8 palabras para un ticket de soporte. La consulta es: '{pregunta}'"
@@ -187,7 +184,7 @@ def _extraer_cantidades_con_llm(pregunta_cliente: str, productos_disponibles_raw
         nombres_y_sku.append(display_name)
 
     prompt = f"""
-    Tu tarea es analizar la respuesta de un cliente y extraer los productos y cantidades que solicita, basándote en la lista de PRODUCTOS DISPONIBLES.
+    Tu tarea es analizar la respuesta de un cliente y extraer los productos y cantidades que solicita, basándote en la lista de PRODUCTOS_DISPONIBLES.
     Si el cliente menciona "cada variedad" o "todos los que me mostraste", debes incluir TODOS los productos de la lista de PRODUCTOS_DISPONIBLES con la cantidad especificada.
     Tu respuesta DEBE SER ÚNICAMENTE un objeto JSON en formato de lista. Cada objeto debe tener "producto_identificador", "cantidad" y "unidad".
     "producto_identificador" debe ser el nombre exacto o el nombre con SKU que se te proporcionó en la lista PRODUCTOS_DISPONIBLES para una identificación precisa.
@@ -313,7 +310,7 @@ def armar_tabla_comparativa(productos: list) -> str:
         filas.append(f"| {nombre} | {precio} | {unidad} | {desc} |")
     return header + "\n".join(filas)
 
-# --- ARQUITECTURA DE HANDLERS (MODIFICADA PARA ACEPTAR PAYLOAD) ---
+# --- ARQUITECTURA DE HANDLERS (TODAS LAS CLASES DEFINIDAS AQUÍ PRIMERO) ---
 
 class BaseHandler:
     def __init__(self, context):
@@ -331,6 +328,29 @@ class BaseHandler:
     def _has_keyword(self, text: str, keywords: list[str]) -> bool:
         texto_norm = self._normalize(text)
         return any(kw in texto_norm for kw in keywords)
+
+    def build_detalles_memoria(self, memoria: dict) -> str:
+        """Arma un pequeño resumen de los datos del reclamo/pedido."""
+        partes = []
+        if memoria.get("categoria_reclamo"):
+            partes.append(f"Categoría: {memoria['categoria_reclamo']}")
+        if memoria.get("descripcion_reclamo"):
+            partes.append(f"Descripción: {memoria['descripcion_reclamo']}")
+        if memoria.get("foto_url"):
+            partes.append("Foto adjunta: Sí")
+        if memoria.get("ubicacion_gps"):
+            lat = memoria['ubicacion_gps'].get('lat', 'N/A')
+            lon = memoria['ubicacion_gps'].get('lon', 'N/A')
+            partes.append(f"Ubicación GPS: Lat {lat}, Lon {lon}")
+        
+        # Para pedidos, si hay items temporales
+        if memoria.get("items_temporales"):
+            items_str = "\n".join([f"- {item['cantidad']} {item['unidad']} de {item['nombre']} ({item['precio_str']})" for item in memoria['items_temporales']])
+            partes.append(f"Ítems del pedido:\n{items_str}")
+            total = calcular_monto_total_items(memoria['items_temporales'])
+            partes.append(f"Total estimado: ${total:.2f}")
+
+        return "\n".join(partes)
 
 
 class GreetingHandler(BaseHandler):
@@ -385,11 +405,70 @@ class GreetingHandler(BaseHandler):
             }
         return None
 
+
+class CancelHandler(BaseHandler):
+    """Permite cancelar el flujo actual si el usuario lo solicita."""
+
+    CANCEL_KEYWORDS = [
+        "cancelar", "olvidalo", "deja", "no importa", "volver", "salir",
+        "cancelar pedido", "no quiero continuar", "parar", "detener",
+        "finalizar", "terminar" # Añadidos para capturar intentos de finalizar el reclamo/pedido
+    ]
+
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
+        texto = self._normalize(pregunta_str)
+        # Si la acción es "cancelar" (desde un botón) o la frase contiene keywords de cancelación
+        if payload.get("action") == "cancelar" or any(kw in texto for kw in self.CANCEL_KEYWORDS): 
+            self.context.get("contexto_pyme", {}).clear() # Limpia completamente el contexto del flujo
+            return {
+                "respuesta": "Operación cancelada. ¿Necesitás ayuda con otra cosa?",
+                "fuente": "cancelar_pyme",
+                "botones": [
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ],
+            }
+        return None
+
+
+class PoliteHandler(BaseHandler):
+    """Responde brevemente ante agradecimientos u otras expresiones corteses."""
+
+    KEYWORDS = {"gracias", "ok", "ok gracias", "muchas gracias", "dale", "perfecto", "genial"}
+
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
+        texto = self._normalize(pregunta_str)
+        if texto in self.KEYWORDS:
+            # No necesariamente limpiar toda la memoria, si está en medio de un flujo.
+            # Solo si es un agradecimiento simple fuera de un flujo directo.
+            if not self.context.get("contexto_pyme", {}).get("estado_conversacion"):
+                self.context.get("contexto_pyme", {}).clear()
+            return {
+                "respuesta": "¡De nada! ¿Necesitás ayuda con algo más?",
+                "fuente": "cortesia_pyme",
+                "botones": [
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ],
+            }
+        return None
+
+
 class SmallTalkHandler(BaseHandler):
     """Detecta small talk con LLM y responde de forma cordial."""
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
+        # Solo responde small talk si no hay una acción o adjunto explícito
+        if payload.get("action") or payload.get("es_foto") or payload.get("es_ubicacion"):
+            return None # No interceptar si hay una acción o adjunto real
+
         if detectar_small_talk_con_llm(pregunta_str):
             respuesta = generar_respuesta_small_talk(pregunta_str)
             return {
@@ -397,23 +476,6 @@ class SmallTalkHandler(BaseHandler):
                 "fuente": "smalltalk_pyme_llm",
             }
         return None
-
-PROMPT_ANALISIS_SENTIMIENTO = """
-Analiza la FRASE y respondé solo 'positivo', 'negativo' o 'neutro'.
-
-FRASE: "{frase}"
-"""
-
-def analizar_sentimiento_con_llm(frase: str) -> str:
-    try:
-        decision = get_cohere_response(
-            message=PROMPT_ANALISIS_SENTIMIENTO.format(frase=frase),
-            preamble="Sos un analizador de sentimiento. Respondé solo con positivo, negativo o neutro.",
-        )
-        return decision.strip().lower()
-    except Exception as e:
-        logger.error(f"[SENTIMIENTO] Error analizando: {e}")
-        return "neutro"
 
 
 class SentimentHandler(BaseHandler):
@@ -427,6 +489,11 @@ class SentimentHandler(BaseHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
         texto = self._normalize(pregunta_str)
+        
+        # Solo analiza sentimiento si no es una acción de botón o un adjunto
+        if payload.get("action") or payload.get("es_foto") or payload.get("es_ubicacion"):
+            return None
+
         if any(kw in texto for kw in self.POSITIVE_KEYWORDS):
             sentimiento = "positivo"
         elif any(kw in texto for kw in self.NEGATIVE_KEYWORDS):
@@ -471,9 +538,6 @@ class LimitHandler(BaseHandler):
             }
         return None
 
-# --- HANDLERS FALTANTES: PLANTILLAS INTELIGENTES ---
-# Necesitamos definir estos Handlers aquí si no están en otro archivo importado.
-# Voy a asumir que ya existen o los definiremos a continuación, ajustando sus handles.
 
 class FaqHandler(BaseHandler):
     # MODIFICADO: acepta payload
@@ -497,8 +561,15 @@ class ToolHandlerPyme(BaseHandler):
         pregunta_str = payload.get("pregunta", "")
         # Aquí podrías usar crear_prompt_decision_herramienta_pyme para que el LLM decida la herramienta
         # Por ahora, un simple chequeo de keyword
-        if "stock" in pregunta_str.lower():
-            # Esto debería ser un sub-flujo que pida el nombre del producto, luego use la herramienta
+        if self.context.get('contexto_pyme',{}).get('estado_conversacion') == PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK:
+            # Flujo de stock: el usuario dio el nombre del producto
+            from services.herramientas_pyme import verificar_stock_producto
+            resultado = verificar_stock_producto(nombre=pregunta_str, user_id=self.context.get('user_id'))
+            self.context['contexto_pyme'].pop('estado_conversacion', None) # Limpiar estado
+            return json.loads(resultado) # La herramienta ya devuelve un dict para el frontend
+
+        if "stock" in pregunta_str.lower() or payload.get("action") == "consultar_stock":
+            # Esto inicia el sub-flujo que pide el nombre del producto
             self.context['contexto_pyme']['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK)
             return {
                 "respuesta": "Puedo ayudarte a verificar el stock. ¿Qué producto te interesa?",
@@ -645,8 +716,25 @@ class IntentHandler(BaseHandler):
 class EngancheAnonimoHandler(BaseHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
-        # pregunta_str = payload.get("pregunta", "") # No se usa directamente aquí
-        if not self.context.get('user_id') and not self.context.get('anon_id'): # Solo si no hay usuario ni anon_id
+        pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
+        
+        # Si ya hay un user_id, no se aplica este enganche
+        if self.context.get('user_id'):
+            return None
+
+        # Si el usuario es anónimo y NO tiene anon_id (es la primera interacción real)
+        # o si la acción es "continuar_anonimo"
+        if not self.context.get('anon_id') or payload.get("action") == "continuar_anonimo":
+            # El backend debe generar un anon_id si no existe
+            if not self.context.get('anon_id'):
+                # Idealmente, el anon_id se crea en el endpoint /ask si es anónimo
+                # Aquí solo confirmamos si existe para el mensaje de enganche
+                pass # No generamos anon_id aquí, se genera en routes/chat.py
+            
+            # Si el usuario ya está logueado o ya tiene un anon_id, este handler no debería responder.
+            if self.context.get('user_id') or self.context.get('anon_id'):
+                return None
+
             return {
                 "respuesta": "¡Hola! Soy Chatboc, tu asistente de {nombre_pyme}. Para ver precios exclusivos y hacer pedidos, por favor regístrate o ingresá tus datos. ¿Querés continuar como invitado o iniciar sesión?".format(nombre_pyme=self.context.get('nombre_pyme')),
                 "fuente": "enganche_anonimo",
@@ -695,17 +783,17 @@ class CrossSellHandler(BaseHandler):
     """Sugiere productos complementarios o más vendidos para aumentar el ticket promedio."""
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
-        # pregunta_str = payload.get("pregunta", "") # No se usa directamente aquí
+        pregunta_str = payload.get("pregunta", "")
         productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
         if productos:
             # Sugiere productos de otra categoría o los más vendidos
-            sugeridos = [p for p in productos if p.get("destacado") or p.get("categoria") == "Accesorios"]
+            sugeridos = [p for p in productos if p.get("destacado")] or productos[:3]
             sugeridos = ordenar_productos_para_venta(sugeridos)
             if sugeridos:
                 texto = "Muchos clientes también llevan estos productos complementarios. ¡Aprovechá para agregarlos a tu compra!"
                 lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in sugeridos[:3]])
                 return {
-                    "respuesta": f"{texto}\n{lista}",
+                    "respuesta": f"{texto}\n{lista}\n¿Te gustaría conocer más o agregarlos al pedido?",
                     "fuente": "cross_sell_pyme",
                     "botones": [
                         {"texto": "Agregar al pedido", "action": "add_to_cart"},
@@ -717,7 +805,7 @@ class CrossSellHandler(BaseHandler):
 class OfertaPersonalizadaHandler(BaseHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
-        # pregunta_str = payload.get("pregunta", "") # No se usa directamente aquí
+        pregunta_str = payload.get("pregunta", "")
         if self.context.get('user_obj') and self.context['user_obj'].plan != "anonimo":
             return {
                 "respuesta": "¡Por ser cliente frecuente, tenés un 10% de descuento en tu próxima compra! ¿Querés aprovecharlo ahora?",
@@ -879,7 +967,7 @@ class FollowUpHandler(BaseHandler):
 
         # Si el usuario está confirmando un pedido
         if estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            if "cancelar" in pregunta_str.lower() or "no quiero" in pregunta_str.lower() or payload.get("action") == "cancelar": # Check action
+            if "cancelar" in pregunta_str.lower() or "no quiero" in pregunta_str.lower() or payload.get("action") == "cancelar_pedido": # Check action
                 contexto_pyme.clear()
                 return {
                     "respuesta": "Entendido, no se generará el pedido. ¿Te gustaría ver otros productos o recibir asesoramiento?",
@@ -1032,760 +1120,818 @@ class IntentClassifierPymeHandler(BaseHandler):
         return None
 
 class VectorCatalogHandler(BaseHandler):
-    """
-    Muestra productos agrupados, ordenados y con botones de acción para maximizar ventas.
-    Usa contexto, historial y preferencias si están disponibles.
-    """
-    # MODIFICADO: acepta payload
-    def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "")
-        user_id = self.context.get('user_id')
-        if not user_id:
-            return None
+    """
+    Muestra productos agrupados, ordenados y con botones de acción para maximizar ventas.
+    Usa contexto, historial y preferencias si están disponibles.
+    """
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        user_id = self.context.get('user_id')
+        if not user_id:
+            return None
 
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        
-        # Si la intención es iniciar pedido o estamos en un flujo de pedido/reclamo, no debería responder el catálogo general
-        if self.context.get('intencion') in ['iniciar_pedido', 'iniciar_reclamo_pyme'] or estado in {
-            PymeConversationState.ESPERANDO_DETALLES_PEDIDO,
-            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
-            PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2,
-            PymeConversationState.ESPERANDO_DETALLES_RECLAMO, # Bloquear si estamos en un reclamo
-            PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME,
-            PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME,
-        }:
-            return None
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+        
+        # Si la intención es iniciar pedido o estamos en un flujo de pedido/reclamo, no debería responder el catálogo general
+        if self.context.get('intencion') in ['iniciar_pedido', 'iniciar_reclamo_pyme'] or estado in {
+            PymeConversationState.ESPERANDO_DETALLES_PEDIDO,
+            PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
+            PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2,
+            PymeConversationState.ESPERANDO_DETALLES_RECLAMO, # Bloquear si estamos en un reclamo
+            PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME,
+            PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME,
+        }:
+            return None
 
-        # Si la acción explícita es ver_catalogo, forzar búsqueda de catálogo
-        if payload.get("action") == "ver_catalogo" or self._has_keyword(pregunta_str, ["catalogo", "productos", "ver", "lista", "muestrame"]): # Add more keywords
-            pass # Continúa para buscar catálogo
-        else:
-            # Si no hay intención de catálogo y no hay estado activo, no se dispara este handler por defecto
-            if not self.context.get('intencion') == "general_pyme" and not estado:
-                return None
+        # Si la acción explícita es ver_catalogo, forzar búsqueda de catálogo
+        if payload.get("action") == "ver_catalogo" or self._has_keyword(pregunta_str, ["catalogo", "productos", "ver", "lista", "muestrame"]): # Add more keywords
+            pass # Continúa para buscar catálogo
+        else:
+            # Si no hay intención de catálogo y no hay estado activo, no se dispara este handler por defecto
+            if not self.context.get('intencion') == "general_pyme" and not estado:
+                return None
 
 
-        resultados = buscar_catalogo_qdrant(
-            user_id=user_id,
-            pregunta=pregunta_str,
-            limite=DEFAULT_SEARCH_LIMIT,
-            categoria=self.context.get('rubro_nombre'),
-        )
-        productos_mostrados = []
-        if resultados:
-            for hit in resultados:
-                if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
-                    productos_mostrados.append(hit.payload)
+        resultados = buscar_catalogo_qdrant(
+            user_id=user_id,
+            pregunta=pregunta_str,
+            limite=DEFAULT_SEARCH_LIMIT,
+            categoria=self.context.get('rubro_nombre'),
+        )
+        productos_mostrados = []
+        if resultados:
+            for hit in resultados:
+                if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
+                    productos_mostrados.append(hit.payload)
 
-        if productos_mostrados:
-            # Ordena usando un algoritmo que prioriza destacados y relevancia
-            productos_mostrados = ordenar_productos_para_venta(productos_mostrados)
-            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
+        if productos_mostrados:
+            # Ordena usando un algoritmo que prioriza destacados y relevancia
+            productos_mostrados = ordenar_productos_para_venta(productos_mostrados)
+            self.context['contexto_pyme']['productos_mostrados_catalogo'] = productos_mostrados
 
-            # Agrupa por categoría si hay muchas opciones
-            categorias = {}
-            for p in productos_mostrados:
-                cat = p.get("categoria_qdrant") or p.get("categoria") or "Otros"
-                categorias.setdefault(cat, []).append(p)
+            # Agrupa por categoría si hay muchas opciones
+            categorias = {}
+            for p in productos_mostrados:
+                cat = p.get("categoria_qdrant") or p.get("categoria") or "Otros"
+                categorias.setdefault(cat, []).append(p)
 
-            respuesta = "Estos son los productos más relevantes que encontré para vos:\n"
-            for categoria, items in categorias.items():
-                respuesta += f"\n🗂️ **{categoria.title()}**\n"
-                for idx, p in enumerate(items[:3], 1): # Limitar a 3 por categoría en la lista inicial
-                    nombre = p.get("nombre", "Producto")
-                    precio = p.get("precio_str") or f"${p.get('precio', 'Consultar')}"
-                    desc = p.get("descripcion", "")
-                    respuesta += f"{idx}. **{nombre}** — {precio}\n"
-                    if desc:
-                        respuesta += f"     _{desc[:60]}_\n"
-                if len(items) > 3:
-                    respuesta += f"...y {len(items)-3} más en esta categoría.\n"
+            respuesta = "Estos son los productos más relevantes que encontré para vos:\n"
+            for categoria, items in categorias.items():
+                respuesta += f"\n🗂️ **{categoria.title()}**\n"
+                for idx, p in enumerate(items[:3], 1): # Limitar a 3 por categoría en la lista inicial
+                    nombre = p.get("nombre", "Producto")
+                    precio = p.get("precio_str") or f"${p.get('precio', 'Consultar')}"
+                    desc = p.get("descripcion", "")
+                    respuesta += f"{idx}. **{nombre}** — {precio}\n"
+                    if desc:
+                        respuesta += f"     _{desc[:60]}_\n"
+                if len(items) > 3:
+                    respuesta += f"...y {len(items)-3} más en esta categoría.\n"
 
-            respuesta += "\n¿Te gustaría agregar alguno al pedido? Decime el número o nombre del producto y la cantidad. Si querés ver más opciones, decímelo o pedí ayuda."
+            respuesta += "\n¿Te gustaría agregar alguno al pedido? Decime el número o nombre del producto y la cantidad. Si querés ver más opciones, decímelo o pedí ayuda."
 
-            return {
-                'respuesta': respuesta,
-                'fuente': 'catalogo_vector',
-                'estado_respuesta': 'mostrar_catalogo',
-                'botones': [
-                    {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                    {"texto": "Ver más productos", "action": "ver_mas"}, # Nuevo botón para ver más
-                    {"texto": "Consultar stock", "action": "consultar_stock"},
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                ]
-            }
+            return {
+                'respuesta': respuesta,
+                'fuente': 'catalogo_vector',
+                'estado_respuesta': 'mostrar_catalogo',
+                'botones': [
+                    {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                    {"texto": "Ver más productos", "action": "ver_mas"}, # Nuevo botón para ver más
+                    {"texto": "Consultar stock", "action": "consultar_stock"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
 
-        return None
+        return None
 
 class PedidoHandler(BaseHandler):
-    # MODIFICADO: acepta payload
-    def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "")
-        contexto_pyme = self.context.get('contexto_pyme', {})
-        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
-        user_id = self.context.get('user_id')
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        contexto_pyme = self.context.get('contexto_pyme', {})
+        estado = deserialize_state(contexto_pyme.get('estado_conversacion'))
+        user_id = self.context.get('user_id')
 
-        # Acción: Iniciar pedido
-        if self.context.get('intencion') == 'iniciar_pedido' and not estado:
-            contexto_pyme.clear() # Limpiar memoria para nuevo pedido
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_PEDIDO)
-            
-            # Buscar productos relevantes en el catálogo directamente
-            productos_encontrados = buscar_catalogo_qdrant(
-                user_id=user_id,
-                pregunta=pregunta_str, # Usar la pregunta inicial
-                limite=DEFAULT_SEARCH_LIMIT,
-                categoria=self.context.get('rubro_nombre')
-            )
-            contexto_pyme['productos_mostrados_catalogo'] = productos_encontrados if productos_encontrados else []
-            
-            if productos_encontrados:
-                respuesta_catalogo = armar_respuesta_catalogo_agrupado(productos_encontrados, max_por_categoria=3)
-                return {
-                    "respuesta": f"Claro, para iniciar tu pedido, estos son algunos productos que encontré:\n{respuesta_catalogo}\n\nDecime qué productos y cantidades te gustaría agregar.",
-                    "fuente": "pedido_iniciado_con_sugerencia",
-                    "estado_respuesta": "mostrar_catalogo_pedido",
-                    "botones": [
-                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
-                        {"texto": "Ver más productos", "action": "ver_mas"},
-                        {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
-                    ]
-                }
-            return {
-                "respuesta": "Claro, para iniciar tu pedido. ¿Qué productos te gustaría agregar? Si necesitas, puedo mostrarte nuestro catálogo.",
-                "fuente": "pedido_iniciado",
-                "estado_respuesta": "esperando_productos_pedido",
-                "botones": [
-                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                    {"texto": "Hablar con un agente", "action": "escalar"},
-                ]
-            }
+        # Acción: Iniciar pedido
+        if self.context.get('intencion') == 'iniciar_pedido' and not estado:
+            contexto_pyme.clear() # Limpiar memoria para nuevo pedido
+            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_PEDIDO)
+            
+            # Buscar productos relevantes en el catálogo directamente
+            productos_encontrados = buscar_catalogo_qdrant(
+                user_id=user_id,
+                pregunta=pregunta_str, # Usar la pregunta inicial
+                limite=DEFAULT_SEARCH_LIMIT,
+                categoria=self.context.get('rubro_nombre')
+            )
+            contexto_pyme['productos_mostrados_catalogo'] = productos_encontrados if productos_encontrados else []
+            
+            if productos_encontrados:
+                respuesta_catalogo = armar_respuesta_catalogo_agrupado(productos_encontrados, max_por_categoria=3)
+                return {
+                    "respuesta": f"Claro, para iniciar tu pedido, estos son algunos productos que encontré:\n{respuesta_catalogo}\n\nDecime qué productos y cantidades te gustaría agregar.",
+                    "fuente": "pedido_iniciado_con_sugerencia",
+                    "estado_respuesta": "mostrar_catalogo_pedido",
+                    "botones": [
+                        {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                        {"texto": "Ver más productos", "action": "ver_mas"},
+                        {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
+                    ]
+                }
+            return {
+                "respuesta": "Claro, para iniciar tu pedido. ¿Qué productos te gustaría agregar? Si necesitas, puedo mostrarte nuestro catálogo.",
+                "fuente": "pedido_iniciado",
+                "estado_respuesta": "esperando_productos_pedido",
+                "botones": [
+                    {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
 
-        # Estado: Esperando detalles del pedido
-        if estado == PymeConversationState.ESPERANDO_DETALLES_PEDIDO:
-            productos_mostrados = contexto_pyme.get('productos_mostrados_catalogo', [])
-            productos_con_cantidades = _extraer_cantidades_con_llm(pregunta_str, productos_mostrados)
-            
-            if not productos_con_cantidades:
-                return {
-                    "respuesta": "No entendí los productos o cantidades. Por favor, decime qué productos de la lista y qué cantidad deseas (ej. '2 unidades de vino tinto').",
-                    "fuente": "pedido_error_cantidad",
-                    "botones": [
-                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "escalar"},
-                    ]
-                }
-            
-            contexto_pyme['items_temporales'] = productos_con_cantidades
-            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
-            
-            resumen_items = "\n".join([
-                f"- {p['cantidad']} {p['unidad']} de {p['nombre']} ({p['precio_str']})" 
-                for p in productos_con_cantidades
-            ])
-            monto_total = calcular_monto_total_items(productos_con_cantidades)
+        # Estado: Esperando detalles del pedido
+        if estado == PymeConversationState.ESPERANDO_DETALLES_PEDIDO:
+            productos_mostrados = contexto_pyme.get('productos_mostrados_catalogo', [])
+            productos_con_cantidades = _extraer_cantidades_con_llm(pregunta_str, productos_mostrados)
+            
+            if not productos_con_cantidades:
+                return {
+                    "respuesta": "No entendí los productos o cantidades. Por favor, decime qué productos de la lista y qué cantidad deseas (ej. '2 unidades de vino tinto').",
+                    "fuente": "pedido_error_cantidad",
+                    "botones": [
+                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                        {"texto": "Hablar con un agente", "action": "escalar"},
+                    ]
+                }
+            
+            contexto_pyme['items_temporales'] = productos_con_cantidades
+            contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_TEMP)
+            
+            resumen_items = "\n".join([
+                f"- {p['cantidad']} {p['unidad']} de {p['nombre']} ({p['precio_str']})" 
+                for p in productos_con_cantidades
+            ])
+            monto_total = calcular_monto_total_items(productos_con_cantidades)
 
-            return {
-                "respuesta": f"Confirmá los ítems para tu pedido:\n{resumen_items}\n\nTotal estimado: ${monto_total:.2f}\n\n¿Es correcto?",
-                "fuente": "pedido_resumen_temp",
-                "botones": [
-                    {"texto": "Confirmar pedido", "action": "confirmar_pedido"},
-                    {"texto": "Agregar más productos", "action": "ver_catalogo"},
-                    {"texto": "Cancelar pedido", "action": "cancelar_pedido"},
-                ]
-            }
+            return {
+                "respuesta": f"Confirmá los ítems para tu pedido:\n{resumen_items}\n\nTotal estimado: ${monto_total:.2f}\n\n¿Es correcto?",
+                "fuente": "pedido_resumen_temp",
+                "botones": [
+                    {"texto": "Confirmar pedido", "action": "confirmar_pedido"},
+                    {"texto": "Agregar más productos", "action": "ver_catalogo"},
+                    {"texto": "Cancelar pedido", "action": "cancelar_pedido"},
+                ]
+            }
 
-        # Acción: Confirmar pedido (primer paso, desde botón)
-        if payload.get("action") == "confirmar_pedido" and estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
-            # Aquí generas el pedido en la DB.
-            items_pedido = contexto_pyme.get('items_temporales', [])
-            if not items_pedido:
-                contexto_pyme.clear()
-                return {
-                    "respuesta": "No hay ítems en tu pedido para confirmar. ¿Te gustaría empezar un pedido nuevo?",
-                    "fuente": "pedido_error_no_items",
-                    "botones": [
-                        {"texto": "Iniciar pedido", "action": "iniciar_pedido"}
-                    ]
-                }
-            
-            # Crear el pedido real en la DB
-            try:
-                pedido_id = servicio_pedidos.crear_pedido(
-                    user_id=user_id,
-                    items=items_pedido,
-                    total=calcular_monto_total_items(items_pedido)
-                )
-                contexto_pyme['pedido_actual'] = {"id": pedido_id, "items": items_pedido, "total": calcular_monto_total_items(items_pedido)} # Guarda el pedido final
-                contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2) # Siguiente paso
-                
-                # Enviar notificaciones al admin y cliente
-                admin_email = getattr(self.context.get('user_obj'), 'email', None)
-                if admin_email:
-                    enviar_email_ticket_admin(admin_email, pedido_id, items_pedido) # Asumo que esta función existe
-                
-                cliente_email = getattr(self.context.get('viewer_user_obj'), 'email', None) # Asumo viewer_user_obj en contexto
-                if cliente_email:
-                    enviar_email_pedido_cliente(cliente_email, pedido_id, items_pedido) # Asumo que esta función existe
-                
-                return {
-                    "respuesta": f"¡Excelente! Tu pedido #{pedido_id} ha sido confirmado. ¿Por qué canal te gustaría recibir el resumen y el link de pago?",
-                    "fuente": "pedido_confirmado",
-                    "pedido_data": contexto_pyme['pedido_actual'], # Envía los datos del pedido al frontend
-                    "botones": [
-                        {"texto": "WhatsApp", "action": "enviar_whatsapp"},
-                        {"texto": "Email", "action": "enviar_email"},
-                        {"texto": "SMS", "action": "enviar_sms"},
-                        {"texto": "Pagar ahora", "action": "link_pago"},
-                    ]
-                }
-            except Exception as e:
-                logger.error(f"[PYME] Error al crear pedido: {e}", exc_info=True)
-                contexto_pyme.clear()
-                return {
-                    "respuesta": "Hubo un error al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
-                    "fuente": "pedido_error_db",
-                    "botones": [
-                        {"texto": "Hablar con un agente", "action": "escalar"}
-                    ]
-                }
+        # Acción: Confirmar pedido (primer paso, desde botón)
+        if payload.get("action") == "confirmar_pedido" and estado == PymeConversationState.CONFIRMANDO_PEDIDO_TEMP:
+            # Aquí generas el pedido en la DB.
+            items_pedido = contexto_pyme.get('items_temporales', [])
+            if not items_pedido:
+                contexto_pyme.clear()
+                return {
+                    "respuesta": "No hay ítems en tu pedido para confirmar. ¿Te gustaría empezar un pedido nuevo?",
+                    "fuente": "pedido_error_no_items",
+                    "botones": [
+                        {"texto": "Iniciar pedido", "action": "iniciar_pedido"}
+                    ]
+                }
+            
+            # Crear el pedido real en la DB
+            try:
+                pedido_id = servicio_pedidos.crear_pedido(
+                    user_id=user_id,
+                    items=items_pedido,
+                    total=calcular_monto_total_items(items_pedido)
+                )
+                contexto_pyme['pedido_actual'] = {"id": pedido_id, "items": items_pedido, "total": calcular_monto_total_items(items_pedido)} # Guarda el pedido final
+                contexto_pyme['estado_conversacion'] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2) # Siguiente paso
+                
+                # Enviar notificaciones al admin y cliente
+                admin_email = getattr(self.context.get('user_obj'), 'email', None)
+                if admin_email:
+                    enviar_email_ticket_admin(admin_email, pedido_id, items_pedido) # Asumo que esta función existe
+                
+                cliente_email = getattr(self.context.get('viewer_user_obj'), 'email', None) # Asumo viewer_user_obj en contexto
+                if cliente_email:
+                    enviar_email_pedido_cliente(cliente_email, pedido_id, items_pedido) # Asumo que esta función existe
+                
+                cliente_tel = getattr(self.context.get('viewer_user_obj'), 'telefono', None)
+                if cliente_tel:
+                    enviar_sms(cliente_tel, f"Tu pedido P-{pedido_id} ha sido confirmado por {self.context.get('nombre_pyme')}.")
 
-        return None
+
+                memoria.clear() # Limpiar memoria después de finalizar el pedido
+                return {
+                    "respuesta": f"¡Excelente! Tu pedido #{pedido_id} ha sido confirmado. ¿Por qué canal te gustaría recibir el resumen y el link de pago?",
+                    "fuente": "pedido_confirmado",
+                    "pedido_data": contexto_pyme['pedido_actual'], # Envía los datos del pedido al frontend
+                    "botones": [
+                        {"texto": "WhatsApp", "action": "enviar_whatsapp"},
+                        {"texto": "Email", "action": "enviar_email"},
+                        {"texto": "SMS", "action": "enviar_sms"},
+                        {"texto": "Pagar ahora", "action": "link_pago"},
+                    ]
+                }
+            except Exception as e:
+                logger.error(f"[PYME] Error al crear pedido: {e}", exc_info=True)
+                contexto_pyme.clear()
+                return {
+                    "respuesta": "Hubo un error al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
+                    "fuente": "pedido_error_db",
+                    "botones": [
+                        {"texto": "Hablar con un agente", "action": "escalar"}
+                    ]
+                }
+
+        return None
 
 class BrokenProductHandler(BaseHandler):
-    # MODIFICADO: acepta payload
-    def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "")
-        # Esto es un placeholder. Debería manejar productos que no se encuentran.
-        return None
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        # Esto es un placeholder. Debería manejar productos que no se encuentran.
+        return None # Por ahora, no hace nada
 
 class ClaimHandler(BaseHandler):
-    """
-    Gestiona el flujo de reclamos de PYME, solicitando detalles, adjuntos y confirmación.
-    """
-    CAMPOS_RECLAMO_PYME = ["categoria", "descripcion", "foto_url", "ubicacion_gps"]
+    """
+    Gestiona el flujo de reclamos de PYME, solicitando detalles, adjuntos y confirmación.
+    """
+    CAMPOS_RECLAMO_PYME = ["categoria", "descripcion", "foto_url", "ubicacion_gps"]
 
-    # MODIFICADO: acepta payload
-    def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "")
-        memoria = self.context.get("contexto_pyme", {})
-        estado = deserialize_state(memoria.get("estado_conversacion"))
-        user_id = self.context.get('user_id')
-        cliente_id = self.context.get('cliente_id')
-        nombre_pyme = self.context.get('nombre_pyme')
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        memoria = self.context.get("contexto_pyme", {})
+        estado = deserialize_state(memoria.get("estado_conversacion"))
+        user_id = self.context.get('user_id')
+        cliente_id = self.context.get('cliente_id')
+        nombre_pyme = self.context.get('nombre_pyme')
 
-        # Iniciar reclamo
-        if self.context.get('intencion') == 'iniciar_reclamo_pyme' and not estado:
-            memoria.clear() # Limpiar memoria para nuevo reclamo
-            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
-            
-            # Intentar extraer datos desde el primer mensaje si es un reclamo "inteligente"
-            prompt = f"""
-            Extrae del siguiente mensaje del cliente los siguientes datos si están presentes:
-            - categoria (motivo del reclamo, ej: envío, producto, servicio, pago, etc.)
-            - descripcion (detalle del problema)
+        # Iniciar reclamo
+        if self.context.get('intencion') == 'iniciar_reclamo_pyme' and not estado:
+            memoria.clear() # Limpiar memoria para nuevo reclamo
+            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
+            
+            # Intentar extraer datos desde el primer mensaje si es un reclamo "inteligente"
+            prompt = f"""
+            Extrae del siguiente mensaje del cliente los siguientes datos si están presentes:
+            - categoria (motivo del reclamo, ej: envío, producto, servicio, pago, etc.)
+            - descripcion (detalle del problema)
 
-            Mensaje: "{pregunta_str}"
+            Mensaje: "{pregunta_str}"
 
-            Devuelve solo JSON con esos campos. Ejemplo:
-            {{ "categoria": "envío", "descripcion": "mi pedido llegó roto" }}
-            """
-            try:
-                resp = get_cohere_response(message=prompt, preamble="Extrae los campos y devuelve solo JSON.")
-                datos_llm = json.loads(resp) if resp else {}
-                memoria['categoria_reclamo'] = datos_llm.get('categoria')
-                memoria['descripcion_reclamo'] = datos_llm.get('descripcion')
-            except Exception as e:
-                logger.error(f"[CLAIM] Error LLM extrayendo reclamo: {e}", exc_info=True)
+            Devuelve solo JSON con esos campos. Ejemplo:
+            {{ "categoria": "envío", "descripcion": "mi pedido llegó roto" }}
+            """
+            try:
+                resp = get_cohere_response(message=prompt, preamble="Extrae los campos y devuelve solo JSON.")
+                datos_llm = json.loads(resp) if resp else {}
+                memoria['categoria_reclamo'] = datos_llm.get('categoria')
+                memoria['descripcion_reclamo'] = datos_llm.get('descripcion')
+            except Exception as e:
+                logger.error(f"[CLAIM] Error LLM extrayendo reclamo: {e}", exc_info=True)
 
-            if memoria.get('descripcion_reclamo'):
-                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME)
-                return {
-                    "respuesta": f"Entendido. Tu reclamo es sobre: {memoria['descripcion_reclamo']}. ¿Querés adjuntar una foto o compartir tu ubicación?",
-                    "fuente": "reclamo_iniciado",
-                    "botones": [
-                        {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                        {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                        {"texto": "No, continuar", "action": "sin_adjuntos"}
-                    ]
-                }
+            if memoria.get('descripcion_reclamo'):
+                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME)
+                return {
+                    "respuesta": f"Entendido. Tu reclamo es sobre: {memoria['descripcion_reclamo']}. ¿Querés adjuntar una foto o compartir tu ubicación?",
+                    "fuente": "reclamo_iniciado",
+                    "botones": [
+                        {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
+                        {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                        {"texto": "No, continuar", "action": "sin_adjuntos"}
+                    ]
+                }
 
-            return {
-                "respuesta": "¿Sobre qué es tu reclamo? Por favor, describímelo brevemente.",
-                "fuente": "reclamo_iniciado",
-            }
+            return {
+                "respuesta": "¿Sobre qué es tu reclamo? Por favor, describímelo brevemente.",
+                "fuente": "reclamo_iniciado",
+            }
 
-        # Estado: Esperando detalles del reclamo
-        if estado == PymeConversationState.ESPERANDO_DETALLES_RECLAMO:
-            if not pregunta_str.strip():
-                return {"respuesta": "Por favor, describí el problema para tu reclamo."}
-            
-            memoria['descripcion_reclamo'] = pregunta_str.strip()
-            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME)
-            return {
-                "respuesta": "¿Querés adjuntar una foto o compartir tu ubicación?",
-                "fuente": "reclamo_detalles",
-                "botones": [
-                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                    {"texto": "No, continuar", "action": "sin_adjuntos"}
-                ]
-            }
+        # Estado: Esperando detalles del reclamo
+        if estado == PymeConversationState.ESPERANDO_DETALLES_RECLAMO:
+            if not pregunta_str.strip():
+                return {"respuesta": "Por favor, describí el problema para tu reclamo."}
+            
+            memoria['descripcion_reclamo'] = pregunta_str.strip()
+            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME)
+            return {
+                "respuesta": "¿Querés adjuntar una foto o compartir tu ubicación?",
+                "fuente": "reclamo_detalles",
+                "botones": [
+                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
+                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                    {"texto": "No, continuar", "action": "sin_adjuntos"}
+                ]
+            }
 
-        # Estado: Esperando adjuntos (foto/ubicación)
-        if estado == PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME:
-            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
-            
-            # PROCESAR ADJUNTOS REALES
-            if payload.get("es_foto") and payload.get("archivo_url"):
-                memoria["foto_url"] = payload.get("archivo_url")
-                logger.info(f"[CLAIM] Foto adjunta para PYME: {memoria['foto_url']}")
-                memoria["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME)
-                resumen = self.build_detalles_memoria(memoria)
-                return {
-                    "respuesta": f"¡Foto recibida! ¿Confirmás el reclamo con estos datos?\n{resumen}",
-                    "fuente": "reclamo_foto_recibida",
-                    "botones": [
-                        {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                        {"texto": "Editar datos", "action": "editar_reclamo"}
-                    ]
-                }
-            
-            if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
-                memoria["ubicacion_gps"] = payload.get("ubicacion_usuario")
-                logger.info(f"[CLAIM] Ubicación adjunta para PYME: {memoria['ubicacion_gps']}")
-                memoria["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME)
-                resumen = self.build_detalles_memoria(memoria)
-                return {
-                    "respuesta": f"¡Ubicación recibida! ¿Confirmás el reclamo con estos datos?\n{resumen}",
-                    "fuente": "reclamo_ubicacion_recibida",
-                    "botones": [
-                        {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                        {"texto": "Editar datos", "action": "editar_reclamo"}
-                    ]
-                }
+        # Estado: Esperando adjuntos (foto/ubicación)
+        if estado == PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME:
+            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
+            
+            # PROCESAR ADJUNTOS REALES
+            if payload.get("es_foto") and payload.get("archivo_url"):
+                memoria["foto_url"] = payload.get("archivo_url")
+                logger.info(f"[CLAIM] Foto adjunta para PYME: {memoria['foto_url']}")
+                memoria["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME)
+                resumen = self.build_detalles_memoria(memoria)
+                return {
+                    "respuesta": f"¡Foto recibida! ¿Confirmás el reclamo con estos datos?\n{resumen}",
+                    "fuente": "reclamo_foto_recibida",
+                    "botones": [
+                        {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                        {"texto": "Editar datos", "action": "editar_reclamo"}
+                    ]
+                }
+            
+            if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
+                memoria["ubicacion_gps"] = payload.get("ubicacion_usuario")
+                logger.info(f"[CLAIM] Ubicación adjunta para PYME: {memoria['ubicacion_gps']}")
+                memoria["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME)
+                resumen = self.build_detalles_memoria(memoria)
+                return {
+                    "respuesta": f"¡Ubicación recibida! ¿Confirmás el reclamo con estos datos?\n{resumen}",
+                    "fuente": "reclamo_ubicacion_recibida",
+                    "botones": [
+                        {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                        {"texto": "Editar datos", "action": "editar_reclamo"}
+                    ]
+                }
 
-            # ACCIONES DE BOTONES
-            if accion == "sin_adjuntos": # El botón "No, continuar"
-                memoria["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME)
-                resumen = self.build_detalles_memoria(memoria)
-                return {
-                    "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
-                    "fuente": "reclamo_sin_adjuntos",
-                    "botones": [
-                        {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                        {"texto": "Editar datos", "action": "editar_reclamo"}
-                    ]
-                }
-            
-            if accion in ["adjuntar_foto", "compartir_ubicacion"]:
-                # El frontend ya maneja la UX de abrir el selector/pedir GPS. 
-                # El backend simplemente espera el siguiente mensaje que contendrá el adjunto real.
-                return None # No responder, solo esperar el siguiente input
+            # ACCIONES DE BOTONES
+            if accion == "sin_adjuntos": # El botón "No, continuar"
+                memoria["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME)
+                resumen = self.build_detalles_memoria(memoria)
+                return {
+                    "respuesta": f"¿Confirmás el reclamo con estos datos?\n{resumen}",
+                    "fuente": "reclamo_sin_adjuntos",
+                    "botones": [
+                        {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                        {"texto": "Editar datos", "action": "editar_reclamo"}
+                    ]
+                }
+            
+            if accion in ["adjuntar_foto", "compartir_ubicacion"]:
+                # El frontend ya maneja la UX de abrir el selector/pedir GPS. 
+                # El backend simplemente espera el siguiente mensaje que contendrá el adjunto real.
+                return None # No responder, solo esperar el siguiente input
 
-            # FALLBACK si no es adjunto real ni acción reconocida
-            return {
-                "respuesta": "Todavía no recibí ningún adjunto válido. ¿Querés adjuntar una foto o compartir tu ubicación, o continuar sin adjuntos?",
-                "fuente": "reclamo_adjunto_invalido_reintento",
-                "botones": [
-                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                    {"texto": "No, continuar", "action": "sin_adjuntos"}
-                ]
-            }
+            # FALLBACK si no es adjunto real ni acción reconocida
+            return {
+                "respuesta": "Todavía no recibí ningún adjunto válido. ¿Querés adjuntar una foto o compartir tu ubicación, o continuar sin adjuntos?",
+                "fuente": "reclamo_adjunto_invalido_reintento",
+                "botones": [
+                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
+                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                    {"texto": "No, continuar", "action": "sin_adjuntos"}
+                ]
+            }
 
-        # Estado: Esperando confirmación final del reclamo
-        if estado == PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME:
-            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
+        # Estado: Esperando confirmación final del reclamo
+        if estado == PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME:
+            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
 
-            if accion == "confirmar_reclamo":
-                # Validar que los datos mínimos estén
-                if not memoria.get('descripcion_reclamo'):
-                    memoria.clear()
-                    return {"respuesta": "Parece que falta la descripción del reclamo. ¿Querés empezar de nuevo?", "botones":[{"texto": "Iniciar reclamo", "action": "iniciar_reclamo_pyme"}]}
-                
-                # Crear el ticket de reclamo final
-                try:
-                    ticket_data = {
-                        "asunto": memoria.get('categoria_reclamo', 'Reclamo General') + ": " + memoria['descripcion_reclamo'][:50],
-                        "categoria": memoria.get('categoria_reclamo', 'General'),
-                        "detalles": self.build_detalles_memoria(memoria), # Reutiliza la función para el resumen
-                        "user_id": cliente_id if cliente_id else user_id,
-                        "pyme_id": user_id,
-                        "estado": "nuevo",
-                        "ubicacion": memoria.get('ubicacion_gps'),
-                        "foto_url": memoria.get('foto_url'),
-                        "anon_id": self.context.get('anon_id')
-                    }
-                    ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data)
-                    
-                    # Enviar notificaciones (asumo que tienes email/telefono en user_obj/viewer_user_obj)
-                    if user_id:
-                        admin_email = getattr(self.context.get('user_obj'), 'email', None)
-                        if admin_email:
-                            enviar_email_ticket_admin(admin_email, ticket.nro_ticket, ticket_data['detalles'])
-                    
-                    cliente_email = getattr(self.context.get('viewer_user_obj'), 'email', None) # Asumo viewer_user_obj
-                    if cliente_email:
-                        enviar_email_ticket_cliente(cliente_email, ticket.nro_ticket, ticket_data['detalles'])
-                    
-                    cliente_tel = getattr(self.context.get('viewer_user_obj'), 'telefono', None)
-                    if cliente_tel:
-                        enviar_sms(cliente_tel, f"Tu reclamo P-{ticket.nro_ticket} ha sido recibido por {nombre_pyme}.")
+            if accion == "confirmar_reclamo":
+                # Validar que los datos mínimos estén
+                if not memoria.get('descripcion_reclamo'):
+                    memoria.clear()
+                    return {"respuesta": "Parece que falta la descripción del reclamo. ¿Querés empezar de nuevo?", "botones":[{"texto": "Iniciar reclamo", "action": "iniciar_reclamo_pyme"}]}
+                
+                # Crear el ticket de reclamo final
+                try:
+                    ticket_data = {
+                        "asunto": memoria.get('categoria_reclamo', 'Reclamo General') + ": " + memoria['descripcion_reclamo'][:50],
+                        "categoria": memoria.get('categoria_reclamo', 'General'),
+                        "detalles": self.build_detalles_memoria(memoria), # Reutiliza la función para el resumen
+                        "user_id": cliente_id if cliente_id else user_id,
+                        "pyme_id": user_id,
+                        "estado": "nuevo",
+                        "ubicacion": memoria.get('ubicacion_gps'),
+                        "foto_url": memoria.get('foto_url'),
+                        "anon_id": self.context.get('anon_id')
+                    }
+                    ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data)
+                    
+                    # Enviar notificaciones (asumo que tienes email/telefono en user_obj/viewer_user_obj)
+                    if user_id:
+                        admin_email = getattr(self.context.get('user_obj'), 'email', None)
+                        if admin_email:
+                            enviar_email_ticket_admin(admin_email, ticket.nro_ticket, ticket_data['detalles'])
+                    
+                    cliente_email = getattr(self.context.get('viewer_user_obj'), 'email', None) # Asumo viewer_user_obj
+                    if cliente_email:
+                        enviar_email_pedido_cliente(cliente_email, ticket.nro_ticket, ticket_data['detalles'])
+                    
+                    cliente_tel = getattr(self.context.get('viewer_user_obj'), 'telefono', None)
+                    if cliente_tel:
+                        enviar_sms(cliente_tel, f"Tu reclamo P-{ticket.nro_ticket} ha sido recibido por {nombre_pyme}.")
 
 
-                    memoria.clear() # Limpiar memoria después de finalizar el reclamo
-                    return {
-                        "respuesta": f"¡Listo! Tu reclamo #{ticket.nro_ticket} ha sido registrado exitosamente. Te mantendremos informado sobre el estado.",
-                        "fuente": "reclamo_confirmado",
-                        "ticket_id": ticket.id,
-                        "botones": [
-                            {"texto": "Consultar estado de ticket", "action": "consultar_estado_ticket"},
-                            {"texto": "Hacer otro reclamo", "action": "iniciar_reclamo_pyme"},
-                            {"texto": "Hablar con un agente", "action": "escalar"}
-                        ]
-                    }
-                except Exception as e:
-                    logger.error(f"[CLAIM] Error al crear ticket de reclamo: {e}", exc_info=True)
-                    memoria.clear()
-                    return {"respuesta": "Hubo un error al registrar tu reclamo. Por favor, intenta más tarde o contacta a un agente.", "fuente": "reclamo_error"}
-            
-            elif accion == "editar_datos":
-                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
-                return {"respuesta": "¿Qué parte del reclamo quieres editar? Describe los cambios o ingresa nuevamente los detalles.", "fuente": "reclamo_editar"}
-            
-            # Si no es confirmar ni editar, repite la pregunta
-            return {
-                "respuesta": "¿Confirmás tu reclamo con los datos ingresados o querés editarlos?",
-                "fuente": "reclamo_confirmacion_reintento",
-                "botones": [
-                    {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
-                    {"texto": "Editar datos", "action": "editar_reclamo"}
-                ]
-            }
-        return None
+                    memoria.clear() # Limpiar memoria después de finalizar el reclamo
+                    return {
+                        "respuesta": f"¡Listo! Tu reclamo #{ticket.nro_ticket} ha sido registrado exitosamente. Te mantendremos informado sobre el estado.",
+                        "fuente": "reclamo_confirmado",
+                        "ticket_id": ticket.id,
+                        "botones": [
+                            {"texto": "Consultar estado de ticket", "action": "consultar_estado_ticket"},
+                            {"texto": "Hacer otro reclamo", "action": "iniciar_reclamo_pyme"},
+                            {"texto": "Hablar con un agente", "action": "escalar"}
+                        ]
+                    }
+                except Exception as e:
+                    logger.error(f"[CLAIM] Error al crear ticket de reclamo: {e}", exc_info=True)
+                    memoria.clear()
+                    return {"respuesta": "Hubo un error al registrar tu reclamo. Por favor, intenta más tarde o contacta a un agente.", "fuente": "reclamo_error"}
+            
+            elif accion == "editar_datos":
+                memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_DETALLES_RECLAMO)
+                return {"respuesta": "¿Qué parte del reclamo quieres editar? Describe los cambios o ingresa nuevamente los detalles.", "fuente": "reclamo_editar"}
+            
+            # Si no es confirmar ni editar, repite la pregunta
+            return {
+                "respuesta": "¿Confirmás tu reclamo con los datos ingresados o querés editarlos?",
+                "fuente": "reclamo_confirmacion_reintento",
+                "botones": [
+                    {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
+                    {"texto": "Editar datos", "action": "editar_reclamo"}
+                ]
+            }
+        return None
 
 class TicketStatusHandler(BaseHandler):
-    # MODIFICADO: acepta payload
-    def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "")
-        memoria = self.context.get("contexto_pyme", {})
-        estado = deserialize_state(memoria.get("estado_conversacion"))
-        user_id = self.context.get('user_id')
-        cliente_id = self.context.get('cliente_id')
-        
-        # Iniciar consulta de estado de pedido/ticket
-        if self.context.get('intencion') == 'consultar_estado_pedido' and not estado:
-            memoria.clear()
-            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_PEDIDO)
-            return {"respuesta": "Por favor, indicame el número de tu pedido para consultar su estado.", "fuente": "estado_pedido_solicitar_numero"}
-        
-        # Esperando número de pedido
-        if estado == PymeConversationState.ESPERANDO_NUMERO_PEDIDO:
-            match_num = re.search(r'\d+', pregunta_str)
-            if not match_num:
-                return {"respuesta": "No reconocí un número de pedido válido. Por favor, ingresá solo los dígitos.", "fuente": "estado_pedido_error_numero"}
-            
-            nro_pedido = int(match_num.group(0))
-            pedido = PymePedido.query.filter_by(nro_pedido=nro_pedido, user_id=user_id).first() # Buscar por nro y pyme_id
-            
-            if not pedido:
-                return {"respuesta": f"No encontré el pedido #{nro_pedido}. Verificá si lo escribiste bien o si fue creado con este usuario.", "fuente": "estado_pedido_no_encontrado"}
-            
-            memoria.clear()
-            return {
-                "respuesta": f"El pedido #{pedido.nro_pedido} está en estado: **{pedido.estado}**.\nTotal: ${pedido.total:.2f}. Detalles: {pedido.detalles_json}",
-                "fuente": "estado_pedido_encontrado",
-                "botones": [
-                    {"texto": "Ver ítems", "action": "ver_pedido_items", "pedido_id": pedido.id},
-                    {"texto": "Contactar por este pedido", "action": "escalar_por_pedido", "pedido_id": pedido.id},
-                ]
-            }
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        memoria = self.context.get("contexto_pyme", {})
+        estado = deserialize_state(memoria.get("estado_conversacion"))
+        user_id = self.context.get('user_id')
+        cliente_id = self.context.get('cliente_id')
+        
+        # Iniciar consulta de estado de pedido/ticket
+        if self.context.get('intencion') == 'consultar_estado_pedido' and not estado:
+            memoria.clear()
+            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_PEDIDO)
+            return {"respuesta": "Por favor, indicame el número de tu pedido para consultar su estado.", "fuente": "estado_pedido_solicitar_numero"}
+        
+        # Esperando número de pedido
+        if estado == PymeConversationState.ESPERANDO_NUMERO_PEDIDO:
+            match_num = re.search(r'\d+', pregunta_str)
+            if not match_num:
+                return {"respuesta": "No reconocí un número de pedido válido. Por favor, ingresá solo los dígitos.", "fuente": "estado_pedido_error_numero"}
+            
+            nro_pedido = int(match_num.group(0))
+            pedido = PymePedido.query.filter_by(nro_pedido=nro_pedido, user_id=user_id).first() # Buscar por nro y pyme_id
+            
+            if not pedido:
+                return {"respuesta": f"No encontré el pedido #{nro_pedido}. Verificá si lo escribiste bien o si fue creado con este usuario.", "fuente": "estado_pedido_no_encontrado"}
+            
+            memoria.clear()
+            return {
+                "respuesta": f"El pedido #{pedido.nro_pedido} está en estado: **{pedido.estado}**.\nTotal: ${pedido.total:.2f}. Detalles: {pedido.detalles_json}",
+                "fuente": "estado_pedido_encontrado",
+                "botones": [
+                    {"texto": "Ver ítems", "action": "ver_pedido_items", "pedido_id": pedido.id},
+                    {"texto": "Contactar por este pedido", "action": "escalar_por_pedido", "pedido_id": pedido.id},
+                ]
+            }
 
-        # Iniciar consulta de estado de ticket
-        if self.context.get('intencion') == 'consultar_estado_ticket' and not estado:
-            memoria.clear()
-            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_TICKET)
-            return {"respuesta": "Por favor, indicame el número de tu ticket para consultar su estado.", "fuente": "estado_ticket_solicitar_numero"}
+        # Iniciar consulta de estado de ticket
+        if self.context.get('intencion') == 'consultar_estado_ticket' and not estado:
+            memoria.clear()
+            memoria['estado_conversacion'] = serialize_state(PymeConversationState.ESPERANDO_NUMERO_TICKET)
+            return {"respuesta": "Por favor, indicame el número de tu ticket para consultar su estado.", "fuente": "estado_ticket_solicitar_numero"}
 
-        # Esperando número de ticket
-        if estado == PymeConversationState.ESPERANDO_NUMERO_TICKET:
-            match_num = re.search(r'\d+', pregunta_str)
-            if not match_num:
-                return {"respuesta": "No reconocí un número de ticket válido. Por favor, ingresá solo los dígitos.", "fuente": "estado_ticket_error_numero"}
-            
-            nro_ticket = int(match_num.group(0))
-            ticket = PymeTicket.query.filter_by(nro_ticket=nro_ticket, user_id=user_id).first() # Buscar por nro y pyme_id
-            
-            if not ticket:
-                return {"respuesta": f"No encontré el ticket #{nro_ticket}. Verificá si lo escribiste bien o si fue creado con este usuario.", "fuente": "estado_ticket_no_encontrado"}
-            
-            memoria.clear()
-            return {
-                "respuesta": f"El ticket #{ticket.nro_ticket} (Asunto: {ticket.asunto}) está en estado: **{ticket.estado}**.\nDetalles: {ticket.detalles}",
-                "fuente": "estado_ticket_encontrado",
-                "botones": [
-                    {"texto": "Contactar por este ticket", "action": "escalar_por_ticket", "ticket_id": ticket.id},
-                ]
-            }
-        return None
+        # Esperando número de ticket
+        if estado == PymeConversationState.ESPERANDO_NUMERO_TICKET:
+            match_num = re.search(r'\d+', pregunta_str)
+            if not match_num:
+                return {"respuesta": "No reconocí un número de ticket válido. Por favor, ingresá solo los dígitos.", "fuente": "estado_ticket_error_numero"}
+            
+            nro_ticket = int(match_num.group(0))
+            ticket = PymeTicket.query.filter_by(nro_ticket=nro_ticket, user_id=user_id).first() # Buscar por nro y pyme_id
+            
+            if not ticket:
+                return {"respuesta": f"No encontré el ticket #{nro_ticket}. Verificá si lo escribiste bien o si fue creado con este usuario.", "fuente": "estado_ticket_no_encontrado"}
+            
+            memoria.clear()
+            return {
+                "respuesta": f"El ticket #{ticket.nro_ticket} (Asunto: {ticket.asunto}) está en estado: **{ticket.estado}**.\nDetalles: {ticket.detalles}",
+                "fuente": "estado_ticket_encontrado",
+                "botones": [
+                    {"texto": "Contactar por este ticket", "action": "escalar_por_ticket", "ticket_id": ticket.id},
+                ]
+            }
+        return None
 
 # --- Otros handlers si los tienes definidos o quieres que los creemos ---
 # Puedes añadir aquí los handlers para RecomendacionHandler, UpsellHandler,
 # BrokenProductHandler, ClaimHandler (si no es el mismo que TicketStatusHandler), etc.
 # Asegúrate de que todos sigan el patrón handle(self, payload: dict).
 
+class RecomendacionHandler(BaseHandler):
+    """Sugiere productos recomendados según historial, ticket promedio y catálogo."""
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+        if not productos:
+            return None
+        # Ejemplo: sugiere los más vendidos o destacados
+        recomendados = [p for p in productos if p.get("destacado")] or productos[:3]
+        recomendados = ordenar_productos_para_venta(recomendados)
+        if recomendados:
+            texto = "Nuestros clientes aman estos productos. ¿Te gustaría probarlos?"
+            lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in recomendados])
+            return {
+                "respuesta": f"{texto}\n{lista}\n¿Te gustaría agregarlos al pedido o ver más detalles?",
+                "fuente": "recomendacion_pyme",
+                "botones": [
+                    {"texto": "Agregar recomendados", "action": "add_to_cart"},
+                    {"texto": "Ver más productos", "action": "ver_mas"},
+                    {"texto": "Consultar stock", "action": "consultar_stock"},
+                    {"texto": "Hablar con un agente", "action": "escalar"},
+                ]
+            }
+        return None
 
-# FUNCIÓN ORQUESTADORA PRINCIPAL MEJORADA
+class UpsellHandler(BaseHandler):
+    """Sugiere versiones premium, packs o mayores cantidades para aumentar el ticket."""
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        productos = self.context['contexto_pyme'].get('productos_mostrados_catalogo', [])
+        if not productos:
+            return None
+        # Ejemplo: si el usuario pide un producto barato, sugiere el premium
+        baratos = [p for p in productos if float(p.get("precio_float", 0)) < 5000]
+        premium = [p for p in productos if float(p.get("precio_float", 0)) > 10000]
+        premium = ordenar_productos_para_venta(premium)
+        if baratos and premium:
+            texto = "Tenemos opciones premium y packs con mayor valor agregado. ¡Ideal para sacar el máximo provecho!"
+            lista = "\n".join([f"- {p.get('nombre')} ({p.get('precio_str','Consultar')})" for p in premium[:2]])
+            return {
+                "respuesta": f"{texto}\n{lista}\n¿Te gustaría conocer más o agregarlos al pedido?",
+                "fuente": "upsell_pyme",
+                "botones": [
+                    {"texto": "Ver packs premium", "action": "ver_premium"},
+                    {"texto": "Agregar al pedido", "action": "add_to_cart"},
+                ]
+            }
+        return None
+
+class BrokenProductHandler(BaseHandler):
+    # MODIFICADO: acepta payload
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "")
+        # Esto es un placeholder. Debería manejar productos que no se encuentran.
+        return None # Por ahora, no hace nada
+
+# --- FUNCIÓN ORQUESTADORA PRINCIPAL MEJORADA ---
 def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
-    logger.info(f"[INICIO] Pregunta recibida: '{pregunta_original}'")
-    
-    # --- MODIFICACIÓN CLAVE: Preparar el payload ---
-    received_payload = {}
-    if isinstance(pregunta_original, dict): # Si el frontend envió un objeto JSON completo en el campo 'pregunta'
-        received_payload = pregunta_original
-        pregunta_str = received_payload.get("pregunta", "")
-    else: # Si el frontend envió un string simple
-        pregunta_str = pregunta_original
-        received_payload["pregunta"] = pregunta_original
-    
-    # Combinar los kwargs adicionales de la llamada API con el payload recibido
-    for key, value in kwargs.items():
-        received_payload[key] = value
+    logger.info(f"[INICIO] Pregunta recibida: '{pregunta_original}'")
+    
+    # --- MODIFICACIÓN CLAVE: Preparar el payload ---
+    received_payload = {}
+    if isinstance(pregunta_original, dict): # Si el frontend envió un objeto JSON completo en el campo 'pregunta'
+        received_payload = pregunta_original
+        pregunta_str = received_payload.get("pregunta", "")
+    else: # Si el frontend envió un string simple
+        pregunta_str = pregunta_original
+        received_payload["pregunta"] = pregunta_original
+    
+    # Combinar los kwargs adicionales de la llamada API con el payload recibido
+    for key, value in kwargs.items():
+        received_payload[key] = value
 
-    # Obtener el contexto de la sesión
-    contexto_previo = received_payload.get('contexto_previo', {})
-    contexto_pyme = contexto_previo.get(CONTEXTO_PYME_SESION, {})
+    # Obtener el contexto de la sesión
+    contexto_previo = received_payload.get('contexto_previo', {})
+    contexto_pyme = contexto_previo.get(CONTEXTO_PYME_SESION, {})
 
-    # Deserializar el estado de conversación
-    estado_guardado_str = contexto_pyme.get('estado_conversacion')
-    if estado_guardado_str and isinstance(estado_guardado_str, str):
-        contexto_pyme['estado_conversacion'] = deserialize_state(estado_guardado_str)
-    else:
-        contexto_pyme['estado_conversacion'] = None
+    # Deserializar el estado de conversación
+    estado_guardado_str = contexto_pyme.get('estado_conversacion')
+    if estado_guardado_str and isinstance(estado_guardado_str, str):
+        contexto_pyme['estado_conversacion'] = deserialize_state(estado_guardado_str)
+    else:
+        contexto_pyme['estado_conversacion'] = None
 
-    # Inicializar el diccionario 'context'
-    context = {
-        "contexto_pyme": contexto_pyme,
-        "user_obj": owner_user,
-        "rubro_obj": rubro_obj,
-        "user_id": getattr(owner_user, "id", None),
-        "cliente_id": getattr(viewer_user, "id", None), # El usuario final interactuando
-        "anon_id": anon_id,
-        "nombre_pyme": getattr(owner_user, "nombre_empresa", "la empresa") if owner_user else "la empresa",
-        "telefono": getattr(owner_user, "telefono", "") if owner_user else "",
-        "direccion": getattr(owner_user, "direccion", "") if owner_user else "",
-        "email": getattr(owner_user, "email", "") if owner_user else "",
-        "plan": getattr(owner_user, "plan", "anonimo") if owner_user else "anonimo",
-        "preguntas_usadas": getattr(owner_user, "preguntas_usadas", 0) if owner_user else 0,
-        "limite_preguntas": limite_para_usuario(owner_user) if owner_user else None,
-        "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
-        "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, []),
-        # Incluir datos de adjuntos y acciones directamente en el contexto para fácil acceso de los handlers
-        "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
-        "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
-        "es_foto": received_payload.get("es_foto", False),
-        "es_ubicacion": received_payload.get("es_ubicacion", False),
-        "es_archivo": received_payload.get("es_archivo", False),
-        "action": received_payload.get("action"),
-        "intencion": None, # La intención se clasificará o se recuperará de la memoria
-    }
+    # Inicializar el diccionario 'context'
+    context = {
+        "contexto_pyme": contexto_pyme,
+        "user_obj": owner_user,
+        "rubro_obj": rubro_obj,
+        "user_id": getattr(owner_user, "id", None),
+        "cliente_id": getattr(viewer_user, "id", None), # El usuario final interactuando
+        "anon_id": anon_id,
+        "nombre_pyme": getattr(owner_user, "nombre_empresa", "la empresa") if owner_user else "la empresa",
+        "telefono": getattr(owner_user, "telefono", "") if owner_user else "",
+        "direccion": getattr(owner_user, "direccion", "") if owner_user else "",
+        "email": getattr(owner_user, "email", "") if owner_user else "",
+        "plan": getattr(owner_user, "plan", "anonimo") if owner_user else "anonimo",
+        "preguntas_usadas": getattr(owner_user, "preguntas_usadas", 0) if owner_user else 0,
+        "limite_preguntas": limite_para_usuario(owner_user) if owner_user else None,
+        "rubro_nombre": getattr(rubro_obj, "nombre", "empresa").lower() if rubro_obj else "desconocido",
+        "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, []),
+        # Incluir datos de adjuntos y acciones directamente en el contexto para fácil acceso de los handlers
+        "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
+        "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
+        "es_foto": received_payload.get("es_foto", False),
+        "es_ubicacion": received_payload.get("es_ubicacion", False),
+        "es_archivo": received_payload.get("es_archivo", False),
+        "action": received_payload.get("action"),
+        "intencion": None, # La intención se clasificará o se recuperará de la memoria
+    }
 
-    # Lógica para cambio de dueño de sesión (para limpiar historial si cambia de pyme)
-    if owner_user:
-        last_id = flask_session.get(LAST_OWNER_SESION)
-        if last_id != owner_user.id:
-            flask_session[LAST_OWNER_SESION] = owner_user.id
-            flask_session[NOMBRE_HISTORIAL_SESION] = []
-            flask_session[CONTEXTO_PYME_SESION] = {}
-            context["contexto_pyme"] = {} # Reiniciar contexto si cambia de dueño
-            context["mensajes_previos"] = []
-    else:
-        flask_session.pop(LAST_OWNER_SESION, None)
-
-
-    # --- INICIO DE CADENA DE HANDLERS ---
-    handler_chain = [
-        # Prioridad alta para interrupciones y small talk
-        LimitHandler, # Chequea límite de preguntas primero
-        CancelHandler, # Cancelar cualquier flujo
-        GreetingHandler, # Saludos
-        SmallTalkHandler, # Conversación casual
-        SentimentHandler, # Análisis de sentimiento
-        
-        # Handlers de flujos específicos (si hay un estado de conversación activo)
-        FollowUpHandler, # Guía al usuario en flujos activos (pedido, reclamo, etc.)
-        PedidoHandler, # Gestión de creación de pedidos (iniciar, agregar items, confirmar)
-        TicketStatusHandler, # Consulta de estado de pedidos/tickets
-        ClaimHandler, # Gestión de reclamos
-        
-        # Clasificación de intención general para enrutar a herramientas o flujos
-        IntentClassifierPymeHandler, 
-        
-        # Herramientas y búsqueda de catálogo
-        ToolHandlerPyme, # Herramientas simples (stock, horario, etc.)
-        VectorCatalogHandler, # Búsqueda y muestra de catálogo por búsqueda vectorial
-        
-        # Lógicas de venta y marketing (engagement)
-        SalesEngageHandler, # Sugerencias de venta
-        CrossSellHandler, # Venta cruzada
-        RecomendacionHandler, # Recomendaciones de productos
-        UpsellHandler, # Sugerencias de upgrade
-        OfertaPersonalizadaHandler, # Ofertas a clientes
-        EnvioResumenHandler, # Envío de resumen de pedido
-        PostVentaHandler, # Post-venta (encuestas, feedback)
-
-        # Fallback de IA generativa y enganches
-        LLMHandler, # Preguntas generales (contexto web de la PYME)
-        IntentHandler, # Manejo de intenciones generales sin lógica de flujo compleja
-        EngancheAnonimoHandler, # Enganche para usuarios anónimos al final
-    ]
-
-    respuesta_final = None
-    
-    # Intenta clasificar la intención principal ANTES de pasar por la cadena de handlers
-    # Esto permite que los handlers internos confíen en `context['intencion']`
-    if not context["contexto_pyme"].get("estado_conversacion"): # Solo clasifica si no hay un flujo activo
-        # Si hay un action desde el frontend, úsalo como intención
-        if context.get("action"):
-            context["intencion"] = context["action"]
-            logger.info(f"[INTENT] Intención inicial: '{context['intencion']}' (desde action)")
-        else:
-            # Si no hay action, usa el LLM para clasificar
-            intencion_clasificada = _clasificar_intencion_pyme_con_llm(pregunta_str)
-            context["intencion"] = intencion_clasificada
-            logger.info(f"[INTENT] Intención inicial: '{context['intencion']}' (clasificada por LLM)")
-
-    # Iterar sobre la cadena de handlers
-    for handler_class in handler_chain:
-        handler_instance = handler_class(context)
-        # Check if the handler should run based on the current state or intention
-        
-        # Especial: Los handlers de interrupción o saludo siempre se ejecutan primero
-        if handler_class in [CancelHandler, GreetingHandler, SmallTalkHandler, SentimentHandler, LimitHandler]:
-            respuesta_parcial = handler_instance.handle(received_payload)
-            if respuesta_parcial:
-                respuesta_final = respuesta_parcial
-                break # Si este handler responde, termina la cadena
-            continue # Si no responde, pasa al siguiente
-
-        # Lógica para que solo el handler del estado activo (o que coincida con la intención) responda
-        current_state_in_context = context["contexto_pyme"].get("estado_conversacion")
-        current_intencion = context.get("intencion")
-
-        # Determinar si el handler actual es el "dueño" del flujo o intención
-        is_owner_of_flow = False
-        if current_state_in_context:
-            # Si hay un estado activo, solo el handler asociado a ese estado debería procesar
-            if isinstance(handler_instance, FollowUpHandler) and current_state_in_context in [
-                PymeConversationState.ESPERANDO_DETALLES_PEDIDO, PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
-                PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2, PymeConversationState.ESPERANDO_NUMERO_PEDIDO,
-                PymeConversationState.ESPERANDO_NUMERO_TICKET, PymeConversationState.ESPERANDO_DETALLES_RECLAMO,
-                PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME, PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME,
-            ]:
-                is_owner_of_flow = True
-            elif isinstance(handler_instance, PedidoHandler) and current_state_in_context in [
-                PymeConversationState.ESPERANDO_DETALLES_PEDIDO, PymeConversationState.CONFIRMANDO_PEDIDO_TEMP, PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2
-            ]:
-                is_owner_of_flow = True
-            elif isinstance(handler_instance, ClaimHandler) and current_state_in_context in [
-                PymeConversationState.ESPERANDO_DETALLES_RECLAMO, PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME, PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME
-            ]:
-                is_owner_of_flow = True
-            elif isinstance(handler_instance, TicketStatusHandler) and current_state_in_context in [
-                PymeConversationState.ESPERANDO_NUMERO_PEDIDO, PymeConversationState.ESPERANDO_NUMERO_TICKET
-            ]:
-                is_owner_of_flow = True
-            elif isinstance(handler_instance, ToolHandlerPyme) and current_state_in_context == PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK:
-                is_owner_of_flow = True
-            # Añadir otras condiciones si hay handlers que "poseen" un estado específico
-
-        elif not current_state_in_context: # Si no hay un flujo activo, el handler puede ser el que inicia un flujo basado en la intención
-            if (isinstance(handler_instance, PedidoHandler) and current_intencion == 'iniciar_pedido') or \
-               (isinstance(handler_instance, VectorCatalogHandler) and (current_intencion == 'general_pyme' or payload.get("action") == "ver_catalogo" )) or \
-               (isinstance(handler_instance, HumanEscalationPymeHandler) and current_intencion == 'hablar_con_agente_pyme') or \
-               (isinstance(handler_instance, TicketStatusHandler) and current_intencion in ['consultar_estado_pedido', 'consultar_estado_ticket']) or \
-               (isinstance(handler_instance, ToolHandlerPyme) and current_intencion == 'consultar_stock') or \
-               (isinstance(handler_instance, ClaimHandler) and current_intencion == 'iniciar_reclamo_pyme') or \
-               (isinstance(handler_instance, SalesEngageHandler) and current_intencion in ['recomendar', 'ofertas', 'add_to_cart']) or \
-               (isinstance(handler_instance, CrossSellHandler) and current_intencion == 'cross_sell') or \
-               (isinstance(handler_instance, RecomendacionHandler) and current_intencion == 'recomendar') or \
-               (isinstance(handler_instance, UpsellHandler) and current_intencion == 'upsell') or \
-               (isinstance(handler_instance, OfertaPersonalizadaHandler) and current_intencion == 'ofertas') or \
-               (isinstance(handler_instance, EnvioResumenHandler) and current_intencion in ['enviar_whatsapp', 'enviar_email', 'enviar_sms', 'link_pago']) or \
-               (isinstance(handler_instance, PostVentaHandler) and current_intencion == 'post_venta') or \
-               (isinstance(handler_instance, FaqHandler) and current_intencion == 'faq') or \
-               (isinstance(handler_instance, LLMHandler) and current_intencion == 'general_pyme') or \
-               (isinstance(handler_instance, IntentHandler) and current_intencion in ['consultar_horario', 'consultar_ubicacion']):
-                is_owner_of_flow = True
-
-        if is_owner_of_flow:
-            logger.info(f"[HANDLER] Procesando con handler de flujo/intención: {handler_class.__name__} (Estado: {current_state_in_context.name if current_state_in_context else 'None'}, Intención: {current_intencion})")
-            respuesta_parcial = handler_instance.handle(received_payload)
-            if respuesta_parcial:
-                respuesta_final = respuesta_parcial
-                break
-            else:
-                # Si el handler de flujo no respondió, puede que el payload no contenga lo esperado
-                logger.warning(f"[HANDLER] Handler {handler_class.__name__} (flujo/intención) no generó respuesta válida.")
-                # Si el estado es activo y el handler dueño no respondió con lo esperado,
-                # y no es un adjunto/acción explícita, entonces el flujo podría haberse roto.
-                # Ojo: No queremos resetear si el handler simplemente no encontró match interno (ej. producto no encontrado).
-                # Solo si el LLM dice que cambió de tema.
-                if current_state_in_context and not (payload.get("es_foto") or payload.get("es_ubicacion") or payload.get("action")):
-                    if es_pregunta_nueva(pregunta_str, "el dato solicitado"):
-                        logger.info("[GUARDIAN] Detectada PREGUNTA_NUEVA. Limpiando estado y re-evaluando intención.")
-                        context["contexto_pyme"].clear()
-                        context["intencion"] = None
-                        respuesta_final = None # Fuerza reinicio de la cadena
-                        break
-                continue # Continúa al siguiente handler si no se resolvió o no hay que resetear
-
-        logger.info(f"[HANDLER] Saltando {handler_class.__name__} (no es dueño del flujo/intención actual).")
+    # Lógica para cambio de dueño de sesión (para limpiar historial si cambia de pyme)
+    if owner_user:
+        last_id = flask_session.get(LAST_OWNER_SESION)
+        if last_id != owner_user.id:
+            flask_session[LAST_OWNER_SESION] = owner_user.id
+            flask_session[NOMBRE_HISTORIAL_SESION] = []
+            flask_session[CONTEXTO_PYME_SESION] = {}
+            context["contexto_pyme"] = {} # Reiniciar contexto si cambia de dueño
+            context["mensajes_previos"] = []
+    else:
+        flask_session.pop(LAST_OWNER_SESION, None)
 
 
-    if not respuesta_final:
-        # Fallback general si ningún handler respondió
-        respuesta_final = {
-            "respuesta": "Disculpa, no pude procesar tu solicitud. Por favor, intenta de nuevo o consulta nuestro catálogo.",
-            "fuente": "error_no_handler",
-            "estado_respuesta": "error_critico",
-            "botones": [
-                {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                {"texto": "Hablar con un agente", "action": "escalar"},
-            ]
-        }
-    
-    # Guardar historial de conversación
-    historial = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
-    historial.append({"role": "user", "content": pregunta_str}) # Guarda pregunta_str
-    asistente_content = str(respuesta_final.get('respuesta',''))
-    historial.append({"role": "assistant", "content": asistente_content})
-    flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:]
+    # --- INICIO DE CADENA DE HANDLERS ---
+    # TODAS LAS CLASES DE HANDLERS DEBEN ESTAR DEFINIDAS ARRIBA DE ESTE PUNTO
+    handler_chain = [
+        # Prioridad alta para interrupciones y small talk
+        LimitHandler, # Chequea límite de preguntas primero
+        CancelHandler, # Cancelar cualquier flujo
+        GreetingHandler, # Saludos
+        SmallTalkHandler, # Conversación casual
+        SentimentHandler, # Análisis de sentimiento
+        
+        # Handlers de flujos específicos (si hay un estado de conversación activo)
+        FollowUpHandler, # Guía al usuario en flujos activos (pedido, reclamo, etc.)
+        PedidoHandler, # Gestión de creación de pedidos (iniciar, agregar items, confirmar)
+        TicketStatusHandler, # Consulta de estado de pedidos/tickets
+        ClaimHandler, # Gestión de reclamos
+        
+        # Clasificación de intención general para enrutar a herramientas o flujos
+        IntentClassifierPymeHandler, 
+        
+        # Herramientas y búsqueda de catálogo
+        ToolHandlerPyme, # Herramientas simples (stock, horario, etc.)
+        VectorCatalogHandler, # Búsqueda y muestra de catálogo por búsqueda vectorial
+        
+        # Lógicas de venta y marketing (engagement)
+        SalesEngageHandler, # Sugerencias de venta
+        CrossSellHandler, # Venta cruzada
+        RecomendacionHandler, # Recomendaciones de productos
+        UpsellHandler, # Sugerencias de upgrade
+        OfertaPersonalizadaHandler, # Ofertas a clientes
+        EnvioResumenHandler, # Envío de resumen de pedido
+        PostVentaHandler, # Post-venta (encuestas, feedback)
 
-    # Guardar conversación en DB (solo si hay user_id)
-    try:
-        if context['user_id']:
-            db.session.add(Conversacion(
-                user_id=context['user_id'], 
-                pregunta=pregunta_str, # Guarda pregunta_str
-                respuesta=respuesta_final.get('respuesta', ''),
-                fuente=respuesta_final.get('fuente', 'desconocida'),
-                rubro=context['rubro_nombre']
-            ))
-            db.session.commit()
-    except Exception as e:
-        logging.error(f"[PYMES] Error guardando conversación en DB: {e}", exc_info=True)
-        db.session.rollback()
+        # Fallback de IA generativa y enganches
+        LLMHandler, # Preguntas generales (contexto web de la PYME)
+        IntentHandler, # Manejo de intenciones generales sin lógica de flujo compleja
+        EngancheAnonimoHandler, # Enganche para usuarios anónimos al final
+    ]
 
-    # Devolver respuesta final al frontend
-    return {
-        "respuesta": respuesta_final.get('respuesta', "Error: respuesta mal formada."),
-        "fuente": respuesta_final.get('fuente', 'desconocida'),
-        "contexto_actualizado": {CONTEXTO_PYME_SESION: contexto_pyme}, # Devuelve el contexto_pyme actualizado
-        "estado_respuesta": respuesta_final.get('estado_respuesta', 'no_entendido'),
-        "pedido_data": respuesta_final.get('pedido_data', None), # Si existe data de pedido
-        "botones": respuesta_final.get('botones', []),
-        # Aquí puedes añadir media_url y location_data si el bot los genera directamente en la respuesta (no solo para reclamos)
-    }
+    respuesta_final = None
+    
+    # Intenta clasificar la intención principal ANTES de pasar por la cadena de handlers
+    # Esto permite que los handlers internos confíen en `context['intencion']`
+    if not context["contexto_pyme"].get("estado_conversacion"): # Solo clasifica si no hay un flujo activo
+        # Si hay un action desde el frontend, úsalo como intención
+        if context.get("action"):
+            context["intencion"] = context["action"]
+            logger.info(f"[INTENT] Intención inicial: '{context['intencion']}' (desde action)")
+        else:
+            # Si no hay action, usa el LLM para clasificar
+            intencion_clasificada = _clasificar_intencion_pyme_con_llm(pregunta_str)
+            context["intencion"] = intencion_clasificada
+            logger.info(f"[INTENT] Intención inicial: '{context['intencion']}' (clasificada por LLM)")
+
+    # Iterar sobre la cadena de handlers
+    for handler_class in handler_chain:
+        handler_instance = handler_class(context)
+        
+        # Especial: Los handlers de interrupción o saludo siempre se evalúan primero
+        if handler_class in [CancelHandler, GreetingHandler, SmallTalkHandler, SentimentHandler, LimitHandler]:
+            respuesta_parcial = handler_instance.handle(received_payload)
+            if respuesta_parcial:
+                respuesta_final = respuesta_parcial
+                break 
+            continue 
+
+        # Lógica para que solo el handler del estado activo (o que coincida con la intención) responda
+        current_state_in_context = context["contexto_pyme"].get("estado_conversacion")
+        current_intencion = context.get("intencion")
+
+        is_owner_of_flow = False
+        if current_state_in_context:
+            # Si hay un estado activo, el handler debe ser el dueño de ese estado para procesar
+            if isinstance(handler_instance, FollowUpHandler) and current_state_in_context in [
+                PymeConversationState.ESPERANDO_DETALLES_PEDIDO, PymeConversationState.CONFIRMANDO_PEDIDO_TEMP,
+                PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2, PymeConversationState.ESPERANDO_NUMERO_PEDIDO,
+                PymeConversationState.ESPERANDO_NUMERO_TICKET, PymeConversationState.ESPERANDO_DETALLES_RECLAMO,
+                PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME, PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME,
+                PymeConversationState.ESPERANDO_CIUDAD_ENVIO, PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK # Añadidos para FollowUp si cubre esos estados
+            ]:
+                is_owner_of_flow = True
+            elif isinstance(handler_instance, PedidoHandler) and current_state_in_context in [
+                PymeConversationState.ESPERANDO_DETALLES_PEDIDO, PymeConversationState.CONFIRMANDO_PEDIDO_TEMP, PymeConversationState.CONFIRMANDO_PEDIDO_FINAL_PASO_2
+            ]:
+                is_owner_of_flow = True
+            elif isinstance(handler_instance, ClaimHandler) and current_state_in_context in [
+                PymeConversationState.ESPERANDO_DETALLES_RECLAMO, PymeConversationState.ESPERANDO_ADJUNTOS_RECLAMO_PYME, PymeConversationState.ESPERANDO_CONFIRMACION_RECLAMO_PYME
+            ]:
+                is_owner_of_flow = True
+            elif isinstance(handler_instance, TicketStatusHandler) and current_state_in_context in [
+                PymeConversationState.ESPERANDO_NUMERO_PEDIDO, PymeConversationState.ESPERANDO_NUMERO_TICKET
+            ]:
+                is_owner_of_flow = True
+            elif isinstance(handler_instance, ToolHandlerPyme) and current_state_in_context == PymeConversationState.ESPERANDO_NOMBRE_PRODUCTO_STOCK:
+                is_owner_of_flow = True
+            # Añadir otras condiciones si hay handlers que "poseen" un estado específico
+
+        elif not current_state_in_context: # Si no hay un flujo activo, el handler puede ser el que inicia un flujo basado en la intención
+            if (isinstance(handler_instance, PedidoHandler) and current_intencion == 'iniciar_pedido') or \
+               (isinstance(handler_instance, VectorCatalogHandler) and (current_intencion == 'general_pyme' or payload.get("action") == "ver_catalogo" )) or \
+               (isinstance(handler_instance, HumanEscalationPymeHandler) and current_intencion == 'hablar_con_agente_pyme') or \
+               (isinstance(handler_instance, TicketStatusHandler) and current_intencion in ['consultar_estado_pedido', 'consultar_estado_ticket']) or \
+               (isinstance(handler_instance, ToolHandlerPyme) and current_intencion == 'consultar_stock') or \
+               (isinstance(handler_instance, ClaimHandler) and current_intencion == 'iniciar_reclamo_pyme') or \
+               (isinstance(handler_instance, SalesEngageHandler) and current_intencion in ['recomendar', 'ofertas', 'add_to_cart']) or \
+               (isinstance(handler_instance, CrossSellHandler) and current_intencion == 'cross_sell') or \
+               (isinstance(handler_instance, RecomendacionHandler) and current_intencion == 'recomendar') or \
+               (isinstance(handler_instance, UpsellHandler) and current_intencion == 'upsell') or \
+               (isinstance(handler_instance, OfertaPersonalizadaHandler) and current_intencion == 'ofertas') or \
+               (isinstance(handler_instance, EnvioResumenHandler) and current_intencion in ['enviar_whatsapp', 'enviar_email', 'enviar_sms', 'link_pago']) or \
+               (isinstance(handler_instance, PostVentaHandler) and current_intencion == 'post_venta') or \
+               (isinstance(handler_instance, FaqHandler) and current_intencion == 'faq') or \
+               (isinstance(handler_instance, LLMHandler) and current_intencion == 'general_pyme') or \
+               (isinstance(handler_instance, IntentHandler) and current_intencion in ['consultar_horario', 'consultar_ubicacion']):
+                is_owner_of_flow = True
+
+        if is_owner_of_flow:
+            logger.info(f"[HANDLER] Procesando con handler de flujo/intención: {handler_class.__name__} (Estado: {current_state_in_context.name if current_state_in_context else 'None'}, Intención: {current_intencion})")
+            respuesta_parcial = handler_instance.handle(received_payload)
+            if respuesta_parcial:
+                respuesta_final = respuesta_parcial
+                break
+            else:
+                logger.warning(f"[HANDLER] Handler {handler_class.__name__} (flujo/intención) no generó respuesta válida.")
+                if current_state_in_context and not (payload.get("es_foto") or payload.get("es_ubicacion") or payload.get("action")):
+                    if es_pregunta_nueva(pregunta_str, "el dato solicitado"):
+                        logger.info("[GUARDIAN] Detectada PREGUNTA_NUEVA. Limpiando estado y re-evaluando intención.")
+                        context["contexto_pyme"].clear()
+                        context["intencion"] = None
+                        respuesta_final = None 
+                        break
+                continue 
+
+        logger.info(f"[HANDLER] Saltando {handler_class.__name__} (no es dueño del flujo/intención actual).")
+
+
+    if not respuesta_final:
+        respuesta_final = {
+            "respuesta": "Disculpa, no pude procesar tu solicitud. Por favor, intenta de nuevo o consulta nuestro catálogo.",
+            "fuente": "error_no_handler",
+            "estado_respuesta": "error_critico",
+            "botones": [
+                {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                {"texto": "Hablar con un agente", "action": "escalar"},
+            ]
+        }
+    
+    # Guardar historial de conversación
+    historial = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
+    historial.append({"role": "user", "content": pregunta_str}) 
+    asistente_content = str(respuesta_final.get('respuesta',''))
+    historial.append({"role": "assistant", "content": asistente_content})
+    flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:]
+
+    # Guardar conversación en DB (solo si hay user_id)
+    try:
+        if context['user_id']:
+            db.session.add(Conversacion(
+                user_id=context['user_id'], 
+                pregunta=pregunta_str, 
+                respuesta=respuesta_final.get('respuesta', ''),
+                fuente=respuesta_final.get('fuente', 'desconocida'),
+                rubro=context['rubro_nombre']
+            ))
+            db.session.commit()
+    except Exception as e:
+        logging.error(f"[PYMES] Error guardando conversación en DB: {e}", exc_info=True)
+        db.session.rollback()
+
+    # Devolver respuesta final al frontend
+    return {
+        "respuesta": respuesta_final.get('respuesta', "Error: respuesta mal formada."),
+        "fuente": respuesta_final.get('fuente', 'desconocida'),
+        "contexto_actualizado": {CONTEXTO_PYME_SESION: contexto_pyme}, 
+        "estado_respuesta": respuesta_final.get('estado_respuesta', 'no_entendido'),
+        "pedido_data": respuesta_final.get('pedido_data', None), 
+        "botones": respuesta_final.get('botones', []),
+        "media_url": context.get('foto_url'), 
+        "location_data": context.get('ubicacion_usuario') 
+    }
