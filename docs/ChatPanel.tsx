@@ -7,8 +7,8 @@ export interface ChatPanelProps {
 
 const ChatPanel: React.FC<ChatPanelProps> = ({ messages }) => {
   return (
-    <div className="flex flex-col items-center w-full min-h-screen bg-[#111827]">
-      <div className="w-full max-w-lg flex flex-col flex-1 py-6 px-2">
+    <div className="flex flex-col items-center w-full h-full md:h-screen bg-[#111827]">
+      <div className="w-full max-w-md md:max-w-lg mx-auto flex flex-col flex-1 py-4 px-2 md:px-4">
         {messages.map((msg) => (
           <ChatMessage key={msg.id} message={msg} />
         ))}
