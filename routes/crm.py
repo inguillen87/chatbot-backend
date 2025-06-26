@@ -10,22 +10,67 @@ from models import (
 from extensions import db
 from sqlalchemy import or_
 from routes.auth import token_requerido, admin_o_empleado_requerido
+from sqlalchemy import or_
 
 crm_bp = Blueprint('crm', __name__, url_prefix='/crm')
 
 
-def _obtener_clientes(current_user: User, tag: str | None = None, q: str | None = None, marketing: str | None = None):
+def _obtener_clientes(
+    current_user: User,
+    tag: str | None = None,
+    q: str | None = None,
+    acepta_marketing: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+):
+    """Obtiene los clientes permitiendo búsqueda y filtros opcionales.
+
+    Args:
+        current_user: Usuario dueño de los clientes.
+        tag: Filtrar por tag existente.
+        q: Término de búsqueda en nombre, email o teléfono.
+        acepta_marketing: 'true' / 'false' para filtrar por suscripción.
+        sort: Campo por el cual ordenar (name, email, telefono).
+        order: 'asc' o 'desc'.
+        limit: Cantidad máxima de registros a devolver.
+        offset: Desplazamiento inicial de los resultados.
+    """
     query = User.query.filter_by(empresa_id=current_user.id)
     if tag:
         like = f"%{tag}%"
         query = query.filter(User.tags.ilike(like))
     if q:
         like = f"%{q}%"
-        query = query.filter(or_(User.name.ilike(like), User.email.ilike(like)))
-    if marketing is not None:
-        val = str(marketing).lower() in {"1", "true", "yes", "t", "y"}
-        query = query.filter(User.acepta_marketing.is_(val))
-    clientes = query.order_by(User.name.asc()).all()
+        query = query.filter(
+            or_(User.name.ilike(like), User.email.ilike(like), User.telefono.ilike(like))
+        )
+    if acepta_marketing is not None:
+        val = acepta_marketing.lower() in {"1", "true", "t", "yes", "si"}
+        query = query.filter(User.acepta_marketing == val)
+    if sort not in {"name", "email", "telefono", "id"}:
+        sort = "name"
+    columna = getattr(User, sort)
+    if order == "desc":
+        query = query.order_by(columna.desc())
+    else:
+        query = query.order_by(columna.asc())
+    if offset is not None:
+        try:
+            offset_val = int(offset)
+            if offset_val >= 0:
+                query = query.offset(offset_val)
+        except (TypeError, ValueError):
+            pass
+    if limit is not None:
+        try:
+            limit_val = int(limit)
+            if limit_val >= 0:
+                query = query.limit(limit_val)
+        except (TypeError, ValueError):
+            pass
+    clientes = query.all()
     return [
         {
             "id": c.id,
@@ -47,8 +92,21 @@ def listar_clientes(current_user: User):
     """Devuelve los usuarios asociados a la empresa o municipio del token."""
     tag = request.args.get('tag')
     q = request.args.get('q')
-    marketing = request.args.get('marketing')
-    resultado = _obtener_clientes(current_user, tag, q, marketing)
+    marketing = request.args.get('acepta_marketing')
+    sort = request.args.get('sort')
+    order = request.args.get('order')
+    limit = request.args.get('limit')
+    offset = request.args.get('offset')
+    resultado = _obtener_clientes(
+        current_user,
+        tag,
+        q=q,
+        acepta_marketing=marketing,
+        sort=sort,
+        order=order,
+        limit=limit,
+        offset=offset,
+    )
     return jsonify(resultado)
 
 
@@ -59,8 +117,21 @@ def listar_usuarios(current_user: User):
     """Alias de /clientes por compatibilidad."""
     tag = request.args.get('tag')
     q = request.args.get('q')
-    marketing = request.args.get('marketing')
-    resultado = _obtener_clientes(current_user, tag, q, marketing)
+    marketing = request.args.get('acepta_marketing')
+    sort = request.args.get('sort')
+    order = request.args.get('order')
+    limit = request.args.get('limit')
+    offset = request.args.get('offset')
+    resultado = _obtener_clientes(
+        current_user,
+        tag,
+        q=q,
+        acepta_marketing=marketing,
+        sort=sort,
+        order=order,
+        limit=limit,
+        offset=offset,
+    )
     return jsonify(resultado)
 
 
