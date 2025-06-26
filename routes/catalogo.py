@@ -9,10 +9,14 @@ from services.qdrant_search import (
     CATALOGO_PYME,
     CATALOGO_MUNICIPIO,
 )
-from services.upload_processor import (
-    subir_catalogo as _subir_catalogo,
-    CATALOGO_FOLDER,
-)
+try:
+    from services.upload_processor import (
+        subir_catalogo as _subir_catalogo,
+        CATALOGO_FOLDER,
+    )
+except ImportError:  # fallback for older versions
+    from services.upload_processor import subir_catalogo as _subir_catalogo
+    CATALOGO_FOLDER = os.path.join("data", "catalogos")
 from services.utils import (
     calcular_precio_por_unidad,
     limpiar_texto_base,
