@@ -9,7 +9,12 @@ from services.qdrant_search import (
     CATALOGO_MUNICIPIO,
 )
 from services.upload_processor import subir_catalogo as _subir_catalogo
-from services.utils import calcular_precio_por_unidad, limpiar_texto_base
+from services.utils import (
+    calcular_precio_por_unidad,
+    limpiar_texto_base,
+    parse_precio_flexible,
+    parse_cantidad_flexible,
+)
 
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
@@ -67,10 +72,48 @@ def _formatear_producto(data: dict) -> dict:
     }
 
 
+def _agrupar_variantes(productos: list[dict]) -> list[dict]:
+    """Agrupa productos por nombre y marca consolidando sus variantes."""
+    grupos: dict[tuple, dict] = {}
+    for prod in productos:
+        clave = (prod.get("nombre"), prod.get("marca"))
+        base = grupos.setdefault(
+            clave,
+            {
+                "nombre": prod.get("nombre"),
+                "marca": prod.get("marca"),
+                "categoria": prod.get("categoria"),
+                "descripcion": prod.get("descripcion"),
+                "sku": prod.get("sku"),
+                "imagen_url": prod.get("imagen_url"),
+                "variants": [],
+            },
+        )
+        variante = {
+            "presentacion": prod.get("presentacion"),
+            "talles": prod.get("talles"),
+            "colores": prod.get("colores"),
+            "precio_unitario": prod.get("precio_unitario"),
+            "precio_pack": prod.get("precio_pack"),
+            "stock": prod.get("stock"),
+        }
+        variante = {k: v for k, v in variante.items() if v not in (None, "")}
+        base["variants"].append(variante)
+    return list(grupos.values())
+
+
 @catalogo_bp.route('', methods=['GET'])
 @token_requerido
 def listar_catalogo(user):
-    items = CatalogoItem.query.filter_by(user_id=user.id).all()
+    categoria = request.args.get("categoria")
+    precio_min = request.args.get("precio_min")
+    precio_max = request.args.get("precio_max")
+    stock_min = request.args.get("stock_min")
+
+    consulta = CatalogoItem.query.filter_by(user_id=user.id)
+    if categoria:
+        consulta = consulta.filter_by(categoria=categoria)
+    items = consulta.all()
     if not items:
         return jsonify(
             {
@@ -81,20 +124,43 @@ def listar_catalogo(user):
 
     productos = []
     for item in items:
-        productos.append(
-            _formatear_producto(
-                {
-                    "nombre": item.nombre,
-                    "categoria": item.categoria,
-                    "descripcion": item.descripcion,
-                    "sku": item.sku,
-                    "unidad": item.unidad,
-                    "precio_str": item.precio,
-                    "cantidad": item.cantidad,
-                    "marca": item.marca,
-                }
-            )
+        prod = _formatear_producto(
+            {
+                "nombre": item.nombre,
+                "categoria": item.categoria,
+                "descripcion": item.descripcion,
+                "sku": item.sku,
+                "unidad": item.unidad,
+                "precio_str": item.precio,
+                "cantidad": item.cantidad,
+                "marca": item.marca,
+            }
         )
+
+        precio_val = None
+        if isinstance(prod.get("precio_unitario"), (int, float)):
+            precio_val = float(prod["precio_unitario"])
+        else:
+            _, f_val, _ = parse_precio_flexible(str(prod.get("precio_unitario")))
+            precio_val = f_val
+
+        if precio_min and precio_val is not None and precio_val < float(precio_min):
+            continue
+        if precio_max and precio_val is not None and precio_val > float(precio_max):
+            continue
+
+        if stock_min:
+            stock_val = parse_cantidad_flexible(prod.get("stock"))
+            if stock_val is not None and stock_val < float(stock_min):
+                continue
+
+        productos.append(prod)
+
+    productos = sorted(
+        productos,
+        key=lambda p: parse_precio_flexible(p.get("precio_unitario"))[1] or 0,
+    )
+    productos = _agrupar_variantes(productos)
     return jsonify(productos)
 
 
@@ -115,6 +181,7 @@ def buscar_en_catalogo(user):
     for hit in resultados:
         if hasattr(hit, 'payload') and isinstance(hit.payload, dict):
             productos.append(_formatear_producto(hit.payload))
+    productos = _agrupar_variantes(productos)
     return jsonify(productos)
 
 
