@@ -1,4 +1,5 @@
 import React from "react";
+import "./chat.css";
 
 export interface ChatButton {
   text: string;
@@ -30,8 +31,10 @@ export default function ChatMessage({ message }: ChatMessageProps) {
         `}
       >
         <div className="flex items-center gap-2">
-          {isBot && (
+          {isBot ? (
             <img src="/logo-icon-blue.png" alt="Bot" className="w-6 h-6" />
+          ) : (
+            <img src="/user-avatar.png" alt="User" className="w-6 h-6 user-avatar" />
           )}
           <span className="font-medium text-base break-words">{message.text}</span>
         </div>
