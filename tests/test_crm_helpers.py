@@ -2,6 +2,10 @@ import unittest
 from types import SimpleNamespace
 
 
+def _obtener_clientes(resultados, tag=None):
+    """Simplified helper mirroring `routes.crm._obtener_clientes`."""
+    if tag:
+        resultados = [c for c in resultados if tag in (c.tags or "").split(',')]
     return [
         {
             "id": c.id,

@@ -618,9 +618,9 @@ def dashboard_info(user):
 
     panels = ["perfil"]
     if user.rol == "admin":
-        panels.extend(["tickets", "crm", "empleados"])
+        panels.extend(["tickets", "crm", "empleados", "pedidos"])
     elif user.rol == "empleado":
-        panels.extend(["tickets", "crm"])
+        panels.extend(["tickets", "crm", "pedidos"])
     if user.municipio_id:
         panels.append("municipio")
 

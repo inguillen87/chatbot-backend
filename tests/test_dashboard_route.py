@@ -19,6 +19,7 @@ class DashboardRouteTests(unittest.TestCase):
         self.assertIn('municipio', resp['panels'])
         self.assertIn('crm', resp['panels'])
         self.assertIn('empleados', resp['panels'])
+        self.assertIn('pedidos', resp['panels'])
         self.assertEqual(resp['tipo_chat'], 'municipio')
 
 if __name__ == '__main__':
