@@ -27,16 +27,23 @@ export default function ChatMessage({ message }: ChatMessageProps) {
             ? "bg-[#131c2b] text-white border border-[#195fa4]"
             : "bg-gradient-to-br from-blue-600 to-blue-800 text-white"
           }
-          rounded-2xl shadow-lg px-4 py-3 max-w-[80vw] md:max-w-md
+          rounded-2xl shadow-lg px-4 py-3 max-w-[85vw] md:max-w-lg
         `}
       >
         <div className="flex items-center gap-2">
           {isBot ? (
             <img src="/logo-icon-blue.png" alt="Bot" className="w-6 h-6" />
           ) : (
-            <img src="/user-avatar.png" alt="User" className="w-6 h-6 user-avatar" />
+            <img
+              src="./images/user-avatar.svg"
+              alt="User"
+              className="w-6 h-6 user-avatar"
+            />
           )}
-          <span className="font-medium text-base break-words">{message.text}</span>
+          <span
+            className="font-medium text-base break-words"
+            dangerouslySetInnerHTML={{ __html: message.text }}
+          />
         </div>
         {Array.isArray(message.botones) && message.botones.length > 0 && (
           <div className="flex flex-wrap gap-2 pt-1">
