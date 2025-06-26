@@ -8,7 +8,7 @@ import unittest.mock
 @contextmanager
 def stub_modules():
     cohere_stub = ModuleType('services.cohere_ai')
-    cohere_stub.get_cohere_response = lambda *a, **k: ""
+    cohere_stub.robust_chat = lambda *a, **k: ""
     pymes_stub = ModuleType('services.pymes')
     pymes_stub.responder_pyme = lambda *a, **k: {'origen': 'pyme'}
     municipio_stub = ModuleType('services.municipios')
