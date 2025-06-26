@@ -1,5 +1,6 @@
-from flask import Blueprint, request, jsonify
-from models import CatalogoItem, QA
+import os
+from flask import Blueprint, request, jsonify, send_from_directory
+from models import CatalogoItem, QA, ArchivoAdjunto
 from routes.auth import token_requerido
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
@@ -8,7 +9,10 @@ from services.qdrant_search import (
     CATALOGO_PYME,
     CATALOGO_MUNICIPIO,
 )
-from services.upload_processor import subir_catalogo as _subir_catalogo
+from services.upload_processor import (
+    subir_catalogo as _subir_catalogo,
+    CATALOGO_FOLDER,
+)
 from services.utils import (
     calcular_precio_por_unidad,
     limpiar_texto_base,
@@ -23,6 +27,32 @@ catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 def cargar_catalogo():
     """Alias que reutiliza la lógica de ``subir_catalogo``."""
     return _subir_catalogo()
+
+
+@catalogo_bp.route('/archivos', methods=['GET'])
+@token_requerido
+def listar_archivos(user):
+    """Lista los archivos de catálogo disponibles para el token."""
+    catalogos = (
+        ArchivoAdjunto.query.filter_by(user_id=user.id, tipo="catalogo")
+        .order_by(ArchivoAdjunto.fecha.desc())
+        .all()
+    )
+    data = [
+        {"nombre": c.nombre_original or c.filename, "url": f"/catalogo/archivo/{c.filename}"}
+        for c in catalogos
+    ]
+    return jsonify(data)
+
+
+@catalogo_bp.route('/archivo/<path:filename>', methods=['GET'])
+@token_requerido
+def descargar_archivo(user, filename):
+    """Devuelve el archivo del catálogo si pertenece al usuario."""
+    adj = ArchivoAdjunto.query.filter_by(filename=filename, tipo="catalogo", user_id=user.id).first()
+    if not adj:
+        return jsonify({"error": "Archivo no encontrado"}), 404
+    return send_from_directory(CATALOGO_FOLDER, filename, as_attachment=True)
 
 
 def _formatear_producto(data: dict) -> dict:
