@@ -919,7 +919,7 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         # 7. Adjuntos (solo en este paso podés aceptar foto/ubicación)
         if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
-            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str) # Acceder a action desde payload
+            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
             
             if accion in ["sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias"]:
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
@@ -929,6 +929,22 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "botones": [
                         {"texto": "Confirmar reclamo", "action": "confirmar_reclamo"},
                         {"texto": "Editar datos", "action": "editar_reclamo"}
+                    ]
+                }
+
+            if accion == "adjuntar_foto":
+                return {
+                    "respuesta": "Enviá la imagen ahora y la adjuntaré al reclamo.",
+                    "botones": [
+                        {"texto": "No, continuar", "action": "sin_adjuntos"}
+                    ]
+                }
+
+            if accion == "compartir_ubicacion":
+                return {
+                    "respuesta": "Compartí tu ubicación actual desde el dispositivo.",
+                    "botones": [
+                        {"texto": "No, continuar", "action": "sin_adjuntos"}
                     ]
                 }
             
@@ -966,9 +982,9 @@ class ReclamoHandler(BaseMunicipioHandler):
         # 8. Confirmación y creación de ticket
         if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
             texto_normalizado = normalizar_texto(pregunta_str)
-            accion = payload.get("action", "").lower() or texto_normalizado # Acceder a action desde payload
+            accion = payload.get("action", "").lower() or texto_normalizado
 
-            if accion in ["confirmar_reclamo", "confirmar", "si", "sí"]:
+            if accion in ["confirmar_reclamo", "confirmar", "finalizar", "finalizar reclamo", "si", "sí"]:
                 # Armar bien los detalles y crear el ticket
                 # Asegurarse de que los datos estén presentes antes de crear
                 if not all(memoria.get(f"{campo}_reclamo" if campo not in ["nombre", "telefono", "email"] else f"{campo}_vecino") for campo in ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]):
@@ -1541,8 +1557,12 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Nuevo reclamo": "iniciar_reclamo",
     "Adjuntar foto": "adjuntar_foto",
     "Compartir ubicación": "compartir_ubicacion",
+    "Foto": "adjuntar_foto",
+    "Ubicación": "compartir_ubicacion",
     "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
     "Confirmar reclamo": "confirmar_reclamo",
+    "Finalizar": "confirmar_reclamo",
+    "Finalizar reclamo": "confirmar_reclamo",
     "Editar datos": "editar_reclamo",
     "Sí, solucionado": "confirmar_cierre_ticket",
     "No, aún no": "no_cerrar_ticket",
@@ -1852,8 +1872,12 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Nuevo reclamo": "iniciar_reclamo",
     "Adjuntar foto": "adjuntar_foto",
     "Compartir ubicación": "compartir_ubicacion",
+    "Foto": "adjuntar_foto",
+    "Ubicación": "compartir_ubicacion",
     "No, continuar": "sin_adjuntos", # Renombrado para mayor claridad en el backend
     "Confirmar reclamo": "confirmar_reclamo",
+    "Finalizar": "confirmar_reclamo",
+    "Finalizar reclamo": "confirmar_reclamo",
     "Editar datos": "editar_reclamo",
     "Sí, solucionado": "confirmar_cierre_ticket",
     "No, aún no": "no_cerrar_ticket",
