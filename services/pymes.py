@@ -22,6 +22,26 @@ NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme"
 MAX_HISTORIAL_CHAT = 30
 CANCEL_KEYWORDS = {"cancel", "cancelar", "cancelalo", "anular", "borrar", "no gracias"}
 
+# Prompt y helper para validar que el usuario realmente ingrese un producto
+PROMPT_VALIDAR_PRODUCTO = """
+¿El USUARIO menciona un producto o código y una cantidad para comprar? Responde
+solo con SI o NO.
+
+MENSAJE DEL USUARIO: "{texto}"
+"""
+
+
+def es_producto_valido_llm(texto: str) -> bool:
+    """Utiliza el LLM para determinar si la entrada parece un producto."""
+    try:
+        decision = robust_chat(message=PROMPT_VALIDAR_PRODUCTO.format(texto=texto))
+        if decision:
+            return decision.strip().upper().startswith("SI")
+    except Exception as e:
+        logger.error(f"[PYME] Error validando producto con LLM: {e}")
+    # Por defecto asumimos que es válido para no interrumpir el flujo
+    return True
+
 
 def tiene_archivo_catalogo(user_id: int) -> bool:
     """Verifica si el usuario tiene un catálogo cargado."""
@@ -253,11 +273,13 @@ class PedidoHandler(BaseHandler):
         )
         estado = deserialize_state(ctx.get("estado_conversacion")) or PymeConversationState.IDLE
         texto = pregunta.lower()
+        intentos = ctx.get("reintentos", 0)
 
         if estado == PymeConversationState.ESPERANDO_PRODUCTO:
             if any(k in texto for k in CANCEL_KEYWORDS):
                 ctx.clear()
                 ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+                ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
                 return {
                     "respuesta": "Pedido cancelado. ¿Necesitás otra cosa?",
@@ -269,6 +291,7 @@ class PedidoHandler(BaseHandler):
                 }
             if "finalizar" in texto:
                 ctx["estado_conversacion"] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
+                ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
                 return {
                     "respuesta": "¿Confirmás tu pedido?",
@@ -278,6 +301,28 @@ class PedidoHandler(BaseHandler):
                         {"texto": "Cancelar", "action": "cancelar_pedido"},
                     ],
                 }
+            if not es_producto_valido_llm(texto):
+                intentos += 1
+                ctx["reintentos"] = intentos
+                flask_session[CONTEXTO_PYME] = ctx
+                if intentos >= 3:
+                    ctx.clear()
+                    ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+                    ctx["reintentos"] = 0
+                    flask_session[CONTEXTO_PYME] = ctx
+                    return {
+                        "respuesta": "No pude entender los productos. Cancelé el pedido para empezar de nuevo.",
+                        "fuente": "pedido_cancelado",
+                        "botones": [
+                            {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                            {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                        ],
+                    }
+                return {
+                    "respuesta": "No entendí el producto. Indicá nombre o código. Si querés cancelar, escribí 'cancelar'.",
+                    "fuente": "producto_no_reconocido",
+                }
+            ctx["reintentos"] = 0
             flask_session[CONTEXTO_PYME] = ctx
             return {
                 "respuesta": "Producto agregado. Indicá otro o escribí 'finalizar pedido'.",
@@ -292,6 +337,7 @@ class PedidoHandler(BaseHandler):
             if any(k in texto for k in CANCEL_KEYWORDS):
                 ctx.clear()
                 ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+                ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
                 return {
                     "respuesta": "Pedido cancelado. ¿Necesitás otra cosa?",
@@ -303,12 +349,28 @@ class PedidoHandler(BaseHandler):
                 }
             if texto.strip() in {"si", "sí", "confirmo", "confirmar"}:
                 ctx["estado_conversacion"] = serialize_state(PymeConversationState.PEDIDO_FINALIZADO)
+                ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
                 return {
                     "respuesta": "¡Listo! Tu pedido fue registrado.",
                     "fuente": "pedido_finalizado",
                 }
+            intentos += 1
+            ctx["reintentos"] = intentos
             flask_session[CONTEXTO_PYME] = ctx
+            if intentos >= 3:
+                ctx.clear()
+                ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+                ctx["reintentos"] = 0
+                flask_session[CONTEXTO_PYME] = ctx
+                return {
+                    "respuesta": "No pudimos confirmar tu pedido y fue cancelado.",
+                    "fuente": "pedido_cancelado",
+                    "botones": [
+                        {"texto": "Ver catálogo", "action": "ver_catalogo"},
+                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                    ],
+                }
             return {
                 "respuesta": "¿Confirmás tu pedido? Escribí 'sí' para confirmar o 'cancelar' para anular.",
                 "fuente": "confirmando_pedido",
@@ -316,6 +378,7 @@ class PedidoHandler(BaseHandler):
 
         if estado == PymeConversationState.PEDIDO_FINALIZADO:
             ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+            ctx["reintentos"] = 0
             flask_session[CONTEXTO_PYME] = ctx
             return {
                 "respuesta": "Tu pedido ya fue finalizado. ¿Necesitás algo más?",
@@ -323,6 +386,7 @@ class PedidoHandler(BaseHandler):
             }
 
         ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_PRODUCTO)
+        ctx["reintentos"] = 0
         flask_session[CONTEXTO_PYME] = ctx
         return {
             "respuesta": "¿Qué producto y cuántas unidades querés pedir? Decime el nombre o el código. Cuando termines, escribí 'finalizar pedido'.",
