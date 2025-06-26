@@ -69,9 +69,12 @@ def municipal_incidents(current_user):
             "categoria": getattr(t, "categoria", None),
             "estado": t.estado,
             "fecha": t.fecha.isoformat() if getattr(t, "fecha", None) else None,
+            "pregunta": getattr(t, "pregunta", None),
+            "detalles": getattr(t, "detalles", None),
             "direccion": getattr(t, "direccion", None),
             "latitud": getattr(t, "latitud", None),
             "longitud": getattr(t, "longitud", None),
+            "archivo_url": getattr(t, "archivo_url", None),
         }
         for t in tickets
     ]
