@@ -170,7 +170,7 @@ class PymeLogicTests(unittest.TestCase):
     def test_cancel_keywords(self):
         contexto = {
             'contexto_pyme': {
-                'estado_conversacion': pymes.serialize_state(pymes.PymeConversationState.CONFIRMANDO_PEDIDO_TEMP),
+                'estado_conversacion': pymes.serialize_state(pymes.PymeConversationState.ESPERANDO_PRODUCTO),
                 'productos_solicitados_temp': [{'nombre': 'vino', 'cantidad': 1}],
                 'monto_total_temp': 100
             },
