@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import AdjuntarArchivo from "./AdjuntarArchivo";
+import useSpeechRecognition from "./useSpeechRecognition";
 
 // Dummy handler if none is provided
 const onFileUploaded = (file: File) => {
@@ -13,6 +14,13 @@ type Props = {
 
 const ChatInput: React.FC<Props> = ({ onSend, onFileUploaded: onUploadProp }) => {
   const [text, setText] = useState("");
+  const { transcript, listening, start, stop, supported } = useSpeechRecognition();
+
+  useEffect(() => {
+    if (transcript) {
+      setText(transcript);
+    }
+  }, [transcript]);
 
   const handleSend = () => {
     if (text.trim()) {
@@ -24,6 +32,14 @@ const ChatInput: React.FC<Props> = ({ onSend, onFileUploaded: onUploadProp }) =>
   // Use provided handler or fall back to dummy
   const handleFileUploaded = onUploadProp || onFileUploaded;
 
+  const toggleMic = () => {
+    if (listening) {
+      stop();
+    } else {
+      start();
+    }
+  };
+
   return (
     <div>
       <input
@@ -31,6 +47,11 @@ const ChatInput: React.FC<Props> = ({ onSend, onFileUploaded: onUploadProp }) =>
         onChange={(e) => setText(e.target.value)}
         placeholder="Escribe un mensaje..."
       />
+      {supported && (
+        <button onClick={toggleMic}>
+          {listening ? "Detener" : "Hablar"}
+        </button>
+      )}
       <button onClick={handleSend}>Enviar</button>
       <AdjuntarArchivo onUpload={handleFileUploaded} />
     </div>
