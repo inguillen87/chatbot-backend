@@ -106,10 +106,11 @@ class DummyUser(SimpleNamespace):
             plan='full',
             preguntas_usadas=0,
             limite_preguntas=100,
+            link_web='https://empresa.test',
         )
 
 class PymeLogicTests(unittest.TestCase):
-    @patch('services.pymes.get_cohere_response', return_value='PREGUNTA_NUEVA')
+    @patch('services.pymes.robust_chat', return_value='PREGUNTA_NUEVA')
     def test_es_pregunta_nueva_llm(self, mock_llm):
         self.assertTrue(pymes.es_pregunta_nueva('hola', 'el dato solicitado'))
         mock_llm.return_value = 'RESPUESTA_VALIDA'
@@ -146,14 +147,14 @@ class PymeLogicTests(unittest.TestCase):
             self.assertIn('Hola', resp['respuesta'])
             self.assertEqual(mock_llm.call_count, 2)
 
-    @patch('services.pymes.get_cohere_response', return_value='negativo')
+    @patch('services.pymes.robust_chat', return_value='negativo')
     def test_sentiment_handler(self, mock_llm):
         user = DummyUser()
         resp = pymes.responder_pyme('este servicio es horrible', user, None, viewer_user=user)
         self.assertEqual(resp['fuente'], 'sentimiento_negativo')
         self.assertIn('agente', resp['respuesta'].lower())
 
-    @patch('services.pymes.get_cohere_response', return_value='positivo')
+    @patch('services.pymes.robust_chat', return_value='positivo')
     def test_sentiment_handler_positive(self, mock_llm):
         user = DummyUser()
         resp = pymes.responder_pyme('excelente servicio muchas gracias', user, None, viewer_user=user)
@@ -182,6 +183,16 @@ class PymeLogicTests(unittest.TestCase):
         resp = pymes.responder_pyme('quiero comprar', user, None, viewer_user=user)
         self.assertEqual(resp['estado_respuesta'], 'pyme_pregunta_pedido')
         self.assertIn('pedido', resp['respuesta'].lower())
+
+    @patch('services.pymes.sugerencias_por_rubro', return_value=[])
+    @patch('services.pymes.buscar_en_faq_spacy', return_value=None)
+    @patch('services.pymes.obtener_info_web', return_value={'envios': 'en el dia'})
+    @patch('services.pymes.robust_chat', return_value='Enviamos en el dia')
+    def test_contextual_llm_handler(self, mock_llm, mock_web, mock_faq, mock_sug):
+        user = DummyUser()
+        resp = pymes.responder_pyme('costo de envio?', user, None, viewer_user=user)
+        self.assertEqual(resp['fuente'], 'llm_contextual_pyme')
+        self.assertIn('en el dia', resp['respuesta'])
 
 
 if __name__ == '__main__':
