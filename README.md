@@ -90,6 +90,9 @@ El valor se obtiene desde `/google-maps-key` para inicializar Google Maps.
 Para ajustar la zona horaria de los tickets puedes definir `TIMEZONE_OFFSET` con
 la diferencia respecto a UTC en horas (por ejemplo `-3` para Argentina).
 Si no se indica, se asume `-3`.
+Si quieres rotar frases en el globito del chat puedes definir
+`ATTENTION_BUBBLE_CHOICES` con una lista separada por barras verticales
+(`|`). Por ejemplo `"Hola|¿Necesitas ayuda?|¿Querés hacer un reclamo?"`.
 
 ## Uso correcto del rubro
 

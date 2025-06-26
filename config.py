@@ -48,6 +48,10 @@ class Config:
     ATTENTION_BUBBLE_TEXT = os.getenv(
         "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
     )
+    # Lista opcional de mensajes para rotar en el globito de atención
+    ATTENTION_BUBBLE_CHOICES = [m.strip() for m in os.getenv(
+        "ATTENTION_BUBBLE_CHOICES", ""
+    ).split("|") if m.strip()] or None
 
     # Base URL del frontend para generar links de productos
     TIENDA_BASE_URL = os.getenv("TIENDA_BASE_URL", "")

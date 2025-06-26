@@ -1,5 +1,6 @@
 # routes/chat.py
 import logging
+import random
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func
 from models import User, Rubro
@@ -284,7 +285,11 @@ def widget_attention_options():
 @chat_bp.route("/widget/attention", methods=["GET"])
 def widget_attention():
     """Devuelve un mensaje breve para mostrar en el globito del chat."""
-    mensaje = current_app.config.get(
-        "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
-    )
+    opciones = current_app.config.get("ATTENTION_BUBBLE_CHOICES")
+    if opciones:
+        mensaje = random.choice(opciones)
+    else:
+        mensaje = current_app.config.get(
+            "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
+        )
     return jsonify({"mensaje": mensaje})
