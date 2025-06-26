@@ -14,7 +14,20 @@ municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 @admin_o_empleado_requerido
 def municipal_usuarios(current_user):
     tag = request.args.get('tag')
-    return jsonify(_obtener_clientes(current_user, tag))
+    q = request.args.get('q')
+    marketing = request.args.get('acepta_marketing')
+    sort = request.args.get('sort')
+    order = request.args.get('order')
+    return jsonify(
+        _obtener_clientes(
+            current_user,
+            tag,
+            q=q,
+            acepta_marketing=marketing,
+            sort=sort,
+            order=order,
+        )
+    )
 
 @municipal_bp.route('/categorias', methods=['GET'])
 @token_requerido
