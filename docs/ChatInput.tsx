@@ -23,8 +23,9 @@ const ChatInput: React.FC<Props> = ({ onSend, onFileUploaded: onUploadProp }) =>
   }, [transcript]);
 
   const handleSend = () => {
-    if (text.trim()) {
-      onSend?.(text);
+    const msg = text.trim();
+    if (msg) {
+      onSend?.(msg);
       setText("");
     }
   };
@@ -45,6 +46,7 @@ const ChatInput: React.FC<Props> = ({ onSend, onFileUploaded: onUploadProp }) =>
       <input
         value={text}
         onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && handleSend()}
         placeholder="Escribe un mensaje..."
       />
       {supported && (
