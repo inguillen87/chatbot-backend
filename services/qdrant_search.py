@@ -275,3 +275,54 @@ def armar_respuesta_legible_multi_rubro(
             break
 
     return "\n".join(lineas)
+
+
+# --- Funciones avanzadas para inferir intención y ofrecer sugerencias ---
+
+PROMPT_INTENCION_BUSQUEDA = """
+Sos un asistente de ventas. Analizá la consulta del usuario y respondé solo con
+una de las siguientes palabras: ofertas, combos, destacados o consulta_exacta.
+
+CONSULTA: "{consulta}"
+"""
+
+
+def inferir_intencion_con_llm(consulta: str) -> str | None:
+    """Intenta deducir la intención comercial del usuario con el LLM."""
+    try:
+        from .cohere_ai import robust_chat
+
+        resp = robust_chat(message=PROMPT_INTENCION_BUSQUEDA.format(consulta=consulta))
+        if resp:
+            return resp.strip().lower()
+    except Exception:
+        logger.exception("[QDRANT SEARCH] Error al inferir intención con el LLM")
+    return None
+
+
+def buscar_catalogo_avanzado(
+    user_id: Optional[int],
+    pregunta: str,
+    limite: int = DEFAULT_SEARCH_LIMIT,
+    score_min: float = 0.20,
+    coleccion: str = CATALOGO_PYME,
+    score_suficiente: float = 0.25,
+) -> tuple[list[qdrant_models.ScoredPoint], str | None]:
+    """Búsqueda en Qdrant con inferencia de intención si hay pocos resultados."""
+
+    resultados = buscar_catalogo_qdrant(
+        user_id=user_id,
+        pregunta=pregunta,
+        limite=limite,
+        score_min=score_min,
+        coleccion=coleccion,
+    )
+
+    hay_score_suficiente = any(
+        getattr(r, "score", 0) >= score_suficiente for r in resultados
+    )
+    if resultados and hay_score_suficiente:
+        return resultados, None
+
+    sugerencia = inferir_intencion_con_llm(pregunta)
+    return resultados, sugerencia
