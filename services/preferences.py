@@ -14,7 +14,8 @@ def add_preference(key: str, value: str) -> None:
     valores = set(prefs.get(key, []))
     valores.add(value)
     prefs[key] = list(valores)
-    session.modified = True
+    if hasattr(session, "modified"):
+        session.modified = True
 
 
 def get_preferences(key: str | None = None):
@@ -26,4 +27,5 @@ def get_preferences(key: str | None = None):
 
 def clear_preferences() -> None:
     session["preferencias"] = {}
-    session.modified = True
+    if hasattr(session, "modified"):
+        session.modified = True

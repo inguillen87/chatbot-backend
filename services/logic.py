@@ -30,7 +30,10 @@ def es_rubro_publico(rubro) -> bool:
     """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
     return normalizar_rubro(rubro) in RUBROS_PUBLICOS
 
-from services.cohere_ai import get_cohere_response  # Asegúrate de que esta importación exista y sea correcta
+try:
+    from services.cohere_ai import get_cohere_response
+except Exception:  # pragma: no cover - fallback for tests
+    from services.cohere_ai import robust_chat as get_cohere_response
 
 # --- Utilidades para small talk ---
 PROMPT_DETECT_SMALL_TALK = """
