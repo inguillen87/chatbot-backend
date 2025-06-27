@@ -13,11 +13,6 @@ from .spacy_loader import get_spacy_model
 from .utils import (
     limpiar_texto_base,
     parse_precio_flexible,
-    parse_cantidad_flexible,
-    crear_mapa_de_columnas_inteligente,
-    safe_row_get,
-    extraer_unidades_y_tipos_precio,
-    calcular_precio_por_unidad,
 )
 
 logger = logging.getLogger(__name__)
@@ -155,19 +150,6 @@ def _obtener_documento_ai(path: str, mime_type: str = "application/pdf") -> Opti
         raise  # Re-lanzamos la excepción para que el procesador principal la capture
 
 
-def _obtener_precio_desde_fila(row: pd.Series, mapa_columnas: Dict[str, str]) -> tuple[str, Optional[float], str]:
-    """Devuelve el precio detectado en una fila, con fallback analizando toda la linea."""
-    precio_crudo = str(safe_row_get(row, mapa_columnas.get('precio', ''))).strip()
-    precio_str, precio_float, moneda = parse_precio_flexible(precio_crudo)
-
-    if precio_float is None:
-        fila_completa = " ".join(str(c) for c in row.tolist())
-        precio_str_2, precio_float_2, moneda_2 = parse_precio_flexible(fila_completa)
-        if precio_float_2 is not None:
-            precio_str, precio_float = precio_str_2, precio_float_2
-            if moneda_2:
-                moneda = moneda_2
-    return precio_str, precio_float, moneda
 
 
 def _procesar_documento_tablas(document: documentai.Document, base_filename: str, pyme_rubro_nombre: str) -> List[Dict[str, Any]]:
@@ -197,66 +179,21 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
             logger.warning(f"Tabla #{i+1} estaba vacía o no se pudo convertir. Saltando.")
             continue
 
-        resultado_mapeo = crear_mapa_de_columnas_inteligente(df_tabla)
-        if not resultado_mapeo:
-            logger.warning(f"El cerebro no pudo entender la Tabla #{i+1}. Saltando.")
-            continue
+        df_data = df_tabla.copy()
+        df_data.columns = [limpiar_texto_base(c).replace(" ", "_") for c in df_data.iloc[0].tolist()]
+        df_data = df_data.iloc[1:].reset_index(drop=True)
+        df_data.dropna(how="all", inplace=True)
 
-        mapa_columnas, fila_inicio_datos = resultado_mapeo
-
-        df_datos = df_tabla.copy()
-        df_datos.columns = df_datos.iloc[fila_inicio_datos - 1].tolist()
-        df_datos = df_datos.iloc[fila_inicio_datos:].reset_index(drop=True)
-        df_datos.dropna(how="all", inplace=True)
-
-        for index, row in df_datos.iterrows():
-            try:
-                nombre_prod = str(safe_row_get(row, mapa_columnas.get("nombre", ""))).strip()
-                precio_str, precio_float, moneda = _obtener_precio_desde_fila(row, mapa_columnas)
-
-                if not nombre_prod or len(nombre_prod) < 2:
-                    fila_completa = " ".join(str(c) for c in row.tolist())
-                    posible_nombre = re.split(r"\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?", fila_completa, 1)[0].strip()
-                    if posible_nombre:
-                        nombre_prod = posible_nombre
-
-                if not nombre_prod or precio_float is None:
-                    continue
-
-                unidad_detectada, _ = extraer_unidades_y_tipos_precio(
-                    " ".join(str(c) for c in row.tolist()), pyme_rubro_nombre
-                )
-
-                precio_unitario_calc = calcular_precio_por_unidad(
-                    precio_float,
-                    unidad_detectada or str(safe_row_get(row, mapa_columnas.get("unidad")) or ""),
-                )
-
-                producto = {
-                    "nombre": nombre_prod,
-                    "precio_str": precio_str,
-                    "precio_float": precio_float,
-                    "moneda": moneda,
-                    "sku": str(safe_row_get(row, mapa_columnas.get("sku"))).strip(),
-                    "descripcion": str(safe_row_get(row, mapa_columnas.get("descripcion"))).strip(),
-                    "marca": str(safe_row_get(row, mapa_columnas.get("marca"))).strip(),
-                    "categoria_qdrant": str(
-                        safe_row_get(row, mapa_columnas.get("categoria")) or pyme_rubro_nombre
-                    ).strip(),
-                    "unidad": unidad_detectada
-                    or str(safe_row_get(row, mapa_columnas.get("unidad")) or "unidad").strip(),
-                    "cantidad_disponible": str(
-                        parse_cantidad_flexible(safe_row_get(row, mapa_columnas.get("stock")) or "1") or "0"
-                    ).strip(),
-                }
-                if precio_unitario_calc is not None:
-                    producto["precio_unitario"] = precio_unitario_calc
-                productos_extraidos_final.append(producto)
-            except Exception as e_row:
-                logger.warning(
-                    f"⚠️ Error procesando una fila de la Tabla #{i+1}. Fila:{index}. Error: {e_row}"
-                )
+        for _, row in df_data.iterrows():
+            registro = {col: str(row.get(col, "")).strip() for col in df_data.columns}
+            if not registro.get("nombre"):
                 continue
+            if registro.get("precio"):
+                precio_str, precio_float, moneda = parse_precio_flexible(registro.get("precio"))
+                registro["precio_str"] = precio_str
+                registro["precio_float"] = precio_float
+                registro["moneda"] = moneda
+            productos_extraidos_final.append(registro)
 
     logger.info(
         f"✅ Proceso de documento completado. Total productos finales de todas las tablas: {len(productos_extraidos_final)}"
