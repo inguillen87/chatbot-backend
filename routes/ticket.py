@@ -664,13 +664,23 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
 def mapa_de_tickets(current_user: User, tipo: str):
     """Devuelve los tickets abiertos con latitud y longitud solo para agentes de la empresa/municipio."""
     if tipo == "municipio":
-        # Solo tickets municipales
-        if not (current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id")):
+        # Solo tickets del municipio del usuario
+        if not (
+            current_user.rubro
+            and current_user.rubro.nombre.lower().strip() == "municipios"
+            and hasattr(current_user, "municipio_id")
+        ):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
-        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo)
+        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
+            tipo,
+            municipio_id=current_user.municipio_id,
+        )
     else:
         # Solo tickets de su empresa/rubro
         if not current_user.rubro_id:
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
-        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(tipo, rubro_id=current_user.rubro_id)
+        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
+            tipo,
+            rubro_id=current_user.rubro_id,
+        )
     return jsonify(datos)
