@@ -126,6 +126,9 @@ class PymeConversationState(Enum):
     CONFIRMANDO_PEDIDO = auto()
     PEDIDO_FINALIZADO = auto()
     ESPERANDO_CONTACTO = auto()
+    ESPERANDO_NUMERO_TICKET = auto()
+    ESPERANDO_CONFIRMACION_CIERRE = auto()
+    ESPERANDO_CALIFICACION = auto()
 
 
 def serialize_state(state):
@@ -150,6 +153,7 @@ Sos el cerebro comercial de un chatbot para una pyme. Analizá la PREGUNTA DEL U
 - pregunta_faq
 - hablar_con_agente
 - continuar_flujo
+- consultar_estado_ticket
 - pregunta_ambigua
 
 PREGUNTA DEL USUARIO: "{pregunta_usuario}"
@@ -611,6 +615,114 @@ class HumanHandler(BaseHandler):
             }
 
 
+class TicketStatusHandler(BaseHandler):
+    def handle(self, pregunta):
+        ctx = self.context.setdefault(
+            CONTEXTO_PYME, flask_session.get(CONTEXTO_PYME, {})
+        )
+        estado = deserialize_state(ctx.get("estado_conversacion"))
+        texto = pregunta.lower()
+
+        if estado == PymeConversationState.ESPERANDO_CONFIRMACION_CIERRE:
+            if texto in {"si", "sí", "yes", "y"}:
+                ticket_id = ctx.get("ticket_id_activo")
+                ticket = db.session.get(PymeTicket, ticket_id)
+                if ticket:
+                    ticket.estado = "resuelto"
+                    db.session.commit()
+                ctx["estado_conversacion"] = serialize_state(
+                    PymeConversationState.ESPERANDO_CALIFICACION
+                )
+                return {"respuesta": "¡Excelente! ¿Podés calificar la atención recibida del 1 al 5?"}
+            ctx.clear()
+            return {"respuesta": "Dejamos el ticket abierto para seguimiento del equipo. ¿Necesitás algo más?"}
+
+        if estado == PymeConversationState.ESPERANDO_CALIFICACION:
+            if not re.fullmatch(r"[1-5]", texto.strip()):
+                return {"respuesta": "Por favor, ingresa una calificación del 1 al 5."}
+            ticket_id = ctx.get("ticket_id_activo")
+            if ticket_id:
+                servicio_tickets.crear_comentario(
+                    ticket_id=ticket_id,
+                    tipo_ticket="pyme",
+                    comentario_data={
+                        "comentario": f"Calificación: {texto}",
+                        "es_admin": False,
+                        "anon_id": self.context.get("anon_id"),
+                    },
+                )
+            ctx.clear()
+            return {
+                "respuesta": "¡Gracias por tu calificación! ¿Te ayudo con algo más?",
+                "botones": [{"texto": "Hablar con un agente", "action": "hablar_con_agente"}],
+            }
+
+        if estado == PymeConversationState.ESPERANDO_NUMERO_TICKET:
+            match = re.search(r"\d{5,}", texto)
+            if not match:
+                return {"respuesta": "No entendí el número de ticket. ¿Podés repetirlo? Debe ser de al menos 5 dígitos."}
+            numero = int(match.group(0))
+            ticket = PymeTicket.query.filter_by(nro_ticket=numero).first()
+            ctx.pop("estado_conversacion", None)
+            if not ticket:
+                return {"respuesta": f"No encontré ticket P-{numero}. Por favor verificá el número."}
+            respuesta = (
+                f"El ticket **P-{ticket.nro_ticket}** sobre '{getattr(ticket,'asunto','')}' "
+                f"está en estado: **{ticket.estado.replace('_',' ').title()}**."
+            )
+            ultimo = (
+                TicketComentario.query.filter_by(pyme_ticket_id=ticket.id, es_admin=True)
+                .order_by(TicketComentario.fecha.desc())
+                .first()
+            )
+            if ultimo:
+                respuesta += f"\nÚltima actualización: *{ultimo.comentario}*"
+            if ticket.estado == "en_proceso":
+                ctx["estado_conversacion"] = serialize_state(
+                    PymeConversationState.ESPERANDO_CONFIRMACION_CIERRE
+                )
+                ctx["ticket_id_activo"] = ticket.id
+                return {
+                    "respuesta": respuesta + "\n¿Se resolvió tu problema?",
+                    "botones": [{"texto": "Sí, solucionado"}, {"texto": "No, aún no"}],
+                }
+            return {"respuesta": respuesta}
+
+        if self.context.get("intencion") == "consultar_estado_ticket":
+            match = re.search(r"\d{5,}", texto)
+            if not match:
+                ctx["estado_conversacion"] = serialize_state(
+                    PymeConversationState.ESPERANDO_NUMERO_TICKET
+                )
+                return {"respuesta": "Para consultar el estado de un ticket, decime el número de ticket por favor."}
+            numero = int(match.group(0))
+            ticket = PymeTicket.query.filter_by(nro_ticket=numero).first()
+            if not ticket:
+                return {"respuesta": f"No encontré ticket P-{numero}. Por favor verificá el número."}
+            respuesta = (
+                f"El ticket **P-{ticket.nro_ticket}** sobre '{getattr(ticket,'asunto','')}' "
+                f"está en estado: **{ticket.estado.replace('_',' ').title()}**."
+            )
+            ultimo = (
+                TicketComentario.query.filter_by(pyme_ticket_id=ticket.id, es_admin=True)
+                .order_by(TicketComentario.fecha.desc())
+                .first()
+            )
+            if ultimo:
+                respuesta += f"\nÚltima actualización: *{ultimo.comentario}*"
+            if ticket.estado == "en_proceso":
+                ctx["estado_conversacion"] = serialize_state(
+                    PymeConversationState.ESPERANDO_CONFIRMACION_CIERRE
+                )
+                ctx["ticket_id_activo"] = ticket.id
+                return {
+                    "respuesta": respuesta + "\n¿Se resolvió tu problema?",
+                    "botones": [{"texto": "Sí, solucionado"}, {"texto": "No, aún no"}],
+                }
+            return {"respuesta": respuesta}
+
+        return None
+
 class FallbackHandler(BaseHandler):
     def handle(self, pregunta):
         user_id = self.context.get("user_id")
@@ -721,6 +833,7 @@ def responder_pyme(
         "pregunta_faq": FaqHandler,
         "hablar_con_agente": HumanHandler,
         "hablar_con_agente_pyme": HumanHandler,
+        "consultar_estado_ticket": TicketStatusHandler,
     }
 
     if detectar_small_talk_con_llm(pregunta):
@@ -751,6 +864,7 @@ def responder_pyme(
                 "consultar_ofertas",
                 "iniciar_pedido",
                 "continuar_flujo",
+                "consultar_estado_ticket",
             }
             or es_pregunta_compra
         ):
