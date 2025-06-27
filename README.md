@@ -55,6 +55,7 @@ This project exposes several endpoints to process questions for different sector
 - `GET /catalogo/resumen` – summary of products grouped by category.
 - `GET /municipal/incidents` – list open municipal incidents for the authenticated user's municipality.
 - `GET /municipal/stats` – professional analytics of municipal tickets including totals, categories and response time.
+- `GET /municipal/metrics` – counts of neighbor messages this week, month and year.
 
 ### Municipal incidents
 
