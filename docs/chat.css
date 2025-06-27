@@ -8,7 +8,14 @@
   50% { transform: rotate(3deg); }
 }
 
+@keyframes avatar-bounce {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2px) scale(1.05); }
+}
+
 .user-avatar {
-  animation: avatar-blink 6s infinite linear, avatar-nod 8s infinite ease-in-out;
+  animation: avatar-blink 6s infinite linear,
+             avatar-nod 8s infinite ease-in-out,
+             avatar-bounce 5s infinite ease-in-out;
   transform-origin: center bottom;
 }

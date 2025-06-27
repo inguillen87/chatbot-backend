@@ -36,7 +36,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
           ) : (
             <img
               src="./images/user-avatar.svg"
-              alt="User"
+              alt="Cliente"
               className="w-6 h-6 user-avatar"
             />
           )}

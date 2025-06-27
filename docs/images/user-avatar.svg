@@ -1,6 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <circle cx="32" cy="20" r="12" fill="#ffd966" />
-  <rect x="26" y="32" width="12" height="20" rx="3" fill="#4a86e8" />
-  <rect x="22" y="52" width="8" height="10" fill="#4a86e8" />
-  <rect x="34" y="52" width="8" height="10" fill="#4a86e8" />
+  <defs>
+    <linearGradient id="avatarGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#6cb4ff"/>
+      <stop offset="100%" stop-color="#0041a8"/>
+    </linearGradient>
+  </defs>
+  <!-- cabeza -->
+  <circle cx="32" cy="20" r="12" fill="#ffe6c0" stroke="#d3b48c" stroke-width="2"/>
+  <!-- torso -->
+  <path d="M16 54c0-10 8-18 16-18s16 8 16 18v4H16z" fill="url(#avatarGrad)"/>
 </svg>
