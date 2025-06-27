@@ -30,8 +30,11 @@ class MetricasRouteTests(unittest.TestCase):
             normal = obtener_metricas.__wrapped__(user)
             alias = obtener_metricas_pyme.__wrapped__(user)
         self.assertEqual(normal, alias)
+        self.assertEqual(len(normal), 4)
         self.assertEqual(normal[0]['value'], 10)
         self.assertEqual(normal[1]['value'], 5)
+        self.assertIsNone(normal[2]['value'])
+        self.assertIsNone(normal[3]['value'])
         self.assertEqual(db_mock.session.calls[0]['uid'], 3)
 
 if __name__ == '__main__':

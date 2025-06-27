@@ -2,12 +2,16 @@ from flask import Blueprint, jsonify
 from extensions import db
 from datetime import datetime, timedelta
 from routes.auth import token_requerido
+from utils.plan_limits import limite_para_usuario
 
 metricas_bp = Blueprint("metricas_bp", __name__)
 
 
 def _compilar_metricas(usuario):
+    """Compila la información de métricas para un usuario."""
+
     total = usuario.preguntas_usadas or 0
+
     desde = datetime.now() - timedelta(days=7)
     preguntas_esta_semana = db.session.execute(
         db.text(
@@ -15,9 +19,24 @@ def _compilar_metricas(usuario):
         ),
         {"uid": usuario.id, "desde": desde},
     ).scalar() or 0
+
+    limite = limite_para_usuario(usuario)
+    restantes = None
+    porcentaje = None
+    if limite is not None:
+        restantes = max(limite - total, 0)
+        porcentaje = round(total / limite * 100, 2)
+
+    last_reset = getattr(usuario, "last_reset", None)
+
     return [
-        {"label": "Total de Preguntas", "value": total},
+        {"label": "Total de Preguntas", "value": total, "porcentaje": porcentaje},
         {"label": "Preguntas esta semana", "value": preguntas_esta_semana},
+        {"label": "Preguntas restantes", "value": restantes},
+        {
+            "label": "Fecha último reinicio",
+            "value": last_reset.isoformat() if last_reset else None,
+        },
     ]
 
 
