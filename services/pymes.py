@@ -14,6 +14,7 @@ from services.utils import sugerencias_por_rubro
 from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_talk
 from services.ticket_service import servicio_tickets
 from services.webinfo import obtener_info_web
+from services.preferences import add_preference
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,7 @@ class CatalogoHandler(BaseHandler):
             pregunta=pregunta,
             categoria=self.context.get("rubro_nombre"),
         )
+        add_preference("busquedas", pregunta)
         botones_base = []
         if resultados:
             respuesta_legible = armar_respuesta_legible(resultados, max_items=5)
@@ -423,6 +425,8 @@ class PedidoHandler(BaseHandler):
             items = extraer_productos(texto)
             if items:
                 carrito.extend(items)
+                for it in items:
+                    add_preference("productos", it.get("nombre", ""))
                 ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
                 return {
