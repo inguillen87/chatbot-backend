@@ -19,6 +19,7 @@ from routes.chat import chat_bp
 from routes.ticket import ticket_bp
 from routes.crm import crm_bp
 from routes.rubros import rubros_bp
+from routes.metricas import metricas_bp
 from services.upload_processor import upload_bp
 from routes.archivos import archivos_bp
 from cli_commands import register_commands
@@ -148,6 +149,7 @@ def create_app(config_class=Config):
     app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)
     app.register_blueprint(rubros_bp)
+    app.register_blueprint(metricas_bp)
     app.register_blueprint(catalogo_bp)
     app.register_blueprint(pedidos_bp)
     app.register_blueprint(estadisticas_bp)
