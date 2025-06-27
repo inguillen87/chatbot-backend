@@ -5,6 +5,15 @@ from typing import List, Optional, Dict, Any, Tuple
 from collections import OrderedDict
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from services.logic import es_rubro_publico
+
+# Column mapping used for tablas cuando el usuario pide ver el catálogo
+DEFAULT_TABLE_COLUMNS = [
+    ("Marca", "marca"),
+    ("Varietal", "varietal"),
+    ("Caja", "caja"),
+    ("Precio Botella", "precio_botella"),
+    ("Precio Caja", "precio_caja"),
+]
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
 from .utils import limpiar_texto_base, unir_codigos_alfa_numericos
@@ -222,6 +231,35 @@ def armar_respuesta_legible(
     if len(productos_ordenados) > max_items:
         lineas.append(f"…y {len(productos_ordenados)-max_items} productos más.")
     return "\n".join(lineas)
+
+
+def formatear_tabla_catalogo(
+    resultados_qdrant: List[qdrant_models.ScoredPoint],
+    columnas: list[tuple[str, str]] | None = None,
+) -> str:
+    """Devuelve una representación en tabla Markdown de los resultados."""
+    if not resultados_qdrant:
+        return (
+            "No hay productos en el catálogo que coincidan con tu búsqueda. "
+            "¿Querés ver el catálogo completo?"
+        )
+
+    columnas = columnas or DEFAULT_TABLE_COLUMNS
+    encabezado = "| " + " | ".join(col for col, _ in columnas) + " |"
+    separador = "|" + "|".join("---" for _ in columnas) + "|"
+    filas: list[str] = [encabezado, separador]
+
+    for hit in resultados_qdrant:
+        payload = getattr(hit, "payload", {}) or {}
+        celdas = []
+        for _, key in columnas:
+            val = payload.get(key)
+            if val is None or str(val).strip() == "":
+                val = "-"
+            celdas.append(str(val))
+        filas.append("| " + " | ".join(celdas) + " |")
+
+    return "\n".join(filas)
 
 
 def armar_respuesta_legible_multi_rubro(

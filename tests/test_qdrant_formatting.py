@@ -2,28 +2,56 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 import os
-from services.qdrant_search import armar_respuesta_legible
+from services.qdrant_search import armar_respuesta_legible, formatear_tabla_catalogo
+
 
 class DummyHit(SimpleNamespace):
     pass
 
+
 class QdrantFormattingTests(unittest.TestCase):
     def test_deduplication_of_products(self):
-        hit1 = DummyHit(payload={"nombre": "Vino Tinto", "sku": "A1", "precio_str": "10"}, score=0.9)
-        hit2 = DummyHit(payload={"nombre": "Vino Tinto", "sku": "A1", "precio_str": "10"}, score=0.8)
-        hit3 = DummyHit(payload={"nombre": "Vino Blanco", "sku": "B2", "precio_str": "12"}, score=0.7)
+        hit1 = DummyHit(
+            payload={"nombre": "Vino Tinto", "sku": "A1", "precio_str": "10"}, score=0.9
+        )
+        hit2 = DummyHit(
+            payload={"nombre": "Vino Tinto", "sku": "A1", "precio_str": "10"}, score=0.8
+        )
+        hit3 = DummyHit(
+            payload={"nombre": "Vino Blanco", "sku": "B2", "precio_str": "12"},
+            score=0.7,
+        )
         texto = armar_respuesta_legible([hit1, hit2, hit3], max_items=5)
         # Solo deben aparecer dos productos en el listado
         self.assertEqual(texto.count("**Vino"), 2)
 
     def test_merge_fields_from_duplicate_hits(self):
-        hit1 = DummyHit(payload={"nombre": "Vino Tinto", "sku": "A1", "precio_str": "10"}, score=0.9)
-        hit2 = DummyHit(payload={"nombre": "Vino Tinto", "sku": "A1", "descripcion": "Rojo"}, score=0.8)
+        hit1 = DummyHit(
+            payload={"nombre": "Vino Tinto", "sku": "A1", "precio_str": "10"}, score=0.9
+        )
+        hit2 = DummyHit(
+            payload={"nombre": "Vino Tinto", "sku": "A1", "descripcion": "Rojo"},
+            score=0.8,
+        )
         texto = armar_respuesta_legible([hit1, hit2], max_items=5)
         self.assertEqual(texto.count("**Vino Tinto**"), 1)
         self.assertIn("10", texto)
 
+    def test_table_formatting_includes_all_columns(self):
+        hit = DummyHit(
+            payload={
+                "marca": "Vincent",
+                "varietal": "Malbec",
+                "caja": "6",
+                "precio_botella": "$2.732",
+                "precio_caja": "$16.390",
+            },
+            score=0.9,
+        )
+        tabla = formatear_tabla_catalogo([hit])
+        self.assertIn("| Marca | Varietal |", tabla)
+        self.assertIn("Vincent", tabla)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
