@@ -186,13 +186,23 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
 
         for _, row in df_data.iterrows():
             registro = {col: str(row.get(col, "")).strip() for col in df_data.columns}
+
             if not registro.get("nombre"):
+                nombre_alternativo = registro.get("producto") or " ".join(
+                    filter(None, [registro.get("marca"), registro.get("varietal")])
+                ).strip()
+                if nombre_alternativo:
+                    registro["nombre"] = nombre_alternativo
+
+            if not any(registro.values()):
                 continue
+
             if registro.get("precio"):
                 precio_str, precio_float, moneda = parse_precio_flexible(registro.get("precio"))
                 registro["precio_str"] = precio_str
                 registro["precio_float"] = precio_float
                 registro["moneda"] = moneda
+
             productos_extraidos_final.append(registro)
 
     logger.info(
