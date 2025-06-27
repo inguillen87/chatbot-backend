@@ -633,35 +633,37 @@ def responder_pyme(
     if detectar_small_talk_con_llm(pregunta):
         handler = SmallTalkHandler(context)
     else:
-        sentimiento = analizar_sentimiento_llm(pregunta)
-        if sentimiento in {"positivo", "negativo"}:
-            handler = SentimentHandler(context, sentimiento)
-        else:
-            # Extra: si la intención es ambigua pero la pregunta contiene palabras de compra, forzá búsqueda en catálogo.
-            palabras_compra = [
-                "comprar",
-                "vender",
-                "precio",
-                "tenés",
-                "hay",
-                "malbec",
-                "oferta",
-                "promo",
-                "descuento",
-                "unidades",
-                "sku",
-                "stock",
-                "vino",
-                "caja",
-            ]
-            es_pregunta_compra = any(pal in pregunta.lower() for pal in palabras_compra)
+        palabras_compra = [
+            "comprar",
+            "vender",
+            "precio",
+            "tenés",
+            "hay",
+            "malbec",
+            "oferta",
+            "promo",
+            "descuento",
+            "unidades",
+            "sku",
+            "stock",
+            "vino",
+            "caja",
+        ]
+        es_pregunta_compra = any(pal in pregunta.lower() for pal in palabras_compra)
 
+        if intencion in {"ver_catalogo", "consultar_ofertas", "iniciar_pedido", "continuar_flujo"} or es_pregunta_compra:
             if intencion == "pregunta_ambigua" and es_pregunta_compra:
                 handler_cls = CatalogoHandler
             else:
                 handler_cls = INTENT_MAP.get(intencion, FallbackHandler)
-
             handler = handler_cls(context)
+        else:
+            sentimiento = analizar_sentimiento_llm(pregunta)
+            if sentimiento in {"positivo", "negativo"}:
+                handler = SentimentHandler(context, sentimiento)
+            else:
+                handler_cls = INTENT_MAP.get(intencion, FallbackHandler)
+                handler = handler_cls(context)
 
     respuesta_final = handler.handle(pregunta) or FallbackHandler(context).handle(
         pregunta
