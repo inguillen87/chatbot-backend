@@ -603,6 +603,40 @@ def get_panel_por_categoria(current_user: User):
         current_app.logger.error(f"Error en get_panel_por_categoria: {e}", exc_info=True)
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
 
+# ---------- PANEL PYME (AGENTES PYME) ----------
+@ticket_bp.route('/panel_pyme', methods=['GET'])
+@token_requerido
+@require_role('admin', 'empleado')
+def get_panel_pyme(current_user: User):
+    try:
+        query = PymeTicket.query
+        if current_user.rubro_id:
+            query = query.filter_by(rubro_id=current_user.rubro_id)
+        tickets = query.order_by(PymeTicket.fecha.desc()).all()
+        if current_user.rol == 'empleado' and current_user.ticket_categorias:
+            cats = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            tickets = [t for t in tickets if (t.categoria or '').lower() in cats]
+
+        tickets_agrupados = defaultdict(list)
+        for t in tickets:
+            data = {
+                "id": t.id,
+                "tipo": "pyme",
+                "nro_ticket": t.nro_ticket,
+                "asunto": t.asunto,
+                "estado": t.estado,
+                "fecha": t.fecha.isoformat(),
+                "direccion": getattr(t, 'direccion', None),
+                "latitud": getattr(t, 'latitud', None),
+                "longitud": getattr(t, 'longitud', None),
+            }
+            tickets_agrupados[t.categoria or "Sin Categoría"].append(data)
+
+        return jsonify(tickets_agrupados)
+    except Exception as e:
+        current_app.logger.error(f"Error en get_panel_pyme: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
+
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido

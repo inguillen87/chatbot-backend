@@ -615,6 +615,58 @@ class HumanHandler(BaseHandler):
             }
 
 
+class UnclearHandler(BaseHandler):
+    """Abre un chat pendiente cuando la consulta no es clara."""
+
+    def handle(self, pregunta):
+        if not self.context.get("cliente_id"):
+            return {
+                "respuesta": "No entendí tu consulta. ¿Querés hablar con un agente?",
+                "botones": [
+                    {"texto": "Iniciar sesión", "action": "login"},
+                    {"texto": "Registrarme Gratis", "action": "register"},
+                ],
+            }
+
+        ticket_data = {
+            "asunto": "Consulta ambigua",
+            "categoria": "Atención en Vivo",
+            "detalles": f"Consulta no clara: '{pregunta}'",
+            "user_id": self.context.get("cliente_id"),
+            "rubro_id": self.context.get("rubro_id"),
+            "anon_id": self.context.get("anon_id"),
+            "estado": "pendiente",
+        }
+
+        try:
+            sala_de_chat = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="pyme", ticket_data=ticket_data
+            )
+            if sala_de_chat:
+                servicio_tickets.crear_comentario(
+                    ticket_id=sala_de_chat.id,
+                    tipo_ticket="pyme",
+                    comentario_data={
+                        "comentario": pregunta,
+                        "es_admin": False,
+                        "user_id": self.context.get("cliente_id"),
+                        "anon_id": self.context.get("anon_id"),
+                    },
+                )
+                return {
+                    "respuesta": "¿Querés que te pase con un agente?",
+                    "ticket_id": sala_de_chat.id,
+                    "fuente": "chat_pendiente",
+                }
+        except Exception as e:  # pragma: no cover - log error
+            logger.error(f"[UnclearHandler] Error creando ticket pendiente: {e}")
+
+        return {
+            "respuesta": "¿Querés que te pase con un agente?",
+            "botones": [{"texto": "Hablar con un agente"}],
+        }
+
+
 class TicketStatusHandler(BaseHandler):
     def handle(self, pregunta):
         ctx = self.context.setdefault(
@@ -834,6 +886,7 @@ def responder_pyme(
         "hablar_con_agente": HumanHandler,
         "hablar_con_agente_pyme": HumanHandler,
         "consultar_estado_ticket": TicketStatusHandler,
+        "pregunta_ambigua": UnclearHandler,
     }
 
     if detectar_small_talk_con_llm(pregunta):
