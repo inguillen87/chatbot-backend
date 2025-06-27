@@ -430,6 +430,57 @@ def get_chat_mensajes(current_user: User, ticket_id: int):
         current_app.logger.error(f"Error en get_chat_mensajes para ticket {ticket_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
 
+
+# ---------- CHAT EN VIVO PYME: MENSAJES ----------
+@ticket_bp.route('/chat/pyme/<int:ticket_id>/mensajes', methods=['GET'])
+@token_requerido
+def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
+    """Devuelve los mensajes del chat en vivo para una pyme."""
+    try:
+        sala_de_chat = db.session.get(PymeTicket, ticket_id)
+        if not sala_de_chat:
+            return jsonify({"error": "Sala de chat no encontrada."}), 404
+
+        es_agente_pyme = current_user.rubro_id and sala_de_chat.rubro_id == current_user.rubro_id
+        es_dueño = sala_de_chat.user_id == current_user.id
+
+        log_ticket_debug("get_chat_mensajes_pyme", ticket_id, None, sala_de_chat)
+
+        if sala_de_chat.user_id is None and not es_agente_pyme:
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+        if sala_de_chat.user_id is not None and not (es_agente_pyme or es_dueño):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+        if sala_de_chat.estado == "cerrado" and not es_agente_pyme:
+            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
+
+        ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
+        mensajes_nuevos = (
+            TicketComentario.query
+            .filter(
+                TicketComentario.pyme_ticket_id == ticket_id,
+                TicketComentario.id > ultimo_mensaje_id
+            )
+            .order_by(TicketComentario.fecha.asc())
+            .all()
+        )
+
+        mensajes_formateados = [
+            {
+                "id": msg.id,
+                "texto": msg.comentario,
+                "fecha": msg.fecha.isoformat(),
+                "es_admin": msg.es_admin
+            }
+            for msg in mensajes_nuevos
+        ]
+
+        return jsonify({"estado_chat": sala_de_chat.estado, "mensajes": mensajes_formateados})
+    except Exception as e:
+        current_app.logger.error(f"Error en get_chat_mensajes_pyme para ticket {ticket_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
 @token_requerido
@@ -466,6 +517,43 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
             "user_id": user_id_para_comentario,
             "es_admin": False
         }
+    )
+    if nuevo_comentario:
+        return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
+
+    return jsonify({"error": "No se pudo guardar la respuesta."}), 500
+
+# ---------- CHAT EN VIVO PYME: RESPONDER CLIENTE ----------
+@ticket_bp.route('/chat/pyme/<int:ticket_id>/responder_cliente', methods=['POST'])
+@token_requerido
+def responder_cliente_a_chat(current_user: User, ticket_id: int):
+    """Permite al cliente responder en el chat de su pyme."""
+    data = request.get_json()
+    if not data or not data.get("comentario"):
+        return jsonify({"error": "El comentario no puede estar vacío."}), 400
+
+    sala_de_chat = db.session.get(PymeTicket, ticket_id)
+    if not sala_de_chat:
+        return jsonify({"error": "Sala de chat no encontrada."}), 404
+
+    es_dueño = sala_de_chat.user_id == current_user.id
+
+    log_ticket_debug("responder_cliente_pyme", ticket_id, None, sala_de_chat)
+
+    if sala_de_chat.user_id is None or not es_dueño:
+        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+    if sala_de_chat.estado == "cerrado":
+        return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
+
+    nuevo_comentario = servicio_tickets.crear_comentario(
+        ticket_id=ticket_id,
+        tipo_ticket="pyme",
+        comentario_data={
+            "comentario": data["comentario"],
+            "user_id": current_user.id,
+            "es_admin": False,
+        },
     )
     if nuevo_comentario:
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
