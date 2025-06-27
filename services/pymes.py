@@ -625,6 +625,7 @@ def responder_pyme(
         "ver_catalogo": CatalogoHandler,
         "consultar_ofertas": OfertasHandler,
         "iniciar_pedido": PedidoHandler,
+        "continuar_flujo": PedidoHandler,
         "pregunta_faq": FaqHandler,
         "hablar_con_agente": HumanHandler,
     }
@@ -697,5 +698,6 @@ def responder_pyme(
         "respuesta": respuesta_final.get("respuesta", "Ocurrió un error."),
         "fuente": respuesta_final.get("fuente", "desconocida"),
         "botones": respuesta_final.get("botones", []),
+        "estado_respuesta": respuesta_final.get("estado_respuesta"),
         "contexto_actualizado": {CONTEXTO_PYME: context.get(CONTEXTO_PYME, {})},
     }
