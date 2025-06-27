@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request, current_app
 from routes.auth import token_requerido, admin_o_empleado_requerido
+from datetime import datetime, timedelta
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
 from services.municipios import TODAS_LAS_CATEGORIAS_UNICAS
@@ -151,3 +152,34 @@ def municipal_incidents(current_user):
     ]
 
     return jsonify(resultado)
+
+
+@municipal_bp.route('/metrics', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_metrics(current_user):
+    """Devuelve cantidad de mensajes de vecinos por rango de tiempo."""
+
+    eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
+    ahora = datetime.now()
+
+    def _contar_desde(dias: int) -> int:
+        desde = ahora - timedelta(days=dias)
+        return (
+            db.session.execute(
+                db.text(
+                    "SELECT COUNT(*) FROM conversacion c JOIN user u ON c.user_id = u.id "
+                    "WHERE u.empresa_id = :eid AND c.timestamp >= :desde"
+                ),
+                {"eid": eid, "desde": desde},
+            ).scalar()
+            or 0
+        )
+
+    datos = [
+        {"label": "Mensajes esta semana", "value": _contar_desde(7)},
+        {"label": "Mensajes este mes", "value": _contar_desde(30)},
+        {"label": "Mensajes este año", "value": _contar_desde(365)},
+    ]
+
+    return jsonify(datos)
