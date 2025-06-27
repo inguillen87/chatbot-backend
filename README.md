@@ -28,6 +28,9 @@ This project exposes several endpoints to process questions for different sector
 - `GET /catalogo/archivo/<nombre>` – download a catalog file.
 - Universal catalog search formats results for any industry using
   `armar_respuesta_legible_multi_rubro`.
+- `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional
+  `?limite=` to control how many products are returned (defaults to
+  `CATALOGO_RESULT_LIMIT`).
 
 - `PUT /me` – update the logged in user's profile.
 - `GET /me` – retrieve the full profile. The response includes the user's role
@@ -103,6 +106,9 @@ Si no se especifica, se permiten dominios locales y los subdominios de
 
 Define también `GOOGLE_MAPS_API_KEY` si el frontend usa el widget de mapa.
 El valor se obtiene desde `/google-maps-key` para inicializar Google Maps.
+
+`CATALOGO_RESULT_LIMIT` controla cuántos resultados devuelve por defecto el
+endpoint `/catalogo/buscar` cuando no se envía `?limite=`.
 
 Para ajustar la zona horaria de los tickets puedes definir `TIMEZONE_OFFSET` con
 la diferencia respecto a UTC en horas (por ejemplo `-3` para Argentina).
