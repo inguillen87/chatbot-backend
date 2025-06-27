@@ -550,11 +550,65 @@ class FaqHandler(BaseHandler):
 
 
 class HumanHandler(BaseHandler):
+    """Escala la conversación a un agente humano creando un ticket."""
+
     def handle(self, pregunta):
-        return {
-            "respuesta": "Te paso con un agente humano. Aguardá un momento.",
-            "fuente": "escalamiento_humano",
+        # Requiere que el cliente esté autenticado para poder contactarlo luego
+        if not self.context.get("cliente_id"):
+            return {
+                "respuesta": (
+                    "Para hablar con un agente y que podamos dar seguimiento a tu consulta, \n"
+                    "necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo?"
+                ),
+                "botones": [
+                    {"texto": "Iniciar sesión", "action": "login"},
+                    {"texto": "Registrarme Gratis", "action": "register"},
+                ],
+            }
+
+        ticket_data = {
+            "asunto": "Solicitud de Chat en Vivo",
+            "categoria": "Atención en Vivo",
+            "detalles": f"El cliente solicitó chat en vivo con la pregunta: '{pregunta}'",
+            "user_id": self.context.get("cliente_id"),
+            "rubro_id": self.context.get("rubro_id"),
+            "anon_id": self.context.get("anon_id"),
+            "estado": "esperando_agente_en_vivo",
         }
+
+        try:
+            sala_de_chat = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="pyme", ticket_data=ticket_data
+            )
+            if not sala_de_chat:
+                raise Exception("No se pudo crear el ticket de sala de chat.")
+
+            servicio_tickets.crear_comentario(
+                ticket_id=sala_de_chat.id,
+                tipo_ticket="pyme",
+                comentario_data={
+                    "comentario": pregunta,
+                    "es_admin": False,
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id"),
+                },
+            )
+
+            self.context.get(CONTEXTO_PYME, {}).clear()
+            return {
+                "respuesta": (
+                    f"¡Listo! Abrimos una sala de chat directa con el equipo.\n"
+                    f"Tu número de chat es **P-{sala_de_chat.nro_ticket}**. Esperá, un agente se conecta en breve."
+                ),
+                "ticket_id": sala_de_chat.id,
+                "fuente": "escalamiento_humano",
+            }
+        except Exception as e:
+            logger.error(f"[HumanHandler] Error al escalar a agente: {e}", exc_info=True)
+            return {
+                "respuesta": "No pudimos conectar con un agente en este momento. Probá más tarde o llamá a la empresa.",
+                "botones": [{"texto": "Hablar con un agente"}],
+            }
 
 
 class FallbackHandler(BaseHandler):
@@ -649,6 +703,9 @@ def responder_pyme(
         ),
         "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, []),
         CONTEXTO_PYME: flask_session.get(CONTEXTO_PYME, {}),
+        "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
+        "rubro_id": getattr(rubro_obj, "id", None) if rubro_obj else None,
     }
 
     intencion = _clasificar_intencion_pyme_con_llm(pregunta)
@@ -663,6 +720,7 @@ def responder_pyme(
         "continuar_flujo": PedidoHandler,
         "pregunta_faq": FaqHandler,
         "hablar_con_agente": HumanHandler,
+        "hablar_con_agente_pyme": HumanHandler,
     }
 
     if detectar_small_talk_con_llm(pregunta):
