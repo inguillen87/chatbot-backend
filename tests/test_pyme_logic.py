@@ -18,9 +18,7 @@ class _DummySession:
     def rollback(self):
         pass
 models_stub.Conversacion = _DummyModel
-models_stub.PymeTicket = _DummyModel
 models_stub.MunicipioTicket = _DummyModel
-models_stub.TicketComentario = _DummyModel
 models_stub.TicketSatisfaccion = _DummyModel
 models_stub.PymePedido = _DummyModel
 models_stub.Rubro = _DummyModel
@@ -33,6 +31,16 @@ class _DummyQuery(list):
         return []
     def first(self):
         return self[0] if self else None
+
+class DummyPymeTicket(_DummyModel):
+    query = _DummyQuery()
+
+class DummyTicketComentario(_DummyModel):
+    fecha = SimpleNamespace(desc=lambda: 'fecha')
+    query = _DummyQuery()
+
+models_stub.PymeTicket = DummyPymeTicket
+models_stub.TicketComentario = DummyTicketComentario
 
 class DummyCatalogoItem:
     query = _DummyQuery()
@@ -96,9 +104,11 @@ sys.modules.setdefault('twilio', ModuleType('twilio'))
 from services import pymes
 
 class DummyTicket:
-    def __init__(self, id=1, nro_ticket=654321):
+    def __init__(self, id=1, nro_ticket=654321, asunto=None, estado='nuevo'):
         self.id = id
         self.nro_ticket = nro_ticket
+        self.asunto = asunto
+        self.estado = estado
 
 class DummyUser(SimpleNamespace):
     def __init__(self):
@@ -140,7 +150,9 @@ class PymeLogicTests(unittest.TestCase):
         resp = pymes.responder_pyme('Necesito hablar con un agente', DummyUser(), None, viewer_user=None)
         self.assertIn('iniciar sesión', resp['respuesta'])
 
-    def test_greeting_with_typo(self):
+    @patch('services.pymes.detectar_small_talk_con_llm', return_value=False)
+    @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='saludo')
+    def test_greeting_with_typo(self, mock_clf, mock_small):
         user = DummyUser()
         resp = pymes.responder_pyme('holaa buenos noxes', user, None, viewer_user=user)
         self.assertIn('¿En qué puedo ayudarte hoy', resp['respuesta'])
@@ -200,8 +212,7 @@ class PymeLogicTests(unittest.TestCase):
     @patch('services.pymes.sugerencias_por_rubro', return_value=[])
     @patch('services.pymes.buscar_en_faq_spacy', return_value=None)
     @patch('services.pymes.obtener_info_web', return_value={'envios': 'en el dia'})
-
-    def test_contextual_llm_handler(self, mock_llm, mock_web, mock_faq, mock_sug):
+    def test_contextual_llm_handler(self, mock_web, mock_faq, mock_sug):
         user = DummyUser()
         resp = pymes.responder_pyme('costo de envio?', user, None, viewer_user=user)
         self.assertEqual(resp['fuente'], 'llm_contextual_pyme')
@@ -220,6 +231,27 @@ class PymeLogicTests(unittest.TestCase):
 
         resp = pymes.responder_pyme('ver catalogo', None, owner.rubro, viewer_user=admin)
         self.assertNotIn('iniciá sesión', resp['respuesta'].lower())
+
+    def test_ticket_status_handler(self):
+        ctx = {
+            'anon_id': 'anon',
+            pymes.CONTEXTO_PYME: {},
+            'intencion': 'consultar_estado_ticket'
+        }
+        DummyPymeTicket.query = type('Q', (), {
+            'filter_by': lambda self, **kw: self,
+            'first': lambda self: DummyTicket(nro_ticket=12345, id=1, asunto='A', estado='en_proceso')
+        })()
+        DummyTicketComentario.query = type('Q', (), {
+            'filter_by': lambda self, **kw: self,
+            'order_by': lambda self, *a, **k: self,
+            'first': lambda self: None
+        })()
+        pymes.PymeTicket = DummyPymeTicket
+        pymes.TicketComentario = DummyTicketComentario
+        handler = pymes.TicketStatusHandler(ctx)
+        resp = handler.handle('estado ticket 12345')
+        self.assertIn('P-12345', resp['respuesta'])
 
 
 if __name__ == '__main__':
