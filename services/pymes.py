@@ -64,6 +64,32 @@ def url_descargar_catalogo() -> str:
     return f"{base}/catalogo/descargar"
 
 
+def extraer_productos_llm(texto: str) -> list[dict]:
+    """Utiliza el LLM para extraer productos y cantidades del texto."""
+    prompt = (
+        "Extrae producto y cantidad del MENSAJE y responde solo con JSON "
+        "como [{'nombre': '...', 'cantidad': 1}].\n"
+        f"MENSAJE: '{texto}'"
+    )
+    try:
+        resp = robust_chat(message=prompt)
+        datos = json.loads(resp or "[]")
+        items: list[dict] = []
+        if isinstance(datos, list):
+            for it in datos:
+                nombre = str(it.get("nombre", "")).strip()
+                try:
+                    cantidad = int(it.get("cantidad", 1))
+                except (TypeError, ValueError):
+                    continue
+                if nombre:
+                    items.append({"nombre": nombre, "cantidad": cantidad})
+        return items
+    except Exception:
+        logger.exception("[PYME] Error usando LLM para extraer productos")
+    return []
+
+
 def extraer_productos(texto: str) -> list[dict]:
     """Intenta extraer pares cantidad/nombre de un texto simple."""
     partes = re.split(r",| y ", texto)
@@ -78,6 +104,8 @@ def extraer_productos(texto: str) -> list[dict]:
             nombre = m.group(2).strip()
             if nombre:
                 items.append({"nombre": nombre, "cantidad": cantidad})
+    if not items:
+        items = extraer_productos_llm(texto)
     return items
 
 
