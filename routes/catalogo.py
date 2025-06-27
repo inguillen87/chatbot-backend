@@ -218,11 +218,17 @@ def buscar_en_catalogo(user):
     consulta = request.args.get('q', '')
     if not consulta:
         return jsonify([])
+
+    try:
+        limite = int(request.args.get('limite', DEFAULT_SEARCH_LIMIT))
+    except (TypeError, ValueError):
+        limite = DEFAULT_SEARCH_LIMIT
+
     coleccion = coleccion_catalogo_para_rubro(user.rubro)
     resultados = buscar_catalogo_qdrant(
         user.id,
         consulta,
-        limite=DEFAULT_SEARCH_LIMIT,
+        limite=limite,
         coleccion=coleccion,
     )
     productos = []
