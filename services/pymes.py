@@ -7,7 +7,11 @@ from flask import session as flask_session
 
 from services.cohere_ai import robust_chat
 from models import Conversacion, db, ArchivoAdjunto
-from services.qdrant_search import buscar_catalogo_qdrant, armar_respuesta_legible
+from services.qdrant_search import (
+    buscar_catalogo_qdrant,
+    armar_respuesta_legible,
+    formatear_tabla_catalogo,
+)
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import reemplazar_placeholders
 from services.utils import sugerencias_por_rubro
@@ -245,12 +249,16 @@ class CatalogoHandler(BaseHandler):
             user_id=user_id,
             pregunta=pregunta,
             categoria=self.context.get("rubro_nombre"),
+            limite=50,
         )
         add_preference("busquedas", pregunta)
         botones_base = []
         if resultados:
-            respuesta_legible = armar_respuesta_legible(resultados, max_items=5)
-            mensaje = f"Estos son algunos productos que tenemos:\n{respuesta_legible}\n¿Te interesa alguno o querés ver más opciones?"
+            tabla = formatear_tabla_catalogo(resultados)
+            mensaje = (
+                "Estos son todos los productos disponibles en catálogo:\n\n"
+                f"{tabla}\n\nSi querés ver otro producto o descargar el catálogo completo, avisame."
+            )
             fuente = "catalogo_vector"
             botones_base = [
                 {"texto": "Hacer un pedido", "action": "iniciar_pedido"},
@@ -324,7 +332,10 @@ class PedidoHandler(BaseHandler):
         ctx = self.context.setdefault(
             CONTEXTO_PYME, flask_session.get(CONTEXTO_PYME, {})
         )
-        estado = deserialize_state(ctx.get("estado_conversacion")) or PymeConversationState.IDLE
+        estado = (
+            deserialize_state(ctx.get("estado_conversacion"))
+            or PymeConversationState.IDLE
+        )
         texto = pregunta.lower()
         intentos = ctx.get("reintentos", 0)
         carrito = ctx.setdefault("carrito", [])
@@ -340,7 +351,10 @@ class PedidoHandler(BaseHandler):
                     "fuente": "pedido_cancelado",
                     "botones": [
                         {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                        {
+                            "texto": "Hablar con un agente",
+                            "action": "hablar_con_agente",
+                        },
                     ],
                 }
             if any(k in texto for k in ["mostrar", "carrito", "pedido"]):
@@ -389,7 +403,9 @@ class PedidoHandler(BaseHandler):
                     "fuente": "producto_no_encontrado",
                 }
             if "finalizar" in texto:
-                ctx["estado_conversacion"] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
+                ctx["estado_conversacion"] = serialize_state(
+                    PymeConversationState.CONFIRMANDO_PEDIDO
+                )
                 ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
                 resumen = formatear_carrito(carrito)
@@ -407,7 +423,9 @@ class PedidoHandler(BaseHandler):
                 flask_session[CONTEXTO_PYME] = ctx
                 if intentos >= 3:
                     ctx.clear()
-                    ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+                    ctx["estado_conversacion"] = serialize_state(
+                        PymeConversationState.IDLE
+                    )
                     ctx["reintentos"] = 0
                     flask_session[CONTEXTO_PYME] = ctx
                     return {
@@ -415,7 +433,10 @@ class PedidoHandler(BaseHandler):
                         "fuente": "pedido_cancelado",
                         "botones": [
                             {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                            {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                            {
+                                "texto": "Hablar con un agente",
+                                "action": "hablar_con_agente",
+                            },
                         ],
                     }
                 return {
@@ -455,11 +476,16 @@ class PedidoHandler(BaseHandler):
                     "fuente": "pedido_cancelado",
                     "botones": [
                         {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                        {
+                            "texto": "Hablar con un agente",
+                            "action": "hablar_con_agente",
+                        },
                     ],
                 }
             if texto.strip() in {"si", "sí", "confirmo", "confirmar"}:
-                ctx["estado_conversacion"] = serialize_state(PymeConversationState.PEDIDO_FINALIZADO)
+                ctx["estado_conversacion"] = serialize_state(
+                    PymeConversationState.PEDIDO_FINALIZADO
+                )
                 ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
                 return {
@@ -479,7 +505,10 @@ class PedidoHandler(BaseHandler):
                     "fuente": "pedido_cancelado",
                     "botones": [
                         {"texto": "Ver catálogo", "action": "ver_catalogo"},
-                        {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
+                        {
+                            "texto": "Hablar con un agente",
+                            "action": "hablar_con_agente",
+                        },
                     ],
                 }
             return {
@@ -496,7 +525,9 @@ class PedidoHandler(BaseHandler):
                 "fuente": "pedido_finalizado",
             }
 
-        ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_PRODUCTO)
+        ctx["estado_conversacion"] = serialize_state(
+            PymeConversationState.ESPERANDO_PRODUCTO
+        )
         ctx["reintentos"] = 0
         flask_session[CONTEXTO_PYME] = ctx
         return {
@@ -655,7 +686,16 @@ def responder_pyme(
         ]
         es_pregunta_compra = any(pal in pregunta.lower() for pal in palabras_compra)
 
-        if intencion in {"ver_catalogo", "consultar_ofertas", "iniciar_pedido", "continuar_flujo"} or es_pregunta_compra:
+        if (
+            intencion
+            in {
+                "ver_catalogo",
+                "consultar_ofertas",
+                "iniciar_pedido",
+                "continuar_flujo",
+            }
+            or es_pregunta_compra
+        ):
             if intencion == "pregunta_ambigua" and es_pregunta_compra:
                 handler_cls = CatalogoHandler
             else:
