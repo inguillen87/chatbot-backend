@@ -190,6 +190,13 @@ class PymeLogicTests(unittest.TestCase):
         self.assertEqual(resp['estado_respuesta'], 'pyme_pregunta_pedido')
         self.assertIn('pedido', resp['respuesta'].lower())
 
+    @patch('services.pymes._clasificar_intencion_pyme_con_llm', return_value='continuar_flujo')
+    def test_continuar_flujo_usar_pedido_handler(self, mock_clf):
+        user = DummyUser()
+        resp = pymes.responder_pyme('agregar mas productos', user, None, viewer_user=user)
+        self.assertEqual(resp['estado_respuesta'], 'pyme_pregunta_pedido')
+        self.assertIn('producto', resp['respuesta'].lower())
+
     @patch('services.pymes.sugerencias_por_rubro', return_value=[])
     @patch('services.pymes.buscar_en_faq_spacy', return_value=None)
     @patch('services.pymes.obtener_info_web', return_value={'envios': 'en el dia'})
