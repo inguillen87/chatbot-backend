@@ -64,6 +64,29 @@ def url_descargar_catalogo() -> str:
     return f"{base}/catalogo/descargar"
 
 
+def extraer_productos(texto: str) -> list[dict]:
+    """Intenta extraer pares cantidad/nombre de un texto simple."""
+    partes = re.split(r",| y ", texto)
+    items: list[dict] = []
+    for p in partes:
+        m = re.search(r"(\d+)[^a-zA-Z0-9]*(.+)", p.strip())
+        if m:
+            try:
+                cantidad = int(m.group(1))
+            except ValueError:
+                continue
+            nombre = m.group(2).strip()
+            if nombre:
+                items.append({"nombre": nombre, "cantidad": cantidad})
+    return items
+
+
+def formatear_carrito(carrito: list[dict]) -> str:
+    if not carrito:
+        return "(vacío)"
+    return "\n".join(f"{it['cantidad']} x {it['nombre']}" for it in carrito)
+
+
 class PymeConversationState(Enum):
     IDLE = auto()
     ESPERANDO_PRODUCTO = auto()
@@ -274,6 +297,7 @@ class PedidoHandler(BaseHandler):
         estado = deserialize_state(ctx.get("estado_conversacion")) or PymeConversationState.IDLE
         texto = pregunta.lower()
         intentos = ctx.get("reintentos", 0)
+        carrito = ctx.setdefault("carrito", [])
 
         if estado == PymeConversationState.ESPERANDO_PRODUCTO:
             if any(k in texto for k in CANCEL_KEYWORDS):
@@ -289,12 +313,58 @@ class PedidoHandler(BaseHandler):
                         {"texto": "Hablar con un agente", "action": "hablar_con_agente"},
                     ],
                 }
+            if any(k in texto for k in ["mostrar", "carrito", "pedido"]):
+                resumen = formatear_carrito(carrito)
+                flask_session[CONTEXTO_PYME] = ctx
+                return {
+                    "respuesta": f"Tu pedido actual:\n{resumen}",
+                    "fuente": "mostrar_pedido",
+                    "botones": [
+                        {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
+                    ],
+                }
+            if any(k in texto for k in ["sacar", "quitar", "eliminar"]):
+                eliminado = False
+                for item in list(carrito):
+                    if item["nombre"].lower() in texto:
+                        carrito.remove(item)
+                        eliminado = True
+                flask_session[CONTEXTO_PYME] = ctx
+                if eliminado:
+                    resumen = formatear_carrito(carrito)
+                    return {
+                        "respuesta": f"Producto eliminado. Carrito:\n{resumen}",
+                        "fuente": "producto_eliminado",
+                    }
+                return {
+                    "respuesta": "No identifiqué el producto a quitar.",
+                    "fuente": "producto_no_encontrado",
+                }
+            if "cambiar" in texto:
+                items = extraer_productos(texto)
+                actualizado = False
+                for it in items:
+                    for c in carrito:
+                        if c["nombre"].lower() in it["nombre"].lower():
+                            c["cantidad"] = it["cantidad"]
+                            actualizado = True
+                flask_session[CONTEXTO_PYME] = ctx
+                if actualizado:
+                    return {
+                        "respuesta": f"Actualizado. Carrito:\n{formatear_carrito(carrito)}",
+                        "fuente": "producto_actualizado",
+                    }
+                return {
+                    "respuesta": "No encontré el producto para cambiar.",
+                    "fuente": "producto_no_encontrado",
+                }
             if "finalizar" in texto:
                 ctx["estado_conversacion"] = serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
                 ctx["reintentos"] = 0
                 flask_session[CONTEXTO_PYME] = ctx
+                resumen = formatear_carrito(carrito)
                 return {
-                    "respuesta": "¿Confirmás tu pedido?",
+                    "respuesta": f"Vas a confirmar este pedido:\n{resumen}\n¿Confirmás?",
                     "fuente": "confirmando_pedido",
                     "botones": [
                         {"texto": "Sí, confirmar", "action": "confirmar_pedido"},
@@ -322,15 +392,24 @@ class PedidoHandler(BaseHandler):
                     "respuesta": "No entendí el producto. Indicá nombre o código. Si querés cancelar, escribí 'cancelar'.",
                     "fuente": "producto_no_reconocido",
                 }
+            items = extraer_productos(texto)
+            if items:
+                carrito.extend(items)
+                ctx["reintentos"] = 0
+                flask_session[CONTEXTO_PYME] = ctx
+                return {
+                    "respuesta": f"Agregado. Carrito:\n{formatear_carrito(carrito)}",
+                    "fuente": "pedido_en_progreso",
+                    "estado_respuesta": "pyme_pregunta_pedido",
+                    "botones": [
+                        {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
+                    ],
+                }
             ctx["reintentos"] = 0
             flask_session[CONTEXTO_PYME] = ctx
             return {
-                "respuesta": "Producto agregado. Indicá otro o escribí 'finalizar pedido'.",
-                "fuente": "pedido_en_progreso",
-                "estado_respuesta": "pyme_pregunta_pedido",
-                "botones": [
-                    {"texto": "Finalizar pedido", "action": "finalizar_pedido"},
-                ],
+                "respuesta": "No entendí el producto. Si querés cancelar, escribí 'cancelar'.",
+                "fuente": "producto_no_reconocido",
             }
 
         if estado == PymeConversationState.CONFIRMANDO_PEDIDO:
