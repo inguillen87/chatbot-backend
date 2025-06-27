@@ -9,6 +9,8 @@ implementar cada idea.
 - Endpoint `GET /tickets/<tipo>/mapa` devuelve los tickets abiertos con
   latitud y longitud utilizando
   `TicketService.obtener_tickets_abiertos_con_ubicacion`.
+  Este método ahora acepta `municipio_id` o `rubro_id` para
+  restringir los resultados al municipio o rubro del usuario.
 - Con esos datos puede renderizarse un mapa interactivo para identificar zonas
   con más reclamos y planificar mejor la respuesta.
 - Ejemplo de respuesta del endpoint:

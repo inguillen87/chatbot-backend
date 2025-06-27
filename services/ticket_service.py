@@ -174,12 +174,25 @@ class ServicioTickets:
             return None
 
     def obtener_tickets_abiertos_con_ubicacion(
-        self, tipo_ticket: Literal["municipio", "pyme"]
+        self,
+        tipo_ticket: Literal["municipio", "pyme"],
+        *,
+        municipio_id: int | None = None,
+        rubro_id: int | None = None,
     ) -> list[dict]:
-        """Devuelve los tickets con ubicación que no estén cerrados."""
+        """Devuelve los tickets con ubicación que no estén cerrados.
+
+        Solo retorna los tickets pertenecientes al ``municipio_id`` o
+        ``rubro_id`` indicados, si se proporcionan.
+        """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
-            tickets = Model.query.all()
+            query = Model.query
+            if tipo_ticket == "municipio" and municipio_id is not None:
+                query = query.filter_by(municipio_id=municipio_id)
+            if tipo_ticket == "pyme" and rubro_id is not None:
+                query = query.filter_by(rubro_id=rubro_id)
+            tickets = query.all()
             resultado = []
             for t in tickets:
                 if (
