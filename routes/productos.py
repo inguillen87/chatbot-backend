@@ -1,13 +1,17 @@
-from flask import Blueprint, request, jsonify
+"""Alias para exponer el catálogo como ``/productos``."""
+
+from flask import Blueprint
 from routes.auth import token_requerido
 from routes.catalogo import listar_catalogo
 
-productos_bp = Blueprint('productos_bp', __name__, url_prefix='/productos')
+productos_bp = Blueprint("productos", __name__, url_prefix="/productos")
 
-@productos_bp.route('/', methods=['GET'], strict_slashes=False)
-@productos_bp.route('', methods=['GET'])
-@productos_bp.route('/', methods=['GET'])
+
+@productos_bp.route("", methods=["GET"], strict_slashes=False)
 @token_requerido
 def obtener_productos(user):
-    # Reutiliza la lógica de listar_catalogo para exponer un alias en /productos
-    return listar_catalogo(user)
+    """Devuelve el catálogo de productos."""
+    # ``listar_catalogo`` ya está protegido por ``token_requerido``.
+    # Para evitar doble verificación, llamamos a la función subyacente
+    # utilizando el atributo ``__wrapped__`` que conserva ``functools.wraps``.
+    return listar_catalogo.__wrapped__(user)
