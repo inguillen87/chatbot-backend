@@ -26,6 +26,8 @@ This project exposes several endpoints to process questions for different sector
 - `POST /subir_catalogo` – upload a product catalog (PDF, Excel or images).
 - `GET /catalogo/archivos` – list available catalog files.
 - `GET /catalogo/archivo/<nombre>` – download a catalog file.
+- Cart management endpoints under `/carrito` allow adding, updating and
+  removing products. Use `/carrito/resumen` to retrieve the current cart.
 - Universal catalog search formats results for any industry using
   `armar_respuesta_legible_multi_rubro`.
 - `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional

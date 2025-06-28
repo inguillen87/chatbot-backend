@@ -33,6 +33,7 @@ from routes.historial import historial_bp
 from routes.notifications import notifications_bp
 from routes.municipal_legacy import municipal_bp
 from routes.reacciones import reacciones_bp
+from routes.carrito import carrito_bp
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -152,6 +153,7 @@ def create_app(config_class=Config):
     app.register_blueprint(metricas_bp)
     app.register_blueprint(catalogo_bp)
     app.register_blueprint(pedidos_bp)
+    app.register_blueprint(carrito_bp)
     app.register_blueprint(estadisticas_bp)
     app.register_blueprint(empleados_bp)
     app.register_blueprint(categorias_bp)
