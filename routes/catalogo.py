@@ -152,7 +152,7 @@ def _agrupar_variantes(productos: list[dict]) -> list[dict]:
 
 @catalogo_bp.route('', methods=['GET'])
 @token_requerido
-def listar_catalogo(user):
+def listar_catalogo(user, *args, **kwargs):
     categoria = request.args.get("categoria")
     precio_min = request.args.get("precio_min")
     precio_max = request.args.get("precio_max")
