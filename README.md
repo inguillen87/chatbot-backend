@@ -102,6 +102,10 @@ asegurarte de que `VITE_GOOGLE_CLIENT_ID` esté disponible en el proceso de
 `npm run build`.  La falta de esta variable suele provocar errores 400 al
 cargar `accounts.google.com/gsi/button`.
 
+Recuerda también registrar la URL de tu frontend en el apartado
+"Authorized JavaScript origins" de la consola de Google Cloud.
+De lo contrario, el botón de inicio de sesión puede devolver errores 403.
+
 Para definir qué orígenes pueden realizar peticiones al backend, puedes usar la
 variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de

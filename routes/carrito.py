@@ -5,6 +5,14 @@ from services.cart import add_item, remove_item, update_item, clear_cart, get_su
 carrito_bp = Blueprint('carrito_bp', __name__, url_prefix='/carrito')
 
 
+@carrito_bp.route('', methods=['GET'])
+@carrito_bp.route('/', methods=['GET'])
+@token_requerido
+def obtener_carrito(user):
+    """Alias de /carrito/resumen para compatibilidad."""
+    return jsonify(get_summary())
+
+
 @carrito_bp.route('/agregar', methods=['POST'])
 @token_requerido
 def agregar(user):
