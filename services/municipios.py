@@ -2170,6 +2170,7 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
     location_data_to_send = contexto_municipio.get("ubicacion_gps")
 
     logger.info(f"[FIN] Respuesta final: '{respuesta_final.get('respuesta')}'")
+    # Corregir indentación aquí
     return {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
