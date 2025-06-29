@@ -254,3 +254,35 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
+
+def validar_email(email: str) -> bool:
+    """Valida si un email tiene formato correcto."""
+    patron = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    return bool(re.match(patron, email))
+
+def validar_telefono(telefono: str) -> bool:
+    """Valida si un teléfono tiene formato numérico y longitud razonable (6-20 dígitos)."""
+    if not isinstance(telefono, str):
+        return False
+    solo_numeros = re.sub(r"\D", "", telefono)
+
+    return 6 <= len(solo_numeros) <= 20
+
+def formatear_telefono_e164(telefono: str, cod_pais: str = "54") -> str:
+    """
+    Normaliza un número de teléfono a formato E.164 (por defecto para Argentina).
+    Ejemplo: "11 2345-6789" -> "+541123456789"
+    """
+    if not isinstance(telefono, str):
+        return ""
+    solo_numeros = re.sub(r"\D", "", telefono)
+    if solo_numeros.startswith(cod_pais):
+        return f"+{solo_numeros}"
+    return f"+{cod_pais}{solo_numeros.lstrip('0')}"
+
+def calcular_precio_por_unidad(precio_total: float, cantidad: int) -> float:
+    """Devuelve el precio por unidad dado un total y la cantidad."""
+    try:
+        return float(precio_total) / int(cantidad) if cantidad else 0.0
+    except (ValueError, ZeroDivisionError):
+        return 0.0

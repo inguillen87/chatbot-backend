@@ -17,7 +17,7 @@ try:
 except ImportError:  # fallback for older versions
     from services.upload_processor import subir_catalogo as _subir_catalogo
     CATALOGO_FOLDER = os.path.join("data", "catalogos")
-from services.utils import (
+from services.common_utils import (
     calcular_precio_por_unidad,
     limpiar_texto_base,
     parse_precio_flexible,
@@ -87,7 +87,7 @@ def _formatear_producto(data: dict) -> dict:
             precio_float, data.get("unidad") or data.get("presentacion", "")
         )
     elif isinstance(precio_str, str) and precio_str.strip():
-        from services.utils import parse_precio_flexible
+        from services.common_utils import parse_precio_flexible
 
         _, parsed_float, _ = parse_precio_flexible(precio_str)
         if parsed_float is not None:
