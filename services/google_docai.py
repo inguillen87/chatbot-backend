@@ -166,25 +166,34 @@ def _obtener_documento_ai(path: str, mime_type: str = "application/pdf") -> Opti
         raw_document_proto = documentai.RawDocument(content=file_content, mime_type=mime_type)
 
         # Configurar para que el procesador de tablas (si es un Custom Extractor con esa capacidad) funcione mejor
-        process_options = documentai.ProcessOptions(
-            from_start=documentai.ProcessOptions.LayoutConfig(
-                chunking_config=documentai.ProcessOptions.LayoutConfig.ChunkingConfig(
-                    chunk_size=1000, # Default, ajustar si es necesario
-                    include_ancestor_headings=True
-                )
-            )
-        )
-        if processor_id.startswith("product-catalog-"): # Heurística para procesador de catálogo
-             process_options = None # Dejar que el procesador especializado maneje sus opciones
+        process_options_val = None # Default to None
+        
+        # The following LayoutConfig caused a TypeError.
+        # For now, we will rely on default processor options or specialized processor behavior.
+        # If specific layout hints are needed for certain general processors,
+        # this needs to be revisited with correct ProcessOptions structure.
+        #
+        # layout_config_for_general_processor = documentai.ProcessOptions.LayoutConfig(
+        #     chunking_config=documentai.ProcessOptions.LayoutConfig.ChunkingConfig(
+        #         chunk_size=1000,
+        #         include_ancestor_headings=True
+        #     )
+        # )
+        #
+        # if not (processor_id and processor_id.startswith("product-catalog-")):
+        #    # Potentially, this should be nested under an OcrConfig or similar
+        #    # process_options_val = documentai.ProcessOptions(ocr_config=documentai.OcrConfig(layout_config=layout_config_for_general_processor))
+        #    # For now, defaulting to None if not a known catalog processor.
+        #    pass
 
         request_doc_ai = documentai.ProcessRequest(
             name=resource_name,
             raw_document=raw_document_proto,
             skip_human_review=True,
-            process_options=process_options
+            process_options=process_options_val # Use the defaulted None
         )
 
-        logger.info(f"[DOCAI-GET] Enviando '{os.path.basename(path)}' a Document AI...")
+        logger.info(f"[DOCAI-GET] Enviando '{os.path.basename(path)}' a Document AI (ProcessOptions: {process_options_val is not None})...")
         result = client.process_document(request=request_doc_ai)
 
         if result and result.document:
