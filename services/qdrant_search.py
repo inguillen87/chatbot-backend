@@ -2,18 +2,11 @@ import logging
 import os
 import re
 from typing import List, Optional, Dict, Any, Tuple
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from services.logic import es_rubro_publico
 
-# Column mapping used for tablas cuando el usuario pide ver el catálogo
-DEFAULT_TABLE_COLUMNS = [
-    ("Marca", "marca"),
-    ("Varietal", "varietal"),
-    ("Caja", "caja"),
-    ("Precio Botella", "precio_botella"),
-    ("Precio Caja", "precio_caja"),
-]
+# from collections import Counter # Ya está importado arriba
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
 from .utils import limpiar_texto_base, unir_codigos_alfa_numericos
@@ -42,6 +35,8 @@ def buscar_catalogo_qdrant(
     score_min: float = 0.20,
     categoria: str | None = None,
     coleccion: str = CATALOGO_PYME,
+    en_promocion: Optional[bool] = None, 
+    con_stock: Optional[bool] = None,
 ) -> List[qdrant_models.ScoredPoint]:
     """
     Busca productos en el catálogo vectorial Qdrant de una PyME, maximizando relevancia comercial y minimizando falsos negativos.

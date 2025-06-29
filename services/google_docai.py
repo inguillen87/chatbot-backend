@@ -180,14 +180,14 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
             continue
 
         df_data = df_tabla.copy()
-
+        
         # --- Inicio Mapeo Mejorado de Columnas ---
         if df_data.empty or len(df_data.iloc[0]) == 0:
             logger.warning(f"Tabla #{i+1} parece no tener cabeceras o estar vacía después de la consolidación. Saltando.")
             continue
 
         cabeceras_originales = [str(c).lower() for c in df_data.iloc[0].tolist()]
-
+        
         posibles_nombres_columnas = {
             "nombre": ["nombre", "producto", "titulo", "descripción", "descripcion", "detalle"],
             "sku": ["sku", "codigo", "código", "cod", "referencia", "ref", "item no"],
@@ -211,7 +211,7 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
                 if alias in cabeceras_originales:
                     original_header = df_data.iloc[0][cabeceras_originales.index(alias)] # Mantener mayúsculas/minúsculas originales
                     columnas_mapeadas[nombre_std] = original_header
-                    break
+                    break 
                 # Intentar coincidencia parcial (si es más de una palabra o más de 3 letras)
                 elif len(alias) > 3 or ' ' in alias:
                     for col_idx, header_orig_raw in enumerate(df_data.iloc[0].tolist()):
@@ -221,13 +221,13 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
                             break
                     if nombre_std in columnas_mapeadas: # Salir si ya se encontró por coincidencia parcial
                         break
-
+        
         # Usar cabeceras originales si no hay mapeo, limpiándolas
         df_data.columns = [limpiar_texto_base(c).replace(" ", "_") for c in df_data.iloc[0].tolist()]
-
+        
         logger.info(f"Tabla #{i+1}: Cabeceras originales detectadas: {cabeceras_originales}")
         logger.info(f"Tabla #{i+1}: Cabeceras mapeadas a estándar: {columnas_mapeadas}")
-
+        
         df_data = df_data.iloc[1:].reset_index(drop=True)
         df_data.dropna(how="all", inplace=True)
         # --- Fin Mapeo Mejorado de Columnas ---
@@ -255,14 +255,14 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
 
             if not registro.get("nombre") and registro.get("producto"): # fallback
                  registro["nombre"] = registro.get("producto")
-
+            
             # Si 'nombre' sigue faltando después de todo, intentar con otras claves comunes
             if not registro.get("nombre"):
                 for key_try in ["titulo", "descripcion", "detalle"]:
                     if registro.get(key_try):
                         registro["nombre"] = registro.get(key_try)
                         break
-
+            
             # Si después de todos los intentos, no hay 'nombre', es un registro inválido.
             if not registro.get("nombre"):
                 logger.debug(f"Registro descartado por falta de 'nombre': {registro}")
@@ -277,7 +277,7 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
                 registro["precio_str"] = precio_str
                 registro["precio_float"] = precio_float
                 registro["moneda"] = moneda
-
+            
             # Asegurar que los campos clave para Qdrant tengan un valor default si no se extrajeron
             registro.setdefault("sku", "")
             registro.setdefault("stock", "") # Podría ser "Consultar" o un número
