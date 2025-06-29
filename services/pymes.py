@@ -42,39 +42,6 @@ def es_producto_valido_llm(texto: str) -> bool:
         logger.error(f"[PYME] Error validando producto con LLM: {e}")
     return True # Default a True para no interrumpir flujo si falla LLM
 
-# Helper function to check for public catalog and get its info
-def _check_and_get_catalog_download_info(pyme_user_id: Optional[int]) -> Dict[str, Any]:
-    """
-    Checks if a Pyme has a downloadable catalog and returns its info.
-    """
-    if not pyme_user_id:
-        return {"exists": False}
-
-    try:
-        latest_catalog_adj = (
-            ArchivoAdjunto.query
-            .filter_by(user_id=pyme_user_id, tipo="catalogo")
-            .order_by(ArchivoAdjunto.fecha.desc())
-            .first()
-        )
-        if latest_catalog_adj:
-            # Ensure URL is correctly formed. Assuming app context is available for url_for,
-            # or construct manually if necessary. For now, relative path.
-            # from flask import url_for # Would need app context
-            # url = url_for('catalogo.descargar_catalogo_publico', pyme_user_id=pyme_user_id, _external=True)
-            # Using relative URL for simplicity as flask client/buttons might handle it.
-            url = f"/catalogo/public/{pyme_user_id}/descargar"
-            return {
-                "exists": True,
-                "url": url,
-                "filename": latest_catalog_adj.nombre_original or latest_catalog_adj.filename
-            }
-    except Exception as e:
-        logger.error(f"[PYME_CATALOG_DOWNLOAD_CHECK] Error checking for catalog for pyme_id {pyme_user_id}: {e}", exc_info=True)
-
-    return {"exists": False}
-
-
 def tiene_archivo_catalogo(user_id: int) -> bool: # This is for the Pyme owner's own catalog
     if not user_id: return False
     try:
@@ -314,16 +281,12 @@ class CatalogoHandler(BaseHandler):
                 # Default buttons for no results could be just "Hablar con un agente" or "Intentar otra búsqueda".
                 # The download link will be added below if available.
                 if not botones_base: # Ensure there's always some action
-                    botones_base = [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}]
+                    botones_base = [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
+            # Restore original logic for pyme owner download if applicable
+            if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf", "completo"]):
+                 botones_base.append({"texto": "Descargar mi catálogo", "action": "descargar_catalogo"}) # Action for owner
+                 mensaje += f"\n\nPodés [descargar tu catálogo completo aquí]({url_descargar_catalogo()})."
 
-
-        # Add catalog download info if available, for all cases (results found or not)
-        download_info = _check_and_get_catalog_download_info(user_id)
-        if download_info["exists"]:
-            mensaje += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
-            # Optionally, add a button if your frontend supports it well
-            # Example: botones_base.append({"type": "web_url", "title": f"Descargar Catálogo ({download_info['filename']})", "url": download_info['url']})
-            # For now, sticking to markdown link in text for broader compatibility.
 
         return {"respuesta": mensaje, "fuente": fuente, "botones": botones_base}
 
@@ -346,11 +309,6 @@ class OfertasHandler(BaseHandler):
             mensaje = "Por el momento no tenemos ofertas especiales destacadas, pero puedes ver nuestro catálogo completo."
             fuente = "sin_ofertas_dinamicas"
             botones = [{"texto": "Ver catálogo", "action": "ver_catalogo"}]
-
-        download_info = _check_and_get_catalog_download_info(user_id)
-        if download_info["exists"]:
-            mensaje += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
-            # Consider adding a download button to `botones` if desired and supported by frontend.
 
         return {"respuesta": mensaje, "fuente": fuente, "botones": botones}
 
@@ -728,7 +686,7 @@ class FallbackHandler(BaseHandler):
             mensaje_final = f"{random.choice(sugerencias)} ¿Querés una oferta personalizada o ayuda para comprar?"
             fuente_final = "fallback_sugerencia_rubro"
             botones_finales = [{"texto": "Ver ofertas", "action": "ver_ofertas"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
-        
+
         elif user_id: # Only try webinfo if there's a user_id context for the Pyme
             info_web = obtener_info_web(user_id, self.context.get("nombre_pyme"))
             if info_web:
@@ -739,12 +697,13 @@ class FallbackHandler(BaseHandler):
                     # Botones podrían ser genéricos o relacionados con la info web si es parseable
                     botones_finales = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
 
+        # Restore original logic for pyme owner download if applicable and question implies it
+        if resultados and tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf", "completo"]):
+            # 'resultados' check ensures we only offer download if we also showed some catalog items.
+            # 'pregunta.lower()' check ensures user expressed some intent to download.
+            botones_finales.append({"texto": "Descargar mi catálogo", "action": "descargar_catalogo"}) # Action for owner
+            mensaje_final += f"\n\nPodés [descargar tu catálogo completo aquí]({url_descargar_catalogo()})."
 
-        # Add catalog download info if available
-        download_info = _check_and_get_catalog_download_info(user_id)
-        if download_info["exists"]:
-            mensaje_final += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
-            # No se añaden botones aquí para no sobrecargar el fallback, el link en texto es suficiente.
             
         return {"respuesta": mensaje_final, "fuente": fuente_final, "botones": botones_finales}
 
