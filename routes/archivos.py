@@ -1,5 +1,4 @@
-from flask import Blueprint, request, jsonify, current_app, send_from_directory
-from routes.chat import cors_options_response
+from flask import Blueprint, request, jsonify, current_app, send_from_directory, make_response
 from extensions import db
 from models import ArchivoAdjunto, User
 import os
@@ -35,6 +34,26 @@ ALLOWED_MIME_PREFIXES = [
 
 # Tamaño máximo de archivo (10 MB)
 MAX_FILE_SIZE = 10 * 1024 * 1024
+
+
+# Definition of the new cors_options_response function
+def cors_options_response():
+    response = make_response(jsonify({}))
+    origin = request.headers.get('Origin')
+    if origin:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+    else:
+        # Consider if '*' is appropriate or if a more specific origin list should be used
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = (
+        'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token'
+    )
+    # Ensure all methods intended to be covered by CORS are listed, including OPTIONS itself
+    # The methods listed here should ideally match or be a superset of those in apply_cors for consistency
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS' 
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response
 
 
 def allowed_mime(mime: str) -> bool:

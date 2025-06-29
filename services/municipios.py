@@ -2164,14 +2164,14 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
                 ],
             }
 
+    # Correctly indented block starts here
     contexto_para_guardar = serializar_enum(context["contexto_municipio"])
-
     media_url_to_send = contexto_municipio.get("foto_url")
     location_data_to_send = contexto_municipio.get("ubicacion_gps")
 
     logger.info(f"[FIN] Respuesta final: '{respuesta_final.get('respuesta')}'")
-    # Corregir indentación aquí
-    return {
+    
+    return { 
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
