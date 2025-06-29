@@ -351,6 +351,21 @@ class Reaccion(db.Model):
     conversacion = db.relationship("Conversacion", backref="reacciones")
     user = db.relationship("User")
 
+class SugerenciaCiudadano(db.Model):
+    __tablename__ = "sugerencia_ciudadano"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True) # Puede ser anónimo o registrado
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
+    municipio_id = db.Column(db.Integer, nullable=True) # Para vincular a qué municipio pertenece la sugerencia
+    texto_sugerencia = db.Column(db.Text, nullable=False)
+    fecha = db.Column(db.DateTime, default=get_local_now)
+    estado = db.Column(db.String(30), default="nueva") # Ej: nueva, revisada, implementada, descartada
+
+    user = db.relationship("User", backref="sugerencias_ciudadano")
+
+    def __repr__(self):
+        return f"<SugerenciaCiudadano {self.id} por User {self.user_id or self.anon_id}>"
+
 def generate_token():
     return str(uuid.uuid4())
 
