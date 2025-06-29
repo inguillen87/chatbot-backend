@@ -1835,6 +1835,84 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
         return ReclamoHandler(self.context).handle(payload) # Pasa el payload completo
 
 
+class SugerenciasVecinoHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        logger.info(
+            f"[SugerenciasVecinoHandler] Recibida pregunta: {payload.get('pregunta', '')}"
+        )
+        pregunta_str = payload.get("pregunta", "")
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        intencion = self.context.get("intencion")
+
+        # Si la intención es hacer una sugerencia y no hay un flujo activo
+        if intencion == "hacer_sugerencia" and not estado:
+            memoria.clear()
+            # Verificar si el usuario está logueado, si no, pedir registro/login de forma amigable
+            if not self.context.get("cliente_id"):
+                return {
+                    "respuesta": (
+                        "¡Me encanta que quieras compartir tus ideas! Para poder registrar tu sugerencia y mantenerte al tanto, "
+                        "necesitaría que inicies sesión o te registres. ¿Te gustaría hacerlo ahora?"
+                    ),
+                    "botones": [
+                        {"texto": "Iniciar sesión", "action": "login"},
+                        {"texto": "Registrarme Gratis", "action": "register"},
+                        {"texto": "Cancelar sugerencia"},
+                    ],
+                }
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA
+            return {
+                "respuesta": "¡Genial! Contame tu sugerencia para mejorar nuestro municipio. Te escucho atentamente."
+            }
+
+        # Si estamos esperando el texto de la sugerencia
+        if estado == ConversationState.ESPERANDO_TEXTO_SUGERENCIA:
+            texto_sugerencia = pregunta_str.strip()
+            if not texto_sugerencia:
+                return {
+                    "respuesta": "Parece que no escribiste nada. Por favor, contame cuál es tu sugerencia."
+                }
+
+            # Guardar la sugerencia
+            try:
+                from models import SugerenciaCiudadano, db  # Importar aquí para evitar error de importación circular
+
+                nueva_sugerencia = SugerenciaCiudadano(
+                    user_id=self.context.get("cliente_id"),
+                    anon_id=self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                    municipio_id=getattr(self.context.get("user_obj"), "municipio_id", None),
+                    texto_sugerencia=texto_sugerencia,
+                    estado="nueva",
+                )
+                db.session.add(nueva_sugerencia)
+                db.session.commit()
+
+                memoria.clear()
+                return {
+                    "respuesta": (
+                        "¡Muchas gracias por tu sugerencia! La hemos registrado y el equipo la revisará pronto. "
+                        "Valoramos mucho tu aporte para que juntos hagamos un municipio mejor. 😊"
+                    ),
+                    "botones": [
+                        {"texto": "Hacer otra sugerencia"},
+                        {"texto": "Hacer un reclamo"},
+                        {"texto": "Volver al inicio"},
+                    ],
+                }
+            except Exception as e:
+                logger.error(
+                    f"[SugerenciasVecinoHandler] Error al guardar sugerencia: {e}",
+                    exc_info=True,
+                )
+                memoria.clear()
+                return {
+                    "respuesta": "¡Ups! Hubo un problema técnico al guardar tu sugerencia. Lamento las molestias. Por favor, intentá de nuevo más tarde."
+                }
+
+        return None
+
+
 def safe_llm_call(prompt, preamble, fallback=None):
     try:
         resp = get_cohere_response(message=prompt, preamble=preamble)
@@ -2008,85 +2086,10 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
 
     respuesta_final = None
 
-# Definición de SugerenciasVecinoHandler (Placeholder)
-# Se define aquí para que esté disponible antes de su uso en handler_chain
-class SugerenciasVecinoHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        logger.info(f"[SugerenciasVecinoHandler] Recibida pregunta: {payload.get('pregunta', '')}")
-        pregunta_str = payload.get("pregunta", "")
-        memoria = self.context.get("contexto_municipio", {})
-        estado = memoria.get("estado_conversacion")
-        intencion = self.context.get("intencion")
-
-        # Si la intención es hacer una sugerencia y no hay un flujo activo
-        if intencion == "hacer_sugerencia" and not estado:
-            memoria.clear()
-            # Verificar si el usuario está logueado, si no, pedir registro/login de forma amigable
-            if not self.context.get("cliente_id"): # cliente_id es viewer_user.id
-                 return {
-                    "respuesta": (
-                        "¡Me encanta que quieras compartir tus ideas! Para poder registrar tu sugerencia y mantenerte al tanto, "
-                        "necesitaría que inicies sesión o te registres. ¿Te gustaría hacerlo ahora?"
-                    ),
-                    "botones": [
-                        {"texto": "Iniciar sesión", "action": "login"},
-                        {"texto": "Registrarme Gratis", "action": "register"},
-                        {"texto": "Cancelar sugerencia"},
-                    ],
-                }
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA
-            return {
-                "respuesta": "¡Genial! Contame tu sugerencia para mejorar nuestro municipio. Te escucho atentamente."
-            }
-
-        # Si estamos esperando el texto de la sugerencia
-        if estado == ConversationState.ESPERANDO_TEXTO_SUGERENCIA:
-            texto_sugerencia = pregunta_str.strip()
-            if not texto_sugerencia:
-                return {
-                    "respuesta": "Parece que no escribiste nada. Por favor, contame cuál es tu sugerencia."
-                }
-
-            # Guardar la sugerencia
-            try:
-                from models import SugerenciaCiudadano, db # Importar aquí para evitar error de importación circular
-
-                nueva_sugerencia = SugerenciaCiudadano(
-                    user_id=self.context.get("cliente_id"), # Usar cliente_id que es viewer_user.id
-                    anon_id=self.context.get("anon_id") if not self.context.get("cliente_id") else None,
-                    municipio_id=getattr(self.context.get("user_obj"), "municipio_id", None),
-                    texto_sugerencia=texto_sugerencia,
-                    estado="nueva"
-                )
-                db.session.add(nueva_sugerencia)
-                db.session.commit()
-
-                memoria.clear()
-                return {
-                    "respuesta": (
-                        "¡Muchas gracias por tu sugerencia! La hemos registrado y el equipo la revisará pronto. "
-                        "Valoramos mucho tu aporte para que juntos hagamos un municipio mejor. 😊"
-                    ),
-                    "botones": [
-                        {"texto": "Hacer otra sugerencia"},
-                        {"texto": "Hacer un reclamo"},
-                        {"texto": "Volver al inicio"},
-                    ],
-                }
-            except Exception as e:
-                logger.error(f"[SugerenciasVecinoHandler] Error al guardar sugerencia: {e}", exc_info=True)
-                memoria.clear()
-                return {
-                    "respuesta": "¡Ups! Hubo un problema técnico al guardar tu sugerencia. Lamento las molestias. Por favor, intentá de nuevo más tarde."
-                }
-
-        return None
-
-# Actualizar la cadena de handlers para incluir SugerenciasVecinoHandler
+# Actualizar la cadena de handlers para incluir SugerenciasVecinoHandler.
 # Debe ir después de IntentClassifierHandler y antes de los handlers más generales.
 # Idealmente, después de gestiones que requieren login (como HumanEscalation) y antes de reclamos/trámites.
-# Lo colocaré después de TicketStatusHandler.
-# ... (código anterior de la cadena de handlers)
+# Lo colocaremos después de TicketStatusHandler.
 
     for handler_class in handler_chain:
         try:
