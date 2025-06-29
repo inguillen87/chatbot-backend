@@ -83,22 +83,30 @@ def _formatear_producto(data: dict) -> dict:
 
     if precio_float is not None:
         precio_pack = precio_float
-        precio_unitario = calcular_precio_por_unidad(
-            precio_float, data.get("unidad") or data.get("presentacion", "")
-        )
+        unidad_str = data.get("unidad") or data.get("presentacion", "")
+        cantidad_int = parse_cantidad_flexible(unidad_str)
+        if cantidad_int is not None and cantidad_int > 0:
+            precio_unitario = calcular_precio_por_unidad(precio_float, cantidad_int)
+        else:
+            precio_unitario = precio_float # Default to pack price if quantity not parsable
+
     elif isinstance(precio_str, str) and precio_str.strip():
         from services.common_utils import parse_precio_flexible
 
         _, parsed_float, _ = parse_precio_flexible(precio_str)
         if parsed_float is not None:
             precio_pack = parsed_float
-            precio_unitario = calcular_precio_por_unidad(
-                parsed_float, data.get("unidad") or data.get("presentacion", "")
-            )
+            unidad_str = data.get("unidad") or data.get("presentacion", "")
+            cantidad_int = parse_cantidad_flexible(unidad_str)
+            if cantidad_int is not None and cantidad_int > 0:
+                precio_unitario = calcular_precio_por_unidad(parsed_float, cantidad_int)
+            else:
+                precio_unitario = parsed_float # Default to pack price
         else:
             precio_pack = precio_str.strip()
+            precio_unitario = precio_pack # If price string couldn't be parsed to float, unit price is also the string
 
-    if precio_unitario is None:
+    if precio_unitario is None: # Fallback if it's still None
         precio_unitario = precio_pack
 
     if isinstance(precio_pack, str) and not precio_pack:
