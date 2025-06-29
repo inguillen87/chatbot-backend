@@ -344,10 +344,28 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
             registro_actual.setdefault("stock", "")
             registro_actual.setdefault("categoria_producto", pyme_rubro_nombre)
             registro_actual.setdefault("marca", "")
-            registro_actual.setdefault("descripcion", registro_actual.get("descripcion","") or "") # Asegurar que 'descripcion' exista
+            registro_actual.setdefault("descripcion", registro_actual.get("descripcion","") or "")
             registro_actual.setdefault("descripcion_corta", "")
             registro_actual.setdefault("promocion_texto", "")
-            registro_actual.setdefault("unidad", "")
+
+            # Procesar la unidad original para extraer cantidad de empaque
+            unidad_original_str = registro_actual.get("unidad", "")
+            from .utils import parse_unidad_y_cantidad_empaque # Import local para claridad
+            unidad_desc_parsed, cantidad_emp_parsed = parse_unidad_y_cantidad_empaque(unidad_original_str)
+            registro_actual['unidad_parsed'] = unidad_desc_parsed
+            registro_actual['cantidad_empaque'] = cantidad_emp_parsed
+            # La 'unidad' original ya está en registro_actual['unidad'] si se mapeó.
+            # Si no se mapeó, 'unidad' será "" y unidad_parsed también será "", cantidad_empaque será None.
+            logger.debug(f"[DOCAI_TABLES] Tabla #{i+1}, Fila {row_idx}: 'unidad' original='{unidad_original_str}', parsed_desc='{unidad_desc_parsed}', parsed_cant_empaque='{cantidad_emp_parsed}'")
+
+            # Asegurar que todos los campos de KEYWORD_MAP (y los nuevos parseados) existan
+            for k_std in KEYWORD_MAP.keys():
+                if k_std not in registro_actual:
+                    registro_actual[k_std] = ""
+            if 'unidad_parsed' not in registro_actual: # Debería estar por el código anterior
+                 registro_actual['unidad_parsed'] = registro_actual.get('unidad', "")
+            if 'cantidad_empaque' not in registro_actual: # Debería estar
+                 registro_actual['cantidad_empaque'] = None
 
             productos_extraidos_final.append(registro_actual)
 

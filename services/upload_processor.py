@@ -65,7 +65,9 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
             "precio_float": producto_dict.get("precio_float"),
             "moneda": producto_dict.get("moneda", "ARS"),
             "categoria_qdrant": categoria_norm, # Categoría normalizada
-            "unidad": producto_dict.get("unidad", ""),
+            "unidad_original": producto_dict.get("unidad", ""), # Original string e.g. "Caja x 6 botellas"
+            "unidad_descripcion": producto_dict.get("unidad_parsed", producto_dict.get("unidad", "")), # Parsed e.g. "Caja botellas" or fallback
+            "cantidad_empaque": producto_dict.get("cantidad_empaque"), # Parsed e.g. 6 or None
             "marca": producto_dict.get("marca", ""),
             "sku": producto_dict.get("sku", ""),
             "stock": producto_dict.get("stock", ""), # Puede ser numérico o texto como "disponible"
@@ -141,17 +143,34 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
             categoria = str(prod_dict.get("categoria_qdrant", prod_dict.get("categoria", pyme_rubro_nombre))).strip()
             marca = str(prod_dict.get("marca", "")).strip()
             sku = str(prod_dict.get("sku", "")).strip()
-            unidad = str(prod_dict.get("unidad", "")).strip()
+
+            # Get original and parsed unit information
+            unidad_original = str(prod_dict.get("unidad", "")).strip() # e.g., "Caja x 6 botellas"
+            unidad_parsed_desc = str(prod_dict.get("unidad_parsed", "")).strip() # e.g., "Caja botellas"
+            cantidad_empaque_val = prod_dict.get("cantidad_empaque") # e.g., 6 or None
+
             talles = str(prod_dict.get("talles", "")).strip()
             colores = str(prod_dict.get("colores", "")).strip()
 
             partes_texto_embed = []
             if nombre: partes_texto_embed.append(f"Producto: {nombre}")
-            else: continue
+            else: continue # Skip if no name
 
             if marca: partes_texto_embed.append(f"Marca: {marca}")
             if categoria: partes_texto_embed.append(f"Categoría: {categoria}")
-            if unidad: partes_texto_embed.append(f"Presentación: {unidad}")
+
+            # Construct a descriptive presentacion_texto for embedding
+            presentacion_texto_para_embed = unidad_original # Default to original string
+            if unidad_parsed_desc and cantidad_empaque_val is not None and cantidad_empaque_val > 0:
+                presentacion_texto_para_embed = f"{unidad_parsed_desc} (empaque de {cantidad_empaque_val})"
+            elif unidad_parsed_desc: # Only parsed description, no quantity (or quantity is 1 or None)
+                presentacion_texto_para_embed = unidad_parsed_desc
+
+            if presentacion_texto_para_embed: # Use the constructed text
+                partes_texto_embed.append(f"Presentación: {presentacion_texto_para_embed}")
+            elif unidad_original: # Fallback if somehow presentacion_texto_para_embed is empty but original is not
+                partes_texto_embed.append(f"Presentación: {unidad_original}")
+
             if talles: partes_texto_embed.append(f"Talles: {talles}")
             if colores: partes_texto_embed.append(f"Colores: {colores}")
             if sku: partes_texto_embed.append(f"Código/SKU: {sku}")

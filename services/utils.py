@@ -356,6 +356,90 @@ def validar_telefono(telefono: str) -> bool:
     solo_numeros = re.sub(r"\D", "", telefono)
     return len(solo_numeros) >= 8
 
+def parse_unidad_y_cantidad_empaque(texto_unidad_str: Optional[str]) -> tuple[str, Optional[int]]:
+    """
+    Intenta extraer una cantidad numérica de empaque y una descripción de unidad.
+    Ej: "Caja x 6 botellas" -> ("Caja botellas", 6)
+        "Pack de 12"      -> ("Pack", 12)
+        "Botella 750ml"   -> ("Botella 750ml", 1) (o None si no se asume 1)
+        "6 unidades"      -> ("unidades", 6)
+    """
+    if not texto_unidad_str or not isinstance(texto_unidad_str, str):
+        # Devuelve el texto original (o vacío) y None para la cantidad si la entrada no es válida
+        return str(texto_unidad_str or "").strip(), None
+
+    original_descripcion_stripped = texto_unidad_str.strip()
+    texto_lower = original_descripcion_stripped.lower()
+
+    cantidad_empaque: Optional[int] = None
+    unidad_descripcion: str = original_descripcion_stripped # Default
+
+    # Patrones comunes: "6 pack", "pack x 6", "caja de 12", "12 unidades", "x12"
+    # Priorizar patrones que claramente separan número y texto o usan palabras clave.
+    patterns = [
+        # Caso: "6 pack", "12 unidades", "24 botellas" (número seguido de palabra)
+        re.compile(r"(\d+)\s*([a-zA-Záéíóúñü]+(?:(?:\s+de)?\s*[a-zA-Záéíóúñü]+)*)"),
+        # Caso: "pack x 6", "caja de 12", "unidades: 24" (palabra clave seguida de número)
+        re.compile(r"([a-zA-Záéíóúñü]+(?:(?:\s+de)?\s*[a_zA-Záéíóúñü]+)*)\s*(?:x|de|por|:|pack|-|)\s*(\d+)"),
+        # Caso: "x6", "x 6", "/12" (solo un prefijo y número) - más genérico, menos prioritario
+        re.compile(r"(?:x|/)\s*(\d+)"),
+    ]
+
+    for i, pattern in enumerate(patterns):
+        match = pattern.search(texto_lower)
+        if match:
+            try:
+                if i == 0: # "6 pack"
+                    cantidad_empaque = int(match.group(1))
+                    unidad_descripcion = match.group(2).strip()
+                     # Capitalizar la primera letra de la descripción de la unidad si es solo una palabra
+                    if ' ' not in unidad_descripcion:
+                        unidad_descripcion = unidad_descripcion.capitalize()
+                    else: # Capitalizar cada palabra
+                        unidad_descripcion = ' '.join(word.capitalize() for word in unidad_descripcion.split())
+                elif i == 1: # "pack x 6"
+                    cantidad_empaque = int(match.group(2))
+                    unidad_descripcion = match.group(1).strip()
+                    if ' ' not in unidad_descripcion:
+                        unidad_descripcion = unidad_descripcion.capitalize()
+                    else:
+                        unidad_descripcion = ' '.join(word.capitalize() for word in unidad_descripcion.split())
+                elif i == 2: # "x6"
+                    cantidad_empaque = int(match.group(1))
+                    # Aquí la descripción de la unidad es más difícil, mantenemos la original o una genérica
+                    # Podríamos intentar quitar el "xN" de la original.
+                    temp_desc = re.sub(r"(?:x|/)\s*" + str(cantidad_empaque), "", original_descripcion_stripped, flags=re.IGNORECASE).strip()
+                    unidad_descripcion = temp_desc if temp_desc else "Pack" # Fallback a "Pack" si quitarlo deja vacío
+
+                # Si encontramos una cantidad, rompemos para no sobrescribir con patrones menos específicos
+                if cantidad_empaque is not None:
+                    break
+            except (ValueError, IndexError):
+                continue # Error en parsing del match, intentar siguiente patrón
+
+    # Si después de los patrones no se encontró cantidad pero el texto sugiere singularidad
+    if cantidad_empaque is None:
+        singular_keywords = ["botella", "unidad", "lata", "pieza", "blister", "rollo", "sachet", "frasco", "pote"]
+        # No usar "caja" o "pack" aquí porque usualmente implican múltiples, a menos que se especifique "1 caja"
+        is_singular = any(keyword in texto_lower for keyword in singular_keywords)
+        if is_singular:
+            # Verificamos si la palabra "docena" está presente
+            if "docena" in texto_lower:
+                cantidad_empaque = 12
+                unidad_descripcion = "Docena" # O mantener la descripción original
+            else:
+                cantidad_empaque = 1
+            # unidad_descripcion ya es original_descripcion_stripped por defecto
+            # Podríamos intentar limpiarla un poco más si es necesario aquí.
+
+    # Si la descripción de la unidad quedó vacía pero la original no, usar la original.
+    if not unidad_descripcion.strip() and original_descripcion_stripped:
+        unidad_descripcion = original_descripcion_stripped
+    elif not unidad_descripcion.strip() and not original_descripcion_stripped: # Ambas vacias
+        unidad_descripcion = "" # Asegurar que sea string vacio y no None
+
+    return unidad_descripcion, cantidad_empaque
+
 def formatear_telefono_e164(telefono: str, codigo_pais: str = "54") -> str:
     """Devuelve el teléfono en formato E164 o cadena vacía si no es válido."""
     if not telefono:

@@ -147,21 +147,43 @@ def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # conte
 
     for item in carrito:
         nombre = item.get("nombre", "Producto desconocido")
-        cantidad = item.get("cantidad", 0)
-        precio_unitario = item.get("precio_unitario", 0.0)
-        unidad = item.get("unidad", "")
-        precio_str = item.get("precio_str", "Consultar")
+        cantidad_pedida = item.get("cantidad_pedido", 0)
 
-        linea = f"{cantidad} x {nombre}"
-        if unidad:
-            linea += f" ({unidad})"
+        precio_catalogo = item.get("precio_unitario_catalogo", 0.0)
+        unidad_original = item.get("unidad_original_catalogo", "")
+        unidad_desc = item.get("unidad_descripcion_catalogo", "")
+        cantidad_empaque = item.get("cantidad_empaque_catalogo")
+        precio_str_catalogo = item.get("precio_str_catalogo", "Consultar")
 
-        if precio_unitario > 0:
-            precio_total_item = cantidad * precio_unitario
-            linea += f" - ${precio_unitario:,.2f} c/u = ${precio_total_item:,.2f}"
+        linea = f"{cantidad_pedida} x {nombre}"
+
+        display_unidad_carrito = ""
+        # Use parsed description and empaque quantity if available and meaningful
+        if unidad_desc and isinstance(cantidad_empaque, int) and cantidad_empaque > 1:
+            display_unidad_carrito = f"{unidad_desc} (de {cantidad_empaque} items)"
+        elif unidad_desc: # e.g., "Botella", "Unidad"
+            display_unidad_carrito = unidad_desc
+        elif unidad_original: # Fallback to original string if no better parsing
+            display_unidad_carrito = unidad_original
+
+        if display_unidad_carrito:
+            linea += f" ({display_unidad_carrito})"
+
+        # Precio y subtotal
+        # precio_catalogo is the price for the 'display_unidad_carrito'
+        if precio_catalogo > 0:
+            precio_total_item = cantidad_pedida * precio_catalogo
+            linea += f" - ${precio_catalogo:,.2f} c/u = ${precio_total_item:,.2f}"
             subtotal_pedido += precio_total_item
+
+            # If the price displayed is for a pack, and it's different from individual item price, show individual
+            if isinstance(cantidad_empaque, int) and cantidad_empaque > 1:
+                # This assumes precio_catalogo is for the pack of 'cantidad_empaque' items
+                precio_individual_calc = precio_catalogo / cantidad_empaque
+                if abs(precio_individual_calc - precio_catalogo) > 0.01: # Only show if different
+                    linea += f" <i style='font-size:smaller;'>(equiv. ${precio_individual_calc:,.2f} por item individual)</i>"
         else:
-            linea += f" - {precio_str}"
+            linea += f" - {precio_str_catalogo}" # "Consultar" or other string
             productos_sin_precio_cont +=1
 
         lineas_carrito.append(linea)
@@ -170,7 +192,7 @@ def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # conte
         lineas_carrito.append(f"\n**Subtotal del pedido: ${subtotal_pedido:,.2f}**")
 
     if productos_sin_precio_cont > 0:
-        nota_precio = "Algunos precios se confirmarán al finalizar." if subtotal_pedido > 0 else "Los precios se confirmarán al finalizar."
+        nota_precio = "Algunos precios se confirmarán al finalizar el pedido." if subtotal_pedido > 0 else "Los precios se confirmarán al finalizar el pedido."
         lineas_carrito.append(f"_{nota_precio}_")
 
     return "\n".join(lineas_carrito)
@@ -310,13 +332,48 @@ class PedidoHandler(BaseHandler):
                 nombre_oferta = payload.get("nombre", "").strip()
                 if nombre_oferta and nombre_oferta.lower() not in nombres_en_carrito:
                     if not any(nombre_oferta.lower() == item_agregado['nombre'].lower() for item_agregado in items_recien_agregados):
-                        precio_oferta_str = payload.get("precio_str", "") or (f"${payload['precio_float']:,.2f}" if payload.get("precio_float") is not None else "")
+                        # Extraer campos de unidad y precio del payload
+                        precio_val = payload.get("precio_float")
+                        precio_str_original = payload.get("precio_str", "")
+
+                        unidad_desc_parsed = payload.get("unidad_descripcion", "")
+                        cantidad_empaque_val = payload.get("cantidad_empaque")
+
+                        precio_display_sugerencia = "Consultar"
+                        if precio_val is not None:
+                            precio_display_sugerencia = f"${float(precio_val):,.2f}"
+                        elif precio_str_original:
+                            precio_display_sugerencia = precio_str_original
+
                         texto_sugerencia = f"'{nombre_oferta}'"
-                        if precio_oferta_str: texto_sugerencia += f" a {precio_oferta_str}"
-                        if payload.get("promocion_texto"): texto_sugerencia += f" ({payload.get('promocion_texto')})"
+
+                        display_unidad_sug = ""
+                        if unidad_desc_parsed and cantidad_empaque_val and cantidad_empaque_val > 1:
+                            display_unidad_sug = f" ({unidad_desc_parsed} x{cantidad_empaque_val})"
+                        elif unidad_desc_parsed:
+                            display_unidad_sug = f" ({unidad_desc_parsed})"
+
+                        if display_unidad_sug:
+                            texto_sugerencia += display_unidad_sug
+
+                        texto_sugerencia += f" a {precio_display_sugerencia}"
+
+                        if payload.get("promocion_texto"):
+                            texto_sugerencia += f" ({payload.get('promocion_texto')})"
+
                         sugerencias_validas.append(texto_sugerencia)
-                if len(sugerencias_validas) >= 1: break 
-            if sugerencias_validas: return f"\n\n✨ ¡Aprovecha también! Tenemos {', '.join(sugerencias_validas)}. ¿Te interesa alguno?"
+                if len(sugerencias_validas) >= 1: break # Solo sugerir uno o dos para no abrumar
+
+            if sugerencias_validas:
+                 # Unir con "y" si hay dos, o solo tomar la primera si hay más.
+                sugerencia_final_str = ""
+                if len(sugerencias_validas) == 1:
+                    sugerencia_final_str = sugerencias_validas[0]
+                elif len(sugerencias_validas) > 1:
+                    sugerencia_final_str = " y ".join(sugerencias_validas[:2]) # Mostrar hasta 2 sugerencias
+
+                if sugerencia_final_str:
+                    return f"\n\n✨ ¡Aprovecha también! Tenemos {sugerencia_final_str}. ¿Te interesa alguno?"
         return ""
 
     def handle(self, pregunta):
@@ -410,13 +467,18 @@ class PedidoHandler(BaseHandler):
                     if not producto_encontrado_en_qdrant or precio_unitario_catalogo == 0:
                         productos_no_encontrados_o_sin_precio.append(nombre_producto_catalogo)
 
+                    # Extraer toda la info de unidad del payload para el carrito
+                    # 'unidad_catalogo' era payload.get("unidad", "") -> ahora es payload.get("unidad_original", "")
+                    unidad_original_qdrant = payload.get("unidad_original", unidad_catalogo) # unidad_catalogo was a fallback
+                    unidad_desc_qdrant = payload.get("unidad_descripcion", "")
+                    cantidad_empaque_qdrant = payload.get("cantidad_empaque")
+
+
                     # Lógica para agregar o actualizar cantidad en carrito
                     found_in_cart = False
                     for item_car_existente in carrito:
                         if nombre_producto_catalogo.lower() == item_car_existente["nombre"].lower():
-                            item_car_existente["cantidad"] += item_ext["cantidad"]
-                            # El precio y unidad ya están en item_car_existente desde que se agregó por primera vez.
-                            # Si se encontró ahora con precio y antes no, se podría actualizar, pero simplificamos por ahora.
+                            item_car_existente["cantidad_pedido"] = item_car_existente.get("cantidad_pedido",0) + item_ext["cantidad"] # cantidad que pide el usuario
                             items_agregados_info.append(item_car_existente)
                             found_in_cart = True
                             break
@@ -424,10 +486,12 @@ class PedidoHandler(BaseHandler):
                     if not found_in_cart:
                         item_para_carrito_nuevo = {
                             "nombre": nombre_producto_catalogo,
-                            "cantidad": item_ext["cantidad"],
-                            "precio_unitario": precio_unitario_catalogo,
-                            "unidad": unidad_catalogo,
-                            "precio_str": precio_str_catalogo
+                            "cantidad_pedido": item_ext["cantidad"], # Cantidad que el usuario pide
+                            "precio_unitario_catalogo": precio_unitario_catalogo, # Precio del item como está en catálogo (podría ser por unidad o por pack)
+                            "unidad_original_catalogo": unidad_original_qdrant,   # Ej: "Caja x 6 botellas"
+                            "unidad_descripcion_catalogo": unidad_desc_qdrant, # Ej: "Caja botellas"
+                            "cantidad_empaque_catalogo": cantidad_empaque_qdrant, # Ej: 6
+                            "precio_str_catalogo": precio_str_catalogo # Ej: "$500" o "Consultar"
                         }
                         carrito.append(item_para_carrito_nuevo)
                         items_agregados_info.append(item_para_carrito_nuevo)

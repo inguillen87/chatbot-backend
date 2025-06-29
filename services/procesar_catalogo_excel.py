@@ -87,17 +87,30 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
                 continue
 
             col_idx = mapa_columnas.get(campo_estandar)
+            valor_celda = ""
             if col_idx is not None and col_idx < len(row):
                 valor_celda = str(row.iloc[col_idx]).strip() # Usar iloc
-                registro_actual[campo_estandar] = valor_celda
-            else:
-                # Si el campo no está en mapa_columnas o el índice está fuera de rango para la fila
-                registro_actual[campo_estandar] = ""
 
-        # Llenar campos faltantes con defaults (vacío) si no fueron mapeados (esto es redundante si el loop anterior usa KEYWORD_MAP.keys())
-        # for k_std in KEYWORD_MAP.keys():
+            registro_actual[campo_estandar] = valor_celda
+
+            if campo_estandar == 'unidad':
+                from .utils import parse_unidad_y_cantidad_empaque # Import locally for clarity
+                unidad_desc_parsed, cantidad_emp_parsed = parse_unidad_y_cantidad_empaque(valor_celda)
+                registro_actual['unidad_parsed'] = unidad_desc_parsed
+                registro_actual['cantidad_empaque'] = cantidad_emp_parsed
+                logger.debug(f"[EXCEL_PROC] Fila {i + fila_inicio_datos}: 'unidad' original='{valor_celda}', parsed_desc='{unidad_desc_parsed}', parsed_cant_empaque='{cantidad_emp_parsed}'")
+
+
+        # Asegurar que todos los campos de KEYWORD_MAP existan en el registro, incluso si están vacíos
+        for k_std in KEYWORD_MAP.keys():
             if k_std not in registro_actual:
                 registro_actual[k_std] = ""
+            # Adicionalmente, asegurar que los campos parseados de unidad también existan
+            if 'unidad_parsed' not in registro_actual:
+                 registro_actual['unidad_parsed'] = registro_actual.get('unidad', "") # fallback al original si no se parseó
+            if 'cantidad_empaque' not in registro_actual:
+                 registro_actual['cantidad_empaque'] = None
+
 
         registros.append(registro_actual)
 
