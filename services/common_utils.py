@@ -255,6 +255,30 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
 
+def parse_cantidad_flexible(cantidad_str: Any) -> Optional[int]:
+    """
+    PLACEHOLDER: Parses a flexible quantity string (e.g., "6 units", "12", "1 dozen") into an integer.
+    Attempts to extract the first number found.
+    Original implementation needs to be restored for more robust parsing.
+    """
+    get_logger().warning(f"Using PLACEHOLDER parse_cantidad_flexible for: {cantidad_str}")
+    if cantidad_str is None:
+        return None
+
+    s = str(cantidad_str)
+
+    # Try to extract first number found
+    match = re.search(r'\d+', s)
+    if match:
+        try:
+            return int(match.group(0))
+        except ValueError:
+            return None
+
+    # Add more sophisticated parsing here if needed (e.g., "dozen" -> 12)
+    # For placeholder, this is basic.
+    return None
+
 def validar_email(email: str) -> bool:
     """Valida si un email tiene formato correcto."""
     patron = r"^[\w\.-]+@[\w\.-]+\.\w+$"
