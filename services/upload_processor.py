@@ -51,24 +51,32 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
         raise ValueError("Discrepancia crítica entre número de productos y vectores al preparar datos para Qdrant.")
 
     for producto_dict, vector in zip(productos_estructurados, vectores):
+        # Normalizar categoria_producto antes de usarla
+        categoria_norm = limpiar_texto_base(
+            str(producto_dict.get("categoria_producto", producto_dict.get("categoria", ""))) # Prioriza categoria_producto
+        ).lower() or pyme_rubro_nombre # Fallback al rubro de la pyme si no hay categoría específica
+
         payload = {
             "user_id": user_id,
             "nombre": producto_dict.get("nombre", "Producto Sin Nombre"),
-            "descripcion": producto_dict.get("descripcion", ""),
+            "descripcion": producto_dict.get("descripcion", ""), # Descripción larga
+            "descripcion_corta": producto_dict.get("descripcion_corta", ""),
             "precio_str": str(producto_dict.get("precio_str", "")),
             "precio_float": producto_dict.get("precio_float"),
             "moneda": producto_dict.get("moneda", "ARS"),
-            "categoria_qdrant": producto_dict.get("categoria_qdrant", producto_dict.get("categoria", "")),
+            "categoria_qdrant": categoria_norm, # Categoría normalizada
             "unidad": producto_dict.get("unidad", ""),
             "marca": producto_dict.get("marca", ""),
             "sku": producto_dict.get("sku", ""),
+            "stock": producto_dict.get("stock", ""), # Puede ser numérico o texto como "disponible"
+            "promocion_texto": producto_dict.get("promocion_texto", ""),
             "talles": producto_dict.get("talles", ""),
             "colores": producto_dict.get("colores", ""),
             "texto_original_para_embedding": producto_dict.get("texto_para_embedding", "")
         }
         payload_limpio = {k: v for k, v in payload.items() if v is not None and (not isinstance(v, str) or v.strip() != "")}
 
-        if not vector or not isinstance(vector, list) or not all(isinstance(num, (int, float)) for num in vector):
+        if not vector or not isinstance(vector, list) or not all(isinstance(num, (float, int)) for num in vector):
             logger.warning(f"[QDRANT_SAVE] Vector inválido o vacío para producto '{payload.get('nombre')}', user_id={user_id}. Saltando este punto.")
             continue
 
@@ -184,10 +192,12 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
                 CatalogoItem(
                     user_id=user_id,
                     nombre=str(prod_dict_final.get("nombre", "S/N"))[:255],
-                    descripcion=str(prod_dict_final.get("descripcion", ""))[:1024],
+                    descripcion=str(prod_dict_final.get("descripcion", ""))[:1024], # Descripcion larga
+                    descripcion_corta=str(prod_dict_final.get("descripcion_corta", ""))[:512], # Nuevo campo
+                    promocion_info=str(prod_dict_final.get("promocion_texto", ""))[:255], # Nuevo campo
                     precio=str(prod_dict_final.get("precio_str", ""))[:50],
-                    cantidad=str(prod_dict_final.get("cantidad_disponible", "1"))[:50],
-                    categoria=str(prod_dict_final.get("categoria_qdrant", prod_dict_final.get("categoria", "")))[:100],
+                    cantidad=str(prod_dict_final.get("stock", "0"))[:50], # Mapea 'stock' a 'cantidad'
+                    categoria=str(prod_dict_final.get("categoria_qdrant", pyme_rubro_nombre))[:100],
                     unidad=str(prod_dict_final.get("unidad", ""))[:50],
                     sku=str(prod_dict_final.get("sku", ""))[:100],
                     marca=str(prod_dict_final.get("marca", ""))[:100],

@@ -180,21 +180,96 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
             continue
 
         df_data = df_tabla.copy()
+
+        # --- Inicio Mapeo Mejorado de Columnas ---
+        if df_data.empty or len(df_data.iloc[0]) == 0:
+            logger.warning(f"Tabla #{i+1} parece no tener cabeceras o estar vacía después de la consolidación. Saltando.")
+            continue
+
+        cabeceras_originales = [str(c).lower() for c in df_data.iloc[0].tolist()]
+
+        posibles_nombres_columnas = {
+            "nombre": ["nombre", "producto", "titulo", "descripción", "descripcion", "detalle"],
+            "sku": ["sku", "codigo", "código", "cod", "referencia", "ref", "item no"],
+            "precio": ["precio", "valor", "importe", "costo", "pvp"],
+            "stock": ["stock", "disponibilidad", "disponible", "cantidad", "cant."],
+            "categoria_producto": ["categoria", "categoría", "rubro", "familia", "tipo"],
+            "marca": ["marca", "fabricante"],
+            "descripcion_corta": ["descripcion corta", "desc. corta", "resumen"],
+            "promocion_texto": ["promocion", "promoción", "oferta", "descuento"],
+            "unidad": ["unidad", "presentacion", "presentación"],
+            # Campos específicos de vino que podrían mantenerse o generalizarse
+            "varietal": ["varietal", "uva"],
+            "caja": ["caja", "precio por caja"],
+            "precio_botella": ["precio botella", "precio individual"],
+        }
+
+        columnas_mapeadas = {}
+        for nombre_std, alias_list in posibles_nombres_columnas.items():
+            for alias_idx, alias in enumerate(alias_list):
+                # Intentar coincidencia exacta primero
+                if alias in cabeceras_originales:
+                    original_header = df_data.iloc[0][cabeceras_originales.index(alias)] # Mantener mayúsculas/minúsculas originales
+                    columnas_mapeadas[nombre_std] = original_header
+                    break
+                # Intentar coincidencia parcial (si es más de una palabra o más de 3 letras)
+                elif len(alias) > 3 or ' ' in alias:
+                    for col_idx, header_orig_raw in enumerate(df_data.iloc[0].tolist()):
+                        header_orig_lower = str(header_orig_raw).lower()
+                        if alias in header_orig_lower:
+                            columnas_mapeadas[nombre_std] = header_orig_raw
+                            break
+                    if nombre_std in columnas_mapeadas: # Salir si ya se encontró por coincidencia parcial
+                        break
+
+        # Usar cabeceras originales si no hay mapeo, limpiándolas
         df_data.columns = [limpiar_texto_base(c).replace(" ", "_") for c in df_data.iloc[0].tolist()]
+
+        logger.info(f"Tabla #{i+1}: Cabeceras originales detectadas: {cabeceras_originales}")
+        logger.info(f"Tabla #{i+1}: Cabeceras mapeadas a estándar: {columnas_mapeadas}")
+
         df_data = df_data.iloc[1:].reset_index(drop=True)
         df_data.dropna(how="all", inplace=True)
+        # --- Fin Mapeo Mejorado de Columnas ---
 
         for _, row in df_data.iterrows():
-            registro = {col: str(row.get(col, "")).strip() for col in df_data.columns}
+            registro = {}
+            # Llenar el registro usando las columnas mapeadas y luego las originales si hay conflicto o no mapeo
+            for nombre_std, header_original_en_df in columnas_mapeadas.items():
+                # Encontrar el nombre de columna real en df_data (que fue limpiado)
+                col_limpia_en_df = limpiar_texto_base(str(header_original_en_df)).replace(" ", "_")
+                if col_limpia_en_df in df_data.columns:
+                    valor_celda = str(row.get(col_limpia_en_df, "")).strip()
+                    if valor_celda: # Solo añadir si hay valor
+                         registro[nombre_std] = valor_celda
 
+            # Añadir datos de columnas no mapeadas explícitamente pero presentes en el df
+            for col_original_df in df_data.columns:
+                if col_original_df not in [limpiar_texto_base(str(c)).replace(" ", "_") for c in columnas_mapeadas.values()]:
+                    # Evitar sobrescribir si un mapeo ya creó la clave estándar
+                    clave_potencial_std = col_original_df.lower() # Podríamos intentar un mapeo inverso simple
+                    if clave_potencial_std not in registro:
+                        valor_celda = str(row.get(col_original_df, "")).strip()
+                        if valor_celda: # Solo añadir si hay valor
+                            registro[col_original_df] = valor_celda # Usar el nombre original limpio como clave
+
+            if not registro.get("nombre") and registro.get("producto"): # fallback
+                 registro["nombre"] = registro.get("producto")
+
+            # Si 'nombre' sigue faltando después de todo, intentar con otras claves comunes
             if not registro.get("nombre"):
-                nombre_alternativo = registro.get("producto") or " ".join(
-                    filter(None, [registro.get("marca"), registro.get("varietal")])
-                ).strip()
-                if nombre_alternativo:
-                    registro["nombre"] = nombre_alternativo
+                for key_try in ["titulo", "descripcion", "detalle"]:
+                    if registro.get(key_try):
+                        registro["nombre"] = registro.get(key_try)
+                        break
 
-            if not any(registro.values()):
+            # Si después de todos los intentos, no hay 'nombre', es un registro inválido.
+            if not registro.get("nombre"):
+                logger.debug(f"Registro descartado por falta de 'nombre': {registro}")
+                continue
+
+            if not any(registro.values()): # Si todos los valores son vacíos
+                logger.debug(f"Registro descartado por estar completamente vacío: {row.to_dict()}")
                 continue
 
             if registro.get("precio"):
@@ -203,10 +278,19 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
                 registro["precio_float"] = precio_float
                 registro["moneda"] = moneda
 
+            # Asegurar que los campos clave para Qdrant tengan un valor default si no se extrajeron
+            registro.setdefault("sku", "")
+            registro.setdefault("stock", "") # Podría ser "Consultar" o un número
+            registro.setdefault("categoria_producto", pyme_rubro_nombre) # Default a rubro de la pyme
+            registro.setdefault("marca", "")
+            registro.setdefault("descripcion_corta", "")
+            registro.setdefault("promocion_texto", "")
+            registro.setdefault("unidad", "")
+
             productos_extraidos_final.append(registro)
 
     logger.info(
-        f"✅ Proceso de documento completado. Total productos finales de todas las tablas: {len(productos_extraidos_final)}"
+        f"✅ Proceso de documento completado. Total productos finales de todas las tablas: {len(productos_extraidos_final)}. Ejemplo: {productos_extraidos_final[0] if productos_extraidos_final else 'N/A'}"
     )
     return productos_extraidos_final
 

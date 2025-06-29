@@ -274,8 +274,13 @@ class CatalogoItem(db.Model):
     marca = db.Column(db.String(100), nullable=True, index=True)
     categoria = db.Column(db.String(100))
     unidad = db.Column(db.String(50))
+    # Nuevos campos para información más detallada del catálogo
+    descripcion_corta = db.Column(db.String(512), nullable=True)
+    promocion_info = db.Column(db.String(255), nullable=True) # Para texto de promociones, ej: "20% OFF"
+    # 'cantidad' se usa actualmente para stock. Si se necesita diferenciar, añadir un campo 'stock' dedicado.
+    # 'texto' se usa para almacenar el texto combinado que se usó para el embedding.
     texto = db.Column(db.Text, nullable=True)
-    embedding = db.Column(db.PickleType, nullable=True)
+    embedding = db.Column(db.PickleType, nullable=True) # Este campo podría eliminarse si los embeddings solo viven en Qdrant
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
