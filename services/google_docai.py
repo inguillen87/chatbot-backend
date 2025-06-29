@@ -10,11 +10,12 @@ from typing import List, Dict, Any, Optional
 from .spacy_loader import get_spacy_model
 
 # Importamos nuestro cerebro y herramientas compartidas
-from .utils import (
+from .common_utils import (
     limpiar_texto_base,
     parse_precio_flexible,
     crear_mapa_de_columnas_inteligente, # Importante
-    KEYWORD_MAP # Usaremos el mismo KEYWORD_MAP global
+    KEYWORD_MAP, # Usaremos el mismo KEYWORD_MAP global
+    parse_unidad_y_cantidad_empaque # Moved here from local import for consistency
 )
 
 logger = logging.getLogger(__name__)
@@ -350,7 +351,7 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
             
             # Procesar la unidad original para extraer cantidad de empaque
             unidad_original_str = registro_actual.get("unidad", "")
-            from .utils import parse_unidad_y_cantidad_empaque # Import local para claridad
+            # parse_unidad_y_cantidad_empaque is now imported from .common_utils at the top
             unidad_desc_parsed, cantidad_emp_parsed = parse_unidad_y_cantidad_empaque(unidad_original_str)
             registro_actual['unidad_parsed'] = unidad_desc_parsed
             registro_actual['cantidad_empaque'] = cantidad_emp_parsed
