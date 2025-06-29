@@ -91,6 +91,7 @@ def _tabla_docai_a_dataframe(table: documentai.Document.Page.Table, full_doc_tex
              celdas_fila = celdas_fila[:len(filas_datos[0])]
 
         filas_datos.append(celdas_fila)
+    
     # Crear DataFrame sin cabeceras (header=None) para que crear_mapa_de_columnas_inteligente las busque
     return pd.DataFrame(filas_datos) if filas_datos else pd.DataFrame()
 
@@ -115,7 +116,7 @@ def _consolidar_filas(df: pd.DataFrame) -> pd.DataFrame:
 
     for _, row_data in df.iterrows():
         celdas = [str(c).strip() if pd.notna(c) else "" for c in row_data.tolist()]
-
+        
         # Asegurar que la fila tenga el número correcto de columnas
         if len(celdas) < n_cols:
             celdas.extend([""] * (n_cols - len(celdas)))
@@ -134,6 +135,7 @@ def _consolidar_filas(df: pd.DataFrame) -> pd.DataFrame:
             for i in range(n_cols):
                 if celdas[i]: # Si la celda de continuación tiene contenido
                     fila_actual[i] = (fila_actual[i] + " " + celdas[i]).strip() if fila_actual[i] else celdas[i]
+    
     # Añadir la última fila_actual si tiene contenido
     if sum(1 for c_act in fila_actual if c_act) > 0:
         filas_consolidadas.append(fila_actual)
@@ -165,6 +167,7 @@ def _obtener_documento_ai(path: str, mime_type: str = "application/pdf") -> Opti
 
         # Configurar para que el procesador de tablas (si es un Custom Extractor con esa capacidad) funcione mejor
         process_options_val = None # Default to None
+        
         # The following LayoutConfig caused a TypeError.
         # For now, we will rely on default processor options or specialized processor behavior.
         # If specific layout hints are needed for certain general processors,
@@ -226,13 +229,11 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
     for i, tabla_docai in enumerate(todas_las_tablas_docai):
         logger.info(f"--- [DOCAI_TABLES] Procesando Tabla Bruta #{i+1} ---")
         df_tabla_bruta = _tabla_docai_a_dataframe(tabla_docai, document.text or "")
+        
         if df_tabla_bruta.empty:
             logger.warning(f"[DOCAI_TABLES] Tabla Bruta #{i+1} estaba vacía. Saltando.")
             continue
         
-        logger.debug(f"[DOCAI_TABLES] Tabla Bruta #{i+1} (antes de consolidar):\n{df_tabla_bruta.head().to_string()}")
-        df_consolidada = _consolidar_filas(df_tabla_bruta.copy()) # Usar .copy() para evitar modificar df_tabla_bruta
-
         logger.debug(f"[DOCAI_TABLES] Tabla Bruta #{i+1} (antes de consolidar):\n{df_tabla_bruta.head().to_string()}")
         df_consolidada = _consolidar_filas(df_tabla_bruta.copy()) # Usar .copy() para evitar modificar df_tabla_bruta
 
@@ -287,12 +288,12 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
 
         for row_idx, row in df_datos_tabla_actual.iterrows():
             registro_actual = {}
-
+            
             nombre_producto = ""
             col_nombre_orig = mapa_columnas.get('nombre')
             if col_nombre_orig is not None: # col_nombre_orig puede ser int si no hay header
                 nombre_producto = str(row.get(col_nombre_orig, "")).strip()
-
+            
             if not nombre_producto: # Si el nombre principal está vacío, intentar con fallbacks del KEYWORD_MAP
                 for fallback_key in KEYWORD_MAP.get('nombre', []): # ej: "producto", "descripcion"
                     if fallback_key == 'nombre': continue # ya intentado
@@ -303,7 +304,7 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
                             nombre_producto = nombre_producto_fallback
                             logger.debug(f"[DOCAI_TABLES] Tabla #{i+1}, Fila {row_idx}: 'nombre' obtenido de fallback '{fallback_key}': '{nombre_producto}'")
                             break
-
+            
             if not nombre_producto:
                 logger.warning(f"[DOCAI_TABLES] Tabla #{i+1}, Fila {row_idx}: Omitida por 'nombre' vacío o no mapeado. Valor original intentado: '{str(row.get(mapa_columnas.get('nombre', 'N/A'), ''))}'")
                 continue
@@ -312,13 +313,14 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
             
             for campo_estandar in KEYWORD_MAP.keys():
                 if campo_estandar == 'nombre': continue # Ya procesado
+                
                 nombre_columna_original = mapa_columnas.get(campo_estandar)
                 if nombre_columna_original is not None:
                     valor_celda = str(row.get(nombre_columna_original, "")).strip()
                     registro_actual[campo_estandar] = valor_celda
                 else: # Asegurar que todos los campos estándar existan
-                    registro_actual[campo_estandar] = ""
-
+                    registro_actual[campo_estandar] = "" 
+            
             # Aplicar parse_precio_flexible si hay un campo de precio
             precio_col_orig = mapa_columnas.get('precio')
             if precio_col_orig:
@@ -345,7 +347,7 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
             registro_actual.setdefault("descripcion", registro_actual.get("descripcion","") or "")
             registro_actual.setdefault("descripcion_corta", "")
             registro_actual.setdefault("promocion_texto", "")
-
+            
             # Procesar la unidad original para extraer cantidad de empaque
             unidad_original_str = registro_actual.get("unidad", "")
             from .utils import parse_unidad_y_cantidad_empaque # Import local para claridad
@@ -361,7 +363,7 @@ def _procesar_documento_tablas(document: documentai.Document, base_filename: str
                 if k_std not in registro_actual:
                     registro_actual[k_std] = ""
             if 'unidad_parsed' not in registro_actual: # Debería estar por el código anterior
-                 registro_actual['unidad_parsed'] = registro_actual.get('unidad', "")
+                 registro_actual['unidad_parsed'] = registro_actual.get('unidad', "") 
             if 'cantidad_empaque' not in registro_actual: # Debería estar
                  registro_actual['cantidad_empaque'] = None
 
@@ -384,7 +386,7 @@ def procesar_catalogo_pdf_google(pdf_path: str, user_id: int, pyme_rubro_nombre:
         # _obtener_documento_ai ya loggea el error y puede lanzar una excepción si es crítico
         logger.error(f"[DOCAI_PROC] Fallo al obtener el documento procesado por DocAI para {base_filename}.")
         # Devolver lista vacía para que el flujo principal muestre el error de "no productos"
-        return []
+        return [] 
         # Considerar: raise ValueError(f"Google DocAI no pudo procesar el documento: {base_filename}")
 
     try:
@@ -406,6 +408,7 @@ def procesar_catalogo_imagen_google(image_path: str, user_id: int, pyme_rubro_no
         logger.error(f"[DOCAI_PROC] Fallo al obtener el documento procesado por DocAI para imagen {base_filename}.")
         return []
         # Considerar: raise ValueError(f"Google DocAI no pudo procesar la imagen: {base_filename}")
+    
     try:
         return _procesar_documento_tablas(document, base_filename, pyme_rubro_nombre)
     except Exception as e_proc_tablas_img:

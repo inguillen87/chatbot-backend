@@ -1,370 +1,361 @@
-# services/utils.py
-import re
 import os
-import json
-try:
-    import pandas as pd
-except Exception:  # pragma: no cover - pandas es opcional para tests
-    class _DummyPD:
-        class Series: ...
-        class DataFrame: ...
-    pd = _DummyPD()
+import uuid
 import logging
-from typing import List, Dict, Any, Optional, Tuple
-from urllib.parse import quote_plus
+import traceback
+import re
+import shutil
+from flask import Blueprint, request, jsonify
+from werkzeug.utils import secure_filename
+from extensions import db
+from models import CatalogoItem, User, Rubro, ArchivoAdjunto
+from services.cohere_ai import embed_textos
 
+from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
+from services.procesar_catalogo_excel import procesar_catalogo_excel
+
+from .utils import limpiar_texto_base
+
+from services.qdrant_utils import (
+    get_qdrant_client,
+    verificar_y_crear_coleccion_qdrant,
+)
+from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO
+from services.logic import es_rubro_publico
+from qdrant_client import models as qdrant_models
+from typing import List, Dict, Any, Optional
+
+upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__)
 
-# --- 1. CAJA DE HERRAMIENTAS (Tus funciones originales y probadas) ---
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg"}
+UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")  # Esto anda en cualquier entorno
+CATALOGO_FOLDER = os.path.join("data", "catalogos")
 
-def limpiar_texto_base(texto: Optional[Any]) -> str:
-    """Limpia y normaliza texto de forma robusta, asegurando que la entrada sea un string."""
-    if texto is None: return ""
-    if not isinstance(texto, str):
-        try: texto = str(texto)
-        except Exception: return ""
-    return re.sub(r'\s+', ' ', texto).strip().lower()
+def extension_valida(nombre_archivo: str) -> bool:
+    return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
 
-def unir_codigos_alfa_numericos(texto: str) -> str:
-    """Une secuencias alfanuméricas separadas por espacios (por ejemplo 'de 108 c' -> 'de108c')."""
-    if not isinstance(texto, str):
-        return ""
-    # Junta letras seguidas de números o viceversa cuando están separados solo por espacios
-    texto = re.sub(r'([A-Za-z])\s+(?=\d)', r"\1", texto)
-    texto = re.sub(r'(\d)\s+(?=[A-Za-z])', r"\1", texto)
-    return texto
+def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]], coleccion: str):
+    qdrant_cli = get_qdrant_client()
+    if not qdrant_cli:
+        logger.error(f"[QDRANT_SAVE] No se pudo obtener cliente Qdrant para user_id={user_id}.")
+        raise ConnectionError("No se pudo conectar a Qdrant para guardar los datos.")
 
-def parse_precio_flexible(texto_precio_input: Optional[Any]) -> Tuple[Optional[str], Optional[float], Optional[str]]:
-    """Tu potente función para parsear precios. Se conserva intacta."""
-    if texto_precio_input is None: return None, None, None
-    texto_precio_str = str(texto_precio_input).strip()
-    if not texto_precio_str: return None, None, None
-    
-    moneda_detectada = "ARS"
-    numero_para_procesar = texto_precio_str
+    vector_dim = len(vectores[0]) if vectores else 1024
+    if not verificar_y_crear_coleccion_qdrant(coleccion, vector_dim, create_indexes=True):
+        raise ConnectionError("No se pudo inicializar la colección en Qdrant.")
 
-    # Extrae el último patrón numérico significativo (para casos como
-    # "1/2 DOC POR $ 5.400,00")
-    posibles_numeros = re.findall(r"\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?", numero_para_procesar)
-    if posibles_numeros:
-        numero_para_procesar = posibles_numeros[-1]
+    puntos_para_insertar: List[qdrant_models.PointStruct] = []
 
-    if re.search(r"(?i)\bUSD\b|U\$S", numero_para_procesar):
-        moneda_detectada = "USD"
-        numero_para_procesar = re.sub(r"(?i)\bUSD\b|U\$S", "", numero_para_procesar, flags=re.IGNORECASE).strip()
-    elif re.search(r"(?i)\bARS\b", numero_para_procesar):
-        moneda_detectada = "ARS"
-    
-    if "$" in numero_para_procesar:
-        numero_para_procesar = numero_para_procesar.replace("$", "", 1).strip()
+    if len(productos_estructurados) != len(vectores):
+        logger.error(f"[QDRANT_SAVE] Discrepancia crítica: {len(productos_estructurados)} productos vs {len(vectores)} vectores para user_id={user_id}.")
+        raise ValueError("Discrepancia crítica entre número de productos y vectores al preparar datos para Qdrant.")
 
-    if not numero_para_procesar: return texto_precio_str, None, moneda_detectada
-    
-    numero_normalizado = numero_para_procesar
-    if ',' in numero_normalizado and '.' in numero_normalizado:
-        if numero_normalizado.rfind(',') > numero_normalizado.rfind('.'):
-            numero_normalizado = numero_normalizado.replace('.', '').replace(',', '.')
-        else:
-            numero_normalizado = numero_normalizado.replace(',', '')
-    elif ',' in numero_normalizado:
-        partes_coma = numero_normalizado.split(',')
-        if len(partes_coma) > 1 and len(partes_coma[-1]) in [1, 2] and partes_coma[-1].isdigit():
-            numero_normalizado = "".join(partes_coma[:-1]) + "." + partes_coma[-1]
-        else:
-            numero_normalizado = numero_normalizado.replace(',', '')
-            
-    numero_final_para_float_str = re.sub(r"[^0-9.]", "", numero_normalizado)
-    try:
-        if not numero_final_para_float_str or not re.search(r"\d", numero_final_para_float_str):
-            raise ValueError("String numérico no contiene dígitos válidos")
-        precio_flt = round(float(numero_final_para_float_str), 2)
-        return texto_precio_str, precio_flt, moneda_detectada
-    except (ValueError, TypeError):
-        if re.search(r"\d", numero_para_procesar):
-            return texto_precio_str, None, moneda_detectada
-        return texto_precio_str, None, moneda_detectada
+    for producto_dict, vector in zip(productos_estructurados, vectores):
+        # Normalizar categoria_producto antes de usarla
+        categoria_norm = limpiar_texto_base(
+            str(producto_dict.get("categoria_producto", producto_dict.get("categoria", ""))) # Prioriza categoria_producto
+        ).lower() or pyme_rubro_nombre # Fallback al rubro de la pyme si no hay categoría específica
 
-def parse_cantidad_flexible(texto_cantidad_input: Optional[Any]) -> Optional[float]:
-    """Intenta extraer un número de una cantidad con formato libre."""
-    if texto_cantidad_input is None:
-        return None
-    texto = str(texto_cantidad_input).strip()
-    if not texto:
-        return None
-    texto_norm = texto.replace(".", "").replace(",", ".")
-    match = re.search(r"-?\d+(?:\.\d+)?", texto_norm)
-    if not match:
-        return None
-    try:
-        num = float(match.group())
-        return int(num) if num.is_integer() else num
-    except ValueError:
-        return None
+        payload = {
+            "user_id": user_id,
+            "nombre": producto_dict.get("nombre", "Producto Sin Nombre"),
+            "descripcion": producto_dict.get("descripcion", ""), # Descripción larga
+            "descripcion_corta": producto_dict.get("descripcion_corta", ""),
+            "precio_str": str(producto_dict.get("precio_str", "")),
+            "precio_float": producto_dict.get("precio_float"),
+            "moneda": producto_dict.get("moneda", "ARS"),
+            "categoria_qdrant": categoria_norm, # Categoría normalizada
+            "unidad_original": producto_dict.get("unidad", ""), # Original string e.g. "Caja x 6 botellas"
+            "unidad_descripcion": producto_dict.get("unidad_parsed", producto_dict.get("unidad", "")), # Parsed e.g. "Caja botellas" or fallback
+            "cantidad_empaque": producto_dict.get("cantidad_empaque"), # Parsed e.g. 6 or None
+            "marca": producto_dict.get("marca", ""),
+            "sku": producto_dict.get("sku", ""),
+            "stock": producto_dict.get("stock", ""), # Puede ser numérico o texto como "disponible"
+            "promocion_texto": producto_dict.get("promocion_texto", ""),
+            "talles": producto_dict.get("talles", ""),
+            "colores": producto_dict.get("colores", ""),
+            "texto_original_para_embedding": producto_dict.get("texto_para_embedding", "")
+        }
+        payload_limpio = {k: v for k, v in payload.items() if v is not None and (not isinstance(v, str) or v.strip() != "")}
 
-
-def generar_link_google_maps(
-    direccion: str | None = None,
-    latitud: float | None = None,
-    longitud: float | None = None,
-) -> str | None:
-    """Genera un enlace a Google Maps a partir de una dirección o coordenadas."""
-    if latitud is not None and longitud is not None:
-        return f"https://www.google.com/maps/search/?api=1&query={latitud},{longitud}"
-    if direccion:
-        return f"https://www.google.com/maps/search/?api=1&query={quote_plus(direccion)}"
-    return None
-
-def safe_row_get(row: pd.Series, column: Any) -> Any:
-    """Safely obtain a value from a DataFrame row by label or position."""
-    if isinstance(column, int):
-        if column < len(row):
-            return row.iloc[column]
-        return ""
-    return row.get(column, "")
-
-def extraer_unidades_y_tipos_precio(texto_linea: str, pyme_rubro_nombre: str = "generico") -> tuple[Optional[str], Optional[str]]:
-    """Tu excelente función para extraer unidades y tipos de precio. Se conserva intacta."""
-    if not texto_linea: return None, None
-    texto_linea_lower = limpiar_texto_base(texto_linea) 
-    unidad = None; tipo_precio = None
-    unidades_patrones = [
-        (r"\b(caja(?:s)?\s*x\s*\d{1,3})\b", "caja_especifica"), (r"\b(pack\s*x\s*\d{1,3})\b", "pack_especifico"),
-        (r"\b(\d{1,4}\s*ml)\b", "volumen_ml"), (r"\b(\d{1,2}(?:[.,]\d{1,2})?\s*lts?)\b", "volumen_lts"),
-        (r"\b(\d{1,3}(?:[.,]\d{1,3})?\s*kilos?g?)\b", "peso_kg"), (r"\b(\d{1,4}\s*gr(?:s)?|gramo(?:s)?)\b", "peso_gr"),
-        (r"\b(docena(?:s)?)\b", "docena"), (r"\b(par(?:es)?)\b", "par"),
-        (r"\b(blister(?:es)?\s*x\s*\d{1,2})\b", "blister_especifico"), (r"\b(horma)\b", "horma"),
-        (r"\b(caja|box)\b", "caja_generica"), (r"\b(botella|bottle)\b", "botella_generica"),
-        (r"\b(pack)\b", "pack_generico"), (r"\b(blister)\b", "blister_generico"),
-        (r"\b(unidad|unidades|unid\.?|un\.?|u\.?)\b", "unidad_generica")]
-    tipos_precio_keywords = { "mayorista": ["mayorista", "por mayor", "distribuidor", "distr?", "mayor"], "minorista": ["minorista", "al detalle", "público", "publico", "consumidor final", "cf", "minor"], "promocion": ["promo", "oferta", "descuento", "dcto", "dto", "especial", "sale", "liquidación", "outlet", "rebaja"]}
-    mejor_match_unidad = None; texto_linea_temp = texto_linea_lower
-    for patron, _ in unidades_patrones:
-        match = re.search(patron, texto_linea_temp) 
-        if match:
-            unidad_encontrada_raw = match.group(1)
-            if mejor_match_unidad is None or len(unidad_encontrada_raw) > len(mejor_match_unidad): mejor_match_unidad = unidad_encontrada_raw
-    if mejor_match_unidad: unidad = re.sub(r'\s+', ' ', mejor_match_unidad).strip()
-    for tipo, keywords in tipos_precio_keywords.items():
-        for kw in keywords:
-            if re.search(r'\b' + re.escape(kw.replace("?", "\\w?")) + r'\b', texto_linea_lower): tipo_precio = tipo; break
-        if tipo_precio: break
-    return unidad, tipo_precio
-
-def calcular_precio_por_unidad(precio_float: Optional[float], unidad_texto: str) -> Optional[float]:
-    """Calcula el precio por unidad cuando la presentación indica varias unidades."""
-    if precio_float is None or not unidad_texto:
-        return None
-    texto = limpiar_texto_base(unidad_texto)
-    match = re.search(r"(?:x|por|de)\s*(\d+(?:[.,]\d+)?)", texto)
-    if not match:
-        match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:unidades|unidad|u|uds?|pack|caja)", texto)
-    if match:
-        try:
-            cantidad = float(match.group(1).replace(',', '.'))
-            if cantidad > 0:
-                return round(precio_float / cantidad, 2)
-        except ValueError:
-            return None
-    return None
-
-def calcular_monto_total_items(items: List[Dict[str, Any]]) -> float:
-    """Calcula el monto total de una lista de items {cantidad, precio}."""
-    total = 0.0
-    for item in items:
-        try:
-            cantidad = float(item.get("cantidad", 1))
-            precio = float(item.get("precio", 0))
-            total += cantidad * precio
-        except (TypeError, ValueError):
+        if not vector or not isinstance(vector, list) or not all(isinstance(num, (float, int)) for num in vector):
+            logger.warning(f"[QDRANT_SAVE] Vector inválido o vacío para producto '{payload.get('nombre')}', user_id={user_id}. Saltando este punto.")
             continue
-    return round(total, 2)
 
-# --- 2. EL CEREBRO INTELIGENTE v3.0 (Nuestra Lógica de Mapeo Mejorada) ---
+        puntos_para_insertar.append(qdrant_models.PointStruct(
+            id=str(uuid.uuid4()),
+            vector=vector,
+            payload=payload_limpio
+        ))
 
-KEYWORD_MAP = {
-    'sku': [
-        "codigo", "código", "cod.", "cod", "sku", "art.", "articulo", "art",
-        "ref", "referencia", "id", "item code", "ean"
-    ],
-    'nombre': [
-        "producto", "nombre", "variedad", "designacion", "item",
-        "title", "denominacion", "vino", "articulo", "descripcion",
-        "descripción", "detalle"
-    ],
-    'descripcion': [
-        "descripcion", "descripción", "detalle", "detalles",
-        "descripcion producto", "description", "comentarios"
-    ],
-    'precio': [
-        "precio", "precio lista", "lista", "pvp", "p.v.p", "valor", "importe", "$", "contado", 
-        "oferta", "sugerido", "minorista", "publico", "tarifa", "precio sugerido contado",
-        "$ botella", "$ caja", "precio unitario", "distribuidor", "gremio", "monto"
-    ],
-    'marca': ["marca", "brand", "fabricante", "bodega", "productor", "linea", "línea"],
-    'categoria': ["categoria", "categoría", "rubro", "tipo", "familia", "clase"],
-    'unidad': [
-        "unidad", "unidades", "unid", "un.", "u/m", "presentacion", "envase", 
-        "caja x", "un/caja", "pack x", "contenido", "botella"
-    ],
-    'stock': [
-        "stock", "cantidad", "disponible", "existencias", "cant.", "quantity", "qty"
-    ],
-    'descripcion_larga': [
-        "notas de cata", "composicion", "caracteristicas", "observaciones", "añada", "cosecha"
-    ]
-}
+    if puntos_para_insertar:
+        try:
+            logger.info(f"[QDRANT_SAVE] Intentando upsert de {len(puntos_para_insertar)} puntos para user_id={user_id}...")
+            qdrant_cli.upsert(collection_name=coleccion, points=puntos_para_insertar, wait=True)
+            logger.info(f"✅ {len(puntos_para_insertar)} ítems guardados/actualizados en Qdrant para user_id={user_id}")
+        except Exception as e_qdrant_upsert:
+            logger.error(f"❌ Error durante upsert a Qdrant para user_id={user_id}: {e_qdrant_upsert}", exc_info=True)
+            raise ValueError(f"Fallo al guardar datos en Qdrant: {str(e_qdrant_upsert)}")
+    else:
+        logger.warning(f"[QDRANT_SAVE] No se prepararon puntos válidos para Qdrant para user_id={user_id}. Ningún ítem fue enviado.")
 
-def crear_mapa_de_columnas_inteligente(
-    df: pd.DataFrame,
-    max_filas_a_revisar: int = 50
-) -> Optional[Tuple[Dict[str, str], int]]:
-    """
-    Analiza las primeras N filas de un DataFrame para encontrar la fila de encabezado
-    y crear un mapa de columnas {'campo_estandar': 'nombre_columna_original'}.
-    Devuelve: Una tupla (mapa_de_columnas, indice_fila_datos_inicio) o None si no encuentra un mapa válido.
-    """
-    logger.info(f"[CEREBRO] Iniciando búsqueda inteligente de mapa de columnas...")
-    
-    mejor_mapa: Dict[str, str] = {}
-    mejor_fila_idx: int = -1
-    mejor_score: int = 0
+def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nombre: str = "generico", coleccion: str = CATALOGO_PYME) -> int:
+    logger.info(f"[UPLOAD_PROC] Iniciando procesamiento y embedding de catálogo: '{os.path.basename(path_archivo)}' para user_id={user_id}, rubro Pyme='{pyme_rubro_nombre}'")
+    registros_estructurados: List[Dict[str, Any]] = []
 
-    for i, row in df.head(max_filas_a_revisar).iterrows():
-        mapa_actual = {}
-        celdas_originales = [str(cell).strip() for cell in row.tolist()]
-        if len([c for c in celdas_originales if c]) < 2: continue
-
-        celdas_limpias = [limpiar_texto_base(cell) for cell in celdas_originales]
-        
-        for campo_estandar, keywords in KEYWORD_MAP.items():
-            if campo_estandar in mapa_actual: continue
-            for idx, celda_limpia in enumerate(celdas_limpias):
-                if not celda_limpia: continue
-                # idx es el índice de la columna en la fila actual (y por ende en el df_raw si header=None)
-                for keyword in keywords:
-                    if re.search(r'\b' + re.escape(keyword) + r'\b', celda_limpia, re.IGNORECASE):
-                        # Guardar el índice de la columna, no el nombre del header.
-                        # Asegurarse de no mapear el mismo índice a múltiples campos estándar.
-                        if idx not in mapa_actual.values():
-                            mapa_actual[campo_estandar] = idx # Guardar el índice de la columna
-                            break
-                if campo_estandar in mapa_actual: break
-        
-        score_actual = 0
-        if 'nombre' in mapa_actual: score_actual += 10
-        if 'precio' in mapa_actual: score_actual += 10
-        if 'sku' in mapa_actual: score_actual += 3
-        score_actual += len(mapa_actual)
-
-        if score_actual > mejor_score:
-            mejor_score = score_actual
-            mejor_mapa = mapa_actual
-            mejor_fila_idx = i
-
-    if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
-        fila_inicio_datos = mejor_fila_idx + 1
-        logger.info(
-            f"✅ [CEREBRO] Mapa de columnas válido encontrado. Encabezados en fila {mejor_fila_idx}. Score: {mejor_score}. Mapa: {mejor_mapa}"
-        )
-        return mejor_mapa, fila_inicio_datos
-
-    # Intento heurístico adicional cuando falta 'nombre' o 'precio'
-    logger.warning(
-        f"[CEREBRO] Buscando mapa por heurística. Mapa parcial: {mejor_mapa}"
-    )
-
-    if 'precio' not in mejor_mapa:
-        for col in df.columns:
-            valores = df[col].head(max_filas_a_revisar)
-            parseables = sum(1 for v in valores if parse_precio_flexible(v)[1] is not None)
-            if parseables >= max(2, len(valores) // 2):
-                mejor_mapa['precio'] = col
-                break
-
-    if 'nombre' not in mejor_mapa:
-        for col in df.columns:
-            if col == mejor_mapa.get('precio'):
-                continue
-            textos = [str(v).strip() for v in df[col].head(max_filas_a_revisar)]
-            largas = [t for t in textos if len(t) > 2]
-            if len(largas) >= len(textos) // 2:
-                mejor_mapa['nombre'] = col
-                break
-
-    if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
-        logger.info(f"✅ [CEREBRO] Mapa heurístico obtenido: {mejor_mapa}")
-        return mejor_mapa, 0
-
-    # Fallback: usar columna de SKU o descripción como nombre cuando no se
-    # identificó explícitamente una columna de nombre
-    if 'nombre' not in mejor_mapa:
-        if 'descripcion' in mejor_mapa:
-            mejor_mapa['nombre'] = mejor_mapa['descripcion']
-        elif 'sku' in mejor_mapa:
-            mejor_mapa['nombre'] = mejor_mapa['sku']
-    if 'nombre' in mejor_mapa and 'precio' in mejor_mapa:
-        logger.info(f"✅ [CEREBRO] Mapa de columnas asignado por fallback: {mejor_mapa}")
-        return mejor_mapa, 0
-
-    logger.error(
-        f"[CEREBRO] No se pudo crear un mapa válido. Faltan campos esenciales 'nombre' y/o 'precio'. Mejor mapa encontrado: {mejor_mapa}"
-    )
-    return None
-
-# --- 3. OTRAS UTILIDADES (Función que ya tenías) ---
-def sugerencias_por_rubro(rubro):
-    """
-    Devuelve una lista de sugerencias de preguntas para el rubro desde /data/sugerencias.json.
-    """
-    SUGERENCIAS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'sugerencias.json')
     try:
-        with open(SUGERENCIAS_PATH, encoding='utf-8') as f:
-            sugerencias_data = json.load(f)
-    except Exception as e:
-        logging.warning(f"[UTILS] No se pudo leer sugerencias.json: {e}")
-        sugerencias_data = {}
+        _, extension_archivo = os.path.splitext(path_archivo)
+        extension_archivo = extension_archivo.lower()
 
-    rubro_nombre = None
-    if isinstance(rubro, str):
-        rubro_nombre = rubro.lower().replace(" ", "_")
-    elif hasattr(rubro, 'nombre'):
-        rubro_nombre = str(rubro.nombre).lower().replace(" ", "_")
-    elif isinstance(rubro, int):
-        id_map = {1: "bodega", 2: "almacen", 3: "medico", 4: "local_comercial", 5: "municipios"}
-        rubro_nombre = id_map.get(rubro)
-    
-    if not rubro_nombre:
-        rubro_nombre = "bodega"  # Fallback seguro
+        if extension_archivo == ".pdf":
+            logger.info(f"[UPLOAD_PROC] Procesando PDF con Google DocAI: {os.path.basename(path_archivo)}")
+            registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id, pyme_rubro_nombre)
+        elif extension_archivo in [".png", ".jpg", ".jpeg"]:
+            logger.info(f"[UPLOAD_PROC] Procesando imagen con Google DocAI: {os.path.basename(path_archivo)}")
+            registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id, pyme_rubro_nombre)
+        elif extension_archivo in [".xlsx", ".xls", ".csv"]:
+            logger.info(f"[UPLOAD_PROC] Procesando EXCEL/CSV: {os.path.basename(path_archivo)}")
+            registros_estructurados = procesar_catalogo_excel(path_archivo, user_id, pyme_rubro_nombre)
+        else:
+            logger.error(f"[UPLOAD_PROC] Tipo de archivo no soportado: {extension_archivo}")
+            raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
 
-    sugerencias = sugerencias_data.get(rubro_nombre, [])
-    if not sugerencias:
-        sugerencias = ["Consultá nuestro catálogo", "Contactá a un asesor", "Visitá nuestra web para más info"]
-    return sugerencias
+        if not isinstance(registros_estructurados, list):
+            logger.error(f"[UPLOAD_PROC] El procesador de archivos no devolvió una lista para '{os.path.basename(path_archivo)}'. Devolvió: {type(registros_estructurados)}")
+            registros_estructurados = []
 
-import re
+        if not registros_estructurados:
+            logger.warning(f"[UPLOAD_PROC] El procesamiento del archivo '{os.path.basename(path_archivo)}' no devolvió registros estructurados o la lista está vacía.")
+            return 0
 
-def validar_email(email: str) -> bool:
-    """Valida formato básico de email."""
-    if not isinstance(email, str):
-        return False
-    return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
+        logger.info(f"📄 {len(registros_estructurados)} registros extraídos del archivo. Ejemplo primer registro (si existe): {registros_estructurados[0] if registros_estructurados else 'N/A'}")
 
-def validar_telefono(telefono: str) -> bool:
-    """Valida que el teléfono tenga solo números y al menos 8 dígitos."""
-    if not isinstance(telefono, str):
-        return False
-    solo_numeros = re.sub(r"\D", "", telefono)
-    return len(solo_numeros) >= 8
+        textos_para_embedding: List[str] = []
+        productos_finales_para_qdrant_y_db: List[Dict[str, Any]] = []
 
-def formatear_telefono_e164(telefono: str, codigo_pais: str = "54") -> str:
-    """Devuelve el teléfono en formato E164 o cadena vacía si no es válido."""
-    if not telefono:
-        return ""
-    telefono = telefono.strip()
-    if telefono.startswith("+"):
-        return telefono
-    solo_numeros = re.sub(r"\D", "", telefono)
-    if len(solo_numeros) < 8:
-        return ""
-    solo_numeros = solo_numeros.lstrip("0")
-    return f"+{codigo_pais}{solo_numeros}"
+        for i, prod_dict in enumerate(registros_estructurados):
+            if not isinstance(prod_dict, dict):
+                logger.warning(f"[UPLOAD_PROC] Ítem {i} no es un diccionario, saltando: {prod_dict}")
+                continue
+
+            nombre = str(prod_dict.get("nombre", "")).strip()
+            descripcion = str(prod_dict.get("descripcion", "")).strip()
+            categoria = str(prod_dict.get("categoria_qdrant", prod_dict.get("categoria", pyme_rubro_nombre))).strip()
+            marca = str(prod_dict.get("marca", "")).strip()
+            sku = str(prod_dict.get("sku", "")).strip()
+            
+            # Get original and parsed unit information
+            unidad_original = str(prod_dict.get("unidad", "")).strip() # e.g., "Caja x 6 botellas"
+            unidad_parsed_desc = str(prod_dict.get("unidad_parsed", "")).strip() # e.g., "Caja botellas"
+            cantidad_empaque_val = prod_dict.get("cantidad_empaque") # e.g., 6 or None
+
+            talles = str(prod_dict.get("talles", "")).strip()
+            colores = str(prod_dict.get("colores", "")).strip()
+
+            partes_texto_embed = []
+            if nombre: partes_texto_embed.append(f"Producto: {nombre}")
+            else: continue # Skip if no name
+
+            if marca: partes_texto_embed.append(f"Marca: {marca}")
+            if categoria: partes_texto_embed.append(f"Categoría: {categoria}")
+            
+            # Construct a descriptive presentacion_texto for embedding
+            presentacion_texto_para_embed = unidad_original # Default to original string
+            if unidad_parsed_desc and cantidad_empaque_val is not None and cantidad_empaque_val > 0:
+                presentacion_texto_para_embed = f"{unidad_parsed_desc} (empaque de {cantidad_empaque_val})"
+            elif unidad_parsed_desc: # Only parsed description, no quantity (or quantity is 1 or None)
+                presentacion_texto_para_embed = unidad_parsed_desc
+            
+            if presentacion_texto_para_embed: # Use the constructed text
+                partes_texto_embed.append(f"Presentación: {presentacion_texto_para_embed}")
+            elif unidad_original: # Fallback if somehow presentacion_texto_para_embed is empty but original is not
+                partes_texto_embed.append(f"Presentación: {unidad_original}")
+
+            if talles: partes_texto_embed.append(f"Talles: {talles}")
+            if colores: partes_texto_embed.append(f"Colores: {colores}")
+            if sku: partes_texto_embed.append(f"Código/SKU: {sku}")
+
+            descripcion_limpia = limpiar_texto_base(descripcion)
+            nombre_limpio = limpiar_texto_base(nombre)
+            if descripcion_limpia and descripcion_limpia != nombre_limpio:
+                partes_texto_embed.append(f"Detalles: {descripcion}")
+
+            texto_combinado = " | ".join(filter(None, partes_texto_embed)).strip()
+
+            if texto_combinado and len(texto_combinado) >= 10:
+                textos_para_embedding.append(texto_combinado)
+                prod_dict["texto_para_embedding"] = texto_combinado
+                productos_finales_para_qdrant_y_db.append(prod_dict)
+            else:
+                logger.warning(f"[UPLOAD_PROC] Texto para embedding demasiado corto o vacío para producto '{nombre}' (Índice: {i}), saltando. Texto generado: '{texto_combinado}'")
+
+        if not productos_finales_para_qdrant_y_db:
+            logger.warning("[UPLOAD_PROC] No se generaron textos válidos para embedding después de procesar todos los registros.")
+            return 0
+
+        logger.info(f"🧠 Textos para embedding preparados (Total: {len(textos_para_embedding)}). Primeros 3 (si hay): {textos_para_embedding[:3]}")
+        logger.info("🧬 Generando vectores con Cohere...")
+        vectores = embed_textos(textos_para_embedding, input_type="search_document")
+
+        if not vectores or len(vectores) != len(productos_finales_para_qdrant_y_db):
+            logger.error(f"[UPLOAD_PROC] Error en generación de vectores. Se esperaban {len(productos_finales_para_qdrant_y_db)} vectores, se obtuvieron {len(vectores if vectores else [])}.")
+            raise ValueError("Fallo en la generación de vectores o desajuste con productos.")
+
+        logger.info(f"🧬 Vectores generados: {len(vectores)}. Dimensión del primer vector (si existe): {len(vectores[0]) if vectores and isinstance(vectores[0], list) else 'N/A'}")
+
+        guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores, coleccion)
+
+        items_para_db_sql: List[CatalogoItem] = []
+        for prod_dict_final in productos_finales_para_qdrant_y_db:
+            items_para_db_sql.append(
+                CatalogoItem(
+                    user_id=user_id,
+                    nombre=str(prod_dict_final.get("nombre", "S/N"))[:255],
+                    descripcion=str(prod_dict_final.get("descripcion", ""))[:1024], # Descripcion larga
+                    descripcion_corta=str(prod_dict_final.get("descripcion_corta", ""))[:512], # Nuevo campo
+                    promocion_info=str(prod_dict_final.get("promocion_texto", ""))[:255], # Nuevo campo
+                    precio=str(prod_dict_final.get("precio_str", ""))[:50],
+                    cantidad=str(prod_dict_final.get("stock", "0"))[:50], # Mapea 'stock' a 'cantidad'
+                    categoria=str(prod_dict_final.get("categoria_qdrant", pyme_rubro_nombre))[:100],
+                    unidad=str(prod_dict_final.get("unidad", ""))[:50],
+                    sku=str(prod_dict_final.get("sku", ""))[:100],
+                    marca=str(prod_dict_final.get("marca", ""))[:100],
+                    texto=prod_dict_final.get("texto_para_embedding", "")
+                )
+            )
+
+        if items_para_db_sql:
+            try:
+                CatalogoItem.query.filter_by(user_id=user_id).delete()
+                db.session.bulk_save_objects(items_para_db_sql)
+                db.session.commit()
+                logger.info(f"✅ {len(items_para_db_sql)} ítems guardados en DB relacional para user_id={user_id}")
+            except Exception as e_db_relacional:
+                db.session.rollback()
+                logger.error(f"❌ Error guardando en DB relacional para user_id={user_id}: {e_db_relacional}", exc_info=True)
+                raise ValueError(f"Error al guardar el catálogo en la base de datos principal: {str(e_db_relacional)}")
+
+        logger.info(f"🎉 Proceso de catálogo completado: {len(productos_finales_para_qdrant_y_db)} ítems procesados y guardados para user_id={user_id}")
+        return len(productos_finales_para_qdrant_y_db)
+
+    except ValueError as ve:
+        logger.warning(f"[UPLOAD_PROC] Error de Valor en procesar_y_embedear_catalogo para user_id={user_id} (archivo: {os.path.basename(path_archivo)}): {str(ve)}")
+        raise
+    except Exception as e_inesperado:
+        logger.error(f"❌ [UPLOAD_PROC] Excepción Genérica Severa en procesar_y_embedear_catalogo para user_id={user_id} (archivo: {os.path.basename(path_archivo)}): {str(e_inesperado)}", exc_info=True)
+        raise ValueError(f"Error interno grave al procesar el catálogo. Por favor, contacta a soporte si el problema persiste.")
+
+@upload_bp.route("/subir_catalogo", methods=["POST"])
+def subir_catalogo():
+    user: Optional[User] = None
+    ruta_guardado_temporal: Optional[str] = None
+
+    try:
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not token:
+            return jsonify({"error": "Token no proporcionado. Por favor, inicia sesión de nuevo."}), 401
+
+        user = User.query.filter_by(token=token).first()
+        if not user:
+            return jsonify({"error": "Token inválido o sesión expirada. Por favor, inicia sesión de nuevo."}), 401
+
+        if 'file' not in request.files:
+            return jsonify({"error": "No se encontró el archivo en la solicitud."}), 400
+
+        archivo = request.files.get("file")
+        if not archivo or not archivo.filename:
+            return jsonify({"error": "Archivo no válido o no presente."}), 400
+
+        if not extension_valida(archivo.filename):
+            return jsonify({"error": "Formato de archivo no permitido. Solo se aceptan: " + ", ".join(ALLOWED_EXTENSIONS)}), 400
+
+        nombre_empresa_seguro = limpiar_texto_base(user.nombre_empresa if user.nombre_empresa else "pyme").replace(" ", "_")
+        nombre_base_seguro, extension_archivo_segura = os.path.splitext(secure_filename(archivo.filename))
+        nombre_archivo_unico = f"user_{user.id}_{nombre_empresa_seguro[:15]}_{uuid.uuid4().hex[:6]}{extension_archivo_segura}"
+
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        ruta_guardado_temporal = os.path.join(UPLOAD_FOLDER, nombre_archivo_unico)
+
+        archivo.save(ruta_guardado_temporal)
+        logger.info(f"📂 Archivo '{archivo.filename}' (guardado como '{nombre_archivo_unico}') en: {ruta_guardado_temporal} para User ID: {user.id}")
+
+        pyme_rubro_nombre = "generico"
+        if user.rubro_id:
+            rubro_obj = db.session.get(Rubro, user.rubro_id)
+            if rubro_obj and rubro_obj.nombre:
+                pyme_rubro_nombre = rubro_obj.nombre.lower().strip()
+        logger.info(f"[UPLOAD_PROC] Rubro de la Pyme para procesamiento: {pyme_rubro_nombre}")
+
+        coleccion = (
+            CATALOGO_MUNICIPIO if user.municipio_id or es_rubro_publico(user.rubro)
+            else CATALOGO_PYME
+        )
+        if not verificar_y_crear_coleccion_qdrant(coleccion, 1024, create_indexes=True):
+            logger.error("[UPLOAD_PROC] No se pudo preparar la colección en Qdrant")
+            return jsonify({"error": "Error de infraestructura al preparar el catálogo."}), 500
+
+        logger.info(f"Intentando eliminar catálogo anterior en Qdrant para user_id={user.id}...")
+        try:
+            qdrant_cli = get_qdrant_client()
+            if qdrant_cli:
+                qdrant_cli.delete(
+                    collection_name=coleccion,
+                    points_selector=qdrant_models.FilterSelector(
+                        filter=qdrant_models.Filter(
+                            must=[qdrant_models.FieldCondition(key="user_id", match=qdrant_models.MatchValue(value=user.id))]
+                        )
+                    ),
+                    wait=True
+                )
+                logger.info(f"✅ Intento de eliminación de catálogo anterior en Qdrant para user_id={user.id} completado.")
+            else:
+                logger.error(f"⚠️ No se pudo obtener cliente Qdrant para eliminar puntos de user_id={user.id}.")
+        except Exception as e_delete_qdrant:
+            logger.error(f"⚠️ Error al intentar eliminar catálogo anterior en Qdrant para user_id={user.id}: {e_delete_qdrant}", exc_info=True)
+
+        cantidad_procesada = procesar_y_embedear_catalogo(
+            ruta_guardado_temporal,
+            user.id,
+            pyme_rubro_nombre=pyme_rubro_nombre,
+            coleccion=coleccion,
+        )
+
+        # Guardar el archivo original para descargas futuras
+        os.makedirs(CATALOGO_FOLDER, exist_ok=True)
+        ruta_final = os.path.join(CATALOGO_FOLDER, nombre_archivo_unico)
+        shutil.move(ruta_guardado_temporal, ruta_final)
+        ruta_guardado_temporal = None
+        tamano = os.path.getsize(ruta_final)
+        url = f"/catalogo/archivo/{nombre_archivo_unico}"
+        db.session.add(
+            ArchivoAdjunto(
+                user_id=user.id,
+                filename=nombre_archivo_unico,
+                nombre_original=archivo.filename,
+                mime=archivo.mimetype,
+                tamano=tamano,
+                tipo="catalogo",
+                url=url,
+            )
+        )
+        db.session.commit()
+
+        mensaje_exito = f"✅ Catálogo procesado. Se { 'han' if cantidad_procesada != 1 else 'ha'} encontrado e indexado {cantidad_procesada} { 'producto' if cantidad_procesada == 1 else 'productos'}."
+        if cantidad_procesada == 0:
+            mensaje_exito = "⚠️ El archivo fue procesado, pero no se encontraron productos válidos. Revisa el formato y contenido de tu archivo. Asegúrate que tenga encabezados claros como 'Nombre', 'Precio', 'Descripción', etc., y que los productos tengan nombre."
+
+        return jsonify({"mensaje": mensaje_exito, "items_procesados": cantidad_procesada}), 200
+
+    except ValueError as ve:
+        logger.warning(f"[UPLOAD_PROC] Error de Valor en /subir_catalogo para user {getattr(user, 'id', 'N/A')}: {str(ve)}")
+        return jsonify({"error": f"Error al procesar el catálogo: {str(ve)}"}), 400
+    except Exception as e_global:
+        logger.error(f"❌ [UPLOAD_PROC] Error inesperado severo en /subir_catalogo para user {getattr(user, 'id', 'N/A')}: {str(e_global)}", exc_info=True)
+        return jsonify({"error": "Error interno inesperado al procesar el catálogo. Por favor, intenta más tarde o contacta a soporte."}), 500
+    finally:
+        if ruta_guardado_temporal and os.path.exists(ruta_guardado_temporal):
+            try:
+                os.remove(ruta_guardado_temporal)
+                logger.info(f"🗑️ Archivo temporal '{ruta_guardado_temporal}' eliminado.")
+            except Exception as e_remove:
+                logger.error(f"🔥 Error al eliminar archivo temporal '{ruta_guardado_temporal}': {e_remove}", exc_info=True)

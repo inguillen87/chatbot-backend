@@ -44,6 +44,7 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
     if fila_inicio_datos >= len(df_raw) and not df_raw.empty:
         logger.warning(f"[EXCEL_PROC] fila_inicio_datos ({fila_inicio_datos}) está fuera de los límites de df_raw ({len(df_raw)} filas) para '{base_filename}'. No hay datos para procesar.")
         return []
+    
     # df_iterar tomará las filas de datos de df_raw.
     # Como df_raw fue leído con header=None, sus columnas ya son 0, 1, 2...
     # Y mapa_columnas.values() también son estos índices 0, 1, 2...
@@ -54,19 +55,19 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
         return []
 
     registros: List[Dict[str, Any]] = []
-
+    
     # Los nombres de las columnas en df_iterar son RangeIndex (0, 1, 2...)
     # Esto coincide con los valores (índices) que ahora están en mapa_columnas.
-
+    
     for i, row in df_iterar.iterrows():
         registro_actual = {}
-
+        
         nombre_producto = ""
         col_idx_nombre = mapa_columnas.get('nombre') # Esto es un Integer index
-
+        
         if col_idx_nombre is not None and col_idx_nombre < len(row):
             nombre_producto = str(row.iloc[col_idx_nombre]).strip() # Usar iloc para acceder por posición
-
+        
         if not nombre_producto:
             valor_original_log = ""
             if col_idx_nombre is not None and col_idx_nombre < len(row):
@@ -80,16 +81,16 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
             continue
 
         registro_actual['nombre'] = nombre_producto
-
+        
         for campo_estandar in KEYWORD_MAP.keys(): # Usar KEYWORD_MAP para asegurar todos los campos
             if campo_estandar == 'nombre': # Ya procesado
                 continue
-
+            
             col_idx = mapa_columnas.get(campo_estandar)
             valor_celda = ""
             if col_idx is not None and col_idx < len(row):
                 valor_celda = str(row.iloc[col_idx]).strip() # Usar iloc
-
+            
             registro_actual[campo_estandar] = valor_celda
 
             if campo_estandar == 'unidad':

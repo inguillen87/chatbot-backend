@@ -217,29 +217,57 @@ def armar_respuesta_legible(
             except (ValueError, TypeError):
                 precio_formateado = precio_str_display or "Consultar"
         elif precio_str_display:
+            # Ensure that price_str_display doesn't accidentally contain non-price numbers if parse_precio_flexible was too aggressive
+            # For now, we trust precio_val if it exists, otherwise precio_str_display
             precio_formateado = precio_str_display
         else:
-            precio_formateado = "Consultar"
+            precio_formateado = "Consultar" # Default if no price info
 
-        unidad = payload.get("unidad", "")
+        # New unit fields from Qdrant payload
+        unidad_original_str = payload.get("unidad_original", "")     # e.g., "Caja x 6 botellas"
+        unidad_desc_parsed = payload.get("unidad_descripcion", "")    # e.g., "Caja botellas" or "Caja"
+        cantidad_empaque_val = payload.get("cantidad_empaque")      # e.g., 6 (int) or None
+
         # Usar descripcion_corta si existe, sino la descripcion normal
         desc_corta = payload.get("descripcion_corta", "")
         desc_completa = payload.get("descripcion", "")
         desc_display = desc_corta if desc_corta else desc_completa
 
-        promocion = payload.get("promocion_info", "") # Asumiendo que este campo puede existir
+        promocion = payload.get("promocion_info", "")
 
         res = f"- <b>{nombre}</b>"
-        if unidad:
-            res += f" ({unidad})"
+        
+        # Construct unit display string
+        display_unidad_info = ""
+        if unidad_desc_parsed and cantidad_empaque_val and cantidad_empaque_val > 1:
+            # e.g., "Caja (empaque de 6)" or "Caja botellas (empaque de 6)"
+            display_unidad_info = f"{unidad_desc_parsed} (empaque de {cantidad_empaque_val})"
+        elif unidad_desc_parsed: # e.g., "Botella", "Unidad" (cantidad_empaque_val is 1 or None)
+            display_unidad_info = unidad_desc_parsed
+        elif unidad_original_str: # Fallback to original string if parsing was incomplete
+            display_unidad_info = unidad_original_str
+        
+        if display_unidad_info:
+            res += f" ({display_unidad_info})"
 
         res += f" — <b>{precio_formateado}</b>"
+
+        # Display per-item price if the main price is for a pack
+        # This assumes `precio_val` is the price for the pack of `cantidad_empaque_val` items.
+        if precio_val is not None and isinstance(cantidad_empaque_val, int) and cantidad_empaque_val > 1:
+            try:
+                precio_por_item_individual = float(precio_val) / cantidad_empaque_val
+                # Only show if significantly different from pack price and makes sense
+                if abs(precio_por_item_individual - float(precio_val)) > 0.01 : 
+                     res += f" <i style='font-size:smaller;'>(equivale a ${precio_por_item_individual:,.2f} c/u individual)</i>"
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass # Couldn't calculate individual price
 
         if promocion:
             res += f" <b style='color:green;'>({promocion})</b>"
 
         if desc_display:
-            res += f" | {desc_display[:70]}{'...' if len(desc_display)>70 else ''}" # Un poco más de descripción
+            res += f" | {desc_display[:70]}{'...' if len(desc_display) > 70 else ''}"
 
         lineas.append(res)
         if len(lineas) >= max_items:
