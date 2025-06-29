@@ -348,6 +348,113 @@
 }
 
   
-]
-
+],
+  "comercio_general": [
+    {
+      "categoria": "iniciar_compra",
+      "ejemplos": [
+        "Quiero comprar",
+        "Ver productos",
+        "Necesito hacer una compra",
+        "Mostrar catálogo",
+        "¿Qué venden?",
+        "Estoy buscando algo para comprar",
+        "Empezar pedido"
+      ],
+      "respuesta": "ACTION_INICIAR_COMPRA"
+    },
+    {
+      "categoria": "consultar_producto",
+      "ejemplos": [
+        "¿Tienen [PRODUCTO]?",
+        "Información sobre [PRODUCTO]",
+        "Cuánto cuesta [PRODUCTO]?",
+        "Detalles del [PRODUCTO]",
+        "Busco [PRODUCTO]",
+        "¿Hay stock de [PRODUCTO]?"
+      ],
+      "respuesta": "ACTION_CONSULTAR_PRODUCTO"
+    },
+    {
+      "categoria": "agregar_al_carrito",
+      "ejemplos": [
+        "Agregar eso al carrito",
+        "Sí, lo quiero comprar",
+        "Añadir a mi pedido",
+        "Ponelo en la bolsa",
+        "Sumar al carrito",
+        "Lo llevo"
+      ],
+      "respuesta": "ACTION_AGREGAR_AL_CARRITO"
+    },
+    {
+      "categoria": "ver_carrito",
+      "ejemplos": [
+        "¿Qué tengo en el carrito?",
+        "Mostrar mi compra actual",
+        "Ver mi pedido",
+        "Revisar el carrito",
+        "Mi bolsa de compras"
+      ],
+      "respuesta": "ACTION_VER_CARRITO"
+    },
+    {
+      "categoria": "eliminar_del_carrito",
+      "ejemplos": [
+        "Quitar [PRODUCTO] del carrito",
+        "Sacar esto del pedido",
+        "No quiero [PRODUCTO]",
+        "Eliminar el último producto"
+      ],
+      "respuesta": "ACTION_ELIMINAR_DEL_CARRITO"
+    },
+    {
+      "categoria": "proceder_al_pago",
+      "ejemplos": [
+        "Quiero pagar",
+        "Finalizar compra",
+        "Proceder al checkout",
+        "Pagar mi pedido",
+        "Listo para pagar"
+      ],
+      "respuesta": "ACTION_PROCEDER_AL_PAGO"
+    },
+    {
+      "categoria": "solicitar_ubicacion_tienda",
+      "ejemplos": [
+        "¿Dónde están ubicados?",
+        "¿Cuál es su dirección?",
+        "Local más cercano",
+        "¿Tienen tiendas físicas?",
+        "Cómo llegar a su local"
+      ],
+      "respuesta": "ACTION_SOLICITAR_UBICACION_TIENDA"
+    },
+    {
+      "categoria": "reclamo_pedido",
+      "ejemplos": [
+        "Mi pedido llegó mal",
+        "Tengo un problema con mi compra",
+        "Quiero reclamar un pedido",
+        "El producto está roto",
+        "Me enviaron algo incorrecto"
+      ],
+      "respuesta": "ACTION_RECLAMO_PEDIDO"
+    },
+    {
+        "categoria": "saludo_comercio",
+        "ejemplos": ["Hola", "Buenas", "Qué tal", "Buen día"],
+        "respuesta": "¡Hola! Bienvenido a [nombreEmpresa]. ¿En qué puedo ayudarte hoy? Puedes ver productos, consultar tu carrito o pedir ayuda a un agente."
+    },
+    {
+        "categoria": "despedida_comercio",
+        "ejemplos": ["Adiós", "Chau", "Hasta luego", "Nos vemos"],
+        "respuesta": "¡Gracias por visitar [nombreEmpresa]! Vuelve pronto."
+    },
+    {
+        "categoria": "agradecimiento_comercio",
+        "ejemplos": ["Gracias", "Muchas gracias", "Ok gracias"],
+        "respuesta": "¡De nada! ¿Hay algo más en lo que pueda ayudarte?"
+    }
+  ]
 }
