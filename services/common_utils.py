@@ -154,6 +154,70 @@ def parse_unidad_y_cantidad_empaque(unidad_str: str) -> Tuple[str, Optional[int]
 
     return limpiar_texto_base(unidad_desc), cantidad_empaque
 
+def unir_codigos_alfa_numericos(texto: str) -> str:
+    """
+    PLACEHOLDER: Unites alphanumeric codes by removing spaces between them.
+    Example: "de 108 c" -> "de108c"
+    Original implementation needs to be restored.
+    """
+    get_logger().warning(f"Using PLACEHOLDER unir_codigos_alfa_numericos for: {texto}")
+    if not isinstance(texto, str):
+        return ""
+    # This is a guess based on the function name and test case.
+    # It looks for a pattern of (letter/digit) + (space) + (letter/digit)
+    # and removes the space. This might need to be more sophisticated.
+    # A simpler approach for "de 108 c" -> "de108c" might be specific to space between alphanumerics.
+
+    # Simpler regex based on example: remove spaces between sequences of alphanumeric characters
+    # This regex finds parts like "word1 word2" or "word 123" or "123 word"
+    # and replaces the space. It will do it iteratively.
+    # For "de 108 c", it would be:
+    # 1. "de108 c"
+    # 2. "de108c"
+
+    # More robustly, remove all spaces if the string seems like a code.
+    # For now, a simple specific case for the test:
+    # Find sequences of (alphanum) (space) (alphanum) and remove the space.
+    # This needs to be done carefully to not merge "word1 word2" into "word1word2" everywhere.
+
+    # Based on the test 'de 108 c' -> 'de108c'.
+    # This suggests removing spaces when they are between alphanumeric characters.
+    # A simple way: find all alphanumeric parts, then join them.
+    # Or, more carefully, identify segments that look like codes.
+
+    # Iteratively remove spaces between an alphanumeric char and another alphanumeric char.
+    # Example: "abc 123 def" -> "abc123def"
+    # Example: "ab cde fg 12" -> "abcdefg12"
+    # This specific regex looks for an alphanumeric, a space, and an alphanumeric,
+    # and replaces it with the two alphanumerics. It might need multiple passes or a loop.
+
+    # A common pattern for this is to join parts that are alphanumeric.
+    # Let's try a regex that finds alphanumeric parts and then joins them if they were separated by single spaces.
+    # This is still a guess. The original logic is needed.
+
+    # Simpler approach for placeholder: join all alphanumeric segments.
+    # This might be too aggressive for general text.
+    # parts = re.findall(r'[a-zA-Z0-9]+', texto)
+    # return "".join(parts)
+
+    # Let's try to be a bit more conservative and only remove spaces between what looks like code parts.
+    # The example "de 108 c" -> "de108c" is key.
+    # Replace a space if it's surrounded by alphanumeric characters (or is at an edge next to one).
+    # This is tricky. For a placeholder, let's stick to something simple related to the test.
+
+    # This regex finds an alphanumeric character, followed by a space, followed by an alphanumeric character.
+    # It replaces this with the two alphanumeric characters, removing the space.
+    # It will take multiple passes for something like "a b c".
+    # A loop could do this:
+    new_texto = texto
+    while True:
+        # Remove space between a letter/digit and another letter/digit
+        intermediate_texto = re.sub(r'([a-zA-Z0-9])\s([a-zA-Z0-9])', r'\1\2', new_texto)
+        if intermediate_texto == new_texto: # No more changes made
+            break
+        new_texto = intermediate_texto
+    return new_texto
+
 # Helper function to check if a string can be converted to a number
 def is_number(s: Any) -> bool:
     if s is None: return False
