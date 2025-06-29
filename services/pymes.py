@@ -42,13 +42,46 @@ def es_producto_valido_llm(texto: str) -> bool:
         logger.error(f"[PYME] Error validando producto con LLM: {e}")
     return True # Default a True para no interrumpir flujo si falla LLM
 
-def tiene_archivo_catalogo(user_id: int) -> bool:
+# Helper function to check for public catalog and get its info
+def _check_and_get_catalog_download_info(pyme_user_id: Optional[int]) -> Dict[str, Any]:
+    """
+    Checks if a Pyme has a downloadable catalog and returns its info.
+    """
+    if not pyme_user_id:
+        return {"exists": False}
+
+    try:
+        latest_catalog_adj = (
+            ArchivoAdjunto.query
+            .filter_by(user_id=pyme_user_id, tipo="catalogo")
+            .order_by(ArchivoAdjunto.fecha.desc())
+            .first()
+        )
+        if latest_catalog_adj:
+            # Ensure URL is correctly formed. Assuming app context is available for url_for,
+            # or construct manually if necessary. For now, relative path.
+            # from flask import url_for # Would need app context
+            # url = url_for('catalogo.descargar_catalogo_publico', pyme_user_id=pyme_user_id, _external=True)
+            # Using relative URL for simplicity as flask client/buttons might handle it.
+            url = f"/catalogo/public/{pyme_user_id}/descargar"
+            return {
+                "exists": True,
+                "url": url,
+                "filename": latest_catalog_adj.nombre_original or latest_catalog_adj.filename
+            }
+    except Exception as e:
+        logger.error(f"[PYME_CATALOG_DOWNLOAD_CHECK] Error checking for catalog for pyme_id {pyme_user_id}: {e}", exc_info=True)
+
+    return {"exists": False}
+
+
+def tiene_archivo_catalogo(user_id: int) -> bool: # This is for the Pyme owner's own catalog
     if not user_id: return False
     try:
         return ArchivoAdjunto.query.filter_by(user_id=user_id, tipo="catalogo").first() is not None
     except Exception: return False
 
-def url_descargar_catalogo() -> str:
+def url_descargar_catalogo() -> str: # This is for the Pyme owner's own catalog
     from flask import request
     return f"{request.url_root.rstrip('/')}/catalogo/descargar"
 
@@ -81,7 +114,6 @@ def extraer_productos_llm(texto: str) -> list[dict]:
                 match_md_json = re.match(r"^\s*```json\s*([\s\S]*?)\s*```\s*$", resp_corrected, re.DOTALL)
                 if match_md_json:
                     resp_corrected = match_md_json.group(1)
-                
                 datos = ast.literal_eval(resp_corrected)
             except (SyntaxError, ValueError) as e_ast:
                 logger.error(f"[PYME_LLM_PARSE] ast.literal_eval también falló para: '{resp_corrected}'. Error: {e_ast}. Se devuelve lista vacía.")
@@ -100,10 +132,10 @@ def extraer_productos_llm(texto: str) -> list[dict]:
                     cantidad = int(cantidad_raw)
                 elif isinstance(cantidad_raw, str) and cantidad_raw.isdigit():
                     cantidad = int(cantidad_raw)
-                
+
                 if cantidad < 1: cantidad = 1 # Asegurar cantidad mínima
 
-                if nombre: 
+                if nombre:
                     items.append({"nombre": nombre, "cantidad": cantidad})
         elif isinstance(datos, dict): # Si el LLM devuelve un solo objeto en lugar de una lista
             logger.warning(f"[PYME_LLM_PARSE] LLM devolvió un diccionario en lugar de una lista: {datos}. Intentando procesarlo.")
@@ -147,21 +179,43 @@ def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # conte
 
     for item in carrito:
         nombre = item.get("nombre", "Producto desconocido")
-        cantidad = item.get("cantidad", 0)
-        precio_unitario = item.get("precio_unitario", 0.0)
-        unidad = item.get("unidad", "")
-        precio_str = item.get("precio_str", "Consultar")
+        cantidad_pedida = item.get("cantidad_pedido", 0)
 
-        linea = f"{cantidad} x {nombre}"
-        if unidad:
-            linea += f" ({unidad})"
+        precio_catalogo = item.get("precio_unitario_catalogo", 0.0)
+        unidad_original = item.get("unidad_original_catalogo", "")
+        unidad_desc = item.get("unidad_descripcion_catalogo", "")
+        cantidad_empaque = item.get("cantidad_empaque_catalogo")
+        precio_str_catalogo = item.get("precio_str_catalogo", "Consultar")
 
-        if precio_unitario > 0:
-            precio_total_item = cantidad * precio_unitario
-            linea += f" - ${precio_unitario:,.2f} c/u = ${precio_total_item:,.2f}"
+        linea = f"{cantidad_pedida} x {nombre}"
+
+        display_unidad_carrito = ""
+        # Use parsed description and empaque quantity if available and meaningful
+        if unidad_desc and isinstance(cantidad_empaque, int) and cantidad_empaque > 1:
+            display_unidad_carrito = f"{unidad_desc} (de {cantidad_empaque} items)"
+        elif unidad_desc: # e.g., "Botella", "Unidad"
+            display_unidad_carrito = unidad_desc
+        elif unidad_original: # Fallback to original string if no better parsing
+            display_unidad_carrito = unidad_original
+
+        if display_unidad_carrito:
+            linea += f" ({display_unidad_carrito})"
+
+        # Precio y subtotal
+        # precio_catalogo is the price for the 'display_unidad_carrito'
+        if precio_catalogo > 0:
+            precio_total_item = cantidad_pedida * precio_catalogo
+            linea += f" - ${precio_catalogo:,.2f} c/u = ${precio_total_item:,.2f}"
             subtotal_pedido += precio_total_item
+
+            # If the price displayed is for a pack, and it's different from individual item price, show individual
+            if isinstance(cantidad_empaque, int) and cantidad_empaque > 1:
+                # This assumes precio_catalogo is for the pack of 'cantidad_empaque' items
+                precio_individual_calc = precio_catalogo / cantidad_empaque
+                if abs(precio_individual_calc - precio_catalogo) > 0.01: # Only show if different
+                    linea += f" <i style='font-size:smaller;'>(equiv. ${precio_individual_calc:,.2f} por item individual)</i>"
         else:
-            linea += f" - {precio_str}"
+            linea += f" - {precio_str_catalogo}" # "Consultar" or other string
             productos_sin_precio_cont +=1
 
         lineas_carrito.append(linea)
@@ -170,7 +224,7 @@ def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # conte
         lineas_carrito.append(f"\n**Subtotal del pedido: ${subtotal_pedido:,.2f}**")
 
     if productos_sin_precio_cont > 0:
-        nota_precio = "Algunos precios se confirmarán al finalizar." if subtotal_pedido > 0 else "Los precios se confirmarán al finalizar."
+        nota_precio = "Algunos precios se confirmarán al finalizar el pedido." if subtotal_pedido > 0 else "Los precios se confirmarán al finalizar el pedido."
         lineas_carrito.append(f"_{nota_precio}_")
 
     return "\n".join(lineas_carrito)
@@ -250,16 +304,26 @@ class CatalogoHandler(BaseHandler):
                 mensaje = f"Hmm, no encontré resultados exactos para '{pregunta}'. \n\n¿Te gustaría que intente con una búsqueda más general, ver el catálogo completo (si está disponible), o prefieres hablar con un agente?"
                 fuente = "catalogo_no_encontrado_especifico"
                 botones_base = [{"texto": "Buscar algo más general", "action": "ver_catalogo"}, 
-                                {"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, # Necesitaría una acción específica o el frontend maneja "ver_catalogo" sin pregunta.
+                                # {"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, # Replaced by download
                                 {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
-            else:
-                mensaje = "No encontré productos que coincidan con tu búsqueda. Puedes intentar con otras palabras o ver nuestro catálogo completo."
+            else: # No specific product in query, but no results from general search
+                mensaje = "No encontré productos que coincidan con tu búsqueda. Puedes intentar con otras palabras."
                 fuente = "catalogo_no_encontrado_general"
-                botones_base = [{"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
-        
-        if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf", "completo"]):
-            botones_base.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
-            mensaje += f"\n\nDescargá el catálogo completo aquí: {url_descargar_catalogo()}"
+                # botones_base already includes "Hablar con un agente" if this path is taken often.
+                # Default buttons for no results could be just "Hablar con un agente" or "Intentar otra búsqueda".
+                # The download link will be added below if available.
+                if not botones_base: # Ensure there's always some action
+                    botones_base = [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}]
+
+
+        # Add catalog download info if available, for all cases (results found or not)
+        download_info = _check_and_get_catalog_download_info(user_id)
+        if download_info["exists"]:
+            mensaje += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
+            # Optionally, add a button if your frontend supports it well
+            # Example: botones_base.append({"type": "web_url", "title": f"Descargar Catálogo ({download_info['filename']})", "url": download_info['url']})
+            # For now, sticking to markdown link in text for broader compatibility.
+
         return {"respuesta": mensaje, "fuente": fuente, "botones": botones_base}
 
 class OfertasHandler(BaseHandler):
@@ -268,10 +332,26 @@ class OfertasHandler(BaseHandler):
         if not user_id: return {"respuesta": "Inicia sesión para ver las ofertas.", "fuente": "ofertas_sin_login"}
         
         resultados_ofertas = buscar_catalogo_qdrant(user_id=user_id, pregunta="ofertas promociones descuentos", limite=5, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME), en_promocion=True)
+
+        mensaje = ""
+        botones = []
+        fuente = ""
+
         if resultados_ofertas:
-            respuesta = "Estas son algunas de nuestras ofertas destacadas:\n" + armar_respuesta_legible(resultados_ofertas, max_items=5) + "\n\n¿Te interesa alguna o quieres ver más?"
-            return {"respuesta": respuesta, "fuente": "ofertas_dinamicas", "botones": [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
-        return {"respuesta": "Por el momento no tenemos ofertas especiales destacadas, pero puedes ver nuestro catálogo completo.", "fuente": "sin_ofertas_dinamicas", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+            mensaje = "Estas son algunas de nuestras ofertas destacadas:\n" + armar_respuesta_legible(resultados_ofertas, max_items=5) + "\n\n¿Te interesa alguna o quieres ver más?"
+            fuente = "ofertas_dinamicas"
+            botones = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]
+        else:
+            mensaje = "Por el momento no tenemos ofertas especiales destacadas, pero puedes ver nuestro catálogo completo."
+            fuente = "sin_ofertas_dinamicas"
+            botones = [{"texto": "Ver catálogo", "action": "ver_catalogo"}]
+
+        download_info = _check_and_get_catalog_download_info(user_id)
+        if download_info["exists"]:
+            mensaje += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
+            # Consider adding a download button to `botones` if desired and supported by frontend.
+
+        return {"respuesta": mensaje, "fuente": fuente, "botones": botones}
 
 class SmallTalkHandler(BaseHandler):
     def handle(self, pregunta): return {"respuesta": generar_respuesta_small_talk(pregunta), "fuente": "smalltalk_pyme_llm"}
@@ -310,13 +390,48 @@ class PedidoHandler(BaseHandler):
                 nombre_oferta = payload.get("nombre", "").strip()
                 if nombre_oferta and nombre_oferta.lower() not in nombres_en_carrito:
                     if not any(nombre_oferta.lower() == item_agregado['nombre'].lower() for item_agregado in items_recien_agregados):
-                        precio_oferta_str = payload.get("precio_str", "") or (f"${payload['precio_float']:,.2f}" if payload.get("precio_float") is not None else "")
+                        # Extraer campos de unidad y precio del payload
+                        precio_val = payload.get("precio_float")
+                        precio_str_original = payload.get("precio_str", "")
+
+                        unidad_desc_parsed = payload.get("unidad_descripcion", "")
+                        cantidad_empaque_val = payload.get("cantidad_empaque")
+
+                        precio_display_sugerencia = "Consultar"
+                        if precio_val is not None:
+                            precio_display_sugerencia = f"${float(precio_val):,.2f}"
+                        elif precio_str_original:
+                            precio_display_sugerencia = precio_str_original
+
                         texto_sugerencia = f"'{nombre_oferta}'"
-                        if precio_oferta_str: texto_sugerencia += f" a {precio_oferta_str}"
-                        if payload.get("promocion_texto"): texto_sugerencia += f" ({payload.get('promocion_texto')})"
+
+                        display_unidad_sug = ""
+                        if unidad_desc_parsed and cantidad_empaque_val and cantidad_empaque_val > 1:
+                            display_unidad_sug = f" ({unidad_desc_parsed} x{cantidad_empaque_val})"
+                        elif unidad_desc_parsed:
+                            display_unidad_sug = f" ({unidad_desc_parsed})"
+
+                        if display_unidad_sug:
+                            texto_sugerencia += display_unidad_sug
+
+                        texto_sugerencia += f" a {precio_display_sugerencia}"
+
+                        if payload.get("promocion_texto"):
+                            texto_sugerencia += f" ({payload.get('promocion_texto')})"
+
                         sugerencias_validas.append(texto_sugerencia)
-                if len(sugerencias_validas) >= 1: break 
-            if sugerencias_validas: return f"\n\n✨ ¡Aprovecha también! Tenemos {', '.join(sugerencias_validas)}. ¿Te interesa alguno?"
+                if len(sugerencias_validas) >= 1: break # Solo sugerir uno o dos para no abrumar
+
+            if sugerencias_validas:
+                 # Unir con "y" si hay dos, o solo tomar la primera si hay más.
+                sugerencia_final_str = ""
+                if len(sugerencias_validas) == 1:
+                    sugerencia_final_str = sugerencias_validas[0]
+                elif len(sugerencias_validas) > 1:
+                    sugerencia_final_str = " y ".join(sugerencias_validas[:2]) # Mostrar hasta 2 sugerencias
+
+                if sugerencia_final_str:
+                    return f"\n\n✨ ¡Aprovecha también! Tenemos {sugerencia_final_str}. ¿Te interesa alguno?"
         return ""
 
     def handle(self, pregunta):
@@ -410,13 +525,18 @@ class PedidoHandler(BaseHandler):
                     if not producto_encontrado_en_qdrant or precio_unitario_catalogo == 0:
                         productos_no_encontrados_o_sin_precio.append(nombre_producto_catalogo)
 
+                    # Extraer toda la info de unidad del payload para el carrito
+                    # 'unidad_catalogo' era payload.get("unidad", "") -> ahora es payload.get("unidad_original", "")
+                    unidad_original_qdrant = payload.get("unidad_original", unidad_catalogo) # unidad_catalogo was a fallback
+                    unidad_desc_qdrant = payload.get("unidad_descripcion", "")
+                    cantidad_empaque_qdrant = payload.get("cantidad_empaque")
+
+
                     # Lógica para agregar o actualizar cantidad en carrito
                     found_in_cart = False
                     for item_car_existente in carrito:
                         if nombre_producto_catalogo.lower() == item_car_existente["nombre"].lower():
-                            item_car_existente["cantidad"] += item_ext["cantidad"]
-                            # El precio y unidad ya están en item_car_existente desde que se agregó por primera vez.
-                            # Si se encontró ahora con precio y antes no, se podría actualizar, pero simplificamos por ahora.
+                            item_car_existente["cantidad_pedido"] = item_car_existente.get("cantidad_pedido",0) + item_ext["cantidad"] # cantidad que pide el usuario
                             items_agregados_info.append(item_car_existente)
                             found_in_cart = True
                             break
@@ -424,10 +544,12 @@ class PedidoHandler(BaseHandler):
                     if not found_in_cart:
                         item_para_carrito_nuevo = {
                             "nombre": nombre_producto_catalogo,
-                            "cantidad": item_ext["cantidad"],
-                            "precio_unitario": precio_unitario_catalogo,
-                            "unidad": unidad_catalogo,
-                            "precio_str": precio_str_catalogo
+                            "cantidad_pedido": item_ext["cantidad"], # Cantidad que el usuario pide
+                            "precio_unitario_catalogo": precio_unitario_catalogo, # Precio del item como está en catálogo (podría ser por unidad o por pack)
+                            "unidad_original_catalogo": unidad_original_qdrant,   # Ej: "Caja x 6 botellas"
+                            "unidad_descripcion_catalogo": unidad_desc_qdrant, # Ej: "Caja botellas"
+                            "cantidad_empaque_catalogo": cantidad_empaque_qdrant, # Ej: 6
+                            "precio_str_catalogo": precio_str_catalogo # Ej: "$500" o "Consultar"
                         }
                         carrito.append(item_para_carrito_nuevo)
                         items_agregados_info.append(item_para_carrito_nuevo)
@@ -584,30 +706,46 @@ class FallbackHandler(BaseHandler):
     def handle(self, pregunta):
         user_id = self.context.get("user_id")
         rubro = self.context.get("rubro_nombre")
-        
+        fuente_final = "fallback_generico_final" # Default
+        mensaje_final = "No entendí bien tu consulta. ¿Podrías reformularla?"
+        botones_finales = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
+
         resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=rubro, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME))
         if resultados:
             respuesta_legible = armar_respuesta_legible(resultados, max_items=3)
-            botones = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo completo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
-            if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
-                botones.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
-                respuesta_legible += f"\n\nDescargá el catálogo aquí: {url_descargar_catalogo()}"
-            return {"respuesta": f"Esto es lo que encontré relacionado:\n{respuesta_legible}\n¿Te sirve o necesitas más ayuda?", "fuente": "fallback_catalogo_encontrado", "botones": botones}
+            mensaje_final = f"Esto es lo que encontré relacionado:\n{respuesta_legible}\n¿Te sirve o necesitas más ayuda?"
+            fuente_final = "fallback_catalogo_encontrado"
+            botones_finales = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Buscar otra cosa", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
 
-        if es_producto_valido_llm(pregunta):
-            mensaje = f"No pude encontrar '{pregunta}' en nuestro catálogo. Puedes intentar describirlo de otra manera, ver el catálogo completo, o hablar con un agente."
-            return {"respuesta": mensaje, "fuente": "fallback_producto_no_encontrado_especifico", "botones": [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}, {"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]}
+        elif es_producto_valido_llm(pregunta):
+            mensaje_final = f"No pude encontrar '{pregunta}' en nuestro catálogo. Puedes intentar describirlo de otra manera o hablar con un agente."
+            fuente_final = "fallback_producto_no_encontrado_especifico"
+            botones_finales = [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
 
-        sugerencias = sugerencias_por_rubro(rubro)
-        if sugerencias:
-            return {"respuesta": f"{random.choice(sugerencias)} ¿Querés una oferta personalizada o ayuda para comprar?", "fuente": "fallback_sugerencia_rubro", "botones": [{"texto": "Ver ofertas", "action": "ver_ofertas"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]}
+        elif sugerencias_por_rubro(rubro): # Check if list is not empty
+            sugerencias = sugerencias_por_rubro(rubro)
+            mensaje_final = f"{random.choice(sugerencias)} ¿Querés una oferta personalizada o ayuda para comprar?"
+            fuente_final = "fallback_sugerencia_rubro"
+            botones_finales = [{"texto": "Ver ofertas", "action": "ver_ofertas"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
         
-        info_web = (obtener_info_web(user_id, self.context.get("nombre_pyme")) if user_id else {})
-        if info_web:
-            mensaje_info = ", ".join(f"{k.capitalize()}: {v}" for k, v in info_web.items())
-            return {"respuesta": f"Sobre nosotros: {mensaje_info}", "fuente": "fallback_info_web"}
+        elif user_id: # Only try webinfo if there's a user_id context for the Pyme
+            info_web = obtener_info_web(user_id, self.context.get("nombre_pyme"))
+            if info_web:
+                mensaje_info_items = [f"{k.capitalize()}: {v}" for k, v in info_web.items() if v]
+                if mensaje_info_items:
+                    mensaje_final = f"Sobre nosotros: {', '.join(mensaje_info_items)}"
+                    fuente_final = "fallback_info_web"
+                    # Botones podrían ser genéricos o relacionados con la info web si es parseable
+                    botones_finales = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
+
+
+        # Add catalog download info if available
+        download_info = _check_and_get_catalog_download_info(user_id)
+        if download_info["exists"]:
+            mensaje_final += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
+            # No se añaden botones aquí para no sobrecargar el fallback, el link en texto es suficiente.
             
-        return {"respuesta": "No entendí bien tu consulta. ¿Podrías reformularla? También puedes ver el catálogo o hablar con un agente.", "fuente": "fallback_generico_final", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]}
+        return {"respuesta": mensaje_final, "fuente": fuente_final, "botones": botones_finales}
 
 # --- ROUTER PRINCIPAL ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):

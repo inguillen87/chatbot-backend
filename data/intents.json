@@ -345,8 +345,21 @@
     "Fumigación de terrenos baldíos"
   ],
   "respuesta": "Las solicitudes de fumigación se reciben por la web [linkWeb] o llamando al [telefono]. Detallá la ubicación para coordinar el servicio. ¿Querés que te ayude con el trámite?"
+},
+{
+  "categoria": "activar_panico",
+  "ejemplos": [
+    "AYUDA URGENTE",
+    "EMERGENCIA",
+    "SOS",
+    "NECESITO AYUDA INMEDIATA",
+    "PANICO",
+    "BOTON DE PANICO",
+    "PELIGRO",
+    "ESTOY EN PELIGRO"
+  ],
+  "respuesta": "ACTION_ACTIVAR_PANICO"
 }
-
   
 ],
   "comercio_general": [
