@@ -121,6 +121,9 @@ class ConversationState(Enum):
     ESPERANDO_DETALLES_CHECKOUT = auto() # Para pedir dirección, etc.
     ESPERANDO_CONFIRMACION_PEDIDO = auto()
 
+    # Estado para Pánico
+    ESPERANDO_UBICACION_PANICO = auto()
+
 
 # --- Carga del Catálogo de Productos ---
 _PRODUCT_CATALOG_CACHE = None
@@ -605,6 +608,9 @@ class IntentClassifierHandler(BaseMunicipioHandler):
     KEYWORDS_UBICACION_TIENDA = ["ubicación", "dirección", "local", "tienda física", "sucursal", "mapa"]
     KEYWORDS_RECLAMO_PEDIDO = ["pedido mal", "problema compra", "producto roto", "pedido incorrecto"]
 
+    # Keywords para Pánico
+    KEYWORDS_PANICO = ["ayuda urgente", "emergencia", "sos", "necesito ayuda inmediata", "panico", "pánico", "boton de panico", "botón de pánico", "peligro"]
+
 
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
@@ -623,11 +629,26 @@ class IntentClassifierHandler(BaseMunicipioHandler):
                 logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo)")
                 return None
 
+            # Excepción: si el usuario explícitamente activa pánico, eso tiene máxima prioridad.
+            if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO):
+                self.context["intencion"] = "activar_panico"
+                memoria.clear() # Limpiar cualquier estado previo, pánico es absoluto
+                logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo)")
+                return None
+
             self.context["intencion"] = "continuar_flujo"
             logger.info(f"[MUNICIPIO] Intención: continuar_flujo (estado activo: {memoria.get('estado_conversacion')})")
             return None
 
-        # Priorizar "hablar con agente"
+        # Priorizar PÁNICO
+        for kw in self.KEYWORDS_PANICO:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "activar_panico"
+                memoria.clear()
+                logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword '{kw}')")
+                return None
+
+        # Luego, "hablar con agente"
         for kw in self.KEYWORDS_AGENTE:
             if kw in texto_normalizado:
                 self.context["intencion"] = "hablar_con_agente"
@@ -2076,6 +2097,114 @@ class StoreLocationHandler(BaseMunicipioHandler):
 
 # --- Fin Handlers de Ventas ---
 
+# --- Handler de Pánico ---
+class PanicButtonHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "").strip() # Puede ser útil para loguear el trigger inicial
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        intencion = self.context.get("intencion")
+        user_location = self.context.get("ubicacion_usuario")
+
+        if not (intencion == "activar_panico" or estado == ConversationState.ESPERANDO_UBICACION_PANICO):
+            return None
+
+        logger.warning(f"[PANIC_HANDLER] Pánico activado. Intención: {intencion}, Estado: {estado}, Ubicación: {user_location}")
+
+        # Si no tenemos ubicación y no la estamos esperando explícitamente, la pedimos.
+        if not user_location and estado != ConversationState.ESPERANDO_UBICACION_PANICO:
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_UBICACION_PANICO
+            memoria["intencion_pendiente_ubicacion"] = "activar_panico" # Para el callback de ubicación
+            # Guardar el mensaje original que disparó el pánico si es la primera vez.
+            if intencion == "activar_panico": # Solo guardar si es el inicio del flujo de pánico
+                 memoria["mensaje_original_panico"] = pregunta_str
+
+            return {
+                "respuesta": (
+                    "¡EMERGENCIA! Para ayudarte de inmediato, COMPARTÍ TU UBICACIÓN AHORA. Es crucial para enviar ayuda.\n"
+                    "Si no puedes compartirla, intentaremos ayudarte igualmente, pero la ubicación acelera la respuesta."
+                ),
+                "botones": [
+                    {"texto": "🚨 COMPARTIR UBICACIÓN URGENTE", "action": "compartir_ubicacion_urgente"},
+                    {"texto": "No puedo compartir ubicación"} # Usuario puede confirmar pánico sin ubicación
+                ]
+            }
+
+        # Si el usuario presiona "No puedo compartir ubicación" o si ya teníamos la ubicación
+        # o si la ubicación se acaba de recibir (user_location ya estaría en context).
+
+        # Limpiar estados de espera de ubicación si ya la tenemos o si el usuario decidió no compartirla
+        if memoria.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO:
+            memoria.pop("estado_conversacion", None)
+            memoria.pop("intencion_pendiente_ubicacion", None)
+
+        mensaje_original_guardado = memoria.pop("mensaje_original_panico", pregunta_str) # Usar el guardado o el actual
+
+        try:
+            detalles_alerta = f"Botón de pánico activado por el usuario. Mensaje original: '{mensaje_original_guardado}'."
+            if user_location:
+                detalles_alerta += f" Ubicación compartida: Lat {user_location.get('lat')}, Lon {user_location.get('lon')}."
+            else:
+                detalles_alerta += " Ubicación NO compartida por el usuario."
+
+            ticket_data = {
+                "asunto": "¡¡¡ALERTA DE PÁNICO ACTIVADA!!!",
+                "categoria": "Emergencia Pánico", # Categoría bien distintiva
+                "detalles": detalles_alerta,
+                "pregunta": mensaje_original_guardado, # El mensaje que disparó el pánico
+                "estado": "ALERTA_PANICO_ACTIVA", # Un estado específico y urgente
+                "user_id": self.context.get("cliente_id"),
+                "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
+                "latitud": user_location.get("lat") if user_location else None,
+                "longitud": user_location.get("lon") if user_location else None,
+            }
+
+            # Siempre tipo "municipio" para pánico, ya que es un servicio ciudadano.
+            ticket_panico = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="municipio",
+                ticket_data=ticket_data
+            )
+
+            if not ticket_panico:
+                raise Exception("La creación del ticket de pánico retornó None.")
+
+            logger.critical(f"[PANIC_HANDLER] Ticket de pánico M-{ticket_panico.nro_ticket} CREADO. {detalles_alerta}")
+
+            # TODO: Considerar notificación SMS/WhatsApp directa a un número de emergencia configurado,
+            # además del email que enviará `servicio_tickets` al ADMIN_EMAIL.
+            # Ejemplo: enviar_sms_emergencia(numero_emergencia, f"ALERTA PANICO M-{ticket_panico.nro_ticket} en Lat:{lat} Lon:{lon}")
+
+            respuesta_usuario = ""
+            if user_location:
+                respuesta_usuario = (
+                    "Tu ALERTA DE PÁNICO y ubicación han sido ENVIADAS a los servicios de emergencia. "
+                    "La ayuda está en camino. Mantené la calma y seguí las instrucciones de las autoridades si te contactan."
+                )
+            else:
+                respuesta_usuario = (
+                    "Tu ALERTA DE PÁNICO ha sido ENVIADA. No se pudo obtener tu ubicación. "
+                    "Si es posible, informala cuando te contacten. Mantené la calma."
+                )
+
+            # Limpiar contexto sensible o innecesario. No limpiar todo por si hay info de usuario útil.
+            memoria.pop("shopping_cart", None)
+            memoria.pop("last_discussed_product", None)
+            # No limpiar 'estado_conversacion' aquí, ya se hizo o no aplica.
+
+            return {"respuesta": respuesta_usuario}
+
+        except Exception as e:
+            logger.error(f"[PanicButtonHandler] Error crítico al procesar pánico: {e}", exc_info=True)
+            # Mensaje de fallback genérico pero que indique que algo se intentó
+            return {
+                "respuesta": (
+                    "Estamos intentando procesar tu alerta de emergencia. Si estás en peligro inmediato, por favor contacta "
+                    "directamente a los servicios de emergencia locales (ej: 911)."
+                )
+            }
+# --- Fin Handler de Pánico ---
+
 
 class ImpuestosHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
@@ -2791,10 +2920,17 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     elif context.get("es_foto") or context.get("es_ubicacion"):
         logger.info(f"[ADJUNTO] Adjunto detectado: es_foto={context['es_foto']}, es_ubicacion={context['es_ubicacion']}")
         # Si se compartió ubicación específicamente para tiendas
-        if context.get("es_ubicacion") and memoria.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda":
-            if memoria.get("estado_conversacion") == "ESPERANDO_UBICACION_PARA_TIENDAS": # Doble check del estado
-                context["intencion"] = "solicitar_ubicacion_tienda" # Forzar la intención para re-procesar con StoreLocationHandler
+        if context.get("es_ubicacion"):
+            # Callback para ubicación de tiendas
+            if memoria.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda" and \
+               memoria.get("estado_conversacion") == "ESPERANDO_UBICACION_PARA_TIENDAS":
+                context["intencion"] = "solicitar_ubicacion_tienda"
                 logger.info(f"[CONTEXTO] Ubicación recibida para tiendas, re-evaluando con intención: {context['intencion']}")
+            # Callback para ubicación de pánico
+            elif memoria.get("intencion_pendiente_ubicacion") == "activar_panico" and \
+                 memoria.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO: # Check against Enum member
+                context["intencion"] = "activar_panico" # Forzar la intención para re-procesar con PanicButtonHandler
+                logger.info(f"[CONTEXTO] Ubicación URGENTE recibida para PÁNICO, re-evaluando con intención: {context['intencion']}")
 
 
     estado_antes = context["contexto_municipio"].get("estado_conversacion")
@@ -2803,7 +2939,8 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     handler_chain = [
         CancelHandler, 
         PoliteHandler, 
-        SmallTalkHandler, 
+        SmallTalkHandler,
+        PanicButtonHandler, # Added PanicButtonHandler with high priority
         IntentClassifierHandler,
         # Sales Handlers (New)
         ProductCatalogHandler,
