@@ -784,25 +784,42 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
 @token_requerido
 @admin_o_empleado_requerido
 def mapa_de_tickets(current_user: User, tipo: str):
-    """Devuelve los tickets abiertos con latitud y longitud solo para agentes de la empresa/municipio."""
+    """
+    Devuelve los datos de tickets para visualización en mapa (puntos o calor).
+    Los datos se agrupan por ubicación y se cuenta el número de tickets (peso).
+    Permite filtrar por fecha_inicio, fecha_fin y categoria.
+    """
+    fecha_inicio = request.args.get("fecha_inicio")
+    fecha_fin = request.args.get("fecha_fin")
+    categoria = request.args.get("categoria")
+
     if tipo == "municipio":
-        # Solo tickets del municipio del usuario
         if not (
             current_user.rubro
             and current_user.rubro.nombre.lower().strip() == "municipios"
             and hasattr(current_user, "municipio_id")
         ):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
+
         datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
-            tipo,
+            tipo_ticket=tipo,
             municipio_id=current_user.municipio_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            categoria=categoria,
+        )
+    elif tipo == "pyme":
+        if not current_user.rubro_id: # Asumimos que si es pyme, debe tener rubro_id
+            return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
+
+        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
+            tipo_ticket=tipo,
+            rubro_id=current_user.rubro_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            categoria=categoria,
         )
     else:
-        # Solo tickets de su empresa/rubro
-        if not current_user.rubro_id:
-            return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
-        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
-            tipo,
-            rubro_id=current_user.rubro_id,
-        )
+        return jsonify({"error": "Tipo de mapa no válido."}), 400
+
     return jsonify(datos)
