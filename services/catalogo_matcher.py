@@ -5,7 +5,7 @@ import numpy as np
 from models import CatalogoEmbedding 
 from services.cohere_ai import embed_textos # Asumiendo que es la misma función de embedding
 from sklearn.metrics.pairwise import cosine_similarity
-from .utils import limpiar_texto_base, parse_precio_flexible, unir_codigos_alfa_numericos # Importar desde utils
+from .common_utils import limpiar_texto_base, parse_precio_flexible, unir_codigos_alfa_numericos # Importar desde common_utils
 
 logger = logging.getLogger(__name__)
 

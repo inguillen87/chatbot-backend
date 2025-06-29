@@ -9,7 +9,7 @@ from services.logic import es_rubro_publico
 # from collections import Counter # Ya está importado arriba
 from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
-from .utils import limpiar_texto_base, unir_codigos_alfa_numericos
+from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.

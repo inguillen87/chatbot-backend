@@ -4,7 +4,7 @@ import logging
 import os
 from typing import List, Dict, Any
 
-from .utils import limpiar_texto_base, crear_mapa_de_columnas_inteligente, KEYWORD_MAP
+from .common_utils import limpiar_texto_base, crear_mapa_de_columnas_inteligente, KEYWORD_MAP, parse_unidad_y_cantidad_empaque
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
             registro_actual[campo_estandar] = valor_celda
 
             if campo_estandar == 'unidad':
-                from .utils import parse_unidad_y_cantidad_empaque # Import locally for clarity
+                # parse_unidad_y_cantidad_empaque is now imported from .common_utils at the top
                 unidad_desc_parsed, cantidad_emp_parsed = parse_unidad_y_cantidad_empaque(valor_celda)
                 registro_actual['unidad_parsed'] = unidad_desc_parsed
                 registro_actual['cantidad_empaque'] = cantidad_emp_parsed
