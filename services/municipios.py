@@ -113,6 +113,54 @@ class ConversationState(Enum):
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
     ESPERANDO_TEXTO_SUGERENCIA = auto() # Nuevo estado para sugerencias
 
+    # Estados para Ventas y Carrito
+    ESPERANDO_PRODUCTO_PARA_CONSULTA = auto()
+    MOSTRANDO_PRODUCTOS = auto()
+    ESPERANDO_CONFIRMACION_AGREGAR_CARRITO = auto()
+    ESPERANDO_OPCION_CARRITO = auto()
+    ESPERANDO_DETALLES_CHECKOUT = auto() # Para pedir dirección, etc.
+    ESPERANDO_CONFIRMACION_PEDIDO = auto()
+
+
+# --- Carga del Catálogo de Productos ---
+_PRODUCT_CATALOG_CACHE = None
+
+def cargar_catalogo_productos():
+    """Carga el catálogo de productos desde el JSON."""
+    global _PRODUCT_CATALOG_CACHE
+    if _PRODUCT_CATALOG_CACHE is None:
+        try:
+            catalog_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "product_catalog.json")
+            with open(catalog_file_path, "r", encoding="utf-8") as f:
+                _PRODUCT_CATALOG_CACHE = json.load(f)
+            logger.info(f"✅ Catálogo de productos cargado desde {catalog_file_path}")
+        except Exception as e:
+            logger.error(f"❌ No se pudo cargar product_catalog.json: {e}", exc_info=True)
+            _PRODUCT_CATALOG_CACHE = [] # Devolver lista vacía en caso de error
+    return _PRODUCT_CATALOG_CACHE
+
+PRODUCT_CATALOG = cargar_catalogo_productos()
+# --------------------------------------
+
+# --- Carga de Ubicaciones de Comercios ---
+_COMMERCE_LOCATIONS_CACHE = None
+
+def cargar_ubicaciones_comercios():
+    """Carga las ubicaciones de los comercios desde el JSON."""
+    global _COMMERCE_LOCATIONS_CACHE
+    if _COMMERCE_LOCATIONS_CACHE is None:
+        try:
+            loc_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "commerce_locations.json")
+            with open(loc_file_path, "r", encoding="utf-8") as f:
+                _COMMERCE_LOCATIONS_CACHE = json.load(f)
+            logger.info(f"✅ Ubicaciones de comercios cargadas desde {loc_file_path}")
+        except Exception as e:
+            logger.error(f"❌ No se pudo cargar commerce_locations.json: {e}", exc_info=True)
+            _COMMERCE_LOCATIONS_CACHE = []
+    return _COMMERCE_LOCATIONS_CACHE
+
+COMMERCE_LOCATIONS = cargar_ubicaciones_comercios()
+# -----------------------------------------
 
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     """
@@ -311,6 +359,88 @@ class GreetingHandler(BaseMunicipioHandler):
                 break
         return None
 
+class SugerenciasVecinoHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "").strip()
+        memoria = self.context.get("contexto_municipio", {})
+        estado_conversacion = memoria.get("estado_conversacion")
+        intencion = self.context.get("intencion")
+        sugerencia_texto_directo = ""
+
+        if intencion == "hacer_sugerencia":
+            # Intentar extraer el texto de la sugerencia si vino junto con la intención
+            # (ej: "sugiero que pongan más bancos")
+            # Simple heurística: si la pregunta es más larga que la palabra clave "sugerencia" + algo de margen.
+            palabras_clave_sugerencia = ["sugerencia", "sugerencias", "idea", "propuesta", "proponer", "mejorar"]
+            texto_limpio_de_keywords = pregunta_str
+            for kw in palabras_clave_sugerencia:
+                if texto_limpio_de_keywords.lower().startswith(kw):
+                    texto_limpio_de_keywords = texto_limpio_de_keywords[len(kw):].strip()
+
+            if texto_limpio_de_keywords and len(texto_limpio_de_keywords) > 5: # Tiene que haber algo de sustancia
+                sugerencia_texto_directo = texto_limpio_de_keywords
+
+            if not sugerencia_texto_directo and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA:
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA
+                return {
+                    "respuesta": "¡Genial! Nos interesa mucho tu opinión. Por favor, contanos tu sugerencia o idea para mejorar:",
+                    "botones": [{"texto": "Cancelar sugerencia"}]
+                }
+
+        if estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA or sugerencia_texto_directo:
+            sugerencia_final = sugerencia_texto_directo if sugerencia_texto_directo else pregunta_str
+
+            if not sugerencia_final or len(sugerencia_final) < 5: # Validación mínima
+                return {
+                    "respuesta": "Por favor, ingresá el texto de tu sugerencia. Tiene que ser un poco más descriptiva para que podamos entenderla bien.",
+                    "botones": [{"texto": "Cancelar sugerencia"}]
+                }
+
+            try:
+                ticket_data = {
+                    "asunto": "Nueva Sugerencia/Mejora del Vecino",
+                    "categoria": "Sugerencia",
+                    "detalles": sugerencia_final,
+                    "pregunta": sugerencia_final,
+                    "estado": "nueva_sugerencia",
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                    "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None)
+                }
+
+                tipo_ticket_para_sugerencia = "municipio" # Default
+                # Podría ajustarse según el 'rubro_obj' si este handler se vuelve más genérico
+                # if hasattr(self.context.get("rubro_obj"), "id"):
+                # tipo_ticket_para_sugerencia = "pyme"
+
+                ticket = servicio_tickets.crear_nuevo_ticket(
+                    tipo_ticket=tipo_ticket_para_sugerencia,
+                    ticket_data=ticket_data
+                )
+
+                if ticket:
+                    nro_ticket_str = f"M-{ticket.nro_ticket}" if tipo_ticket_para_sugerencia == "municipio" else str(ticket.nro_ticket)
+                    logger.info(f"Sugerencia registrada como ticket {nro_ticket_str}.")
+                    memoria.clear()
+                    return {
+                        "respuesta": (
+                            "¡Muchas gracias por tu sugerencia! La hemos registrado y será revisada por nuestro equipo. "
+                            f"Tu número de registro es {nro_ticket_str}. Valoramos mucho tu aporte."
+                        ),
+                        "botones": [
+                            {"texto": "Hacer otra consulta"},
+                            {"texto": "Volver al inicio"}
+                        ]
+                    }
+                else:
+                    raise Exception("La creación del ticket de sugerencia retornó None.")
+
+            except Exception as e:
+                logger.error(f"[SugerenciasVecinoHandler] Error al guardar sugerencia como ticket: {e}", exc_info=True)
+                return {
+                    "respuesta": "Hubo un problema al registrar tu sugerencia. Por favor, intentá de nuevo en un momento."
+                }
+        return None
 
 class CancelHandler(BaseMunicipioHandler):
     """Permite cancelar el flujo actual si el usuario lo solicita."""
@@ -468,53 +598,96 @@ class IntentClassifierHandler(BaseMunicipioHandler):
     KEYWORDS_TICKET_STATUS = ["ticket", "estado", "seguimiento", "número de ticket"]
     KEYWORDS_SUGERENCIA = ["sugerencia", "sugerencias", "idea", "propuesta", "proponer", "mejorar"]
 
+    # Keywords para ventas y comercio
+    KEYWORDS_INICIAR_COMPRA = ["comprar", "compra", "pedido", "productos", "catálogo", "catalogo", "tienda", "venden"]
+    KEYWORDS_VER_CARRITO = ["carrito", "bolsa", "mi compra", "mi pedido"]
+    KEYWORDS_PAGAR = ["pagar", "checkout", "finalizar compra", "cobrar"]
+    KEYWORDS_UBICACION_TIENDA = ["ubicación", "dirección", "local", "tienda física", "sucursal", "mapa"]
+    KEYWORDS_RECLAMO_PEDIDO = ["pedido mal", "problema compra", "producto roto", "pedido incorrecto"]
+
 
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
         logger.info(f"[INTENT] Analizando intención para: {pregunta_str}")
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context.get("contexto_municipio", {}) # Usaremos el mismo contexto por ahora
         texto_normalizado = normalizar_texto(pregunta_str)
-        tokens = texto_normalizado.split()
+        # tokens = texto_normalizado.split() # No se usa tokens directamente, se usa 'in'
 
-        # Si ya hay un estado de conversación activo (ej: esperando una dirección para un reclamo),
-        # no re-clasificamos la intención principal con keywords, porque el LLM ya lo hará si aplica.
+        # Si ya hay un estado de conversación activo, no re-clasificamos la intención principal con keywords.
         if memoria.get("estado_conversacion"):
+            # Excepción: si el usuario explícitamente quiere hablar con un agente, eso tiene prioridad.
+            if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE):
+                self.context["intencion"] = "hablar_con_agente"
+                memoria.clear()
+                logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo)")
+                return None
+
             self.context["intencion"] = "continuar_flujo"
-            logger.info(f"[MUNICIPIO] Intención: continuar_flujo (estado activo)")
+            logger.info(f"[MUNICIPIO] Intención: continuar_flujo (estado activo: {memoria.get('estado_conversacion')})")
             return None
 
         # Priorizar "hablar con agente"
         for kw in self.KEYWORDS_AGENTE:
             if kw in texto_normalizado:
                 self.context["intencion"] = "hablar_con_agente"
-                memoria.clear() # Limpiar memoria si el usuario quiere hablar con agente
+                memoria.clear()
                 logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword '{kw}')")
                 return None
 
-        # Priorizar "consultar estado de ticket"
+        # Nuevas intenciones de comercio
+        for kw in self.KEYWORDS_INICIAR_COMPRA:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "iniciar_compra"
+                logger.info(f"[COMERCIO] Intención: iniciar_compra (por keyword '{kw}')")
+                return None
+
+        for kw in self.KEYWORDS_VER_CARRITO:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "ver_carrito"
+                logger.info(f"[COMERCIO] Intención: ver_carrito (por keyword '{kw}')")
+                return None
+
+        for kw in self.KEYWORDS_PAGAR:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "proceder_al_pago"
+                logger.info(f"[COMERCIO] Intención: proceder_al_pago (por keyword '{kw}')")
+                return None
+
+        for kw in self.KEYWORDS_UBICACION_TIENDA:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "solicitar_ubicacion_tienda"
+                logger.info(f"[COMERCIO] Intención: solicitar_ubicacion_tienda (por keyword '{kw}')")
+                return None
+
+        for kw in self.KEYWORDS_RECLAMO_PEDIDO:
+            if kw in texto_normalizado:
+                self.context["intencion"] = "reclamo_pedido"
+                logger.info(f"[COMERCIO] Intención: reclamo_pedido (por keyword '{kw}')")
+                return None
+
+        # (La intención "consultar_producto" y "agregar_al_carrito" son más difíciles de capturar solo con keywords
+        # ya que dependen mucho del contexto o de entidades. Se manejarán mejor con LLM o lógica de estado)
+
+        # Intenciones existentes de municipio
         for kw in self.KEYWORDS_TICKET_STATUS:
             if kw in texto_normalizado:
                 self.context["intencion"] = "consultar_estado_ticket"
                 logger.info(f"[MUNICIPIO] Intención: consultar_estado_ticket (por keyword '{kw}')")
                 return None
 
-
-        # Luego, reclamo
-        for kw in self.KEYWORDS_RECLAMO:
+        for kw in self.KEYWORDS_RECLAMO: # Reclamo general municipal
             if kw in texto_normalizado:
                 self.context["intencion"] = "iniciar_reclamo"
                 logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por palabra clave '{kw}')")
                 return None
 
-        # Luego, trámite
         for kw in self.KEYWORDS_TRAMITE:
             if kw in texto_normalizado:
                 self.context["intencion"] = "consultar_tramite"
                 logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por palabra clave '{kw}')")
                 return None
 
-        # Luego, sugerencia
         for kw in self.KEYWORDS_SUGERENCIA:
             if kw in texto_normalizado:
                 self.context["intencion"] = "hacer_sugerencia"
@@ -522,6 +695,8 @@ class IntentClassifierHandler(BaseMunicipioHandler):
                 return None
 
         # Finalmente, clasificación con LLM si no hubo match con keywords y no hay estado activo
+        # Aquí se podría pasar un contexto de "rubro" al LLM si el bot maneja múltiples rubros (ej: municipio vs comercio)
+        # Por ahora, se asume que _clasificar_intencion_con_llm puede manejarlo o se adaptará.
         intencion_llm = _clasificar_intencion_con_llm(pregunta_str)
         self.context["intencion"] = intencion_llm
 
@@ -1280,6 +1455,627 @@ class TramitesHandler(BaseMunicipioHandler):
 
         return None
 
+# --- Handlers de Ventas ---
+class ProductCatalogHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "").strip()
+        memoria = self.context.get("contexto_municipio", {})
+        intencion = self.context.get("intencion")
+
+        if intencion != "iniciar_compra":
+            return None
+
+        if not PRODUCT_CATALOG:
+            memoria.clear()
+            return {"respuesta": "Lo sentimos, nuestro catálogo de productos no está disponible en este momento."}
+
+        # Obtener categorías únicas
+        categories = sorted(list(set(p.get("category", "Otros") for p in PRODUCT_CATALOG)))
+
+        botones_categorias = []
+        for cat in categories:
+            botones_categorias.append({"texto": cat})
+
+        respuesta_texto = "¡Excelente! Tenemos varios productos que podrían interesarte. ¿Qué tipo de producto estás buscando? Aquí tienes nuestras categorías:"
+
+        # Podríamos mostrar algunos productos destacados también
+        # destacados = [p['name'] for p in PRODUCT_CATALOG if p.get('featured')] # Asumiendo un campo 'featured'
+        # if destacados:
+        # respuesta_texto += "\nAlgunos destacados: " + ", ".join(destacados[:3])
+
+        memoria["estado_conversacion"] = ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA
+        memoria.pop("last_found_products", None)
+        memoria.pop("last_discussed_product", None)
+
+        return {
+            "respuesta": respuesta_texto,
+            "botones": botones_categorias
+        }
+
+class ProductInquiryHandler(BaseMunicipioHandler):
+    def _buscar_productos(self, texto_busqueda: str) -> list:
+        if not texto_busqueda:
+            return []
+
+        texto_busqueda_norm = normalizar_texto(texto_busqueda)
+        palabras_busqueda = set(texto_busqueda_norm.split())
+
+        productos_encontrados = []
+        for prod in PRODUCT_CATALOG:
+            nombre_norm = normalizar_texto(prod.get("name", ""))
+            desc_norm = normalizar_texto(prod.get("description", ""))
+            cat_norm = normalizar_texto(prod.get("category", ""))
+
+            # Prioridad 1: Coincidencia exacta o casi exacta en nombre
+            if texto_busqueda_norm in nombre_norm:
+                productos_encontrados.append({"producto": prod, "score": 10})
+                continue
+
+            # Prioridad 2: Todas las palabras de búsqueda en el nombre
+            if palabras_busqueda.issubset(nombre_norm.split()):
+                productos_encontrados.append({"producto": prod, "score": 8})
+                continue
+
+            # Prioridad 3: Palabras de búsqueda en categoría + nombre/descripción
+            score = 0
+            if any(palabra in cat_norm for palabra in palabras_busqueda):
+                score +=3
+
+            palabras_en_nombre = sum(1 for palabra in palabras_busqueda if palabra in nombre_norm)
+            palabras_en_desc = sum(1 for palabra in palabras_busqueda if palabra in desc_norm)
+
+            score += palabras_en_nombre * 2 # Más peso a las palabras en el nombre
+            score += palabras_en_desc * 1
+
+            if score > 2: # Umbral mínimo para considerar relevante
+                 productos_encontrados.append({"producto": prod, "score": score})
+
+        # Ordenar por score descendente
+        productos_encontrados.sort(key=lambda x: x["score"], reverse=True)
+
+        # Devolver solo los productos, no el score, y eliminar duplicados por ID
+        # Y aplicar un filtro final de score si es necesario
+        final_list_with_scores = []
+        seen_ids = set()
+        for item in productos_encontrados:
+            if item["producto"]["id"] not in seen_ids:
+                # Podríamos aplicar un umbral de score mínimo aquí si es necesario
+                # if item["score"] > MIN_RELEVANCE_SCORE:
+                final_list_with_scores.append(item)
+                seen_ids.add(item["producto"]["id"])
+
+        # Si no hay coincidencias fuertes, intentar fuzzy matching como último recurso
+        # Esto es más útil si las palabras clave no dieron buenos resultados o para typos.
+        if not final_list_with_scores or final_list_with_scores[0]["score"] < 5: # Si el mejor score es bajo
+            all_product_names = {prod.get("id"): normalizar_texto(prod.get("name", "")) for prod in PRODUCT_CATALOG}
+            # Usar texto_busqueda_norm que es la pregunta del usuario normalizada
+            fuzzy_matches_names = difflib.get_close_matches(texto_busqueda_norm, all_product_names.values(), n=3, cutoff=0.7) # cutoff más alto para más precisión
+
+            if fuzzy_matches_names:
+                logger.info(f"[ProductInquiryHandler] Fuzzy matches encontrados: {fuzzy_matches_names}")
+                for name_match in fuzzy_matches_names:
+                    for prod_id, norm_name in all_product_names.items():
+                        if norm_name == name_match:
+                            # Encontrar el producto original
+                            original_prod = next((p for p in PRODUCT_CATALOG if p["id"] == prod_id), None)
+                            if original_prod and original_prod["id"] not in seen_ids:
+                                # Añadir con un score indicativo de fuzzy match, o simplemente añadirlo
+                                # Damos un score más bajo para que no supere a los keyword matches fuertes si los hubo
+                                final_list_with_scores.append({"producto": original_prod, "score": 2})
+                                seen_ids.add(original_prod["id"])
+                                break # Pasar al siguiente nombre de fuzzy_match
+
+        # Re-ordenar por si se añadieron fuzzy matches y para asegurar unicidad final
+        final_list_with_scores.sort(key=lambda x: x["score"], reverse=True)
+
+        # Extraer solo los productos finales
+        final_products_list = []
+        final_seen_ids = set()
+        for item in final_list_with_scores:
+            if item["producto"]["id"] not in final_seen_ids:
+                final_products_list.append(item["producto"])
+                final_seen_ids.add(item["producto"]["id"])
+
+        return final_products_list
+
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "").strip()
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        intencion = self.context.get("intencion")
+
+        # Si el usuario seleccionó una categoría del ProductCatalogHandler
+        # o si la intención es consultar_producto
+        if not (estado == ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA or \
+                (intencion == "consultar_producto" and estado != ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO) ):
+            return None
+
+        if not PRODUCT_CATALOG:
+             return {"respuesta": "Nuestro catálogo de productos no está disponible en este momento. Intenta más tarde, por favor."}
+
+        logger.info(f"[ProductInquiryHandler] Procesando consulta de producto: '{pregunta_str}'")
+
+        # --- Placeholder para NLU avanzada con LLM para extraer entidades ---
+        # Ejemplo de cómo se podría integrar:
+        # if _deberia_usar_llm_para_entidades(pregunta_str): # Función heurística para decidir si usar LLM
+        #     extracted_entities = _extract_product_entities_with_llm(pregunta_str, PRODUCT_CATALOG)
+        #     if extracted_entities:
+        #         # Lógica para manejar múltiples productos extraídos, cantidades, etc.
+        #         # Esto podría implicar agregar varios al carrito o pedir confirmación para cada uno.
+        #         # Por ahora, este es un punto de extensión.
+        #         logger.info(f"[ProductInquiryHandler] Entidades extraídas por LLM: {extracted_entities}")
+        #         # Ejemplo simplificado: si extrajo un solo producto y quiere agregarlo
+        #         if len(extracted_entities) == 1 and extracted_entities[0].get('accion') == 'agregar':
+        #                # ... buscar producto en catálogo, si existe y hay stock ...
+        #                # memoria['last_discussed_product'] = found_product_from_llm
+        #                # return CartHandler(self.context).handle(payload_con_producto_y_accion_agregar)
+        #                pass # No implementado completamente aquí
+
+        # Continuar con la búsqueda basada en keywords/fuzzy si LLM no se usó o no dio resultado concluyente.
+        productos = self._buscar_productos(pregunta_str)
+
+        memoria.pop("last_discussed_product", None) # Limpiar producto anterior
+
+        if not productos:
+            # Si la búsqueda por nombre/descripción no da nada, intentar buscar por categoría si la pregunta es solo una categoría
+            # (esto ya estaba, se mantiene)
+            categoria_match = next((cat for cat in set(p.get("category") for p in PRODUCT_CATALOG) if normalizar_texto(pregunta_str) == normalizar_texto(cat)), None)
+            if categoria_match:
+                productos_categoria = [p for p in PRODUCT_CATALOG if p.get("category") == categoria_match]
+                if productos_categoria:
+                    memoria["last_found_products"] = productos_categoria
+                    memoria["estado_conversacion"] = ConversationState.MOSTRANDO_PRODUCTOS
+                    nombres_productos = [f"{p['name']} (${p['price']:.2f})" for p in productos_categoria[:5]] # Mostrar hasta 5
+                    respuesta_str = f"Encontré estos productos en la categoría '{categoria_match}':\n" + "\n".join(f"- {nombre}" for nombre in nombres_productos)
+                    if len(productos_categoria) > 5:
+                        respuesta_str += f"\n... y {len(productos_categoria) - 5} más."
+                    respuesta_str += "\n¿Te interesa alguno en particular?"
+                    return {"respuesta": respuesta_str, "botones": [{"texto": p['name']} for p in productos_categoria[:3]]} # Botones para los primeros 3
+
+            return {
+                "respuesta": "No encontré productos que coincidan con tu búsqueda. ¿Querés intentar con otras palabras o ver nuestras categorías?",
+                "botones": [{"texto": "Ver categorías"}, {"texto": "Cancelar compra"}]
+            }
+
+        if len(productos) == 1:
+            prod = productos[0]
+            memoria["last_discussed_product"] = prod
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO
+            respuesta = (
+                f"Encontré esto: **{prod['name']}**\n"
+                f"{prod['description']}\nPrecio: ${prod['price']:.2f}\n"
+                f"¿Te gustaría agregarlo al carrito?"
+            )
+            return {
+                "respuesta": respuesta,
+                "botones": [
+                    {"texto": "Sí, agregar al carrito"},
+                    {"texto": "No, gracias"},
+                    {"texto": "Buscar otro producto"}
+                ]
+            }
+        else: # Múltiples productos encontrados
+            memoria["last_found_products"] = productos
+            memoria["estado_conversacion"] = ConversationState.MOSTRANDO_PRODUCTOS
+
+            nombres_productos = [f"{p['name']} (${p['price']:.2f})" for p in productos[:5]] # Mostrar hasta 5
+            respuesta_str = "Encontré varios productos que podrían interesarte:\n" + "\n".join(f"- {nombre}" for nombre in nombres_productos)
+            if len(productos) > 5:
+                respuesta_str += f"\n... y {len(productos) - 5} más."
+            respuesta_str += "\n¿Cuál de estos te interesa? O puedes refinar tu búsqueda."
+
+            botones = [{"texto": p['name']} for p in productos[:3]] # Botones para los primeros 3
+            botones.append({"texto": "Buscar de nuevo"})
+            return {
+                "respuesta": respuesta_str,
+                "botones": botones
+            }
+
+class CartHandler(BaseMunicipioHandler):
+    def _initialize_cart(self, memoria: dict):
+        memoria.setdefault('shopping_cart', [])
+
+    def _add_to_cart(self, memoria: dict, product_to_add: dict, quantity: int = 1) -> bool:
+        self._initialize_cart(memoria)
+        cart = memoria['shopping_cart']
+
+        # Check stock (basic)
+        if product_to_add.get('stock', float('inf')) < quantity:
+            return False # Not enough stock
+
+        for item in cart:
+            if item['id'] == product_to_add['id']:
+                item['quantity'] += quantity
+                # item['stock'] -= quantity # Deduct stock if managing here
+                return True
+
+        cart.append({
+            'id': product_to_add['id'],
+            'name': product_to_add['name'],
+            'price': product_to_add['price'],
+            'quantity': quantity,
+            # 'stock': product_to_add.get('stock', float('inf')) - quantity
+        })
+        return True
+
+    def _remove_from_cart(self, memoria: dict, product_id_to_remove: str) -> bool:
+        self._initialize_cart(memoria)
+        cart = memoria['shopping_cart']
+        original_length = len(cart)
+        memoria['shopping_cart'] = [item for item in cart if item['id'] != product_id_to_remove]
+        return len(memoria['shopping_cart']) < original_length
+
+    def _format_cart_view(self, memoria: dict) -> str:
+        self._initialize_cart(memoria)
+        cart = memoria['shopping_cart']
+        if not cart:
+            return "Tu carrito de compras está vacío."
+
+        respuesta = "🛒 **Tu Carrito de Compras:**\n"
+        total_general = 0.0
+        for i, item in enumerate(cart):
+            subtotal = item['price'] * item['quantity']
+            respuesta += f"{i+1}. **{item['name']}**\n"
+            respuesta += f"   Cantidad: {item['quantity']} x ${item['price']:.2f} c/u = ${subtotal:.2f}\n"
+            total_general += subtotal
+
+        respuesta += f"\n✨ **Total General: ${total_general:.2f}**"
+        memoria['last_cart_total'] = total_general # Guardar para posible checkout
+        return respuesta
+
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "").strip()
+        action = payload.get("action", normalizar_texto(pregunta_str)) # Considerar acción de botón
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        intencion = self.context.get("intencion")
+
+        self._initialize_cart(memoria)
+
+        # --- AGREGAR AL CARRITO ---
+        if (intencion == "agregar_al_carrito" or \
+            (estado == ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO and \
+             any(kw in action for kw in ["si", "sí", "agregar", "dale", "quiero"]))):
+
+            product_to_add = memoria.get("last_discussed_product")
+            if not product_to_add:
+                return {"respuesta": "No estoy seguro de qué producto querés agregar. ¿Podrías mostrarme de nuevo?"}
+
+            if self._add_to_cart(memoria, product_to_add):
+                memoria.pop("last_discussed_product", None)
+                memoria.pop("last_found_products", None)
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_OPCION_CARRITO
+
+                cart_summary = self._format_cart_view(memoria)
+                num_items = sum(item['quantity'] for item in memoria['shopping_cart'])
+
+                return {
+                    "respuesta": f"✅ ¡{product_to_add['name']} agregado al carrito!\n\n{cart_summary}",
+                    "botones": [
+                        {"texto": "Seguir comprando"},
+                        {"texto": "Finalizar Compra"},
+                        {"texto": "Quitar un producto"}
+                    ]
+                }
+            else: # Sin stock
+                 return {
+                    "respuesta": f"Lo siento, parece que no tenemos suficiente stock de {product_to_add['name']} en este momento.",
+                    "botones": [{"texto": "Buscar otro producto"}, {"texto": "Ver carrito"}]
+                }
+
+        if estado == ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO and \
+           any(kw in action for kw in ["no", "cancelar"]):
+            memoria.pop("last_discussed_product", None)
+            memoria.pop("estado_conversacion", None) # Volver al estado neutro o MOSTRANDO_PRODUCTOS si venía de ahí
+            return {"respuesta": "Entendido. ¿Querés buscar otro producto o ver nuestras categorías?", "botones": [{"texto":"Buscar otro producto"}, {"texto": "Ver categorías"}]}
+
+
+        # --- VER CARRITO ---
+        if intencion == "ver_carrito" or action == "ver carrito":
+            cart_view = self._format_cart_view(memoria)
+            botones = []
+            if memoria['shopping_cart']: # Solo mostrar botones de acción si hay algo en el carrito
+                 botones = [
+                    {"texto": "Finalizar Compra"},
+                    {"texto": "Seguir comprando"},
+                    {"texto": "Quitar un producto"}
+                ]
+            else:
+                botones = [{"texto": "Ver productos"}]
+
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_OPCION_CARRITO if memoria['shopping_cart'] else None
+            return {
+                "respuesta": cart_view,
+                "botones": botones
+            }
+
+        # --- QUITAR DEL CARRITO (Básico) ---
+        if intencion == "eliminar_del_carrito" or \
+           (estado == ConversationState.ESPERANDO_OPCION_CARRITO and "quitar" in action):
+
+            if not memoria['shopping_cart']:
+                return {"respuesta": "Tu carrito ya está vacío.", "botones": [{"texto": "Ver productos"}]}
+
+            # Por ahora, una forma simple: quitar el último agregado o preguntar cuál.
+            # Para una mejor UX, se necesitaría identificar el producto a quitar por nombre o índice.
+            # Esta es una simplificación para el primer paso.
+
+            # Ejemplo: si el usuario dice "quitar Malbec Clásico"
+            producto_a_quitar_nombre = None
+            if "quitar" in pregunta_str: # Asume formato "quitar NOMBRE_PRODUCTO"
+                partes = pregunta_str.split("quitar", 1)
+                if len(partes) > 1 and partes[1].strip():
+                    producto_a_quitar_nombre = normalizar_texto(partes[1].strip())
+
+            if producto_a_quitar_nombre:
+                item_id_to_remove = None
+                for item in memoria['shopping_cart']:
+                    if normalizar_texto(item['name']) == producto_a_quitar_nombre:
+                        item_id_to_remove = item['id']
+                        break
+                if item_id_to_remove:
+                    self._remove_from_cart(memoria, item_id_to_remove)
+                    cart_view = self._format_cart_view(memoria)
+                    respuesta_msg = f"'{producto_a_quitar_nombre.title()}' eliminado del carrito.\n\n{cart_view}"
+                    if not memoria['shopping_cart']: memoria.pop("estado_conversacion", None)
+                    return {"respuesta": respuesta_msg, "botones": [{"texto": "Seguir comprando"}, {"texto": "Finalizar Compra"}]}
+                else:
+                    return {"respuesta": f"No encontré '{producto_a_quitar_nombre.title()}' en tu carrito. ¿Querés ver el carrito para verificar?", "botones": [{"texto":"Ver carrito"}]}
+            else: # No se especificó producto, o no se pudo extraer. Pedir que elija.
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_OPCION_CARRITO # O un nuevo estado ESPERANDO_PRODUCTO_A_QUITAR
+                botones_productos_carrito = [{"texto": f"Quitar: {item['name']}"} for item in memoria['shopping_cart'][:3]] # Mostrar hasta 3 para quitar
+                return {
+                    "respuesta": "OK. ¿Qué producto te gustaría quitar de tu carrito?",
+                    "botones": botones_productos_carrito + [{"texto": "Ver carrito completo"}, {"texto": "Cancelar"}]
+                }
+
+        # Si la acción es quitar un producto específico (ej: por botón "Quitar: Malbec Clásico")
+        if action.startswith("quitar:"):
+            nombre_a_quitar = action.split("quitar:", 1)[1].strip()
+            item_id_to_remove = None
+            for item in memoria['shopping_cart']:
+                if item['name'] == nombre_a_quitar: # Comparación exacta por nombre del botón
+                    item_id_to_remove = item['id']
+                    break
+            if item_id_to_remove:
+                self._remove_from_cart(memoria, item_id_to_remove)
+                cart_view = self._format_cart_view(memoria)
+                respuesta_msg = f"'{nombre_a_quitar}' eliminado del carrito.\n\n{cart_view}"
+                if not memoria['shopping_cart']: memoria.pop("estado_conversacion", None)
+                return {"respuesta": respuesta_msg, "botones": [{"texto": "Seguir comprando"}, {"texto": "Finalizar Compra"}]}
+
+
+        # --- SEGUIR COMPRANDO (desde el carrito) ---
+        if estado == ConversationState.ESPERANDO_OPCION_CARRITO and "seguir comprando" in action:
+            memoria.pop("estado_conversacion", None) # Limpiar estado para que pueda buscar productos
+            # Re-llamar a ProductCatalogHandler o similar para mostrar opciones de compra
+            return ProductCatalogHandler(self.context).handle({"pregunta": "ver productos", "action":"ver productos", "intencion": "iniciar_compra"})
+
+
+        return None
+
+class CheckoutHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "").strip()
+        action = payload.get("action", normalizar_texto(pregunta_str))
+        memoria = self.context.get("contexto_municipio", {})
+        estado = memoria.get("estado_conversacion")
+        intencion = self.context.get("intencion")
+
+        cart_handler_instance = CartHandler(self.context) # Para reutilizar _format_cart_view
+
+        # --- INICIAR CHECKOUT ---
+        if intencion == "proceder_al_pago" or \
+           (estado == ConversationState.ESPERANDO_OPCION_CARRITO and "finalizar compra" in action):
+
+            cart_handler_instance._initialize_cart(memoria) # Asegurar que el carrito existe
+            if not memoria.get('shopping_cart'):
+                return {
+                    "respuesta": "Tu carrito está vacío. ¿Querés ver nuestros productos para agregar algo?",
+                    "botones": [{"texto": "Ver productos"}]
+                }
+
+            cart_view = cart_handler_instance._format_cart_view(memoria)
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_PEDIDO
+            return {
+                "respuesta": f"Estás por finalizar tu compra. Por favor, revisá tu pedido:\n\n{cart_view}\n\n¿Confirmás este pedido?",
+                "botones": [
+                    {"texto": "Sí, confirmar pedido"},
+                    {"texto": "Modificar carrito"},
+                    {"texto": "Cancelar"}
+                ]
+            }
+
+        # --- CONFIRMAR PEDIDO ---
+        if estado == ConversationState.ESPERANDO_CONFIRMACION_PEDIDO:
+            if any(kw in action for kw in ["si", "sí", "confirmar", "confirmar pedido"]):
+                cart_handler_instance._initialize_cart(memoria) # Asegurar que el carrito existe
+                shopping_cart = memoria.get('shopping_cart', [])
+                if not shopping_cart: # Doble chequeo por si acaso
+                    memoria.clear() # Limpiar por si hubo error
+                    return {"respuesta": "Parece que tu carrito está vacío. Volvamos a empezar.", "botones": [{"texto": "Ver productos"}]}
+
+                # Crear el ticket de pedido
+                try:
+                    user_name = getattr(self.context.get("user_obj"), "nombre", "Cliente Chat") or \
+                                getattr(self.context.get("viewer_user"), "nombre", "Cliente Chat")
+
+                    # Formatear detalles del pedido para el ticket
+                    detalles_pedido_str = "Productos:\n"
+                    for item in shopping_cart:
+                        detalles_pedido_str += f"- {item['name']} (x{item['quantity']}) - ${item['price']:.2f} c/u\n"
+                    detalles_pedido_str += f"\nTotal: ${memoria.get('last_cart_total', 0.0):.2f}"
+
+                    # (Opcional) Recopilar más info como dirección de envío aquí si es necesario,
+                    # por ahora se simplifica y se asume que se coordina post-confirmación.
+
+                    ticket_data = {
+                        "asunto": f"Nuevo Pedido Web/Chat - {user_name}",
+                        "categoria": "Pedido Online",
+                        "detalles": detalles_pedido_str,
+                        "pregunta": f"Pedido confirmado por {user_name}.", # O un resumen
+                        "estado": "pedido_confirmado", # O "pendiente_procesamiento"
+                        "user_id": self.context.get("cliente_id"),
+                        "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                        "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
+                        # Podríamos añadir campos específicos para pedidos si el modelo Ticket lo permite
+                        # ej: 'datos_pedido_json': json.dumps(shopping_cart)
+                    }
+
+                    # Asumimos tipo "pyme" para pedidos, o hacerlo configurable
+                    # Si el bot es solo para una tienda, "pyme" tiene sentido.
+                    # Si es un bot multipropósito (municipio y ventas), esto necesita más lógica.
+                    # Por ahora, si 'rubro_obj' existe y tiene un 'id', lo usamos para PymeTicket. Sino, MunicipioTicket.
+                    tipo_ticket_pedido = "pyme" if hasattr(self.context.get("rubro_obj"), "id") else "municipio"
+
+
+                    pedido_ticket = servicio_tickets.crear_nuevo_ticket(
+                        tipo_ticket=tipo_ticket_pedido,
+                        ticket_data=ticket_data
+                    )
+
+                    if pedido_ticket:
+                        logger.info(f"Pedido confirmado y registrado como ticket #{pedido_ticket.nro_ticket}.")
+                        memoria.pop('shopping_cart', None)
+                        memoria.pop('last_cart_total', None)
+                        memoria.pop('last_discussed_product', None)
+                        memoria.pop('last_found_products', None)
+                        memoria.pop("estado_conversacion", None)
+
+                        # Notificar al admin (ya sucede si crear_comentario se llama dentro de crear_nuevo_ticket o si se agrega un comentario post-creación)
+                        # Si no, llamar explícitamente a email_service.enviar_email_pedido_admin(pedido_ticket) si esa función existe y está adaptada
+
+                        return {
+                            "respuesta": (
+                                f"¡Excelente! Tu pedido ha sido confirmado con el número de referencia: **{pedido_ticket.nro_ticket}**. "
+                                "Nos pondremos en contacto contigo a la brevedad para coordinar los detalles del pago y la entrega. ¡Gracias por tu compra!"
+                            ),
+                            "botones": [{"texto": "Ver más productos"}, {"texto": "Necesito ayuda"}]
+                        }
+                    else:
+                        raise Exception("La creación del ticket de pedido retornó None.")
+
+                except Exception as e:
+                    logger.error(f"[CheckoutHandler] Error al finalizar pedido y crear ticket: {e}", exc_info=True)
+                    # No limpiar el carrito en caso de error para que el usuario pueda reintentar
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_OPCION_CARRITO # Volver al carrito
+                    return {
+                        "respuesta": "Hubo un problema al procesar tu pedido. Por favor, intentá confirmar nuevamente en unos momentos. Tu carrito sigue guardado.",
+                        "botones": [{"texto": "Reintentar confirmar"}, {"texto": "Ver carrito"}]
+                    }
+            elif any(kw in action for kw in ["modificar", "modificar carrito"]):
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_OPCION_CARRITO
+                cart_view = cart_handler_instance._format_cart_view(memoria) # Reutilizar vista del carrito
+                return {
+                    "respuesta": "Ok, volvemos a tu carrito para que puedas modificarlo:\n\n" + cart_view,
+                     "botones": [
+                        {"texto": "Finalizar Compra"},
+                        {"texto": "Seguir comprando"},
+                        {"texto": "Quitar un producto"}
+                    ]
+                }
+            elif any(kw in action for kw in ["cancelar", "no"]):
+                 memoria.pop("estado_conversacion", None)
+                 return {
+                     "respuesta": "Pedido cancelado. ¿Querés seguir viendo productos o necesitas ayuda con algo más?",
+                     "botones": [{"texto": "Seguir comprando"}, {"texto": "Ver carrito"}, {"texto": "Hablar con un agente"}]
+                 }
+            else: # Respuesta no clara
+                cart_view = cart_handler_instance._format_cart_view(memoria)
+                return {
+                    "respuesta": f"No entendí tu respuesta. Por favor, confirmá si querés finalizar este pedido:\n\n{cart_view}\n\n",
+                    "botones": [
+                        {"texto": "Sí, confirmar pedido"},
+                        {"texto": "Modificar carrito"},
+                        {"texto": "Cancelar"}
+                    ]
+                }
+        return None
+
+class StoreLocationHandler(BaseMunicipioHandler):
+    def _calculate_distance_sq(self, lat1, lon1, lat2, lon2):
+        """Calculates squared Euclidean distance. Faster than true distance for sorting."""
+        # Consider using haversine for real-world distances if precision matters beyond sorting.
+        return (lat1 - lat2)**2 + (lon1 - lon2)**2
+
+    def handle(self, payload: dict) -> dict | None:
+        pregunta_str = payload.get("pregunta", "").strip()
+        memoria = self.context.get("contexto_municipio", {})
+        intencion = self.context.get("intencion")
+        user_location = self.context.get("ubicacion_usuario") # Expected format: {'lat': float, 'lon': float}
+
+        if intencion != "solicitar_ubicacion_tienda":
+            return None
+
+        if not COMMERCE_LOCATIONS:
+            return {"respuesta": "Lo siento, no tengo información sobre la ubicación de nuestras tiendas o sucursales en este momento."}
+
+        if not user_location:
+            # Si el usuario no ha compartido ubicación, pedirla.
+            # Guardar la intención para que después de compartir ubicación, se vuelva a este handler.
+            memoria["estado_conversacion"] = "ESPERANDO_UBICACION_PARA_TIENDAS" # Podría ser un Enum
+            memoria["intencion_pendiente_ubicacion"] = "solicitar_ubicacion_tienda"
+            return {
+                "respuesta": "Para encontrar las sucursales más cercanas, necesito tu ubicación. ¿Podrías compartirla?",
+                "botones": [
+                    {"texto": "Compartir mi ubicación", "action": "compartir_ubicacion_para_tiendas"}, # Frontend debe manejar esta acción
+                    {"texto": "No, gracias"}
+                ]
+            }
+
+        # Si llegamos aquí, tenemos la ubicación del usuario.
+        # Limpiar estado de espera de ubicación si existiera.
+        if memoria.get("estado_conversacion") == "ESPERANDO_UBICACION_PARA_TIENDAS":
+            memoria.pop("estado_conversacion", None)
+            memoria.pop("intencion_pendiente_ubicacion", None)
+
+        # Calcular distancias y ordenar
+        locations_with_distance = []
+        for loc in COMMERCE_LOCATIONS:
+            if loc.get("latitude") is not None and loc.get("longitude") is not None:
+                dist_sq = self._calculate_distance_sq(
+                    user_location['lat'], user_location['lon'],
+                    loc['latitude'], loc['longitude']
+                )
+                locations_with_distance.append({**loc, "distance_sq": dist_sq})
+
+        locations_with_distance.sort(key=lambda x: x["distance_sq"])
+
+        nearest_locations = locations_with_distance[:3] # Mostrar las 3 más cercanas
+
+        if not nearest_locations:
+            return {"respuesta": "No encontré tiendas o sucursales cercanas a tu ubicación actual."}
+
+        respuesta_str = "Aquí están las tiendas/sucursales más cercanas que encontré:\n"
+        botones = []
+        for i, loc in enumerate(nearest_locations):
+            respuesta_str += (
+                f"\n{i+1}. **{loc['name']}**\n"
+                f"   Dirección: {loc['address']}\n"
+            )
+            if loc.get('hours'):
+                respuesta_str += f"   Horario: {loc['hours']}\n"
+            if loc.get('phone'):
+                 respuesta_str += f"   Teléfono: {loc['phone']}\n"
+
+            # Botón para ver en mapa (requiere que el frontend lo maneje o genere un link de Google Maps)
+            map_url = f"https://www.google.com/maps/search/?api=1&query={loc['latitude']},{loc['longitude']}"
+            botones.append({"texto": f"Ver mapa: {loc['name']}", "url": map_url})
+
+        respuesta_str += "\nEspero que esta información te sea útil."
+        # Limpiar el contexto de ventas por si acaso
+        memoria.pop("last_found_products", None)
+        memoria.pop("last_discussed_product", None)
+        memoria.pop("shopping_cart", None)
+
+
+        return {
+            "respuesta": respuesta_str,
+            "botones": botones
+        }
+
+# --- Fin Handlers de Ventas ---
+
 
 class ImpuestosHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
@@ -1577,18 +2373,41 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             )
             
             self.context.get("contexto_municipio", {}).clear() # Limpiar contexto al escalar a un agente
+
+            # Notificar al ADMIN_EMAIL ya se hace automáticamente cuando se crea el comentario del ticket.
+            # El email que recibe el admin dirá:
+            # Asunto: Nuevo ticket M-XXXXXX
+            # Asunto (en cuerpo): Solicitud de Chat en Vivo
+            # Categoría (en cuerpo): Atención en Vivo
+            # Pregunta (en cuerpo): <El mensaje original del usuario pidiendo agente>
+
             return {
                 "respuesta": (
-                    f"¡Listo! Abrimos una sala de chat directa con el equipo.\n"
-                    f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. Esperá, un agente se conecta en breve."
+                    f"Hemos recibido tu solicitud para hablar con un agente. Estamos notificando al equipo. "
+                    f"Tu número de chat es **M-{sala_de_chat.nro_ticket}**. Un agente se unirá tan pronto como esté disponible. "
+                    "Si la espera se prolonga, puedes intentar nuevamente o dejarnos un mensaje más detallado sobre tu consulta."
                 ),
                 "ticket_id": sala_de_chat.id,
+                "botones": [ # Opcional: ofrecer botones para acciones mientras espera
+                    {"texto": "Dejar un mensaje detallado"},
+                    {"texto": "Ver estado de mi solicitud (M-" + str(sala_de_chat.nro_ticket) + ")"}
+                ]
             }
         except Exception as e:
             logger.error(f"[HumanEscalationHandler] Error al escalar a agente: {e}", exc_info=True)
+            # Mensaje de fallback mejorado
             return {
-                "respuesta": "No pudimos conectar con un agente en este momento. Probá más tarde o llamá al municipio.",
-                "botones": [{"texto": "Hablar con un agente"}],
+                "respuesta": (
+                    "Tuvimos un inconveniente al intentar conectar con un agente en este momento. "
+                    "Por favor, ¿podrías intentar nuevamente en unos minutos? "
+                    "Si prefieres, puedes dejarnos un mensaje con tu consulta y te contactaremos a la brevedad, "
+                    "o llamar directamente al [telefono_municipio_o_empresa]." # TODO: Configurar este número de teléfono
+                ),
+                "botones": [
+                    {"texto": "Intentar de nuevo"},
+                    {"texto": "Dejar un mensaje"}
+                    # Considerar añadir un botón para "Llamar ahora" si se tiene el número
+                ],
             }
         return None
 
@@ -1971,6 +2790,12 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         logger.info(f"[BOTON] Comando detectado: '{context['action']}' (desde payload.action)")
     elif context.get("es_foto") or context.get("es_ubicacion"):
         logger.info(f"[ADJUNTO] Adjunto detectado: es_foto={context['es_foto']}, es_ubicacion={context['es_ubicacion']}")
+        # Si se compartió ubicación específicamente para tiendas
+        if context.get("es_ubicacion") and memoria.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda":
+            if memoria.get("estado_conversacion") == "ESPERANDO_UBICACION_PARA_TIENDAS": # Doble check del estado
+                context["intencion"] = "solicitar_ubicacion_tienda" # Forzar la intención para re-procesar con StoreLocationHandler
+                logger.info(f"[CONTEXTO] Ubicación recibida para tiendas, re-evaluando con intención: {context['intencion']}")
+
 
     estado_antes = context["contexto_municipio"].get("estado_conversacion")
     logger.info(f"[CONTEXTO] Estado previo: {estado_antes.name if estado_antes else 'None'}")
@@ -1979,13 +2804,20 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         CancelHandler, 
         PoliteHandler, 
         SmallTalkHandler, 
-        IntentClassifierHandler, 
+        IntentClassifierHandler,
+        # Sales Handlers (New)
+        ProductCatalogHandler,
+        ProductInquiryHandler,
+        CartHandler,
+        CheckoutHandler,
+        StoreLocationHandler, # Added StoreLocationHandler
+        # End Sales Handlers
         HumanEscalationHandler, 
-        TicketStatusHandler, 
+        TicketStatusHandler,
         SugerenciasVecinoHandler,
-        RecoleccionHandler, 
-        ReclamoInteligenteMunicipioHandler, 
-        ReclamoHandler, 
+        RecoleccionHandler,
+        ReclamoInteligenteMunicipioHandler,
+        ReclamoHandler,
         TramitesHandler, 
         TramiteInteligenteHandler, 
         ImpuestosHandler, 
