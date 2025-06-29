@@ -805,6 +805,10 @@ class ReclamoHandler(BaseMunicipioHandler):
     Maneja el flujo paso a paso del reclamo, aceptando tanto botones como texto libre,
     y utilizando Cohere/LLM para interpretar intención cuando no hay coincidencia clara.
     """
+    EDIT_KEYWORDS = [
+        "editar", "cambiar", "corregir", "modificar", 
+        "no era asi", "me equivoque", "error"
+    ] # Definido a nivel de clase
 
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") or ""
@@ -1157,6 +1161,18 @@ class ReclamoHandler(BaseMunicipioHandler):
                     ]
                 }
         return None
+
+# Placeholder para la función buscar_en_faqs
+def buscar_en_faqs(pregunta: str, contexto_faq: str) -> dict | None:
+    """
+    Busca una pregunta en una base de conocimiento de FAQs.
+    DEBE SER IMPLEMENTADA.
+    """
+    logger.info(f"[buscar_en_faqs] Buscando '{pregunta}' en el contexto '{contexto_faq}'. Implementación pendiente.")
+    # Ejemplo de lo que podría devolver si encuentra algo:
+    # if "costo" in pregunta.lower() and contexto_faq == "licencia_de_conducir":
+    #     return {"p": pregunta, "a": "El costo del curso de licencia es de $5000.", "botones": [{"texto": "Más info"}]}
+    return None
 
 
 class TramitesHandler(BaseMunicipioHandler):
@@ -1992,9 +2008,11 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
 
     respuesta_final = None
 
-
+# Definición de SugerenciasVecinoHandler (Placeholder)
+# Se define aquí para que esté disponible antes de su uso en handler_chain
 class SugerenciasVecinoHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
+        logger.info(f"[SugerenciasVecinoHandler] Recibida pregunta: {payload.get('pregunta', '')}")
         pregunta_str = payload.get("pregunta", "")
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
