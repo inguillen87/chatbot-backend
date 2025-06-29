@@ -83,9 +83,42 @@ def extraer_productos(texto: str) -> list[dict]:
             except ValueError: continue
     return items if items else extraer_productos_llm(texto)
 
-def formatear_carrito(carrito: list[dict]) -> str:
-    if not carrito: return "(vacío)"
-    return "\n".join(f"{it['cantidad']} x {it['nombre']}" for it in carrito)
+def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # context es opcional por ahora
+    if not carrito: return "Tu carrito está vacío."
+
+    lineas_carrito = []
+    subtotal_pedido = 0.0
+    productos_sin_precio_cont = 0
+
+    for item in carrito:
+        nombre = item.get("nombre", "Producto desconocido")
+        cantidad = item.get("cantidad", 0)
+        precio_unitario = item.get("precio_unitario", 0.0)
+        unidad = item.get("unidad", "")
+        precio_str = item.get("precio_str", "Consultar")
+
+        linea = f"{cantidad} x {nombre}"
+        if unidad:
+            linea += f" ({unidad})"
+
+        if precio_unitario > 0:
+            precio_total_item = cantidad * precio_unitario
+            linea += f" - ${precio_unitario:,.2f} c/u = ${precio_total_item:,.2f}"
+            subtotal_pedido += precio_total_item
+        else:
+            linea += f" - {precio_str}"
+            productos_sin_precio_cont +=1
+
+        lineas_carrito.append(linea)
+
+    if subtotal_pedido > 0:
+        lineas_carrito.append(f"\n**Subtotal del pedido: ${subtotal_pedido:,.2f}**")
+
+    if productos_sin_precio_cont > 0:
+        nota_precio = "Algunos precios se confirmarán al finalizar." if subtotal_pedido > 0 else "Los precios se confirmarán al finalizar."
+        lineas_carrito.append(f"_{nota_precio}_")
+
+    return "\n".join(lineas_carrito)
 
 class PymeConversationState(Enum):
     IDLE = auto()
@@ -152,13 +185,14 @@ class CatalogoHandler(BaseHandler):
         botones_base = []
 
         if resultados:
-            tabla = formatear_tabla_catalogo(resultados) # Usa columnas dinámicas
-            mensaje = f"Encontré esto en el catálogo:\n\n{tabla}\n\nSi querés ver otro producto, pedir alguno de estos, o descargar el catálogo completo, avisame."
-            fuente = "catalogo_vector_dinamico"
-            botones_base = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Ver más opciones", "action": "ver_catalogo"}]
+            # Usamos armar_respuesta_legible en lugar de formatear_tabla_catalogo para consistencia y mejor formato
+            respuesta_catalogo = armar_respuesta_legible(resultados, max_items=7) # Aumentamos un poco para catálogo
+            mensaje = f"Encontré esto para ti:\n\n{respuesta_catalogo}\n\nSi querés pedir alguno de estos, dime cuál y qué cantidad. También puedes ver más opciones o descargar el catálogo completo si está disponible."
+            fuente = "catalogo_vector_dinamico_legible"
+            botones_base = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Buscar otra cosa", "action": "ver_catalogo"}]
         else:
-            if es_producto_valido_llm(pregunta):
-                mensaje = f"Hmm, no encontré resultados exactos para '{pregunta}'. \n\n¿Te gustaría que intente con una búsqueda más general, ver el catálogo completo, o prefieres hablar con un agente?"
+            if es_producto_valido_llm(pregunta): # Si la pregunta parecía ser un producto específico
+                mensaje = f"Hmm, no encontré resultados exactos para '{pregunta}'. \n\n¿Te gustaría que intente con una búsqueda más general, ver el catálogo completo (si está disponible), o prefieres hablar con un agente?"
                 fuente = "catalogo_no_encontrado_especifico"
                 botones_base = [{"texto": "Buscar algo más general", "action": "ver_catalogo"}, 
                                 {"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, # Necesitaría una acción específica o el frontend maneja "ver_catalogo" sin pregunta.
@@ -283,25 +317,89 @@ class PedidoHandler(BaseHandler):
                     return {"respuesta": "Parece que no nos entendemos. Cancelé el pedido. Podemos intentar de nuevo o ver el catálogo.", "fuente": "pedido_cancelado_reintentos_val", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con agente", "action": "hablar_con_agente"}]}
                 return {"respuesta": "No entendí qué producto agregar. Indica nombre o código y cantidad. Para anular, escribe 'cancelar'.", "fuente": "producto_no_reconocido_val"}
 
-            items = extraer_productos(texto)
+            items_extraidos = extraer_productos(texto)
             mensaje_principal = ""
-            if items:
-                for item_nuevo in items:
-                    found = False
-                    for item_car in carrito:
-                        if item_nuevo["nombre"].lower() == item_car["nombre"].lower(): item_car["cantidad"] += item_nuevo["cantidad"]; found = True; items_agregados_info.append(item_car); break
-                    if not found: carrito.append(item_nuevo); items_agregados_info.append(item_nuevo)
-                    add_preference("productos", item_nuevo["nombre"])
-                mensaje_principal = f"Agregado. Carrito:\n{formatear_carrito(carrito)}"; ctx["reintentos"] = 0
-            else:
-                if not carrito and len(texto.split()) <= 2: mensaje_principal = "¿Qué producto y cuántas unidades querés pedir?"
-                elif carrito: mensaje_principal = f"Carrito actual:\n{formatear_carrito(carrito)}\n\nNo identifiqué nuevos productos. ¿Qué más agregamos?"
-                else:
+            productos_no_encontrados_o_sin_precio = []
+
+            if items_extraidos:
+                for item_ext in items_extraidos:
+                    # Buscar producto en el catálogo para obtener precio y unidad
+                    resultados_qdrant = buscar_catalogo_qdrant(
+                        user_id=self.context.get("user_id"),
+                        pregunta=item_ext["nombre"],
+                        limite=1,
+                        coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME)
+                    )
+
+                    nombre_producto_catalogo = item_ext["nombre"]
+                    precio_unitario_catalogo = 0.0
+                    unidad_catalogo = ""
+                    precio_str_catalogo = "Consultar"
+                    producto_encontrado_en_qdrant = False
+
+                    if resultados_qdrant:
+                        payload = getattr(resultados_qdrant[0], "payload", {})
+                        if payload:
+                            nombre_producto_catalogo = payload.get("nombre", item_ext["nombre"])
+                            precio_unitario_catalogo = payload.get("precio_float", 0.0)
+                            if precio_unitario_catalogo is None: precio_unitario_catalogo = 0.0 # Asegurar que sea float
+                            unidad_catalogo = payload.get("unidad", "")
+
+                            if precio_unitario_catalogo > 0:
+                                precio_str_catalogo = f"${precio_unitario_catalogo:,.2f}"
+                            elif payload.get("precio_str"):
+                                precio_str_catalogo = payload.get("precio_str")
+
+                            producto_encontrado_en_qdrant = True
+
+                    if not producto_encontrado_en_qdrant or precio_unitario_catalogo == 0:
+                        productos_no_encontrados_o_sin_precio.append(nombre_producto_catalogo)
+
+                    # Lógica para agregar o actualizar cantidad en carrito
+                    found_in_cart = False
+                    for item_car_existente in carrito:
+                        if nombre_producto_catalogo.lower() == item_car_existente["nombre"].lower():
+                            item_car_existente["cantidad"] += item_ext["cantidad"]
+                            # El precio y unidad ya están en item_car_existente desde que se agregó por primera vez.
+                            # Si se encontró ahora con precio y antes no, se podría actualizar, pero simplificamos por ahora.
+                            items_agregados_info.append(item_car_existente)
+                            found_in_cart = True
+                            break
+
+                    if not found_in_cart:
+                        item_para_carrito_nuevo = {
+                            "nombre": nombre_producto_catalogo,
+                            "cantidad": item_ext["cantidad"],
+                            "precio_unitario": precio_unitario_catalogo,
+                            "unidad": unidad_catalogo,
+                            "precio_str": precio_str_catalogo
+                        }
+                        carrito.append(item_para_carrito_nuevo)
+                        items_agregados_info.append(item_para_carrito_nuevo)
+
+                    add_preference("productos", nombre_producto_catalogo)
+
+                mensaje_principal = f"Agregado. Carrito actual:\n{formatear_carrito(carrito, self.context)}"
+                if productos_no_encontrados_o_sin_precio:
+                    nombres_problematicos = list(set(productos_no_encontrados_o_sin_precio)) # Evitar duplicados
+                    mensaje_principal += f"\n\n_Nota: No se encontró precio para: {', '.join(nombres_problematicos)}. Se mostrarán como 'Consultar' y se confirmarán al finalizar el pedido._"
+                ctx["reintentos"] = 0
+            else: # No se extrajeron items del mensaje del usuario
+                if not carrito and len(texto.split()) <= 3: # Pregunta corta, probablemente pidiendo iniciar
+                    mensaje_principal = "¿Qué producto o productos y qué cantidades te gustaría pedir?"
+                elif carrito: # Ya hay cosas en el carrito, pero no se entendió lo último
+                    mensaje_principal = f"No identifiqué nuevos productos en tu último mensaje. Tu carrito actual es:\n{formatear_carrito(carrito, self.context)}\n\n¿Qué más quieres agregar o hacemos para finalizar?"
+                else: # Sin carrito y sin entender el producto
                     sug_fb = buscar_catalogo_qdrant(user_id=self.context.get("user_id"), pregunta=pregunta, limite=2, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME))
-                    mensaje_principal = armar_respuesta_legible(sug_fb, max_items=2) if sug_fb else "No entendí qué producto agregar. Puedes ver el catálogo o reintentar."
+                    if sug_fb:
+                        mensaje_principal = f"No entendí bien qué producto buscas. Quizás te interese algo de esto:\n{armar_respuesta_legible(sug_fb, max_items=2)}\n\nO puedes intentar describir el producto de nuevo."
+                    else:
+                        mensaje_principal = "No entendí qué producto agregar. Puedes ver el catálogo o intentar describirlo de nuevo (ej: '2 kilos de pan')."
             
             flask_session[CONTEXTO_PYME] = ctx
-            sug_compl = self._sugerir_productos_complementarios(items[-1]['nombre'] if items else "", carrito, items_agregados_info)
+            # Usar items_agregados_info que contiene los productos con su info de catálogo (potencialmente)
+            ultimo_agregado_nombre = items_agregados_info[-1]['nombre'] if items_agregados_info else ""
+            sug_compl = self._sugerir_productos_complementarios(ultimo_agregado_nombre, carrito, items_agregados_info)
             return {"respuesta": f"{mensaje_principal}{sug_compl}", "fuente": "pedido_progreso_sug" if sug_compl else "pedido_progreso", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
         
         elif estado == PymeConversationState.CONFIRMANDO_PEDIDO:

@@ -207,24 +207,45 @@ def armar_respuesta_legible(
         if clave in vistos:
             continue
         vistos.add(clave)
-        precio = payload.get("precio_str") or payload.get("precio") or ""
-        if not precio and payload.get("precio_float") is not None:
-            precio = f"${payload['precio_float']:,.2f}"
-        if not precio:
-            precio = "Consultar"
+
+        precio_val = payload.get("precio_float")
+        precio_str_display = payload.get("precio_str", "")
+
+        if precio_val is not None:
+            try:
+                precio_formateado = f"${float(precio_val):,.2f}"
+            except (ValueError, TypeError):
+                precio_formateado = precio_str_display or "Consultar"
+        elif precio_str_display:
+            precio_formateado = precio_str_display
+        else:
+            precio_formateado = "Consultar"
+
         unidad = payload.get("unidad", "")
-        desc = payload.get("descripcion", "")
+        # Usar descripcion_corta si existe, sino la descripcion normal
+        desc_corta = payload.get("descripcion_corta", "")
+        desc_completa = payload.get("descripcion", "")
+        desc_display = desc_corta if desc_corta else desc_completa
+
+        promocion = payload.get("promocion_info", "") # Asumiendo que este campo puede existir
+
         res = f"- <b>{nombre}</b>"
         if unidad:
             res += f" ({unidad})"
-        res += f" — <b>{precio}</b>"
-        if desc:
-            res += f" | {desc[:60]}{'...' if len(desc)>60 else ''}"
+
+        res += f" — <b>{precio_formateado}</b>"
+
+        if promocion:
+            res += f" <b style='color:green;'>({promocion})</b>"
+
+        if desc_display:
+            res += f" | {desc_display[:70]}{'...' if len(desc_display)>70 else ''}" # Un poco más de descripción
+
         lineas.append(res)
         if len(lineas) >= max_items:
             break
     if len(productos_ordenados) > max_items:
-        lineas.append(f"…y {len(productos_ordenados)-max_items} productos más.")
+        lineas.append(f"…y {len(productos_ordenados) - max_items} productos más.")
     return "\n".join(lineas)
 
 
