@@ -218,6 +218,76 @@ def unir_codigos_alfa_numericos(texto: str) -> str:
         new_texto = intermediate_texto
     return new_texto
 
+def validar_email(email: str) -> bool:
+    """
+    PLACEHOLDER: Validates an email address.
+    Original implementation needs to be restored.
+    """
+    get_logger().warning(f"Using PLACEHOLDER validar_email for: {email}")
+    if not isinstance(email, str):
+        return False
+    # Basic regex for email validation
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    return bool(re.match(pattern, email))
+
+def validar_telefono(telefono: str) -> bool:
+    """
+    PLACEHOLDER: Validates a phone number.
+    Original implementation needs to be restored.
+    Assumes phone number is a string of digits, possibly with spaces or hyphens.
+    """
+    get_logger().warning(f"Using PLACEHOLDER validar_telefono for: {telefono}")
+    if not isinstance(telefono, str):
+        return False
+    # Remove common formatting and check if it's all digits and reasonable length
+    cleaned_telefono = re.sub(r"[^0-9]", "", telefono)
+    return 7 <= len(cleaned_telefono) <= 15 # Common international min/max
+
+def formatear_telefono_e164(telefono: str, codigo_pais_defecto: str = "54") -> Optional[str]:
+    """
+    PLACEHOLDER: Formats a phone number to E.164 format (e.g., +5492611234567).
+    Original implementation needs to be restored.
+    """
+    get_logger().warning(f"Using PLACEHOLDER formatear_telefono_e164 for: {telefono}")
+    if not isinstance(telefono, str):
+        return None
+
+    cleaned_telefono = re.sub(r"[^0-9]", "", telefono)
+
+    if not cleaned_telefono:
+        return None
+
+    # Simplistic logic:
+    # If it already starts with '+', assume it's E.164 or close enough for placeholder.
+    if telefono.startswith("+"):
+        return telefono
+
+    # Remove leading '0' if it's like "0261..." or "011..." for Argentina common local dialing
+    if cleaned_telefono.startswith("0") and len(cleaned_telefono) > 5: # Avoid stripping "0" from short codes
+        cleaned_telefono = cleaned_telefono[1:]
+
+    # If it's a mobile number in Argentina (commonly 10 digits after area code, e.g., 261xxxxxxx),
+    # add '9' after country code. This is very specific to AR and a guess.
+    # A real implementation would use a library like phonenumbers.
+    if codigo_pais_defecto == "54" and len(cleaned_telefono) == 10: # e.g. 2615551234
+        # Check if it's a known mobile prefix structure (highly simplified)
+        # For AR, mobile often implies adding a '9' after country code for international format.
+        # This is a common pattern but not universally true for all AR numbers.
+        # Example: Mendoza mobile 261 + 15 + XXXXXX -> local 261 15XXXXXX
+        # For E.164: +54 9 261 XXXXXX (if the '15' was dropped)
+        # Or if input is 261XXXXXX (assuming '15' was never there or already removed)
+        # This placeholder is too naive for robust AR phone formatting.
+        # A proper library (like phonenumbers) is essential.
+        # For now, if it's 10 digits and AR, we'll prefix with +549.
+        # This is a common case for WhatsApp E.164.
+        return f"+{codigo_pais_defecto}9{cleaned_telefono}"
+    elif codigo_pais_defecto == "54" and len(cleaned_telefono) > 10 and cleaned_telefono.startswith("9"): # e.g. 9261...
+         return f"+{codigo_pais_defecto}{cleaned_telefono}"
+
+
+    # General case: just prepend country code
+    return f"+{codigo_pais_defecto}{cleaned_telefono}"
+
 # Helper function to check if a string can be converted to a number
 def is_number(s: Any) -> bool:
     if s is None: return False
