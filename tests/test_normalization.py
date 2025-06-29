@@ -1,6 +1,6 @@
 import unittest
 from services.herramientas_municipio import normalizar_texto
-from services.utils import unir_codigos_alfa_numericos
+from services.common_utils import unir_codigos_alfa_numericos
 
 class NormalizationTests(unittest.TestCase):
     def test_remove_accents_and_punctuation(self):

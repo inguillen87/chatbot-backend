@@ -28,7 +28,7 @@ from .herramientas_municipio import (
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
-from services.utils import (
+from services.common_utils import (
     validar_email,
     validar_telefono,
     formatear_telefono_e164,

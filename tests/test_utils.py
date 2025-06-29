@@ -21,7 +21,7 @@ class DummyCatalogoItem:
 models_stub.CatalogoItem = DummyCatalogoItem
 sys.modules['models'] = models_stub
 
-from services.utils import generar_link_google_maps
+from services.common_utils import generar_link_google_maps
 import services.herramientas_pyme as hp
 hp.CatalogoItem = DummyCatalogoItem
 verificar_stock_producto = hp.verificar_stock_producto

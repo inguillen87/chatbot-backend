@@ -15,7 +15,7 @@ from services.qdrant_search import (
 )
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import reemplazar_placeholders
-from services.utils import sugerencias_por_rubro
+from services.common_utils import sugerencias_por_rubro
 from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_talk
 from services.ticket_service import servicio_tickets # Asumiendo que PymeTicket está aquí
 from services.webinfo import obtener_info_web
