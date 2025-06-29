@@ -37,14 +37,14 @@ def parse_precio_flexible(precio_str: str) -> Tuple[str, Optional[float], Option
     get_logger().warning(f"Using PLACEHOLDER parse_precio_flexible for: {precio_str}")
     if not isinstance(precio_str, str):
         return "", None, None
-
+    
     cleaned_price_str = re.sub(r'[^\d,.]', '', precio_str) # Keep digits, comma, dot
-
+    
     # Try to convert to float
     # Handle cases like "1.234,56" (German) and "1,234.56" (US)
     price_float = None
     moneda = "ARS" # Default
-
+    
     if not cleaned_price_str:
         return "", None, None
 
@@ -66,7 +66,7 @@ def parse_precio_flexible(precio_str: str) -> Tuple[str, Optional[float], Option
         moneda = "USD" # Or ARS if $ is used for pesos
     elif '€' in precio_str:
         moneda = "EUR"
-
+        
     return cleaned_price_str, price_float, moneda
 
 def crear_mapa_de_columnas_inteligente(df: pd.DataFrame) -> Optional[Tuple[Dict[str, Any], int]]:
@@ -78,24 +78,24 @@ def crear_mapa_de_columnas_inteligente(df: pd.DataFrame) -> Optional[Tuple[Dict[
     get_logger().warning("Using PLACEHOLDER crear_mapa_de_columnas_inteligente. This will likely not work correctly.")
     if df.empty:
         return None
-
+        
     # Extremely naive placeholder: assumes first row is header, maps known keywords
     # This WILL NOT be robust.
     headers = [str(h).lower().strip() for h in df.iloc[0].tolist()]
     mapa = {}
     possible_nombre = ['nombre', 'producto', 'descripción', 'item']
     possible_precio = ['precio', 'valor', 'costo']
-
+    
     for i, header in enumerate(headers):
         if any(pn in header for pn in possible_nombre) and 'nombre' not in mapa:
             mapa['nombre'] = df.columns[i] # Use original column name/index from df
         elif any(pp in header for pp in possible_precio) and 'precio' not in mapa:
             mapa['precio'] = df.columns[i]
-
+            
     if 'nombre' not in mapa: # Essential column
         get_logger().error("Placeholder crear_mapa_de_columnas_inteligente: Could not find a 'nombre' column.")
         return None
-
+        
     return mapa, 1 # Assume data starts from row 1 (after header row 0)
 
 KEYWORD_MAP: Dict[str, List[str]] = {
@@ -148,7 +148,7 @@ def parse_unidad_y_cantidad_empaque(unidad_str: str) -> Tuple[str, Optional[int]
                 pass # Decided this is too ambiguous for a placeholder
             except ValueError:
                 pass
-
+    
     if not unidad_desc: # If stripping made it empty, revert to original
         unidad_desc = unidad_str
 
@@ -191,10 +191,6 @@ def unir_codigos_alfa_numericos(texto: str) -> str:
     # This specific regex looks for an alphanumeric, a space, and an alphanumeric,
     # and replaces it with the two alphanumerics. It might need multiple passes or a loop.
 
-    # A common pattern for this is to join parts that are alphanumeric.
-    # Let's try a regex that finds alphanumeric parts and then joins them if they were separated by single spaces.
-    # This is still a guess. The original logic is needed.
-
     # Simpler approach for placeholder: join all alphanumeric segments.
     # This might be too aggressive for general text.
     # parts = re.findall(r'[a-zA-Z0-9]+', texto)
@@ -218,75 +214,6 @@ def unir_codigos_alfa_numericos(texto: str) -> str:
         new_texto = intermediate_texto
     return new_texto
 
-def validar_email(email: str) -> bool:
-    """
-    PLACEHOLDER: Validates an email address.
-    Original implementation needs to be restored.
-    """
-    get_logger().warning(f"Using PLACEHOLDER validar_email for: {email}")
-    if not isinstance(email, str):
-        return False
-    # Basic regex for email validation
-    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-    return bool(re.match(pattern, email))
-
-def validar_telefono(telefono: str) -> bool:
-    """
-    PLACEHOLDER: Validates a phone number.
-    Original implementation needs to be restored.
-    Assumes phone number is a string of digits, possibly with spaces or hyphens.
-    """
-    get_logger().warning(f"Using PLACEHOLDER validar_telefono for: {telefono}")
-    if not isinstance(telefono, str):
-        return False
-    # Remove common formatting and check if it's all digits and reasonable length
-    cleaned_telefono = re.sub(r"[^0-9]", "", telefono)
-    return 7 <= len(cleaned_telefono) <= 15 # Common international min/max
-
-def formatear_telefono_e164(telefono: str, codigo_pais_defecto: str = "54") -> Optional[str]:
-    """
-    PLACEHOLDER: Formats a phone number to E.164 format (e.g., +5492611234567).
-    Original implementation needs to be restored.
-    """
-    get_logger().warning(f"Using PLACEHOLDER formatear_telefono_e164 for: {telefono}")
-    if not isinstance(telefono, str):
-        return None
-
-    cleaned_telefono = re.sub(r"[^0-9]", "", telefono)
-
-    if not cleaned_telefono:
-        return None
-
-    # Simplistic logic:
-    # If it already starts with '+', assume it's E.164 or close enough for placeholder.
-    if telefono.startswith("+"):
-        return telefono
-
-    # Remove leading '0' if it's like "0261..." or "011..." for Argentina common local dialing
-    if cleaned_telefono.startswith("0") and len(cleaned_telefono) > 5: # Avoid stripping "0" from short codes
-        cleaned_telefono = cleaned_telefono[1:]
-
-    # If it's a mobile number in Argentina (commonly 10 digits after area code, e.g., 261xxxxxxx),
-    # add '9' after country code. This is very specific to AR and a guess.
-    # A real implementation would use a library like phonenumbers.
-    if codigo_pais_defecto == "54" and len(cleaned_telefono) == 10: # e.g. 2615551234
-        # Check if it's a known mobile prefix structure (highly simplified)
-        # For AR, mobile often implies adding a '9' after country code for international format.
-        # This is a common pattern but not universally true for all AR numbers.
-        # Example: Mendoza mobile 261 + 15 + XXXXXX -> local 261 15XXXXXX
-        # For E.164: +54 9 261 XXXXXX (if the '15' was dropped)
-        # Or if input is 261XXXXXX (assuming '15' was never there or already removed)
-        # This placeholder is too naive for robust AR phone formatting.
-        # A proper library (like phonenumbers) is essential.
-        # For now, if it's 10 digits and AR, we'll prefix with +549.
-        # This is a common case for WhatsApp E.164.
-        return f"+{codigo_pais_defecto}9{cleaned_telefono}"
-    elif codigo_pais_defecto == "54" and len(cleaned_telefono) > 10 and cleaned_telefono.startswith("9"): # e.g. 9261...
-         return f"+{codigo_pais_defecto}{cleaned_telefono}"
-
-
-    # General case: just prepend country code
-    return f"+{codigo_pais_defecto}{cleaned_telefono}"
 
 # Helper function to check if a string can be converted to a number
 def is_number(s: Any) -> bool:
@@ -305,10 +232,10 @@ if __name__ == '__main__':
     print(parse_precio_flexible(" €2,345.99 "))
     print(parse_precio_flexible("1200.75"))
     print(parse_precio_flexible("No es un precio"))
-
+    
     df_test_data = {
-        'PRODUCTO': ['Manzanas', 'Bananas'],
-        'PRECIO': ['100', '50'],
+        'PRODUCTO': ['Manzanas', 'Bananas'], 
+        'PRECIO': ['100', '50'], 
         'DETALLE EXTRA': ['Rojas', 'De Ecuador']
     }
     df_test = pd.DataFrame(df_test_data)
@@ -324,3 +251,59 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
+
+def parse_cantidad_flexible(cantidad_str: Any) -> Optional[int]:
+    """
+    PLACEHOLDER: Parses a flexible quantity string (e.g., "6 units", "12", "1 dozen") into an integer.
+    Attempts to extract the first number found.
+    Original implementation needs to be restored for more robust parsing.
+    """
+    get_logger().warning(f"Using PLACEHOLDER parse_cantidad_flexible for: {cantidad_str}")
+    if cantidad_str is None:
+        return None
+
+    s = str(cantidad_str)
+
+    # Try to extract first number found
+    match = re.search(r'\d+', s)
+    if match:
+        try:
+            return int(match.group(0))
+        except ValueError:
+            return None
+
+    # Add more sophisticated parsing here if needed (e.g., "dozen" -> 12)
+    # For placeholder, this is basic.
+    return None
+
+def validar_email(email: str) -> bool:
+    """Valida si un email tiene formato correcto."""
+    patron = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    return bool(re.match(patron, email))
+
+def validar_telefono(telefono: str) -> bool:
+    """Valida si un teléfono tiene formato numérico y longitud razonable (6-20 dígitos)."""
+    if not isinstance(telefono, str):
+        return False
+    solo_numeros = re.sub(r"\D", "", telefono)
+
+    return 6 <= len(solo_numeros) <= 20
+
+def formatear_telefono_e164(telefono: str, cod_pais: str = "54") -> str:
+    """
+    Normaliza un número de teléfono a formato E.164 (por defecto para Argentina).
+    Ejemplo: "11 2345-6789" -> "+541123456789"
+    """
+    if not isinstance(telefono, str):
+        return ""
+    solo_numeros = re.sub(r"\D", "", telefono)
+    if solo_numeros.startswith(cod_pais):
+        return f"+{solo_numeros}"
+    return f"+{cod_pais}{solo_numeros.lstrip('0')}"
+
+def calcular_precio_por_unidad(precio_total: float, cantidad: int) -> float:
+    """Devuelve el precio por unidad dado un total y la cantidad."""
+    try:
+        return float(precio_total) / int(cantidad) if cantidad else 0.0
+    except (ValueError, ZeroDivisionError):
+        return 0.0
