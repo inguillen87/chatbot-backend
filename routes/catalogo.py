@@ -32,6 +32,52 @@ def cargar_catalogo():
     """Alias que reutiliza la lógica de ``subir_catalogo``."""
     return _subir_catalogo()
 
+# Import current_app for logging
+from flask import current_app
+
+@catalogo_bp.route('/public/<int:pyme_user_id>/descargar', methods=['GET'])
+def descargar_catalogo_publico(pyme_user_id: int):
+    """Permite a cualquier visitante descargar el catálogo más reciente de una Pyme específica."""
+    current_app.logger.info(f"[CATALOGO_PUBLICO] Solicitud de descarga para pyme_user_id: {pyme_user_id}")
+
+    adj = (
+        ArchivoAdjunto.query
+        .filter_by(user_id=pyme_user_id, tipo="catalogo")
+        .order_by(ArchivoAdjunto.fecha.desc())
+        .first()
+    )
+
+    if not adj:
+        current_app.logger.warning(f"[CATALOGO_PUBLICO] No se encontró catálogo para pyme_user_id: {pyme_user_id}")
+        return jsonify({"error": "Catálogo no disponible para esta empresa."}), 404
+
+    # Construct absolute path to CATALOGO_FOLDER if it's relative
+    # CATALOGO_FOLDER is typically 'data/catalogos'
+    # send_from_directory expects directory relative to app root or absolute
+    # For simplicity, ensure CATALOGO_FOLDER is correctly defined (e.g., relative to app.root_path or absolute)
+    # Assuming CATALOGO_FOLDER is like 'data/catalogos' relative to the instance or app root.
+    # If CATALOGO_FOLDER is defined like os.path.join("data", "catalogos"), it's relative to where the app runs.
+    # For send_from_directory, if it's not an absolute path, it's typically relative to app.root_path.
+    # Let's ensure it's robust.
+
+    # UPLOAD_PROCESSOR_CATALOGO_FOLDER should be the same as services.upload_processor.CATALOGO_FOLDER
+    # It's already imported at the top of this file.
+
+    try:
+        current_app.logger.info(f"[CATALOGO_PUBLICO] Sirviendo archivo: {adj.filename} desde {CATALOGO_FOLDER} para pyme_user_id: {pyme_user_id}. Nombre original: {adj.nombre_original}")
+        return send_from_directory(
+            CATALOGO_FOLDER,
+            adj.filename,
+            as_attachment=True,
+            download_name=adj.nombre_original or adj.filename  # Use original filename for download
+        )
+    except FileNotFoundError:
+        current_app.logger.error(f"[CATALOGO_PUBLICO] Archivo de catálogo no encontrado en el servidor: {adj.filename} para pyme_user_id: {pyme_user_id} en carpeta {CATALOGO_FOLDER}")
+        return jsonify({"error": "Archivo de catálogo no encontrado en el servidor."}), 404
+    except Exception as e:
+        current_app.logger.error(f"[CATALOGO_PUBLICO] Error al servir archivo {adj.filename} para pyme_user_id {pyme_user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al intentar descargar el catálogo."}), 500
+
 
 @catalogo_bp.route('/archivos', methods=['GET'])
 @token_requerido

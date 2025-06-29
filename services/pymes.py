@@ -42,13 +42,46 @@ def es_producto_valido_llm(texto: str) -> bool:
         logger.error(f"[PYME] Error validando producto con LLM: {e}")
     return True # Default a True para no interrumpir flujo si falla LLM
 
-def tiene_archivo_catalogo(user_id: int) -> bool:
+# Helper function to check for public catalog and get its info
+def _check_and_get_catalog_download_info(pyme_user_id: Optional[int]) -> Dict[str, Any]:
+    """
+    Checks if a Pyme has a downloadable catalog and returns its info.
+    """
+    if not pyme_user_id:
+        return {"exists": False}
+
+    try:
+        latest_catalog_adj = (
+            ArchivoAdjunto.query
+            .filter_by(user_id=pyme_user_id, tipo="catalogo")
+            .order_by(ArchivoAdjunto.fecha.desc())
+            .first()
+        )
+        if latest_catalog_adj:
+            # Ensure URL is correctly formed. Assuming app context is available for url_for,
+            # or construct manually if necessary. For now, relative path.
+            # from flask import url_for # Would need app context
+            # url = url_for('catalogo.descargar_catalogo_publico', pyme_user_id=pyme_user_id, _external=True)
+            # Using relative URL for simplicity as flask client/buttons might handle it.
+            url = f"/catalogo/public/{pyme_user_id}/descargar"
+            return {
+                "exists": True,
+                "url": url,
+                "filename": latest_catalog_adj.nombre_original or latest_catalog_adj.filename
+            }
+    except Exception as e:
+        logger.error(f"[PYME_CATALOG_DOWNLOAD_CHECK] Error checking for catalog for pyme_id {pyme_user_id}: {e}", exc_info=True)
+
+    return {"exists": False}
+
+
+def tiene_archivo_catalogo(user_id: int) -> bool: # This is for the Pyme owner's own catalog
     if not user_id: return False
     try:
         return ArchivoAdjunto.query.filter_by(user_id=user_id, tipo="catalogo").first() is not None
     except Exception: return False
 
-def url_descargar_catalogo() -> str:
+def url_descargar_catalogo() -> str: # This is for the Pyme owner's own catalog
     from flask import request
     return f"{request.url_root.rstrip('/')}/catalogo/descargar"
 
@@ -272,16 +305,26 @@ class CatalogoHandler(BaseHandler):
                 mensaje = f"Hmm, no encontré resultados exactos para '{pregunta}'. \n\n¿Te gustaría que intente con una búsqueda más general, ver el catálogo completo (si está disponible), o prefieres hablar con un agente?"
                 fuente = "catalogo_no_encontrado_especifico"
                 botones_base = [{"texto": "Buscar algo más general", "action": "ver_catalogo"}, 
-                                {"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, # Necesitaría una acción específica o el frontend maneja "ver_catalogo" sin pregunta.
+                                # {"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, # Replaced by download
                                 {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
-            else:
-                mensaje = "No encontré productos que coincidan con tu búsqueda. Puedes intentar con otras palabras o ver nuestro catálogo completo."
+            else: # No specific product in query, but no results from general search
+                mensaje = "No encontré productos que coincidan con tu búsqueda. Puedes intentar con otras palabras."
                 fuente = "catalogo_no_encontrado_general"
-                botones_base = [{"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
-        
-        if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf", "completo"]):
-            botones_base.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
-            mensaje += f"\n\nDescargá el catálogo completo aquí: {url_descargar_catalogo()}"
+                # botones_base already includes "Hablar con un agente" if this path is taken often.
+                # Default buttons for no results could be just "Hablar con un agente" or "Intentar otra búsqueda".
+                # The download link will be added below if available.
+                if not botones_base: # Ensure there's always some action
+                    botones_base = [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}]
+
+
+        # Add catalog download info if available, for all cases (results found or not)
+        download_info = _check_and_get_catalog_download_info(user_id)
+        if download_info["exists"]:
+            mensaje += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
+            # Optionally, add a button if your frontend supports it well
+            # Example: botones_base.append({"type": "web_url", "title": f"Descargar Catálogo ({download_info['filename']})", "url": download_info['url']})
+            # For now, sticking to markdown link in text for broader compatibility.
+
         return {"respuesta": mensaje, "fuente": fuente, "botones": botones_base}
 
 class OfertasHandler(BaseHandler):
@@ -290,10 +333,26 @@ class OfertasHandler(BaseHandler):
         if not user_id: return {"respuesta": "Inicia sesión para ver las ofertas.", "fuente": "ofertas_sin_login"}
         
         resultados_ofertas = buscar_catalogo_qdrant(user_id=user_id, pregunta="ofertas promociones descuentos", limite=5, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME), en_promocion=True)
+
+        mensaje = ""
+        botones = []
+        fuente = ""
+
         if resultados_ofertas:
-            respuesta = "Estas son algunas de nuestras ofertas destacadas:\n" + armar_respuesta_legible(resultados_ofertas, max_items=5) + "\n\n¿Te interesa alguna o quieres ver más?"
-            return {"respuesta": respuesta, "fuente": "ofertas_dinamicas", "botones": [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
-        return {"respuesta": "Por el momento no tenemos ofertas especiales destacadas, pero puedes ver nuestro catálogo completo.", "fuente": "sin_ofertas_dinamicas", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+            mensaje = "Estas son algunas de nuestras ofertas destacadas:\n" + armar_respuesta_legible(resultados_ofertas, max_items=5) + "\n\n¿Te interesa alguna o quieres ver más?"
+            fuente = "ofertas_dinamicas"
+            botones = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]
+        else:
+            mensaje = "Por el momento no tenemos ofertas especiales destacadas, pero puedes ver nuestro catálogo completo."
+            fuente = "sin_ofertas_dinamicas"
+            botones = [{"texto": "Ver catálogo", "action": "ver_catalogo"}]
+
+        download_info = _check_and_get_catalog_download_info(user_id)
+        if download_info["exists"]:
+            mensaje += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
+            # Consider adding a download button to `botones` if desired and supported by frontend.
+
+        return {"respuesta": mensaje, "fuente": fuente, "botones": botones}
 
 class SmallTalkHandler(BaseHandler):
     def handle(self, pregunta): return {"respuesta": generar_respuesta_small_talk(pregunta), "fuente": "smalltalk_pyme_llm"}
@@ -648,30 +707,46 @@ class FallbackHandler(BaseHandler):
     def handle(self, pregunta):
         user_id = self.context.get("user_id")
         rubro = self.context.get("rubro_nombre")
-        
+        fuente_final = "fallback_generico_final" # Default
+        mensaje_final = "No entendí bien tu consulta. ¿Podrías reformularla?"
+        botones_finales = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
+
         resultados = buscar_catalogo_qdrant(user_id=user_id, pregunta=pregunta, categoria=rubro, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME))
         if resultados:
             respuesta_legible = armar_respuesta_legible(resultados, max_items=3)
-            botones = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo completo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
-            if tiene_archivo_catalogo(user_id) and any(k in pregunta.lower() for k in ["descargar", "pdf"]):
-                botones.append({"texto": "Descargar catálogo", "action": "descargar_catalogo"})
-                respuesta_legible += f"\n\nDescargá el catálogo aquí: {url_descargar_catalogo()}"
-            return {"respuesta": f"Esto es lo que encontré relacionado:\n{respuesta_legible}\n¿Te sirve o necesitas más ayuda?", "fuente": "fallback_catalogo_encontrado", "botones": botones}
+            mensaje_final = f"Esto es lo que encontré relacionado:\n{respuesta_legible}\n¿Te sirve o necesitas más ayuda?"
+            fuente_final = "fallback_catalogo_encontrado"
+            botones_finales = [{"texto": "Hacer un pedido", "action": "iniciar_pedido"}, {"texto": "Buscar otra cosa", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
 
-        if es_producto_valido_llm(pregunta):
-            mensaje = f"No pude encontrar '{pregunta}' en nuestro catálogo. Puedes intentar describirlo de otra manera, ver el catálogo completo, o hablar con un agente."
-            return {"respuesta": mensaje, "fuente": "fallback_producto_no_encontrado_especifico", "botones": [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}, {"texto": "Ver catálogo completo", "action": "ver_catalogo_completo_accion"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]}
+        elif es_producto_valido_llm(pregunta):
+            mensaje_final = f"No pude encontrar '{pregunta}' en nuestro catálogo. Puedes intentar describirlo de otra manera o hablar con un agente."
+            fuente_final = "fallback_producto_no_encontrado_especifico"
+            botones_finales = [{"texto": "Intentar otra búsqueda", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
 
-        sugerencias = sugerencias_por_rubro(rubro)
-        if sugerencias:
-            return {"respuesta": f"{random.choice(sugerencias)} ¿Querés una oferta personalizada o ayuda para comprar?", "fuente": "fallback_sugerencia_rubro", "botones": [{"texto": "Ver ofertas", "action": "ver_ofertas"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]}
+        elif sugerencias_por_rubro(rubro): # Check if list is not empty
+            sugerencias = sugerencias_por_rubro(rubro)
+            mensaje_final = f"{random.choice(sugerencias)} ¿Querés una oferta personalizada o ayuda para comprar?"
+            fuente_final = "fallback_sugerencia_rubro"
+            botones_finales = [{"texto": "Ver ofertas", "action": "ver_ofertas"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
         
-        info_web = (obtener_info_web(user_id, self.context.get("nombre_pyme")) if user_id else {})
-        if info_web:
-            mensaje_info = ", ".join(f"{k.capitalize()}: {v}" for k, v in info_web.items())
-            return {"respuesta": f"Sobre nosotros: {mensaje_info}", "fuente": "fallback_info_web"}
+        elif user_id: # Only try webinfo if there's a user_id context for the Pyme
+            info_web = obtener_info_web(user_id, self.context.get("nombre_pyme"))
+            if info_web:
+                mensaje_info_items = [f"{k.capitalize()}: {v}" for k, v in info_web.items() if v]
+                if mensaje_info_items:
+                    mensaje_final = f"Sobre nosotros: {', '.join(mensaje_info_items)}"
+                    fuente_final = "fallback_info_web"
+                    # Botones podrían ser genéricos o relacionados con la info web si es parseable
+                    botones_finales = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
+
+
+        # Add catalog download info if available
+        download_info = _check_and_get_catalog_download_info(user_id)
+        if download_info["exists"]:
+            mensaje_final += f"\n\nTambién puedes [descargar nuestro catálogo completo aquí]({download_info['url']}) ({download_info['filename']})."
+            # No se añaden botones aquí para no sobrecargar el fallback, el link en texto es suficiente.
             
-        return {"respuesta": "No entendí bien tu consulta. ¿Podrías reformularla? También puedes ver el catálogo o hablar con un agente.", "fuente": "fallback_generico_final", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]}
+        return {"respuesta": mensaje_final, "fuente": fuente_final, "botones": botones_finales}
 
 # --- ROUTER PRINCIPAL ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
