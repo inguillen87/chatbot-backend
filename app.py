@@ -136,14 +136,6 @@ def create_app(config_class=Config):
         resp.headers.setdefault("Permissions-Policy", "geolocation=(self)")
         return resp
 
-    @app.before_request
-    def catch_all_options():
-        """Handle any CORS preflight with a basic response."""
-        from flask import request
-        if request.method == "OPTIONS":
-            from routes.chat import cors_options_response
-            return cors_options_response()
-
     # --- 4. Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)

@@ -13,24 +13,6 @@ from services.logic import (
 from .auth import anon_o_token_requerido
 
 
-from flask import make_response
-
-def cors_options_response():
-    resp = make_response('', 200)
-    origin = request.headers.get('Origin')
-    if origin:
-        resp.headers['Access-Control-Allow-Origin'] = origin
-        resp.headers['Vary'] = 'Origin'
-    else:
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
-    resp.headers['Access-Control-Allow-Headers'] = (
-        'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token'
-    )
-    resp.headers['Access-Control-Allow-Credentials'] = 'true'
-    return resp
-
-
 chat_bp = Blueprint("chat_bp", __name__)
 
 
@@ -221,12 +203,6 @@ def _procesar_chat(
         return jsonify({"error": "Error interno del servidor."}), 500
 
 
-# Handler para el preflight de CORS de /ask
-@chat_bp.route("/ask", methods=["OPTIONS"])
-def ask_options():
-    return cors_options_response()
-
-
 @chat_bp.route("/ask", methods=["POST"])
 @anon_o_token_requerido
 def ask(current_user=None, anon_id=None, owner_user=None):
@@ -238,12 +214,6 @@ def ask(current_user=None, anon_id=None, owner_user=None):
     """
     user = owner_user or current_user
     return _procesar_chat(current_user=current_user, owner_user=user, anon_id=anon_id)
-
-
-# Handler para el preflight de CORS de /ask/pyme
-@chat_bp.route("/ask/pyme", methods=["OPTIONS"])
-def ask_pyme_options():
-    return cors_options_response()
 
 
 @chat_bp.route("/ask/pyme", methods=["POST"])
@@ -259,11 +229,6 @@ def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     return _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
 
 
-# Preflight CORS handler for /ask/municipio
-@chat_bp.route("/ask/municipio", methods=["OPTIONS"])
-def ask_municipio_options():
-    return cors_options_response()
-
 @chat_bp.route("/ask/municipio", methods=["POST"])
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None, owner_user=None):
@@ -274,12 +239,6 @@ def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     """
     user = owner_user or current_user
     return _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
-
-
-# Preflight CORS handler for /widget/attention
-@chat_bp.route("/widget/attention", methods=["OPTIONS"])
-def widget_attention_options():
-    return cors_options_response()
 
 
 @chat_bp.route("/widget/attention", methods=["GET"])
