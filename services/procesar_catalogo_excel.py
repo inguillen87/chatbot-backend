@@ -38,80 +38,67 @@ def procesar_catalogo_excel(path: str, pyme_user_id: int, pyme_rubro_nombre: str
         return []
 
     mapa_columnas, fila_inicio_datos = mapa_info
-    logger.info(f"[EXCEL_PROC] Mapa de columnas detectado para '{base_filename}' (user_id: {pyme_user_id}): {mapa_columnas}. Datos inician en fila: {fila_inicio_datos}")
+    # mapa_columnas AHORA contiene INTEGER INDICES como valores, que se refieren a las columnas de df_raw.
+    logger.info(f"[EXCEL_PROC] Mapa de columnas (índices en df_raw) detectado para '{base_filename}' (user_id: {pyme_user_id}): {mapa_columnas}. Datos inician en fila de df_raw: {fila_inicio_datos}")
 
-    # Si la fila_inicio_datos es 0, significa que la primera fila ya son datos (o no se encontró header explícito y se usa heurística)
-    # En este caso, pd.read_excel con header=None ya asignó nombres numéricos a las columnas.
-    # El mapa_columnas contendrá esos nombres numéricos como valores si la heurística los usó.
-    # Si la primera fila son los headers (fila_inicio_datos > 0), entonces usamos esos headers para el df de datos.
-    if fila_inicio_datos > 0:
-        # Los encabezados están en df_raw.iloc[fila_inicio_datos - 1]
-        # Los datos comienzan en df_raw.iloc[fila_inicio_datos:]
-        df_datos = df_raw.iloc[fila_inicio_datos:].reset_index(drop=True)
-        # Usar los nombres de columna originales que el mapeador identificó
-        df_datos.columns = df_raw.iloc[fila_inicio_datos -1].tolist()
+    if fila_inicio_datos >= len(df_raw) and not df_raw.empty:
+        logger.warning(f"[EXCEL_PROC] fila_inicio_datos ({fila_inicio_datos}) está fuera de los límites de df_raw ({len(df_raw)} filas) para '{base_filename}'. No hay datos para procesar.")
+        return []
+    
+    # df_iterar tomará las filas de datos de df_raw.
+    # Como df_raw fue leído con header=None, sus columnas ya son 0, 1, 2...
+    # Y mapa_columnas.values() también son estos índices 0, 1, 2...
+    df_iterar = df_raw.iloc[fila_inicio_datos:].reset_index(drop=True)
 
-    else: # fila_inicio_datos es 0
-        # Esto significa que o bien no hay encabezados, o los encabezados son la primera fila (index 0)
-        # y el mapeador inteligente los usó para crear el mapa_columnas.
-        # Si la primera fila eran encabezados, df_raw.columns ya son esos.
-        # Si no había encabezados y se usó heurística, mapa_columnas referenciará las columnas por su índice (0, 1, 2...).
-        # En este caso, el `mapa_columnas` ya tiene las claves correctas (0, 1, 2..) si no había header
-        # o los nombres de la primera fila si eran headers.
-        # Necesitamos que df_datos tenga las columnas nombradas como espera el mapa_columnas.
-        # Si mapa_columnas.values() son strings (nombres de headers), usamos la primera fila como headers.
-        # Si mapa_columnas.values() son ints (índices de columnas), usamos header=None.
-
-        # Re-leer el dataframe, esta vez dejando que pandas infiera los encabezados si están en la primera fila,
-        # o use índices numéricos si no hay encabezados.
-        # Esto es más simple que tratar de reasignar columnas a df_raw directamente.
-        # Si la primera fila eran los headers que el mapper usó (fila_inicio_datos == 0 y mapa_columnas.values() son str)
-        # entonces df_datos debería tener esos headers.
-        # Si no había headers y el mapper usó índices (fila_inicio_datos == 0 y mapa_columnas.values() son int/str(int))
-        # entonces df_datos debería tener esos índices como headers.
-
-        # Simplificación: Si fila_inicio_datos es 0, asumimos que la primera fila de df_raw SON los headers
-        # o que no hay headers y el mapeador usó los índices posicionales.
-        # El mapa_columnas ya contiene los nombres correctos (sean strings o índices numéricos casteados a string)
-        # que pandas usaría.
-        df_datos = pd.read_excel(path, sheet_name=0, keep_default_na=False, dtype=str, header=0 if any(isinstance(v, str) and not v.isdigit() for v in mapa_columnas.values()) else None)
-        if df_datos.empty and not df_raw.empty : # Si leer con header=0 falla pero raw tenía datos, reintentar con header=None
-             df_datos = pd.read_excel(path, sheet_name=0, keep_default_na=False, dtype=str, header=None)
-
+    if df_iterar.empty:
+        logger.warning(f"[EXCEL_PROC] No se encontraron filas de datos en '{base_filename}' (user_id: {pyme_user_id}) después de aplicar fila_inicio_datos={fila_inicio_datos}.")
+        return []
 
     registros: List[Dict[str, Any]] = []
-    campos_estandar = list(KEYWORD_MAP.keys()) # nombre, precio, descripcion, sku, etc.
-
-    for i, row in df_datos.iterrows():
+    
+    # Los nombres de las columnas en df_iterar son RangeIndex (0, 1, 2...)
+    # Esto coincide con los valores (índices) que ahora están en mapa_columnas.
+    
+    for i, row in df_iterar.iterrows():
         registro_actual = {}
-        # Usar el mapa_columnas para extraer datos. Las claves del mapa son los nombres estándar.
-        # Los valores del mapa son los nombres de columna originales (o índices si no hay header).
-
+        
         nombre_producto = ""
-        if mapa_columnas.get('nombre'):
-            nombre_producto = str(row.get(mapa_columnas['nombre'], "")).strip()
-
+        col_idx_nombre = mapa_columnas.get('nombre') # Esto es un Integer index
+        
+        if col_idx_nombre is not None and col_idx_nombre < len(row):
+            nombre_producto = str(row.iloc[col_idx_nombre]).strip() # Usar iloc para acceder por posición
+        
         if not nombre_producto:
-            logger.warning(f"[EXCEL_PROC] Fila {i+fila_inicio_datos} (user_id: {pyme_user_id}) omitida: 'nombre' está vacío o no se pudo mapear. Valor original: '{row.get(mapa_columnas.get('nombre', 'N/A'), '')}'")
+            valor_original_log = ""
+            if col_idx_nombre is not None and col_idx_nombre < len(row):
+                 valor_original_log = str(row.iloc[col_idx_nombre])
+            elif col_idx_nombre is not None:
+                 valor_original_log = f"(Índice {col_idx_nombre} fuera de rango para fila con {len(row)} celdas)"
+            else:
+                 valor_original_log = "(Columna 'nombre' no mapeada)"
+
+            logger.warning(f"[EXCEL_PROC] Fila {i + fila_inicio_datos} de df_raw (fila {i} de datos) (user_id: {pyme_user_id}) omitida: 'nombre' está vacío. Valor original intentado: '{valor_original_log}'")
             continue
 
         registro_actual['nombre'] = nombre_producto
-
-        for campo_estandar in campos_estandar:
+        
+        for campo_estandar in KEYWORD_MAP.keys(): # Usar KEYWORD_MAP para asegurar todos los campos
             if campo_estandar == 'nombre': # Ya procesado
                 continue
-            nombre_columna_original = mapa_columnas.get(campo_estandar)
-            if nombre_columna_original is not None: # Puede ser int si no hay header
-                valor_celda = str(row.get(nombre_columna_original, "")).strip()
+            
+            col_idx = mapa_columnas.get(campo_estandar)
+            if col_idx is not None and col_idx < len(row):
+                valor_celda = str(row.iloc[col_idx]).strip() # Usar iloc
                 registro_actual[campo_estandar] = valor_celda
             else:
-                registro_actual[campo_estandar] = "" # Asegurar que todos los campos estándar existan
+                # Si el campo no está en mapa_columnas o el índice está fuera de rango para la fila
+                registro_actual[campo_estandar] = "" 
 
-        # Llenar campos faltantes con defaults (vacío) si no fueron mapeados
-        for k_std in KEYWORD_MAP.keys():
+        # Llenar campos faltantes con defaults (vacío) si no fueron mapeados (esto es redundante si el loop anterior usa KEYWORD_MAP.keys())
+        # for k_std in KEYWORD_MAP.keys():
             if k_std not in registro_actual:
                 registro_actual[k_std] = ""
-
+        
         registros.append(registro_actual)
 
     if not registros:

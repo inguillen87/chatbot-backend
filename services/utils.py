@@ -240,13 +240,16 @@ def crear_mapa_de_columnas_inteligente(
             if campo_estandar in mapa_actual: continue
             for idx, celda_limpia in enumerate(celdas_limpias):
                 if not celda_limpia: continue
+                # idx es el índice de la columna en la fila actual (y por ende en el df_raw si header=None)
                 for keyword in keywords:
                     if re.search(r'\b' + re.escape(keyword) + r'\b', celda_limpia, re.IGNORECASE):
-                        if celdas_originales[idx] not in mapa_actual.values():
-                            mapa_actual[campo_estandar] = celdas_originales[idx]
+                        # Guardar el índice de la columna, no el nombre del header.
+                        # Asegurarse de no mapear el mismo índice a múltiples campos estándar.
+                        if idx not in mapa_actual.values():
+                            mapa_actual[campo_estandar] = idx # Guardar el índice de la columna
                             break
                 if campo_estandar in mapa_actual: break
-
+        
         score_actual = 0
         if 'nombre' in mapa_actual: score_actual += 10
         if 'precio' in mapa_actual: score_actual += 10
