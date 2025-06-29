@@ -384,6 +384,6 @@ def procesar_catalogo_imagen_google(image_path: str, user_id: int, pyme_rubro_no
     
     try:
         return _procesar_documento_tablas(document, base_filename, pyme_rubro_nombre)
-    except Exception e_proc_tablas_img:
+    except Exception as e_proc_tablas_img:
         logger.error(f"❌ [DOCAI_PROC] Error durante _procesar_documento_tablas para imagen {base_filename}: {e_proc_tablas_img}", exc_info=True)
         return []
