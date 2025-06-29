@@ -52,22 +52,77 @@ def url_descargar_catalogo() -> str:
     from flask import request
     return f"{request.url_root.rstrip('/')}/catalogo/descargar"
 
+import ast # For literal_eval
+
 def extraer_productos_llm(texto: str) -> list[dict]:
-    prompt = ("Extrae producto y cantidad del MENSAJE y responde solo con JSON "
-              "como [{'nombre': '...', 'cantidad': 1}].\n"
-              f"MENSAJE: '{texto}'")
+    prompt = (
+        "Extrae producto y cantidad del MENSAJE. Responde ÚNICAMENTE con una lista de objetos JSON válida. "
+        "Cada objeto debe tener claves \"nombre\" (string) y \"cantidad\" (integer). "
+        "Ejemplo: [{\"nombre\": \"manzanas\", \"cantidad\": 2}, {\"nombre\": \"peras\", \"cantidad\": 1}]\n"
+        f"MENSAJE: '{texto}'"
+    )
+    resp_content = "" # Para logging en caso de error
     try:
-        resp = robust_chat(message=prompt)
-        datos = json.loads(resp or "[]")
+        resp_content = robust_chat(message=prompt)
+        if not resp_content:
+            logger.warning("[PYME_LLM_PARSE] LLM devolvió respuesta vacía para extraer productos.")
+            return []
+
+        datos = []
+        try:
+            datos = json.loads(resp_content)
+        except json.JSONDecodeError as e_json:
+            logger.warning(f"[PYME_LLM_PARSE] JSONDecodeError para: '{resp_content}'. Error: {e_json}. Intentando con ast.literal_eval.")
+            try:
+                # Corregir booleanos/null de JS/Python antes de ast.literal_eval
+                # No es perfecto, pero cubre casos comunes de LLMs.
+                resp_corrected = resp_content.replace("true", "True").replace("false", "False").replace("null", "None")
+                # Intentar quitar un posible ```json ... ``` de markdown si el LLM lo añade
+                match_md_json = re.match(r"^\s*```json\s*([\s\S]*?)\s*```\s*$", resp_corrected, re.DOTALL)
+                if match_md_json:
+                    resp_corrected = match_md_json.group(1)
+
+                datos = ast.literal_eval(resp_corrected)
+            except (SyntaxError, ValueError) as e_ast:
+                logger.error(f"[PYME_LLM_PARSE] ast.literal_eval también falló para: '{resp_corrected}'. Error: {e_ast}. Se devuelve lista vacía.")
+                return [] # Fallback a lista vacía si todo falla
+
         items: list[dict] = []
         if isinstance(datos, list):
             for it in datos:
+                if not isinstance(it, dict): # Asegurar que cada item de la lista sea un dict
+                    logger.warning(f"[PYME_LLM_PARSE] Item no es un diccionario en datos de LLM: {it}")
+                    continue
                 nombre = str(it.get("nombre", "")).strip()
-                cantidad = int(it.get("cantidad", 1)) if str(it.get("cantidad", "1")).isdigit() else 1
-                if nombre: items.append({"nombre": nombre, "cantidad": cantidad})
+                cantidad_raw = it.get("cantidad", 1)
+                cantidad = 1
+                if isinstance(cantidad_raw, (int, float)):
+                    cantidad = int(cantidad_raw)
+                elif isinstance(cantidad_raw, str) and cantidad_raw.isdigit():
+                    cantidad = int(cantidad_raw)
+
+                if cantidad < 1: cantidad = 1 # Asegurar cantidad mínima
+
+                if nombre:
+                    items.append({"nombre": nombre, "cantidad": cantidad})
+        elif isinstance(datos, dict): # Si el LLM devuelve un solo objeto en lugar de una lista
+            logger.warning(f"[PYME_LLM_PARSE] LLM devolvió un diccionario en lugar de una lista: {datos}. Intentando procesarlo.")
+            nombre = str(datos.get("nombre", "")).strip()
+            cantidad_raw = datos.get("cantidad", 1)
+            cantidad = 1
+            if isinstance(cantidad_raw, (int, float)):
+                cantidad = int(cantidad_raw)
+            elif isinstance(cantidad_raw, str) and cantidad_raw.isdigit():
+                cantidad = int(cantidad_raw)
+            if cantidad < 1: cantidad = 1
+            if nombre:
+                items.append({"nombre": nombre, "cantidad": cantidad})
+        else:
+            logger.error(f"[PYME_LLM_PARSE] Datos de LLM no son lista ni diccionario después de parseo: {datos} (Tipo: {type(datos)}) (Original: '{resp_content}')")
+
         return items
-    except Exception:
-        logger.exception("[PYME] Error usando LLM para extraer productos")
+    except Exception as e_outer:
+        logger.exception(f"[PYME] Error general en extraer_productos_llm. Respuesta original del LLM (si hubo): '{resp_content}'. Error: {e_outer}")
     return []
 
 def extraer_productos(texto: str) -> list[dict]:
