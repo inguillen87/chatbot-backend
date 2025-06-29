@@ -1,6 +1,6 @@
 # services/ticket_service.py
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Literal, Union
 import logging
 
@@ -179,41 +179,68 @@ class ServicioTickets:
         *,
         municipio_id: int | None = None,
         rubro_id: int | None = None,
+        fecha_inicio: str | None = None,
+        fecha_fin: str | None = None,
+        categoria: str | None = None,
     ) -> list[dict]:
-        """Devuelve los tickets con ubicación que no estén cerrados.
-
-        Solo retorna los tickets pertenecientes al ``municipio_id`` o
-        ``rubro_id`` indicados, si se proporcionan.
+        """
+        Devuelve los tickets con ubicación que no estén cerrados,
+        agrupados por ubicación y con un peso (cantidad de tickets).
+        Permite filtrar por municipio/rubro, rango de fechas y categoría.
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
-            query = Model.query
+            query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            query = query.filter(Model.estado != "cerrado")
+
             if tipo_ticket == "municipio" and municipio_id is not None:
                 query = query.filter_by(municipio_id=municipio_id)
             if tipo_ticket == "pyme" and rubro_id is not None:
                 query = query.filter_by(rubro_id=rubro_id)
+
+            if fecha_inicio:
+                try:
+                    query = query.filter(Model.fecha >= datetime.fromisoformat(fecha_inicio))
+                except ValueError:
+                    logger.warning(f"Formato de fecha_inicio inválido: {fecha_inicio}")
+            if fecha_fin:
+                try:
+                    # Añadimos un día para incluir todo el día de fecha_fin
+                    fecha_fin_dt = datetime.fromisoformat(fecha_fin) + timedelta(days=1)
+                    query = query.filter(Model.fecha < fecha_fin_dt)
+                except ValueError:
+                    logger.warning(f"Formato de fecha_fin inválido: {fecha_fin}")
+
+            if categoria and hasattr(Model, 'categoria'):
+                query = query.filter(Model.categoria == categoria)
+
             tickets = query.all()
-            resultado = []
+
+            ubicaciones_agrupadas = {} # (lat, lng) -> count
+
             for t in tickets:
-                if (
-                    getattr(t, "estado", "") != "cerrado"
-                    and getattr(t, "latitud", None) is not None
-                    and getattr(t, "longitud", None) is not None
-                ):
-                    resultado.append(
-                        {
-                            "id": t.id,
-                            "latitud": t.latitud,
-                            "longitud": t.longitud,
-                            "categoria": getattr(t, "categoria", None),
-                            "estado": t.estado,
-                            "direccion": getattr(t, "direccion", None),
-                        }
-                    )
-            return resultado
+                # Redondear lat/lng a un número de decimales para agrupar puntos cercanos.
+                # Ajustar el número de decimales según la precisión deseada.
+                # 5 decimales dan una precisión de ~1.1 metros.
+                # 4 decimales dan una precisión de ~11 metros.
+                # 3 decimales dan una precisión de ~110 metros.
+                # Consideremos 4 decimales para agrupar problemáticas en una misma "zona pequeña".
+                lat_lng_key = (round(t.latitud, 4), round(t.longitud, 4))
+                if lat_lng_key not in ubicaciones_agrupadas:
+                    ubicaciones_agrupadas[lat_lng_key] = 0
+                ubicaciones_agrupadas[lat_lng_key] += 1
+
+            resultado_heatmap = []
+            for (lat, lng), weight in ubicaciones_agrupadas.items():
+                resultado_heatmap.append({
+                    "location": {"lat": lat, "lng": lng},
+                    "weight": weight
+                })
+
+            return resultado_heatmap
         except SQLAlchemyError as e:
             logger.error(
-                f"Error de DB al obtener tickets para mapa: {e}", exc_info=True
+                f"Error de DB al obtener tickets para mapa de calor: {e}", exc_info=True
             )
             return []
 
