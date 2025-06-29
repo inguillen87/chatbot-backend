@@ -114,6 +114,26 @@ def municipal_tramites():
 def municipal_tramite(nombre):
     return obtener_tramite(nombre)
 
+@municipal_bp.route('/tickets/map_data', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_tickets_map_data(current_user):
+    """
+    Devuelve datos de tickets municipales abiertos con ubicación
+    para el municipio del usuario actual, optimizado para mostrar en un mapa.
+    """
+    from services.ticket_service import servicio_tickets # Importación local
+
+    municipio_id_del_admin = current_user.municipio_id
+    if not municipio_id_del_admin:
+        return jsonify({"error": "Usuario no asociado a un municipio"}), 400
+
+    tickets_con_ubicacion = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
+        tipo_ticket="municipio",
+        municipio_id=municipio_id_del_admin
+    )
+    return jsonify(tickets_con_ubicacion)
+
 
 @municipal_bp.route('/incidents', methods=['GET'])
 @token_requerido
@@ -125,7 +145,7 @@ def municipal_incidents(current_user):
         tickets = (
             MunicipioTicket.query
             .filter_by(municipio_id=current_user.municipio_id)
-            .filter(MunicipioTicket.estado != 'cerrado')
+            .filter(MunicipioTicket.estado != 'cerrado') # Podríamos querer ver todos en el admin, no solo los no cerrados
             .order_by(MunicipioTicket.fecha.desc())
             .all()
         )
@@ -141,12 +161,16 @@ def municipal_incidents(current_user):
             "categoria": getattr(t, "categoria", None),
             "estado": t.estado,
             "fecha": t.fecha.isoformat() if getattr(t, "fecha", None) else None,
-            "pregunta": getattr(t, "pregunta", None),
-            "detalles": getattr(t, "detalles", None),
+            "pregunta": getattr(t, "pregunta", None), # Descripción breve inicial
+            "detalles": getattr(t, "detalles", None), # Detalles completos del reclamo
             "direccion": getattr(t, "direccion", None),
             "latitud": getattr(t, "latitud", None),
             "longitud": getattr(t, "longitud", None),
-            "archivo_url": getattr(t, "archivo_url", None),
+            "archivo_url": getattr(t, "archivo_url", None), # Para la foto
+            # Datos del vecino/usuario si están disponibles (requeriría join con User o guardar en ticket)
+            "nombre_vecino": getattr(t, "nombre_vecino", None), # Asumiendo que se añada al modelo o se obtenga de User
+            "telefono_vecino": getattr(t, "telefono_vecino", None),
+            "email_vecino": getattr(t, "email_vecino", None),
         }
         for t in tickets
     ]
