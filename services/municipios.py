@@ -1213,6 +1213,24 @@ class ReclamoHandler(BaseMunicipioHandler):
                     ]
                 }
             # Si no reconoce, intenta entender con LLM (por si usuario escribe raro)
+            # Primero, chequear si es una confirmación directa para saltar adjuntos
+            CONFIRMACION_DIRECTA_KEYWORDS_ADJUNTOS = [
+                "confirmar reclamo", "confirmar", "confirmo", "confirmado",
+                "si confirmo", "sí confirmo", "finalizar reclamo", "si", "sí",
+                "confirmarreclamo" # Añadido de los logs del usuario
+            ]
+            if any(kw in accion for kw in CONFIRMACION_DIRECTA_KEYWORDS_ADJUNTOS):
+                logger.info(f"[ReclamoHandler] Detectada confirmación directa ('{accion}') en ESPERANDO_ADJUNTOS_RECLAMO. Transicionando a confirmación final.")
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+                resumen = self.build_detalles_memoria(memoria)
+                return {
+                    "respuesta": f"Entendido, salteamos los adjuntos. Por favor, revisá si todos los datos son correctos antes de confirmar:\n\n{resumen}\n\n¿Está todo bien para generar el reclamo?",
+                    "botones": [
+                        {"texto": "Sí, confirmar reclamo", "action": "confirmar_reclamo"},
+                        {"texto": "No, quiero editar algo", "action": "editar_reclamo"}
+                    ]
+                }
+
             try:
                 respuesta_llm = _clasificar_intencion_con_llm(
                     pregunta_str,
