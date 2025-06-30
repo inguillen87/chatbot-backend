@@ -1217,7 +1217,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             CONFIRMACION_DIRECTA_KEYWORDS_ADJUNTOS = [
                 "confirmar reclamo", "confirmar", "confirmo", "confirmado",
                 "si confirmo", "sí confirmo", "finalizar reclamo", "si", "sí",
-                "confirmarreclamo" # Añadido de los logs del usuario
+                "confirmarreclamo", "si confirmar reclamo", "sí confirmar reclamo" # Variantes observadas
             ]
             if any(kw in accion for kw in CONFIRMACION_DIRECTA_KEYWORDS_ADJUNTOS):
                 logger.info(f"[ReclamoHandler] Detectada confirmación directa ('{accion}') en ESPERANDO_ADJUNTOS_RECLAMO. Transicionando a confirmación final.")
@@ -2944,6 +2944,8 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "Ubicación": "compartir_ubicacion",
     "No, continuar": "sin_adjuntos",  # Renombrado para mayor claridad en el backend
     "Completar reclamo": "sin_adjuntos",
+    "Sí, confirmar reclamo": "confirmar_reclamo",  # Nueva variante detectada en logs
+    "Si, confirmar reclamo": "confirmar_reclamo",   # Variante sin tilde para robustez
     "Confirmar reclamo": "confirmar_reclamo",
     "Finalizar": "confirmar_reclamo",
     "Finalizar reclamo": "confirmar_reclamo",
