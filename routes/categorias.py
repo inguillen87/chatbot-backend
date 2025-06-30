@@ -10,4 +10,4 @@ categorias_bp = Blueprint('categorias', __name__, url_prefix='/categorias')
 @require_role('admin', 'empleado')
 def obtener_categorias(current_user):
     """Devuelve la lista de categorías de tickets disponibles."""
-    return jsonify(TODAS_LAS_CATEGORIAS_UNICAS)
+    return jsonify({"categorias": TODAS_LAS_CATEGORIAS_UNICAS})
