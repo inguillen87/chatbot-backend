@@ -96,3 +96,87 @@ def listar_pedidos_usuario(user):
     except Exception as e:
         logger.error(f"Error en la ruta /pedidos: {e}", exc_info=True)
         return jsonify({"error": "Error interno del servidor al obtener los pedidos."}), 500
+
+# --- Ruta para Checkout del Carrito ---
+@pedidos_bp.route('/pedidos/checkout', methods=['POST'])
+@token_requerido
+def checkout_carrito(user: User):
+    """
+    Procesa el carrito de compras actual y crea un PymePedido.
+    """
+    from services.cart import get_summary, clear_cart # Importaciones locales
+
+    cart_items = get_summary()
+    if not cart_items:
+        return jsonify({"error": "El carrito está vacío."}), 400
+
+    # Datos del cliente pueden venir en el request body o tomarse del perfil del usuario
+    data = request.get_json() or {}
+
+    # Priorizar datos del request, luego del perfil del usuario
+    # El user.id aquí es el del cliente que está comprando.
+    # El user_id para buscar en CatalogoItem dentro de crear_pedido_desde_carrito
+    # debe ser el de la Pyme dueña del catálogo. Esto necesita ser manejado con cuidado.
+    # Si el 'user' es el dueño de la pyme (admin/empleado) haciendo un pedido para un cliente,
+    # el user.id es correcto para el catálogo. Si 'user' es el cliente final,
+    # necesitamos el user_id de la pyme a la que está comprando.
+    # Para este ejemplo, asumiremos que el 'user' autenticado (dueño del token)
+    # es el que posee el catálogo y a quien se le hace el pedido (user.id es el pyme_id).
+    # Si el sistema permite a clientes finales tener sus propios carritos para múltiples pymes,
+    # el 'pyme_id' o 'empresa_id' a la que se compra debería ser parte del request o contexto.
+
+    # Para el dueño del catálogo/pyme:
+    # Asumimos que el 'user' autenticado (dueño del token) es la Pyme o un empleado de la Pyme.
+    # El catálogo se busca usando user.id
+    pyme_id_for_catalog = user.id
+
+    # Para los datos del cliente que realiza el pedido:
+    # Si el cliente es el mismo usuario autenticado (Pyme haciendo un pedido para sí misma o un empleado para la pyme),
+    # entonces cliente_user_id es user.id.
+    # Si es un pedido para un cliente final (potencialmente diferente o anónimo),
+    # el `cliente_user_id` podría venir del request `data` si el cliente está logueado con otro sistema,
+    # o ser None para clientes anónimos.
+    # Por simplicidad y consistencia con el user_id de PymePedido,
+    # si `data` no especifica un `cliente_user_id`, se asume que el pedido es para el `user` autenticado.
+
+    cliente_user_id_from_request = data.get("cliente_user_id")
+    # Si el que hace checkout es el mismo dueño de la pyme, su user.id es el cliente_user_id
+    # Podría ser None si es un guest checkout y no se pasa cliente_user_id
+    final_cliente_user_id = cliente_user_id_from_request if cliente_user_id_from_request is not None else user.id
+
+    cliente_data = {
+        "nombre_cliente": data.get("nombre_cliente") or user.name, # Nombre del cliente
+        "email_cliente": data.get("email_cliente") or user.email,   # Email del cliente
+        "telefono_cliente": data.get("telefono_cliente") or user.telefono, # Teléfono del cliente
+        "direccion": data.get("direccion") or user.direccion, # Dirección de envío/cliente
+        "latitud": data.get("latitud") or user.latitud,
+        "longitud": data.get("longitud") or user.longitud,
+        "asunto": data.get("asunto", f"Pedido desde carrito para {user.name or 'cliente'}"),
+        "rubro": user.rubro.clave if user.rubro else "general_pyme", # Rubro de la Pyme (dueña del catálogo)
+        "cliente_user_id": final_cliente_user_id # ID del cliente que crea el pedido
+    }
+
+    try:
+        # El primer argumento es el ID de la Pyme dueña del catálogo.
+        # El cliente_user_id dentro de cliente_data es para el campo user_id del PymePedido.
+        nuevo_pedido = servicio_pedidos.crear_pedido_desde_carrito(
+            pyme_id=pyme_id_for_catalog,
+            cart_items=cart_items,
+            cliente_data=cliente_data
+        )
+
+        if nuevo_pedido:
+            clear_cart() # Vaciar el carrito después de un checkout exitoso
+            return jsonify({
+                "mensaje": "Pedido realizado con éxito desde el carrito.",
+                "nro_pedido": nuevo_pedido.nro_pedido,
+                "estado": nuevo_pedido.estado,
+                "monto_total": nuevo_pedido.monto_total
+            }), 201
+        else:
+            # Los logs dentro de crear_pedido_desde_carrito deberían indicar la causa del error
+            return jsonify({"error": "No se pudo procesar el pedido desde el carrito."}), 500
+
+    except Exception as e:
+        logger.error(f"Error en la ruta /pedidos/checkout: {e}", exc_info=True)
+        return jsonify({"error": "Error interno del servidor al procesar el checkout."}), 500
