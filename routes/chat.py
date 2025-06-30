@@ -187,6 +187,16 @@ def _procesar_chat(
                     403,
                 )
 
+        from flask import session as flask_request_session # Renombrar para evitar conflicto con session_obj
+        import uuid
+
+        session_chat_id = flask_request_session.get('chat_session_uuid')
+        if not session_chat_id:
+            session_chat_id = str(uuid.uuid4())
+            flask_request_session['chat_session_uuid'] = session_chat_id
+
+        current_app.logger.info(f"Chat Session ID: {session_chat_id}")
+
         # Usamos la lógica centralizada que decide según el rubro
         resultado = responder_chatboc(
             pregunta,
@@ -195,8 +205,9 @@ def _procesar_chat(
             rubro_obj=rubro_obj,
             rubro_nombre_frontend=rubro_clave,
             tipo_chat=tipo_chat,
-            contexto_previo=contexto_previo,
+            contexto_previo=contexto_previo, # Esto es el contexto_pyme o contexto_municipio de la sesión
             anon_id=anon_id,
+            chat_session_uuid=session_chat_id # Pasar el session_uuid
         )
 
         # --- Determinar si la conversación debe considerarse pública ---
