@@ -81,20 +81,28 @@ def generar_respuesta_small_talk(pregunta: str) -> str:
 # Puedes ajustar este prompt según las intenciones que quieras clasificar
 PROMPT_CLASIFICACION_INTENCION = """
 Analiza la siguiente PREGUNTA DEL USUARIO y clasifica su INTENCIÓN.
-Si la pregunta no encaja en ninguna de las categorías, clasifícala como 'general'.
+Responde ÚNICAMENTE con una de las INTENCIONES POSIBLES de la lista.
+Si la pregunta no encaja claramente en ninguna de las categorías específicas, clasifícala como 'general'.
 
 INTENCIONES POSIBLES:
-- iniciar_reclamo: El usuario quiere iniciar un reclamo o queja (ej. "quiero reclamar por una luz", "hay basura en la calle")
-- consultar_estado_ticket: El usuario quiere saber el estado de un ticket o reclamo existente (ej. "estado de mi reclamo", "cómo va mi ticket 12345")
-- consultar_impuestos: El usuario pregunta sobre impuestos municipales, tasas o pagos (ej. "quiero pagar mis impuestos", "deuda de tasas")
-- consultar_tramite: El usuario pregunta sobre cómo realizar un trámite (ej. "requisitos para licencia de conducir", "cómo se hace habilitacion comercial")
-- hablar_con_agente: El usuario quiere hablar con una persona (ej. "necesito hablar con alguien", "quiero hablar con una persona", "pasame con un humano", "me pasas con un operador", "quiero un representante")
-- general: Cualquier otra consulta que no encaje en las anteriores.
+- iniciar_reclamo: El usuario expresa deseo de presentar una queja, problema o denuncia.
+    Ejemplos: "quiero reclamar por una luz quemada", "hay mucha basura en la esquina de mi casa", "el servicio de agua no funciona", "tengo un problema con el pavimento"
+- consultar_estado_ticket: El usuario quiere saber el estado o progreso de un ticket, reclamo o trámite ya iniciado.
+    Ejemplos: "cómo va mi reclamo 12345?", "quisiera saber el estado de mi gestión", "alguna novedad sobre el ticket M-5567?"
+- consultar_impuestos: El usuario pregunta sobre impuestos municipales, tasas, facturas, boletas o formas de pago relacionadas.
+    Ejemplos: "quiero pagar mis impuestos", "cómo pago la tasa municipal?", "dónde puedo ver mi boleta de ABL?", "cuánto debo de patentes?"
+- consultar_tramite: El usuario pregunta sobre cómo realizar un trámite, requisitos, horarios o lugares para trámites municipales.
+    Ejemplos: "requisitos para licencia de conducir", "cómo se hace la habilitación comercial?", "dónde saco el certificado de domicilio?", "horario para renovar DNI"
+- hacer_sugerencia: El usuario quiere proponer una idea, mejora o dar una opinión constructiva.
+    Ejemplos: "deberían poner más bancos en la plaza", "sugiero que mejoren la iluminación del parque", "tengo una idea para el tránsito"
+- hablar_con_agente: El usuario solicita explícitamente hablar con una persona, empleado o representante.
+    Ejemplos: "necesito hablar con alguien", "quiero hablar con una persona", "pasame con un humano", "me pasas con un operador?", "quiero un representante"
+- general: Cualquier otra consulta que no encaje en las anteriores, o preguntas generales sobre el municipio.
+    Ejemplos: "cuál es el teléfono del intendente?", "historia de la ciudad", "eventos culturales este fin de semana"
 
 PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 
-Tu respuesta debe ser SÓLO una de las INTENCIONES POSIBLES.
-"""
+INTENCIÓN: """
 
 def _clasificar_intencion_con_llm(pregunta: str) -> str:
     """
@@ -130,6 +138,7 @@ def responder_chatboc(
     rubro_nombre_frontend=None,
     tipo_chat=None,
     anon_id=None,
+    chat_session_uuid=None, # Nuevo parámetro
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
@@ -194,8 +203,9 @@ def responder_chatboc(
             owner_user,
             rubro_obj,
             viewer_user=current_user,
-            session_obj=session_obj,
+            session_obj=session_obj, # El session_obj de flask
             anon_id=anon_id,
+            chat_session_uuid=chat_session_uuid, # Pasar aquí
             **kwargs,
         )
     elif tipo_chat == "pyme":
@@ -205,8 +215,9 @@ def responder_chatboc(
             owner_user,
             rubro_obj,
             viewer_user=current_user,
-            session_obj=session_obj,
+            session_obj=session_obj, # El session_obj de flask
             anon_id=anon_id,
+            chat_session_uuid=chat_session_uuid, # Pasar aquí
             **kwargs,
         )
     else:
