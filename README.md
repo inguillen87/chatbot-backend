@@ -176,6 +176,9 @@ header `Anon-Id` durante la llamada a `POST /widget/register`, el backend
 migrará automáticamente esos tickets y comentarios para que pertenezcan al nuevo
 usuario.
 
+Para ver un ejemplo completo de cómo enviar una pregunta en modo anónimo
+consulta el archivo [`docs/ejemplo-request-demo.md`](docs/ejemplo-request-demo.md).
+
 ## Mejoras recientes
 
 - Los listados de productos del catálogo y los pedidos se ordenan por precio para que sea más fácil elegir.
