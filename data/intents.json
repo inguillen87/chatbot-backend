@@ -359,10 +359,58 @@
     "ESTOY EN PELIGRO"
   ],
   "respuesta": "ACTION_ACTIVAR_PANICO"
+},
+{
+  "categoria": "consultar_estado_tramite",
+  "ejemplos": [
+    "¿Cómo va mi trámite?",
+    "Quiero saber el estado de mi solicitud de licencia",
+    "Consultar estado de expediente 12345",
+    "¿En qué quedó mi reclamo número 500?",
+    "Seguimiento de mi gestión",
+    "Ver el avance de mi permiso"
+  ],
+  "respuesta": "Para consultar el estado de tu trámite o reclamo, por favor indicame el número de expediente/ticket o el DNI del titular. También podés verificarlo online en [linkWeb]/seguimiento."
+},
+{
+  "categoria": "solicitar_ayuda_social",
+  "ejemplos": [
+    "¿Cómo pido ayuda social?",
+    "Necesito asistencia alimentaria",
+    "¿Qué programas de ayuda tiene el municipio?",
+    "Información sobre planes sociales",
+    "¿Dan bolsones de comida?",
+    "Requiero ayuda económica del municipio"
+  ],
+  "respuesta": "El municipio cuenta con varios programas de asistencia social. Podés acercarte a la Secretaría de Desarrollo Social en [direccionSocial] en el horario [horarioSocial] o llamar al [telefonoSocial] para evaluar tu caso. Más info en [linkWeb]/desarrollosocial. ¿Necesitas la dirección, teléfono u horario?"
 }
   
 ],
   "comercio_general": [
+    {
+      "categoria": "consultar_horario_atencion",
+      "ejemplos": [
+        "¿Cuál es su horario?",
+        "¿Hasta qué hora están abiertos hoy?",
+        "Horarios de atención",
+        "¿Abren los sábados?",
+        "¿A qué hora cierran?",
+        "¿Están abiertos ahora?"
+      ],
+      "respuesta": "Nuestro horario de atención en [nombreEmpresa] es de [horario]. Podés encontrar esta información actualizada también en nuestro perfil de Google Maps o en [linkWeb]. ¿Te gustaría saber el horario de algún día en particular?"
+    },
+    {
+      "categoria": "contacto_humano",
+      "ejemplos": [
+        "Quiero hablar con una persona",
+        "Hablar con un representante",
+        "Necesito ayuda de un empleado",
+        "Contactar con atención al cliente",
+        "Pasame con un humano",
+        "¿Puedo hablar con alguien?"
+      ],
+      "respuesta": "ACTION_CONTACTAR_AGENTE"
+    },
     {
       "categoria": "iniciar_compra",
       "ejemplos": [
