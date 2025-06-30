@@ -1160,6 +1160,15 @@ class ReclamoHandler(BaseMunicipioHandler):
 
             # Si botón de adjuntar
             if accion == "adjuntar_foto":
+                if self.context.get("anon_id") and not self.context.get("user_id"):
+                    return {
+                        "respuesta": "Para adjuntar una foto, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?",
+                        "botones": [
+                            {"texto": "Iniciar Sesión", "action": "login"},
+                            {"texto": "Registrarme Gratis", "action": "register"},
+                            {"texto": "Continuar sin adjuntar", "action": "sin_adjuntos"}
+                        ]
+                    }
                 return {
                     "respuesta": "¡Entendido! Podés enviarme la foto ahora. Cuando la vea, la adjuntaré al reclamo. Si preferís no adjuntar nada, simplemente decime 'continuar'.",
                     "botones": [
@@ -1167,6 +1176,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                     ]
                 }
             if accion == "compartir_ubicacion":
+                if self.context.get("anon_id") and not self.context.get("user_id"):
+                    return {
+                        "respuesta": "Para compartir tu ubicación GPS de forma precisa para el reclamo, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?",
+                        "botones": [
+                            {"texto": "Iniciar Sesión", "action": "login"},
+                            {"texto": "Registrarme Gratis", "action": "register"},
+                            {"texto": "Continuar sin compartir ubicación", "action": "sin_adjuntos"}
+                        ]
+                    }
                 return {
                     "respuesta": "¡Claro! Podés compartir tu ubicación actual usando el botón del clip 📎 en tu WhatsApp o la opción de compartir ubicación de la web. Si preferís no hacerlo, solo decime 'continuar'.",
                     "botones": [
@@ -1174,7 +1192,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     ]
                 }
 
-            # Si recibe el archivo o ubicación real
+            # Si recibe el archivo o ubicación real (esto es manejado por el payload que llega a responder_municipio)
             adjunto_recibido_msg = ""
             if payload.get("es_foto") and payload.get("archivo_url"):
                 memoria["foto_url"] = payload.get("archivo_url")
@@ -1226,6 +1244,31 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         # Paso 8: Confirmación y creación de ticket
         if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
+            # Verificar si es anónimo y ya excedió el límite de tickets
+            if self.context.get("anon_id") and not self.context.get("user_id"): # Es anónimo
+                from flask import current_app # Acceder a config
+                from datetime import datetime, timedelta # Asegurar imports
+                max_tickets_anon = current_app.config.get("ANONYMOUS_MAX_TICKETS_PER_SESSION", 1)
+                session_timeout_minutes_config = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+
+                # Contar tickets existentes para este anon_id DENTRO de la ventana de sesión actual
+                anon_tickets_count = MunicipioTicket.query\
+                    .filter_by(anon_id=self.context["anon_id"])\
+                    .filter(MunicipioTicket.fecha >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes_config))\
+                    .count()
+
+                current_app.logger.info(f"Usuario anónimo {self.context['anon_id']} (Municipio): {anon_tickets_count} tickets en la sesión actual (límite: {max_tickets_anon}).")
+
+                if anon_tickets_count >= max_tickets_anon:
+                    memoria.clear() # Limpiar el flujo de reclamo
+                    return {
+                        "respuesta": "Alcanzaste el límite de reclamos para usuarios invitados en esta sesión. Para continuar, por favor inicia sesión o regístrate.",
+                        "botones": [
+                            {"texto": "Iniciar Sesión", "action": "login"},
+                            {"texto": "Registrarme Gratis", "action": "register"}
+                        ]
+                    }
+
             texto_normalizado = normalizar_texto(pregunta_str)
             accion = payload.get("action", "").lower() or texto_normalizado
 
@@ -2112,6 +2155,23 @@ class PanicButtonHandler(BaseMunicipioHandler):
         logger.warning(f"[PANIC_HANDLER] Pánico activado. Intención: {intencion}, Estado: {estado}, Ubicación: {user_location}")
         
         # Si no tenemos ubicación y no la estamos esperando explícitamente, la pedimos.
+        # También verificar si es anónimo, ya que compartir ubicación podría ser una función restringida.
+        if self.context.get("anon_id") and not self.context.get("user_id"):
+            # Para Pánico, la restricción es más laxa, pero igual se informa.
+             return {
+                "respuesta": (
+                    "🚨 **EMERGENCIA DETECTADA** 🚨\nPara enviar ayuda de forma efectiva, necesitamos tu ubicación. "
+                    "Compartir tu ubicación precisa requiere que inicies sesión o te registres. "
+                    "**Si estás en peligro inmediato y no puedes/quieres registrarte, llamá directamente al 911 o al número de emergencia local.**\n\n"
+                    "Si deseas continuar por aquí y compartir tu ubicación (requiere registro/login):"
+                ),
+                "botones": [
+                    {"texto": "Iniciar Sesión para Emergencia", "action": "login"},
+                    {"texto": "Registrarme para Emergencia", "action": "register"},
+                    {"texto": "Cancelar Alerta (error mío)"} # Opción para cancelar si fue un error
+                ]
+            }
+
         if not user_location and estado != ConversationState.ESPERANDO_UBICACION_PANICO:
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_UBICACION_PANICO
             memoria["intencion_pendiente_ubicacion"] = "activar_panico" # Para el callback de ubicación
@@ -2315,37 +2375,49 @@ class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
         if GreetingHandler(self.context).handle(payload) or \
            PoliteHandler(self.context).handle(payload) or \
            SmallTalkHandler(self.context).handle(payload):
-            return None
+            # Estos handlers ya devuelven una respuesta o None. Si devuelven respuesta, se usa.
+            # Si devuelven None, la cadena de handlers continúa.
+            # No necesitamos hacer nada especial aquí para EngancheAnonimo si estos ya respondieron.
+            pass # La respuesta de estos handlers (si la hay) se propagará.
         
         # Si la intención es claramente hacer un reclamo o hablar con agente, o consultar ticket,
+        # y el usuario es anónimo (verificado por la ausencia de user_id/cliente_id y presencia de anon_id)
         # entonces el enganche debe ser específico para esas acciones que requieren registro.
         intencion = self.context.get("intencion")
-        if intencion in ["iniciar_reclamo", "hablar_con_agente", "consultar_estado_ticket"]:
+        es_anonimo_real = self.context.get("anon_id") and not self.context.get("user_id") and not self.context.get("cliente_id")
+
+        if es_anonimo_real:
+            if intencion in ["iniciar_reclamo", "hablar_con_agente", "consultar_estado_ticket", "activar_panico",
+                             "iniciar_compra", "proceder_al_pago"]: # Agregadas intenciones de compra/pánico
+                # Mensaje específico para funciones que requieren login
+                return {
+                    "respuesta": (
+                        "Para esta acción (como registrar reclamos, chatear con un agente, activar alertas, o realizar compras) "
+                        "necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?"
+                    ),
+                    "botones": [
+                        {"texto": "Iniciar Sesión", "action": "login"},
+                        {"texto": "Registrarme Gratis", "action": "register"},
+                        {"texto": "No, gracias (info general)"}, # Opción para seguir como invitado si no quiere
+                    ],
+                }
+
+            # Para cualquier otra consulta general de un usuario anónimo, ofrecer registro de forma más suave.
+            # Esto solo se ejecuta si los handlers de saludo/cortesía no respondieron.
             return {
                 "respuesta": (
-                    "Para poder asistirte con eso (registrar reclamos, chatear con un agente o consultar tickets), \n"
-                    "necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?"
+                    "¡Hola! Soy tu asistente digital. Para darte una atención más completa y personalizada, "
+                    "te recomiendo registrarte o iniciar sesión. "
+                    "¿Querés continuar como invitado y solo consultar información general por ahora?"
                 ),
                 "botones": [
-                    {"texto": "Iniciar sesión", "action": "login"},
+                    {"texto": "Iniciar Sesión", "action": "login"},
                     {"texto": "Registrarme Gratis", "action": "register"},
-                    {"texto": "Consultar info general (como invitado)"},
+                    {"texto": "Continuar como invitado"},
                 ],
             }
 
-        # Para cualquier otra consulta general de un usuario anónimo, ofrecer registro.
-        return {
-            "respuesta": (
-                "¡Hola! Soy tu asistente municipal. Para darte una atención completa, "
-                "especialmente para reclamos o gestiones personalizadas, te recomiendo registrarte o iniciar sesión. "
-                "¿Querés continuar como invitado y solo consultar información general?"
-            ),
-            "botones": [
-                {"texto": "Iniciar sesión", "action": "login"},
-                {"texto": "Registrarme Gratis", "action": "register"},
-                {"texto": "Consultar info general"},
-            ],
-        }
+        return None # Si no es anónimo o ya fue manejado, no hace nada.
 
 
 def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
@@ -2450,20 +2522,27 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             return None
             
         # Si el usuario es anónimo, pedir que se registre/inicie sesión
-        if not self.context.get("cliente_id"): # cliente_id es viewer_user.id
+        if self.context.get("anon_id") and not self.context.get("cliente_id"): # Es anónimo
             return {
                 "respuesta": (
-                    "Para hablar con un agente y que podamos dar seguimiento a tu consulta, \n"
-                    "necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo?"
+                    "Para hablar con un agente y que podamos dar seguimiento personalizado a tu consulta, "
+                    "necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?"
                 ),
                 "botones": [
-                    {"texto": "Iniciar sesión", "action": "login"},
+                    {"texto": "Iniciar Sesión", "action": "login"},
                     {"texto": "Registrarme Gratis", "action": "register"},
+                    {"texto": "No, gracias (continuar como invitado)"}
                 ],
             }
+        elif not self.context.get("cliente_id"): # No es anónimo (no tiene anon_id) pero tampoco tiene cliente_id (caso raro, podría ser owner_user sin ser viewer)
+             return { # Fallback por si acaso, aunque anon_o_token_requerido debería manejar esto.
+                "respuesta": "Para hablar con un agente, por favor inicia sesión.",
+                "botones": [{"texto": "Iniciar Sesión", "action": "login"}]
+            }
+
 
         logger.info(
-            f"[HumanEscalationHandler] Usuario {self.context.get('cliente_id')} pide agente."
+            f"[HumanEscalationHandler] Usuario {self.context.get('cliente_id') or self.context.get('anon_id')} pide agente."
         )
         
         # Crear el ticket de escalación
@@ -3060,6 +3139,32 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     location_data_to_send = contexto_municipio.get("ubicacion_gps")
 
     logger.info(f"[FIN] Respuesta final: '{respuesta_final.get('respuesta')}'")
+
+    # Log anonymous conversation to Conversacion table
+    if anon_id and not viewer_user and respuesta_final: # It's an anonymous user and we have a response
+        try:
+            # Log user's question part of the conversation
+            db.session.add(Conversacion(
+                session_id=anon_id, # anon_id is stored in session_id for anonymous
+                pregunta=pregunta_str, # The original question string from the payload
+                respuesta="", # Bot's response will be in the next entry
+                fuente="municipio_anon_pregunta",
+                rubro=context.get("rubro_obj").nombre if context.get("rubro_obj") else "municipio_general" # Get rubro name
+            ))
+            # Log bot's answer part of the conversation
+            db.session.add(Conversacion(
+                session_id=anon_id,
+                pregunta=pregunta_str, # Repeat user question for context if desired, or keep it specific to bot's turn
+                respuesta=respuesta_final.get("respuesta"),
+                fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"),
+                rubro=context.get("rubro_obj").nombre if context.get("rubro_obj") else "municipio_general"
+            ))
+            db.session.commit()
+            logger.info(f"Conversación anónima (municipio) para anon_id {anon_id} guardada.")
+        except Exception as e_conv:
+            logger.error(f"Error guardando conversación anónima de municipio para anon_id {anon_id}: {e_conv}", exc_info=True)
+            db.session.rollback()
+
     return {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),

@@ -2,8 +2,8 @@
 import logging
 import random
 from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy import func
-from models import User, Rubro
+from sqlalchemy import func, desc
+from models import User, Rubro, Conversacion, db
 from services.logic import (
     responder_chatboc,
     RUBROS_PUBLICOS,
@@ -11,6 +11,7 @@ from services.logic import (
     es_rubro_publico,
 )
 from .auth import anon_o_token_requerido
+from datetime import datetime, timedelta
 
 
 chat_bp = Blueprint("chat_bp", __name__)
@@ -114,6 +115,45 @@ def _procesar_chat(
         viewer_obj = current_user
         if not owner_obj and not anon_id:
             return jsonify({"error": "No autenticado."}), 401
+
+        # --- CONTROL DE LÍMITES PARA USUARIOS ANÓNIMOS ---
+        if anon_id and not owner_obj: # Es anónimo
+            max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
+            session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+
+            # Verificar timeout de sesión
+            last_message_time = db.session.query(func.max(Conversacion.timestamp))\
+                .filter(Conversacion.session_id == anon_id)\
+                .scalar() # Usamos session_id para anon_id como se discutió
+
+            session_expired = False
+            if last_message_time:
+                if datetime.utcnow() - last_message_time > timedelta(minutes=session_timeout_minutes):
+                    session_expired = True
+                    current_app.logger.info(f"Sesión anónima {anon_id} expirada. Reiniciando conteo de mensajes.")
+
+            # Contar mensajes en la sesión actual (o todos si no hay timeout estricto por ahora)
+            # Si la sesión expiró, el conteo efectivo es 0 para la nueva "sesión" (aunque el anon_id sea el mismo).
+            if not session_expired:
+                message_count_this_session = Conversacion.query\
+                    .filter(Conversacion.session_id == anon_id)\
+                    .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes))\
+                    .count() # Contamos cada entrada en Conversacion como un mensaje (pregunta o respuesta)
+                             # O podríamos contar solo las preguntas (user_id es None)
+
+                current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
+
+                if message_count_this_session >= max_messages:
+                    return jsonify({
+                        "error": "Alcanzaste el límite de mensajes para usuarios invitados.",
+                        "respuesta": "Alcanzaste el límite de mensajes para usuarios invitados. Para continuar, por favor inicia sesión o regístrate.",
+                        "botones": [
+                            {"texto": "Iniciar Sesión", "action": "login"},
+                            {"texto": "Registrarme Gratis", "action": "register"}
+                        ]
+                    }), 403
+            # Nota: El incremento de `preguntas_usadas` para anónimos (si se implementa un contador global)
+            # o el registro de la `Conversacion` (que implícitamente cuenta) ocurrirá después de que `responder_chatboc` tenga éxito.
 
         if rubro_id:
             rubro_obj = Rubro.query.get(rubro_id)
