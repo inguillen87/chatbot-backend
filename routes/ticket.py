@@ -181,7 +181,11 @@ def get_mis_tickets(current_user: User):
             serialize(t, "pyme") for t in tickets_pyme
         ]
         todos.sort(key=lambda x: x["fecha"], reverse=True)
-        return jsonify(todos)
+
+        # Mantener la consistencia con otros endpoints que devuelven un objeto
+        # en lugar de una lista plana para facilitar la extensión en el
+        # frontend.
+        return jsonify({"tickets": todos})
     except Exception as e:
         current_app.logger.error(
             f"Error en get_mis_tickets para user {getattr(current_user,'id','?')}: {e}",
