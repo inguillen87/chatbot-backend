@@ -116,11 +116,20 @@ def get_tickets_del_usuario(current_user: User):
         summary_by_status["total"] = len(all_tickets_for_summary_calculation)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
-        final_tickets_query = query_base # query_base ya tiene los filtros de categoria y rol
+        final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
         if requested_estado_filter:
             final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
 
-        tickets_for_list_page = final_tickets_query.order_by(TicketModel.fecha.desc()).all()
+        page = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per_page", current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)))
+
+        tickets_for_list_page = (
+            final_tickets_query
+            .order_by(TicketModel.fecha.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
 
         serialized_tickets = [serialize_ticket_func(t, tipo_ticket_str) for t in tickets_for_list_page]
 
@@ -149,8 +158,21 @@ def get_mis_tickets(current_user: User):
         if categoria:
             query_muni = query_muni.filter(MunicipioTicket.categoria == categoria)
             query_pyme = query_pyme.filter(PymeTicket.categoria == categoria)
-        tickets_muni = query_muni.order_by(MunicipioTicket.fecha.desc()).all()
-        tickets_pyme = query_pyme.order_by(PymeTicket.fecha.desc()).all()
+        page = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per_page", current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)))
+
+        tickets_muni = (
+            query_muni.order_by(MunicipioTicket.fecha.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
+        tickets_pyme = (
+            query_pyme.order_by(PymeTicket.fecha.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
 
         def serialize(t, tipo):
             base = {
