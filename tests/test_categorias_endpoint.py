@@ -65,6 +65,8 @@ class CategoriasEndpointTest(unittest.TestCase):
             resp = obtener_categorias.__wrapped__(user)
         self.assertIsInstance(resp, dict)
         self.assertIn('categorias', resp)
+        self.assertIn('categories', resp)
+        self.assertEqual(resp['categorias'], resp['categories'])
         self.assertIn('Luminaria', resp['categorias'])
 
 if __name__ == '__main__':
