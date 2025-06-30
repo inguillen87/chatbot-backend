@@ -35,7 +35,7 @@ This project exposes several endpoints to process questions for different sector
   `CATALOGO_RESULT_LIMIT`).
 
 - `PUT /me` – update the logged in user's profile.
-- `GET /me` – retrieve the full profile. The response includes the user's role
+- `GET /me` or `/perfil` – retrieve the full profile. The response includes the user's role
   (`rol`), associated company (`empresa_id`) and the ticket categories assigned
   to the account (`categorias`).
 - `GET /tickets` – for admins or employees, list all tickets for the company or
