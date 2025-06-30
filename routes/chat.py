@@ -230,8 +230,6 @@ def _procesar_chat(
         if owner_obj:
             owner_obj.preguntas_usadas += 1
             try:
-                from extensions import db
-
                 db.session.commit()
             except Exception as e:
                 current_app.logger.error(
