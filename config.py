@@ -55,3 +55,16 @@ class Config:
 
     # Base URL del frontend para generar links de productos
     TIENDA_BASE_URL = os.getenv("TIENDA_BASE_URL", "")
+
+    # --- LÍMITES PARA USUARIOS ANÓNIMOS ---
+    # Número máximo de mensajes que un usuario anónimo puede enviar/recibir por sesión.
+    # Una pregunta del usuario y su respuesta del bot cuentan como 1 o 2 interacciones (a definir en la lógica).
+    # Por ahora, consideraremos cada pregunta del usuario como una "interacción".
+    ANONYMOUS_MAX_MESSAGES_PER_SESSION = int(os.getenv("ANONYMOUS_MAX_MESSAGES_PER_SESSION", "10"))
+
+    # Tiempo en minutos tras el cual una sesión anónima sin actividad se considera expirada.
+    # Esto reiniciará el conteo de mensajes para ese anon_id si vuelve a interactuar.
+    ANONYMOUS_SESSION_TIMEOUT_MINUTES = int(os.getenv("ANONYMOUS_SESSION_TIMEOUT_MINUTES", "15"))
+
+    # Número máximo de tickets (reclamos, pedidos, etc.) que un usuario anónimo puede crear por sesión.
+    ANONYMOUS_MAX_TICKETS_PER_SESSION = int(os.getenv("ANONYMOUS_MAX_TICKETS_PER_SESSION", "1"))

@@ -542,11 +542,57 @@ class PedidoHandler(BaseHandler):
             if any(k in texto for k in CANCEL_KEYWORDS):
                 ctx.clear(); ctx.update({"estado_conversacion": serialize_state(PymeConversationState.IDLE), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
                 return {"respuesta": "Pedido cancelado. ¿Necesitás otra cosa?", "fuente": "pedido_cancelado_confirmacion", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con agente", "action": "hablar_con_agente"}]}
+
             if texto.strip() in {"si", "sí", "confirmo", "confirmar"}:
+                # Verificar si es anónimo antes de finalizar el pedido
+                if self.context.get("anon_id") and not self.context.get("cliente_id"):
+                    return {
+                        "respuesta": "Para completar tu pedido y que podamos coordinar la entrega y el pago, necesitás iniciar sesión o registrarte. Tu carrito será guardado.",
+                        "botones": [
+                            {"texto": "Iniciar Sesión para Finalizar", "action": "login_finalizar_pedido"},
+                            {"texto": "Registrarme para Finalizar", "action": "register_finalizar_pedido"},
+                            {"texto": "Cancelar Pedido"}
+                        ],
+                        "fuente": "anon_pedido_confirm_prompt_login"
+                        # Nota: El frontend debería manejar 'login_finalizar_pedido' y 'register_finalizar_pedido'
+                        # para que después del login/registro, se intente retomar el pedido.
+                        # El carrito ya está en `ctx['carrito']` y se guardará en `flask_session[CONTEXTO_PYME]`.
+                    }
+
+                # Lógica para usuarios registrados
                 ctx.update({"estado_conversacion": serialize_state(PymeConversationState.PEDIDO_FINALIZADO), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
-                # TODO: Aquí se debería registrar el pedido en la base de datos (PymePedido)
-                logger.info(f"Pedido confirmado para user_id {self.context.get('user_id')}: {carrito}")
-                return {"respuesta": "¡Listo! Tu pedido fue registrado. En breve nos comunicaremos para coordinar el pago y la entrega.", "fuente": "pedido_finalizado_confirmado"}
+
+                # Crear el ticket de tipo "pyme" para el pedido
+                nombre_cliente_ticket = getattr(self.context.get("user_obj"), "name", "Cliente Chat") or getattr(self.context.get("viewer_user"), "name", "Cliente")
+                detalles_pedido_ticket = formatear_carrito(carrito, self.context) # Usar la función existente
+
+                ticket_data_pedido = {
+                    "asunto": f"Nuevo Pedido de {nombre_cliente_ticket}",
+                    "categoria": "Pedido Online",
+                    "pregunta": f"Pedido confirmado por el cliente: {nombre_cliente_ticket}", # Mensaje inicial del ticket
+                    "detalles": detalles_pedido_ticket, # Resumen del carrito
+                    "user_id": self.context.get("cliente_id"), # ID del cliente logueado
+                    "rubro_id": self.context.get("rubro_id"),
+                    "estado": "pedido_confirmado", # O 'pendiente_procesamiento'
+                    # Aquí podrías agregar más campos específicos si PymeTicket los tiene,
+                    # como total_pedido, direccion_envio (si se pidiera antes), etc.
+                }
+                try:
+                    ticket_pedido = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_pedido)
+                    if not ticket_pedido:
+                        raise Exception("La creación del ticket de pedido para Pyme retornó None.")
+
+                    logger.info(f"Pedido confirmado y registrado como PymeTicket P-{ticket_pedido.nro_ticket} para user_id {self.context.get('cliente_id')}: {carrito}")
+                    # Limpiar carrito de la sesión después de crear el ticket
+                    ctx["carrito"] = []
+                    flask_session[CONTEXTO_PYME] = ctx
+
+                    return {"respuesta": f"¡Listo! Tu pedido fue registrado con el número P-{ticket_pedido.nro_ticket}. En breve nos comunicaremos para coordinar el pago y la entrega.", "fuente": "pedido_finalizado_confirmado_pyme", "ticket_id": ticket_pedido.id}
+                except Exception as e:
+                    logger.error(f"[PedidoHandler-PYME] Error al crear PymeTicket para pedido: {e}", exc_info=True)
+                    # No limpiar el estado de confirmando_pedido para que pueda reintentar
+                    return {"respuesta": "Hubo un problema al registrar tu pedido. Por favor, intenta confirmar de nuevo en unos momentos.", "fuente": "error_crear_ticket_pedido_pyme", "botones": [{"texto": "Reintentar Confirmar Pedido", "action":"confirmar_pedido"}]}
+
             if any(k in texto for k in ["modificar", "cambiar", "agregar", "quitar"]):
                 ctx.update({"estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
                 return {"respuesta": f"Ok, volvemos a tu pedido. Carrito:\n{formatear_carrito(carrito)}\n¿Qué quieres hacer?", "fuente": "modificando_pedido_confirmacion", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
@@ -589,9 +635,24 @@ class FaqHandler(BaseHandler):
 
 class HumanHandler(BaseHandler):
     def handle(self, pregunta):
-        if not self.context.get("cliente_id"):
-            return {"respuesta": "Para hablar con un agente necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo?", "botones": [{"texto": "Iniciar sesión", "action": "login"}, {"texto": "Registrarme Gratis", "action": "register"}]}
-        
+        # Verificar si es anónimo
+        if self.context.get("anon_id") and not self.context.get("cliente_id"):
+            return {
+                "respuesta": "Para hablar con un agente y recibir atención personalizada, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?",
+                "botones": [
+                    {"texto": "Iniciar Sesión", "action": "login"},
+                    {"texto": "Registrarme Gratis", "action": "register"},
+                    {"texto": "No, gracias"}
+                ],
+                "fuente": "anon_escalation_prompt"
+            }
+        elif not self.context.get("cliente_id"): # No anónimo pero sin cliente_id (caso raro)
+             return {
+                "respuesta": "Para hablar con un agente, por favor inicia sesión.",
+                "botones": [{"texto": "Iniciar Sesión", "action": "login"}],
+                "fuente": "login_required_escalation"
+            }
+
         ticket_data = {"asunto": "Solicitud de Chat en Vivo", "categoria": "Atención en Vivo", "detalles": f"Cliente solicitó chat: '{pregunta}'", 
                        "user_id": self.context.get("cliente_id"), "rubro_id": self.context.get("rubro_id"), 
                        "anon_id": self.context.get("anon_id"), "estado": "esperando_agente_en_vivo"}
@@ -735,6 +796,36 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
     texto_pregunta_lower = pregunta.lower() # Para comparaciones de botones
 
     if estado_conversacion_actual == PymeConversationState.ESPERANDO_DETALLES_RECLAMO:
+        # Verificar límite de tickets para anónimos si es un reclamo y se va a crear un ticket
+        if context.get("anon_id") and not context.get("cliente_id"): # Es anónimo
+            from flask import current_app
+            from models import PymeTicket # Necesario para contar
+            from datetime import datetime, timedelta # Asegurar imports
+
+            max_tickets_anon = current_app.config.get("ANONYMOUS_MAX_TICKETS_PER_SESSION", 1)
+            session_timeout_minutes_config = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+
+            # Contar tickets existentes para este anon_id DENTRO de la ventana de sesión actual
+            anon_tickets_count = PymeTicket.query\
+                .filter_by(anon_id=context["anon_id"])\
+                .filter(PymeTicket.fecha >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes_config))\
+                .count()
+
+            current_app.logger.info(f"Usuario anónimo {context['anon_id']} (Pyme): {anon_tickets_count} tickets en la sesión actual (límite: {max_tickets_anon}).")
+
+            if anon_tickets_count >= max_tickets_anon:
+                current_app.logger.info(f"Límite de tickets ({max_tickets_anon}) alcanzado para anon_id {context['anon_id']} en Pyme.")
+                context[CONTEXTO_PYME].clear() # Limpiar el flujo de reclamo
+                flask_session[CONTEXTO_PYME] = context[CONTEXTO_PYME]
+                return {
+                    "respuesta": "Alcanzaste el límite de reclamos/consultas que requieren seguimiento para usuarios invitados. Para continuar, por favor inicia sesión o regístrate.",
+                    "botones": [
+                        {"texto": "Iniciar Sesión", "action": "login"},
+                        {"texto": "Registrarme Gratis", "action": "register"}
+                    ],
+                    "fuente": "anon_pyme_reclamo_limite_alcanzado"
+                }
+
         detalles_reclamo = pregunta 
         pregunta_original_reclamo = context[CONTEXTO_PYME].get("pregunta_reclamo_original", "Reclamo sin detalles previos.")
         
@@ -746,7 +837,7 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
             pregunta_para_agente = f"Reclamo (Pregunta original: \"{pregunta_original_reclamo}\"). El cliente prefirió no dar más detalles por chat."
         
         # HumanHandler se encarga de la respuesta y de limpiar el contexto si es necesario.
-        # También guarda la conversación.
+        # También guarda la conversación y crea el ticket (que ya tiene el check de anon vs cliente_id).
         return HumanHandler(context).handle(pregunta_para_agente) 
 
     puede_buscar_faq = estado_conversacion_actual == PymeConversationState.IDLE or estado_conversacion_actual is None
@@ -803,10 +894,28 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
     flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:]
 
     try:
-        if context["user_id"]: # Solo guardar si hay user_id (propietario o cliente logueado)
-            db.session.add(Conversacion(user_id=context["user_id"], pregunta=pregunta, respuesta=respuesta_final.get("respuesta", ""),
-                                        fuente=respuesta_final.get("fuente", "desconocida"), rubro=context["rubro_nombre"]))
+        conv_entry = Conversacion(
+            pregunta=pregunta,
+            respuesta=respuesta_final.get("respuesta", ""),
+            fuente=respuesta_final.get("fuente", "desconocida"),
+            rubro=context.get("rubro_nombre")
+        )
+        if context.get("cliente_id"): # Usuario logueado (viewer_user)
+            conv_entry.user_id = context["cliente_id"]
+        elif context.get("anon_id"): # Usuario anónimo
+            conv_entry.session_id = context["anon_id"]
+            # Opcionalmente, si queremos asociar la conversación anónima al 'owner_user' (la Pyme dueña del bot)
+            # conv_entry.user_id = context.get("user_id") # user_id aquí es el owner_user.id
+        elif context.get("user_id"): # Usuario logueado es el owner_user (ej. probando su propio bot)
+            conv_entry.user_id = context["user_id"]
+
+        # Solo guardar si hay un identificador (user_id o session_id)
+        if conv_entry.user_id or conv_entry.session_id:
+            db.session.add(conv_entry)
             db.session.commit()
+        else:
+            logger.warning("[PYMES] No se guardó conversación por falta de user_id y anon_id.")
+
     except Exception as e:
         logger.error(f"[PYMES] Error guardando conversación en DB: {e}")
         db.session.rollback()
