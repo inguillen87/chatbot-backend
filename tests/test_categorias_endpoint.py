@@ -63,8 +63,9 @@ class CategoriasEndpointTest(unittest.TestCase):
         user = SimpleNamespace(rol='admin')
         with patch('routes.categorias.jsonify', lambda x: x):
             resp = obtener_categorias.__wrapped__(user)
-        self.assertIsInstance(resp, list)
-        self.assertIn('Luminaria', resp)
+        self.assertIsInstance(resp, dict)
+        self.assertIn('categorias', resp)
+        self.assertIn('Luminaria', resp['categorias'])
 
 if __name__ == '__main__':
     unittest.main()

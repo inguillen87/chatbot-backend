@@ -38,7 +38,7 @@ def municipal_usuarios(current_user):
 @token_requerido
 @require_role('admin', 'empleado')
 def municipal_categorias(current_user):
-    return jsonify(TODAS_LAS_CATEGORIAS_UNICAS)
+    return jsonify({'categorias': TODAS_LAS_CATEGORIAS_UNICAS})
 
 @municipal_bp.route('/stats', methods=['GET'])
 @token_requerido
