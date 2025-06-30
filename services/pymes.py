@@ -3,7 +3,11 @@ import re
 import random
 import json
 from enum import Enum, auto
-from flask import session as flask_session, current_app
+try:
+    from flask import session as flask_session, current_app
+except Exception:
+    flask_session = {}
+    current_app = None
 
 from services.cohere_ai import robust_chat
 from models import Conversacion, db, ArchivoAdjunto, PymePedido, User # Asegúrate que PymeTicket, TicketComentario estén importados si se usan directamente
@@ -15,7 +19,7 @@ from services.qdrant_search import (
 )
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import reemplazar_placeholders
-from services.common_utils import sugerencias_por_rubro
+from services.utils_placeholders import sugerencias_por_rubro
 from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_talk
 from services.ticket_service import servicio_tickets # Asumiendo que PymeTicket está aquí
 from services.webinfo import obtener_info_web
@@ -907,7 +911,7 @@ class PedidoHandler(BaseHandler):
                 flask_session[CONTEXTO_PYME] = ctx
                 # TODO: Guardar el feedback si se desea. Por ahora solo agradece.
                 return {"respuesta": "¡Gracias por tus comentarios! Valoramos tu opinión. ¿Puedo ayudarte con algo más?", "fuente": "agradecimiento_feedback"}
-            else: // "no", "no gracias", o cualquier otra cosa
+            else:  # "no", "no gracias", o cualquier otra cosa
                 ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
                 ctx["carrito"] = []
                 ctx.pop("nro_pedido_confirmado", None)
