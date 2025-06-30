@@ -167,51 +167,111 @@ def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
 
 def enviar_sms(destino: str, mensaje: str) -> bool:
     """Envía un SMS usando Twilio."""
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, destino]):
-        logger.warning("[SMS] Faltan credenciales o destino.")
+    if not destino:
+        logger.warning("[SMS] Destino no proporcionado.")
         return False
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
+        logger.error("[SMS] Faltan credenciales de Twilio. Verificar variables de entorno: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER.")
+        return False
+
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         msg = client.messages.create(body=mensaje, from_=TWILIO_PHONE_NUMBER, to=destino)
-        logger.info(f"[SMS] Enviado SID: {msg.sid}")
+        logger.info(f"[SMS] Enviado a {destino} (SID: {msg.sid}). Mensaje: '{mensaje[:30]}...'")
         return True
     except Exception as e:
-        logger.error(f"[SMS] Error enviando mensaje: {e}")
+        # Intentar obtener más detalles del error de Twilio si es posible
+        error_message = str(e)
+        if hasattr(e, 'status') and hasattr(e, 'uri') and hasattr(e, 'msg'): # TwilioRestException
+            error_message = f"Twilio API Error: Status {e.status}, URI {e.uri}, Message: {e.msg}, Details: {getattr(e, 'details', {})}"
+        logger.error(f"[SMS] Error enviando mensaje a {destino}: {error_message}")
         return False
 
 
 def enviar_whatsapp(destino: str, mensaje: str) -> bool:
     """Envía un mensaje de WhatsApp usando Twilio."""
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER, destino]):
-        logger.warning("[WHATSAPP] Faltan credenciales o destino.")
+    if not destino:
+        logger.warning("[WHATSAPP] Destino no proporcionado.")
         return False
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
+        logger.error("[WHATSAPP] Faltan credenciales de Twilio para WhatsApp. Verificar variables de entorno: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER.")
+        return False
+
+    numero_con_prefijo = f"whatsapp:{destino}" if not destino.startswith("whatsapp:") else destino
+
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         msg = client.messages.create(
             body=mensaje,
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=f"whatsapp:{destino}" if not destino.startswith("whatsapp:") else destino,
+            from_=TWILIO_WHATSAPP_NUMBER, # Este debe ser el número de WhatsApp de Twilio
+            to=numero_con_prefijo
         )
-        logger.info(f"[WHATSAPP] Enviado SID: {msg.sid}")
+        logger.info(f"[WHATSAPP] Enviado a {numero_con_prefijo} (SID: {msg.sid}). Mensaje: '{mensaje[:30]}...'")
         return True
     except Exception as e:
-        logger.error(f"[WHATSAPP] Error enviando mensaje: {e}")
+        error_message = str(e)
+        if hasattr(e, 'status') and hasattr(e, 'uri') and hasattr(e, 'msg'): # TwilioRestException
+            error_message = f"Twilio API Error: Status {e.status}, URI {e.uri}, Message: {e.msg}, Details: {getattr(e, 'details', {})}"
+        logger.error(f"[WHATSAPP] Error enviando mensaje a {numero_con_prefijo}: {error_message}")
         return False
+
+# --- Nueva función para enviar WhatsApp para tickets ---
+def enviar_whatsapp_ticket_novedad(ticket, mensaje: str) -> bool:
+    """Envía un WhatsApp al cliente cuando hay movimiento en su ticket."""
+    ticket_id_log = getattr(ticket, 'id', 'N/A')
+    original_destino = getattr(ticket, "telefono", None)
+
+    if not original_destino and getattr(ticket, "user_id", None):
+        from models import User
+        usuario = User.query.get(ticket.user_id)
+        if usuario:
+            original_destino = getattr(usuario, "telefono", None)
+            logger.info(f"[WHATSAPP] Obteniendo teléfono del usuario {usuario.id} para ticket {ticket_id_log} para WhatsApp: {original_destino}")
+        else:
+            logger.warning(f"[WHATSAPP] Usuario {getattr(ticket, 'user_id', 'N/A')} no encontrado para ticket {ticket_id_log} (WhatsApp).")
+
+    if not original_destino:
+        logger.warning(f"[WHATSAPP] Ticket {ticket_id_log} sin teléfono para notificar novedad por WhatsApp (original: {original_destino}).")
+        return False
+
+    from utils.validators import normalize_phone
+    # normalize_phone ya devuelve el formato E.164 si el número es válido,
+    # que es el preferido por Twilio para WhatsApp.
+    numero_limpio = normalize_phone(original_destino)
+
+    if not numero_limpio:
+        logger.warning(f"[WHATSAPP] Teléfono inválido o no normalizable a E.164 para ticket {ticket_id_log} (original: {original_destino}).")
+        return False
+
+    logger.info(f"[WHATSAPP] Intentando enviar WhatsApp para ticket {ticket_id_log} a número original '{original_destino}', limpio como '{numero_limpio}'. Mensaje: '{mensaje[:30]}...'")
+    return enviar_whatsapp(numero_limpio, mensaje)
 
 
 def enviar_sms_ticket_novedad(ticket, mensaje: str) -> bool:
     """Envía un SMS al cliente cuando hay movimiento en su ticket."""
     destino = getattr(ticket, "telefono", None)
-    if not destino and getattr(ticket, "user_id", None):
+    ticket_id_log = getattr(ticket, 'id', 'N/A')
+    original_destino = getattr(ticket, "telefono", None)
+
+    if not original_destino and getattr(ticket, "user_id", None):
         from models import User
         usuario = User.query.get(ticket.user_id)
-        destino = getattr(usuario, "telefono", None)
-    if not destino:
-        logger.warning("[SMS] Ticket sin telefono para notificar novedad.")
+        if usuario:
+            original_destino = getattr(usuario, "telefono", None)
+            logger.info(f"[SMS] Obteniendo teléfono del usuario {usuario.id} para ticket {ticket_id_log}: {original_destino}")
+        else:
+            logger.warning(f"[SMS] Usuario {getattr(ticket, 'user_id', 'N/A')} no encontrado para ticket {ticket_id_log}.")
+
+    if not original_destino:
+        logger.warning(f"[SMS] Ticket {ticket_id_log} sin teléfono para notificar novedad (original: {original_destino}).")
         return False
+
     from utils.validators import normalize_phone
-    numero = normalize_phone(destino)
-    if not numero:
-        logger.warning("[SMS] Telefono inválido para notificar novedad.")
+    numero_normalizado = normalize_phone(original_destino)
+
+    if not numero_normalizado:
+        logger.warning(f"[SMS] Teléfono inválido o no normalizable para ticket {ticket_id_log} (original: {original_destino}).")
         return False
-    return enviar_sms(numero, mensaje)
+
+    logger.info(f"[SMS] Intentando enviar SMS para ticket {ticket_id_log} a número original '{original_destino}', normalizado como '{numero_normalizado}'. Mensaje: '{mensaje[:30]}...'")
+    return enviar_sms(numero_normalizado, mensaje)
