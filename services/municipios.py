@@ -74,17 +74,43 @@ MINI_FAQ_TRAMITES = cargar_configuracion_municipio(
 
 # --- Trámites municipales ---
 _TRAMITES_CACHE = None
+_TRAMITES_MTIME = None
 
 
 def cargar_tramites_info():
-    """Carga la descripción de los trámites desde el JSON del municipio."""
-    global _TRAMITES_CACHE
-    if _TRAMITES_CACHE is None:
-        _TRAMITES_CACHE = cargar_configuracion_municipio(MUNICIPIO_ID, "tramites.json")
+    """Carga la descripción de los trámites desde el JSON del municipio.
+
+    Si el archivo se modifica, la información se recarga automáticamente.
+    """
+    global _TRAMITES_CACHE, _TRAMITES_MTIME
+    ruta = os.path.join(
+        os.path.dirname(__file__), "..", "data", "municipios", MUNICIPIO_ID, "tramites.json"
+    )
+    try:
+        mtime = os.path.getmtime(ruta)
+    except OSError as e:
+        logger.error(f"[TRAMITES] No se pudo acceder a {ruta}: {e}")
+        _TRAMITES_CACHE = {}
+        _TRAMITES_MTIME = None
+        return _TRAMITES_CACHE
+
+    if _TRAMITES_CACHE is None or _TRAMITES_MTIME != mtime:
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                _TRAMITES_CACHE = json.load(f)
+            logger.info(f"✅ Trámites cargados desde {ruta}")
+            _TRAMITES_MTIME = mtime
+        except Exception as e:
+            logger.error(f"[TRAMITES] No se pudo cargar {ruta}: {e}", exc_info=True)
+            _TRAMITES_CACHE = {}
+            _TRAMITES_MTIME = mtime
+
     return _TRAMITES_CACHE
 
 
-TRAMITES_INFO = cargar_tramites_info()
+def get_tramites_info() -> dict:
+    """Devuelve el diccionario de trámites, recargando si es necesario."""
+    return cargar_tramites_info()
 
 # URL por defecto para los trámites del municipio
 DEFAULT_TRAMITES_WEB_URL = CONFIG_MUNICIPIO.get(
@@ -1449,7 +1475,7 @@ class TramitesHandler(BaseMunicipioHandler):
         if intencion == "consultar_tramite" and not estado:
             memoria.clear() # Limpiar memoria para un nuevo flujo de trámite
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_TRAMITE
-            opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
+            opciones = [{"texto": t.title()} for t in get_tramites_info().keys()]
             return {
                 "respuesta": "¿Sobre qué trámite necesitás información?",
                 "botones": opciones,
@@ -1463,15 +1489,15 @@ class TramitesHandler(BaseMunicipioHandler):
             texto_con_sinonimos = aplicar_sinonimos(texto, TRAMITE_SYNONYMS)
 
             clave_tramite = next(
-                (k for k in TRAMITES_INFO.keys() if normalizar_texto(k) == texto_con_sinonimos),
+                (k for k in get_tramites_info().keys() if normalizar_texto(k) == texto_con_sinonimos),
                 None,
             )
 
             # Intenta un fuzzy match con los nombres de los trámites y sus sinónimos
             if not clave_tramite:
-                all_tramite_names = list(TRAMITES_INFO.keys()) + list(TRAMITE_SYNONYMS.keys())
+                all_tramite_names = list(get_tramites_info().keys()) + list(TRAMITE_SYNONYMS.keys())
                 best_match_key = fuzzy_match(all_tramite_names, texto)
-                if best_match_key and best_match_key in TRAMITES_INFO: # Asegurar que el match es una clave de trámite real
+                if best_match_key and best_match_key in get_tramites_info(): # Asegurar que el match es una clave de trámite real
                     clave_tramite = best_match_key
                 elif best_match_key and best_match_key in TRAMITE_SYNONYMS: # Si el match es un sinónimo, obtener la clave real
                     clave_tramite = TRAMITE_SYNONYMS[best_match_key]
@@ -1479,7 +1505,7 @@ class TramitesHandler(BaseMunicipioHandler):
 
             if clave_tramite:
                 memoria.clear() # Limpiar memoria después de encontrar el trámite
-                info = TRAMITES_INFO[clave_tramite]
+                info = get_tramites_info()[clave_tramite]
                 user_obj = self.context.get("user_obj")
                 link_web = (
                     getattr(user_obj, "link_web", None) or DEFAULT_TRAMITES_WEB_URL
@@ -1511,7 +1537,7 @@ class TramitesHandler(BaseMunicipioHandler):
                 }
 
             memoria.clear() # Limpiar memoria si no se encontró el trámite y no es un flujo específico
-            opciones = [{"texto": t.title()} for t in TRAMITES_INFO.keys()]
+            opciones = [{"texto": t.title()} for t in get_tramites_info().keys()]
             return {
                 "respuesta": obtener_respuesta_municipio("tramite_no_encontrado"),
                 "botones": opciones,
@@ -2773,7 +2799,7 @@ class TramiteInteligenteHandler(BaseMunicipioHandler):
                     tramites_scraped.extend(datos.get("tramites", []))
             
             # Combinar con trámites cargados desde config.json si existen y no están duplicados
-            for k, v in TRAMITES_INFO.items():
+            for k, v in get_tramites_info().items():
                 if not any(t.get("nombre") == k for t in tramites_scraped):
                     tramites_scraped.append({"nombre": k, **v})
 
