@@ -178,13 +178,9 @@ def municipal_incidents(current_user):
     return jsonify(resultado)
 
 
-@municipal_bp.route('/metrics', methods=['GET'])
-@token_requerido
-@admin_o_empleado_requerido
-def municipal_metrics(current_user):
-    """Devuelve cantidad de mensajes de vecinos por rango de tiempo."""
+def _municipal_message_metrics(eid: int) -> list[dict]:
+    """Calcula métricas de mensajes recibidos en distintos períodos."""
 
-    eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
     ahora = datetime.now()
 
     def _contar_desde(dias: int) -> int:
@@ -200,10 +196,28 @@ def municipal_metrics(current_user):
             or 0
         )
 
-    datos = [
+    return [
         {"label": "Mensajes esta semana", "value": _contar_desde(7)},
         {"label": "Mensajes este mes", "value": _contar_desde(30)},
         {"label": "Mensajes este año", "value": _contar_desde(365)},
     ]
 
-    return jsonify(datos)
+
+@municipal_bp.route('/metrics', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_metrics(current_user):
+    """Devuelve cantidad de mensajes de vecinos por rango de tiempo."""
+
+    eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
+    return jsonify(_municipal_message_metrics(eid))
+
+
+@municipal_bp.route('/analytics', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_analytics(current_user):
+    """Alias de ``/metrics`` para compatibilidad con el frontend."""
+
+    eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
+    return jsonify(_municipal_message_metrics(eid))
