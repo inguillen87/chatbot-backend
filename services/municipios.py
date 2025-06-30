@@ -159,13 +159,24 @@ def cargar_catalogo_productos():
     global _PRODUCT_CATALOG_CACHE
     if _PRODUCT_CATALOG_CACHE is None:
         try:
-            catalog_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "product_catalog.json")
+            catalog_file_path = os.path.join(
+                os.path.dirname(__file__), "..", "data", "product_catalog.json"
+            )
             with open(catalog_file_path, "r", encoding="utf-8") as f:
                 _PRODUCT_CATALOG_CACHE = json.load(f)
-            logger.info(f"✅ Catálogo de productos cargado desde {catalog_file_path}")
+            logger.info(
+                f"✅ Catálogo de productos cargado desde {catalog_file_path}"
+            )
+        except FileNotFoundError:
+            logger.warning(
+                f"[CATALOGO] Archivo no encontrado: {catalog_file_path}, se usa lista vacía"
+            )
+            _PRODUCT_CATALOG_CACHE = []
         except Exception as e:
-            logger.error(f"❌ No se pudo cargar product_catalog.json: {e}", exc_info=True)
-            _PRODUCT_CATALOG_CACHE = [] # Devolver lista vacía en caso de error
+            logger.error(
+                f"❌ Error al cargar product_catalog.json: {e}", exc_info=True
+            )
+            _PRODUCT_CATALOG_CACHE = []  # Devolver lista vacía en caso de error
     return _PRODUCT_CATALOG_CACHE
 
 PRODUCT_CATALOG = cargar_catalogo_productos()
@@ -179,12 +190,23 @@ def cargar_ubicaciones_comercios():
     global _COMMERCE_LOCATIONS_CACHE
     if _COMMERCE_LOCATIONS_CACHE is None:
         try:
-            loc_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "commerce_locations.json")
+            loc_file_path = os.path.join(
+                os.path.dirname(__file__), "..", "data", "commerce_locations.json"
+            )
             with open(loc_file_path, "r", encoding="utf-8") as f:
                 _COMMERCE_LOCATIONS_CACHE = json.load(f)
-            logger.info(f"✅ Ubicaciones de comercios cargadas desde {loc_file_path}")
+            logger.info(
+                f"✅ Ubicaciones de comercios cargadas desde {loc_file_path}"
+            )
+        except FileNotFoundError:
+            logger.warning(
+                f"[COMERCIOS] Archivo no encontrado: {loc_file_path}, se usa lista vacía"
+            )
+            _COMMERCE_LOCATIONS_CACHE = []
         except Exception as e:
-            logger.error(f"❌ No se pudo cargar commerce_locations.json: {e}", exc_info=True)
+            logger.error(
+                f"❌ Error al cargar commerce_locations.json: {e}", exc_info=True
+            )
             _COMMERCE_LOCATIONS_CACHE = []
     return _COMMERCE_LOCATIONS_CACHE
 
