@@ -3,6 +3,8 @@ from models import User, TicketComentario, db
 from routes.auth import token_requerido, solo_admin_requerido
 from services.logic import es_rubro_publico
 import uuid
+from datetime import datetime, timedelta # Importar datetime y timedelta
+from sqlalchemy import func # Importar func para count
 
 empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')
 
@@ -16,16 +18,24 @@ def listar_empleados(current_user: User):
         .order_by(User.name.asc())
         .all()
     )
-    datos = [
-        {
+    datos = []
+    fecha_inicio_mes = datetime.utcnow() - timedelta(days=30)
+
+    for e in empleados:
+        tickets_respondidos_mes = db.session.query(func.count(TicketComentario.id)).filter(
+            TicketComentario.user_id == e.id,
+            TicketComentario.es_admin == True, # Comentario hecho por un admin/empleado
+            TicketComentario.fecha >= fecha_inicio_mes
+        ).scalar() or 0
+
+        datos.append({
             "id": e.id,
             "name": e.name,
             "email": e.email,
             "rol": e.rol,
             "categorias": e.ticket_categorias or "",
-        }
-        for e in empleados
-    ]
+            "tickets_respondidos_mes": tickets_respondidos_mes
+        })
     return jsonify(datos)
 
 @empleados_bp.route('', methods=['POST'])
@@ -76,11 +86,24 @@ def historial_empleado(current_user: User, emp_id: int):
     empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
     if not empleado:
         return jsonify({'error': 'Empleado no encontrado o no pertenece a su empresa'}), 404
-    comentarios = (
-        TicketComentario.query.filter_by(user_id=emp_id, es_admin=True)
-        .order_by(TicketComentario.fecha.desc())
-        .all()
-    )
+
+    fecha_inicio_str = request.args.get('fecha_inicio')
+    fecha_fin_str = request.args.get('fecha_fin')
+
+    query_comentarios = TicketComentario.query.filter_by(user_id=emp_id, es_admin=True)
+
+    try:
+        if fecha_inicio_str:
+            fecha_inicio = datetime.fromisoformat(fecha_inicio_str)
+            query_comentarios = query_comentarios.filter(TicketComentario.fecha >= fecha_inicio)
+        if fecha_fin_str:
+            # Para incluir el día completo, podríamos querer ir hasta el final del día
+            fecha_fin = datetime.fromisoformat(fecha_fin_str)
+            query_comentarios = query_comentarios.filter(TicketComentario.fecha <= fecha_fin)
+    except ValueError:
+        return jsonify({"error": "Formato de fecha inválido. Usar YYYY-MM-DD o formato ISO."}), 400
+
+    comentarios = query_comentarios.order_by(TicketComentario.fecha.desc()).all()
     historial = []
     for c in comentarios:
         tipo = 'pyme' if c.pyme_ticket_id else 'municipio'
@@ -104,12 +127,21 @@ def obtener_empleado(current_user: User, emp_id: int):
     empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
     if not empleado:
         return jsonify({"error": "Empleado no encontrado"}), 404
+
+    fecha_inicio_mes = datetime.utcnow() - timedelta(days=30)
+    tickets_respondidos_mes = db.session.query(func.count(TicketComentario.id)).filter(
+        TicketComentario.user_id == empleado.id,
+        TicketComentario.es_admin == True,
+        TicketComentario.fecha >= fecha_inicio_mes
+    ).scalar() or 0
+
     return jsonify({
         "id": empleado.id,
         "name": empleado.name,
         "email": empleado.email,
         "rol": empleado.rol,
         "categorias": empleado.ticket_categorias or "",
+        "tickets_respondidos_mes": tickets_respondidos_mes
     })
 
 
