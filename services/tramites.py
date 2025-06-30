@@ -1,16 +1,17 @@
 from typing import List, Dict
 
-from .municipios import TRAMITES_INFO
+from .municipios import get_tramites_info
 
 
 def buscar_tramites(query: str | None = None) -> List[Dict]:
     """Devuelve los trámites ordenados y opcionalmente filtrados."""
     q = (query or "").strip().lower()
+    tramites = get_tramites_info()
     resultados = []
-    for nombre in sorted(TRAMITES_INFO.keys()):
+    for nombre in sorted(tramites.keys()):
         if q and q not in nombre.lower():
             continue
-        info = TRAMITES_INFO[nombre]
+        info = tramites[nombre]
         resultados.append({
             "nombre": nombre,
             "descripcion": info.get("descripcion"),
