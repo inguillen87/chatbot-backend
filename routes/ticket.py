@@ -601,7 +601,6 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
 def get_panel_por_categoria(current_user: User):
 
     try:
-        from sqlalchemy.orm import selectinload
         from datetime import timedelta
 
         # Helper function (puede moverse a un archivo de utils o services después)
@@ -646,7 +645,7 @@ def get_panel_por_categoria(current_user: User):
                 "resolved_tickets_count": len(resolution_times)
             }
 
-        query = MunicipioTicket.query.options(selectinload(MunicipioTicket.comentarios)) # Eager load comments
+        query = MunicipioTicket.query  # Comments will be loaded lazily
 
         if getattr(current_user, "municipio_id", None):
             query = query.filter_by(municipio_id=current_user.municipio_id)
@@ -722,11 +721,9 @@ def get_panel_pyme(current_user: User):
             query = query.filter_by(rubro_id=current_user.rubro_id)
         tickets = query.order_by(PymeTicket.fecha.desc()).all()
         # Re-using _calculate_ticket_metrics_for_list defined above in get_panel_por_categoria
-        # Ensure imports are at the top of the file: from sqlalchemy.orm import selectinload; from datetime import datetime, timedelta
-        from sqlalchemy.orm import selectinload # Already imported if get_panel_por_categoria is in the same file and parsed first. Redundant but safe.
         # from datetime import datetime, timedelta # Ensure datetime is available
 
-        query = PymeTicket.query.options(selectinload(PymeTicket.comentarios)) # Eager load comments
+        query = PymeTicket.query  # Comments will be loaded lazily
 
         if current_user.rubro_id:
             query = query.filter_by(rubro_id=current_user.rubro_id)
