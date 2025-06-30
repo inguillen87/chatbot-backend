@@ -19,14 +19,16 @@ MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
 
 def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ticket_obj) -> None:
     """Registro unificado de acciones sobre tickets."""
-    current_app.logger.info(
-        "%s | ticket=%s anon_id=%s anon_db=%s estado=%s",
-        action,
-        ticket_id,
-        header_anon_id,
-        getattr(ticket_obj, "anon_id", None),
-        getattr(ticket_obj, "estado", None),
+    log_message = (
+        f"{action} | ticket_id={ticket_id} | "
+        f"header_anon_id={header_anon_id} | "
+        f"ticket_anon_id={getattr(ticket_obj, 'anon_id', None)} | "
+        f"estado_actual={getattr(ticket_obj, 'estado', None)}"
     )
+    # Si la acción es un cambio de estado, podríamos querer loguear el estado al que se cambió.
+    # Esto requeriría pasar el nuevo_estado a esta función, o loguearlo directamente en cambiar_estado_ticket.
+    # Por ahora, mantenemos el log como está, pero es una consideración para el futuro.
+    current_app.logger.info(log_message)
 
 # ---------- LISTA DE TICKETS (logueado) ----------
 @ticket_bp.route('/', methods=['GET'])
@@ -345,17 +347,17 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         from services.email_service import (
             enviar_email_ticket_novedad,
             enviar_sms_ticket_novedad,
+            enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
         )
-        enviar_email_ticket_novedad(
-            ticket_obj,
-            f"El estado de tu ticket ahora es '{nuevo_estado}'.",
-        )
-        enviar_sms_ticket_novedad(
-            ticket_obj,
-            f"Tu ticket {ticket_obj.nro_ticket} ahora está en '{nuevo_estado}'",
-        )
+        mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
+
+        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
+        enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
+        if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
+            enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
+
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
-        current_app.logger.error(f"Error notificando cambio de estado: {e}")
+        current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
 
     comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
     ticket_data = {

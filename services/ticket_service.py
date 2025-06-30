@@ -148,16 +148,19 @@ class ServicioTickets:
                 from services.email_service import (
                     enviar_email_ticket_novedad,
                     enviar_sms_ticket_novedad,
+                    enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
                     enviar_email_ticket_admin,
                 )
-                mensaje = comentario_data.get("comentario", "Nueva actualización")
-                if nuevo_comentario.es_admin:
-                    enviar_email_ticket_novedad(ticket, mensaje)
-                    enviar_sms_ticket_novedad(ticket, mensaje)
-                else:
-                    enviar_email_ticket_admin(ticket)
+                mensaje_notificacion = f"Nuevo comentario en tu ticket #{ticket.nro_ticket}: {comentario_data.get('comentario', '')[:50]}..."
+                if nuevo_comentario.es_admin: # Notificar al usuario/cliente
+                    enviar_email_ticket_novedad(ticket, mensaje_notificacion)
+                    enviar_sms_ticket_novedad(ticket, mensaje_notificacion)
+                    if tipo_ticket == "municipio": # Por ahora, WhatsApp solo para municipio
+                        enviar_whatsapp_ticket_novedad(ticket, mensaje_notificacion)
+                else: # Notificar al admin/empleado
+                    enviar_email_ticket_admin(ticket) # Email al admin es suficiente por ahora
             except Exception as e:  # pragma: no cover - not essential for tests
-                logger.error(f"Error enviando notificaciones: {e}")
+                logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
             return nuevo_comentario
         except SQLAlchemyError as e:
             db.session.rollback()
