@@ -908,11 +908,11 @@ class PedidoHandler(BaseHandler):
                 # TODO: Guardar el feedback si se desea. Por ahora solo agradece.
                 return {"respuesta": "¡Gracias por tus comentarios! Valoramos tu opinión. ¿Puedo ayudarte con algo más?", "fuente": "agradecimiento_feedback"}
             else: // "no", "no gracias", o cualquier otra cosa
-            ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
-            ctx["carrito"] = []
-            ctx.pop("nro_pedido_confirmado", None)
-            flask_session[CONTEXTO_PYME] = ctx
-            return {"respuesta": "Entendido. ¿Querés iniciar un nuevo pedido o ver el catálogo?", "fuente": "feedback_omitido", "botones": [{"texto": "Nuevo pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+                ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+                ctx["carrito"] = []
+                ctx.pop("nro_pedido_confirmado", None)
+                flask_session[CONTEXTO_PYME] = ctx
+                return {"respuesta": "Entendido. ¿Querés iniciar un nuevo pedido o ver el catálogo?", "fuente": "feedback_omitido", "botones": [{"texto": "Nuevo pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
         
         elif estado == PymeConversationState.IDLE:
             # Limpiar carrito y nro de pedido anterior al iniciar un nuevo pedido desde IDLE
