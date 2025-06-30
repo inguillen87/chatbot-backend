@@ -87,7 +87,11 @@ def create_app(config_class=Config):
     # --- Configuración de CORS ---
     allowed_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS")
     if allowed_origins_env:
-        allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
+        allowed_origins_env = allowed_origins_env.strip()
+        if allowed_origins_env == "*":
+            allowed_origins = "*"
+        else:
+            allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
     else:
         allowed_origins = [
             "http://localhost",

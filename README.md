@@ -109,7 +109,11 @@ De lo contrario, el botón de inicio de sesión puede devolver errores 403.
 Para definir qué orígenes pueden realizar peticiones al backend, puedes usar la
 variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
-`chatboc.ar` por defecto.
+`chatboc.ar` por defecto.  Si necesitas aceptar peticiones desde cualquier
+sitio (por ejemplo, si el widget se incrustará en múltiples dominios), define
+`CORS_ALLOWED_ORIGINS=*`. El backend enviará entonces el encabezado
+`Access-Control-Allow-Origin` correspondiente a cada solicitud y la seguridad
+se delegará a la validación de tokens.
 
 Define también `GOOGLE_MAPS_API_KEY` si el frontend usa el widget de mapa.
 El valor se obtiene desde `/google-maps-key` para inicializar Google Maps.
