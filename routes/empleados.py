@@ -33,8 +33,8 @@ def listar_empleados(current_user: User):
             "name": e.name,
             "email": e.email,
             "rol": e.rol,
-            "categorias": e.ticket_categorias or "",
-            "tickets_respondidos_mes": tickets_respondidos_mes
+            "categorias": e.ticket_categorias.split(",") if e.ticket_categorias else [],
+            "tickets_respondidos_mes": tickets_respondidos_mes,
         })
     return jsonify(datos)
 
@@ -76,7 +76,7 @@ def crear_empleado(current_user: User):
         "name": nuevo.name,
         "email": nuevo.email,
         "rol": nuevo.rol,
-        "categorias": nuevo.ticket_categorias or "",
+        "categorias": nuevo.ticket_categorias.split(",") if nuevo.ticket_categorias else [],
     }), 201
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
@@ -140,8 +140,8 @@ def obtener_empleado(current_user: User, emp_id: int):
         "name": empleado.name,
         "email": empleado.email,
         "rol": empleado.rol,
-        "categorias": empleado.ticket_categorias or "",
-        "tickets_respondidos_mes": tickets_respondidos_mes
+        "categorias": empleado.ticket_categorias.split(",") if empleado.ticket_categorias else [],
+        "tickets_respondidos_mes": tickets_respondidos_mes,
     })
 
 
@@ -178,7 +178,7 @@ def actualizar_empleado(current_user: User, emp_id: int):
         "name": empleado.name,
         "email": empleado.email,
         "rol": empleado.rol,
-        "categorias": empleado.ticket_categorias or "",
+        "categorias": empleado.ticket_categorias.split(",") if empleado.ticket_categorias else [],
     })
 
 
