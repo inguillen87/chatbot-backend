@@ -12,6 +12,7 @@ from models import (
     db,
 )
 from sqlalchemy.exc import SQLAlchemyError
+from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,21 @@ class ServicioTickets:
                 db.session.add(comentario)
 
             db.session.commit()
-            logger.info(f"Ticket #{ticket.nro_ticket} creado.")
+            logger.info(f"Ticket #{ticket.nro_ticket} ({tipo_ticket}) creado localmente.")
+
+            # Integración con SIGEM para tickets municipales
+            if tipo_ticket == "municipio" and isinstance(ticket, MunicipioTicket):
+                try:
+                    sigem_success = enviar_ticket_a_sigem(ticket)
+                    if sigem_success:
+                        logger.info(f"Ticket #{ticket.nro_ticket} enviado a SIGEM exitosamente.")
+                    else:
+                        logger.warning(f"Ticket #{ticket.nro_ticket} NO pudo ser enviado a SIGEM (función devolvió False).")
+                except Exception as e_sigem:
+                    # Loggear el error pero no revertir la creación local del ticket.
+                    # La integración externa no debe impedir el funcionamiento primario.
+                    logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
+
             return ticket
         except SQLAlchemyError as e:
             db.session.rollback()
