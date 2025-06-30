@@ -718,15 +718,25 @@ def anon_o_token_requerido(f):
             return "", 200
         token = obtener_token()
         anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
+        current_app.logger.debug(
+            f"Verificando autenticación | token_proporcionado={'sí' if token else 'no'} | anon_id={anon_id or 'no'}"
+        )
+
         user = User.query.filter_by(token=token).first() if token else None
+        if token and not user:
+            current_app.logger.warning("Token inválido o usuario no encontrado")
 
         if user and not anon_id:
             g.current_user = user
+            current_app.logger.debug(f"Autenticado como user_id={user.id}")
             return f(current_user=user, *args, **kwargs)
 
         if anon_id:
             if user:
                 g.owner_user = user
+                current_app.logger.debug(
+                    f"Acceso anónimo con propietario user_id={user.id} anon_id={anon_id}"
+                )
             g.anon_id = anon_id
             response = f(current_user=None, anon_id=anon_id, owner_user=user, *args, **kwargs)
             resp_obj = response[0] if isinstance(response, tuple) else response
@@ -736,6 +746,7 @@ def anon_o_token_requerido(f):
                 pass
             return response
 
+        current_app.logger.warning("Token o Anon-Id requerido pero no proporcionado")
         return jsonify({"error": "Token o anon_id requerido"}), 401
     return decorated
 
