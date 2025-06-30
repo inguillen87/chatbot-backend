@@ -553,6 +553,7 @@ def chatuser_login_panel():
     })
 
 @auth_bp.route('/me', methods=['GET', 'OPTIONS'])
+@auth_bp.route('/perfil', methods=['GET', 'OPTIONS'])
 @token_requerido
 def get_current_user(user):
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
