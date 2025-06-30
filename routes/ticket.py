@@ -701,10 +701,12 @@ def get_panel_por_categoria(current_user: User):
             final_panel_data[categoria_key] = {
                 "summary_by_status": dict(summary_by_status_for_cat),
                 "metrics": category_metrics,
-                "tickets": serialized_tickets_for_cat
+                "tickets": serialized_tickets_for_cat,
             }
-
-        return jsonify(final_panel_data)
+        panel_list = [
+            {"categoria": cat, **data} for cat, data in final_panel_data.items()
+        ]
+        return jsonify(panel_list)
 
     except Exception as e:
         current_app.logger.error(f"Error en get_panel_por_categoria: {e}", exc_info=True)
@@ -774,10 +776,13 @@ def get_panel_pyme(current_user: User):
             final_panel_data[categoria_key] = {
                 "summary_by_status": dict(summary_by_status_for_cat),
                 "metrics": category_metrics,
-                "tickets": serialized_tickets_for_cat
+                "tickets": serialized_tickets_for_cat,
             }
 
-        return jsonify(final_panel_data)
+        panel_list = [
+            {"categoria": cat, **data} for cat, data in final_panel_data.items()
+        ]
+        return jsonify(panel_list)
     except Exception as e:
         current_app.logger.error(f"Error en get_panel_pyme: {e}", exc_info=True)
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
