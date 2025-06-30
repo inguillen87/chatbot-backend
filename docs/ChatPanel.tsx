@@ -1,11 +1,13 @@
 import React from "react";
 import ChatMessage, { ChatMessageProps } from "./ChatMessage";
+import TypingIndicator from "./TypingIndicator";
 
 export interface ChatPanelProps {
   messages: ChatMessageProps["message"][];
+  isTyping?: boolean;
 }
 
-const ChatPanel: React.FC<ChatPanelProps> = ({ messages }) => {
+const ChatPanel: React.FC<ChatPanelProps> = ({ messages, isTyping }) => {
   return (
     <div className="flex flex-col items-center w-full h-full md:h-screen bg-[#111827]">
       <div
@@ -14,9 +16,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages }) => {
         {messages.map((msg) => (
           <ChatMessage key={msg.id} message={msg} />
         ))}
+        {isTyping && <TypingIndicator isUser />}
       </div>
     </div>
   );
-}; 
+};
 
 export default ChatPanel;

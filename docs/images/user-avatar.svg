@@ -7,6 +7,11 @@
   </defs>
   <!-- cabeza -->
   <circle cx="32" cy="20" r="12" fill="#ffe6c0" stroke="#d3b48c" stroke-width="2"/>
+  <!-- ojos -->
+  <circle class="eye" cx="27" cy="18" r="1.5" fill="#000"/>
+  <circle class="eye" cx="37" cy="18" r="1.5" fill="#000"/>
+  <!-- boca -->
+  <path class="mouth" d="M27 24 q5 4 10 0" stroke="#d38" stroke-width="2" fill="none" stroke-linecap="round"/>
   <!-- torso -->
   <path d="M16 54c0-10 8-18 16-18s16 8 16 18v4H16z" fill="url(#avatarGrad)"/>
 </svg>
