@@ -3,10 +3,10 @@ import re
 import random
 import json
 from enum import Enum, auto
-from flask import session as flask_session
+from flask import session as flask_session, current_app
 
 from services.cohere_ai import robust_chat
-from models import Conversacion, db, ArchivoAdjunto # Asegúrate que PymeTicket, TicketComentario estén importados si se usan directamente
+from models import Conversacion, db, ArchivoAdjunto, PymePedido, User # Asegúrate que PymeTicket, TicketComentario estén importados si se usan directamente
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
     armar_respuesta_legible,
@@ -56,10 +56,26 @@ import ast # For literal_eval
 
 def extraer_productos_llm(texto: str) -> list[dict]:
     prompt = (
-        "Extrae producto y cantidad del MENSAJE. Responde ÚNICAMENTE con una lista de objetos JSON válida. "
-        "Cada objeto debe tener claves \"nombre\" (string) y \"cantidad\" (integer). "
-        "Ejemplo: [{\"nombre\": \"manzanas\", \"cantidad\": 2}, {\"nombre\": \"peras\", \"cantidad\": 1}]\n"
-        f"MENSAJE: '{texto}'"
+        "Analiza el MENSAJE DEL USUARIO para extraer productos, sus cantidades numéricas y sus unidades de medida específicas si se mencionan (ej. 'kilos', 'cajas', 'paquetes', 'docenas', 'metros'). "
+        "Responde ÚNICAMENTE con una lista de objetos JSON válida. Cada objeto debe tener:\n"
+        "- \"nombre\": El nombre descriptivo del producto (string).\n"
+        "- \"cantidad\": La cantidad numérica asociada al producto (integer).\n"
+        "- \"unidad\" (opcional): La unidad de medida específica si se menciona (string). Si la unidad es implícita o genérica como 'unidades' o 'ítems', puedes omitirla.\n"
+        "IMPORTANTE: La 'cantidad' debe ser siempre el NÚMERO. Si el usuario dice 'una docena de huevos', la cantidad es 12 y la unidad 'huevos' (o puedes poner 'docena' como unidad y cantidad 1, pero sé consistente). Si dice 'un pallet de cemento', cantidad es 1 y unidad 'pallet'. Si dice '2 cajas de leche', cantidad es 2 y unidad 'cajas'.\n"
+        "Ejemplos:\n"
+        "- MENSAJE: \"quiero 2 kilos de manzanas y 1 pan lactal\"\n"
+        "  RESPUESTA: [{\"nombre\": \"manzanas\", \"cantidad\": 2, \"unidad\": \"kilos\"}, {\"nombre\": \"pan lactal\", \"cantidad\": 1}]\n"
+        "- MENSAJE: \"necesito 3 cajas de tornillos de 5mm y 1 destornillador grande\"\n"
+        "  RESPUESTA: [{\"nombre\": \"tornillos de 5mm\", \"cantidad\": 3, \"unidad\": \"cajas\"}, {\"nombre\": \"destornillador grande\", \"cantidad\": 1}]\n"
+        "- MENSAJE: \"un pallet de bolsas de cemento\"\n"
+        "  RESPUESTA: [{\"nombre\": \"bolsas de cemento\", \"cantidad\": 1, \"unidad\": \"pallet\"}]\n"
+        "- MENSAJE: \"5 metros de cable rojo y 2 enchufes\"\n"
+        "  RESPUESTA: [{\"nombre\": \"cable rojo\", \"cantidad\": 5, \"unidad\": \"metros\"}, {\"nombre\": \"enchufes\", \"cantidad\": 2}]\n"
+        "- MENSAJE: \"una docena de huevos\"\n"
+        "  RESPUESTA: [{\"nombre\": \"huevos\", \"cantidad\": 12}]\n"
+        "  (Alternativa aceptable para 'una docena de huevos': [{\"nombre\": \"huevos\", \"cantidad\": 1, \"unidad\": \"docena\"}])\n"
+        f"MENSAJE DEL USUARIO: '{texto}'\n"
+        "RESPUESTA:"
     )
     resp_content = "" # Para logging en caso de error
     try:
@@ -95,6 +111,7 @@ def extraer_productos_llm(texto: str) -> list[dict]:
                     continue
                 nombre = str(it.get("nombre", "")).strip()
                 cantidad_raw = it.get("cantidad", 1)
+                unidad = str(it.get("unidad", "")).strip() # Extraer unidad
                 cantidad = 1
                 if isinstance(cantidad_raw, (int, float)):
                     cantidad = int(cantidad_raw)
@@ -104,11 +121,15 @@ def extraer_productos_llm(texto: str) -> list[dict]:
                 if cantidad < 1: cantidad = 1 # Asegurar cantidad mínima
 
                 if nombre: 
-                    items.append({"nombre": nombre, "cantidad": cantidad})
+                    item_data = {"nombre": nombre, "cantidad": cantidad}
+                    if unidad: # Añadir unidad si existe
+                        item_data["unidad"] = unidad
+                    items.append(item_data)
         elif isinstance(datos, dict): # Si el LLM devuelve un solo objeto en lugar de una lista
             logger.warning(f"[PYME_LLM_PARSE] LLM devolvió un diccionario en lugar de una lista: {datos}. Intentando procesarlo.")
             nombre = str(datos.get("nombre", "")).strip()
             cantidad_raw = datos.get("cantidad", 1)
+            unidad = str(datos.get("unidad", "")).strip() # Extraer unidad
             cantidad = 1
             if isinstance(cantidad_raw, (int, float)):
                 cantidad = int(cantidad_raw)
@@ -116,7 +137,10 @@ def extraer_productos_llm(texto: str) -> list[dict]:
                 cantidad = int(cantidad_raw)
             if cantidad < 1: cantidad = 1
             if nombre:
-                items.append({"nombre": nombre, "cantidad": cantidad})
+                item_data = {"nombre": nombre, "cantidad": cantidad}
+                if unidad: # Añadir unidad si existe
+                    item_data["unidad"] = unidad
+                items.append(item_data)
         else:
             logger.error(f"[PYME_LLM_PARSE] Datos de LLM no son lista ni diccionario después de parseo: {datos} (Tipo: {type(datos)}) (Original: '{resp_content}')")
 
@@ -136,6 +160,54 @@ def extraer_productos(texto: str) -> list[dict]:
                 nombre = m.group(2).strip()
                 if nombre: items.append({"nombre": nombre, "cantidad": cantidad})
             except ValueError: continue
+    partes = re.split(r',| y ', texto)
+    items: list[dict] = []
+    # Regex mejorado para capturar opcionalmente una unidad después de la cantidad
+    # Ejemplo: "2 kg de manzanas", "3 cajas de tornillos", "10 metros de cable"
+    # (\d+\.?\d*|\d+)  -> captura números enteros o decimales para cantidad
+    # \s*              -> espacio opcional
+    # ([a-zA-Záéíóúñ]+)? -> unidad opcional (palabra)
+    # [^a-zA-Z0-9]*    -> separador no alfanumérico (como antes)
+    # (.+)             -> nombre del producto (como antes)
+    pattern = re.compile(r"(\d+\.?\d*|\d+)\s*([a-zA-Záéíóúñ]+)?\s*[^a-zA-Z0-9]*(.+)", re.IGNORECASE)
+
+    for p_str in partes:
+        p_str = p_str.strip()
+        match = pattern.match(p_str)
+        if match:
+            try:
+                cantidad_str = match.group(1)
+                unidad_str = match.group(2) # Puede ser None si no hay unidad explícita
+                nombre_str = match.group(3).strip()
+
+                # Eliminar palabras comunes de unidad del inicio del nombre si la unidad ya fue capturada
+                if unidad_str and nombre_str.lower().startswith(unidad_str.lower() + " de "):
+                    nombre_str = nombre_str[len(unidad_str) + 4:].strip()
+                elif unidad_str and nombre_str.lower().startswith(unidad_str.lower() + " "):
+                     nombre_str = nombre_str[len(unidad_str) + 1:].strip()
+
+
+                if nombre_str: # Asegurar que quede un nombre de producto
+                    item_data = {"nombre": nombre_str, "cantidad": float(cantidad_str) if '.' in cantidad_str else int(cantidad_str)}
+                    if unidad_str:
+                        item_data["unidad"] = unidad_str.lower()
+                    items.append(item_data)
+            except ValueError:
+                logger.warning(f"[EXTRACT_REGEX] ValueError parseando: {p_str}")
+                continue
+            except IndexError:
+                 logger.warning(f"[EXTRACT_REGEX] IndexError parseando: {p_str}")
+                 continue
+        else: # Si el regex mejorado no funciona, intentar con el original como fallback simple
+            m_simple = re.search(r"(\d+)[^a-zA-Z0-9]*(.+)", p_str)
+            if m_simple:
+                try:
+                    cantidad = int(m_simple.group(1))
+                    nombre = m_simple.group(2).strip()
+                    if nombre: items.append({"nombre": nombre, "cantidad": cantidad})
+                except ValueError: continue
+
+
     return items if items else extraer_productos_llm(texto)
 
 def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # context es opcional por ahora
@@ -147,29 +219,34 @@ def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # conte
 
     for item in carrito:
         nombre = item.get("nombre", "Producto desconocido")
-        cantidad_pedida = item.get("cantidad_pedido", 0) 
+        cantidad_pedida = item.get("cantidad_pedido", 0) # Esta es la cantidad que el usuario quiere pedir
+        unidad_pedido_usuario = item.get("unidad_pedido_usuario", "") # Unidad que el usuario especificó al pedir, ej "kilos"
         
         precio_catalogo = item.get("precio_unitario_catalogo", 0.0) 
-        unidad_original = item.get("unidad_original_catalogo", "") 
-        unidad_desc = item.get("unidad_descripcion_catalogo", "") 
-        cantidad_empaque = item.get("cantidad_empaque_catalogo") 
+        unidad_original_catalogo = item.get("unidad_original_catalogo", "") # Ej: "Caja x 6 botellas"
+        unidad_descripcion_catalogo = item.get("unidad_descripcion_catalogo", "") # Ej: "Caja" o "Botella"
+        cantidad_empaque_catalogo = item.get("cantidad_empaque_catalogo") # Ej: 6 (si es un pack)
         precio_str_catalogo = item.get("precio_str_catalogo", "Consultar")
 
-        linea = f"{cantidad_pedida} x {nombre}"
+        linea = f"{cantidad_pedida}"
+        if unidad_pedido_usuario:
+            linea += f" {unidad_pedido_usuario}"
+        linea += f" x {nombre}"
         
-        display_unidad_carrito = ""
-        # Use parsed description and empaque quantity if available and meaningful
-        if unidad_desc and isinstance(cantidad_empaque, int) and cantidad_empaque > 1:
-            display_unidad_carrito = f"{unidad_desc} (de {cantidad_empaque} items)"
-        elif unidad_desc: # e.g., "Botella", "Unidad"
-            display_unidad_carrito = unidad_desc
-        elif unidad_original: # Fallback to original string if no better parsing
-            display_unidad_carrito = unidad_original
+        # Mostrar la unidad del catálogo si es relevante y diferente de la pedida, o si la pedida no existe
+        display_unidad_info_catalogo = ""
+        if unidad_descripcion_catalogo and isinstance(cantidad_empaque_catalogo, int) and cantidad_empaque_catalogo > 1:
+            display_unidad_info_catalogo = f"{unidad_descripcion_catalogo} (de {cantidad_empaque_catalogo} items)"
+        elif unidad_descripcion_catalogo:
+            display_unidad_info_catalogo = unidad_descripcion_catalogo
+        elif unidad_original_catalogo:
+            display_unidad_info_catalogo = unidad_original_catalogo
         
-        if display_unidad_carrito:
-            linea += f" ({display_unidad_carrito})"
+        if display_unidad_info_catalogo and display_unidad_info_catalogo.lower() != unidad_pedido_usuario.lower():
+            linea += f" (presentación: {display_unidad_info_catalogo})"
 
         # Precio y subtotal
+        # Asumimos que precio_catalogo es el precio de la unidad/empaque descrito por display_unidad_info_catalogo
         # precio_catalogo is the price for the 'display_unidad_carrito'
         if precio_catalogo > 0:
             precio_total_item = cantidad_pedida * precio_catalogo
@@ -202,9 +279,15 @@ class PymeConversationState(Enum):
     ESPERANDO_PRODUCTO = auto()
     CONFIRMANDO_PEDIDO = auto()
     PEDIDO_FINALIZADO = auto()
-    ESPERANDO_CONTACTO = auto()
-    ESPERANDO_NUMERO_TICKET = auto()
-    ESPERANDO_CONFIRMACION_CIERRE = auto()
+    # ESPERANDO_CONTACTO = auto() # Se fusionará con la lógica de recopilación de datos del cliente
+    ESPERANDO_DATOS_CLIENTE_NOMBRE = auto()
+    ESPERANDO_DATOS_CLIENTE_TELEFONO = auto()
+    ESPERANDO_DATOS_CLIENTE_DIRECCION = auto()
+    ESPERANDO_DATOS_CLIENTE_EMAIL = auto() # Opcional si ya está logueado y tiene email
+    ESPERANDO_CONFIRMACION_FINAL_CON_DATOS = auto() # Nuevo estado para confirmar pedido Y datos del cliente
+    ESPERANDO_FEEDBACK = auto() # Nuevo estado para solicitar feedback
+    ESPERANDO_NUMERO_TICKET = auto() # Para reclamos/consultas, no para pedidos
+    ESPERANDO_CONFIRMACION_CIERRE = auto() # Para reclamos/consultas
     ESPERANDO_CALIFICACION = auto()
     ESPERANDO_DETALLES_RECLAMO = auto()
 
@@ -215,8 +298,39 @@ def deserialize_state(value):
     except KeyError: return None
 
 PROMPT_CLASIFICAR_INTENCION = """
-Sos el cerebro comercial de un chatbot para una pyme. Analizá la PREGUNTA DEL USUARIO y respondé sólo con una de estas intenciones:
-- saludo, ver_catalogo, consultar_ofertas, iniciar_pedido, pregunta_faq, hablar_con_agente, continuar_flujo, consultar_estado_ticket, pregunta_ambigua
+Sos el cerebro comercial de un chatbot para una pyme. Analizá la PREGUNTA DEL USUARIO y respondé sólo con una de estas intenciones de la lista.
+Si no encaja claramente, usa 'pregunta_ambigua'.
+
+INTENCIONES POSIBLES:
+- saludo: El usuario está saludando.
+    Ejemplos: "hola", "buenas tardes", "qué tal?"
+- ver_catalogo: El usuario quiere ver productos, el catálogo general o buscar tipos de productos.
+    Ejemplos: "qué productos tienen?", "mostrame el catálogo", "tienen herramientas?", "busco camperas"
+- consultar_ofertas: El usuario pregunta por ofertas, promociones o descuentos.
+    Ejemplos: "qué ofertas hay?", "tienen alguna promo?", "hay descuentos hoy?"
+- iniciar_pedido: El usuario quiere comprar o pedir productos específicos, usualmente mencionando producto y/o cantidad.
+    Ejemplos: "quiero 2kg de pan", "necesito una docena de facturas", "mandame 3 de esos tornillos", "agregar al carrito la remera azul"
+- agregar_al_carrito: El usuario confirma que quiere agregar un producto previamente discutido al carrito.
+    Ejemplos: "sí, agregalo", "dale, ponelo en el carrito", "lo quiero"
+- ver_carrito: El usuario quiere revisar los productos que ya ha seleccionado en su carrito.
+    Ejemplos: "qué tengo en el carrito?", "mostrar mi pedido", "cómo va mi compra?"
+- eliminar_del_carrito: El usuario quiere quitar un producto de su carrito.
+    Ejemplos: "sacar el pan del carrito", "ya no quiero las facturas", "eliminar el último producto"
+- finalizar_pedido: El usuario indica que quiere completar la compra de los productos en su carrito.
+    Ejemplos: "eso es todo", "quiero pagar", "finalizar la compra", "terminar pedido"
+- continuar_flujo: El usuario da una respuesta afirmativa o de continuación a una pregunta del bot en medio de un flujo (ej. confirmación de pedido, seguir agregando productos).
+    Ejemplos: "sí", "ok", "dale", "continuar", "perfecto"
+- cancelar_flujo: El usuario quiere detener la acción actual (ej. cancelar un pedido, salir de una consulta).
+    Ejemplos: "cancelar", "no gracias", "mejor no", "olvidalo"
+- pregunta_faq: El usuario hace una pregunta general sobre la empresa, envíos, pagos, horarios, etc., que podría estar en una FAQ.
+    Ejemplos: "cuánto cuesta el envío?", "aceptan tarjeta?", "dónde están ubicados?", "cuál es su horario?"
+- consultar_estado_ticket: El usuario quiere saber sobre un pedido o consulta anterior (si la pyme usa sistema de tickets).
+    Ejemplos: "cómo va mi pedido 123?", "estado de mi consulta P-456"
+- hablar_con_agente: El usuario solicita explícitamente hablar con una persona.
+    Ejemplos: "quiero hablar con un vendedor", "pasame con alguien de atención al cliente"
+- pregunta_ambigua: La pregunta del usuario no es clara o no encaja en las otras categorías.
+    Ejemplos: "y eso?", "contame más", "no sé"
+
 PREGUNTA DEL USUARIO: "{pregunta_usuario}"
 INTENCIÓN: """
 
@@ -336,62 +450,78 @@ class SentimentHandler(BaseHandler):
         return {"respuesta": "¡Gracias por tu comentario!", "fuente": "sentimiento_positivo", "botones": [{"texto": "Ver ofertas", "action": "ver_ofertas"}]}
 
 class PedidoHandler(BaseHandler):
-    def _sugerir_productos_complementarios(self, ultimo_producto_nombre: str, carrito_actual: list, items_recien_agregados: list) -> str:
+    def _sugerir_productos_complementarios(self, ultimo_producto_nombre: str, carrito_actual: list, items_recien_agregados: list) -> tuple[str, list]:
         user_id = self.context.get("user_id")
-        if not user_id or not items_recien_agregados: return ""
-        
-        ofertas_destacadas = buscar_catalogo_qdrant(user_id=user_id, pregunta="ofertas productos complementarios", limite=3, en_promocion=True, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME))
-        if ofertas_destacadas:
-            nombres_en_carrito = {item['nombre'].lower().strip() for item in carrito_actual}
-            sugerencias_validas = []
-            for oferta in ofertas_destacadas:
-                payload = getattr(oferta, "payload", {})
+        if not user_id or not items_recien_agregados:
+            return "", []
+
+        categoria_ultimo_producto = None
+        # Placeholder: Lógica para obtener categoría del último producto si es necesario para búsqueda contextual.
+        # Por ahora, se usará una búsqueda más genérica.
+
+        pregunta_sugerencias = "ofertas destacadas"
+        if categoria_ultimo_producto: # Ejemplo si tuviéramos la categoría
+            pregunta_sugerencias = f"{categoria_ultimo_producto} ofertas"
+
+        productos_sugeridos_qdrant = buscar_catalogo_qdrant(
+            user_id=user_id,
+            pregunta=pregunta_sugerencias,
+            limite=5,
+            en_promocion=True,
+            coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME)
+        )
+
+        sugerencias_finales_texto = []
+        sugerencias_botones = []
+        nombres_en_carrito_y_agregados = {item['nombre'].lower().strip() for item in carrito_actual}
+        for item_agregado in items_recien_agregados: # Excluir los que se acaban de agregar explícitamente
+            nombres_en_carrito_y_agregados.add(item_agregado['nombre'].lower().strip())
+
+        if productos_sugeridos_qdrant:
+            for oferta_qdrant in productos_sugeridos_qdrant:
+                payload = getattr(oferta_qdrant, "payload", {})
                 nombre_oferta = payload.get("nombre", "").strip()
-                if nombre_oferta and nombre_oferta.lower() not in nombres_en_carrito:
-                    if not any(nombre_oferta.lower() == item_agregado['nombre'].lower() for item_agregado in items_recien_agregados):
-                        # Extraer campos de unidad y precio del payload
-                        precio_val = payload.get("precio_float")
-                        precio_str_original = payload.get("precio_str", "")
-                        
-                        unidad_desc_parsed = payload.get("unidad_descripcion", "")
-                        cantidad_empaque_val = payload.get("cantidad_empaque")
 
-                        precio_display_sugerencia = "Consultar"
-                        if precio_val is not None:
-                            precio_display_sugerencia = f"${float(precio_val):,.2f}"
-                        elif precio_str_original:
-                            precio_display_sugerencia = precio_str_original
-                        
-                        texto_sugerencia = f"'{nombre_oferta}'"
-                        
-                        display_unidad_sug = ""
-                        if unidad_desc_parsed and cantidad_empaque_val and cantidad_empaque_val > 1:
-                            display_unidad_sug = f" ({unidad_desc_parsed} x{cantidad_empaque_val})"
-                        elif unidad_desc_parsed:
-                            display_unidad_sug = f" ({unidad_desc_parsed})"
-                        
-                        if display_unidad_sug:
-                            texto_sugerencia += display_unidad_sug
-                        
-                        texto_sugerencia += f" a {precio_display_sugerencia}"
+                if nombre_oferta and nombre_oferta.lower() not in nombres_en_carrito_y_agregados:
+                    precio_val = payload.get("precio_float")
+                    precio_str_original = payload.get("precio_str", "")
+                    unidad_desc_parsed = payload.get("unidad_descripcion", "")
+                    cantidad_empaque_val = payload.get("cantidad_empaque")
+                    promocion_texto_oferta = payload.get("promocion_info", "")
 
-                        if payload.get("promocion_texto"):
-                            texto_sugerencia += f" ({payload.get('promocion_texto')})"
-                        
-                        sugerencias_validas.append(texto_sugerencia)
-                if len(sugerencias_validas) >= 1: break # Solo sugerir uno o dos para no abrumar
-            
-            if sugerencias_validas:
-                 # Unir con "y" si hay dos, o solo tomar la primera si hay más.
-                sugerencia_final_str = ""
-                if len(sugerencias_validas) == 1:
-                    sugerencia_final_str = sugerencias_validas[0]
-                elif len(sugerencias_validas) > 1:
-                    sugerencia_final_str = " y ".join(sugerencias_validas[:2]) # Mostrar hasta 2 sugerencias
+                    precio_display_sugerencia = "Consultar"
+                    if precio_val is not None:
+                        precio_display_sugerencia = f"${float(precio_val):,.2f}"
+                    elif precio_str_original:
+                        precio_display_sugerencia = precio_str_original
 
+                    texto_sugerencia_item = f"'{nombre_oferta}'"
+
+                    display_unidad_sug = ""
+                    if unidad_desc_parsed and cantidad_empaque_val and isinstance(cantidad_empaque_val, int) and cantidad_empaque_val > 1:
+                        display_unidad_sug = f" ({unidad_desc_parsed} x{cantidad_empaque_val})"
+                    elif unidad_desc_parsed:
+                        display_unidad_sug = f" ({unidad_desc_parsed})"
+
+                    if display_unidad_sug:
+                        texto_sugerencia_item += display_unidad_sug
+
+                    texto_sugerencia_item += f" a {precio_display_sugerencia}"
+
+                    if promocion_texto_oferta:
+                        texto_sugerencia_item += f" <b style='color:green;'>({promocion_texto_oferta})</b>"
+
+                    sugerencias_finales_texto.append(texto_sugerencia_item)
+                    sugerencias_botones.append({"texto": f"Agregar: {nombre_oferta}", "action": f"agregar_sugerido_{nombre_oferta.replace(' ', '_')[:30]}"}) # Limitar longitud del action
+
+                if len(sugerencias_finales_texto) >= 2:
+                    break
+
+            if sugerencias_finales_texto:
+                sugerencia_final_str = " y ".join(sugerencias_finales_texto)
                 if sugerencia_final_str:
-                    return f"\n\n✨ ¡Aprovecha también! Tenemos {sugerencia_final_str}. ¿Te interesa alguno?"
-        return ""
+                    return f"\n\n✨ ¡Quizás también te interese! Tenemos {sugerencia_final_str}. ¿Añadimos alguno?", sugerencias_botones
+        return "", []
 
     def handle(self, pregunta):
         ctx = self.context.setdefault(CONTEXTO_PYME, flask_session.get(CONTEXTO_PYME, {}))
@@ -494,8 +624,12 @@ class PedidoHandler(BaseHandler):
                     # Lógica para agregar o actualizar cantidad en carrito
                     found_in_cart = False
                     for item_car_existente in carrito:
-                        if nombre_producto_catalogo.lower() == item_car_existente["nombre"].lower():
-                            item_car_existente["cantidad_pedido"] = item_car_existente.get("cantidad_pedido",0) + item_ext["cantidad"] # cantidad que pide el usuario
+                        # Comparar también por unidad si ambas existen, para diferenciar "1 kg de X" de "1 bolsa de X" si son items distintos en carrito
+                        match_nombre = nombre_producto_catalogo.lower() == item_car_existente["nombre"].lower()
+                        match_unidad = item_ext.get("unidad","").lower() == item_car_existente.get("unidad_pedido_usuario","").lower() if item_ext.get("unidad") and item_car_existente.get("unidad_pedido_usuario") else True
+
+                        if match_nombre and match_unidad:
+                            item_car_existente["cantidad_pedido"] = item_car_existente.get("cantidad_pedido",0) + item_ext["cantidad"]
                             items_agregados_info.append(item_car_existente)
                             found_in_cart = True
                             break
@@ -503,12 +637,13 @@ class PedidoHandler(BaseHandler):
                     if not found_in_cart:
                         item_para_carrito_nuevo = {
                             "nombre": nombre_producto_catalogo,
-                            "cantidad_pedido": item_ext["cantidad"], # Cantidad que el usuario pide
-                            "precio_unitario_catalogo": precio_unitario_catalogo, # Precio del item como está en catálogo (podría ser por unidad o por pack)
-                            "unidad_original_catalogo": unidad_original_qdrant,   # Ej: "Caja x 6 botellas"
-                            "unidad_descripcion_catalogo": unidad_desc_qdrant, # Ej: "Caja botellas"
-                            "cantidad_empaque_catalogo": cantidad_empaque_qdrant, # Ej: 6
-                            "precio_str_catalogo": precio_str_catalogo # Ej: "$500" o "Consultar"
+                            "cantidad_pedido": item_ext["cantidad"],
+                            "unidad_pedido_usuario": item_ext.get("unidad", ""), # Unidad especificada por el usuario
+                            "precio_unitario_catalogo": precio_unitario_catalogo,
+                            "unidad_original_catalogo": unidad_original_qdrant,
+                            "unidad_descripcion_catalogo": unidad_desc_qdrant,
+                            "cantidad_empaque_catalogo": cantidad_empaque_qdrant,
+                            "precio_str_catalogo": precio_str_catalogo
                         }
                         carrito.append(item_para_carrito_nuevo)
                         items_agregados_info.append(item_para_carrito_nuevo)
@@ -535,63 +670,128 @@ class PedidoHandler(BaseHandler):
             flask_session[CONTEXTO_PYME] = ctx
             # Usar items_agregados_info que contiene los productos con su info de catálogo (potencialmente)
             ultimo_agregado_nombre = items_agregados_info[-1]['nombre'] if items_agregados_info else ""
-            sug_compl = self._sugerir_productos_complementarios(ultimo_agregado_nombre, carrito, items_agregados_info)
-            return {"respuesta": f"{mensaje_principal}{sug_compl}", "fuente": "pedido_progreso_sug" if sug_compl else "pedido_progreso", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
+
+            sug_compl_texto, sug_compl_botones = self._sugerir_productos_complementarios(ultimo_agregado_nombre, carrito, items_agregados_info)
+
+            respuesta_dict = {
+                "respuesta": f"{mensaje_principal}{sug_compl_texto}",
+                "fuente": "pedido_progreso_sug" if sug_compl_texto else "pedido_progreso",
+                "estado_respuesta": "pyme_pregunta_pedido"
+            }
+            botones_existentes = [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]
+            respuesta_dict["botones"] = botones_existentes + sug_compl_botones
+            return respuesta_dict
         
+        # Manejar acción de agregar producto sugerido
+        action = pregunta.lower() # Asumimos que la 'pregunta' puede ser la acción del botón
+        if isinstance(self.context.get("action"), str): # Priorizar action del payload si existe
+            action = self.context.get("action").lower()
+
+        if action.startswith("agregar_sugerido_"):
+            nombre_sugerido_codificado = action.replace("agregar_sugerido_", "")
+            nombre_sugerido = nombre_sugerido_codificado.replace("_", " ") # Decodificar simple
+
+            # Buscar el producto sugerido en Qdrant para obtener todos sus detalles
+            resultados_qdrant_sug = buscar_catalogo_qdrant(
+                user_id=self.context.get("user_id"),
+                pregunta=nombre_sugerido, # Búsqueda exacta por nombre
+                limite=1,
+                coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME)
+            )
+            if resultados_qdrant_sug:
+                payload_sug = getattr(resultados_qdrant_sug[0], "payload", {})
+                if payload_sug:
+                    item_sugerido_para_carrito = {
+                        "nombre": payload_sug.get("nombre", nombre_sugerido),
+                        "cantidad_pedido": 1, # Asumir cantidad 1 para sugerencias
+                        "unidad_pedido_usuario": "", # Asumir unidad base
+                        "precio_unitario_catalogo": payload_sug.get("precio_float", 0.0),
+                        "unidad_original_catalogo": payload_sug.get("unidad_original", ""),
+                        "unidad_descripcion_catalogo": payload_sug.get("unidad_descripcion", ""),
+                        "cantidad_empaque_catalogo": payload_sug.get("cantidad_empaque"),
+                        "precio_str_catalogo": payload_sug.get("precio_str", "Consultar")
+                    }
+                    carrito.append(item_sugerido_para_carrito)
+                    ctx["reintentos"] = 0
+                    flask_session[CONTEXTO_PYME] = ctx
+                    sug_compl_texto_2, sug_compl_botones_2 = self._sugerir_productos_complementarios(nombre_sugerido, carrito, [item_sugerido_para_carrito])
+                    respuesta_dict_sug = {
+                        "respuesta": f"¡'{nombre_sugerido}' agregado al carrito!\n{formatear_carrito(carrito, self.context)}{sug_compl_texto_2}",
+                        "fuente": "pedido_sugerencia_agregada",
+                        "estado_respuesta": "pyme_pregunta_pedido"
+                    }
+                    botones_exist_sug = [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]
+                    respuesta_dict_sug["botones"] = botones_exist_sug + sug_compl_botones_2
+                    return respuesta_dict_sug
+            # Si no se encontró el producto sugerido (raro, pero posible), simplemente mostrar el carrito
+            return {"respuesta": f"No pude agregar la sugerencia. Carrito actual:\n{formatear_carrito(carrito, self.context)}", "fuente": "pedido_progreso", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
+
         elif estado == PymeConversationState.CONFIRMANDO_PEDIDO:
             if any(k in texto for k in CANCEL_KEYWORDS):
                 ctx.clear(); ctx.update({"estado_conversacion": serialize_state(PymeConversationState.IDLE), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
                 return {"respuesta": "Pedido cancelado. ¿Necesitás otra cosa?", "fuente": "pedido_cancelado_confirmacion", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Hablar con agente", "action": "hablar_con_agente"}]}
 
             if texto.strip() in {"si", "sí", "confirmo", "confirmar"}:
-                # Verificar si es anónimo antes de finalizar el pedido
-                if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                    return {
-                        "respuesta": "Para completar tu pedido y que podamos coordinar la entrega y el pago, necesitás iniciar sesión o registrarte. Tu carrito será guardado.",
-                        "botones": [
-                            {"texto": "Iniciar Sesión para Finalizar", "action": "login_finalizar_pedido"},
-                            {"texto": "Registrarme para Finalizar", "action": "register_finalizar_pedido"},
-                            {"texto": "Cancelar Pedido"}
-                        ],
-                        "fuente": "anon_pedido_confirm_prompt_login"
-                        # Nota: El frontend debería manejar 'login_finalizar_pedido' y 'register_finalizar_pedido'
-                        # para que después del login/registro, se intente retomar el pedido.
-                        # El carrito ya está en `ctx['carrito']` y se guardará en `flask_session[CONTEXTO_PYME]`.
-                    }
+                # Antes de finalizar, verificar si necesitamos datos del cliente
+                viewer_user_id = self.context.get("cliente_id")
+                cliente = User.query.get(viewer_user_id) if viewer_user_id else None
 
-                # Lógica para usuarios registrados
-                ctx.update({"estado_conversacion": serialize_state(PymeConversationState.PEDIDO_FINALIZADO), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
+                datos_completos = True
+                campos_faltantes = []
+                if not ctx.get("nombre_cliente"):
+                    if cliente and cliente.name:
+                        ctx["nombre_cliente"] = cliente.name
+                    else:
+                        datos_completos = False
+                        campos_faltantes.append("nombre")
 
-                # Crear el ticket de tipo "pyme" para el pedido
-                nombre_cliente_ticket = getattr(self.context.get("user_obj"), "name", "Cliente Chat") or getattr(self.context.get("viewer_user"), "name", "Cliente")
-                detalles_pedido_ticket = formatear_carrito(carrito, self.context) # Usar la función existente
+                if not ctx.get("telefono_cliente"):
+                    if cliente and cliente.telefono:
+                        ctx["telefono_cliente"] = cliente.telefono
+                    else:
+                        datos_completos = False
+                        campos_faltantes.append("telefono")
 
-                ticket_data_pedido = {
-                    "asunto": f"Nuevo Pedido de {nombre_cliente_ticket}",
-                    "categoria": "Pedido Online",
-                    "pregunta": f"Pedido confirmado por el cliente: {nombre_cliente_ticket}", # Mensaje inicial del ticket
-                    "detalles": detalles_pedido_ticket, # Resumen del carrito
-                    "user_id": self.context.get("cliente_id"), # ID del cliente logueado
-                    "rubro_id": self.context.get("rubro_id"),
-                    "estado": "pedido_confirmado", # O 'pendiente_procesamiento'
-                    # Aquí podrías agregar más campos específicos si PymeTicket los tiene,
-                    # como total_pedido, direccion_envio (si se pidiera antes), etc.
-                }
-                try:
-                    ticket_pedido = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_pedido)
-                    if not ticket_pedido:
-                        raise Exception("La creación del ticket de pedido para Pyme retornó None.")
+                if not ctx.get("direccion_cliente"): # Dirección siempre se pide para el pedido por si es diferente a la del perfil
+                    datos_completos = False
+                    campos_faltantes.append("direccion")
 
-                    logger.info(f"Pedido confirmado y registrado como PymeTicket P-{ticket_pedido.nro_ticket} para user_id {self.context.get('cliente_id')}: {carrito}")
-                    # Limpiar carrito de la sesión después de crear el ticket
-                    ctx["carrito"] = []
+                # Email es opcional si ya está logueado y tiene email, pero puede ser útil para confirmación de pedido
+                # if not ctx.get("email_cliente"):
+                #     if cliente and cliente.email:
+                #         ctx["email_cliente"] = cliente.email
+                #     # else: # No lo marcamos como faltante obligatorio si no está logueado
+                #     #     datos_completos = False
+                #     #     campos_faltantes.append("email")
+
+
+                if not datos_completos:
+                    if "nombre" in campos_faltantes:
+                        ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE)
+                        flask_session[CONTEXTO_PYME] = ctx
+                        return {"respuesta": "¡Casi listo! Para completar tu pedido, ¿podrías decirme tu nombre completo?", "fuente": "solicitando_nombre_cliente"}
+                    elif "telefono" in campos_faltantes:
+                        ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO)
+                        flask_session[CONTEXTO_PYME] = ctx
+                        return {"respuesta": "Entendido. Ahora, ¿cuál es tu número de teléfono (con código de área)?", "fuente": "solicitando_telefono_cliente"}
+                    elif "direccion" in campos_faltantes:
+                        ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION)
+                        flask_session[CONTEXTO_PYME] = ctx
+                        return {"respuesta": "Perfecto. ¿Cuál es la dirección de entrega para este pedido?", "fuente": "solicitando_direccion_cliente"}
+                    # Podríamos añadir solicitud de email aquí si fuera mandatorio y faltara
+                else:
+                    # Todos los datos necesarios están (o se tomaron del perfil), pasar a confirmación final con datos
+                    ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS)
                     flask_session[CONTEXTO_PYME] = ctx
-
-                    return {"respuesta": f"¡Listo! Tu pedido fue registrado con el número P-{ticket_pedido.nro_ticket}. En breve nos comunicaremos para coordinar el pago y la entrega.", "fuente": "pedido_finalizado_confirmado_pyme", "ticket_id": ticket_pedido.id}
-                except Exception as e:
-                    logger.error(f"[PedidoHandler-PYME] Error al crear PymeTicket para pedido: {e}", exc_info=True)
-                    # No limpiar el estado de confirmando_pedido para que pueda reintentar
-                    return {"respuesta": "Hubo un problema al registrar tu pedido. Por favor, intenta confirmar de nuevo en unos momentos.", "fuente": "error_crear_ticket_pedido_pyme", "botones": [{"texto": "Reintentar Confirmar Pedido", "action":"confirmar_pedido"}]}
+                    resumen_pedido = formatear_carrito(carrito)
+                    resumen_datos = f"Nombre: {ctx['nombre_cliente']}\nTeléfono: {ctx['telefono_cliente']}\nDirección de Entrega: {ctx['direccion_cliente']}"
+                    if ctx.get("email_cliente"):
+                        resumen_datos += f"\nEmail: {ctx['email_cliente']}"
+                    return {
+                        "respuesta": f"¡Excelente! Revisemos todo antes de finalizar:\n\n**Pedido:**\n{resumen_pedido}\n\n**Datos de Contacto y Entrega:**\n{resumen_datos}\n\n¿Es todo correcto para generar el pedido?",
+                        "fuente": "confirmando_pedido_con_datos",
+                        "botones": [{"texto": "Sí, todo correcto", "action": "confirmar_final_con_datos"}, {"texto": "Modificar datos", "action": "modificar_datos_cliente"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}]
+                    }
 
             if any(k in texto for k in ["modificar", "cambiar", "agregar", "quitar"]):
                 ctx.update({"estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
@@ -602,19 +802,141 @@ class PedidoHandler(BaseHandler):
                 return {"respuesta": "No pudimos confirmar tu pedido y fue cancelado. Puedes intentar de nuevo.", "fuente": "pedido_cancelado_confirmacion_fallida_reintentos", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
             return {"respuesta": "¿Confirmás el pedido? (Sí/Modificar/Cancelar)", "fuente": "reconfirmando_pedido", "botones": [{"texto": "Sí, confirmar", "action": "confirmar_pedido"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}, {"texto": "Cancelar", "action": "cancelar_pedido"}]}
 
+        elif estado == PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE:
+            nombre_cliente = pregunta.strip()
+            if not nombre_cliente or len(nombre_cliente.split()) < 2:
+                return {"respuesta": "Por favor, ingresa tu nombre y apellido.", "fuente": "re_solicitando_nombre_cliente"}
+            ctx["nombre_cliente"] = nombre_cliente
+            # Avanzar al siguiente dato faltante o a la confirmación final
+            # Reutilizar lógica de CONFIRMANDO_PEDIDO para decidir qué pedir después o confirmar todo
+            return self.handle("confirmar") # Simula una confirmación para re-evaluar datos faltantes
+
+        elif estado == PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO:
+            telefono_cliente = pregunta.strip()
+            # Aquí podrías añadir una validación de formato de teléfono más robusta si es necesario
+            if not telefono_cliente or not re.match(r"^\+?\d{7,15}$", telefono_cliente.replace(" ", "")):
+                return {"respuesta": "El número de teléfono no parece válido. Por favor, ingresalo de nuevo (solo números, con código de área).", "fuente": "re_solicitando_telefono_cliente"}
+            ctx["telefono_cliente"] = telefono_cliente
+            return self.handle("confirmar")
+
+        elif estado == PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION:
+            direccion_cliente = pregunta.strip()
+            if not direccion_cliente or len(direccion_cliente) < 5:
+                return {"respuesta": "La dirección parece muy corta. Por favor, ingresala completa.", "fuente": "re_solicitando_direccion_cliente"}
+            ctx["direccion_cliente"] = direccion_cliente
+            # Si el email es el siguiente, se podría pedir acá, o directamente ir a confirmación final
+            return self.handle("confirmar")
+
+        elif estado == PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS:
+            if texto.strip() in {"si", "sí", "confirmo", "confirmar", "todo correcto", "si todo correcto"}:
+                # Crear el PymePedido
+                try:
+                    monto_total_calculado = sum(item.get("precio_unitario_catalogo", 0) * item.get("cantidad_pedido", 0) for item in carrito if item.get("precio_unitario_catalogo") and item.get("precio_unitario_catalogo") > 0)
+
+                    nuevo_pedido = PymePedido(
+                        asunto=f"Pedido de {ctx.get('nombre_cliente', 'Cliente Chat')}",
+                        detalles=json.dumps(carrito), # Guardar el carrito como JSON
+                        rubro=self.context.get("rubro_nombre", "general"),
+                        nombre_cliente=ctx.get("nombre_cliente"),
+                        email_cliente=ctx.get("email_cliente"), # Puede ser None
+                        telefono_cliente=ctx.get("telefono_cliente"),
+                        user_id=self.context.get("cliente_id"), # ID del ChatUser/User final
+                        direccion=ctx.get("direccion_cliente"),
+                        monto_total=monto_total_calculado
+                        # latitud y longitud podrían obtenerse si la dirección se geocodifica
+                    )
+                    db.session.add(nuevo_pedido)
+                    db.session.commit()
+                    logger.info(f"PymePedido {nuevo_pedido.nro_pedido} creado para user_id {self.context.get('cliente_id') or 'anon'}: {carrito}")
+
+                    # Limpiar contexto de pedido
+                    ctx.update({
+                        "estado_conversacion": serialize_state(PymeConversationState.PEDIDO_FINALIZADO),
+                        "reintentos": 0,
+                        "nro_pedido_confirmado": nuevo_pedido.nro_pedido
+                        # No limpiar carrito aquí por si el usuario quiere preguntar sobre el pedido recién hecho.
+                        # Se limpiará cuando inicie un nuevo pedido o salga del flujo.
+                    })
+                    flask_session[CONTEXTO_PYME] = ctx
+
+                    ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_FEEDBACK) # Transicionar a pedir feedback
+                    flask_session[CONTEXTO_PYME] = ctx
+                    return {
+                        "respuesta": f"¡Listo! Tu pedido **#{nuevo_pedido.nro_pedido}** fue registrado. En breve nos comunicaremos para coordinar el pago y la entrega. ¿Te gustaría dejarnos algún comentario sobre tu experiencia de compra? (Sí/No)",
+                        "fuente": "pedido_finalizado_con_datos",
+                        "botones": [{"texto": "Sí, dejar comentario"}, {"texto": "No, gracias"}]
+                    }
+
+                except Exception as e:
+                    current_app.logger.error(f"Error al crear PymePedido: {e}", exc_info=True)
+                    db.session.rollback()
+                    return {"respuesta": "Hubo un error al registrar tu pedido. Por favor, intenta de nuevo en un momento.", "fuente": "error_guardando_pedido"}
+
+            elif any(k in texto for k in ["modificar datos", "modificar pedido", "no"]):
+                # Volver a pedir el primer dato (nombre) para reiniciar el flujo de datos del cliente
+                # O si es "modificar pedido", volver al estado de agregar productos
+                if "modificar pedido" in texto:
+                     ctx.update({"estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
+                     return {"respuesta": f"Ok, volvemos a tu pedido. Carrito:\n{formatear_carrito(carrito)}\n¿Qué quieres hacer?", "fuente": "modificando_pedido_confirmacion_final", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
+                else: # Modificar datos del cliente
+                    ctx.pop("nombre_cliente", None); ctx.pop("telefono_cliente", None); ctx.pop("direccion_cliente", None); ctx.pop("email_cliente", None)
+                    ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE)
+                    flask_session[CONTEXTO_PYME] = ctx
+                    return {"respuesta": "Entendido. Vamos a ingresar tus datos de nuevo. ¿Cuál es tu nombre completo?", "fuente": "modificando_datos_cliente"}
+            else:
+                return {"respuesta": "No entendí. ¿Confirmas el pedido y los datos, o querés modificar algo? (Sí/Modificar datos/Modificar pedido)", "fuente": "reconfirmando_pedido_con_datos_fallback"}
+
+
         elif estado == PymeConversationState.PEDIDO_FINALIZADO:
-            ctx.update({"estado_conversacion": serialize_state(PymeConversationState.IDLE), "reintentos": 0, "carrito": []}); flask_session[CONTEXTO_PYME] = ctx
-            return {"respuesta": "Tu pedido anterior ya fue finalizado. ¿Querés iniciar uno nuevo o ver el catálogo?", "fuente": "pedido_ya_finalizado_multi", "botones": [{"texto": "Nuevo pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+            # Ahora PEDIDO_FINALIZADO es un estado transitorio antes de ESPERANDO_FEEDBACK
+            # Si por alguna razón se llega aquí directamente, ofrecer feedback o nuevo pedido.
+            nro_pedido_previo = ctx.get("nro_pedido_confirmado", "anterior")
+            ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_FEEDBACK)
+            flask_session[CONTEXTO_PYME] = ctx
+            return {
+                "respuesta": f"Tu pedido #{nro_pedido_previo} ya fue registrado. ¿Te gustaría dejarnos algún comentario sobre tu experiencia? (Sí/No)",
+                "fuente": "pedido_ya_finalizado_pide_feedback",
+                "botones": [{"texto": "Sí, dejar comentario"}, {"texto": "No, gracias (nuevo pedido)"}]
+            }
+
+        elif estado == PymeConversationState.ESPERANDO_FEEDBACK:
+            if texto.strip().lower() in {"si", "sí", "yes", "dale", "bueno"}:
+                ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE) # Preparar para siguiente interaccion
+                ctx["carrito"] = [] # Limpiar carrito después de feedback
+                ctx.pop("nro_pedido_confirmado", None)
+                flask_session[CONTEXTO_PYME] = ctx
+                # TODO: Guardar el feedback si se desea. Por ahora solo agradece.
+                return {"respuesta": "¡Gracias por tus comentarios! Valoramos tu opinión. ¿Puedo ayudarte con algo más?", "fuente": "agradecimiento_feedback"}
+            else: // "no", "no gracias", o cualquier otra cosa
+            ctx["estado_conversacion"] = serialize_state(PymeConversationState.IDLE)
+            ctx["carrito"] = []
+            ctx.pop("nro_pedido_confirmado", None)
+            flask_session[CONTEXTO_PYME] = ctx
+            return {"respuesta": "Entendido. ¿Querés iniciar un nuevo pedido o ver el catálogo?", "fuente": "feedback_omitido", "botones": [{"texto": "Nuevo pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
         
         elif estado == PymeConversationState.IDLE:
-            ctx.clear(); ctx.update({"estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO), "reintentos": 0, "carrito": []}); flask_session[CONTEXTO_PYME] = ctx
+            # Limpiar carrito y nro de pedido anterior al iniciar un nuevo pedido desde IDLE
+            ctx.clear()
+            ctx.update({
+                "estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO),
+                "reintentos": 0,
+                "carrito": []
+            });
+            flask_session[CONTEXTO_PYME] = ctx
+            # carrito ya está inicializado como [] arriba por ctx.clear() y re-set
             items_ini = extraer_productos(pregunta)
             msg_ini = ""; sug_ini = ""
             if items_ini:
-                carrito.extend(items_ini)
+                # Al iniciar un pedido nuevo, el carrito que se pasa a formatear_carrito es el que se está construyendo aquí.
+                current_building_cart = [] # Carrito temporal para este mensaje inicial
+                current_building_cart.extend(items_ini)
                 for it in items_ini: add_preference("productos", it["nombre"])
-                msg_ini = f"¡Entendido! Agregué a tu pedido:\n{formatear_carrito(carrito)}\n\n"
-                if items_ini: sug_ini = self._sugerir_productos_complementarios(items_ini[-1]['nombre'], carrito, items_ini)
+                # Actualizar el carrito en el contexto (ctx) para que PedidoHandler lo use en los siguientes pasos
+                ctx["carrito"] = current_building_cart
+                flask_session[CONTEXTO_PYME] = ctx # Guardar el ctx actualizado en la sesión
+
+                msg_ini = f"¡Entendido! Agregué a tu pedido:\n{formatear_carrito(current_building_cart)}\n\n"
+                if items_ini: sug_ini = self._sugerir_productos_complementarios(items_ini[-1]['nombre'], current_building_cart, items_ini)
             
             ofertas_hdl = OfertasHandler(self.context)
             ofertas_dict = ofertas_hdl.handle(pregunta if not items_ini and len(pregunta.split()) > 2 else "ofertas")
@@ -781,14 +1103,44 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
     user_id_ctx = getattr(owner_user, "id", None) if owner_user else (getattr(viewer_user, "empresa_id", None) or getattr(viewer_user, "id", None) if viewer_user else None)
     nombre_pyme_ctx = getattr(owner_user, "nombre_empresa", "la empresa") if owner_user else (getattr(viewer_user, "nombre_empresa", "la empresa") if viewer_user else "la empresa")
 
+    # --- Gestión del Historial ---
+    historial_en_sesion = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
+    chat_session_uuid = kwargs.get("chat_session_uuid") # Obtener de kwargs
+
+    if not historial_en_sesion and chat_session_uuid:
+        logger.info(f"[PYME_HISTORIAL] Historial de sesión vacío. Intentando cargar desde DB para session_uuid: {chat_session_uuid}")
+        try:
+            num_pares = MAX_HISTORIAL_CHAT // 2
+            # Asumiendo que Conversacion tiene un campo 'session_id'
+            conversaciones_db = Conversacion.query.filter_by(session_id=chat_session_uuid) \
+                                                .order_by(Conversacion.timestamp.desc()) \
+                                                .limit(num_pares * 2).all() # *2 porque son mensajes individuales
+
+            if conversaciones_db:
+                conversaciones_db.reverse()
+                historial_reconstruido = []
+                for conv in conversaciones_db:
+                    # Reconstruir el formato {"role": "USER/CHATBOT", "content": ...}
+                    historial_reconstruido.append({"role": "USER", "content": conv.pregunta})
+                    historial_reconstruido.append({"role": "CHATBOT", "content": conv.respuesta})
+
+                if historial_reconstruido:
+                    logger.info(f"[PYME_HISTORIAL] Reconstruidos {len(historial_reconstruido)} mensajes desde DB para session_uuid: {chat_session_uuid}")
+                    historial_en_sesion = historial_reconstruido[-MAX_HISTORIAL_CHAT:] # Aplicar límite
+                    flask_session[NOMBRE_HISTORIAL_SESION] = historial_en_sesion # Actualizar la sesión de Flask
+        except Exception as e:
+            logger.error(f"[PYME_HISTORIAL] Error cargando historial desde DB: {e}", exc_info=True)
+            # Continuar con el historial de sesión (posiblemente vacío) si falla la carga de DB
+
     context = {
         "user_id": user_id_ctx, "nombre_pyme": nombre_pyme_ctx,
         "rubro_nombre": rubro_nombre_para_coleccion.lower(),
-        "mensajes_previos": flask_session.get(NOMBRE_HISTORIAL_SESION, []),
+        "mensajes_previos": historial_en_sesion, # Usar el historial potencialmente cargado de DB
         CONTEXTO_PYME: flask_session.get(CONTEXTO_PYME, {}),
         "cliente_id": getattr(viewer_user, "id", None), "anon_id": anon_id,
         "rubro_id": getattr(rubro_obj, "id", None) if rubro_obj else (getattr(owner_user.rubro, "id", None) if owner_user and hasattr(owner_user, "rubro") else None),
-        "coleccion_qdrant": coleccion_qdrant_ctx
+        "coleccion_qdrant": coleccion_qdrant_ctx,
+        "chat_session_uuid": chat_session_uuid
     }
     
     estado_conversacion_actual_str = context[CONTEXTO_PYME].get("estado_conversacion")
@@ -894,24 +1246,17 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
     flask_session[NOMBRE_HISTORIAL_SESION] = historial[-MAX_HISTORIAL_CHAT:]
 
     try:
-        conv_entry = Conversacion(
-            pregunta=pregunta,
-            respuesta=respuesta_final.get("respuesta", ""),
-            fuente=respuesta_final.get("fuente", "desconocida"),
-            rubro=context.get("rubro_nombre")
-        )
-        if context.get("cliente_id"): # Usuario logueado (viewer_user)
-            conv_entry.user_id = context["cliente_id"]
-        elif context.get("anon_id"): # Usuario anónimo
-            conv_entry.session_id = context["anon_id"]
-            # Opcionalmente, si queremos asociar la conversación anónima al 'owner_user' (la Pyme dueña del bot)
-            # conv_entry.user_id = context.get("user_id") # user_id aquí es el owner_user.id
-        elif context.get("user_id"): # Usuario logueado es el owner_user (ej. probando su propio bot)
-            conv_entry.user_id = context["user_id"]
-
-        # Solo guardar si hay un identificador (user_id o session_id)
-        if conv_entry.user_id or conv_entry.session_id:
-            db.session.add(conv_entry)
+        # Usar el chat_session_uuid del contexto para guardar en la BD
+        current_chat_session_uuid = context.get("chat_session_uuid")
+        if context.get("user_id") or anon_id: # Guardar si hay algún identificador
+            db.session.add(Conversacion(
+                user_id=context.get("cliente_id") or context.get("user_id"), # Priorizar cliente_id si existe
+                pregunta=pregunta,
+                respuesta=respuesta_final.get("respuesta", ""),
+                fuente=respuesta_final.get("fuente", "desconocida"),
+                rubro=context["rubro_nombre"],
+                session_id=current_chat_session_uuid # Asegurar que se guarda el session_uuid
+            ))
             db.session.commit()
         else:
             logger.warning("[PYMES] No se guardó conversación por falta de user_id y anon_id.")
