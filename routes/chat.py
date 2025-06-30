@@ -254,7 +254,7 @@ def _procesar_chat(
         return jsonify({"error": "Error interno del servidor."}), 500
 
 
-@chat_bp.route("/ask", methods=["POST"])
+@chat_bp.route("/ask", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask(current_user=None, anon_id=None, owner_user=None):
     """Endpoint genérico que delega según el rubro.
@@ -267,7 +267,7 @@ def ask(current_user=None, anon_id=None, owner_user=None):
     return _procesar_chat(current_user=current_user, owner_user=user, anon_id=anon_id)
 
 
-@chat_bp.route("/ask/pyme", methods=["POST"])
+@chat_bp.route("/ask/pyme", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     """Procesa preguntas para pymes.
@@ -280,7 +280,7 @@ def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     return _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
 
 
-@chat_bp.route("/ask/municipio", methods=["POST"])
+@chat_bp.route("/ask/municipio", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     """Procesa preguntas para municipios.

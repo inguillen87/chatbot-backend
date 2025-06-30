@@ -307,3 +307,18 @@ def calcular_precio_por_unidad(precio_total: float, cantidad: int) -> float:
         return float(precio_total) / int(cantidad) if cantidad else 0.0
     except (ValueError, ZeroDivisionError):
         return 0.0
+
+
+def generar_link_google_maps(
+    direccion: str | None = None,
+    latitud: float | None = None,
+    longitud: float | None = None,
+) -> str:
+    """Genera un enlace de Google Maps basado en una dirección o coordenadas."""
+    base = "https://www.google.com/maps/search/?api=1&query="
+    if latitud is not None and longitud is not None:
+        return f"{base}{latitud},{longitud}"
+    if direccion:
+        from urllib.parse import quote_plus
+        return f"{base}{quote_plus(direccion)}"
+    return ""

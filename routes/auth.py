@@ -552,7 +552,7 @@ def chatuser_login_panel():
         "tipo_chat": tipo_chat,
     })
 
-@auth_bp.route('/me', methods=['GET'])
+@auth_bp.route('/me', methods=['GET', 'OPTIONS'])
 @token_requerido
 def get_current_user(user):
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
@@ -594,7 +594,7 @@ def get_current_user(user):
     })
 
 # Nueva ruta para obtener información básica del token
-@auth_bp.route('/token-info', methods=['GET'])
+@auth_bp.route('/token-info', methods=['GET', 'OPTIONS'])
 @token_requerido
 def token_info(user):
     """Devuelve el rubro y la empresa asociados al token."""
@@ -609,7 +609,7 @@ def token_info(user):
     })
 
 
-@auth_bp.route('/me/dashboard', methods=['GET'])
+@auth_bp.route('/me/dashboard', methods=['GET', 'OPTIONS'])
 @token_requerido
 def dashboard_info(user: User):
     """Devuelve las secciones disponibles para el usuario actual."""
@@ -660,8 +660,8 @@ def dashboard_info(user: User):
         # }
     })
 
-@auth_bp.route('/me', methods=['PUT'])
-@auth_bp.route('/perfil', methods=['PUT'])
+@auth_bp.route('/me', methods=['PUT', 'OPTIONS'])
+@auth_bp.route('/perfil', methods=['PUT', 'OPTIONS'])
 @token_requerido
 def actualizar_me(user):
     """Permite que el usuario modifique sus datos personales."""
