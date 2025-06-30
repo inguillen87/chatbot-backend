@@ -90,6 +90,7 @@ class User(db.Model, UserMixin):
     rubro = db.relationship("Rubro", backref="usuarios")
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
+    fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow) # Nuevo campo
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -365,6 +366,7 @@ class SugerenciaCiudadano(db.Model):
     texto_sugerencia = db.Column(db.Text, nullable=False)
     fecha = db.Column(db.DateTime, default=get_local_now)
     estado = db.Column(db.String(30), default="nueva") # Ej: nueva, revisada, implementada, descartada
+    categoria = db.Column(db.String(100), nullable=True) # Nueva columna para categorizar
 
     user = db.relationship("User", backref="sugerencias_ciudadano")
 
@@ -373,5 +375,24 @@ class SugerenciaCiudadano(db.Model):
 
 def generate_token():
     return str(uuid.uuid4())
+
+class ClienteNota(db.Model):
+    __tablename__ = "cliente_nota"
+    id = db.Column(db.Integer, primary_key=True)
+    # ID del usuario cliente sobre quien es la nota
+    cliente_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    # ID del admin/empleado que escribió la nota
+    creada_por_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    nota = db.Column(db.Text, nullable=False)
+    fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha_actualizacion = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship to the client User object
+    cliente = db.relationship('User', foreign_keys=[cliente_user_id], backref=db.backref('notas_recibidas', lazy='dynamic'))
+    # Relationship to the User object of the creator (admin/employee)
+    creador = db.relationship('User', foreign_keys=[creada_por_user_id], backref=db.backref('notas_creadas', lazy='dynamic'))
+
+    def __repr__(self):
+        return f"<ClienteNota id={self.id} para_cliente_id={self.cliente_user_id} por_creador_id={self.creada_por_user_id}>"
 
 print("✅ models.py fue importado con éxito y contiene modelos.")

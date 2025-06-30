@@ -191,7 +191,7 @@ class ServicioTickets:
             )
             return None
 
-    def obtener_tickets_abiertos_con_ubicacion(
+    def obtener_tickets_con_ubicacion_para_mapa( # Nombre modificado
         self,
         tipo_ticket: Literal["municipio", "pyme"],
         *,
@@ -200,16 +200,22 @@ class ServicioTickets:
         fecha_inicio: str | None = None,
         fecha_fin: str | None = None,
         categoria: str | None = None,
+        estado: str | None = None, # Nuevo parámetro de estado
     ) -> list[dict]:
         """
-        Devuelve los tickets con ubicación que no estén cerrados,
+        Devuelve los tickets con ubicación, opcionalmente filtrados por estado,
         agrupados por ubicación y con un peso (cantidad de tickets).
         Permite filtrar por municipio/rubro, rango de fechas y categoría.
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
-            query = query.filter(Model.estado != "cerrado")
+
+            # Filtrar por estado si se proporciona
+            if estado:
+                query = query.filter(Model.estado == estado)
+            # else: # Comportamiento por defecto si no se especifica estado (ej: no cerrados)
+            #     query = query.filter(Model.estado != "cerrado") # Opcional: mantener un filtro por defecto
 
             if tipo_ticket == "municipio" and municipio_id is not None:
                 query = query.filter_by(municipio_id=municipio_id)
@@ -224,7 +230,7 @@ class ServicioTickets:
             if fecha_fin:
                 try:
                     # Añadimos un día para incluir todo el día de fecha_fin
-                    fecha_fin_dt = datetime.fromisoformat(fecha_fin) + timedelta(days=1)
+                    fecha_fin_dt = datetime.fromisoformat(fecha_fin) + timedelta(days=1) # Ajustar para incluir el día completo
                     query = query.filter(Model.fecha < fecha_fin_dt)
                 except ValueError:
                     logger.warning(f"Formato de fecha_fin inválido: {fecha_fin}")
@@ -233,6 +239,16 @@ class ServicioTickets:
                 query = query.filter(Model.categoria == categoria)
 
             tickets = query.all()
+
+            # El agrupamiento por ubicación y el cálculo de 'weight' permanecen igual.
+            # Si se desea devolver todos los puntos individualmente para que el frontend agrupe/clusterice:
+            # return [
+            #     {
+            #         "id": t.id, "lat": t.latitud, "lng": t.longitud, "estado": t.estado,
+            #         "asunto": t.asunto, "nro_ticket": t.nro_ticket, "categoria": t.categoria
+            #     } for t in tickets
+            # ]
+            # Por ahora, mantendremos la agrupación existente que devuelve 'weight'.
 
             ubicaciones_agrupadas = {} # (lat, lng) -> count
 

@@ -611,24 +611,53 @@ def token_info(user):
 
 @auth_bp.route('/me/dashboard', methods=['GET'])
 @token_requerido
-def dashboard_info(user):
+def dashboard_info(user: User):
     """Devuelve las secciones disponibles para el usuario actual."""
-    rubro_nombre = user.rubro.nombre if user.rubro else "General"
-    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
+    rubro = user.rubro
+    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
 
+    # Paneles base para todos los usuarios autenticados
     panels = ["perfil"]
+
+    # Paneles para roles admin y empleado
+    if user.rol in ["admin", "empleado"]:
+        panels.extend([
+            "tickets", # Gestión de tickets
+            "usuarios_crm", # Gestión de clientes/ciudadanos
+            "estadisticas", # Estadísticas generales de tickets/reclamos
+            "analiticas_crm", # Analíticas específicas de CRM
+            "mapa_tickets" # Mapa de tickets
+        ])
+        if tipo_chat == "pyme":
+            panels.append("pedidos_pyme") # Gestión de pedidos para PYMEs
+        elif tipo_chat == "municipio":
+            panels.append("sugerencias_ciudadano") # Gestión de sugerencias para Municipios
+
+    # Paneles exclusivos para admin
     if user.rol == "admin":
-        panels.extend(["tickets", "crm", "empleados", "pedidos"])
-    elif user.rol == "empleado":
-        panels.extend(["tickets", "crm", "pedidos"])
-    if user.municipio_id:
-        panels.append("municipio")
+        panels.extend(["empleados"]) # Gestión de empleados
+
+    # Eliminar duplicados por si acaso y ordenar alfabéticamente para consistencia
+    final_panels = sorted(list(set(panels)))
 
     return jsonify({
         "id": user.id,
         "rol": user.rol,
         "tipo_chat": tipo_chat,
-        "panels": panels,
+        "panels": final_panels, # Lista de identificadores de paneles
+        # Se asume que el frontend mapeará estos identificadores a rutas y nombres visibles
+        # Ejemplo de mapeo conceptual en frontend:
+        # {
+        #   "perfil": { "label": "Mi Perfil", "route": "/perfil" },
+        #   "tickets": { "label": "Tickets", "route": "/tickets" },
+        #   "usuarios_crm": { "label": "Usuarios CRM", "route": "/crm/usuarios" },
+        #   "estadisticas": { "label": "Estadísticas", "route": "/estadisticas" },
+        #   "analiticas_crm": { "label": "Analíticas CRM", "route": "/crm/analytics" },
+        #   "mapa_tickets": { "label": "Mapa de Tickets", "route": "/tickets/mapa" }, # Asumiendo una ruta genérica o que el FE añade el tipo
+        #   "pedidos_pyme": { "label": "Pedidos", "route": "/pedidos" },
+        #   "sugerencias_ciudadano": { "label": "Sugerencias", "route": "/sugerencias/ciudadano" },
+        #   "empleados": { "label": "Empleados", "route": "/empleados" }
+        # }
     })
 
 @auth_bp.route('/me', methods=['PUT'])

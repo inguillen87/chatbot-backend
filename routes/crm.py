@@ -6,11 +6,13 @@ from models import (
     MunicipioTicket,
     TicketComentario,
     ArchivoAdjunto,
+    ClienteNota, # Nueva importación
 )
 from extensions import db
 from sqlalchemy import or_
 from routes.auth import token_requerido, admin_o_empleado_requerido
 from sqlalchemy import or_
+from datetime import datetime, timedelta # Añadido timedelta
 
 crm_bp = Blueprint('crm', __name__, url_prefix='/crm')
 
@@ -195,11 +197,58 @@ def analytics(current_user: User):
         ),
         {"eid": current_user.id},
     ).scalar() or 0
+    en_proceso_muni = db.session.execute(
+        db.text(
+            "SELECT COUNT(*) FROM municipio_ticket mt JOIN user u ON mt.user_id = u.id "
+            "WHERE u.empresa_id = :eid AND mt.estado = 'en_proceso'"
+        ),
+        {"eid": current_user.id},
+    ).scalar() or 0
+
+    en_proceso_pyme = db.session.execute(
+        db.text(
+            "SELECT COUNT(*) FROM pyme_ticket pt JOIN user u ON pt.user_id = u.id "
+            "WHERE u.empresa_id = :eid AND pt.estado = 'en_proceso'"
+        ),
+        {"eid": current_user.id},
+    ).scalar() or 0
+
+    tasa_conversion_marketing = (marketing / total) * 100 if total > 0 else 0
+
+    # Trend calculation for new clients (last 30 days vs previous 30 days)
+    hoy = datetime.utcnow()
+    inicio_periodo_actual = hoy - timedelta(days=30)
+    fin_periodo_anterior = inicio_periodo_actual
+    inicio_periodo_anterior = fin_periodo_anterior - timedelta(days=30)
+
+    nuevos_clientes_actual = User.query.filter(
+        User.empresa_id == current_user.id,
+        User.fecha_creacion >= inicio_periodo_actual
+    ).count() # Asume que fecha_creacion no puede ser en el futuro
+
+    nuevos_clientes_anterior = User.query.filter(
+        User.empresa_id == current_user.id,
+        User.fecha_creacion >= inicio_periodo_anterior,
+        User.fecha_creacion < fin_periodo_anterior
+    ).count()
+
+    tendencia_nuevos_clientes = 0
+    if nuevos_clientes_anterior > 0:
+        tendencia_nuevos_clientes = round(((nuevos_clientes_actual - nuevos_clientes_anterior) / nuevos_clientes_anterior) * 100, 2)
+    elif nuevos_clientes_actual > 0: # Si antes era 0 y ahora hay, es un aumento "infinito"
+        tendencia_nuevos_clientes = 100.0 # O un valor especial, o simplemente mostrar los números
+
     return jsonify({
         "total_clientes": total,
         "aceptan_marketing": marketing,
+        "tasa_conversion_marketing_percent": round(tasa_conversion_marketing, 2),
         "tickets_abiertos": abiertos_muni + abiertos_pyme,
+        "tickets_en_proceso": en_proceso_muni + en_proceso_pyme,
         "tickets_cerrados": cerrados_muni + cerrados_pyme,
+        "insights_periodo_dias": 30, # Informar el periodo usado para los insights
+        "nuevos_clientes_periodo_actual": nuevos_clientes_actual,
+        "nuevos_clientes_periodo_anterior": nuevos_clientes_anterior,
+        "nuevos_clientes_tendencia_percent": tendencia_nuevos_clientes,
     })
 
 
@@ -376,12 +425,52 @@ def _obtener_historial_cliente(cliente_id: int) -> dict:
         archivos.append(meta)
         timeline.append({"tipo": "archivo_chat", **meta})
 
+    # Obtener y añadir notas del cliente
+    notas_cliente = (
+        ClienteNota.query.filter_by(cliente_user_id=cliente_id)
+        .order_by(ClienteNota.fecha_creacion.desc()) # o fecha_actualizacion
+        .all()
+    )
+    creador_ids_notas = list(set(n.creada_por_user_id for n in notas_cliente))
+    creadores_notas_map = {c.id: c.email for c in User.query.filter(User.id.in_(creador_ids_notas)).all()}
+
+    for nota_obj in notas_cliente:
+        nota_data = {
+            "id": nota_obj.id,
+            "tipo": "nota_cliente",
+            "texto": nota_obj.nota,
+            "fecha": nota_obj.fecha_actualizacion.isoformat(), # Usar fecha_actualizacion para que ediciones recientes aparezcan
+            "fecha_creacion": nota_obj.fecha_creacion.isoformat(),
+            "creada_por_user_id": nota_obj.creada_por_user_id,
+            "creador_email": creadores_notas_map.get(nota_obj.creada_por_user_id, "N/A")
+        }
+        # No añadir a 'consultas', 'tickets', o 'archivos' directamente, solo a la timeline.
+        timeline.append(nota_data)
+
     timeline.sort(key=lambda x: x["fecha"], reverse=True)
+
+    # El retorno original ya incluye la timeline.
+    # Se podría considerar añadir un campo 'notas': [lista de notas serializadas] si se quiere acceder a ellas por separado además de en la timeline.
+    # Por ahora, solo se añaden a la timeline.
+
+    # Preparar una lista separada de notas serializadas para el retorno, además de la timeline
+    notas_serializadas = []
+    for nota_obj in notas_cliente: # Iterar de nuevo o almacenar la serialización antes
+         notas_serializadas.append({
+            "id": nota_obj.id,
+            "texto": nota_obj.nota,
+            "fecha_actualizacion": nota_obj.fecha_actualizacion.isoformat(),
+            "fecha_creacion": nota_obj.fecha_creacion.isoformat(),
+            "creada_por_user_id": nota_obj.creada_por_user_id,
+            "creador_email": creadores_notas_map.get(nota_obj.creada_por_user_id, "N/A")
+        })
+
 
     return {
         "consultas": consultas,
         "tickets": tickets,
         "archivos": archivos,
+        "notas": notas_serializadas, # Lista dedicada de notas
         "timeline": timeline,
     }
 
@@ -396,3 +485,222 @@ def historial_cliente(current_user: User, cliente_id: int):
     datos = _obtener_historial_cliente(cliente.id)
     return jsonify(datos)
 
+
+# --- Rutas para Notas de Clientes ---
+
+def _serialize_nota(nota: ClienteNota, creador_email: str = "N/A"):
+    return {
+        "id": nota.id,
+        "cliente_user_id": nota.cliente_user_id,
+        "creada_por_user_id": nota.creada_por_user_id,
+        "creador_email": creador_email, # Email de quien creó la nota
+        "nota": nota.nota,
+        "fecha_creacion": nota.fecha_creacion.isoformat(),
+        "fecha_actualizacion": nota.fecha_actualizacion.isoformat(),
+    }
+
+@crm_bp.route('/clientes/<int:cliente_id>/notas', methods=['POST'])
+@token_requerido
+@admin_o_empleado_requerido
+def crear_nota_cliente(current_user: User, cliente_id: int):
+    """Crea una nueva nota para un cliente específico."""
+    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    if not cliente:
+        return jsonify({"error": "Cliente no encontrado o no pertenece a esta empresa."}), 404
+
+    data = request.get_json()
+    if not data or not data.get('nota'):
+        return jsonify({"error": "El contenido de la nota es obligatorio."}), 400
+
+    nueva_nota = ClienteNota(
+        cliente_user_id=cliente_id,
+        creada_por_user_id=current_user.id, # El admin/empleado actual es el creador
+        nota=data['nota']
+    )
+    db.session.add(nueva_nota)
+    try:
+        db.session.commit()
+        # Obtener el email del creador para la serialización
+        creador = User.query.get(current_user.id)
+        return jsonify(_serialize_nota(nueva_nota, creador.email if creador else "N/A")), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al crear nota para cliente {cliente_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al guardar la nota."}), 500
+
+@crm_bp.route('/clientes/<int:cliente_id>/notas', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def listar_notas_cliente(current_user: User, cliente_id: int):
+    """Lista todas las notas de un cliente específico."""
+    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    if not cliente:
+        return jsonify({"error": "Cliente no encontrado o no pertenece a esta empresa."}), 404
+
+    notas = ClienteNota.query.filter_by(cliente_user_id=cliente_id)\
+                             .order_by(ClienteNota.fecha_creacion.desc())\
+                             .all()
+
+    # Para obtener el email del creador de cada nota eficientemente
+    creador_ids = list(set(n.creada_por_user_id for n in notas))
+    creadores = User.query.filter(User.id.in_(creador_ids)).all()
+    creadores_map = {c.id: c.email for c in creadores}
+
+    return jsonify([_serialize_nota(n, creadores_map.get(n.creada_por_user_id, "N/A")) for n in notas])
+
+@crm_bp.route('/notas/<int:nota_id>', methods=['PUT'])
+@token_requerido
+@admin_o_empleado_requerido
+def actualizar_nota_cliente(current_user: User, nota_id: int):
+    """Actualiza una nota existente."""
+    nota = ClienteNota.query.get(nota_id)
+    if not nota:
+        return jsonify({"error": "Nota no encontrada."}), 404
+
+    # Verificar que el cliente de la nota pertenezca a la empresa del current_user (admin/empleado)
+    cliente_de_nota = User.query.get(nota.cliente_user_id)
+    if not cliente_de_nota or cliente_de_nota.empresa_id != current_user.id:
+        return jsonify({"error": "No tiene permiso para modificar esta nota (cliente no asociado)."}), 403
+
+    # Opcional: permitir solo al creador de la nota modificarla, o a cualquier admin/empleado de la empresa.
+    # if nota.creada_por_user_id != current_user.id:
+    #     return jsonify({"error": "No tiene permiso para modificar esta nota (no es el creador)."}), 403
+
+    data = request.get_json()
+    if not data or not data.get('nota'):
+        return jsonify({"error": "El contenido de la nota es obligatorio."}), 400
+
+    nota.nota = data['nota']
+    # fecha_actualizacion se actualiza automáticamente por onupdate
+    try:
+        db.session.commit()
+        creador = User.query.get(nota.creada_por_user_id)
+        return jsonify(_serialize_nota(nota, creador.email if creador else "N/A"))
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al actualizar nota {nota_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al actualizar la nota."}), 500
+
+@crm_bp.route('/notas/<int:nota_id>', methods=['DELETE'])
+@token_requerido
+@admin_o_empleado_requerido
+def eliminar_nota_cliente(current_user: User, nota_id: int):
+    """Elimina una nota."""
+    nota = ClienteNota.query.get(nota_id)
+    if not nota:
+        return jsonify({"error": "Nota no encontrada."}), 404
+
+    cliente_de_nota = User.query.get(nota.cliente_user_id)
+    if not cliente_de_nota or cliente_de_nota.empresa_id != current_user.id:
+        return jsonify({"error": "No tiene permiso para eliminar esta nota (cliente no asociado)."}), 403
+
+    # Opcional: permitir solo al creador de la nota eliminarla.
+    # if nota.creada_por_user_id != current_user.id:
+    #    return jsonify({"error": "No tiene permiso para eliminar esta nota (no es el creador)."}), 403
+
+    try:
+        db.session.delete(nota)
+        db.session.commit()
+        return jsonify({"mensaje": "Nota eliminada correctamente."})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al eliminar nota {nota_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al eliminar la nota."}), 500
+
+# --- Rutas para Insights de Clientes ---
+
+@crm_bp.route('/clientes/insights/recent', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def get_recent_clients(current_user: User):
+    days_threshold = request.args.get('days', 7, type=int)
+    cutoff_date = datetime.utcnow() - timedelta(days=days_threshold)
+
+    # Solo clientes de la empresa del admin/empleado actual
+    clients = User.query.filter_by(empresa_id=current_user.id).all()
+    recent_clients_data = []
+
+    for client in clients:
+        last_interaction_date = None
+
+        # Check Conversaciones
+        last_convo = Conversacion.query.filter_by(user_id=client.id).order_by(Conversacion.timestamp.desc()).first()
+        if last_convo:
+            # Asegurar que last_convo.timestamp es offset-naive si se compara con datetime.utcnow()
+            # Asumiendo que todos los timestamps son UTC.
+            if not last_interaction_date or last_convo.timestamp > last_interaction_date:
+                last_interaction_date = last_convo.timestamp
+
+        # Check PymeTickets (usar ultima_actividad que se actualiza)
+        last_pyme_ticket = PymeTicket.query.filter_by(user_id=client.id).order_by(PymeTicket.ultima_actividad.desc()).first()
+        if last_pyme_ticket:
+            if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
+                last_interaction_date = last_pyme_ticket.ultima_actividad
+
+        # Check MunicipioTickets (usar ultima_actividad)
+        last_muni_ticket = MunicipioTicket.query.filter_by(user_id=client.id).order_by(MunicipioTicket.ultima_actividad.desc()).first()
+        if last_muni_ticket:
+            if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
+                last_interaction_date = last_muni_ticket.ultima_actividad
+
+        # Check ClienteNota (usar fecha_actualizacion)
+        last_nota = ClienteNota.query.filter_by(cliente_user_id=client.id).order_by(ClienteNota.fecha_actualizacion.desc()).first()
+        if last_nota:
+            if not last_interaction_date or last_nota.fecha_actualizacion > last_interaction_date:
+                last_interaction_date = last_nota.fecha_actualizacion
+
+        if last_interaction_date and last_interaction_date >= cutoff_date:
+            recent_clients_data.append({
+                "id": client.id, "name": client.name, "email": client.email,
+                "telefono": client.telefono, # Añadir teléfono para rápida visualización/acción
+                "last_interaction_date": last_interaction_date.isoformat(),
+                "tags": client.tags.split(',') if client.tags else []
+            })
+
+    return jsonify(sorted(recent_clients_data, key=lambda x: x["last_interaction_date"], reverse=True))
+
+@crm_bp.route('/clientes/insights/needs_followup', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def get_needs_followup_clients(current_user: User):
+    days_threshold = request.args.get('days', 30, type=int)
+    # Clients whose last interaction was BEFORE this cutoff date, or never interacted
+    cutoff_date = datetime.utcnow() - timedelta(days=days_threshold)
+
+    clients = User.query.filter_by(empresa_id=current_user.id).all()
+    needs_followup_clients_data = []
+
+    for client in clients:
+        last_interaction_date = None
+
+        last_convo = Conversacion.query.filter_by(user_id=client.id).order_by(Conversacion.timestamp.desc()).first()
+        if last_convo:
+            if not last_interaction_date or last_convo.timestamp > last_interaction_date:
+                last_interaction_date = last_convo.timestamp
+
+        last_pyme_ticket = PymeTicket.query.filter_by(user_id=client.id).order_by(PymeTicket.ultima_actividad.desc()).first()
+        if last_pyme_ticket:
+            if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
+                last_interaction_date = last_pyme_ticket.ultima_actividad
+
+        last_muni_ticket = MunicipioTicket.query.filter_by(user_id=client.id).order_by(MunicipioTicket.ultima_actividad.desc()).first()
+        if last_muni_ticket:
+            if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
+                last_interaction_date = last_muni_ticket.ultima_actividad
+
+        last_nota = ClienteNota.query.filter_by(cliente_user_id=client.id).order_by(ClienteNota.fecha_actualizacion.desc()).first()
+        if last_nota:
+            if not last_interaction_date or last_nota.fecha_actualizacion > last_interaction_date:
+                last_interaction_date = last_nota.fecha_actualizacion
+
+        if not last_interaction_date or last_interaction_date < cutoff_date:
+            needs_followup_clients_data.append({
+                "id": client.id, "name": client.name, "email": client.email,
+                "telefono": client.telefono, # Añadir teléfono
+                "last_interaction_date": last_interaction_date.isoformat() if last_interaction_date else None,
+                "tags": client.tags.split(',') if client.tags else []
+            })
+
+    # Sort by last_interaction_date, putting None (never interacted) first or last based on preference
+    # Here, None (never interacted) will come first when sorting ascending.
+    return jsonify(sorted(needs_followup_clients_data, key=lambda x: (x["last_interaction_date"] is None, x["last_interaction_date"])))

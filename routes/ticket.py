@@ -7,6 +7,7 @@ from models import (
     TicketSatisfaccion,
     db,
 )
+from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
 from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
@@ -39,64 +40,95 @@ def get_tickets_del_usuario(current_user: User):
         return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
 
     try:
-        estado = request.args.get("estado")
-        categoria = request.args.get("categoria")
-        if current_user.rubro.nombre.lower().strip() == 'municipios':
-            # Solo tickets de su municipio
-            query = MunicipioTicket.query.filter_by(municipio_id=current_user.municipio_id)
-            if estado:
-                query = query.filter_by(estado=estado)
-            if categoria:
-                query = query.filter(MunicipioTicket.categoria == categoria)
-            tickets = query.order_by(MunicipioTicket.fecha.desc()).all()
-            tipo = 'municipio'
-            def serialize_ticket(t):
-                return {
-                    "id": t.id,
-                    "tipo": tipo,
-                    "nro_ticket": t.nro_ticket,
-                    "asunto": getattr(t, 'asunto', 'N/A'),
-                    "estado": t.estado,
-                    "fecha": t.fecha.isoformat(),
-                    "categoria": getattr(t, 'categoria', None),
-                    "direccion": getattr(t, 'direccion', None),
-                    "latitud": getattr(t, 'latitud', None),
-                    "longitud": getattr(t, 'longitud', None)
-                }
-        else:
-            # Solo tickets de su empresa/rubro
-            if current_user.rubro_id:
-                query = PymeTicket.query.filter_by(rubro_id=current_user.rubro_id)
-            else:
-                query = PymeTicket.query.filter_by(user_id=current_user.id)
-            if estado:
-                query = query.filter_by(estado=estado)
-            if categoria:
-                query = query.filter(PymeTicket.categoria == categoria)
-            tickets = query.order_by(PymeTicket.fecha.desc()).all()
-            tipo = 'pyme'
-            def serialize_ticket(t):
-                return {
-                    "id": t.id,
-                    "tipo": tipo,
-                    "nro_ticket": t.nro_ticket,
-                    "asunto": getattr(t, 'asunto', 'N/A'),
-                    "estado": t.estado,
-                    "fecha": t.fecha.isoformat(),
+        requested_estado_filter = request.args.get("estado")
+        requested_categoria_filter = request.args.get("categoria")
+
+        TicketModel = None
+        base_query_filters = []
+        tipo_ticket_str = '' # Para usar en la serialización
+
+        # Definir función de serialización genérica primero
+        def serialize_ticket_func(t, ticket_type_str):
+            data = {
+                "id": t.id, "tipo": ticket_type_str, "nro_ticket": t.nro_ticket,
+                "asunto": getattr(t, 'asunto', 'N/A'), "estado": t.estado,
+                "fecha": t.fecha.isoformat(), "categoria": getattr(t, 'categoria', None),
+                "direccion": getattr(t, 'direccion', None),
+                "latitud": getattr(t, 'latitud', None), "longitud": getattr(t, 'longitud', None)
+            }
+            if ticket_type_str == 'pyme':
+                data.update({
                     "telefono": getattr(t, 'telefono', None),
                     "email": getattr(t, 'email', None),
                     "dni": getattr(t, 'dni', None),
                     "estado_cliente": getattr(t, 'estado_cliente', None),
-                    "categoria": getattr(t, 'categoria', None),
-                    "direccion": getattr(t, 'direccion', None),
-                    "latitud": getattr(t, 'latitud', None),
-                    "longitud": getattr(t, 'longitud', None)
-                }
+                })
+            return data
+
+        if current_user.rubro.nombre.lower().strip() == 'municipios':
+            TicketModel = MunicipioTicket
+            base_query_filters.append(MunicipioTicket.municipio_id == current_user.municipio_id)
+            tipo_ticket_str = 'municipio'
+        else: # PYME
+            TicketModel = PymeTicket
+            if current_user.rubro_id:
+                base_query_filters.append(PymeTicket.rubro_id == current_user.rubro_id)
+            else:
+                current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
+                return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
+            tipo_ticket_str = 'pyme'
+
+        # Construir la query base
+        query_base = TicketModel.query.filter(*base_query_filters)
+
+        # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
+        if requested_categoria_filter:
+            query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
+
+        # Aplicar filtro de categorías asignadas al empleado (afecta tanto al summary como a la lista)
+        employee_specific_categories = []
         if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            cats = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            tickets = [t for t in tickets if (getattr(t, 'categoria', '') or '').lower() in cats]
-        resultado = [serialize_ticket(t) for t in tickets]
-        return jsonify(resultado)
+            employee_specific_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            if employee_specific_categories:
+                 # Usar ilike para búsquedas insensibles a mayúsculas/minúsculas si es necesario,
+                 # o asumir que las categorías se guardan normalizadas.
+                 # Por ahora, se asume que la comparación directa es suficiente si las categorías están normalizadas.
+                 # query_base = query_base.filter(TicketModel.categoria.in_(employee_specific_categories))
+                 # SQLAlchemy no tiene un `ANY` directo como SQL puro para listas de strings de esta forma.
+                 # Se puede usar OR:
+                from sqlalchemy import or_
+                category_conditions = [TicketModel.categoria.ilike(cat_name) for cat_name in employee_specific_categories]
+                query_base = query_base.filter(or_(*category_conditions))
+
+
+        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría de empleado/request) para el resumen
+        all_tickets_for_summary_calculation = query_base.all()
+
+        summary_by_status = defaultdict(int)
+        defined_statuses = ["nuevo", "en_proceso", "cerrado"]
+
+        for t_sum in all_tickets_for_summary_calculation:
+            # El filtro de categoría de empleado ya se aplicó en la query_base
+            if t_sum.estado in defined_statuses:
+                summary_by_status[t_sum.estado] += 1
+            else:
+                summary_by_status["otros"] += 1 # Contar otros estados
+        summary_by_status["total"] = len(all_tickets_for_summary_calculation)
+
+        # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
+        final_tickets_query = query_base # query_base ya tiene los filtros de categoria y rol
+        if requested_estado_filter:
+            final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
+
+        tickets_for_list_page = final_tickets_query.order_by(TicketModel.fecha.desc()).all()
+
+        serialized_tickets = [serialize_ticket_func(t, tipo_ticket_str) for t in tickets_for_list_page]
+
+        return jsonify({
+            "summary_by_status": dict(summary_by_status),
+            "tickets": serialized_tickets
+        })
+
     except Exception as e:
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
@@ -569,37 +601,111 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
 def get_panel_por_categoria(current_user: User):
 
     try:
-        query = MunicipioTicket.query
+        from sqlalchemy.orm import selectinload
+        from datetime import timedelta
+
+        # Helper function (puede moverse a un archivo de utils o services después)
+        def _calculate_ticket_metrics_for_list(ticket_list_with_comments):
+            first_response_times = []
+            resolution_times = []
+
+            for ticket in ticket_list_with_comments:
+                # Asegurarse que ticket.fecha es datetime object
+                if not isinstance(ticket.fecha, datetime): # pragma: no cover
+                    try:
+                        # Intentar parsear si es string, o skip si no es válido
+                        ticket.fecha = datetime.fromisoformat(str(ticket.fecha))
+                    except ValueError:
+                        continue # Skip este ticket si la fecha no es válida
+
+                admin_comments = sorted([c for c in ticket.comentarios if c.es_admin], key=lambda c: c.fecha)
+
+                if admin_comments:
+                    first_admin_comment_time = admin_comments[0].fecha
+                    if isinstance(first_admin_comment_time, datetime) and isinstance(ticket.fecha, datetime):
+                        response_delta = first_admin_comment_time - ticket.fecha
+                        first_response_times.append(response_delta.total_seconds())
+
+                if ticket.estado == 'cerrado':
+                    closure_time = ticket.ultima_actividad
+                    # Asegurarse que closure_time y ticket.fecha son datetime
+                    if not isinstance(closure_time, datetime): # pragma: no cover
+                         closure_time = datetime.fromisoformat(str(closure_time)) if closure_time else ticket.fecha # fallback
+
+                    if isinstance(closure_time, datetime) and isinstance(ticket.fecha, datetime):
+                        resolution_delta = closure_time - ticket.fecha
+                        resolution_times.append(resolution_delta.total_seconds())
+
+            avg_first_response_seconds = sum(first_response_times) / len(first_response_times) if first_response_times else None
+            avg_resolution_seconds = sum(resolution_times) / len(resolution_times) if resolution_times else None
+
+            return {
+                "avg_first_response_seconds": round(avg_first_response_seconds, 2) if avg_first_response_seconds is not None else None,
+                "avg_resolution_seconds": round(avg_resolution_seconds, 2) if avg_resolution_seconds is not None else None,
+                "responded_tickets_count": len(first_response_times),
+                "resolved_tickets_count": len(resolution_times)
+            }
+
+        query = MunicipioTicket.query.options(selectinload(MunicipioTicket.comentarios)) # Eager load comments
+
         if getattr(current_user, "municipio_id", None):
             query = query.filter_by(municipio_id=current_user.municipio_id)
-        tickets = query.order_by(MunicipioTicket.fecha.desc()).all()
+
+        all_tickets_for_user_municipio = query.order_by(MunicipioTicket.fecha.desc()).all()
+
+        # Filtrar por categorías de empleado DESPUÉS de cargar todos los tickets del municipio (con comentarios)
+        # para que el cálculo de métricas generales (si se quisiera) no se vea afectado.
+        # O bien, aplicar el filtro de empleado ANTES si las métricas deben ser solo sobre sus categorías.
+        # Por ahora, las métricas serán por categoría, y el empleado solo verá las categorías asignadas.
+
+        tickets_to_process = all_tickets_for_user_municipio
         if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            cats = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            tickets = [t for t in tickets if (t.categoria or '').lower() in cats]
-        tickets_agrupados = defaultdict(list)
+            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            tickets_to_process = [t for t in all_tickets_for_user_municipio if (t.categoria or '').lower() in employee_allowed_categories]
 
-        for ticket in tickets:
-            direccion = ticket.direccion or "No especificada"
-            if not ticket.direccion and ticket.detalles:
-                for line in ticket.detalles.splitlines():
-                    if "Dirección del problema:" in line:
-                        direccion = line.split("Dirección del problema:")[1].strip()
-                        break
+        # Agrupar tickets por categoría
+        tickets_grouped_by_cat = defaultdict(list)
+        for t_obj in tickets_to_process:
+            tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
 
-            ticket_data = {
-                "id": ticket.id,
-                "tipo": "municipio",
-                "nro_ticket": ticket.nro_ticket,
-                "asunto": ticket.asunto,
-                "estado": ticket.estado,
-                "fecha": ticket.fecha.isoformat(),
-                "direccion": direccion,
-                "latitud": getattr(ticket, 'latitud', None),
-                "longitud": getattr(ticket, 'longitud', None)
+        final_panel_data = {}
+        defined_statuses = ["nuevo", "en_proceso", "cerrado"]
+
+        for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
+            summary_by_status_for_cat = defaultdict(int)
+            serialized_tickets_for_cat = []
+
+            for ticket_obj in tickets_in_category_list:
+                if ticket_obj.estado in defined_statuses:
+                    summary_by_status_for_cat[ticket_obj.estado] += 1
+                else:
+                    summary_by_status_for_cat["otros"] += 1
+                summary_by_status_for_cat["total"] = summary_by_status_for_cat.get("total", 0) + 1
+
+                direccion = ticket_obj.direccion or "No especificada"
+                if not ticket_obj.direccion and ticket_obj.detalles:
+                    for line in ticket_obj.detalles.splitlines():
+                        if "Dirección del problema:" in line:
+                            direccion = line.split("Dirección del problema:")[1].strip()
+                            break
+
+                ticket_data_serialized = {
+                    "id": ticket_obj.id, "tipo": "municipio", "nro_ticket": ticket_obj.nro_ticket,
+                    "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
+                    "fecha": ticket_obj.fecha.isoformat(), "direccion": direccion,
+                    "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None)
+                }
+                serialized_tickets_for_cat.append(ticket_data_serialized)
+
+            category_metrics = _calculate_ticket_metrics_for_list(tickets_in_category_list)
+
+            final_panel_data[categoria_key] = {
+                "summary_by_status": dict(summary_by_status_for_cat),
+                "metrics": category_metrics,
+                "tickets": serialized_tickets_for_cat
             }
-            tickets_agrupados[ticket.categoria or "Sin Categoría"].append(ticket_data)
 
-        return jsonify(tickets_agrupados)
+        return jsonify(final_panel_data)
 
     except Exception as e:
         current_app.logger.error(f"Error en get_panel_por_categoria: {e}", exc_info=True)
@@ -615,26 +721,66 @@ def get_panel_pyme(current_user: User):
         if current_user.rubro_id:
             query = query.filter_by(rubro_id=current_user.rubro_id)
         tickets = query.order_by(PymeTicket.fecha.desc()).all()
+        # Re-using _calculate_ticket_metrics_for_list defined above in get_panel_por_categoria
+        # Ensure imports are at the top of the file: from sqlalchemy.orm import selectinload; from datetime import datetime, timedelta
+        from sqlalchemy.orm import selectinload # Already imported if get_panel_por_categoria is in the same file and parsed first. Redundant but safe.
+        # from datetime import datetime, timedelta # Ensure datetime is available
+
+        query = PymeTicket.query.options(selectinload(PymeTicket.comentarios)) # Eager load comments
+
+        if current_user.rubro_id:
+            query = query.filter_by(rubro_id=current_user.rubro_id)
+        # else: # Should not happen for a PYME admin/employee if setup is correct
+            # return jsonify({"error": "Rubro no asignado al usuario PYME."}), 400
+
+        all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
+
+        tickets_to_process = all_tickets_for_user_pyme
         if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            cats = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            tickets = [t for t in tickets if (t.categoria or '').lower() in cats]
+            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            tickets_to_process = [t for t in all_tickets_for_user_pyme if (t.categoria or '').lower() in employee_allowed_categories]
 
-        tickets_agrupados = defaultdict(list)
-        for t in tickets:
-            data = {
-                "id": t.id,
-                "tipo": "pyme",
-                "nro_ticket": t.nro_ticket,
-                "asunto": t.asunto,
-                "estado": t.estado,
-                "fecha": t.fecha.isoformat(),
-                "direccion": getattr(t, 'direccion', None),
-                "latitud": getattr(t, 'latitud', None),
-                "longitud": getattr(t, 'longitud', None),
+        tickets_grouped_by_cat = defaultdict(list)
+        for t_obj in tickets_to_process:
+            tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
+
+        final_panel_data = {}
+        defined_statuses = ["nuevo", "en_proceso", "cerrado"]
+
+        for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
+            summary_by_status_for_cat = defaultdict(int)
+            serialized_tickets_for_cat = []
+
+            for ticket_obj in tickets_in_category_list:
+                if ticket_obj.estado in defined_statuses:
+                    summary_by_status_for_cat[ticket_obj.estado] += 1
+                else:
+                    summary_by_status_for_cat["otros"] += 1
+                summary_by_status_for_cat["total"] = summary_by_status_for_cat.get("total", 0) + 1
+
+                ticket_data_serialized = {
+                    "id": ticket_obj.id, "tipo": "pyme", "nro_ticket": ticket_obj.nro_ticket,
+                    "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
+                    "fecha": ticket_obj.fecha.isoformat(),
+                    "direccion": getattr(ticket_obj, 'direccion', None),
+                    "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
+                     # PYME specific fields for serialization if needed by frontend for this view
+                    "telefono": getattr(ticket_obj, 'telefono', None),
+                    "email": getattr(ticket_obj, 'email', None),
+                }
+                serialized_tickets_for_cat.append(ticket_data_serialized)
+
+            # Assuming _calculate_ticket_metrics_for_list is accessible here
+            # (defined in the same file or imported)
+            category_metrics = _calculate_ticket_metrics_for_list(tickets_in_category_list)
+
+            final_panel_data[categoria_key] = {
+                "summary_by_status": dict(summary_by_status_for_cat),
+                "metrics": category_metrics,
+                "tickets": serialized_tickets_for_cat
             }
-            tickets_agrupados[t.categoria or "Sin Categoría"].append(data)
 
-        return jsonify(tickets_agrupados)
+        return jsonify(final_panel_data)
     except Exception as e:
         current_app.logger.error(f"Error en get_panel_pyme: {e}", exc_info=True)
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
@@ -794,6 +940,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
     fecha_inicio = request.args.get("fecha_inicio")
     fecha_fin = request.args.get("fecha_fin")
     categoria = request.args.get("categoria")
+    estado = request.args.get("estado") # Nuevo filtro de estado
 
     if tipo == "municipio":
         if not (
@@ -803,23 +950,26 @@ def mapa_de_tickets(current_user: User, tipo: str):
         ):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
 
-        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
+        # Consider renaming 'obtener_tickets_abiertos_con_ubicacion' if it now handles various states
+        datos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa( # Asumiendo que se renombra/modifica el servicio
             tipo_ticket=tipo,
             municipio_id=current_user.municipio_id,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
+            estado=estado # Pasar el nuevo filtro
         )
     elif tipo == "pyme":
         if not current_user.rubro_id: # Asumimos que si es pyme, debe tener rubro_id
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
 
-        datos = servicio_tickets.obtener_tickets_abiertos_con_ubicacion(
+        datos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa( # Asumiendo que se renombra/modifica el servicio
             tipo_ticket=tipo,
             rubro_id=current_user.rubro_id,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
+            estado=estado # Pasar el nuevo filtro
         )
     else:
         return jsonify({"error": "Tipo de mapa no válido."}), 400
