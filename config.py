@@ -34,7 +34,11 @@ class Config:
     SQLALCHEMY_ENGINE_OPTIONS = {
         'connect_args': {'timeout': 15}  # Aumentar timeout de SQLite a 15 segundos
     }
+<<<<<<< fix/reclamo-adjuntos-loop
+
+=======
     
+>>>>>>> main
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN:
