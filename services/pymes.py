@@ -2,6 +2,7 @@ import logging
 import re
 import random
 import json
+import uuid # <--- AÑADIR IMPORTACIÓN DE UUID
 from enum import Enum, auto
 try:
     from flask import session as flask_session, current_app
@@ -251,6 +252,9 @@ def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # conte
         
         if display_unidad_info_catalogo and display_unidad_info_catalogo.lower() != unidad_pedido_usuario.lower():
             linea += f" (presentación: {display_unidad_info_catalogo})"
+        elif not unidad_pedido_usuario and display_unidad_info_catalogo: # Si el usuario no especificó unidad pero el catálogo sí tiene una.
+            linea += f" (presentación: {display_unidad_info_catalogo})"
+
 
         # Precio y subtotal
         # Asumimos que precio_catalogo es el precio de la unidad/empaque descrito por display_unidad_info_catalogo
@@ -261,11 +265,15 @@ def formatear_carrito(carrito: list[dict], context: dict = None) -> str: # conte
             subtotal_pedido += precio_total_item
             
             # If the price displayed is for a pack, and it's different from individual item price, show individual
-            if isinstance(cantidad_empaque, int) and cantidad_empaque > 1:
-                # This assumes precio_catalogo is for the pack of 'cantidad_empaque' items
-                precio_individual_calc = precio_catalogo / cantidad_empaque
-                if abs(precio_individual_calc - precio_catalogo) > 0.01: # Only show if different
-                    linea += f" <i style='font-size:smaller;'>(equiv. ${precio_individual_calc:,.2f} por item individual)</i>"
+            # Asegurarse que cantidad_empaque_catalogo se usa aquí, no cantidad_empaque (que podría no estar definido)
+            if isinstance(cantidad_empaque_catalogo, int) and cantidad_empaque_catalogo > 1:
+                # This assumes precio_catalogo is for the pack of 'cantidad_empaque_catalogo' items
+                try:
+                    precio_individual_calc = precio_catalogo / cantidad_empaque_catalogo
+                    if abs(precio_individual_calc - precio_catalogo) > 0.01: # Only show if different
+                        linea += f" <i style='font-size:smaller;'>(equiv. ${precio_individual_calc:,.2f} por item individual)</i>"
+                except (TypeError, ZeroDivisionError): # TypeError si precio_catalogo no es numérico, ZeroDivisionError
+                    pass # No mostrar precio individual si hay error
         else:
             linea += f" - {precio_str_catalogo}" # "Consultar" or other string
             productos_sin_precio_cont +=1
@@ -537,6 +545,22 @@ class PedidoHandler(BaseHandler):
         intentos = ctx.get("reintentos", 0)
         carrito = ctx.setdefault("carrito", [])
         self.context["coleccion_qdrant"] = self.context.get("coleccion_qdrant") or coleccion_catalogo_para_rubro(self.context.get("rubro_nombre", "generico"))
+        intencion_actual = self.context.get("intencion") # Obtener la intención clasificada
+
+        # Manejo prioritario de "finalizar_pedido" si esa es la intención,
+        # independientemente del estado, siempre que tenga sentido (ej. carrito no vacío o para confirmar vacío).
+        if intencion_actual == "finalizar_pedido":
+            if not carrito:
+                return {"respuesta": "Tu carrito está vacío. ¿Quieres agregar algo antes de finalizar?", 
+                        "fuente": "finalizar_carrito_vacio_directo", 
+                        "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+            
+            ctx.update({"estado_conversacion": serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO), "reintentos": 0})
+            flask_session[CONTEXTO_PYME] = ctx
+            resumen_pedido_str = formatear_carrito(carrito, self.context) # Pasar context
+            return {"respuesta": f"Perfecto. Este es tu pedido:\n{resumen_pedido_str}\n\nEl total es ESTIMATIVO. ¿Confirmas?", 
+                    "fuente": "confirmando_pedido_por_intencion", 
+                    "botones": [{"texto": "Sí, confirmar", "action": "confirmar_pedido"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}, {"texto": "Cancelar", "action": "cancelar_pedido"}]}
 
         if estado == PymeConversationState.ESPERANDO_PRODUCTO:
             if any(k in texto for k in CANCEL_KEYWORDS):
@@ -644,16 +668,25 @@ class PedidoHandler(BaseHandler):
                     if not found_in_cart:
                         item_para_carrito_nuevo = {
                             "nombre": nombre_producto_catalogo,
-                            "cantidad_pedido": item_ext["cantidad"],
-                            "unidad_pedido_usuario": item_ext.get("unidad", ""), # Unidad especificada por el usuario
-                            "precio_unitario_catalogo": precio_unitario_catalogo,
+                            "cantidad_pedido": item_ext.get("cantidad", 1), # Usar .get con default 1 por si acaso
+                            "unidad_pedido_usuario": item_ext.get("unidad", ""), 
+                            "precio_unitario_catalogo": precio_unitario_catalogo, 
                             "unidad_original_catalogo": unidad_original_qdrant,
                             "unidad_descripcion_catalogo": unidad_desc_qdrant,
                             "cantidad_empaque_catalogo": cantidad_empaque_qdrant,
                             "precio_str_catalogo": precio_str_catalogo
                         }
+                        # --- LOG DE DEBUG ---
+                        logger.info(f"[PYME_PEDIDO_HANDLER] Agregando NUEVO item al carrito: item_ext={item_ext}, item_para_carrito={item_para_carrito_nuevo}")
+                        # --- FIN LOG DE DEBUG ---
                         carrito.append(item_para_carrito_nuevo)
                         items_agregados_info.append(item_para_carrito_nuevo)
+                    else: # Item existente actualizado
+                         # --- LOG DE DEBUG ---
+                        # item_car_existente fue modificado in-place. Buscamos el item actualizado en items_agregados_info
+                        item_actualizado_para_log = next((i for i in items_agregados_info if i["nombre"] == item_car_existente["nombre"]), None)
+                        logger.info(f"[PYME_PEDIDO_HANDLER] Actualizando item EXISTENTE en carrito: item_ext={item_ext}, item_actualizado_en_carrito={item_actualizado_para_log or item_car_existente}")
+                        # --- FIN LOG DE DEBUG ---
 
                     add_preference("productos", nombre_producto_catalogo)
 
@@ -1087,27 +1120,38 @@ class PedidoHandler(BaseHandler):
             flask_session[CONTEXTO_PYME] = ctx
             # carrito ya está inicializado como [] arriba por ctx.clear() y re-set
             items_ini = extraer_productos(pregunta)
-            msg_ini = ""; sug_ini = ""
+            msg_ini = ""
+            sug_ini_tupla = ("", []) # Inicializar como tupla (texto_vacio, lista_botones_vacia)
+
             if items_ini:
-                # Al iniciar un pedido nuevo, el carrito que se pasa a formatear_carrito es el que se está construyendo aquí.
-                current_building_cart = [] # Carrito temporal para este mensaje inicial
+                current_building_cart = [] 
                 current_building_cart.extend(items_ini)
                 for it in items_ini: add_preference("productos", it["nombre"])
-                # Actualizar el carrito en el contexto (ctx) para que PedidoHandler lo use en los siguientes pasos
                 ctx["carrito"] = current_building_cart
-                flask_session[CONTEXTO_PYME] = ctx # Guardar el ctx actualizado en la sesión
+                flask_session[CONTEXTO_PYME] = ctx 
 
-                msg_ini = f"¡Entendido! Agregué a tu pedido:\n{formatear_carrito(current_building_cart)}\n\n"
-                if items_ini: sug_ini = self._sugerir_productos_complementarios(items_ini[-1]['nombre'], current_building_cart, items_ini)
+                msg_ini = f"¡Entendido! Agregué a tu pedido:\n{formatear_carrito(current_building_cart, self.context)}\n\n" # Pasar context a formatear_carrito
+                sug_ini_tupla = self._sugerir_productos_complementarios(items_ini[-1]['nombre'], current_building_cart, items_ini)
             
             ofertas_hdl = OfertasHandler(self.context)
-            ofertas_dict = ofertas_hdl.handle(pregunta if not items_ini and len(pregunta.split()) > 2 else "ofertas")
+            pregunta_para_ofertas = pregunta if not items_ini and len(pregunta.split()) > 2 else "ofertas"
+            ofertas_dict = ofertas_hdl.handle(pregunta_para_ofertas) 
             msg_ofertas = ""
             if "No tenemos ofertas especiales" not in ofertas_dict.get("respuesta","") and "Inicia sesión" not in ofertas_dict.get("respuesta",""):
                 lista_ofertas = ofertas_dict.get("respuesta","").replace("Estas son algunas de nuestras ofertas destacadas:\n","").split("\n\n¿Te interesa alguna o quieres ver más?")[0]
                 if lista_ofertas.strip(): msg_ofertas = "\n\nPara empezar, aquí tienes algunas ofertas:\n" + lista_ofertas
             
-            return {"respuesta": f"{msg_ini}Dime qué más productos y cantidades quieres. Escribe 'finalizar pedido' cuando termines.{msg_ofertas}{sug_ini}", "fuente": "iniciar_pedido_flujo", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
+            sug_ini_texto, sug_ini_botones_lista = sug_ini_tupla
+            final_respuesta_str = f"{msg_ini}Dime qué más productos y cantidades quieres. Escribe 'finalizar pedido' cuando termines.{msg_ofertas}{sug_ini_texto}"
+            
+            botones_retorno = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]
+            if isinstance(sug_ini_botones_lista, list):
+                botones_retorno.extend(sug_ini_botones_lista)
+            
+            return {"respuesta": final_respuesta_str, 
+                    "fuente": "iniciar_pedido_flujo_sug" if sug_ini_texto else "iniciar_pedido_flujo", 
+                    "estado_respuesta": "pyme_pregunta_pedido", 
+                    "botones": botones_retorno}
 
         logger.error(f"[PYME_PEDIDO] Estado no manejado: {estado}"); ctx.clear()
         return {"respuesta": "Hubo un problema. ¿Empezamos de nuevo el pedido?", "fuente":"error_pedido_estado_desconocido_reinicio"}
@@ -1254,6 +1298,10 @@ class FallbackHandler(BaseHandler):
 
 # --- ROUTER PRINCIPAL ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+    # Log al inicio de la función
+    request_id = str(uuid.uuid4()) # Generar un ID único para esta solicitud/procesamiento
+    logger.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', User: {getattr(owner_user, 'id', 'N/A')}, Viewer: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Kwargs: {kwargs}")
+
     rubro_nombre_para_coleccion = getattr(rubro_obj, "nombre", None)
     if not rubro_nombre_para_coleccion and owner_user and hasattr(owner_user, "rubro") and hasattr(owner_user.rubro, "nombre"):
         rubro_nombre_para_coleccion = owner_user.rubro.nombre
@@ -1370,7 +1418,10 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
     context["intencion"] = intencion 
 
     INTENT_MAP = { "saludo": SaludoHandler, "ver_catalogo": CatalogoHandler, "consultar_ofertas": OfertasHandler,
-                   "iniciar_pedido": PedidoHandler, "continuar_flujo": PedidoHandler, 
+                   "iniciar_pedido": PedidoHandler, "continuar_flujo": PedidoHandler,
+                   "finalizar_pedido": PedidoHandler, # Intención explícita para finalizar
+                   "agregar_al_carrito": PedidoHandler, # Aunque PedidoHandler lo maneja por estado, tenerlo aquí es más claro
+                   "ver_carrito": PedidoHandler, # Similarmente
                    "pregunta_faq": FaqHandler, "hablar_con_agente": HumanHandler, 
                    "hablar_con_agente_pyme": HumanHandler, "consultar_estado_ticket": TicketStatusHandler,
                    "pregunta_ambigua": UnclearHandler }
@@ -1428,6 +1479,8 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         db.session.rollback()
 
     flask_session[CONTEXTO_PYME] = context.get(CONTEXTO_PYME, {}) # Guardar cualquier cambio en el contexto pyme en la sesión
+
+    logger.info(f"[RESPONDER_PYME_END - {request_id}] Respuesta: {respuesta_final.get('respuesta', 'Ocurrió un error.')}, Fuente: {respuesta_final.get('fuente', 'desconocida')}")
 
     return {
         "respuesta": respuesta_final.get("respuesta", "Ocurrió un error."),
