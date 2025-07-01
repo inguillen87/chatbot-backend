@@ -58,6 +58,7 @@ def _clean_llm_json_output(llm_output: str) -> str:
     """
     if not llm_output:
         return ""
+
     # Remove markdown code fences (```json ... ```)
     match = re.match(r"^\s*```json\s*([\s\S]*?)\s*```\s*$", llm_output, re.DOTALL)
     if match:
@@ -66,7 +67,7 @@ def _clean_llm_json_output(llm_output: str) -> str:
         cleaned_output = llm_output
 
     # Remove trailing commas before closing braces or brackets
-    cleaned_output = re.sub(r",\s*([}\]])", r"\1", cleaned_output)
+
     return cleaned_output.strip()
 
 def extract_multiple_contact_details_llm(text: str, potential_fields: List[str]) -> Dict[str, Any]:
@@ -100,6 +101,7 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
         f"USER MESSAGE: \"{text}\"\n\n"
         "JSON RESPONSE:"
     )
+
     extracted_data = {}
     try:
         response_content = robust_chat(message=prompt, model_override="gpt-4o") # Or your preferred model
@@ -119,6 +121,7 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
         # Optionally, try a more lenient parsing or regex for simple cases if JSON fails often
     except Exception as e:
         logger.error(f"[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: {e} for text: '{text}'")
+
     return extracted_data
 
 def extract_complaint_details_llm(text: str) -> Dict[str, str]:
@@ -169,6 +172,7 @@ def extract_complaint_details_llm(text: str) -> Dict[str, str]:
         logger.error(f"[LLM_COMPLAINT_EXTRACT] JSONDecodeError parsing LLM response: {e}. Response: '{response_content}' for text: '{text}'")
     except Exception as e:
         logger.error(f"[LLM_COMPLAINT_EXTRACT] Error in extract_complaint_details_llm: {e} for text: '{text}'")
+
     return extracted_details
 
 def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dict[str, Any]) -> str:
@@ -189,6 +193,7 @@ def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dic
 
     # For this version, we'll use a simple LLM call to re-summarize if the robust_chat is real.
     # If using the mock, it will do a basic append.
+
     # Check if robust_chat is the mock or real one by checking its __module__ or specific attribute
     # This is a bit hacky; a better way would be dependency injection or a config flag.
     is_mock_chat = hasattr(robust_chat, '__module__') and robust_chat.__module__ == __name__ # if defined in this file
@@ -222,6 +227,7 @@ def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dic
             # Avoid adding duplicate lines if the info seems to be already there (very basic check)
             if f"{readable_key}: {value}" not in current_summary:
                  summary_lines.append(f"- {readable_key}: {value}")
+
     return "\n".join(filter(None, summary_lines))
 
 
@@ -238,6 +244,7 @@ if __name__ == '__main__':
     test_contact_text_2 = "Necesito ayuda. Soy Ana Gómez."
     contact_details_2 = extract_multiple_contact_details_llm(test_contact_text_2, ["nombre_cliente", "telefono_cliente"])
     print(f"Input: \"{test_contact_text_2}\"\nExtracted: {json.dumps(contact_details_2, indent=2, ensure_ascii=False)}")
+
     test_contact_text_3 = "Mi dirección es Falsa 123 y mi teléfono 98765432."
     contact_details_3 = extract_multiple_contact_details_llm(test_contact_text_3, ["direccion_cliente", "telefono_cliente"])
     print(f"Input: \"{test_contact_text_3}\"\nExtracted: {json.dumps(contact_details_3, indent=2, ensure_ascii=False)}")
@@ -261,6 +268,7 @@ if __name__ == '__main__':
     data2 = {"nombre_cliente": "Pedro Paramo", "estado_pedido": "En preparación"}
     updated_summary2 = update_summary_with_llm_extraction(summary2, data2)
     print(f"Original Summary: \"{summary2}\"\nNew Data: {data2}\nUpdated Summary: \"{updated_summary2}\"")
+
     summary3 = "Resumen existente:\n- Nombre: Juan"
     data3 = {"telefono_cliente": "12345", "Nombre": "Juan Perez"} # Test case sensitivity and overwrite logic (basic)
     updated_summary3 = update_summary_with_llm_extraction(summary3, data3)
@@ -276,6 +284,7 @@ if __name__ == '__main__':
     mock_complaint_text = "There's a broken streetlight on Elm Street near pole 123. It's been out for 3 days."
     mock_complaint_details = extract_complaint_details_llm(mock_complaint_text)
     print(f"Mock Input: \"{mock_complaint_text}\"\nMock Extracted: {json.dumps(mock_complaint_details, indent=2)}")
+
     mock_summary = "Current summary: '''Initial problem reported.'''"
     mock_new_data = {"ubicacion_problema": "Calle Falsa 123", "urgencia": "Alta"}
     # Need to simulate the prompt structure for the mock robust_chat for summary
@@ -294,6 +303,7 @@ if __name__ == '__main__':
     json_with_markdown = "```json\n{\"key\": \"value\", \"another_key\": 123,}\n```"
     cleaned_md = _clean_llm_json_output(json_with_markdown)
     print(f"Original: '{json_with_markdown}'\nCleaned: '{cleaned_md}' -> Parsed: {json.loads(cleaned_md)}")
+
     json_with_trailing_comma = "{\"name\": \"Test\", \"items\": [1, 2,], \"valid\": true,}"
     cleaned_tc = _clean_llm_json_output(json_with_trailing_comma)
     print(f"Original: '{json_with_trailing_comma}'\nCleaned: '{cleaned_tc}' -> Parsed: {json.loads(cleaned_tc)}")
@@ -356,6 +366,7 @@ if __name__ == '__main__':
     updated_summary_empty_curr = update_summary_with_llm_extraction(summary_empty_current, data_for_empty_summary)
     print(f"Original Summary: \"{summary_empty_current}\"\nNew Data: {data_for_empty_summary}\nUpdated Summary: \"{updated_summary_empty_curr}\"")
     # Expected (for basic append): "- Info_inicial: Primer dato" or similar
+
     # Test _clean_llm_json_output with problematic JSON string
     bad_json_str = "```json\n{\n  \"name\": \"Test Product\",\n  \"price\": 29.99 // This is a comment\n  \"available\": true,\n}\n```"
     # Note: _clean_llm_json_output does not remove comments. JSON.loads will fail.
@@ -365,6 +376,7 @@ if __name__ == '__main__':
     # {"name": "Test Product", "price": 29.99 // This is a comment "available": true}
     # which is invalid JSON.
     # A better LLM prompt should ask for strictly JSON, no comments.
+
     # Cleaned version for testing just markdown and trailing comma:
     json_for_cleaner_test = "```json\n{\n  \"name\": \"Test Product\",\n  \"price\": 29.99,\n  \"available\": true,\n}\n```"
     cleaned_for_test = _clean_llm_json_output(json_for_cleaner_test)

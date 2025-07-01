@@ -253,6 +253,234 @@ class PymeLogicTests(unittest.TestCase):
         resp = handler.handle('estado ticket 12345')
         self.assertIn('P-12345', resp['respuesta'])
 
+# --- Integration Tests for Pyme Pedido Flow with LLM Contact Extraction ---
+from services.pymes import PymeConversationState, CONTEXTO_PYME
+from unittest.mock import MagicMock
+
+class PymePedidoFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.owner_user = DummyUser()
+        self.viewer_user = DummyUser()
+        self.viewer_user.id = 100
+        self.viewer_user.name = "Cliente Registrado"
+        self.viewer_user.telefono = "999888777" # Assume this is a valid format for storage
+        self.viewer_user.email = "cliente@example.com"
+
+        # Reset flask session for each test
+        # flask_stub is defined globally in this file
+        flask_stub.session = {}
+
+    def _call_responder_pyme(self, pregunta, current_pyme_context_state_dict):
+        # Helper to simulate calling responder_pyme and updating context
+        # The actual flask.session is mocked via flask_stub at the top of the file
+        flask_stub.session[CONTEXTO_PYME] = current_pyme_context_state_dict
+
+        user_query_mock = MagicMock()
+        # Ensure User.query.get returns the correct user for pre-fill, or None
+        user_query_mock.get.side_effect = lambda user_id: self.viewer_user if user_id == self.viewer_user.id else None
+
+        # Mock the database session for PymePedido creation
+        db_session_mock = MagicMock()
+        db_session_mock.add = MagicMock()
+        db_session_mock.commit = MagicMock()
+        db_session_mock.flush = MagicMock()
+        db_session_mock.rollback = MagicMock()
+
+        # Ensure that when services.pymes.db.session is accessed, it returns our mock
+        # This is tricky because 'db' is imported from 'models' which is already stubbed.
+        # We need to ensure models_stub.db.session is our mock.
+        original_db_session = models_stub.db.session
+        models_stub.db.session = db_session_mock
+
+        with patch('services.pymes.User.query', user_query_mock):
+            # We also need to ensure that robust_chat used by es_producto_valido_llm is handled
+            # if it's called during the PedidoHandler's item addition phase (which we are skipping here mostly)
+            with patch('services.pymes.es_producto_valido_llm', MagicMock(return_value=True)):
+                with patch('services.pymes.extraer_productos_llm', MagicMock(return_value=[])): # simplify product extraction
+                    response = pymes.responder_pyme(
+                        pregunta,
+                        owner_user=self.owner_user,
+                        rubro_obj=self.owner_user.rubro, # Make sure rubro_obj is passed
+                        viewer_user=self.viewer_user,
+                        chat_session_uuid="test-session-uuid"
+                    )
+
+        models_stub.db.session = original_db_session # Restore original mock
+
+        if response and response.get("contexto_actualizado", {}).get(CONTEXTO_PYME):
+            return response, response["contexto_actualizado"][CONTEXTO_PYME], db_session_mock
+        return response, current_pyme_context_state_dict, db_session_mock
+
+    @patch('services.llm_utils.robust_chat') # Patching where robust_chat is defined for llm_utils
+    def test_full_contact_details_provided_at_once_by_llm(self, mock_llm_robust_chat):
+        pyme_context_state = {}
+
+        # Simulate adding an item to cart and being in CONFIRMANDO_PEDIDO state
+        pyme_context_state = {
+            "carrito": [{"nombre": "Vino Tinto", "cantidad_pedido": 1, "precio_unitario_catalogo": 150.00}],
+            "estado_conversacion": pymes.serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
+        }
+
+        # User confirms order ("si"), bot should ask for name
+        response, pyme_context_state, _ = self._call_responder_pyme("si", pyme_context_state)
+        self.assertIn("nombre completo", response["respuesta"].lower())
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE))
+
+        # User provides all details in one go when asked for name
+        user_full_details_input = "Soy Pedro Completo, mi teléfono es 1133445566, la dirección es Av. Siempreviva 742, y mi email es pedro@example.com"
+
+        # Mock the response from extract_multiple_contact_details_llm (which uses robust_chat)
+        llm_response_data = {
+            "nombre_cliente": "Pedro Completo",
+            "telefono_cliente": "1133445566",
+            "direccion_cliente": "Av. Siempreviva 742",
+            "email_cliente": "pedro@example.com"
+        }
+        mock_llm_robust_chat.return_value = json.dumps(llm_response_data)
+
+        response, pyme_context_state, db_mock = self._call_responder_pyme(user_full_details_input, pyme_context_state)
+
+        # Check if robust_chat was called (it's used by extract_multiple_contact_details_llm)
+        mock_llm_robust_chat.assert_called()
+
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS))
+        self.assertIn("revisemos todo antes de finalizar", response["respuesta"].lower())
+        self.assertIn("pedro completo", response["respuesta"].lower())
+        self.assertIn("1133445566", response["respuesta"])
+        self.assertIn("av. siempreviva 742", response["respuesta"].lower())
+        self.assertIn("pedro@example.com", response["respuesta"].lower())
+
+        # Final confirmation
+        response, pyme_context_state, db_mock = self._call_responder_pyme("si, todo correcto", pyme_context_state)
+        self.assertIn("pedido fue registrado", response["respuesta"].lower())
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_FEEDBACK))
+        db_mock.add.assert_called()
+        db_mock.commit.assert_called()
+
+    @patch('services.llm_utils.robust_chat')
+    def test_partial_details_by_llm_then_single_prompts(self, mock_llm_robust_chat):
+        pyme_context_state = {
+            "carrito": [{"nombre": "Vino Blanco", "cantidad_pedido": 2, "precio_unitario_catalogo": 120.00}],
+            "estado_conversacion": pymes.serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
+        }
+        response, pyme_context_state, _ = self._call_responder_pyme("si", pyme_context_state) # Confirm order
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE))
+
+        user_name_phone_input = "Soy Ana Parcial, mi teléfono es 2244668800"
+        mock_llm_robust_chat.return_value = json.dumps({
+            "nombre_cliente": "Ana Parcial", "telefono_cliente": "2244668800"
+        })
+        response, pyme_context_state, _ = self._call_responder_pyme(user_name_phone_input, pyme_context_state)
+
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION))
+        self.assertIn("dirección de entrega", response["respuesta"].lower())
+        self.assertEqual(pyme_context_state.get("nombre_cliente"), "Ana Parcial")
+        # Assuming validar_telefono returns the number if valid, or formats it.
+        self.assertEqual(pyme_context_state.get("telefono_cliente"), "2244668800")
+
+        user_address_input = "Es en Calle Ejemplo 456, Ciudad Test. Mi email es ana.p@ejemplo.net"
+        mock_llm_robust_chat.return_value = json.dumps({
+            "direccion_cliente": "Calle Ejemplo 456, Ciudad Test", "email_cliente": "ana.p@ejemplo.net"
+        })
+        response, pyme_context_state, db_mock = self._call_responder_pyme(user_address_input, pyme_context_state)
+
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS))
+        self.assertIn("ana parcial", response["respuesta"].lower())
+        self.assertIn("2244668800", response["respuesta"])
+        self.assertIn("calle ejemplo 456", response["respuesta"].lower())
+        self.assertIn("ana.p@ejemplo.net", response["respuesta"].lower())
+
+        response, pyme_context_state, db_mock = self._call_responder_pyme("si", pyme_context_state)
+        self.assertIn("pedido fue registrado", response["respuesta"].lower())
+        db_mock.add.assert_called()
+        db_mock.commit.assert_called()
+
+    @patch('services.llm_utils.robust_chat')
+    def test_profile_prefill_and_llm_override(self, mock_llm_robust_chat):
+        pyme_context_state = {
+            "carrito": [{"nombre": "Producto X", "cantidad_pedido": 1, "precio_unitario_catalogo": 50.00}],
+            "estado_conversacion": pymes.serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
+        }
+
+        response, pyme_context_state, _ = self._call_responder_pyme("si", pyme_context_state) # Confirm order
+        # Profile: name, phone, email are pre-filled. Bot asks for address.
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION))
+        self.assertIn("dirección de entrega", response["respuesta"].lower())
+        self.assertEqual(pyme_context_state.get("nombre_cliente"), self.viewer_user.name)
+        self.assertEqual(pyme_context_state.get("telefono_cliente"), self.viewer_user.telefono)
+        self.assertEqual(pyme_context_state.get("email_cliente"), self.viewer_user.email)
+
+        user_address_new_phone_input = "Entregar en Av. Libertad 987. Ah, y mi nuevo teléfono es 555123123."
+        mock_llm_robust_chat.return_value = json.dumps({
+            "direccion_cliente": "Av. Libertad 987", "telefono_cliente": "555123123"
+        })
+        response, pyme_context_state, db_mock = self._call_responder_pyme(user_address_new_phone_input, pyme_context_state)
+
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS))
+        self.assertIn(self.viewer_user.name.lower(), response["respuesta"].lower())
+        self.assertIn("555123123", response["respuesta"]) # New phone
+        self.assertIn("av. libertad 987", response["respuesta"].lower())
+        self.assertIn(self.viewer_user.email.lower(), response["respuesta"].lower())
+
+        response, pyme_context_state, db_mock = self._call_responder_pyme("todo ok", pyme_context_state)
+        self.assertIn("pedido fue registrado", response["respuesta"].lower())
+        db_mock.add.assert_called()
+        db_mock.commit.assert_called()
+
+        # Verify PymePedido data
+        # Access the first argument of the first call to db_mock.add
+        if db_mock.add.call_args_list:
+            called_with_pedido = db_mock.add.call_args_list[0][0][0]
+            self.assertEqual(called_with_pedido.telefono_cliente, "555123123")
+            self.assertEqual(called_with_pedido.nombre_cliente, self.viewer_user.name)
+            self.assertEqual(called_with_pedido.direccion, "Av. Libertad 987")
+            self.assertEqual(called_with_pedido.email_cliente, self.viewer_user.email)
+        else:
+            self.fail("db.session.add was not called with PymePedido object")
+
+    @patch('services.llm_utils.robust_chat')
+    def test_traditional_single_field_input_flow(self, mock_llm_robust_chat):
+        # Test the flow when user provides one piece of info at a time, and LLM doesn't extract extras.
+        pyme_context_state = {
+            "carrito": [{"nombre": "Producto Tradicional", "cantidad_pedido": 1, "precio_unitario_catalogo": 75.00}],
+            "estado_conversacion": pymes.serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO)
+        }
+
+        # 1. Confirm order -> Ask for Name
+        response, pyme_context_state, _ = self._call_responder_pyme("si", pyme_context_state)
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE))
+
+        # 2. Provide Name -> Ask for Phone
+        mock_llm_robust_chat.return_value = json.dumps({}) # LLM extracts nothing extra
+        response, pyme_context_state, _ = self._call_responder_pyme("Juan Solo", pyme_context_state)
+        self.assertEqual(pyme_context_state.get("nombre_cliente"), "Juan Solo")
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO))
+        self.assertIn("número de teléfono", response["respuesta"].lower())
+
+        # 3. Provide Phone -> Ask for Address
+        mock_llm_robust_chat.return_value = json.dumps({})
+        response, pyme_context_state, _ = self._call_responder_pyme("1234567890", pyme_context_state)
+        self.assertEqual(pyme_context_state.get("telefono_cliente"), "1234567890")
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION))
+        self.assertIn("dirección de entrega", response["respuesta"].lower())
+
+        # 4. Provide Address -> Ask for Final Confirmation (assuming email is optional or prefilled and valid)
+        # For this test, let's assume email is NOT prefilled and not provided, making it truly optional.
+        self.viewer_user.email = None # Temporarily remove email from profile for this test path
+        mock_llm_robust_chat.return_value = json.dumps({})
+        response, pyme_context_state, db_mock = self._call_responder_pyme("Calle Unica 321", pyme_context_state)
+        self.assertEqual(pyme_context_state.get("direccion_cliente"), "Calle Unica 321")
+        self.assertEqual(pyme_context_state.get("estado_conversacion"), pymes.serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS))
+        self.assertIn("revisemos todo antes de finalizar", response["respuesta"].lower())
+        self.assertNotIn("email:", response["respuesta"].lower()) # Email should not be in the summary if not provided/prefilled
+
+        # 5. Final Confirmation -> Order registered
+        response, pyme_context_state, db_mock = self._call_responder_pyme("si", pyme_context_state)
+        self.assertIn("pedido fue registrado", response["respuesta"].lower())
+        db_mock.add.assert_called()
+        db_mock.commit.assert_called()
+        self.viewer_user.email = "cliente@example.com" # Restore email for other tests
+
 
 if __name__ == '__main__':
     unittest.main()

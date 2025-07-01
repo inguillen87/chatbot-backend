@@ -1077,52 +1077,80 @@ class ReclamoHandler(BaseMunicipioHandler):
             return None
 
         # --- Attempt to extract multiple details with LLM at each step ---
-        # Define all fields that could potentially be extracted for a complaint
-        all_complaint_fields = ['categoria_reclamo', 'direccion_reclamo', 'nombre_vecino', 'telefono_vecino', 'email_vecino', 'descripcion_reclamo']
+        # Only try LLM extraction if the input isn't a simple confirmation or known action for later stages,
+        # and if we are in one of the data gathering states.
+        is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
+        is_known_action_button = payload.get("action") in [
+            "adjuntar_foto", "compartir_ubicacion", "sin_adjuntos",
+            "confirmar_reclamo", "editar_reclamo"
+        ]
 
-        # Only try broad LLM extraction if the input isn't a simple confirmation or known action for later stages
-        is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale"]
-        is_known_action = payload.get("action") in ["adjuntar_foto", "compartir_ubicacion", "sin_adjuntos", "confirmar_reclamo", "editar_reclamo"]
+        # Check if we are in a state where LLM extraction is beneficial
+        llm_extraction_beneficial_states = [
+            ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
+            ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+            ConversationState.ESPERANDO_NOMBRE_VECINO,
+            ConversationState.ESPERANDO_TELEFONO_VECINO,
+            ConversationState.ESPERANDO_EMAIL_VECINO,
+            ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+        ]
 
-        if not is_simple_confirmation and not is_known_action:
-            # Extract details relevant to the current or upcoming states
-            # For example, if waiting for category, try to get category, address, description
-            fields_to_try_extract = []
-            if estado == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-                fields_to_try_extract = ['categoria_reclamo', 'direccion_reclamo', 'descripcion_reclamo', 'nombre_vecino']
-            elif estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
-                fields_to_try_extract = ['direccion_reclamo', 'descripcion_reclamo', 'nombre_vecino', 'telefono_vecino']
-            elif estado == ConversationState.ESPERANDO_NOMBRE_VECINO:
-                fields_to_try_extract = ['nombre_vecino', 'telefono_vecino', 'email_vecino', 'descripcion_reclamo']
-            elif estado == ConversationState.ESPERANDO_TELEFONO_VECINO:
-                fields_to_try_extract = ['telefono_vecino', 'email_vecino', 'descripcion_reclamo']
-            elif estado == ConversationState.ESPERANDO_EMAIL_VECINO:
-                fields_to_try_extract = ['email_vecino', 'descripcion_reclamo']
-            elif estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
-                 fields_to_try_extract = ['descripcion_reclamo']
+        if estado in llm_extraction_beneficial_states and \
+           not is_simple_confirmation and \
+           not is_known_action_button and \
+           pregunta_str: # Ensure there's text to process
 
-            # Only proceed if there are fields to extract for the current logic path
-            if fields_to_try_extract:
-                extracted_details = extract_complaint_details_llm(pregunta_str, fields_to_try_extract, CATEGORIAS_RECLAMO)
+            logger.info(f"[ReclamoHandler_LLM] Attempting LLM extraction for state {estado.name} with input: '{pregunta_str}'")
+            # extract_complaint_details_llm expects only the text, not specific fields to look for in this version
+            extracted_details = extract_complaint_details_llm(pregunta_str)
 
-                llm_updated_any_field = False
-                for field_key, extracted_value in extracted_details.items():
-                    if extracted_value: # Ensure value is not None or empty
-                        # Validate specific fields
-                        if field_key == "telefono_vecino" and not validar_telefono(extracted_value):
-                            logger.warning(f"LLM extracted invalid phone for complaint: {extracted_value}")
-                            continue
-                        if field_key == "email_vecino" and not validar_email(extracted_value):
-                            logger.warning(f"LLM extracted invalid email for complaint: {extracted_value}")
-                            continue
-                        if field_key == "direccion_reclamo" and not direccion_es_valida(extracted_value): # Assuming basic validation
-                            logger.warning(f"LLM extracted invalid address for complaint: {extracted_value}")
-                            continue
+            if extracted_details:
+                logger.info(f"[ReclamoHandler_LLM] LLM Extracted: {extracted_details}")
+                llm_updated_any_field_in_this_pass = False
 
-                        memoria[field_key] = extracted_value.strip() if isinstance(extracted_value, str) else extracted_value
-                        llm_updated_any_field = True
-                        logger.info(f"ReclamoHandler: Field '{field_key}' updated by LLM with value '{memoria[field_key]}'")
+                # Process extracted category
+                if 'tipo_problema' in extracted_details and extracted_details['tipo_problema']:
+                    cat_text = extracted_details['tipo_problema']
+                    # Fuzzy match the extracted category against our known list
+                    matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(cat_text)), None)
+                    if not matched_category:
+                        close_matches = difflib.get_close_matches(normalizar_texto(cat_text), categorias_normalizadas, n=1, cutoff=0.7)
+                        if close_matches:
+                            idx = categorias_normalizadas.index(close_matches[0])
+                            matched_category = CATEGORIAS_RECLAMO[idx]
 
+                    if matched_category and not memoria.get("categoria_reclamo"): # Only update if not already set or if LLM has a better one
+                        memoria["categoria_reclamo"] = matched_category
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set categoria_reclamo: {matched_category}")
+
+                # Process extracted address
+                if 'ubicacion_problema' in extracted_details and extracted_details['ubicacion_problema']:
+                    addr_text = extracted_details['ubicacion_problema'].strip()
+                    if direccion_es_valida(addr_text) and not memoria.get("direccion_reclamo"):
+                        memoria["direccion_reclamo"] = addr_text
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set direccion_reclamo: {addr_text}")
+
+                # Process extracted description
+                if 'descripcion_problema' in extracted_details and extracted_details['descripcion_problema']:
+                    desc_text = extracted_details['descripcion_problema'].strip()
+                    if len(desc_text) > 10 and not memoria.get("descripcion_reclamo"): # Basic validation and update if not set
+                        memoria["descripcion_reclamo"] = desc_text
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set descripcion_reclamo: {desc_text}")
+
+                # Note: extract_complaint_details_llm doesn't currently extract name, phone, email.
+                # If it did, we would process them here similarly, with validation.
+                # Example for if it did extract name:
+                # if 'nombre_vecino' in extracted_details and extracted_details['nombre_vecino']:
+                #     name_text = extracted_details['nombre_vecino'].strip()
+                #     if len(name_text.split()) >= 2 and not memoria.get("nombre_vecino"):
+                #         memoria["nombre_vecino"] = name_text
+                #         llm_updated_any_field_in_this_pass = True
+                #         logger.info(f"LLM set nombre_vecino: {name_text}")
+            else:
+                logger.info(f"[ReclamoHandler_LLM] LLM returned no details for: '{pregunta_str}'")
         # --- End LLM multi-extraction attempt ---
 
         # Re-evaluate current state based on memoria potentially updated by LLM
