@@ -30,6 +30,11 @@ class Config:
         os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
         SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}?check_same_thread=False"
 
+    # Opciones adicionales para el engine de SQLAlchemy
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'connect_args': {'timeout': 15}  # Aumentar timeout de SQLite a 15 segundos
+    }
+
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN:

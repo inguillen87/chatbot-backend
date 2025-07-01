@@ -64,6 +64,25 @@ def create_app(config_class=Config):
 
     # --- Inicialización de Extensiones ---
     db.init_app(app)
+
+    # Configurar el modo WAL para SQLite para mejorar la concurrencia
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+    import sqlite3 # Asegurarse de importar sqlite3
+
+    @event.listens_for(db.engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        if isinstance(dbapi_connection, sqlite3.Connection):
+            app.logger.info("Attempting to set PRAGMA journal_mode=WAL for SQLite connection.")
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                app.logger.info("PRAGMA journal_mode=WAL set successfully.")
+            except Exception as e:
+                app.logger.error(f"Failed to set PRAGMA journal_mode=WAL: {e}")
+            finally:
+                cursor.close()
+
     migrate.init_app(app, db)
 
     # Configuración y activación de Sesiones en el Servidor
