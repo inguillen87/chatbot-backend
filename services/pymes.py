@@ -793,10 +793,10 @@ class PedidoHandler(BaseHandler):
             elif any(k in texto for k in ["modificar", "cambiar", "agregar", "quitar"]): # User wants to modify order items
                 ctx.update({"estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
                 return {"respuesta": f"Ok, volvemos a tu pedido. Carrito actual:\n{formatear_carrito(carrito)}\n¿Qué quieres hacer?", "fuente": "modificando_pedido_confirmacion", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
-
+            
             # Fallback if input is not a clear "yes", "cancel", or "modify order"
             intentos += 1; ctx["reintentos"] = intentos; flask_session[CONTEXTO_PYME] = ctx
-            if intentos >= 2:
+            if intentos >= 2: 
                 ctx.clear(); ctx.update({"estado_conversacion": serialize_state(PymeConversationState.IDLE), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
                 return {"respuesta": "No pudimos confirmar tu pedido y fue cancelado. Puedes intentar de nuevo.", "fuente": "pedido_cancelado_confirmacion_fallida_reintentos", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
             return {"respuesta": "¿Confirmás el pedido? (Sí/Modificar/Cancelar)", "fuente": "reconfirmando_pedido", "botones": [{"texto": "Sí, confirmar", "action": "confirmar_pedido"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}, {"texto": "Cancelar", "action": "cancelar_pedido"}]}
@@ -805,8 +805,8 @@ class PedidoHandler(BaseHandler):
             # Attempt to extract multiple details first
             potential_fields = ['nombre_cliente', 'telefono_cliente', 'direccion_cliente', 'email_cliente']
             # Ensure keys in extracted_details match what ctx expects (e.g. nombre_cliente)
-            extracted_details = extract_multiple_contact_details_llm(pregunta, potential_fields)
-
+            extracted_details = extract_multiple_contact_details_llm(pregunta, potential_fields) 
+            
             updated_by_llm = False
             if extracted_details.get('nombre_cliente'):
                 ctx["nombre_cliente"] = extracted_details['nombre_cliente'].strip()
@@ -859,7 +859,7 @@ class PedidoHandler(BaseHandler):
                     updated_by_llm = True
                 else:
                      logger.warning(f"LLM extracted invalid email for TELEFONO stage: {extracted_details['email_cliente']}")
-
+            
             if updated_by_llm and ctx.get("telefono_cliente"): # Ensure phone was actually set by LLM or previous
                 return self.handle("confirmar")
 
@@ -884,7 +884,7 @@ class PedidoHandler(BaseHandler):
                     updated_by_llm = True
                  else:
                     logger.warning(f"LLM extracted invalid email for DIRECCION stage: {extracted_details['email_cliente']}")
-
+            
             if updated_by_llm and ctx.get("direccion_cliente"):
                 return self.handle("confirmar")
 
