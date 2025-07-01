@@ -4,7 +4,7 @@ import sys
 from flask import Flask
 from flask_cors import CORS
 from flask_session import Session
-from sqlalchemy import event # Added import
+from sqlalchemy import event
 
 # Reuse the same Session extension across multiple app instances to avoid
 # redefining the 'Session' model when tests create the app several times.
@@ -38,6 +38,16 @@ from routes.carrito import carrito_bp
 from routes.cart import cart_bp
 from routes.productos import productos_bp
 
+# --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
+def my_on_connect_listener(dbapi_connection, connection_record):
+    # Ejemplo: Forzar foreign keys en SQLite (sólo si usás SQLite)
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+    except Exception:
+        pass
+
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
@@ -67,32 +77,15 @@ def create_app(config_class=Config):
     db.init_app(app)
     migrate.init_app(app, db)
 
-    # Register the SQLAlchemy event listener after db.init_app
-    # IMPORTANT: Replace 'actual_listener_function_name_here' 
-    # with the actual name of your listener function.
-    # Also, ensure the old decorator @event.listens_for(db.engine, "connect")
-    # is removed from line 73 (or wherever it is).
-    if hasattr(db.engine, 'connect'): # Ensure engine is available
-        # User needs to define/ensure 'actual_listener_function_name_here' is correct
-        # For example, if the listener was:
-        # @event.listens_for(db.engine, "connect")
-        # def my_on_connect_listener(dbapi_connection, connection_record):
-        #    ...
-        # Then use 'my_on_connect_listener' below.
-        # We are assuming a function named 'actual_listener_function_name_here' exists.
-        # This function should be defined in app.py or imported.
-        # As I cannot see the original definition, this is a placeholder.
-        # Ensure this function is defined or imported, e.g.:
-        # def actual_listener_function_name_here(dbapi_connection, connection_record):
-        #     # Your pragma or other on-connect logic here
-        #     pass 
-        event.listen(db.engine, "connect", actual_listener_function_name_here)
-    else:
-        app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
+    # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
+    with app.app_context():
+        if hasattr(db.engine, 'connect'):
+            event.listen(db.engine, "connect", my_on_connect_listener)
+        else:
+            app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
 
     # Configuración y activación de Sesiones en el Servidor
     app.config['SESSION_SQLALCHEMY'] = db
-    # Usar solo session_ext para evitar redefinición en tests o múltiples apps
     session_ext.init_app(app)
 
     # --- Configuración de Logging ---
@@ -140,11 +133,6 @@ def create_app(config_class=Config):
     # --- Fix universal de headers custom para CORS ---
     @app.after_request
     def ensure_custom_cors_headers(resp):
-        """
-        Garantiza que TODOS los headers custom que tu app pueda llegar a usar,
-        queden siempre incluidos en Access-Control-Allow-Headers de la respuesta,
-        para que ningún preflight se los rechace, no importa si Flask-CORS los olvidó.
-        """
         needed = [
             "Authorization", "Content-Type", "Origin", "Accept",
             "Anon-Id", "x-entity-token"
@@ -160,11 +148,10 @@ def create_app(config_class=Config):
 
     @app.after_request
     def add_permissions_policy(resp):
-        """Ensure geolocation is allowed inside iframes."""
         resp.headers.setdefault("Permissions-Policy", "geolocation=(self)")
         return resp
 
-    # --- 4. Registro de Blueprints (Rutas) ---
+    # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
@@ -190,7 +177,6 @@ def create_app(config_class=Config):
     # --- Registro de comandos CLI ---
     register_commands(app)
 
-    # --- Devolución de la app ---
     return app
 
 # --- Creación de la instancia de la aplicación ---
