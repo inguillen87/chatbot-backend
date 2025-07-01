@@ -4,7 +4,6 @@ import sys
 from flask import Flask
 from flask_cors import CORS
 from flask_session import Session
-from sqlalchemy import event # Added import
 
 # Reuse the same Session extension across multiple app instances to avoid
 # redefining the 'Session' model when tests create the app several times.
@@ -65,35 +64,58 @@ def create_app(config_class=Config):
 
     # --- Inicialización de Extensiones ---
     db.init_app(app)
-    migrate.init_app(app, db)
 
-    # Register the SQLAlchemy event listener after db.init_app
-    # IMPORTANT: Replace 'actual_listener_function_name_here' 
-    # with the actual name of your listener function.
-    # Also, ensure the old decorator @event.listens_for(db.engine, "connect")
-    # is removed from line 73 (or wherever it is).
-    if hasattr(db.engine, 'connect'): # Ensure engine is available
-        # User needs to define/ensure 'actual_listener_function_name_here' is correct
-        # For example, if the listener was:
-        # @event.listens_for(db.engine, "connect")
-        # def my_on_connect_listener(dbapi_connection, connection_record):
-        #    ...
-        # Then use 'my_on_connect_listener' below.
-        # We are assuming a function named 'actual_listener_function_name_here' exists.
-        # This function should be defined in app.py or imported.
-        # As I cannot see the original definition, this is a placeholder.
-        # Ensure this function is defined or imported, e.g.:
-        # def actual_listener_function_name_here(dbapi_connection, connection_record):
-        #     # Your pragma or other on-connect logic here
-        #     pass 
-        event.listen(db.engine, "connect", actual_listener_function_name_here)
-    else:
-        app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
+    # Configurar el modo WAL para SQLite para mejorar la concurrencia
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+    import sqlite3 # Asegurarse de importar sqlite3
+
+    @event.listens_for(db.engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        if isinstance(dbapi_connection, sqlite3.Connection):
+            app.logger.info("Attempting to set PRAGMA journal_mode=WAL for SQLite connection.")
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                app.logger.info("PRAGMA journal_mode=WAL set successfully.")
+            except Exception as e:
+                app.logger.error(f"Failed to set PRAGMA journal_mode=WAL: {e}")
+            finally:
+                cursor.close()
+
+    migrate.init_app(app, db)
 
     # Configuración y activación de Sesiones en el Servidor
     app.config['SESSION_SQLALCHEMY'] = db
-    # Usar solo session_ext para evitar redefinición en tests o múltiples apps
     session_ext.init_app(app)
+
+    # Configurar el modo WAL DESPUÉS de que db está completamente inicializado con la app
+    # y tenemos una instancia de app definitiva.
+    if app.config.get('SQLALCHEMY_DATABASE_URI', '').startswith('sqlite'):
+        from sqlalchemy import event
+        # from sqlalchemy.engine import Engine # Engine no es necesario importar directamente aquí
+        import sqlite3
+
+        # Usar db.get_engine(app=app) para obtener el engine asociado a esta instancia de app
+        engine_to_listen = db.get_engine(app=app)
+
+        @event.listens_for(engine_to_listen, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            if isinstance(dbapi_connection, sqlite3.Connection):
+                # Usar el logger de la app si está disponible y configurado, sino print.
+                logger_instance = app.logger if hasattr(app, 'logger') and app.logger.handlers else logging.getLogger(__name__)
+                logger_instance.info("Attempting to set PRAGMA journal_mode=WAL for SQLite connection.")
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL;")
+                    # Verificar el modo actual
+                    # current_mode = cursor.execute("PRAGMA journal_mode;").fetchone()
+                    # logger_instance.info(f"PRAGMA journal_mode set. Current mode: {current_mode[0] if current_mode else 'Unknown'}")
+                    logger_instance.info("PRAGMA journal_mode=WAL set successfully.")
+                except Exception as e_pragma:
+                    logger_instance.error(f"Failed to set PRAGMA journal_mode=WAL: {e_pragma}")
+                finally:
+                    cursor.close()
 
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
