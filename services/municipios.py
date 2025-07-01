@@ -1293,18 +1293,6 @@ class ReclamoHandler(BaseMunicipioHandler):
         # --- States after the data gathering loop ---
         estado = memoria.get("estado_conversacion") # Re-fetch current state as it might have changed in the loop
 
-        # Paso 7: Adjuntos
-        if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
-            return {
-                "respuesta": "¡Gracias por la descripción! ¿Querés **adjuntar una foto del problema o compartir tu ubicación GPS** para que tengamos más detalles? Esto es opcional.",
-                "botones": [
-                    {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
-                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                    {"texto": "No, continuar", "action": "sin_adjuntos"},
-                    {"texto": "Completar reclamo", "action": "sin_adjuntos"}
-                ]
-            }
-
         # Paso 7: Adjuntos (acepta acción por botón o texto)
         if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
