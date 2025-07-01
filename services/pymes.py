@@ -24,6 +24,8 @@ from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_
 from services.ticket_service import servicio_tickets # Asumiendo que PymeTicket está aquí
 from services.webinfo import obtener_info_web
 from services.preferences import add_preference
+from .llm_utils import extract_multiple_contact_details_llm # Epic 1 Enhancement
+from .common_utils import validar_email, validar_telefono # For validating extracted details
 
 logger = logging.getLogger(__name__)
 
@@ -740,56 +742,47 @@ class PedidoHandler(BaseHandler):
                 viewer_user_id = self.context.get("cliente_id")
                 cliente = User.query.get(viewer_user_id) if viewer_user_id else None
 
-                datos_completos = True
-                campos_faltantes = []
-                if not ctx.get("nombre_cliente"):
-                    if cliente and cliente.name:
+                # Pre-fill from profile if available and not already in context
+                if cliente:
+                    if not ctx.get("nombre_cliente") and cliente.name:
                         ctx["nombre_cliente"] = cliente.name
-                    else:
-                        datos_completos = False
-                        campos_faltantes.append("nombre")
+                    if not ctx.get("telefono_cliente") and cliente.telefono:
+                         # Validate phone from profile before using
+                        if validar_telefono(cliente.telefono):
+                            ctx["telefono_cliente"] = cliente.telefono
+                        else:
+                            logger.warning(f"Invalid phone format in profile for user {cliente.id}: {cliente.telefono}")
+                    if not ctx.get("email_cliente") and cliente.email:
+                        if validar_email(cliente.email): # Validate email from profile
+                            ctx["email_cliente"] = cliente.email
+                        else:
+                            logger.warning(f"Invalid email format in profile for user {cliente.id}: {cliente.email}")
+                    # Direccion is usually specific to the order, so we don't pre-fill from general profile address here.
 
-                if not ctx.get("telefono_cliente"):
-                    if cliente and cliente.telefono:
-                        ctx["telefono_cliente"] = cliente.telefono
-                    else:
-                        datos_completos = False
-                        campos_faltantes.append("telefono")
+                # Check which essential fields are still missing for the order
+                campos_necesarios_pedido = ["nombre_cliente", "telefono_cliente", "direccion_cliente"] # Email es opcional
+                campos_faltantes = [campo for campo in campos_necesarios_pedido if not ctx.get(campo)]
 
-                if not ctx.get("direccion_cliente"): # Dirección siempre se pide para el pedido por si es diferente a la del perfil
-                    datos_completos = False
-                    campos_faltantes.append("direccion")
-
-                # Email es opcional si ya está logueado y tiene email, pero puede ser útil para confirmación de pedido
-                # if not ctx.get("email_cliente"):
-                #     if cliente and cliente.email:
-                #         ctx["email_cliente"] = cliente.email
-                #     # else: # No lo marcamos como faltante obligatorio si no está logueado
-                #     #     datos_completos = False
-                #     #     campos_faltantes.append("email")
-
-
-                if not datos_completos:
-                    if "nombre" in campos_faltantes:
+                if campos_faltantes:
+                    if "nombre_cliente" in campos_faltantes:
                         ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE)
                         flask_session[CONTEXTO_PYME] = ctx
                         return {"respuesta": "¡Casi listo! Para completar tu pedido, ¿podrías decirme tu nombre completo?", "fuente": "solicitando_nombre_cliente"}
-                    elif "telefono" in campos_faltantes:
+                    elif "telefono_cliente" in campos_faltantes:
                         ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO)
                         flask_session[CONTEXTO_PYME] = ctx
                         return {"respuesta": "Entendido. Ahora, ¿cuál es tu número de teléfono (con código de área)?", "fuente": "solicitando_telefono_cliente"}
-                    elif "direccion" in campos_faltantes:
+                    elif "direccion_cliente" in campos_faltantes:
                         ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION)
                         flask_session[CONTEXTO_PYME] = ctx
                         return {"respuesta": "Perfecto. ¿Cuál es la dirección de entrega para este pedido?", "fuente": "solicitando_direccion_cliente"}
-                    # Podríamos añadir solicitud de email aquí si fuera mandatorio y faltara
                 else:
-                    # Todos los datos necesarios están (o se tomaron del perfil), pasar a confirmación final con datos
+                    # Todos los datos necesarios están, pasar a confirmación final con datos
                     ctx["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS)
                     flask_session[CONTEXTO_PYME] = ctx
                     resumen_pedido = formatear_carrito(carrito)
-                    resumen_datos = f"Nombre: {ctx['nombre_cliente']}\nTeléfono: {ctx['telefono_cliente']}\nDirección de Entrega: {ctx['direccion_cliente']}"
-                    if ctx.get("email_cliente"):
+                    resumen_datos = f"Nombre: {ctx.get('nombre_cliente', 'N/A')}\nTeléfono: {ctx.get('telefono_cliente', 'N/A')}\nDirección de Entrega: {ctx.get('direccion_cliente', 'N/A')}"
+                    if ctx.get("email_cliente"): # Email es opcional
                         resumen_datos += f"\nEmail: {ctx['email_cliente']}"
                     return {
                         "respuesta": f"¡Excelente! Revisemos todo antes de finalizar:\n\n**Pedido:**\n{resumen_pedido}\n\n**Datos de Contacto y Entrega:**\n{resumen_datos}\n\n¿Es todo correcto para generar el pedido?",
@@ -797,38 +790,109 @@ class PedidoHandler(BaseHandler):
                         "botones": [{"texto": "Sí, todo correcto", "action": "confirmar_final_con_datos"}, {"texto": "Modificar datos", "action": "modificar_datos_cliente"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}]
                     }
 
-            if any(k in texto for k in ["modificar", "cambiar", "agregar", "quitar"]):
+            elif any(k in texto for k in ["modificar", "cambiar", "agregar", "quitar"]): # User wants to modify order items
                 ctx.update({"estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
-                return {"respuesta": f"Ok, volvemos a tu pedido. Carrito:\n{formatear_carrito(carrito)}\n¿Qué quieres hacer?", "fuente": "modificando_pedido_confirmacion", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
+                return {"respuesta": f"Ok, volvemos a tu pedido. Carrito actual:\n{formatear_carrito(carrito)}\n¿Qué quieres hacer?", "fuente": "modificando_pedido_confirmacion", "estado_respuesta": "pyme_pregunta_pedido", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
+
+            # Fallback if input is not a clear "yes", "cancel", or "modify order"
             intentos += 1; ctx["reintentos"] = intentos; flask_session[CONTEXTO_PYME] = ctx
-            if intentos >= 2: # Reducido para no ser molesto
+            if intentos >= 2:
                 ctx.clear(); ctx.update({"estado_conversacion": serialize_state(PymeConversationState.IDLE), "reintentos": 0}); flask_session[CONTEXTO_PYME] = ctx
                 return {"respuesta": "No pudimos confirmar tu pedido y fue cancelado. Puedes intentar de nuevo.", "fuente": "pedido_cancelado_confirmacion_fallida_reintentos", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
             return {"respuesta": "¿Confirmás el pedido? (Sí/Modificar/Cancelar)", "fuente": "reconfirmando_pedido", "botones": [{"texto": "Sí, confirmar", "action": "confirmar_pedido"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}, {"texto": "Cancelar", "action": "cancelar_pedido"}]}
 
         elif estado == PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE:
+            # Attempt to extract multiple details first
+            potential_fields = ['nombre_cliente', 'telefono_cliente', 'direccion_cliente', 'email_cliente']
+            # Ensure keys in extracted_details match what ctx expects (e.g. nombre_cliente)
+            extracted_details = extract_multiple_contact_details_llm(pregunta, potential_fields)
+
+            updated_by_llm = False
+            if extracted_details.get('nombre_cliente'):
+                ctx["nombre_cliente"] = extracted_details['nombre_cliente'].strip()
+                updated_by_llm = True
+            if extracted_details.get('telefono_cliente'):
+                if validar_telefono(extracted_details['telefono_cliente'].strip()):
+                    ctx["telefono_cliente"] = extracted_details['telefono_cliente'].strip()
+                    updated_by_llm = True
+                else:
+                    logger.warning(f"LLM extracted invalid phone for NOMBRE stage: {extracted_details['telefono_cliente']}")
+            if extracted_details.get('direccion_cliente'):
+                ctx["direccion_cliente"] = extracted_details['direccion_cliente'].strip()
+                updated_by_llm = True
+            if extracted_details.get('email_cliente'):
+                if validar_email(extracted_details['email_cliente'].strip()):
+                    ctx["email_cliente"] = extracted_details['email_cliente'].strip()
+                    updated_by_llm = True
+                else:
+                    logger.warning(f"LLM extracted invalid email for NOMBRE stage: {extracted_details['email_cliente']}")
+
+            if updated_by_llm:
+                # Fields might have been updated by LLM, re-evaluate next step
+                return self.handle("confirmar") # Simulate confirm to check missing data again
+
+            # Fallback to simple name processing if LLM didn't get it or wasn't conclusive
             nombre_cliente = pregunta.strip()
-            if not nombre_cliente or len(nombre_cliente.split()) < 2:
+            if not nombre_cliente or len(nombre_cliente.split()) < 2: # Basic validation
                 return {"respuesta": "Por favor, ingresa tu nombre y apellido.", "fuente": "re_solicitando_nombre_cliente"}
             ctx["nombre_cliente"] = nombre_cliente
-            # Avanzar al siguiente dato faltante o a la confirmación final
-            # Reutilizar lógica de CONFIRMANDO_PEDIDO para decidir qué pedir después o confirmar todo
-            return self.handle("confirmar") # Simula una confirmación para re-evaluar datos faltantes
+            return self.handle("confirmar")
 
         elif estado == PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO:
+            potential_fields = ['telefono_cliente', 'direccion_cliente', 'email_cliente'] # Nombre should be set
+            extracted_details = extract_multiple_contact_details_llm(pregunta, potential_fields)
+            updated_by_llm = False
+
+            if extracted_details.get('telefono_cliente'):
+                 if validar_telefono(extracted_details['telefono_cliente'].strip()):
+                    ctx["telefono_cliente"] = extracted_details['telefono_cliente'].strip()
+                    updated_by_llm = True
+                 else:
+                    logger.warning(f"LLM extracted invalid phone for TELEFONO stage: {extracted_details['telefono_cliente']}")
+            # Check other fields extracted by LLM
+            if extracted_details.get('direccion_cliente'):
+                ctx["direccion_cliente"] = extracted_details['direccion_cliente'].strip()
+                updated_by_llm = True
+            if extracted_details.get('email_cliente'):
+                if validar_email(extracted_details['email_cliente'].strip()):
+                    ctx["email_cliente"] = extracted_details['email_cliente'].strip()
+                    updated_by_llm = True
+                else:
+                     logger.warning(f"LLM extracted invalid email for TELEFONO stage: {extracted_details['email_cliente']}")
+
+            if updated_by_llm and ctx.get("telefono_cliente"): # Ensure phone was actually set by LLM or previous
+                return self.handle("confirmar")
+
+            # Fallback to simple phone processing
             telefono_cliente = pregunta.strip()
-            # Aquí podrías añadir una validación de formato de teléfono más robusta si es necesario
-            if not telefono_cliente or not re.match(r"^\+?\d{7,15}$", telefono_cliente.replace(" ", "")):
+            if not validar_telefono(telefono_cliente):
                 return {"respuesta": "El número de teléfono no parece válido. Por favor, ingresalo de nuevo (solo números, con código de área).", "fuente": "re_solicitando_telefono_cliente"}
             ctx["telefono_cliente"] = telefono_cliente
             return self.handle("confirmar")
 
         elif estado == PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION:
+            potential_fields = ['direccion_cliente', 'email_cliente'] # Nombre y telefono should be set
+            extracted_details = extract_multiple_contact_details_llm(pregunta, potential_fields)
+            updated_by_llm = False
+
+            if extracted_details.get('direccion_cliente'):
+                ctx["direccion_cliente"] = extracted_details['direccion_cliente'].strip()
+                updated_by_llm = True
+            if extracted_details.get('email_cliente'):
+                 if validar_email(extracted_details['email_cliente'].strip()):
+                    ctx["email_cliente"] = extracted_details['email_cliente'].strip()
+                    updated_by_llm = True
+                 else:
+                    logger.warning(f"LLM extracted invalid email for DIRECCION stage: {extracted_details['email_cliente']}")
+
+            if updated_by_llm and ctx.get("direccion_cliente"):
+                return self.handle("confirmar")
+
+            # Fallback to simple address processing
             direccion_cliente = pregunta.strip()
-            if not direccion_cliente or len(direccion_cliente) < 5:
+            if not direccion_cliente or len(direccion_cliente) < 5: # Basic validation
                 return {"respuesta": "La dirección parece muy corta. Por favor, ingresala completa.", "fuente": "re_solicitando_direccion_cliente"}
             ctx["direccion_cliente"] = direccion_cliente
-            # Si el email es el siguiente, se podría pedir acá, o directamente ir a confirmación final
             return self.handle("confirmar")
 
         elif estado == PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS:
