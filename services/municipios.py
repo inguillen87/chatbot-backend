@@ -1105,7 +1105,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                 return {
                     "respuesta": (
-                        f"Perfecto, categoría: **{categoria_final.title()}**. ¿La **dirección exacta**?\n{EJEMPLO_DIRECCION}"
+                        f"Perfecto, categoría: **{categoria_final.title()}**. ¿La **dirección exacta**?\nPor ejemplo: {EJEMPLO_DIRECCION}"
                     )
                 }
             else:
@@ -1143,7 +1143,7 @@ class ReclamoHandler(BaseMunicipioHandler):
         if estado == ConversationState.ESPERANDO_NOMBRE_VECINO:
             nombre = pregunta_str.strip()
             if not nombre or len(nombre.split()) < 2: # Simple check for at least two words
-                return {"respuesta": "Para continuar, necesitaría tu nombre y apellido. ¿Podrías ingresarlos, por favor?"}
+                return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido**. ¿Podrías ingresarlos, por favor?"}
             memoria["nombre_vecino"] = nombre
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
             return {
@@ -1154,7 +1154,7 @@ class ReclamoHandler(BaseMunicipioHandler):
         if estado == ConversationState.ESPERANDO_TELEFONO_VECINO:
             telefono = pregunta_str.strip()
             if not validar_telefono(telefono):
-                return {"respuesta": "El número de teléfono que ingresaste no parece válido. ¿Podrías revisarlo e ingresarlo de nuevo, solo números incluyendo el código de área? Por ejemplo: 2615551234."}
+                return {"respuesta": "El **número de teléfono** que ingresaste no parece válido. ¿Podrías revisarlo e ingresarlo de nuevo, solo números incluyendo el código de área? Por ejemplo: 2615551234."}
             memoria["telefono_vecino"] = telefono
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO
             return {"respuesta": "¡Excelente! Ya casi terminamos. ¿Cuál es tu **dirección de correo electrónico**? Te enviaremos las novedades del reclamo por ahí."}
@@ -1163,7 +1163,7 @@ class ReclamoHandler(BaseMunicipioHandler):
         if estado == ConversationState.ESPERANDO_EMAIL_VECINO:
             email = pregunta_str.strip()
             if not validar_email(email):
-                return {"respuesta": "El email que ingresaste no parece tener el formato correcto. ¿Podrías revisarlo? Por ejemplo, debería ser algo como 'nombre@ejemplo.com'."}
+                return {"respuesta": "La **dirección de correo electrónico** que ingresaste no parece tener el formato correcto. ¿Podrías revisarlo? Por ejemplo, debería ser algo como 'nombre@ejemplo.com'."}
             memoria["email_vecino"] = email
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
             return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Si querés, después de esto podrás adjuntar una foto o compartir tu ubicación GPS."}
@@ -1336,21 +1336,29 @@ class ReclamoHandler(BaseMunicipioHandler):
                     }
 
             texto_normalizado = normalizar_texto(pregunta_str)
-            accion = payload.get("action", "").lower() or texto_normalizado
+            texto_normalizado_accion = normalizar_texto(pregunta_str) # Usar el texto normalizado de la pregunta
+            accion = payload.get("action", "").lower() or texto_normalizado_accion # `action` tiene prioridad
 
-            if accion in [
-                "confirmar_reclamo",
+            # Lista ampliada de palabras clave para confirmación
+            PALABRAS_CLAVE_CONFIRMACION = [
+                "confirmar_reclamo", # Acción del botón
                 "confirmar",
                 "confirmar reclamo",
                 "confirmo",
                 "confirmado",
-                "si confirmo",
-                "sí confirmo",
+                "si confirmo", # Normalizado
+                "siconfirmo", # Variante pegada
+                "si confirmar reclamo", # Variante tipeada
                 "finalizar",
                 "finalizar reclamo",
-                "si",
-                "sí",
-            ]:
+                "si", # Normalizado
+                "confirmarreclamo", # Variante pegada y sin espacio
+                "siconfirmarreclamo", # Variante pegada
+                "dale", # Añadido por ser común en confirmaciones informales
+                "proceder",
+            ]
+
+            if accion in PALABRAS_CLAVE_CONFIRMACION:
                 # Armar bien los detalles y crear el ticket
                 # Asegurarse de que los datos estén presentes antes de crear
                 if not all(memoria.get(f"{campo}_reclamo" if campo not in ["nombre", "telefono", "email"] else f"{campo}_vecino") for campo in ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]):
