@@ -551,7 +551,7 @@ class PedidoHandler(BaseHandler):
         # independientemente del estado, siempre que tenga sentido (ej. carrito no vacío o para confirmar vacío).
         if intencion_actual == "finalizar_pedido":
             if not carrito:
-<<<<<<< fix/reclamo-adjuntos-loop
+
                 return {"respuesta": "Tu carrito está vacío. ¿Quieres agregar algo antes de finalizar?",
                         "fuente": "finalizar_carrito_vacio_directo",
                         "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
@@ -561,17 +561,6 @@ class PedidoHandler(BaseHandler):
             resumen_pedido_str = formatear_carrito(carrito, self.context) # Pasar context
             return {"respuesta": f"Perfecto. Este es tu pedido:\n{resumen_pedido_str}\n\nEl total es ESTIMATIVO. ¿Confirmas?",
                     "fuente": "confirmando_pedido_por_intencion",
-=======
-                return {"respuesta": "Tu carrito está vacío. ¿Quieres agregar algo antes de finalizar?", 
-                        "fuente": "finalizar_carrito_vacio_directo", 
-                        "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
-            
-            ctx.update({"estado_conversacion": serialize_state(PymeConversationState.CONFIRMANDO_PEDIDO), "reintentos": 0})
-            flask_session[CONTEXTO_PYME] = ctx
-            resumen_pedido_str = formatear_carrito(carrito, self.context) # Pasar context
-            return {"respuesta": f"Perfecto. Este es tu pedido:\n{resumen_pedido_str}\n\nEl total es ESTIMATIVO. ¿Confirmas?", 
-                    "fuente": "confirmando_pedido_por_intencion", 
->>>>>>> main
                     "botones": [{"texto": "Sí, confirmar", "action": "confirmar_pedido"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}, {"texto": "Cancelar", "action": "cancelar_pedido"}]}
 
         if estado == PymeConversationState.ESPERANDO_PRODUCTO:
@@ -681,13 +670,11 @@ class PedidoHandler(BaseHandler):
                         item_para_carrito_nuevo = {
                             "nombre": nombre_producto_catalogo,
                             "cantidad_pedido": item_ext.get("cantidad", 1), # Usar .get con default 1 por si acaso
-<<<<<<< fix/reclamo-adjuntos-loop
+
                             "unidad_pedido_usuario": item_ext.get("unidad", ""),
                             "precio_unitario_catalogo": precio_unitario_catalogo,
-=======
                             "unidad_pedido_usuario": item_ext.get("unidad", ""), 
                             "precio_unitario_catalogo": precio_unitario_catalogo, 
->>>>>>> main
                             "unidad_original_catalogo": unidad_original_qdrant,
                             "unidad_descripcion_catalogo": unidad_desc_qdrant,
                             "cantidad_empaque_catalogo": cantidad_empaque_qdrant,
@@ -1141,30 +1128,24 @@ class PedidoHandler(BaseHandler):
             sug_ini_tupla = ("", []) # Inicializar como tupla (texto_vacio, lista_botones_vacia)
 
             if items_ini:
-<<<<<<< fix/reclamo-adjuntos-loop
+
                 current_building_cart = []
                 current_building_cart.extend(items_ini)
                 for it in items_ini: add_preference("productos", it["nombre"])
                 ctx["carrito"] = current_building_cart
                 flask_session[CONTEXTO_PYME] = ctx
-=======
-                current_building_cart = [] 
+           current_building_cart = [] 
                 current_building_cart.extend(items_ini)
                 for it in items_ini: add_preference("productos", it["nombre"])
                 ctx["carrito"] = current_building_cart
                 flask_session[CONTEXTO_PYME] = ctx 
->>>>>>> main
 
                 msg_ini = f"¡Entendido! Agregué a tu pedido:\n{formatear_carrito(current_building_cart, self.context)}\n\n" # Pasar context a formatear_carrito
                 sug_ini_tupla = self._sugerir_productos_complementarios(items_ini[-1]['nombre'], current_building_cart, items_ini)
             
             ofertas_hdl = OfertasHandler(self.context)
             pregunta_para_ofertas = pregunta if not items_ini and len(pregunta.split()) > 2 else "ofertas"
-<<<<<<< fix/reclamo-adjuntos-loop
-            ofertas_dict = ofertas_hdl.handle(pregunta_para_ofertas)
-=======
-            ofertas_dict = ofertas_hdl.handle(pregunta_para_ofertas) 
->>>>>>> main
+
             msg_ofertas = ""
             if "No tenemos ofertas especiales" not in ofertas_dict.get("respuesta","") and "Inicia sesión" not in ofertas_dict.get("respuesta",""):
                 lista_ofertas = ofertas_dict.get("respuesta","").replace("Estas son algunas de nuestras ofertas destacadas:\n","").split("\n\n¿Te interesa alguna o quieres ver más?")[0]
@@ -1172,7 +1153,7 @@ class PedidoHandler(BaseHandler):
             
             sug_ini_texto, sug_ini_botones_lista = sug_ini_tupla
             final_respuesta_str = f"{msg_ini}Dime qué más productos y cantidades quieres. Escribe 'finalizar pedido' cuando termines.{msg_ofertas}{sug_ini_texto}"
-<<<<<<< fix/reclamo-adjuntos-loop
+
 
             botones_retorno = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]
             if isinstance(sug_ini_botones_lista, list):
@@ -1181,7 +1162,7 @@ class PedidoHandler(BaseHandler):
             return {"respuesta": final_respuesta_str,
                     "fuente": "iniciar_pedido_flujo_sug" if sug_ini_texto else "iniciar_pedido_flujo",
                     "estado_respuesta": "pyme_pregunta_pedido",
-=======
+
             
             botones_retorno = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]
             if isinstance(sug_ini_botones_lista, list):
@@ -1190,7 +1171,7 @@ class PedidoHandler(BaseHandler):
             return {"respuesta": final_respuesta_str, 
                     "fuente": "iniciar_pedido_flujo_sug" if sug_ini_texto else "iniciar_pedido_flujo", 
                     "estado_respuesta": "pyme_pregunta_pedido", 
->>>>>>> main
+
                     "botones": botones_retorno}
 
         logger.error(f"[PYME_PEDIDO] Estado no manejado: {estado}"); ctx.clear()
