@@ -87,8 +87,35 @@ def create_app(config_class=Config):
 
     # Configuración y activación de Sesiones en el Servidor
     app.config['SESSION_SQLALCHEMY'] = db
-    # Usar solo session_ext para evitar redefinición en tests o múltiples apps
     session_ext.init_app(app)
+
+    # Configurar el modo WAL DESPUÉS de que db está completamente inicializado con la app
+    # y tenemos una instancia de app definitiva.
+    if app.config.get('SQLALCHEMY_DATABASE_URI', '').startswith('sqlite'):
+        from sqlalchemy import event
+        # from sqlalchemy.engine import Engine # Engine no es necesario importar directamente aquí
+        import sqlite3
+
+        # Usar db.get_engine(app=app) para obtener el engine asociado a esta instancia de app
+        engine_to_listen = db.get_engine(app=app)
+
+        @event.listens_for(engine_to_listen, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            if isinstance(dbapi_connection, sqlite3.Connection):
+                # Usar el logger de la app si está disponible y configurado, sino print.
+                logger_instance = app.logger if hasattr(app, 'logger') and app.logger.handlers else logging.getLogger(__name__)
+                logger_instance.info("Attempting to set PRAGMA journal_mode=WAL for SQLite connection.")
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL;")
+                    # Verificar el modo actual
+                    # current_mode = cursor.execute("PRAGMA journal_mode;").fetchone()
+                    # logger_instance.info(f"PRAGMA journal_mode set. Current mode: {current_mode[0] if current_mode else 'Unknown'}")
+                    logger_instance.info("PRAGMA journal_mode=WAL set successfully.")
+                except Exception as e_pragma:
+                    logger_instance.error(f"Failed to set PRAGMA journal_mode=WAL: {e_pragma}")
+                finally:
+                    cursor.close()
 
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
