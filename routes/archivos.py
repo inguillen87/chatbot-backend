@@ -170,7 +170,14 @@ def subir_archivo(current_user):
         current_app.logger.info(
             f"Archivo subido por user {current_user.id}: {unique} ({original})"
         )
-        return jsonify({'mensaje': 'Archivo subido', 'filename': unique, 'url': url}), 200
+        return jsonify({
+            'mensaje': 'Archivo subido',
+            'filename': unique,
+            'name': original,
+            'mimeType': file.mimetype,
+            'size': tamano,
+            'url': url
+        }), 200
     return jsonify({'error': 'Formato no permitido o tipo no permitido.'}), 400
 
 
