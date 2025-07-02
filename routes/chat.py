@@ -51,8 +51,17 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         contexto_previo = data.get("contexto_previo")  # Leemos la mochila
         rubro_id = data.get("rubro_id")
         rubro_clave = data.get("rubro_clave")
+        uploaded_file_info = data.get("uploaded_file_info") # Extract uploaded file info
 
-        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, None
+        # Validate uploaded_file_info structure if present
+        if uploaded_file_info and not (
+            isinstance(uploaded_file_info, dict) and
+            "url" in uploaded_file_info and
+            "name" in uploaded_file_info
+        ):
+            raise ValueError("El campo 'uploaded_file_info' es inválido.")
+
+        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, uploaded_file_info, None
 
     except (TypeError, ValueError) as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
@@ -106,6 +115,7 @@ def _procesar_chat(
             tipo_chat,
             rubro_id,
             rubro_clave,
+            uploaded_file_info, # Added this
             error_response,
         ) = _parse_request(tipo_chat_fijo)
         if error_response:
@@ -207,7 +217,8 @@ def _procesar_chat(
             tipo_chat=tipo_chat,
             contexto_previo=contexto_previo, # Esto es el contexto_pyme o contexto_municipio de la sesión
             anon_id=anon_id,
-            chat_session_uuid=session_chat_id # Pasar el session_uuid
+            chat_session_uuid=session_chat_id, # Pasar el session_uuid
+            uploaded_file_info=uploaded_file_info # Pass file info
         )
 
         # --- Determinar si la conversación debe considerarse pública ---

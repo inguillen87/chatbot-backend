@@ -1047,8 +1047,11 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
 
 class ReclamoHandler(BaseMunicipioHandler):
     """
-    Maneja el flujo paso a paso del reclamo, aceptando tanto botones como texto libre,
-    y utilizando Cohere/LLM para interpretar intención cuando no hay coincidencia clara.
+    Maneja el flujo paso-a-paso para la creación de un reclamo municipal.
+    Este handler gestiona la recopilación de datos del usuario a través de múltiples
+    estados de conversación, incluyendo categoría, dirección, datos personales,
+    descripción del problema y adjuntos. Utiliza validaciones y lógica de
+    extracción de LLM en cada paso para mejorar la robustez y la UX.
     """
     EDIT_KEYWORDS = [
         "editar", "cambiar", "corregir", "modificar", 
@@ -1056,12 +1059,15 @@ class ReclamoHandler(BaseMunicipioHandler):
     ] # Definido a nivel de clase
 
     def handle(self, payload: dict) -> dict | None:
+        # --- Bloque 0: Inicialización de variables ---
         pregunta_str = payload.get("pregunta", "") or ""
         memoria = self.context.get("contexto_municipio", {})
         estado = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
 
-        # Si es inicio explícito de reclamo
+        # --- Bloque 1: Inicio del flujo de reclamo ---
+        # Si la intención es iniciar un reclamo y no hay un estado de reclamo activo,
+        # se limpia la memoria y se establece el primer estado para pedir la categoría.
         if intencion == "iniciar_reclamo" and not estado:
             memoria.clear()
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
@@ -1073,12 +1079,13 @@ class ReclamoHandler(BaseMunicipioHandler):
                 "botones": botones
             }
 
+        # Si el estado actual no pertenece al flujo de reclamos, este handler no actúa.
         if estado not in RECLAMO_STATES:
             return None
 
-        # --- Attempt to extract multiple details with LLM at each step ---
-        # Only try LLM extraction if the input isn't a simple confirmation or known action for later stages,
-        # and if we are in one of the data gathering states.
+        # --- Bloque 2: Extracción de detalles con LLM en cada paso (si aplica) ---
+        # Intenta extraer múltiples detalles de la respuesta del usuario si no es una
+        # simple confirmación o una acción de botón conocida, y si el estado es de recolección de datos.
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
         is_known_action_button = payload.get("action") in [
             "adjuntar_foto", "compartir_ubicacion", "sin_adjuntos",
@@ -1153,11 +1160,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.info(f"[ReclamoHandler_LLM] LLM returned no details for: '{pregunta_str}'")
         # --- End LLM multi-extraction attempt ---
 
-        # Re-evaluate current state based on memoria potentially updated by LLM
-        # This loop ensures we jump to the correct next question if LLM filled some fields.
+        # --- Bloque 3: Loop principal de avance de estados y recolección de datos ---
+        # Este loop avanza el estado de la conversación si la información necesaria
+        # ya está en memoria (posiblemente llenada por el LLM o en un flujo de edición).
+        # Si falta información para el estado actual, se la pide al usuario.
+        # auto_filled_parts = [] # Used to inform user about auto-filled data (enhancement idea, not fully implemented here)
         while True:
             current_state_for_logic = memoria.get("estado_conversacion") # Get potentially updated state
 
+            # Sub-bloque 3.1: Esperando Categoría
             if current_state_for_logic == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
                 if memoria.get("categoria_reclamo"): # If LLM (or previous step) filled it
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
@@ -1201,6 +1212,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     respuesta_texto = "¡Ups! No encontré esa categoría. Estas opciones podrían ayudarte:" if sugeridas else "No entendí la categoría. ¿Podrías elegir una de estas opciones o describirla mejor?"
                     return {"respuesta": respuesta_texto, "botones": botones}
 
+            # Sub-bloque 3.2: Esperando Dirección
             elif current_state_for_logic == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
                 if memoria.get("direccion_reclamo"): # If LLM filled it (and it was validated if extract_complaint_details_llm did so)
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
@@ -1215,7 +1227,8 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if pregunta_str == payload.get("pregunta",""):
                      return {"respuesta": "¡Perfecto! Ya tengo la dirección. Ahora, ¿podrías decirme tu **nombre completo**?"}
                 continue
-
+            
+            # Sub-bloque 3.3: Esperando Nombre Vecino
             elif current_state_for_logic == ConversationState.ESPERANDO_NOMBRE_VECINO:
                 if memoria.get("nombre_vecino"):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO
@@ -1229,6 +1242,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     return {"respuesta": f"¡Gracias, {nombre.split()[0]}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
                 continue
 
+            # Sub-bloque 3.4: Esperando Teléfono Vecino
             elif current_state_for_logic == ConversationState.ESPERANDO_TELEFONO_VECINO:
                 if memoria.get("telefono_vecino"): # Assumes already validated if set by LLM
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO
@@ -1242,6 +1256,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     return {"respuesta": "¡Excelente! Casi terminamos. ¿Cuál es tu **dirección de correo electrónico**?"}
                 continue
 
+            # Sub-bloque 3.5: Esperando Email Vecino
             elif current_state_for_logic == ConversationState.ESPERANDO_EMAIL_VECINO:
                 if memoria.get("email_vecino"): # Assumes already validated
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
@@ -1254,31 +1269,27 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if pregunta_str == payload.get("pregunta",""):
                     return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Luego podrás adjuntar foto/ubicación si querés."}
                 continue
-
+            
+            # Sub-bloque 3.6: Esperando Descripción del Reclamo
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
-                if memoria.get("descripcion_reclamo"):
+                if memoria.get("descripcion_reclamo"): # If LLM or previous input filled it
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-                    # Don't return yet if description was filled by LLM from an earlier multi-part message,
-                    # instead, immediately ask about attachments.
-                    if memoria.get("descripcion_reclamo") != pregunta_str: # If LLM set it from a previous broader message
-                         # This means the current `pregunta_str` is not the description itself, so we can directly ask about attachments.
-                         pass # Fall through to ask about attachments
-                    else: # Description was just provided now
-                        # This means the current `pregunta_str` IS the description.
-                        # We should ask about attachments in this turn.
-                        # Fall through to ask about attachments
-                        pass
-
-                # If description is still missing after potential LLM pass, ask for it.
+                    # If description was filled by LLM from an earlier multi-part message,
+                    # continue the loop to immediately ask about attachments.
+                    if memoria.get("descripcion_reclamo") != pregunta_str: 
+                        continue # Loop to ESPERANDO_ADJUNTOS_RECLAMO logic within this same handle() call
+                    # Else (description was just provided now), fall through to ask about attachments in this turn.
+                
+                # If description is still missing (current input is not the description or was too short)
                 if not memoria.get("descripcion_reclamo"):
                     descripcion = pregunta_str.strip()
-                    if not descripcion or len(descripcion) < 10:
+                    if not descripcion or len(descripcion) < 10: # Basic validation for length
                         return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
                     memoria["descripcion_reclamo"] = descripcion
 
+                # Transition to asking about attachments. This is an exit point from the while True loop for this turn.
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-                # Always ask about attachments after description is set, regardless of how it was set.
-                return {
+                return { # This return exits the handle() method for this turn.
                     "respuesta": "¡Gracias por la descripción! ¿Querés **adjuntar una foto o compartir tu ubicación GPS**? (Opcional)",
                     "botones": [
                         {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
@@ -1286,14 +1297,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                         {"texto": "No, continuar", "action": "sin_adjuntos"}
                     ]}
 
-            # If we've fallen through the loop, it means all prior data is filled,
-            # or we are in a state that doesn't require further looping (like ADJUNTOS or CONFIRMACION).
-            break # Exit the while True loop
+            # If we've fallen through all data gathering states in the loop without returning,
+            # it means all necessary data up to description is filled.
+            # Break the loop to proceed to post-data-gathering states (Adjuntos, Confirmacion).
+            break 
 
-        # --- States after the data gathering loop ---
+        # --- Bloque 4: Manejo de estados post-recolección de datos (Adjuntos y Confirmación) ---
         estado = memoria.get("estado_conversacion") # Re-fetch current state as it might have changed in the loop
 
-        # Paso 7: Adjuntos (acepta acción por botón o texto)
+        # Sub-bloque 4.1: Esperando Adjuntos
         if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
 
@@ -1416,7 +1428,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 ]
             }
 
-        # Paso 8: Confirmación y creación de ticket
+        # Sub-bloque 4.2: Esperando Confirmación Final y Creación de Ticket
         if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
             # Verificar si es anónimo y ya excedió el límite de tickets
             if self.context.get("anon_id") and not self.context.get("user_id"): # Es anónimo
@@ -3319,27 +3331,51 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
 
     # Serializar estado actualizado para frontend/session
     contexto_para_guardar = serializar_enum(context["contexto_municipio"])
-    media_url_to_send = contexto_municipio.get("foto_url")
+    media_url_to_send = contexto_municipio.get("foto_url") # Primarily for reclamo photos handled by ReclamoHandler
     location_data_to_send = contexto_municipio.get("ubicacion_gps")
 
-    logger.info(f"[FIN] Respuesta final: '{respuesta_final.get('respuesta')}'")
+    # Prepare the final response dictionary
+    final_response_dict = {
+        "respuesta": respuesta_final.get("respuesta"),
+        "botones": respuesta_final.get("botones", []),
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
+        "ticket_id": respuesta_final.get("ticket_id", None),
+        "media_url": media_url_to_send, 
+        "location_data": location_data_to_send,
+        "adjuntos": [] # Initialize attachments list for general file uploads
+    }
+
+    # Check if a file was uploaded by the user in this turn and add its info for frontend display.
+    # This assumes 'received_payload' (which includes kwargs from routes/chat.py)
+    # might contain 'uploaded_file_info' if the frontend sent it after a successful upload via /archivos/subir.
+    # 'uploaded_file_info' structure: {'url': '/archivos/xyz.pdf', 'name': 'original.pdf', 'type': 'application/pdf'}
+    uploaded_file_info = received_payload.get("uploaded_file_info")
+    if uploaded_file_info and isinstance(uploaded_file_info, dict):
+        if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
+            final_response_dict["adjuntos"].append({
+                "nombre_original": uploaded_file_info["name"],
+                "url_descarga": uploaded_file_info["url"], # This is the direct URL to the file from /archivos/subir
+                "tipo_mime": uploaded_file_info.get("type", 'application/octet-stream')
+            })
+            logger.info(f"Adjuntando info de archivo subido a la respuesta: {uploaded_file_info['name']}")
+
+    logger.info(f"[FIN] Respuesta final: '{final_response_dict.get('respuesta')}', Adjuntos: {len(final_response_dict['adjuntos'])}")
 
     # Log anonymous conversation to Conversacion table
-    if anon_id and not viewer_user and respuesta_final: # It's an anonymous user and we have a response
+    # Using pregunta_str (text part of user's message) and respuesta_final.get("respuesta") (text part of bot's message)
+    if anon_id and not viewer_user and respuesta_final: 
         try:
-            # Log user's question part of the conversation
             db.session.add(Conversacion(
-                session_id=anon_id, # anon_id is stored in session_id for anonymous
-                pregunta=pregunta_str, # The original question string from the payload
-                respuesta="", # Bot's response will be in the next entry
+                session_id=anon_id, 
+                pregunta=pregunta_str, 
+                respuesta="", 
                 fuente="municipio_anon_pregunta",
-                rubro=context.get("rubro_obj").nombre if context.get("rubro_obj") else "municipio_general" # Get rubro name
+                rubro=context.get("rubro_obj").nombre if context.get("rubro_obj") else "municipio_general"
             ))
-            # Log bot's answer part of the conversation
             db.session.add(Conversacion(
                 session_id=anon_id,
-                pregunta=pregunta_str, # Repeat user question for context if desired, or keep it specific to bot's turn
-                respuesta=respuesta_final.get("respuesta"),
+                pregunta=pregunta_str, 
+                respuesta=final_response_dict.get("respuesta"), # Use text response from final_response_dict
                 fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"),
                 rubro=context.get("rubro_obj").nombre if context.get("rubro_obj") else "municipio_general"
             ))
@@ -3349,11 +3385,4 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             logger.error(f"Error guardando conversación anónima de municipio para anon_id {anon_id}: {e_conv}", exc_info=True)
             db.session.rollback()
 
-    return {
-        "respuesta": respuesta_final.get("respuesta"),
-        "botones": respuesta_final.get("botones", []),
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
-        "ticket_id": respuesta_final.get("ticket_id", None),
-        "media_url": media_url_to_send,
-        "location_data": location_data_to_send
-    }
+    return final_response_dict

@@ -1296,6 +1296,123 @@ class FallbackHandler(BaseHandler):
             
         return {"respuesta": mensaje_final, "fuente": fuente_final, "botones": botones_finales}
 
+
+class ToolHandlerPyme(BaseHandler):
+    def handle(self, pregunta_str: str): # pregunta_str is the raw user text
+        from services.cohere_ai import get_cohere_response # Local import
+        from services.herramientas_pyme import TOOL_REGISTRY_PYME, crear_prompt_decision_herramienta_pyme # Import Pyme specific tools and prompt
+
+        pyme_context = self.context.get(CONTEXTO_PYME, {})
+        current_pyme_owner_user_id = self.context.get("user_id") # This should be the Pyme's owner_user.id
+
+        if not current_pyme_owner_user_id:
+            logger.warning("[ToolHandlerPyme] No user_id (Pyme owner ID) in context. Cannot use tools.")
+            return None
+
+        active_flow_states = [
+            PymeConversationState.CONFIRMANDO_PEDIDO,
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE,
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO,
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION,
+            PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS,
+            PymeConversationState.ESPERANDO_FEEDBACK,
+            PymeConversationState.ESPERANDO_NUMERO_TICKET, # Added from municipio logic
+            PymeConversationState.ESPERANDO_CONFIRMACION_CIERRE, # Added from municipio logic
+            PymeConversationState.ESPERANDO_CALIFICACION, # Added from municipio logic
+            PymeConversationState.ESPERANDO_DETALLES_RECLAMO 
+        ]
+        current_pyme_state = deserialize_state(pyme_context.get("estado_conversacion"))
+        if current_pyme_state in active_flow_states:
+            logger.info(f"[ToolHandlerPyme] Skipping tool check due to active Pyme flow state: {current_pyme_state}")
+            return None
+
+        prompt = crear_prompt_decision_herramienta_pyme(pregunta_str)
+        
+        try:
+            respuesta_llm_str = get_cohere_response(
+                message=prompt,
+                preamble="Eres un experto en decidir si una pregunta de un cliente de PyME requiere una herramienta. Responde solo con el JSON solicitado o 'null'."
+            )
+            logger.info(f"[ToolHandlerPyme] LLM Tool Decision: {respuesta_llm_str.strip() if respuesta_llm_str else 'None'}")
+
+            if not respuesta_llm_str or respuesta_llm_str.strip().lower() == "null":
+                return None 
+
+            decision = json.loads(respuesta_llm_str.strip())
+            nombre_herramienta = decision.get("herramienta")
+
+            if not nombre_herramienta or nombre_herramienta not in TOOL_REGISTRY_PYME:
+                logger.warning(f"[ToolHandlerPyme] LLM suggested unknown tool: {nombre_herramienta}")
+                return None
+
+            tool_details = TOOL_REGISTRY_PYME[nombre_herramienta]
+            
+            if "faltan_parametros_del_usuario" in decision:
+                param_faltante_key = decision["faltan_parametros_del_usuario"][0]
+                param_info = tool_details["parametros"].get(param_faltante_key, {})
+                param_desc_user = param_info.get("description", param_faltante_key.replace('_', ' '))
+                
+                prompt_text = f"Para usar la función de '{tool_details['descripcion'].split('.')[0].lower()}', necesito saber: {param_desc_user}."
+                if param_faltante_key == "nombre_producto":
+                    prompt_text = f"Claro, puedo ayudarte con eso. ¿El nombre del producto que te interesa?"
+                elif param_faltante_key == "ciudad_destino":
+                    prompt_text = f"Puedo calcularte un estimado del envío. ¿A qué ciudad o localidad sería?"
+                
+                # Store pending tool info if needed for multi-turn parameter gathering (more advanced)
+                # pyme_context["estado_conversacion"] = serialize_state(PymeConversationState.ESPERANDO_PARAM_HERRAMIENTA_PYME) # Define this state
+                # pyme_context["herramienta_pendiente_pyme"] = nombre_herramienta
+                # pyme_context["param_pendiente_pyme"] = param_faltante_key
+                # flask_session[CONTEXTO_PYME] = pyme_context
+                return {"respuesta": prompt_text, "fuente": f"tool_prompt_{nombre_herramienta}"}
+
+            elif "parametros" in decision or not any(p != "user_id" for p in tool_details["parametros"].keys()):
+                # This condition means:
+                # 1. LLM provided parameters, OR
+                # 2. The tool has no user-extractable parameters (only user_id or no params at all)
+                
+                parametros_llm = decision.get("parametros", {})
+                
+                final_params = {}
+                # Add user_id (Pyme's owner_user.id) which is context, not from LLM extraction for user query
+                if "user_id" in tool_details["parametros"]:
+                    final_params["user_id"] = current_pyme_owner_user_id
+                
+                # Add parameters extracted by LLM from user's query
+                final_params.update(parametros_llm)
+
+                funcion_a_ejecutar = tool_details["funcion"]
+                logger.info(f"[ToolHandlerPyme] Executing tool '{nombre_herramienta}' with final_params: {final_params}")
+                
+                resultado_json_str = funcion_a_ejecutar(**final_params)
+                resultado_dict = json.loads(resultado_json_str) 
+                
+                return {
+                    "respuesta": resultado_dict.get("respuesta", "No pude obtener un resultado de la herramienta."),
+                    "fuente": f"tool_executed_{nombre_herramienta}",
+                    "botones": resultado_dict.get("botones", []) 
+                }
+            else: 
+                # LLM decided a tool applies, but didn't provide parameters, and the tool expects parameters from the user.
+                # Ask for the first parameter the user should provide.
+                user_extractable_params = {k:v for k,v in tool_details["parametros"].items() if k != "user_id"}
+                if user_extractable_params:
+                    first_param_key = list(user_extractable_params.keys())[0]
+                    first_param_desc = user_extractable_params[first_param_key].get("description", first_param_key.replace('_', ' '))
+                    prompt_text = f"Para ayudarte con '{tool_details['descripcion'].split('.')[0].lower()}', necesitaría que me digas: {first_param_desc}."
+                    return {"respuesta": prompt_text, "fuente": f"tool_prompt_missing_all_{nombre_herramienta}"}
+                else: # Should be caught by "no user-extractable params" case above. Safety.
+                    logger.warning(f"[ToolHandlerPyme] Tool '{nombre_herramienta}' selected, but parameter logic for LLM decision is unclear.")
+                    return None
+
+        except json.JSONDecodeError:
+            logger.error(f"[ToolHandlerPyme] Error parsing LLM JSON response: '{respuesta_llm_str if respuesta_llm_str else 'Empty'}'", exc_info=True)
+            return None # Let other handlers try
+        except Exception as e:
+            logger.error(f"[ToolHandlerPyme] General error in ToolHandlerPyme: {e}", exc_info=True)
+            return {"respuesta": "Hubo un problema técnico al intentar usar una de nuestras herramientas. Por favor, intenta reformular tu pregunta o consulta más tarde.", "fuente": "tool_handler_pyme_error_general"}
+        
+        return None # Fallback, should ideally not be reached if logic above is exhaustive
+
 # --- ROUTER PRINCIPAL ---
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     # Log al inicio de la función
@@ -1419,38 +1536,46 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
 
     INTENT_MAP = { "saludo": SaludoHandler, "ver_catalogo": CatalogoHandler, "consultar_ofertas": OfertasHandler,
                    "iniciar_pedido": PedidoHandler, "continuar_flujo": PedidoHandler,
-                   "finalizar_pedido": PedidoHandler, # Intención explícita para finalizar
-                   "agregar_al_carrito": PedidoHandler, # Aunque PedidoHandler lo maneja por estado, tenerlo aquí es más claro
-                   "ver_carrito": PedidoHandler, # Similarmente
+                   "finalizar_pedido": PedidoHandler, 
+                   "agregar_al_carrito": PedidoHandler, 
+                   "ver_carrito": PedidoHandler, 
                    "pregunta_faq": FaqHandler, "hablar_con_agente": HumanHandler, 
                    "hablar_con_agente_pyme": HumanHandler, "consultar_estado_ticket": TicketStatusHandler,
                    "pregunta_ambigua": UnclearHandler }
 
-    handler = None
-    if detectar_small_talk_con_llm(pregunta) and intencion not in {"iniciar_pedido", "ver_catalogo", "consultar_ofertas"}:
-        handler = SmallTalkHandler(context)
-    else:
-        palabras_compra_catalogo = ["comprar", "vender", "precio", "tenés", "hay", "oferta", "promo", "descuento", "unidades", "sku", "stock", "catálogo", "catalogo", "producto", "productos"]
-        es_compra_o_catalogo = any(pal in texto_pregunta_lower for pal in palabras_compra_catalogo)
+    # New Handler Chain including ToolHandlerPyme
+    # Order: Greetings/Politeness -> Specific Tools -> Intent-based -> General Fallbacks
+    
+    handler_chain = [
+        (lambda ctx, p: SaludoHandler(ctx) if intencion == "saludo" else None),
+        (lambda ctx, p: SmallTalkHandler(ctx) if detectar_small_talk_con_llm(p) and intencion not in {"iniciar_pedido", "ver_catalogo", "consultar_ofertas"} else None),
+        ToolHandlerPyme, # Attempt to use a tool early if applicable
+        (lambda ctx, p: INTENT_MAP[intencion](ctx) if intencion in INTENT_MAP and intencion != "pregunta_ambigua" else None), # Specific intent handlers
+        (lambda ctx, p: CatalogoHandler(ctx) if any(pal in p.lower() for pal in ["comprar", "vender", "precio", "tenés", "hay", "oferta", "promo", "descuento", "unidades", "sku", "stock", "catálogo", "catalogo", "producto", "productos"]) or intencion == "pregunta_ambigua" else None), # Catalog as a common fallback for product-related queries
+        (lambda ctx, p: SentimentHandler(ctx, analizar_sentimiento_llm(p))), # Sentiment as a later fallback
+        FallbackHandler # Final fallback
+    ]
 
-        if intencion in INTENT_MAP:
-            handler = INTENT_MAP[intencion](context) if not (intencion == "pregunta_ambigua" and es_compra_o_catalogo) else CatalogoHandler(context)
-        elif es_compra_o_catalogo: 
-            handler = CatalogoHandler(context)
-        else: 
-            sentimiento = analizar_sentimiento_llm(pregunta)
-            if sentimiento == "negativo": handler = SentimentHandler(context, "negativo")
-            elif sentimiento == "positivo": handler = SentimentHandler(context, "positivo")
-            else: handler = FallbackHandler(context)
-    
-    respuesta_final = handler.handle(pregunta)
-    
-    if respuesta_final is None: # Si el handler principal no dio respuesta
-        logger.info(f"[PYME] Handler ({type(handler).__name__}) devolvió None para '{pregunta}', usando FallbackHandler.")
-        respuesta_final = FallbackHandler(context).handle(pregunta)
-        if respuesta_final is None: # FallbackHandler DEBE devolver algo
-            logger.error(f"[PYME] FallbackHandler también devolvió None para '{pregunta}'. Esto es un error.")
-            respuesta_final = {"respuesta": "Lo siento, no pude procesar tu solicitud en este momento. Intenta de nuevo.", "fuente": "error_fallback_definitivo"}
+    respuesta_final = None
+    for handler_candidate in handler_chain:
+        if callable(handler_candidate) and not isinstance(handler_candidate, type): # It's a lambda
+            handler_instance = handler_candidate(context, pregunta)
+        elif isinstance(handler_candidate, type): # It's a class
+            handler_instance = handler_candidate(context)
+        else: # Should not happen
+            continue
+
+        if handler_instance:
+            logger.info(f"[PYME_HANDLER_CHAIN] Trying handler: {type(handler_instance).__name__}")
+            respuesta_parcial = handler_instance.handle(pregunta)
+            if respuesta_parcial is not None: # Handler provided a response
+                respuesta_final = respuesta_parcial
+                logger.info(f"[PYME_HANDLER_CHAIN] Handler {type(handler_instance).__name__} responded.")
+                break 
+        
+    if respuesta_final is None: 
+        logger.error(f"[PYME] CRITICAL: No handler in chain produced a response for '{pregunta}'. This should not happen if FallbackHandler is last.")
+        respuesta_final = {"respuesta": "Lo siento, no pude procesar tu solicitud en este momento. Por favor, intenta más tarde.", "fuente": "error_no_handler_response"}
 
     # Guardar historial y conversación en DB
     historial = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
@@ -1480,12 +1605,38 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
 
     flask_session[CONTEXTO_PYME] = context.get(CONTEXTO_PYME, {}) # Guardar cualquier cambio en el contexto pyme en la sesión
 
-    logger.info(f"[RESPONDER_PYME_END - {request_id}] Respuesta: {respuesta_final.get('respuesta', 'Ocurrió un error.')}, Fuente: {respuesta_final.get('fuente', 'desconocida')}")
-
-    return {
+    # Prepare the final response dictionary
+    final_response_dict = {
         "respuesta": respuesta_final.get("respuesta", "Ocurrió un error."),
         "fuente": respuesta_final.get("fuente", "desconocida"),
         "botones": respuesta_final.get("botones", []),
-        "estado_respuesta": respuesta_final.get("estado_respuesta"), 
+        "estado_respuesta": respuesta_final.get("estado_respuesta"),
         "contexto_actualizado": {CONTEXTO_PYME: context.get(CONTEXTO_PYME, {})},
+        "ticket_id": respuesta_final.get("ticket_id", None), # Ensure ticket_id is passed if available (e.g., from HumanHandler)
+        "adjuntos": [] # Initialize attachments list
     }
+    
+    # Add uploaded file information if present in the initial payload (kwargs)
+    # This assumes 'kwargs' (passed into responder_pyme and available in 'context' or directly)
+    # might contain 'uploaded_file_info': {'url': '/archivos/xyz.pdf', 'name': 'original.pdf', 'type': 'application/pdf'}
+    # Note: 'kwargs' are merged into 'context' if they are standard chat parameters,
+    # but 'uploaded_file_info' would be a custom one from routes/chat.py
+    # We should check `kwargs` directly or ensure it's placed in `context` by `responder_chatboc` or `_procesar_chat`.
+    # For now, let's assume it might be in `kwargs` passed to `responder_pyme`.
+    
+    # The `pregunta` variable here is the user's text input.
+    # `kwargs` is passed to `responder_pyme`.
+    uploaded_file_info = kwargs.get("uploaded_file_info") 
+    if uploaded_file_info and isinstance(uploaded_file_info, dict):
+        if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
+            final_response_dict["adjuntos"].append({
+                "nombre_original": uploaded_file_info["name"],
+                "url_descarga": uploaded_file_info["url"],
+                "tipo_mime": uploaded_file_info.get("type", 'application/octet-stream')
+            })
+            logger.info(f"[RESPONDER_PYME] Adjuntando info de archivo subido a la respuesta: {uploaded_file_info['name']}")
+
+
+    logger.info(f"[RESPONDER_PYME_END - {request_id}] Respuesta: {final_response_dict.get('respuesta', 'Ocurrió un error.')}, Fuente: {final_response_dict.get('fuente', 'desconocida')}, Adjuntos: {len(final_response_dict['adjuntos'])}")
+
+    return final_response_dict
