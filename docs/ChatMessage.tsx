@@ -3,7 +3,7 @@ import "./chat.css";
 
 export interface ChatButton {
   text: string;
-  action?: string;
+  action?: string; // The action associated with the button (e.g., "hacer_reclamo", "login")
 }
 
 export interface ChatMessageProps {
@@ -13,10 +13,21 @@ export interface ChatMessageProps {
     isBot?: boolean;
     botones?: ChatButton[];
   };
+  onButtonClick?: (action: string, text: string) => void; // Callback when a button is clicked
 }
 
-export default function ChatMessage({ message }: ChatMessageProps) {
+export default function ChatMessage({ message, onButtonClick }: ChatMessageProps) {
   const isBot = message.isBot;
+
+  const handleButtonClick = (button: ChatButton) => {
+    if (onButtonClick) {
+      // Prefer action if available, otherwise use button text as a fallback action
+      onButtonClick(button.action || button.text, button.text);
+    } else {
+      // Fallback if no handler is provided (though it should be)
+      console.warn("ChatMessage: onButtonClick handler not provided. Clicked:", button);
+    }
+  };
 
   return (
     <div className={`flex ${isBot ? "justify-start" : "justify-end"} w-full mb-3`}>
@@ -50,7 +61,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
             {message.botones.map((btn, idx) => (
               <button
                 key={btn.action || idx}
-                onClick={() => { /* tu lógica */ }}
+                onClick={() => handleButtonClick(btn)}
                 className="rounded-xl px-4 py-1 text-sm font-semibold bg-white text-blue-900 border border-blue-300 hover:bg-blue-100 transition"
               >
                 {btn.text}
