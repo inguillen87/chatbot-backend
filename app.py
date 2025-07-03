@@ -134,20 +134,21 @@ def create_app(config_class=Config):
     )
 
     # --- Fix universal de headers custom para CORS ---
-    @app.after_request
-    def ensure_custom_cors_headers(resp):
-        needed = [
-            "Authorization", "Content-Type", "Origin", "Accept",
-            "Anon-Id", "x-entity-token"
-        ]
-        prev = resp.headers.get("Access-Control-Allow-Headers", "")
-        actual = [h.strip() for h in prev.split(",") if h.strip()]
-        actual_lower = [h.lower() for h in actual]
-        for n in needed:
-            if n.lower() not in actual_lower:
-                actual.append(n)
-        resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
-        return resp
+    # Temporarily commented out to test if Flask-CORS handles this sufficiently
+    # @app.after_request
+    # def ensure_custom_cors_headers(resp):
+    #     needed = [
+    #         "Authorization", "Content-Type", "Origin", "Accept",
+    #         "Anon-Id", "x-entity-token"
+    #     ]
+    #     prev = resp.headers.get("Access-Control-Allow-Headers", "")
+    #     actual = [h.strip() for h in prev.split(",") if h.strip()]
+    #     actual_lower = [h.lower() for h in actual]
+    #     for n in needed:
+    #         if n.lower() not in actual_lower:
+    #             actual.append(n)
+    #     resp.headers["Access-Control-Allow-Headers"] = ", ".join(actual)
+    #     return resp
 
     @app.after_request
     def add_permissions_policy(resp):
