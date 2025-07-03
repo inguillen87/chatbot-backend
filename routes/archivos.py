@@ -6,6 +6,7 @@ import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from routes.auth import token_requerido
+from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 
 archivos_bp = Blueprint('archivos_bp', __name__, url_prefix='/archivos')
 
@@ -149,36 +150,47 @@ def subir_archivo(current_user):
         save_path = os.path.join(UPLOAD_FOLDER, unique)
         file.save(save_path)
         tamano = os.path.getsize(save_path)
-        url = f"/archivos/{unique}"
+        url = f"/archivos/{unique}" # URL para acceder al archivo después, podría ser una ruta de la API
         session_id = request.form.get("session_id") or request.headers.get("X-Session-Id")
-        tipo = request.form.get("tipo", "chat")
-        db.session.add(
-            ArchivoAdjunto(
-                user_id=current_user.id,
-                session_id=session_id,
-                filename=unique,
-                nombre_original=original,
-                mime=file.mimetype,
-                tamano=tamano,
-                tipo=tipo,
-                pyme_ticket_id=pyme_ticket_id,
-                municipio_ticket_id=municipio_ticket_id,
-                url=url,
-            )
+        tipo = request.form.get("tipo", "chat") # tipo de archivo (ej. chat, ticket_adjunto, etc.)
+
+        nuevo_adjunto = ArchivoAdjunto(
+            user_id=current_user.id,
+            session_id=session_id,
+            filename=unique, # Nombre seguro del archivo en el servidor
+            nombre_original=original, # Nombre original del archivo
+            mime=file.mimetype,
+            tamano=tamano,
+            tipo=tipo,
+            pyme_ticket_id=pyme_ticket_id if pyme_ticket_id else None,
+            municipio_ticket_id=municipio_ticket_id if municipio_ticket_id else None,
+            url=url, # Ruta para acceder al archivo
         )
+        db.session.add(nuevo_adjunto)
         db.session.commit()
+
+        # Encolar tarea de análisis de archivo
+        try:
+            tarea_analizar_contenido_archivo.delay(nuevo_adjunto.id)
+            current_app.logger.info(f"Tarea de análisis encolada para ArchivoAdjunto ID: {nuevo_adjunto.id}")
+        except Exception as e:
+            current_app.logger.error(f"Error al encolar tarea de análisis para ArchivoAdjunto ID: {nuevo_adjunto.id}. Error: {e}", exc_info=True)
+            # Considerar qué hacer si Celery no está disponible. ¿Marcar el archivo para análisis posterior?
+            # Por ahora, solo logueamos el error. La subida del archivo ya fue exitosa.
+
         current_app.logger.info(
-            f"Archivo subido por user {current_user.id}: {unique} ({original})"
+            f"Archivo subido por user {current_user.id}: {unique} ({original}). ID: {nuevo_adjunto.id}"
         )
         return jsonify({
-            'mensaje': 'Archivo subido',
+            'mensaje': 'Archivo subido y análisis encolado.',
             'filename': unique,
+            'id': nuevo_adjunto.id, # Devolver el ID del ArchivoAdjunto puede ser útil
             'name': original,
             'mimeType': file.mimetype,
             'size': tamano,
             'url': url
         }), 200
-    return jsonify({'error': 'Formato no permitido o tipo no permitido.'}), 400
+    return jsonify({'error': 'Formato no permitido o tipo MIME no permitido.'}), 400
 
 
 @archivos_bp.route('/<path:filename>', methods=['GET'])

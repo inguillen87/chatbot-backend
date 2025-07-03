@@ -1,4 +1,9 @@
 import logging
+from flask import current_app # Para logging y config
+from models import ArchivoAdjunto, AnalisisArchivo, db # db para la sesión
+from services.interpretacion_service import interpretacion_service
+from services.archivo_service import archivo_service
+# servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +198,53 @@ def responder_chatboc(
         raise ValueError("tipo_chat requerido")
 
     # ---------- ACÁ DEFINÍS EL anon_id ----------
-    anon_id = kwargs.get("anon_id", None)
+    # anon_id ya es un parámetro de la función responder_chatboc, no necesita extraerse de kwargs si se pasa directamente.
+    # anon_id = kwargs.get("anon_id", None)
+
+    # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
+    uploaded_file_info = kwargs.get("uploaded_file_info")
+    datos_interpretados_de_archivo = None
+    archivo_id_para_asociar_al_ticket = None
+
+    if uploaded_file_info and isinstance(uploaded_file_info, dict) and uploaded_file_info.get("id"):
+        archivo_id = uploaded_file_info.get("id")
+        # uploaded_file_info["id"] es el ID del ArchivoAdjunto.
+        current_app.logger.info(f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}")
+
+        archivo_obj = db.session.query(ArchivoAdjunto).get(archivo_id)
+
+        if archivo_obj:
+            archivo_id_para_asociar_al_ticket = archivo_id
+
+            if archivo_obj.analisis and archivo_obj.analisis.estado_analisis == "completado":
+                current_app.logger.info(f"[LOGIC] Análisis encontrado y completado para ArchivoAdjunto ID: {archivo_id}")
+
+                user_id_actual = owner_user.id if owner_user else None
+
+                datos_interpretados_de_archivo = interpretacion_service.interpretar_analisis_para_datos_ticket(
+                    analisis_archivo=archivo_obj.analisis,
+                    tipo_contexto=tipo_chat,
+                    user_id=user_id_actual
+                )
+                if datos_interpretados_de_archivo:
+                    current_app.logger.info(f"[LOGIC] Datos interpretados del archivo: {datos_interpretados_de_archivo}")
+                    # Se pasarán a los handlers via kwargs
+            elif archivo_obj.analisis and archivo_obj.analisis.estado_analisis in ["pendiente", "procesando"]:
+                current_app.logger.info(f"[LOGIC] Análisis para ArchivoAdjunto ID: {archivo_id} aún está '{archivo_obj.analisis.estado_analisis}'. El archivo se asociará si se crea un ticket.")
+            else:
+                current_app.logger.info(f"[LOGIC] No hay análisis completado para ArchivoAdjunto ID: {archivo_id} (estado: {archivo_obj.analisis.estado_analisis if archivo_obj.analisis else 'sin análisis'}). El archivo se asociará si se crea un ticket.")
+        else:
+            current_app.logger.warning(f"[LOGIC] No se encontró ArchivoAdjunto con ID: {archivo_id} desde uploaded_file_info.")
+            archivo_id_para_asociar_al_ticket = None # No podemos asociar si no encontramos el archivo
+
+    # Actualizar kwargs para pasar la información a los handlers específicos
+    kwargs["datos_interpretados_archivo"] = datos_interpretados_de_archivo
+    kwargs["archivo_id_para_asociar"] = archivo_id_para_asociar_al_ticket
+    # Limpiar uploaded_file_info de kwargs para no pasarlo más allá si ya se procesó.
+    # Opcional, pero puede ser más limpio.
+    if "uploaded_file_info" in kwargs:
+        del kwargs["uploaded_file_info"]
+    # --- Fin: Lógica de manejo de archivo adjunto ---
 
     # ---------- Y ACÁ LO PASÁS SIEMPRE ----------
     if tipo_chat == "municipio":
@@ -206,7 +257,7 @@ def responder_chatboc(
             session_obj=session_obj, # El session_obj de flask
             anon_id=anon_id,
             chat_session_uuid=chat_session_uuid, # Pasar aquí
-            **kwargs,
+            **kwargs, # kwargs ahora contiene datos_interpretados_archivo y archivo_id_para_asociar
         )
     elif tipo_chat == "pyme":
         from services.pymes import responder_pyme
@@ -218,7 +269,7 @@ def responder_chatboc(
             session_obj=session_obj, # El session_obj de flask
             anon_id=anon_id,
             chat_session_uuid=chat_session_uuid, # Pasar aquí
-            **kwargs,
+            **kwargs, # kwargs ahora contiene datos_interpretados_archivo y archivo_id_para_asociar
         )
     else:
         raise ValueError(f"Tipo de chat no soportado: {tipo_chat}")

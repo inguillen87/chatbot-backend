@@ -1,0 +1,173 @@
+import logging
+import json
+from typing import Dict, Any, List, Optional
+
+from models import AnalisisArchivo # Para type hinting
+# Asumiendo que robust_chat está en llm_utils o cohere_ai
+from services.llm_utils import robust_chat, _clean_llm_json_output # _clean_llm_json_output es de llm_utils
+
+logger = logging.getLogger(__name__)
+
+class InterpretacionService:
+
+    def _llamar_llm_para_extraccion_ticket_municipal(self, texto_completo: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Llama a un LLM para extraer detalles de un reclamo municipal desde texto.
+        """
+        if not texto_completo:
+            return {}
+
+        campos_esperados = [
+            "tipo_problema",
+            "descripcion_corta_problema",
+            "direccion_problema",
+            "nombre_ciudadano",
+            "telefono_ciudadano",
+            "detalles_adicionales"
+        ]
+
+        prompt = (
+            "Eres un asistente experto en procesar reclamos ciudadanos a partir de texto. "
+            "Analiza el siguiente TEXTO DEL RECLAMO y extrae la información relevante "
+            f"correspondiente a los siguientes campos: {', '.join(campos_esperados)}. \n"
+            "Devuelve la información ÚNICAMENTE como un objeto JSON válido. Las claves del JSON deben ser "
+            f"los nombres de los campos de la lista: {campos_esperados}.\n"
+            "Si un campo no se encuentra en el texto, omite esa clave del JSON.\n"
+            "Prioriza la información más específica y relevante para cada campo.\n"
+            "Por ejemplo, para 'descripcion_corta_problema', extrae la esencia del reclamo.\n"
+            "Para 'direccion_problema', sé lo más específico posible con la ubicación.\n\n"
+            f"TEXTO DEL RECLAMO:\n'''{texto_completo[:8000]}'''\n\n"
+            "JSON RESPONSE:"
+        )
+
+        try:
+            # robust_chat podría necesitar user_id para contextos específicos o límites de uso
+            # response_content = robust_chat(message=prompt, model_override="gpt-4o-mini", user_id=user_id)
+            response_content = robust_chat(message=prompt, user_id=user_id)
+            if response_content:
+                cleaned_response = _clean_llm_json_output(response_content)
+                if cleaned_response:
+                    extracted_data = json.loads(cleaned_response)
+                    return {k: v for k, v in extracted_data.items() if k in campos_esperados and v}
+            logger.warning(f"LLM no devolvió contenido o contenido vacío tras limpiar para extracción de ticket municipal. Texto: {texto_completo[:200]}")
+            return {}
+        except json.JSONDecodeError as e:
+            logger.error(f"JSONDecodeError al parsear respuesta de LLM para extracción municipal: {e}. Respuesta: '{response_content}'. Texto: {texto_completo[:200]}")
+            return {}
+        except Exception as e:
+            logger.error(f"Error llamando a LLM para extracción municipal: {e}. Texto: {texto_completo[:200]}", exc_info=True)
+            return {}
+
+    def _llamar_llm_para_extraccion_pedido_pyme(self, texto_completo: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Llama a un LLM para extraer detalles de un pedido PYME desde texto.
+        """
+        if not texto_completo:
+            return {}
+
+        campos_esperados = [
+            "nombre_cliente",
+            "telefono_cliente",
+            "email_cliente",
+            "direccion_entrega",
+            "items_pedido",
+            "notas_adicionales"
+        ]
+
+        prompt = (
+            "Eres un asistente experto en procesar pedidos para PYMEs a partir de texto. "
+            "Analiza el siguiente TEXTO DEL PEDIDO y extrae la información relevante "
+            f"correspondiente a los siguientes campos: {', '.join(campos_esperados)}. \n"
+            "Para 'items_pedido', extrae cada producto con su cantidad y unidad si se especifica, como una lista de objetos JSON, cada uno con 'producto', 'cantidad' y opcionalmente 'unidad'.\n"
+            "Devuelve TODA la información ÚNICAMENTE como un objeto JSON válido. Las claves del JSON deben ser "
+            f"los nombres de los campos de la lista: {campos_esperados}.\n"
+            "Si un campo no se encuentra en el texto, omite esa clave del JSON.\n"
+            "Presta especial atención a las cantidades y nombres de productos.\n\n"
+            f"TEXTO DEL PEDIDO:\n'''{texto_completo[:8000]}'''\n\n"
+            "JSON RESPONSE:"
+        )
+
+        try:
+            response_content = robust_chat(message=prompt, user_id=user_id)
+            if response_content:
+                cleaned_response = _clean_llm_json_output(response_content)
+                if cleaned_response:
+                    extracted_data = json.loads(cleaned_response)
+                    if "items_pedido" in extracted_data and not isinstance(extracted_data["items_pedido"], list):
+                        logger.warning(f"LLM devolvió 'items_pedido' pero no es una lista: {extracted_data['items_pedido']}")
+                        # Intentar convertir a lista si es un string que parece una lista de JSON
+                        if isinstance(extracted_data["items_pedido"], str):
+                            try:
+                                potential_list = json.loads(extracted_data["items_pedido"])
+                                if isinstance(potential_list, list):
+                                    extracted_data["items_pedido"] = potential_list
+                                else:
+                                     del extracted_data["items_pedido"]
+                            except json.JSONDecodeError:
+                                del extracted_data["items_pedido"]
+                        else:
+                            del extracted_data["items_pedido"]
+                    return {k: v for k, v in extracted_data.items() if k in campos_esperados and v}
+            logger.warning(f"LLM no devolvió contenido o contenido vacío tras limpiar para extracción de pedido pyme. Texto: {texto_completo[:200]}")
+            return {}
+        except json.JSONDecodeError as e:
+            logger.error(f"JSONDecodeError al parsear respuesta de LLM para extracción pyme: {e}. Respuesta: '{response_content}'. Texto: {texto_completo[:200]}")
+            return {}
+        except Exception as e:
+            logger.error(f"Error llamando a LLM para extracción pyme: {e}. Texto: {texto_completo[:200]}", exc_info=True)
+            return {}
+
+    def interpretar_analisis_para_datos_ticket(
+        self,
+        analisis_archivo: AnalisisArchivo,
+        tipo_contexto: str, # "municipio" o "pyme"
+        user_id: Optional[int] = None # Para pasar a las llamadas LLM si es necesario
+    ) -> Dict[str, Any]:
+        """
+        Interpreta el contenido de un AnalisisArchivo para extraer datos estructurados
+        útiles para pre-llenar un ticket o pedido.
+        """
+        if not analisis_archivo:
+            return {}
+
+        datos_interpretados = {}
+
+        if analisis_archivo.datos_estructurados and isinstance(analisis_archivo.datos_estructurados, dict):
+            logger.info(f"Usando datos_estructurados preexistentes del AnalisisArchivo ID: {analisis_archivo.id}")
+            datos_interpretados = analisis_archivo.datos_estructurados.copy()
+            datos_interpretados["_fuente_interpretacion"] = "datos_estructurados_originales"
+            # Si los datos estructurados son de DocumentAI, es posible que ya no necesitemos LLM.
+            # Podríamos añadir una lógica para ver si son 'suficientes'.
+
+        if not datos_interpretados and analisis_archivo.texto_extraido: # Si no hay datos estructurados, o si queremos complementar.
+            logger.info(f"Interpretando texto_extraido del AnalisisArchivo ID: {analisis_archivo.id} usando LLM para contexto: {tipo_contexto}")
+            texto_a_procesar = analisis_archivo.texto_extraido
+
+            datos_llm = {}
+            if tipo_contexto == "municipio":
+                datos_llm = self._llamar_llm_para_extraccion_ticket_municipal(texto_a_procesar, user_id)
+                if datos_llm:
+                    datos_interpretados.update(datos_llm) # Usar update para no sobreescribir "_fuente_interpretacion" si ya existía
+                    datos_interpretados["_fuente_interpretacion"] = datos_interpretados.get("_fuente_interpretacion", "") + "+llm_municipal"
+            elif tipo_contexto == "pyme":
+                datos_llm = self._llamar_llm_para_extraccion_pedido_pyme(texto_a_procesar, user_id)
+                if datos_llm:
+                    datos_interpretados.update(datos_llm)
+                    datos_interpretados["_fuente_interpretacion"] = datos_interpretados.get("_fuente_interpretacion", "") + "+llm_pyme"
+            else:
+                logger.warning(f"Tipo de contexto desconocido '{tipo_contexto}' para interpretación LLM.")
+
+        elif not analisis_archivo.texto_extraido and not analisis_archivo.datos_estructurados:
+            logger.info(f"AnalisisArchivo ID: {analisis_archivo.id} no tiene texto_extraido ni datos_estructurados para interpretar.")
+            return {}
+
+        # Limpiar el prefijo "+" si solo hubo una fuente de interpretación LLM
+        if "_fuente_interpretacion" in datos_interpretados and datos_interpretados["_fuente_interpretacion"].startswith("+"):
+            datos_interpretados["_fuente_interpretacion"] = datos_interpretados["_fuente_interpretacion"][1:]
+
+
+        logger.info(f"Datos interpretados para AnalisisArchivo ID {analisis_archivo.id}: {datos_interpretados}")
+        return datos_interpretados
+
+
+interpretacion_service = InterpretacionService()
