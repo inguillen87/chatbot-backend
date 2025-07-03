@@ -305,4 +305,3 @@ if __name__ == '__main__':
     # Restaurar db.session si lo habíamos mockeado y existía antes
     if original_db_session:
         db.session = original_db_session
-
