@@ -322,3 +322,29 @@ def generar_link_google_maps(
         from urllib.parse import quote_plus
         return f"{base}{quote_plus(direccion)}"
     return ""
+
+def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
+    """Calcula la similaridad coseno entre dos vectores."""
+    import numpy as np
+
+    # Idealmente, registrar warnings/errors aquí si se usa un logger configurado
+    if not isinstance(vec1, list) or not isinstance(vec2, list):
+        # get_logger().warning("Cosine similarity: input is not a list.")
+        return 0.0
+    if not vec1 or not vec2 or len(vec1) != len(vec2):
+        # get_logger().warning(f"Cosine similarity: Invalid or mismatched length vectors. vec1_len={len(vec1)}, vec2_len={len(vec2)}")
+        return 0.0
+
+    vec1_np = np.array(vec1, dtype=np.float32)
+    vec2_np = np.array(vec2, dtype=np.float32)
+
+    dot_product = np.dot(vec1_np, vec2_np)
+    norm_vec1 = np.linalg.norm(vec1_np)
+    norm_vec2 = np.linalg.norm(vec2_np)
+
+    if norm_vec1 == 0 or norm_vec2 == 0:
+        # get_logger().warning(f"Cosine similarity: Zero norm vector. norm_vec1={norm_vec1}, norm_vec2={norm_vec2}")
+        return 0.0
+
+    similarity = dot_product / (norm_vec1 * norm_vec2)
+    return float(similarity) # Asegurar que devuelve float nativo

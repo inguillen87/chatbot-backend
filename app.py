@@ -37,6 +37,7 @@ from routes.reacciones import reacciones_bp
 from routes.carrito import carrito_bp
 from routes.cart import cart_bp
 from routes.productos import productos_bp
+from routes.ai import ai_bp # <<< NUEVA IMPORTACIÓN
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
 def my_on_connect_listener(dbapi_connection, connection_record):
