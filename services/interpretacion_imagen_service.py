@@ -306,4 +306,3 @@ if __name__ == '__main__':
     if original_db_session:
         db.session = original_db_session
 
-```
