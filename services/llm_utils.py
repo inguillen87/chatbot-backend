@@ -3,6 +3,28 @@ import logging
 import re
 from typing import Dict, List, Any
 
+# Intenta importar errores específicos de Cohere.
+# El nombre exacto puede variar según la versión de la librería 'cohere'.
+# Comunes son cohere.CohereError, cohere.APIError, cohere.CohereAPIError
+try:
+    import cohere
+    # Prioriza el error más específico si existe y luego el más general de la librería
+    if hasattr(cohere, 'CohereAPIError'): # Para versiones más antiguas
+        CohereAPIError = cohere.CohereAPIError
+    elif hasattr(cohere.errors, 'CohereAPIError'): # Estructura observada en el log
+         CohereAPIError = cohere.errors.CohereAPIError
+    elif hasattr(cohere, 'APIError'): # Para versiones más nuevas de la API v3 style
+        CohereAPIError = cohere.APIError
+    elif hasattr(cohere, 'CohereError'): # Error base de la librería
+        CohereAPIError = cohere.CohereError
+    else:
+        CohereAPIError = None # No se pudo encontrar un error específico de Cohere API
+except ImportError:
+    cohere = None
+    CohereAPIError = None
+    # robust_chat también dependería de 'cohere', así que el mock es importante si 'cohere' no está.
+
+
 try:
     from services.cohere_ai import robust_chat
 except ImportError:
@@ -170,8 +192,13 @@ def extract_complaint_details_llm(text: str) -> Dict[str, str]:
 
     except json.JSONDecodeError as e:
         logger.error(f"[LLM_COMPLAINT_EXTRACT] JSONDecodeError parsing LLM response: {e}. Response: '{response_content}' for text: '{text}'")
-    except Exception as e:
-        logger.error(f"[LLM_COMPLAINT_EXTRACT] Error in extract_complaint_details_llm: {e} for text: '{text}'")
+    except Exception as e: # Captura genérica al final
+        # Si hemos identificado un error específico de Cohere y es de ese tipo, loguearlo específicamente.
+        if CohereAPIError and isinstance(e, CohereAPIError):
+            logger.error(f"[LLM_COMPLAINT_EXTRACT] Cohere API Error in extract_complaint_details_llm: {e} (Type: {type(e)}). Text: '{text}'")
+        else:
+            # Log de error genérico para otros tipos de excepciones
+            logger.error(f"[LLM_COMPLAINT_EXTRACT] Generic Error in extract_complaint_details_llm: {e} (Type: {type(e)}). Text: '{text}'", exc_info=True) # exc_info=True para traceback
 
     return extracted_details
 
