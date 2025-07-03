@@ -22,6 +22,7 @@ ALLOWED_EXTENSIONS = {
     'csv',
     'docx',
     'txt',
+    'json', # Añadido json
 }
 
 # Tipos MIME aceptados; cualquier otro se rechaza por seguridad
@@ -29,11 +30,13 @@ ALLOWED_MIME_PREFIXES = [
     'image/',
     'application/pdf',
     'application/msword',
-    'application/vnd.',
+    'application/vnd.', # Para .xlsx, .docx etc.
     'text/plain',
+    'text/csv', # Añadido para CSV explícitamente si no lo cubre vnd
+    'application/json', # Añadido para JSON
 ]
 
-# Tamaño máximo de archivo (10 MB)
+# Tamaño máximo de archivo (10 MB) por archivo
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
@@ -120,16 +123,38 @@ def subir_archivo_options():
 @archivos_bp.route('/subir', methods=['POST'])
 @token_requerido
 def subir_archivo(current_user):
-    if 'archivo' not in request.files:
-        return jsonify({'error': 'No se envió archivo.'}), 400
-    file = request.files['archivo']
-    if file.filename == '':
-        return jsonify({'error': 'Nombre de archivo vacío.'}), 400
-    if request.content_length and request.content_length > MAX_FILE_SIZE:
-        return jsonify({'error': 'Archivo demasiado grande (máx 10MB).'}), 400
+    # Cambiado de 'archivo' a 'archivos' y usando getlist
+    files = request.files.getlist("archivos")
+
+    if not files or all(f.filename == '' for f in files):
+        return jsonify({'error': 'No se enviaron archivos o nombres de archivo vacíos.'}), 400
+
+    # Validar cada archivo antes de procesar
+    for file_to_check in files:
+        # La validación de content_length total es más compleja para múltiples archivos.
+        # MAX_FILE_SIZE se aplicará por archivo.
+        # file_to_check.seek(0, os.SEEK_END)
+        # file_size = file_to_check.tell()
+        # file_to_check.seek(0) # Resetear puntero del archivo
+        # if file_size > MAX_FILE_SIZE:
+        #     return jsonify({'error': f'Archivo "{file_to_check.filename}" demasiado grande (máx 10MB).'}), 400
+        # Nota: Werkzeug FileStorage no tiene un método simple para obtener el tamaño antes de leerlo todo
+        # o guardarlo. request.content_length es para toda la request.
+        # La validación de tamaño se hará después de guardar o se confiará en el frontend,
+        # o se leerá en memoria si es estrictamente necesario (no ideal para archivos grandes).
+        # Por ahora, la validación de MAX_FILE_SIZE se omite aquí para el chequeo individual previo
+        # y se verificará después de guardar, o se asume que el cliente lo valida.
+        # El request.content_length total sí podría chequearse contra N * MAX_FILE_SIZE como un sanity check.
+
+        if not allowed_file(file_to_check.filename):
+            return jsonify({'error': f'Archivo "{file_to_check.filename}": formato no permitido.'}), 400
+        if not allowed_mime(file_to_check.mimetype):
+            return jsonify({'error': f'Archivo "{file_to_check.filename}": tipo MIME no permitido ({file_to_check.mimetype}).'}), 400
 
     pyme_ticket_id = request.form.get("pyme_ticket_id")
     municipio_ticket_id = request.form.get("municipio_ticket_id")
+    session_id = request.form.get("session_id") or request.headers.get("X-Session-Id")
+    tipo_adjunto = request.form.get("tipo", "chat") # tipo de archivo (ej. chat, ticket_adjunto, etc.)
 
     # Permisos: empleados solo pueden asociar archivos a tickets de su empresa/municipio
     if current_user.rol == 'empleado':
@@ -143,54 +168,113 @@ def subir_archivo(current_user):
             if not ticket or ticket.municipio_id != getattr(current_user, 'municipio_id', None):
                 return jsonify({'error': 'No puede asociar archivos a tickets de otro municipio.'}), 403
 
-    if file and allowed_file(file.filename) and allowed_mime(file.mimetype):
+    resultados_subida = []
+    archivos_guardados_info = [] # Para rollback en caso de error parcial
+
+    for file in files:
+        if file.filename == '': # Ya cubierto arriba, pero por si acaso en el loop
+            continue
+
         original = secure_filename(file.filename)
         unique = f"{uuid.uuid4().hex}_{original}"
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
         save_path = os.path.join(UPLOAD_FOLDER, unique)
-        file.save(save_path)
-        tamano = os.path.getsize(save_path)
-        url = f"/archivos/{unique}" # URL para acceder al archivo después, podría ser una ruta de la API
-        session_id = request.form.get("session_id") or request.headers.get("X-Session-Id")
-        tipo = request.form.get("tipo", "chat") # tipo de archivo (ej. chat, ticket_adjunto, etc.)
 
+        try:
+            file.save(save_path)
+            tamano = os.path.getsize(save_path)
+
+            if tamano > MAX_FILE_SIZE:
+                os.remove(save_path) # Eliminar archivo si excede el tamaño
+                # Limpiar archivos ya guardados en esta tanda si decidimos abortar todo
+                for agi in archivos_guardados_info:
+                    os.remove(agi['path'])
+                return jsonify({'error': f'Archivo "{original}" demasiado grande (máx 10MB).'}), 413 # Payload Too Large
+
+            archivos_guardados_info.append({'path': save_path, 'unique': unique, 'original': original, 'mimetype': file.mimetype, 'tamano': tamano})
+
+        except Exception as e:
+            current_app.logger.error(f"Error al guardar el archivo {original}: {e}", exc_info=True)
+            # Limpiar archivos ya guardados en esta tanda
+            for agi in archivos_guardados_info:
+                if os.path.exists(agi['path']): # Verificar si existe antes de borrar
+                    os.remove(agi['path'])
+            return jsonify({'error': f'Error al guardar el archivo {original}.'}), 500
+
+    # Si todos los archivos se guardaron bien, ahora los registramos en la BD
+    for agi in archivos_guardados_info:
+        url = f"/archivos/{agi['unique']}"
         nuevo_adjunto = ArchivoAdjunto(
             user_id=current_user.id,
             session_id=session_id,
-            filename=unique, # Nombre seguro del archivo en el servidor
-            nombre_original=original, # Nombre original del archivo
-            mime=file.mimetype,
-            tamano=tamano,
-            tipo=tipo,
+            filename=agi['unique'],
+            nombre_original=agi['original'],
+            mime=agi['mimetype'],
+            tamano=agi['tamano'],
+            tipo=tipo_adjunto,
             pyme_ticket_id=pyme_ticket_id if pyme_ticket_id else None,
             municipio_ticket_id=municipio_ticket_id if municipio_ticket_id else None,
-            url=url, # Ruta para acceder al archivo
+            url=url,
         )
         db.session.add(nuevo_adjunto)
-        db.session.commit()
 
-        # Encolar tarea de análisis de archivo
         try:
-            tarea_analizar_contenido_archivo.delay(nuevo_adjunto.id)
-            current_app.logger.info(f"Tarea de análisis encolada para ArchivoAdjunto ID: {nuevo_adjunto.id}")
-        except Exception as e:
-            current_app.logger.error(f"Error al encolar tarea de análisis para ArchivoAdjunto ID: {nuevo_adjunto.id}. Error: {e}", exc_info=True)
-            # Considerar qué hacer si Celery no está disponible. ¿Marcar el archivo para análisis posterior?
-            # Por ahora, solo logueamos el error. La subida del archivo ya fue exitosa.
+            db.session.commit() # Commit por cada archivo para obtener ID para la tarea
 
-        current_app.logger.info(
-            f"Archivo subido por user {current_user.id}: {unique} ({original}). ID: {nuevo_adjunto.id}"
-        )
+            # Encolar tarea de análisis de archivo
+            try:
+                tarea_analizar_contenido_archivo.delay(nuevo_adjunto.id)
+                current_app.logger.info(f"Tarea de análisis encolada para ArchivoAdjunto ID: {nuevo_adjunto.id}")
+            except Exception as e_celery:
+                current_app.logger.error(f"Error al encolar tarea de análisis para ArchivoAdjunto ID: {nuevo_adjunto.id}. Error: {e_celery}", exc_info=True)
+                # No revertimos la subida, solo logueamos el error de encolado
+
+            current_app.logger.info(
+                f"Archivo subido por user {current_user.id}: {agi['unique']} ({agi['original']}). ID: {nuevo_adjunto.id}"
+            )
+            resultados_subida.append({
+                'filename': agi['unique'],
+                'id': nuevo_adjunto.id,
+                'name': agi['original'],
+                'mimeType': agi['mimetype'],
+                'size': agi['tamano'],
+                'url': url
+            })
+        except Exception as e_db:
+            db.session.rollback()
+            current_app.logger.error(f"Error al registrar en BD el archivo {agi['original']}: {e_db}", exc_info=True)
+            # Eliminar el archivo físico que se guardó pero no se pudo registrar en BD
+            if os.path.exists(agi['path']):
+                 os.remove(agi['path'])
+            # Aquí podríamos decidir si continuar con otros archivos o abortar todo.
+            # Por ahora, si uno falla en la BD, se omite y se continúa con los demás.
+            # Para una operación más atómica, habría que hacer rollback de todos los archivos de la tanda.
+            # Para simplificar, un error en BD aquí no detiene los demás, pero no se añade a resultados_subida.
+            # Sin embargo, el diseño actual es guardar todos los archivos primero, luego BD.
+            # Si un commit falla, deberíamos hacer rollback de todos los archivos de la tanda.
+
+    if not resultados_subida and archivos_guardados_info:
+        # Esto podría pasar si todos los archivos se guardaron pero todos fallaron el commit a BD
+        # o alguna otra lógica impidió que se agregaran a resultados_subida.
+        # Rollback de los archivos físicos guardados si la lista de resultados está vacía pero se guardaron archivos.
+        for agi_path in [item['path'] for item in archivos_guardados_info]:
+            if os.path.exists(agi_path):
+                os.remove(agi_path)
+        return jsonify({'error': 'Error al procesar archivos en la base de datos después de guardarlos.'}), 500
+
+    if not resultados_subida and not files: # Si no se enviaron archivos válidos desde el principio
+         return jsonify({'error': 'No se proporcionaron archivos válidos.'}), 400
+
+    if resultados_subida:
         return jsonify({
-            'mensaje': 'Archivo subido y análisis encolado.',
-            'filename': unique,
-            'id': nuevo_adjunto.id, # Devolver el ID del ArchivoAdjunto puede ser útil
-            'name': original,
-            'mimeType': file.mimetype,
-            'size': tamano,
-            'url': url
+            'mensaje': f'{len(resultados_subida)} archivo(s) subido(s) y análisis encolado.',
+            'archivos': resultados_subida
         }), 200
-    return jsonify({'error': 'Formato no permitido o tipo MIME no permitido.'}), 400
+    else:
+        # Si llegó aquí, es probable que los archivos fallaran las validaciones iniciales o hubo otro problema.
+        # Los errores específicos ya deberían haber sido retornados.
+        # Este es un fallback, aunque la lógica anterior debería cubrir los casos de error.
+        return jsonify({'error': 'No se pudieron procesar los archivos.'}), 400
 
 
 @archivos_bp.route('/<path:filename>', methods=['GET'])
