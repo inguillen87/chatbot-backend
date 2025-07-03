@@ -38,6 +38,7 @@ from routes.reacciones import reacciones_bp
 from routes.carrito import carrito_bp
 from routes.cart import cart_bp
 from routes.productos import productos_bp
+from routes.ai_templates import ai_templates_bp # <--- NUEVA IMPORTACIÓN
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
 def my_on_connect_listener(dbapi_connection, connection_record):
@@ -175,6 +176,7 @@ def create_app(config_class=Config):
     app.register_blueprint(notifications_bp)
     app.register_blueprint(municipal_bp)
     app.register_blueprint(reacciones_bp)
+    app.register_blueprint(ai_templates_bp) # <--- REGISTRO DEL NUEVO BLUEPRINT
 
     # --- Registro de comandos CLI ---
     register_commands(app)
