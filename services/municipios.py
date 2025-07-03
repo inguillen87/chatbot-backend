@@ -1069,8 +1069,66 @@ class ReclamoHandler(BaseMunicipioHandler):
         # Si la intención es iniciar un reclamo y no hay un estado de reclamo activo,
         # se limpia la memoria y se establece el primer estado para pedir la categoría.
         if intencion == "iniciar_reclamo" and not estado:
-            memoria.clear()
+            logger.info(f"[ReclamoHandler] Iniciando nuevo flujo de reclamo. Intención: {intencion}")
+            memoria.clear() # Limpiar cualquier estado anterior de reclamo
+
+            # --- INICIO: Pre-llenado desde datos de archivo interpretados ---
+            datos_archivo = self.context.get("datos_interpretados_archivo")
+            if datos_archivo and isinstance(datos_archivo, dict):
+                logger.info(f"[ReclamoHandler] Intentando pre-llenar memoria con datos de archivo: {datos_archivo}")
+
+                # Categoría
+                cat_archivo = datos_archivo.get("tipo_problema") or datos_archivo.get("categoria")
+                if cat_archivo:
+                    matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(cat_archivo)), None)
+                    if not matched_category: # Fuzzy match si no hay coincidencia exacta
+                        from difflib import get_close_matches
+                        close_matches = get_close_matches(normalizar_texto(cat_archivo), categorias_normalizadas, n=1, cutoff=0.7)
+                        if close_matches:
+                            idx = categorias_normalizadas.index(close_matches[0])
+                            matched_category = CATEGORIAS_RECLAMO[idx]
+                    if matched_category:
+                        memoria["categoria_reclamo"] = matched_category
+                        logger.info(f"[ReclamoHandler] Pre-llenado categoria_reclamo: {matched_category}")
+
+                # Dirección
+                dir_archivo = datos_archivo.get("direccion_problema") or datos_archivo.get("direccion")
+                if dir_archivo and direccion_es_valida(dir_archivo): # Usar la validación existente
+                    memoria["direccion_reclamo"] = dir_archivo.strip()
+                    logger.info(f"[ReclamoHandler] Pre-llenado direccion_reclamo: {dir_archivo.strip()}")
+
+                # Nombre
+                nombre_archivo = datos_archivo.get("nombre_ciudadano") or datos_archivo.get("nombre_cliente")
+                if nombre_archivo and len(nombre_archivo.split()) >= 1: # Al menos una palabra para nombre
+                    memoria["nombre_vecino"] = nombre_archivo.strip()
+                    logger.info(f"[ReclamoHandler] Pre-llenado nombre_vecino: {nombre_archivo.strip()}")
+
+                # Teléfono
+                tel_archivo = datos_archivo.get("telefono_ciudadano") or datos_archivo.get("telefono_cliente")
+                if tel_archivo and validar_telefono(tel_archivo): # Usar la validación existente
+                    memoria["telefono_vecino"] = tel_archivo.strip()
+                    logger.info(f"[ReclamoHandler] Pre-llenado telefono_vecino: {tel_archivo.strip()}")
+
+                # Email
+                email_archivo = datos_archivo.get("email_ciudadano") or datos_archivo.get("email_cliente")
+                if email_archivo and validar_email(email_archivo): # Usar la validación existente
+                    memoria["email_vecino"] = email_archivo.strip()
+                    logger.info(f"[ReclamoHandler] Pre-llenado email_vecino: {email_archivo.strip()}")
+
+                # Descripción
+                desc_archivo = datos_archivo.get("descripcion_corta_problema") or datos_archivo.get("descripcion_problema") or datos_archivo.get("detalles_adicionales")
+                if desc_archivo and len(desc_archivo) >= 10: # Validación básica de longitud
+                    memoria["descripcion_reclamo"] = desc_archivo.strip()
+                    logger.info(f"[ReclamoHandler] Pre-llenado descripcion_reclamo: {desc_archivo.strip()}")
+            # --- FIN: Pre-llenado ---
+
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+            # La lógica del while loop más abajo se encargará de pedir lo que falte.
+            # Si todo se pre-llenó, el loop avanzará rápidamente a la confirmación.
+            # No devolvemos una respuesta aquí directamente, dejamos que el loop decida el primer paso.
+            # Sin embargo, si después del pre-llenado, el primer estado (categoría) ya está cubierto,
+            # el loop avanzará. Si no, la lógica de pedir categoría se activará.
+
             sugeridas = sugerir_categorias_relevantes(pregunta_str)
             botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
             texto_respuesta = "Elegí la categoría del reclamo" if sugeridas else "¿Sobre qué categoría es tu reclamo?"
@@ -1511,6 +1569,45 @@ class ReclamoHandler(BaseMunicipioHandler):
                         tipo_ticket="municipio",
                         ticket_data=ticket_data,
                     )
+
+                    # --- INICIO: Asociación de archivo al ticket recién creado ---
+                    if ticket: # Asegurarse que el ticket se creó
+                        archivo_id_a_vincular = self.context.get("archivo_id_para_asociar")
+                        chat_session_uuid_actual = self.context.get("chat_session_uuid")
+                        user_id_actual_context = self.context.get("user_id") # El user_id del usuario logueado
+
+                        if archivo_id_a_vincular or chat_session_uuid_actual:
+                            from services.archivo_service import archivo_service # Importar aquí para evitar circularidad o al inicio del módulo
+
+                            criterio_asociacion = {}
+                            if archivo_id_a_vincular:
+                                criterio_asociacion["ids_archivos"] = [archivo_id_a_vincular]
+                                logger.info(f"[ReclamoHandler] Intentando asociar ArchivoAdjunto ID {archivo_id_a_vincular} a Ticket M-{ticket.nro_ticket}")
+                            elif chat_session_uuid_actual:
+                                criterio_asociacion["session_id"] = chat_session_uuid_actual
+                                if user_id_actual_context: # Es importante pasar el user_id si se asocia por session_id de un usuario logueado
+                                    criterio_asociacion["user_id"] = user_id_actual_context
+                                logger.info(f"[ReclamoHandler] Intentando asociar archivos por session_id {chat_session_uuid_actual} (User: {user_id_actual_context}) a Ticket M-{ticket.nro_ticket}")
+
+                            if criterio_asociacion:
+                                asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(
+                                    ticket_id=ticket.id,
+                                    tipo_ticket="municipio",
+                                    **criterio_asociacion
+                                )
+                                if asociacion_exitosa:
+                                    logger.info(f"[ReclamoHandler] Archivos asociados exitosamente a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
+                                    # Limpiar el ID del archivo del contexto para no re-usarlo accidentalmente
+                                    if self.context.get("contexto_municipio") and "archivo_id_para_asociar" in self.context["contexto_municipio"]:
+                                        del self.context["contexto_municipio"]["archivo_id_para_asociar"]
+                                else:
+                                    logger.warning(f"[ReclamoHandler] No se pudieron asociar archivos a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
+                        else:
+                            logger.info(f"[ReclamoHandler] No hay archivo_id específico ni session_id para asociar al Ticket M-{ticket.nro_ticket}.")
+                    else: # Ticket no se creó
+                        logger.error(f"[ReclamoHandler] No se pudo crear el ticket, no se intentará asociar archivos.")
+                    # --- FIN: Asociación de archivo ---
+
                     # Envío notificaciones si corresponde
                     telefono_e164 = formatear_telefono_e164(telefono_raw)
                     if telefono_e164:
@@ -3180,9 +3277,20 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
         "es_foto": received_payload.get("es_foto", False),
         "es_ubicacion": received_payload.get("es_ubicacion", False),
-        "es_archivo": received_payload.get("es_archivo", False),
+        "es_archivo": received_payload.get("es_archivo", False), # Este es un flag genérico
         "action": received_payload.get("action"),
+        # Nuevos datos del análisis de archivos pasados desde logic.py
+        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "chat_session_uuid": kwargs.get("chat_session_uuid"), # Asegurarse que chat_session_uuid también se pasa al contexto
     }
+
+    # Si hay datos interpretados, loguearlo para saber que llegaron al handler de municipio
+    if context.get("datos_interpretados_archivo"):
+        logger.info(f"[MUNICIPIOS_HANDLER] Recibidos datos interpretados de archivo: {context['datos_interpretados_archivo']}")
+    if context.get("archivo_id_para_asociar"):
+        logger.info(f"[MUNICIPIOS_HANDLER] Recibido archivo_id_para_asociar: {context['archivo_id_para_asociar']}")
+
 
     # Detectar comando por texto del botón
     comando_from_text = BOTONES_COMANDOS_MUNICIPIO.get(pregunta_str.strip())

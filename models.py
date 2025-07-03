@@ -271,6 +271,25 @@ class ArchivoAdjunto(db.Model):
     url = db.Column(db.String(255), nullable=False)
     fecha = db.Column(db.DateTime, default=datetime.utcnow)
 
+class AnalisisArchivo(db.Model):
+    __tablename__ = "analisis_archivo"
+    id = db.Column(db.Integer, primary_key=True)
+    archivo_adjunto_id = db.Column(db.Integer, db.ForeignKey("archivo_adjunto.id"), nullable=False, index=True)
+    resumen = db.Column(db.Text, nullable=True)
+    estado_analisis = db.Column(db.String(50), nullable=True, default="pendiente") # ej: pendiente, procesando, completado, error
+    fecha_analisis = db.Column(db.DateTime, nullable=True)
+    error_analisis = db.Column(db.Text, nullable=True) # Para guardar mensajes de error si falla el análisis
+
+    # Nuevos campos para análisis avanzado
+    texto_extraido = db.Column(db.Text, nullable=True) # Para OCR completo o texto de PDF
+    datos_estructurados = db.Column(db.JSON, nullable=True) # Para JSON con data extraída (items, cantidades, etc.)
+    tipo_analisis = db.Column(db.String(100), nullable=True) # ej: 'resumen_texto', 'vision_ocr', 'document_ai_form'
+
+    archivo_adjunto = db.relationship("ArchivoAdjunto", backref=db.backref("analisis", uselist=False, cascade="all, delete-orphan"))
+
+    def __repr__(self):
+        return f"<AnalisisArchivo id={self.id} para archivo_id={self.archivo_adjunto_id} estado='{self.estado_analisis}'>"
+
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)

@@ -272,19 +272,31 @@ def detalle_ticket(current_user, tipo, ticket_id):
 
     # Serializar archivos adjuntos
     archivos_adjuntos_data = []
-    if hasattr(ticket, 'archivos'): # Verificar si la relación 'archivos' existe
-        # Si la relación es lazy='dynamic', se necesita .all()
-        # Si es lazy='select' o similar, ticket.archivos ya es una lista
+    if hasattr(ticket, 'archivos'):
         archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
         for adj in archivos_list:
+            analisis_data = None
+            if adj.analisis: # adj.analisis es la relación one-to-one con AnalisisArchivo
+                analisis = adj.analisis
+                analisis_data = {
+                    "id": analisis.id,
+                    "resumen": analisis.resumen,
+                    "estado_analisis": analisis.estado_analisis,
+                    "fecha_analisis": analisis.fecha_analisis.isoformat() if analisis.fecha_analisis else None,
+                    "error_analisis": analisis.error_analisis,
+                    "texto_extraido": analisis.texto_extraido,
+                    "datos_estructurados": analisis.datos_estructurados, # Esto es JSON, el frontend lo parseará
+                    "tipo_analisis": analisis.tipo_analisis,
+                }
+
             archivos_adjuntos_data.append({
                 "id": adj.id,
-                "name": adj.nombre_original or adj.filename, # 'name' para consistencia con upload response
-                "mimeType": adj.mime, # 'mimeType' para consistencia
+                "name": adj.nombre_original or adj.filename,
+                "mimeType": adj.mime,
                 "size": adj.tamano,
-                "url": adj.url,
+                "url": adj.url, # URL para descargar/ver el archivo original
                 "fecha": adj.fecha.isoformat() if adj.fecha else None,
-                # Considerar si se necesita user_id o session_id aquí
+                "analisis": analisis_data # Incluir los datos del análisis
             })
 
     ticket_data = {

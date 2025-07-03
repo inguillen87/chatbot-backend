@@ -1044,6 +1044,43 @@ class PedidoHandler(BaseHandler):
                     db.session.commit()
                     logger.info(f"PymePedido {nuevo_pedido.nro_pedido} creado para user_id {self.context.get('cliente_id') or 'anon'}: {carrito}")
 
+                    # --- INICIO: Asociación de archivo al PymePedido recién creado ---
+                    if nuevo_pedido:
+                        archivo_id_a_vincular = self.context.get("archivo_id_para_asociar")
+                        chat_session_uuid_actual = self.context.get("chat_session_uuid")
+                        user_id_actual_context = self.context.get("cliente_id") # ID del ChatUser/User final
+
+                        if archivo_id_a_vincular or chat_session_uuid_actual:
+                            from services.archivo_service import archivo_service # Importar aquí o al inicio del módulo
+
+                            criterio_asociacion = {}
+                            if archivo_id_a_vincular:
+                                criterio_asociacion["ids_archivos"] = [archivo_id_a_vincular]
+                                logger.info(f"[PedidoHandler] Intentando asociar ArchivoAdjunto ID {archivo_id_a_vincular} a PymePedido {nuevo_pedido.nro_pedido}")
+                            elif chat_session_uuid_actual:
+                                criterio_asociacion["session_id"] = chat_session_uuid_actual
+                                if user_id_actual_context:
+                                    criterio_asociacion["user_id"] = user_id_actual_context
+                                logger.info(f"[PedidoHandler] Intentando asociar archivos por session_id {chat_session_uuid_actual} (User: {user_id_actual_context}) a PymePedido {nuevo_pedido.nro_pedido}")
+
+                            if criterio_asociacion:
+                                asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(
+                                    ticket_id=nuevo_pedido.id,
+                                    tipo_ticket="pyme", # Indicar que es para PymePedido
+                                    **criterio_asociacion
+                                )
+                                if asociacion_exitosa:
+                                    logger.info(f"[PedidoHandler] Archivos asociados exitosamente a PymePedido {nuevo_pedido.nro_pedido} usando: {criterio_asociacion}")
+                                    if self.context.get(CONTEXTO_PYME) and "archivo_id_para_asociar" in self.context[CONTEXTO_PYME]:
+                                        del self.context[CONTEXTO_PYME]["archivo_id_para_asociar"]
+                                else:
+                                    logger.warning(f"[PedidoHandler] No se pudieron asociar archivos a PymePedido {nuevo_pedido.nro_pedido} usando: {criterio_asociacion}")
+                        else:
+                            logger.info(f"[PedidoHandler] No hay archivo_id específico ni session_id para asociar al PymePedido {nuevo_pedido.nro_pedido}.")
+                    else:
+                        logger.error(f"[PedidoHandler] No se pudo crear el PymePedido, no se intentará asociar archivos.")
+                    # --- FIN: Asociación de archivo ---
+
                     # Limpiar contexto de pedido
                     ctx.update({
                         "estado_conversacion": serialize_state(PymeConversationState.PEDIDO_FINALIZADO),
@@ -1115,26 +1152,105 @@ class PedidoHandler(BaseHandler):
             ctx.update({
                 "estado_conversacion": serialize_state(PymeConversationState.ESPERANDO_PRODUCTO),
                 "reintentos": 0,
-                "carrito": []
+                "carrito": [] # Inicializar carrito vacío
             });
-            flask_session[CONTEXTO_PYME] = ctx
-            # carrito ya está inicializado como [] arriba por ctx.clear() y re-set
-            items_ini = extraer_productos(pregunta)
-            msg_ini = ""
-            sug_ini_tupla = ("", []) # Inicializar como tupla (texto_vacio, lista_botones_vacia)
+            # No guardar en flask_session[CONTEXTO_PYME] = ctx todavía, se hace después de procesar archivo o pregunta.
 
-            if items_ini:
-                current_building_cart = [] 
-                current_building_cart.extend(items_ini)
-                for it in items_ini: add_preference("productos", it["nombre"])
-                ctx["carrito"] = current_building_cart
-                flask_session[CONTEXTO_PYME] = ctx 
+            current_building_cart = ctx["carrito"] # Referencia al carrito del contexto
+            items_ini = [] # Items que se logran identificar y agregar en este primer paso (de archivo o de pregunta)
+            msg_ini = "" # Mensaje inicial que puede venir de procesar el archivo
+            sug_ini_tupla = ("", [])
 
-                msg_ini = f"¡Entendido! Agregué a tu pedido:\n{formatear_carrito(current_building_cart, self.context)}\n\n" # Pasar context a formatear_carrito
-                sug_ini_tupla = self._sugerir_productos_complementarios(items_ini[-1]['nombre'], current_building_cart, items_ini)
+            # --- INICIO: Pre-llenado desde datos de archivo interpretados para PYME ---
+            datos_archivo = self.context.get("datos_interpretados_archivo")
+            if datos_archivo and isinstance(datos_archivo, dict):
+                logger.info(f"[PedidoHandler] Intentando pre-llenar pedido con datos de archivo: {datos_archivo}")
+
+                if datos_archivo.get("nombre_cliente"):
+                    ctx["nombre_cliente"] = str(datos_archivo["nombre_cliente"]).strip()
+                    logger.info(f"[PedidoHandler] Pre-llenado nombre_cliente: {ctx['nombre_cliente']}")
+                if datos_archivo.get("telefono_cliente") and validar_telefono(str(datos_archivo["telefono_cliente"])):
+                    ctx["telefono_cliente"] = validar_telefono(str(datos_archivo["telefono_cliente"])) # Usa el validado/formateado
+                    logger.info(f"[PedidoHandler] Pre-llenado telefono_cliente: {ctx['telefono_cliente']}")
+                if datos_archivo.get("email_cliente") and validar_email(str(datos_archivo["email_cliente"])):
+                    ctx["email_cliente"] = str(datos_archivo["email_cliente"]).strip()
+                    logger.info(f"[PedidoHandler] Pre-llenado email_cliente: {ctx['email_cliente']}")
+                if datos_archivo.get("direccion_entrega"): # El interpretador usa "direccion_entrega"
+                    ctx["direccion_cliente"] = str(datos_archivo["direccion_entrega"]).strip() # Guardar como "direccion_cliente" en el contexto
+                    logger.info(f"[PedidoHandler] Pre-llenado direccion_cliente (desde direccion_entrega): {ctx['direccion_cliente']}")
+
+                items_del_archivo = datos_archivo.get("items_pedido")
+                if isinstance(items_del_archivo, list) and items_del_archivo:
+                    logger.info(f"[PedidoHandler] Items encontrados en archivo para pre-llenar carrito: {items_del_archivo}")
+                    for item_arch in items_del_archivo:
+                        nombre_prod_arch = item_arch.get("nombre")
+                        cant_prod_arch = item_arch.get("cantidad", 1)
+                        unidad_prod_arch = item_arch.get("unidad", "")
+                        if not nombre_prod_arch: continue
+
+                        resultados_qdrant = buscar_catalogo_qdrant(user_id=self.context.get("user_id"), pregunta=nombre_prod_arch, limite=1, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME))
+
+                        item_para_carrito = { # Default si no se encuentra en catálogo
+                            "nombre": nombre_prod_arch, "cantidad_pedido": cant_prod_arch,
+                            "unidad_pedido_usuario": unidad_prod_arch, "precio_unitario_catalogo": 0.0,
+                            "precio_str_catalogo": "A confirmar"
+                        }
+                        if resultados_qdrant:
+                            payload_q = getattr(resultados_qdrant[0], "payload", {})
+                            if payload_q:
+                                item_para_carrito.update({
+                                    "nombre": payload_q.get("nombre", nombre_prod_arch),
+                                    "precio_unitario_catalogo": payload_q.get("precio_float", 0.0),
+                                    "unidad_original_catalogo": payload_q.get("unidad_original", ""),
+                                    "unidad_descripcion_catalogo": payload_q.get("unidad_descripcion", ""),
+                                    "cantidad_empaque_catalogo": payload_q.get("cantidad_empaque"),
+                                    "precio_str_catalogo": payload_q.get("precio_str", "A confirmar")
+                                })
+                        current_building_cart.append(item_para_carrito)
+                        items_ini.append(item_para_carrito) # items_ini se usa para generar sugerencias
+                        add_preference("productos", item_para_carrito["nombre"])
+
+                    if items_ini: # Si se agregaron items del archivo
+                        msg_ini = f"Tomé estos productos del archivo que subiste:\n{formatear_carrito(current_building_cart, self.context)}\n\n"
+            # --- FIN: Pre-llenado ---
+
+            # Si no se pre-llenó nada del archivo o el archivo no tenía items, procesar la pregunta actual del usuario
+            if not items_ini: # Si el carrito sigue vacío después de procesar (o no hubo) archivo
+                items_extraidos_pregunta = extraer_productos(pregunta) # `pregunta` es el texto del usuario
+                if items_extraidos_pregunta:
+                    for item_ext_preg in items_extraidos_pregunta:
+                        resultados_qdrant_preg = buscar_catalogo_qdrant(user_id=self.context.get("user_id"), pregunta=item_ext_preg["nombre"], limite=1, coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME))
+                        item_carrito_preg = {
+                             "nombre": item_ext_preg["nombre"], "cantidad_pedido": item_ext_preg.get("cantidad",1),
+                             "unidad_pedido_usuario": item_ext_preg.get("unidad",""), "precio_unitario_catalogo": 0.0,
+                             "precio_str_catalogo": "A confirmar"
+                        }
+                        if resultados_qdrant_preg:
+                            payload_q_preg = getattr(resultados_qdrant_preg[0], "payload", {})
+                            item_carrito_preg.update({
+                                "nombre": payload_q_preg.get("nombre", item_ext_preg["nombre"]),
+                                "precio_unitario_catalogo": payload_q_preg.get("precio_float",0.0),
+                                "unidad_original_catalogo": payload_q_preg.get("unidad_original",""),
+                                "unidad_descripcion_catalogo": payload_q_preg.get("unidad_descripcion",""),
+                                "cantidad_empaque_catalogo": payload_q_preg.get("cantidad_empaque"),
+                                "precio_str_catalogo": payload_q_preg.get("precio_str","A confirmar")
+                            })
+                        current_building_cart.append(item_carrito_preg)
+                        items_ini.append(item_carrito_preg) # items_ini se usa para generar sugerencias
+                        add_preference("productos", item_carrito_preg["nombre"])
+                    if items_ini: # Si se agregaron items de la pregunta del usuario
+                         msg_ini = f"¡Entendido! Agregué a tu pedido:\n{formatear_carrito(current_building_cart, self.context)}\n\n"
+
+            # Lógica de sugerencias y ofertas, se mantiene
+            if items_ini: # Solo si se agregaron items (del archivo o de la pregunta)
+                 sug_ini_tupla = self._sugerir_productos_complementarios(items_ini[-1]['nombre'], current_building_cart, items_ini)
             
             ofertas_hdl = OfertasHandler(self.context)
-            pregunta_para_ofertas = pregunta if not items_ini and len(pregunta.split()) > 2 else "ofertas"
+            # Si msg_ini ya tiene contenido (de archivo o pregunta), no usar la pregunta original para ofertas, sino una genérica.
+            pregunta_para_ofertas = "ofertas" if msg_ini else pregunta
+
+            # Actualizar flask_session ahora que ctx está completamente formado para este turno
+            flask_session[CONTEXTO_PYME] = ctx
             ofertas_dict = ofertas_hdl.handle(pregunta_para_ofertas) 
             msg_ofertas = ""
             if "No tenemos ofertas especiales" not in ofertas_dict.get("respuesta","") and "Inicia sesión" not in ofertas_dict.get("respuesta",""):
@@ -1467,8 +1583,17 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "cliente_id": getattr(viewer_user, "id", None), "anon_id": anon_id,
         "rubro_id": getattr(rubro_obj, "id", None) if rubro_obj else (getattr(owner_user.rubro, "id", None) if owner_user and hasattr(owner_user, "rubro") else None),
         "coleccion_qdrant": coleccion_qdrant_ctx,
-        "chat_session_uuid": chat_session_uuid
+        "chat_session_uuid": chat_session_uuid,
+        # Nuevos datos del análisis de archivos pasados desde logic.py
+        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
     }
+
+    # Si hay datos interpretados, loguearlo para saber que llegaron al handler de pyme
+    if context.get("datos_interpretados_archivo"):
+        logger.info(f"[PYMES_HANDLER] Recibidos datos interpretados de archivo: {context['datos_interpretados_archivo']}")
+    if context.get("archivo_id_para_asociar"):
+        logger.info(f"[PYMES_HANDLER] Recibido archivo_id_para_asociar: {context['archivo_id_para_asociar']}")
     
     estado_conversacion_actual_str = context[CONTEXTO_PYME].get("estado_conversacion")
     estado_conversacion_actual = deserialize_state(estado_conversacion_actual_str)

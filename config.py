@@ -76,3 +76,19 @@ class Config:
 
     # Cantidad de tickets que se muestran por página en el panel
     TICKETS_PER_PAGE_DEFAULT = int(os.getenv("TICKETS_PER_PAGE_DEFAULT", "50"))
+
+    # --- CONFIGURACIÓN DE GOOGLE CLOUD AI SERVICES ---
+    GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", None)
+    # Para Document AI
+    GOOGLE_DOCAI_LOCATION = os.getenv("GOOGLE_DOCAI_LOCATION", "us") # Default a 'us' si no se especifica
+    GOOGLE_DOCAI_PROCESSOR_ID = os.getenv("GOOGLE_DOCAI_PROCESSOR_ID", None) # ID del procesador de Document AI
+    # GOOGLE_DOCAI_FORM_PARSER_PROCESSOR_ID = os.getenv("GOOGLE_DOCAI_FORM_PARSER_PROCESSOR_ID", None) # Específico para Form Parser
+    # GOOGLE_DOCAI_OCR_PROCESSOR_ID = os.getenv("GOOGLE_DOCAI_OCR_PROCESSOR_ID", None) # Específico para OCR
+
+    # Para Vision AI (actualmente usa credenciales de entorno, pero podría tener configs específicas si es necesario)
+    # GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY", None) # No se usa si se usan ADC
+
+    # Path al archivo JSON de credenciales de cuenta de servicio de Google Cloud
+    # Si está seteado GOOGLE_APPLICATION_CREDENTIALS en el entorno, las librerías lo usan automáticamente.
+    # Esta variable es más para referencia o si se necesita cargar manualmente en algún punto.
+    GOOGLE_APPLICATION_CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", None)
