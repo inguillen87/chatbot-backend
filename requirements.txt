@@ -1,0 +1,31 @@
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.7
+Flask-Cors==4.0.1
+Flask-Session==0.6.0
+SQLAlchemy==2.0.23
+psycopg2-binary==2.9.9 # Para PostgreSQL, si se usa en producción
+gunicorn==22.0.0 # Para producción
+python-dotenv==1.0.0
+requests==2.31.0 # Añadido para descarga de imágenes
+google-cloud-vision==3.4.0 # Añadido para Google Vision API
+google-cloud-documentai==2.20.0 # Ya se infiere su uso por google_docai.py
+google-auth==2.23.4 # Dependencia común para servicios Google
+cohere==4.37 # Ya se infiere su uso por cohere_ai.py
+pandas==2.0.3 # Usado en google_docai.py
+spacy==3.7.2 # Usado en google_docai.py
+# Considerar añadir un modelo de spacy específico si es necesario, ej: es_core_news_sm
+# numpy es dependencia de pandas y spacy, se instalará automáticamente.
+# werkzeug es dependencia de Flask.
+# itsdangerous es dependencia de Flask.
+# click es dependencia de Flask.
+# Jinja2 es dependencia de Flask.
+# MarkupSafe es dependencia de Jinja2.
+# alembic es dependencia de Flask-Migrate.
+# Mako es dependencia de Alembic.
+# python-editor es dependencia de Alembic.
+# greenlet es dependencia de SQLAlchemy con async.
+# blinker es dependencia de Flask y SQLAlchemy events.
+# PyJWT es dependencia de Flask-Session si se usa JWT.
+# Pillow es usado en el script de prueba de google_vision_service.py, no es core pero útil para dev.
+Pillow==10.1.0
