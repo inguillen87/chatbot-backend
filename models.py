@@ -146,8 +146,8 @@ class MunicipioTicket(db.Model):
     # archivo_url = db.Column(db.String(255), nullable=True) # Campo obsoleto, se usará la relación
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
     archivos = db.relationship(
-        'ArchivoAdjunto', 
-        foreign_keys='[ArchivoAdjunto.municipio_ticket_id]', 
+        'ArchivoAdjunto',
+        foreign_keys='[ArchivoAdjunto.municipio_ticket_id]',
         backref='municipio_ticket_ref', # Usar un backref específico si PymeTicket también tiene uno
         lazy='dynamic', # O 'select'/'joined' según la necesidad de carga
         cascade="all, delete-orphan" # Opcional: si se borra el ticket, borrar sus archivos
