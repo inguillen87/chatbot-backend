@@ -3,7 +3,7 @@ from datetime import datetime
 import os # For path joining
 import requests # For downloading files if URLs are external
 
-from app import celery_app # Assuming celery_app is initialized in your main app module
+from celery_utils import celery_app # Importar desde el nuevo módulo
 from extensions import db
 from models import ArchivoAdjunto, AnalisisArchivo, User # User might not be directly needed here
 from services.llm_utils import analyze_image_with_google_vision_ocr, analyze_document_with_google_document_ai, robust_chat

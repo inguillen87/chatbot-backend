@@ -92,3 +92,20 @@ class Config:
     # Si está seteado GOOGLE_APPLICATION_CREDENTIALS en el entorno, las librerías lo usan automáticamente.
     # Esta variable es más para referencia o si se necesita cargar manualmente en algún punto.
     GOOGLE_APPLICATION_CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", None)
+
+    # --- CONFIGURACIÓN DE CELERY ---
+    # URL del broker (ej. Redis, RabbitMQ). Default a Redis local para desarrollo.
+    CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+    # URL del backend de resultados (ej. Redis, base de datos). Default a Redis local.
+    CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
+    # Opcional: un diccionario con más configuraciones de Celery que se pasará a celery_app.conf.update()
+    # CELERY_CONFIG = {
+    #     "task_serializer": "json",
+    #     "result_serializer": "json",
+    #     "accept_content": ["json"],
+    #     "timezone": "America/Argentina/Buenos_Aires",
+    #     "enable_utc": True,
+    #     "worker_concurrency": 2, # Ejemplo: limitar concurrencia
+    #     # Para autodiscover de tareas si no se hace explícitamente en init_celery
+    #     # "imports": ("services.analisis_archivo_service",)
+    # }

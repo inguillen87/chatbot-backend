@@ -12,6 +12,7 @@ session_ext = Session()
 
 from config import Config
 from extensions import db, migrate
+from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
 from models import User
 
 # Importación de todas tus rutas (Blueprints)
@@ -76,6 +77,7 @@ def create_app(config_class=Config):
     # --- Inicialización de Extensiones ---
     db.init_app(app)
     migrate.init_app(app, db)
+    init_celery(app) # Inicializar Celery con la app Flask
 
     # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
     with app.app_context():
