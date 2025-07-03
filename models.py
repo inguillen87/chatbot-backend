@@ -421,4 +421,23 @@ class ClienteNota(db.Model):
     def __repr__(self):
         return f"<ClienteNota id={self.id} para_cliente_id={self.cliente_user_id} por_creador_id={self.creada_por_user_id}>"
 
+
+class PlantillasRespuesta(db.Model):
+    __tablename__ = "plantillas_respuesta"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    embedding = db.Column(db.JSON, nullable=True) # Para almacenar el vector de embedding de Cohere
+    keywords = db.Column(db.JSON, nullable=True) # Para almacenar lista de keywords ej: ["pago", "factura"]
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    category = db.Column(db.String(100), nullable=True)
+    # Campos de auditoría
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Relación opcional con User (quién creó/modificó la plantilla), si se necesitara en el futuro.
+    # user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+
+    def __repr__(self):
+        return f"<PlantillasRespuesta id={self.id} name='{self.name}'>"
+
 print("✅ models.py fue importado con éxito y contiene modelos.")
