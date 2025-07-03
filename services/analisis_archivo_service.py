@@ -20,21 +20,47 @@ def _get_or_create_analisis_archivo(session, archivo_adjunto_id: int) -> Analisi
         # Commit will be handled by the task context or calling function
     return analisis
 
+# En services/analisis_archivo_service.py
+# ... otras importaciones ...
+from services.interpretacion_imagen_service import interpretar_imagen_reclamo
+from services.logic import es_rubro_publico # Para determinar contexto municipal
+# ...
+
+# ... _get_or_create_analisis_archivo ...
+
 @celery_app.task(name='tasks.analizar_contenido_archivo', bind=True, max_retries=3, default_retry_delay=60)
 def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
     logger.info(f"Iniciando tarea de análisis para ArchivoAdjunto ID: {archivo_adjunto_id} (Intento: {self.request.retries + 1})")
     
     session = db.session # Obtain session from Flask-SQLAlchemy
     archivo_adjunto = session.query(ArchivoAdjunto).get(archivo_adjunto_id)
+    user_obj = session.query(User).get(archivo_adjunto.user_id) if archivo_adjunto else None
+
 
     if not archivo_adjunto:
         logger.error(f"No se encontró ArchivoAdjunto con ID: {archivo_adjunto_id}. No se reintentará.")
         return
 
+    if not user_obj: # Necesitamos el usuario para determinar el contexto
+        logger.error(f"No se encontró User con ID: {archivo_adjunto.user_id} para ArchivoAdjunto ID: {archivo_adjunto_id}. No se puede determinar contexto.")
+        # Marcar análisis como error o pendiente de contexto
+        analisis_temp = _get_or_create_analisis_archivo(session, archivo_adjunto_id)
+        analisis_temp.estado_analisis = "error"
+        analisis_temp.error_analisis = "Usuario no encontrado, no se pudo determinar contexto para análisis de imagen."
+        analisis_temp.fecha_analisis = datetime.utcnow()
+        session.commit()
+        session.remove()
+        return
+
     try:
         analisis_archivo = _get_or_create_analisis_archivo(session, archivo_adjunto_id)
+        if analisis_archivo.estado_analisis == "completado" and analisis_archivo.tipo_analisis == 'reclamo_vision_llm_v1':
+            logger.info(f"Análisis de reclamo para ArchivoAdjunto ID: {archivo_adjunto_id} ya está completado. Saltando.")
+            session.remove()
+            return
+
         analisis_archivo.estado_analisis = "procesando"
-        session.commit()
+        session.commit() # Commit temprano del estado "procesando"
 
         mime_type = archivo_adjunto.mime.lower() if archivo_adjunto.mime else ''
         
@@ -44,16 +70,29 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
         docai_location = current_app.config.get('GOOGLE_DOCAI_LOCATION')
         docai_processor_id = current_app.config.get('GOOGLE_DOCAI_PROCESSOR_ID') # General purpose Form Parser or OCR
 
-        if mime_type.startswith("image/"):
-            logger.info(f"Archivo {archivo_adjunto_id} es una imagen ({mime_type}). Intentando OCR con Vision API.")
-            analizar_imagen_con_vision_ocr_service(session, analisis_archivo.id)
+        if mime_type.startswith("image/") and es_contexto_municipal:
+            logger.info(f"Archivo {archivo_adjunto_id} es una imagen en contexto municipal. Iniciando análisis de reclamo.")
+            resultado_interpretacion = interpretar_imagen_reclamo(archivo_adjunto, user_obj)
+
+            if resultado_interpretacion.get('error'):
+                logger.error(f"Error en interpretar_imagen_reclamo para {archivo_adjunto_id}: {resultado_interpretacion['error']}")
+            else:
+                logger.info(f"Interpretación de reclamo completada para {archivo_adjunto_id}. ¿Es reclamo?: {resultado_interpretacion.get('es_reclamo')}")
+            # El estado final (completado/error) es manejado por interpretar_imagen_reclamo
+
+        elif mime_type.startswith("image/"):
+            logger.info(f"Archivo {archivo_adjunto_id} es una imagen ({mime_type}) en contexto no municipal. Realizando OCR simple.")
+            _realizar_analisis_ocr_simple(session, analisis_archivo.id)
 
         elif mime_type == "application/pdf":
+            project_id = current_app.config.get('GOOGLE_PROJECT_ID')
+            docai_location = current_app.config.get('GOOGLE_DOCAI_LOCATION')
+            docai_processor_id = current_app.config.get('GOOGLE_DOCAI_PROCESSOR_ID')
             if project_id and docai_location and docai_processor_id:
                 logger.info(f"Archivo {archivo_adjunto_id} es un PDF. Intentando análisis con Document AI.")
                 analizar_pdf_con_document_ai_service(session, analisis_archivo.id, project_id, docai_location, docai_processor_id)
             else:
-                logger.warning(f"Configuración de Document AI incompleta (PROJECT_ID, LOCATION, PROCESSOR_ID). Saltando análisis de PDF para archivo {archivo_adjunto_id}.")
+                logger.warning(f"Configuración de Document AI incompleta. Saltando PDF para archivo {archivo_adjunto_id}.")
                 analisis_archivo.estado_analisis = "omitido_config"
                 analisis_archivo.tipo_analisis = "pdf_config_faltante"
         
@@ -64,10 +103,6 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
                 try:
                     file_content_text = file_content_bytes.decode('utf-8', errors='replace')
                     analisis_archivo.texto_extraido = file_content_text
-                    # Optional: Resumir texto plano con LLM
-                    # prompt = f"Proporciona un resumen conciso del siguiente texto:\n\n{file_content_text[:10000]}"
-                    # resumen = robust_chat(message=prompt, user_id=archivo_adjunto.user_id) # Assuming robust_chat can take user_id
-                    # analisis_archivo.resumen = resumen
                     analisis_archivo.tipo_analisis = "texto_directo"
                 except UnicodeDecodeError:
                     logger.error(f"Error de decodificación para archivo de texto ID: {archivo_adjunto_id}")
@@ -81,12 +116,17 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
             analisis_archivo.estado_analisis = "no_aplicable"
             analisis_archivo.tipo_analisis = "desconocido"
 
-        if analisis_archivo.estado_analisis not in ["error", "procesando", "omitido_config"]:
+        if analisis_archivo.estado_analisis not in ["error", "procesando", "omitido_config", "completado"]:
              analisis_archivo.estado_analisis = "completado"
 
-        analisis_archivo.fecha_analisis = datetime.utcnow()
-        session.commit()
-        logger.info(f"Análisis finalizado para ArchivoAdjunto ID: {archivo_adjunto_id}. Estado: {analisis_archivo.estado_analisis}")
+        if analisis_archivo.tipo_analisis != 'reclamo_vision_llm_v1' and analisis_archivo.estado_analisis == "completado":
+            analisis_archivo.fecha_analisis = datetime.utcnow()
+            session.commit()
+        elif analisis_archivo.estado_analisis == "error" or analisis_archivo.estado_analisis == "omitido_config" or analisis_archivo.estado_analisis == "no_aplicable":
+            analisis_archivo.fecha_analisis = datetime.utcnow()
+            session.commit()
+
+        logger.info(f"Análisis (o delegación) finalizado para ArchivoAdjunto ID: {archivo_adjunto_id}. Estado final en DB: {analisis_archivo.estado_analisis}")
 
     except requests.exceptions.RequestException as exc: 
         logger.error(f"Error de red en tarea de análisis para ArchivoAdjunto ID: {archivo_adjunto_id}: {exc}", exc_info=True)
@@ -95,7 +135,8 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"Máximos reintentos alcanzados para ArchivoAdjunto ID: {archivo_adjunto_id} por error de red.")
-            if 'analisis_archivo' in locals() and analisis_archivo: # Check if analisis_archivo exists
+            analisis_archivo = session.query(AnalisisArchivo).filter_by(archivo_adjunto_id=archivo_adjunto_id).first()
+            if analisis_archivo:
                 analisis_archivo.estado_analisis = "error"
                 analisis_archivo.error_analisis = f"Error de red persistente: {str(exc)}"
                 analisis_archivo.fecha_analisis = datetime.utcnow()
@@ -103,28 +144,30 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
     except Exception as e:
         logger.error(f"Error crítico en la tarea de análisis para ArchivoAdjunto ID: {archivo_adjunto_id}: {e}", exc_info=True)
         session.rollback()
-        if 'analisis_archivo' in locals() and analisis_archivo: # Check if analisis_archivo exists
+        analisis_archivo = session.query(AnalisisArchivo).filter_by(archivo_adjunto_id=archivo_adjunto_id).first()
+        if analisis_archivo:
             analisis_archivo.estado_analisis = "error"
             analisis_archivo.error_analisis = str(e)
             analisis_archivo.fecha_analisis = datetime.utcnow()
             session.commit()
     finally:
-        session.remove() # Ensure session is closed, important for Celery tasks
+        session.remove()
 
 
-def analizar_imagen_con_vision_ocr_service(session, analisis_archivo_id: int):
+# Nueva función para OCR simple, separada de la lógica de reclamos
+def _realizar_analisis_ocr_simple(session, analisis_archivo_id: int):
     analisis_archivo = session.query(AnalisisArchivo).get(analisis_archivo_id)
     if not analisis_archivo or not analisis_archivo.archivo_adjunto:
-        logger.error(f"No se encontró AnalisisArchivo o ArchivoAdjunto asociado para AnalisisArchivo ID: {analisis_archivo_id}")
+        logger.error(f"No se encontró AnalisisArchivo o ArchivoAdjunto asociado para OCR simple. ID: {analisis_archivo_id}")
         return
 
     archivo_adjunto = analisis_archivo.archivo_adjunto
-    logger.info(f"Iniciando OCR con Vision para ArchivoAdjunto ID: {archivo_adjunto.id}, Análisis ID: {analisis_archivo.id}")
+    logger.info(f"Iniciando OCR simple con Vision para ArchivoAdjunto ID: {archivo_adjunto.id}, Análisis ID: {analisis_archivo.id}")
 
     try:
         image_content = obtener_contenido_archivo(archivo_adjunto)
         if not image_content:
-            raise ValueError("No se pudo obtener el contenido de la imagen.")
+            raise ValueError("No se pudo obtener el contenido de la imagen para OCR simple.")
 
         texto_extraido_ocr = analyze_image_with_google_vision_ocr(image_content) 
 
@@ -141,7 +184,7 @@ def analizar_imagen_con_vision_ocr_service(session, analisis_archivo_id: int):
         
         analisis_archivo.estado_analisis = "completado"
     except Exception as e:
-        logger.error(f"Error durante el análisis OCR de la imagen ID {archivo_adjunto.id}: {e}", exc_info=True)
+        logger.error(f"Error durante OCR simple de imagen ID {archivo_adjunto.id}: {e}", exc_info=True)
         analisis_archivo.estado_analisis = "error"
         analisis_archivo.error_analisis = f"Error en OCR Vision: {str(e)}"
         analisis_archivo.tipo_analisis = "vision_ocr_error"
