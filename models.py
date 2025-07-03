@@ -143,8 +143,15 @@ class MunicipioTicket(db.Model):
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
     fecha = db.Column(db.DateTime, default=get_local_now)
-    archivo_url = db.Column(db.String(255), nullable=True)
+    # archivo_url = db.Column(db.String(255), nullable=True) # Campo obsoleto, se usará la relación
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
+    archivos = db.relationship(
+        'ArchivoAdjunto', 
+        foreign_keys='[ArchivoAdjunto.municipio_ticket_id]', 
+        backref='municipio_ticket_ref', # Usar un backref específico si PymeTicket también tiene uno
+        lazy='dynamic', # O 'select'/'joined' según la necesidad de carga
+        cascade="all, delete-orphan" # Opcional: si se borra el ticket, borrar sus archivos
+    )
 
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"

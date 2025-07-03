@@ -270,6 +270,23 @@ def detalle_ticket(current_user, tipo, ticket_id):
         for c in ticket.comentarios
     ]
 
+    # Serializar archivos adjuntos
+    archivos_adjuntos_data = []
+    if hasattr(ticket, 'archivos'): # Verificar si la relación 'archivos' existe
+        # Si la relación es lazy='dynamic', se necesita .all()
+        # Si es lazy='select' o similar, ticket.archivos ya es una lista
+        archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
+        for adj in archivos_list:
+            archivos_adjuntos_data.append({
+                "id": adj.id,
+                "name": adj.nombre_original or adj.filename, # 'name' para consistencia con upload response
+                "mimeType": adj.mime, # 'mimeType' para consistencia
+                "size": adj.tamano,
+                "url": adj.url,
+                "fecha": adj.fecha.isoformat() if adj.fecha else None,
+                # Considerar si se necesita user_id o session_id aquí
+            })
+
     ticket_data = {
         "id": ticket.id,
         "tipo": tipo,
@@ -285,7 +302,8 @@ def detalle_ticket(current_user, tipo, ticket_id):
         "telefono": tel,
         "email": email,
         "direccion": direccion,
-        "archivo_url": getattr(ticket, 'archivo_url', None),
+        # "archivo_url": getattr(ticket, 'archivo_url', None), # Reemplazado por archivos_adjuntos
+        "archivos_adjuntos": archivos_adjuntos_data, # Nueva lista de archivos
         "latitud": getattr(ticket, 'latitud', None),
         "longitud": getattr(ticket, 'longitud', None)
     }
