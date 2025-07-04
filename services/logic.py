@@ -403,7 +403,7 @@ def responder_chatboc(
     if tipo_chat == "municipio":
         from services.municipios import responder_municipio
         return responder_municipio(
-            pregunta=pregunta, # La pregunta original del usuario
+            pregunta_original=pregunta, # La pregunta original del usuario
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=current_user,
