@@ -1,10 +1,14 @@
-from flask import Blueprint, request, jsonify, current_app
+import os
+import uuid
+from werkzeug.utils import secure_filename
+from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from models import (
     MunicipioTicket,
     PymeTicket,
     User,
     TicketComentario,
     TicketSatisfaccion,
+    ArchivoAdjunto, # Asegurarse que ArchivoAdjunto esté importado
     db,
 )
 from datetime import datetime, timedelta
@@ -15,8 +19,67 @@ from collections import defaultdict
 
 ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
+# Carpeta para adjuntos de tickets
+TICKET_ATTACHMENT_FOLDER = os.path.join(os.getcwd(), "data", "archivos_tickets")
+os.makedirs(TICKET_ATTACHMENT_FOLDER, exist_ok=True)
+
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
+
+def guardar_archivo_adjunto_ticket(file_storage, user_id, ticket_id, tipo_ticket) -> ArchivoAdjunto | None:
+    if not file_storage or not file_storage.filename:
+        return None
+
+    try:
+        original_filename = secure_filename(file_storage.filename)
+        extension = os.path.splitext(original_filename)[1].lower()
+        # Podríamos añadir una validación de extensiones aquí si es necesario
+        # ALLOWED_TICKET_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx", ".txt", ".xls", ".xlsx"}
+        # if extension not in ALLOWED_TICKET_EXTENSIONS:
+        #     current_app.logger.warning(f"Intento de subir archivo con extensión no permitida: {extension}")
+        #     return None # O lanzar una excepción específica
+
+        unique_filename = f"{uuid.uuid4().hex}{extension}"
+        save_path = os.path.join(TICKET_ATTACHMENT_FOLDER, unique_filename)
+        
+        file_storage.save(save_path)
+        file_size = os.path.getsize(save_path)
+
+        # Crear la URL. Esto dependerá de cómo se sirvan los archivos.
+        # Asumiré una ruta /tickets/archivos/<filename> que habrá que crear.
+        file_url = f"/tickets/archivos/{unique_filename}" 
+
+        nuevo_adjunto = ArchivoAdjunto(
+            user_id=user_id, # El ID del agente que sube el archivo
+            filename=unique_filename,
+            nombre_original=original_filename,
+            mime=file_storage.mimetype,
+            tamano=file_size,
+            tipo="adjunto_ticket_respuesta", # Un tipo para diferenciarlo de otros usos de ArchivoAdjunto
+            url=file_url
+        )
+
+        if tipo_ticket == "municipio":
+            nuevo_adjunto.municipio_ticket_id = ticket_id
+        elif tipo_ticket == "pyme":
+            nuevo_adjunto.pyme_ticket_id = ticket_id
+        else:
+            current_app.logger.error(f"Tipo de ticket desconocido '{tipo_ticket}' al guardar adjunto.")
+            os.remove(save_path) # Limpiar archivo guardado si hay error
+            return None
+
+        db.session.add(nuevo_adjunto)
+        # El commit se hará después de procesar todos los archivos y el comentario.
+        return nuevo_adjunto
+    except Exception as e:
+        current_app.logger.error(f"Error al guardar archivo adjunto para ticket {tipo_ticket} {ticket_id}: {e}", exc_info=True)
+        # Si hay un path guardado y ocurre un error, intentar borrarlo
+        if 'save_path' in locals() and os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+            except Exception as e_remove:
+                current_app.logger.error(f"Error al limpiar archivo {save_path} tras error: {e_remove}")
+        return None
 
 def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ticket_obj) -> None:
     """Registro unificado de acciones sobre tickets."""
@@ -256,14 +319,35 @@ def detalle_ticket(current_user, tipo, ticket_id):
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     # --- SERIALIZACIÓN ---
-    detalles = getattr(ticket, 'detalles', '') or ''
-    nombre, tel, email = "No especificado", "No especificado", "No especificado"
+    nombre_usuario = "No especificado"
+    telefono_usuario = "No especificado"
+    email_usuario = "No especificado"
+    
+    # Intentar obtener datos del usuario asociado al ticket
+    ticket_owner_user = None
+    if ticket.user_id:
+        ticket_owner_user = db.session.get(User, ticket.user_id)
+        if ticket_owner_user:
+            nombre_usuario = ticket_owner_user.name or nombre_usuario
+            telefono_usuario = ticket_owner_user.telefono or telefono_usuario
+            email_usuario = ticket_owner_user.email or email_usuario
+    
+    # Fallback a la extracción desde el campo 'detalles' si los datos no se encontraron en el User
+    # o si el ticket no tiene user_id (ej. ticket anónimo muy antiguo)
+    detalles_texto = getattr(ticket, 'detalles', '') or ''
+    if nombre_usuario == "No especificado" and "Nombre:" in detalles_texto:
+        nombre_usuario = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
+    if telefono_usuario == "No especificado" and "Teléfono:" in detalles_texto:
+        telefono_usuario = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
+    if email_usuario == "No especificado" and "Email:" in detalles_texto:
+        email_usuario = detalles_texto.split("Email:")[1].split("\n")[0].strip()
+
     direccion = getattr(ticket, 'direccion', None) or "No especificada"
-    if "Nombre:" in detalles: nombre = detalles.split("Nombre:")[1].split("\n")[0].strip()
-    if "Teléfono:" in detalles: tel = detalles.split("Teléfono:")[1].split("\n")[0].strip()
-    if "Email:" in detalles: email = detalles.split("Email:")[1].split("\n")[0].strip()
-    if not getattr(ticket, 'direccion', None) and "Dirección:" in detalles:
-        direccion = detalles.split("Dirección:")[1].split("\n")[0].strip()
+    if not getattr(ticket, 'direccion', None) and "Dirección:" in detalles_texto: # Si la dirección específica del ticket no está, buscar en detalles
+        direccion = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
+    elif ticket_owner_user and not getattr(ticket, 'direccion', None) and ticket_owner_user.direccion: # Si no hay dirección en ticket ni en detalles, usar la del perfil del usuario
+        direccion = ticket_owner_user.direccion
+
 
     comentarios = [
         {"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin}
@@ -308,14 +392,13 @@ def detalle_ticket(current_user, tipo, ticket_id):
         "estado": ticket.estado,
         "fecha": ticket.fecha.isoformat(),
         "pregunta": getattr(ticket, 'pregunta', ''),
-        "detalles": detalles,
+        "detalles": detalles_texto, # Se sigue enviando el campo 'detalles' original por si se usa en otro lado
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "nombre_usuario": nombre,
-        "telefono": tel,
-        "email": email,
-        "direccion": direccion,
-        # "archivo_url": getattr(ticket, 'archivo_url', None), # Reemplazado por archivos_adjuntos
-        "archivos_adjuntos": archivos_adjuntos_data, # Nueva lista de archivos
+        "nombre_usuario": nombre_usuario, # Dato obtenido del User o fallback
+        "telefono": telefono_usuario,     # Dato obtenido del User o fallback
+        "email": email_usuario,           # Dato obtenido del User o fallback
+        "direccion": direccion,           # Dato obtenido de ticket.direccion, User.direccion o fallback
+        "archivos_adjuntos": archivos_adjuntos_data,
         "latitud": getattr(ticket, 'latitud', None),
         "longitud": getattr(ticket, 'longitud', None)
     }
@@ -326,9 +409,16 @@ def detalle_ticket(current_user, tipo, ticket_id):
 @token_requerido
 @admin_o_empleado_requerido
 def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
-    data = request.get_json()
-    if not data or not data.get("comentario"):
-        return jsonify({"error": "El comentario no puede estar vacío."}), 400
+    # Se espera multipart/form-data ahora
+    comentario_texto = request.form.get("comentario")
+    archivos_subidos = request.files.getlist("archivos") # 'archivos' es el name del input type="file"
+
+    if not comentario_texto and not archivos_subidos:
+        return jsonify({"error": "El comentario o al menos un archivo son requeridos."}), 400
+    
+    if comentario_texto is None: # Permitir enviar solo archivos
+        comentario_texto = ""
+
 
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket_obj = db.session.get(TicketModel, ticket_id)
@@ -355,41 +445,95 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
     log_ticket_debug(
-        "responder_agente",
+        "responder_agente_con_archivos", # Acción actualizada
         ticket_id,
         request.headers.get("Anon-Id"),
         ticket_obj,
     )
 
-    nuevo_comentario = servicio_tickets.crear_comentario(
-        ticket_id=ticket_id, tipo_ticket=tipo,
-        comentario_data={"comentario": data["comentario"], "user_id": current_user.id, "es_admin": True}
-    )
+    nuevo_comentario_obj = None
+    if comentario_texto: # Solo crear comentario si hay texto
+        nuevo_comentario_obj = servicio_tickets.crear_comentario(
+            ticket_id=ticket_id, tipo_ticket=tipo,
+            comentario_data={"comentario": comentario_texto, "user_id": current_user.id, "es_admin": True}
+        )
+        if not nuevo_comentario_obj:
+             # Si falla la creación del comentario (y era requerido), podría ser un error 500
+            if not archivos_subidos: # Si no hay archivos, el comentario era lo único
+                 return jsonify({"error": "No se pudo guardar el comentario."}), 500
+            # Si hay archivos, continuamos para intentar guardarlos, pero logueamos el fallo del comentario
+            current_app.logger.error(f"No se pudo guardar el comentario para el ticket {ticket_id}, pero se procederá con los archivos.")
 
-    if nuevo_comentario:
-        if ticket_obj.estado == "nuevo":
+
+    archivos_adjuntados_db = []
+    if archivos_subidos:
+        for file_storage in archivos_subidos:
+            if file_storage and file_storage.filename: # Verificar que hay un archivo real
+                adjunto_db = guardar_archivo_adjunto_ticket(file_storage, current_user.id, ticket_id, tipo)
+                if adjunto_db:
+                    archivos_adjuntados_db.append(adjunto_db)
+                else:
+                    # Si un archivo falla, ¿deberíamos detener todo o continuar?
+                    # Por ahora, continuaremos pero informaremos. Podría ser un error parcial.
+                    current_app.logger.error(f"No se pudo guardar uno de los archivos para el ticket {ticket_id}.")
+                    # Podríamos devolver un error específico si NINGÚN archivo se pudo guardar y no hay comentario
+                    if not comentario_texto and not any(archivos_adjuntados_db):
+                         return jsonify({"error": "No se pudo guardar el comentario ni los archivos adjuntos."}), 500
+    
+    if not nuevo_comentario_obj and not archivos_adjuntados_db:
+        # Esto podría pasar si el comentario está vacío y la subida de todos los archivos falló.
+        return jsonify({"error": "No se pudo guardar la respuesta (ni comentario ni archivos)."}), 500
+
+    try:
+        if ticket_obj.estado == "nuevo" and (nuevo_comentario_obj or archivos_adjuntados_db): # Si hay nuevo contenido
             ticket_obj.estado = "en_proceso"
-            db.session.commit()
+        
+        db.session.commit() # Commit después de todas las operaciones (comentario y archivos)
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al hacer commit final para respuesta de ticket {ticket_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al finalizar la respuesta."}), 500
 
-        comentarios_actualizados = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
-        ticket_data = {
-            "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
-            "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-            "fecha": ticket_obj.fecha.isoformat(),
-            "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
-            "comentarios": sorted(comentarios_actualizados, key=lambda c: c['fecha']),
-            "rubro_id": getattr(ticket_obj, 'rubro_id', None),
-            "telefono": getattr(ticket_obj, 'telefono', None),
-            "email": getattr(ticket_obj, 'email', None),
-            "dni": getattr(ticket_obj, 'dni', None),
-            "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
-            "archivo_url": getattr(ticket_obj, 'archivo_url', None),
-            "latitud": getattr(ticket_obj, 'latitud', None),
-            "longitud": getattr(ticket_obj, 'longitud', None)
-        }
-        return jsonify(ticket_data), 200
 
-    return jsonify({"error": "No se pudo guardar la respuesta."}), 500
+    # Actualizar la serialización del ticket para incluir los nuevos archivos.
+    # La función detalle_ticket ya serializa los archivos, así que podemos reusar esa lógica
+    # o simplemente devolver el ticket actualizado.
+    
+    # Recargar comentarios y archivos para la respuesta
+    # (La relación 'comentarios' y 'archivos' en ticket_obj se actualiza tras el commit)
+    comentarios_actualizados = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios.order_by(TicketComentario.fecha.asc()).all()]
+    
+    archivos_actualizados_data = []
+    if hasattr(ticket_obj, 'archivos'):
+        # Asegurarse de que los archivos recién añadidos estén en la sesión y se carguen
+        # db.session.expire(ticket_obj, ['archivos']) # Forzar recarga de la relación si es necesario
+        # O simplemente consultar de nuevo:
+        archivos_list = ArchivoAdjunto.query.filter(
+            (ArchivoAdjunto.municipio_ticket_id == ticket_id) if tipo == "municipio" else (ArchivoAdjunto.pyme_ticket_id == ticket_id)
+        ).all()
+
+        for adj in archivos_list: # Usar la lista recién consultada
+            # La lógica de análisis no aplica para respuestas de agentes por ahora
+            archivos_actualizados_data.append({
+                "id": adj.id,
+                "name": adj.nombre_original or adj.filename,
+                "mimeType": adj.mime,
+                "size": adj.tamano,
+                "url": adj.url, 
+                "fecha": adj.fecha.isoformat() if adj.fecha else None,
+                "analisis": None 
+            })
+
+    ticket_data_respuesta = {
+        "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
+        "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
+        "fecha": ticket_obj.fecha.isoformat(),
+        "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
+        "comentarios": comentarios_actualizados, # Usar la lista actualizada
+        "archivos_adjuntos": archivos_actualizados_data, # Usar la lista actualizada
+        # ... (otros campos de ticket_obj si son necesarios en la respuesta)
+    }
+    return jsonify(ticket_data_respuesta), 200
 
 # ---------- CAMBIAR ESTADO DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
@@ -1033,3 +1177,51 @@ def mapa_de_tickets(current_user: User, tipo: str):
         return jsonify({"error": "Tipo de mapa no válido."}), 400
 
     return jsonify(datos)
+
+# También se necesitará una ruta para servir los archivos.
+@ticket_bp.route('/archivos/<filename>', methods=['GET'])
+@token_requerido # O una forma de autorización más laxa si los archivos deben ser accesibles por enlace directo temporalmente
+def get_ticket_adjunto(current_user, filename): # current_user es inyectado
+    # Validar filename para evitar directory traversal
+    safe_filename = secure_filename(filename)
+    if safe_filename != filename:
+        return jsonify({"error": "Nombre de archivo no válido."}), 400
+
+    # Verificar permisos: ¿Quién puede acceder a este archivo?
+    # 1. El usuario que lo subió (current_user.id == archivo.user_id)
+    # 2. Si el archivo está asociado a un ticket, el dueño del ticket o un admin/empleado con permiso al ticket.
+    archivo_obj = ArchivoAdjunto.query.filter_by(filename=safe_filename).first()
+    if not archivo_obj:
+        return jsonify({"error": "Archivo no encontrado."}), 404
+
+    # Lógica de permisos (simplificada, podría necesitar ser más robusta):
+    puede_acceder = False
+    if archivo_obj.user_id == current_user.id: # El que lo subió
+        puede_acceder = True
+    else:
+        ticket_id_asociado = archivo_obj.municipio_ticket_id or archivo_obj.pyme_ticket_id
+        tipo_ticket_asociado = "municipio" if archivo_obj.municipio_ticket_id else "pyme"
+        
+        if ticket_id_asociado:
+            TicketModel = MunicipioTicket if tipo_ticket_asociado == "municipio" else PymeTicket
+            ticket_asociado = db.session.get(TicketModel, ticket_id_asociado)
+            if ticket_asociado:
+                if ticket_asociado.user_id == current_user.id: # Dueño del ticket
+                    puede_acceder = True
+                elif tipo_ticket_asociado == "municipio" and \
+                     current_user.rubro and current_user.rubro.nombre.lower().strip() == "municipios" and \
+                     hasattr(current_user, "municipio_id") and ticket_asociado.municipio_id == current_user.municipio_id: # Admin/empleado del municipio
+                    puede_acceder = True
+                elif tipo_ticket_asociado == "pyme" and \
+                     current_user.rubro_id and ticket_asociado.rubro_id == current_user.rubro_id: # Admin/empleado de la pyme
+                    puede_acceder = True
+    
+    if not puede_acceder:
+        return jsonify({"error": "No tienes permiso para acceder a este archivo."}), 403
+
+    file_path = os.path.join(TICKET_ATTACHMENT_FOLDER, safe_filename)
+    if not os.path.exists(file_path):
+        current_app.logger.error(f"El archivo {safe_filename} no existe en el filesystem aunque sí en DB.")
+        return jsonify({"error": "Archivo no encontrado en el servidor."}), 404
+    
+    return send_from_directory(TICKET_ATTACHMENT_FOLDER, safe_filename, as_attachment=False) # as_attachment=True para forzar descarga

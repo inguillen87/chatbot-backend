@@ -70,7 +70,10 @@ class PymeTicketCreator(TicketCreator):
             rubro_id=ticket_data.get("rubro_id"),
             direccion=ticket_data.get("direccion"),
             latitud=lat,
-            longitud=lon
+            longitud=lon,
+            telefono=ticket_data.get("telefono_vecino") or ticket_data.get("telefono"),
+            email=ticket_data.get("email_vecino") or ticket_data.get("email"),
+            dni=ticket_data.get("dni")
         )
 
 class ServicioTickets:

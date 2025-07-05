@@ -1352,7 +1352,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "botones": [
                         {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
                         {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                        {"texto": "No, continuar", "action": "sin_adjuntos"}
+                        {"texto": "Continuar sin adjuntos", "action": "sin_adjuntos"} # MEJORADO
                     ]}
 
             # If we've fallen through all data gathering states in the loop without returning,
@@ -1481,13 +1481,43 @@ class ReclamoHandler(BaseMunicipioHandler):
                 "botones": [
                     {"texto": "Adjuntar foto", "action": "adjuntar_foto"},
                     {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
-                    {"texto": "No, continuar", "action": "sin_adjuntos"},
-                    {"texto": "Completar reclamo", "action": "sin_adjuntos"}
+                    {"texto": "Continuar sin adjuntos", "action": "sin_adjuntos"} # MEJORADO Y UNIFICADO
                 ]
             }
 
         # Sub-bloque 4.2: Esperando Confirmación Final y Creación de Ticket
         if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
+            idempotency_key = payload.get("idempotency_key")
+            chat_session_uuid = self.context.get("chat_session_uuid")
+            
+            # --- INICIO: Lógica de Idempotencia ---
+            if idempotency_key and chat_session_uuid:
+                # Usamos un diccionario en la sesión de Flask para rastrear las claves de idempotencia procesadas
+                # y el ID del ticket que generaron.
+                # session_obj es la sesión de Flask, debe pasarse a self.context o accederse globalmente si es posible.
+                # Asumiendo que self.context tiene session_obj (lo cual es una buena práctica)
+                session_obj = self.context.get("session_obj") 
+                if session_obj: # Asegurarse que session_obj está disponible
+                    processed_keys = session_obj.get("processed_idempotency_keys", {})
+                    if idempotency_key in processed_keys:
+                        existing_ticket_nro = processed_keys[idempotency_key]
+                        logger.info(f"[ReclamoHandler] Idempotency key '{idempotency_key}' ya procesada. Ticket existente: M-{existing_ticket_nro}.")
+                        memoria.clear() # Limpiar el flujo de reclamo actual
+                        return {
+                            "respuesta": (
+                                f"Este reclamo ya fue registrado anteriormente con el número de ticket: **M-{existing_ticket_nro}**. "
+                                "No se ha creado un nuevo ticket. ¡Gracias!"
+                            ),
+                            "botones": [
+                                {"texto": "Hacer un nuevo reclamo"},
+                                {"texto": "Consultar estado de un ticket"},
+                            ],
+                            "ticket_id": None # O el ID del ticket existente si lo tuviéramos, pero nro_ticket es más útil aquí.
+                        }
+                else:
+                    logger.warning("[ReclamoHandler] session_obj no encontrado en el contexto. La idempotencia no se puede aplicar completamente.")
+            # --- FIN: Lógica de Idempotencia ---
+
             # Verificar si es anónimo y ya excedió el límite de tickets
             if self.context.get("anon_id") and not self.context.get("user_id"): # Es anónimo
                 from flask import current_app # Acceder a config
@@ -1570,22 +1600,30 @@ class ReclamoHandler(BaseMunicipioHandler):
                         ticket_data=ticket_data,
                     )
 
-                    # --- INICIO: Asociación de archivo al ticket recién creado ---
-                    if ticket: # Asegurarse que el ticket se creó
+                    if ticket: # Ticket creado exitosamente
+                        # --- INICIO: Guardar idempotency_key en sesión ---
+                        if idempotency_key and chat_session_uuid and session_obj:
+                            processed_keys = session_obj.get("processed_idempotency_keys", {})
+                            processed_keys[idempotency_key] = ticket.nro_ticket # Guardar el número de ticket
+                            session_obj["processed_idempotency_keys"] = processed_keys
+                            logger.info(f"[ReclamoHandler] Idempotency key '{idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada en sesión.")
+                        # --- FIN: Guardar idempotency_key ---
+
+                        # --- INICIO: Asociación de archivo al ticket recién creado ---
                         archivo_id_a_vincular = self.context.get("archivo_id_para_asociar")
-                        chat_session_uuid_actual = self.context.get("chat_session_uuid")
-                        user_id_actual_context = self.context.get("user_id") # El user_id del usuario logueado
+                        chat_session_uuid_actual = self.context.get("chat_session_uuid") # Re-obtener por si acaso, aunque debería ser el mismo
+                        user_id_actual_context = self.context.get("user_id")
 
                         if archivo_id_a_vincular or chat_session_uuid_actual:
-                            from services.archivo_service import archivo_service # Importar aquí para evitar circularidad o al inicio del módulo
+                            from services.archivo_service import archivo_service 
 
                             criterio_asociacion = {}
                             if archivo_id_a_vincular:
                                 criterio_asociacion["ids_archivos"] = [archivo_id_a_vincular]
                                 logger.info(f"[ReclamoHandler] Intentando asociar ArchivoAdjunto ID {archivo_id_a_vincular} a Ticket M-{ticket.nro_ticket}")
-                            elif chat_session_uuid_actual:
+                            elif chat_session_uuid_actual: # Solo usar session_id si no hay archivo_id_a_vincular
                                 criterio_asociacion["session_id"] = chat_session_uuid_actual
-                                if user_id_actual_context: # Es importante pasar el user_id si se asocia por session_id de un usuario logueado
+                                if user_id_actual_context: 
                                     criterio_asociacion["user_id"] = user_id_actual_context
                                 logger.info(f"[ReclamoHandler] Intentando asociar archivos por session_id {chat_session_uuid_actual} (User: {user_id_actual_context}) a Ticket M-{ticket.nro_ticket}")
 
@@ -1597,15 +1635,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                                 )
                                 if asociacion_exitosa:
                                     logger.info(f"[ReclamoHandler] Archivos asociados exitosamente a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
-                                    # Limpiar el ID del archivo del contexto para no re-usarlo accidentalmente
                                     if self.context.get("contexto_municipio") and "archivo_id_para_asociar" in self.context["contexto_municipio"]:
                                         del self.context["contexto_municipio"]["archivo_id_para_asociar"]
                                 else:
                                     logger.warning(f"[ReclamoHandler] No se pudieron asociar archivos a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
                         else:
                             logger.info(f"[ReclamoHandler] No hay archivo_id específico ni session_id para asociar al Ticket M-{ticket.nro_ticket}.")
-                    else: # Ticket no se creó
-                        logger.error(f"[ReclamoHandler] No se pudo crear el ticket, no se intentará asociar archivos.")
+                    else: 
+                        logger.error(f"[ReclamoHandler] No se pudo crear el ticket, no se intentará asociar archivos ni guardar idempotency key.")
                     # --- FIN: Asociación de archivo ---
 
                     # Envío notificaciones si corresponde
@@ -1615,14 +1652,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                             enviar_notificacion_whatsapp_con_plantilla(
                                 telefono_e164, nombre, ticket.nro_ticket, categoria
                             )
-                        except Exception:
+                        except Exception: # pragma: no cover
                             pass
                         try:
                             enviar_notificacion_sms(
                                 telefono_e164,
                                 f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado."
                             )
-                        except Exception:
+                        except Exception: # pragma: no cover
                             pass
                     memoria.clear()
                     return {
@@ -1650,20 +1687,13 @@ class ReclamoHandler(BaseMunicipioHandler):
                     }
             # Si el texto coincide con editar
             elif any(kw in accion for kw in EDIT_KEYWORDS) or "editar" in accion or "cambiar" in accion:
-                # Reiniciar el flujo desde la categoría, pero manteniendo los datos en memoria
-                # para que el usuario no tenga que ingresarlos todos de nuevo.
-                # O mejor, preguntar qué campo específico quiere editar.
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Volvemos al inicio del flujo de reclamo
-                # Podríamos agregar un mensaje más específico para edición aquí si quisiéramos.
-                # Por ahora, simplemente se reinicia el flujo y el ReclamoHandler se encargará de pedir los datos.
-                # El usuario verá el primer paso (categoría) y podrá ir confirmando o cambiando datos.
-                # Una mejora futura sería preguntar específicamente qué campo editar.
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO 
                 return {
                     "respuesta": (
                         "Entendido. Vamos a revisar los datos desde el principio para que puedas corregir lo que necesites. "
                         "Empecemos de nuevo con la categoría. ¿Cuál sería la categoría correcta para tu reclamo?"
                     ),
-                    "botones": [{"texto": cat.title()} for cat in CATEGORIAS_RECLAMO] # Mostrar todas las categorías
+                    "botones": [{"texto": cat.title()} for cat in CATEGORIAS_RECLAMO] 
                 }
             # Si no reconoce, preguntale al LLM como último recurso
             else:
@@ -1673,16 +1703,16 @@ class ReclamoHandler(BaseMunicipioHandler):
                     )
                     if respuesta_llm and "confirm" in respuesta_llm.lower():
                         payload2 = payload.copy()
-                        payload2["action"] = "confirmar_reclamo" # Forzar la acción de confirmación
-                        return self.handle(payload2) # Volver a procesar con la acción forzada
+                        payload2["action"] = "confirmar_reclamo" 
+                        return self.handle(payload2) 
                     elif respuesta_llm and "edit" in respuesta_llm.lower():
                         payload2 = payload.copy()
-                        payload2["action"] = "editar_reclamo" # Forzar la acción de edición
-                        return self.handle(payload2) # Volver a procesar con la acción forzada
-                except Exception:
-                    pass # Si el LLM falla, se muestra el mensaje de abajo
+                        payload2["action"] = "editar_reclamo" 
+                        return self.handle(payload2) 
+                except Exception: # pragma: no cover
+                    pass 
 
-                resumen = self.build_detalles_memoria(memoria) # Volver a mostrar el resumen
+                resumen = self.build_detalles_memoria(memoria) 
                 return {
                     "respuesta": f"No estoy seguro de qué quisiste decir. Por favor, confirmá si los datos son correctos o si querés editar algo:\n\n{resumen}\n\n¿Confirmamos o editamos?",
                     "botones": [
