@@ -332,7 +332,24 @@ def _procesar_chat(
 
     except Exception as e:
         db.session.rollback() # Rollback en caso de error antes del commit final
-        current_app.logger.error(f"❌ Error crítico en _procesar_chat: {e}", exc_info=True)
+        # Log more details to help pinpoint the 500 error
+        error_details = {
+            "pregunta": pregunta if 'pregunta' in locals() else 'N/A',
+            "tipo_chat": tipo_chat if 'tipo_chat' in locals() else 'N/A',
+            "rubro_id": rubro_id if 'rubro_id' in locals() else 'N/A',
+            "rubro_clave": rubro_clave if 'rubro_clave' in locals() else 'N/A',
+            "actor_principal_id": actor_principal.id if 'actor_principal' in locals() and actor_principal else 'N/A',
+            "owner_del_bot_id": owner_del_bot.id if 'owner_del_bot' in locals() and owner_del_bot else 'N/A',
+            "viewer_obj_id": viewer_obj.id if 'viewer_obj' in locals() and viewer_obj else 'N/A',
+            "anon_id": anon_id if 'anon_id' in locals() else 'N/A',
+            "archivo_adjunto_id": archivo_adjunto_id if 'archivo_adjunto_id' in locals() else 'N/A',
+            "uploaded_file_info": uploaded_file_info if 'uploaded_file_info' in locals() else 'N/A',
+            "session_chat_id": session_chat_id if 'session_chat_id' in locals() else 'N/A'
+        }
+        current_app.logger.error(
+            f"❌ Error crítico en _procesar_chat. Details: {error_details}. Exception: {e}",
+            exc_info=True
+        )
         return jsonify({"error": "Error interno del servidor."}), 500
 
 
