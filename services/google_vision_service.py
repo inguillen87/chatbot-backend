@@ -94,7 +94,7 @@ def analyze_image_from_content(image_content: bytes, min_confidence: float = 0.5
 
     request = vision.AnnotateImageRequest(image=image, features=features)
 
-    results = {"objects": [], "labels": [], "text_annotations": []}
+    results = {"objects": [], "labels": [], "full_text_annotation": None, "text_annotations_detail": []} # Cambiado
 
     try:
         logger.info("➡️ [VISION_SVC] Enviando imagen a Google Cloud Vision API...")
@@ -130,17 +130,31 @@ def analyze_image_from_content(image_content: bytes, min_confidence: float = 0.5
 
         # Procesar Text Detection (OCR)
         if response.text_annotations:
-            # La primera anotación suele ser el texto completo
-            full_text = response.text_annotations[0].description if response.text_annotations else ""
-            results["text_annotations"].append({
+            # La primera anotación (índice 0) es generalmente el texto completo.
+            full_text_annotation_obj = response.text_annotations[0]
+            full_text = full_text_annotation_obj.description
+            results["full_text_annotation"] = {
                 "description": full_text,
-                "locale": response.text_annotations[0].locale if response.text_annotations and response.text_annotations[0].locale else "",
-                # Podríamos añadir bounding_poly si es necesario para el texto completo
-            })
-            # También podríamos iterar sobre el resto de text_annotations si necesitamos palabras individuales y sus geometrías
-            logger.info(f"✅ [VISION_SVC] Texto detectado (OCR). Longitud: {len(full_text)}")
-            if len(full_text) > 150: # Loguear solo un fragmento si es muy largo
-                logger.debug(f"[VISION_SVC] Texto detectado (fragmento): {full_text[:150]}...")
+                "locale": full_text_annotation_obj.locale,
+                "bounding_poly": [
+                    {"x": v.x, "y": v.y} for v in full_text_annotation_obj.bounding_poly.vertices
+                ]
+            }
+            logger.info(f"✅ [VISION_SVC] Texto completo detectado (OCR). Longitud: {len(full_text)}")
+            if len(full_text) > 150:
+                logger.debug(f"[VISION_SVC] Texto completo (fragmento): {full_text[:150]}...")
+
+            # Las anotaciones restantes (a partir del índice 1) son palabras individuales o bloques de texto más pequeños.
+            # Las almacenamos en "text_annotations_detail" para uso futuro si es necesario.
+            for i in range(1, len(response.text_annotations)):
+                text_block = response.text_annotations[i]
+                results["text_annotations_detail"].append({
+                    "description": text_block.description,
+                    "bounding_poly": [
+                        {"x": v.x, "y": v.y} for v in text_block.bounding_poly.vertices
+                    ]
+                })
+            logger.info(f"✅ [VISION_SVC] Detalles de texto adicionales (palabras/bloques): {len(results['text_annotations_detail'])}")
 
 
     except Exception as e:
@@ -194,7 +208,8 @@ if __name__ == '__main__':
                     logger.info("Resultados del Análisis:")
                     logger.info(f"  Objetos: {json.dumps(analysis_result.get('objects', []), indent=2)}")
                     logger.info(f"  Etiquetas: {json.dumps(analysis_result.get('labels', []), indent=2)}")
-                    logger.info(f"  Texto: {json.dumps(analysis_result.get('text_annotations', []), indent=2)}")
+                    logger.info(f"  Texto Completo: {json.dumps(analysis_result.get('full_text_annotation', {}), indent=2)}")
+                    logger.info(f"  Detalles de Texto: {json.dumps(analysis_result.get('text_annotations_detail', []), indent=2)}")
             except FileNotFoundError:
                 logger.error(f"Archivo de imagen de prueba '{test_image_path}' no encontrado.")
             except Exception as e_test:
