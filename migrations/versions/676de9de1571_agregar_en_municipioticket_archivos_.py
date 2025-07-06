@@ -17,15 +17,8 @@ depends_on = None
 
 
 def upgrade():
-    # Drop temp table if it exists (leftover from failed migration)
-    try:
-        op.execute("DROP TABLE IF EXISTS _alembic_tmp_municipio_ticket")
-    except Exception as e:
-        print(f"Ignoring error while trying to drop _alembic_tmp_municipio_ticket: {e}")
-
-    # Ahora sigue la migración normal
-    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-        batch_op.drop_column('archivo_url')
+    # No hacer nada, la estructura ya es compatible
+    pass
 
 def downgrade():
     pass
