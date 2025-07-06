@@ -142,3 +142,9 @@ class Config:
     # --- CONFIGURACIÓN DE APP BASE URL (para generar links en emails/notificaciones) ---
     # Usado en el paso de descarga de catálogo, también útil para links en campañas.
     APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5000") # Default para desarrollo
+
+    # --- UMBRALES PARA SUGERENCIA DE REGISTRO PROACTIVA ---
+    # Después de cuántas interacciones de un usuario anónimo en una sesión de chat se sugiere registrarse.
+    # Establecer a 0 o None para desactivar esta sugerencia basada en conteo.
+    PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
+    MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))

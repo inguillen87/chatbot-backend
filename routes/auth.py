@@ -724,29 +724,43 @@ def anon_o_token_requerido(f):
 
         user = User.query.filter_by(token=token).first() if token else None
         if token and not user:
-            current_app.logger.warning("Token inválido o usuario no encontrado")
+            current_app.logger.warning(f"Token proporcionado ('{token[:10]}...') pero inválido o usuario no encontrado.")
 
-        if user and not anon_id:
+        if user and not anon_id: # Usuario autenticado por token, sin Anon-Id explícito en cabecera
             g.current_user = user
-            current_app.logger.debug(f"Autenticado como user_id={user.id}")
+            current_app.logger.debug(f"Autenticado como user_id={user.id} (sin Anon-Id en cabecera). Token: '{token[:10]}...'")
             return f(current_user=user, *args, **kwargs)
 
-        if anon_id:
-            if user:
-                g.owner_user = user
-                current_app.logger.debug(
-                    f"Acceso anónimo con propietario user_id={user.id} anon_id={anon_id}"
-                )
+        if anon_id: # Hay un Anon-Id, puede o no haber un owner_user (token de entidad)
             g.anon_id = anon_id
+            if user: # Hay un owner_user (token de entidad) Y un Anon-Id (usuario final anónimo)
+                g.owner_user = user # user aquí es el owner_user (entidad)
+                current_app.logger.debug(
+                    f"Acceso anónimo con Anon-Id: {anon_id} bajo entidad/owner_user id: {user.id}. Token entidad: '{token[:10]}...'"
+                )
+            else: # Hay Anon-Id pero no hay token de entidad (ej. chat público genérico sin token de entidad)
+                current_app.logger.debug(
+                    f"Acceso anónimo con Anon-Id: {anon_id} (sin entidad/owner_user específica por token)."
+                )
+
+            # Llamar a la función decorada, pasando owner_user (que es 'user' de la query por token, puede ser None)
+            # y current_user=None porque el usuario final es anónimo (identificado por anon_id)
             response = f(current_user=None, anon_id=anon_id, owner_user=user, *args, **kwargs)
+
+            # Intentar añadir Anon-Id a la respuesta si es un objeto Response
             resp_obj = response[0] if isinstance(response, tuple) else response
-            try:
-                resp_obj.headers["Anon-Id"] = anon_id
-            except Exception:
-                pass
+            if hasattr(resp_obj, 'headers'):
+                try:
+                    # Asegurarse de que no estamos intentando modificar un objeto inmutable si no es una instancia de Response
+                    from flask import Response
+                    if isinstance(resp_obj, Response):
+                        resp_obj.headers["Anon-Id"] = anon_id
+                    # Si no es un Response de Flask, no intentar añadir la cabecera (ej. si es un dict de error)
+                except Exception as e_header: # pragma: no cover
+                    current_app.logger.warning(f"No se pudo establecer header Anon-Id en respuesta: {e_header}")
             return response
 
-        current_app.logger.warning("Token o Anon-Id requerido pero no proporcionado")
+        current_app.logger.warning(f"Token o Anon-Id requerido pero no proporcionado o inválido. Token recibido: {'presente' if token else 'ausente'}, Anon-Id recibido: {'presente' if anon_id else 'ausente'}")
         return jsonify({"error": "Token o anon_id requerido"}), 401
     return decorated
 

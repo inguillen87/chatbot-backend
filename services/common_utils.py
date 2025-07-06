@@ -667,3 +667,29 @@ def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
 
     similarity = dot_product / (norm_vec1 * norm_vec2)
     return float(similarity) # Asegurar que devuelve float nativo
+
+def construir_respuesta_sugerir_registro(mensaje_personalizado: Optional[str] = None, tipo_entidad: str = "pyme"):
+    """
+    Construye un diccionario de respuesta estándar para sugerir el registro o inicio de sesión.
+    Se usa cuando el bot proactivamente quiere que el usuario anónimo se identifique.
+    """
+    mensaje_base = "Para una experiencia más completa, guardar tu historial y acceder a todas las funciones, te recomiendo crear una cuenta o iniciar sesión."
+    if mensaje_personalizado:
+        mensaje_final = f"{mensaje_personalizado} {mensaje_base}"
+    else:
+        mensaje_final = mensaje_base
+
+    # Las acciones 'register_widget' y 'login_widget' deben ser manejadas por el frontend del widget embebido
+    # para mostrar los formularios correspondientes que luego llaman a /widget/register y /widget/login.
+    return {
+        "respuesta": mensaje_final,
+        "fuente": "sistema_sugerencia_registro", # Fuente clara para identificar esta acción
+        "botones": [
+            {"texto": "Registrarme Gratis", "action": "register_widget"},
+            {"texto": "Iniciar Sesión", "action": "login_widget"}
+        ],
+        "tipo_respuesta": "sugerencia_registro", # Tipo especial para que el frontend lo maneje
+        # Devolver un contexto vacío o el último conocido, para que el frontend no lo pierda.
+        # Los handlers (pyme/municipio) deben asegurarse de pasar el contexto actual si es necesario.
+        f"contexto_{tipo_entidad}": {} # O el contexto que se le pase a esta función
+    }

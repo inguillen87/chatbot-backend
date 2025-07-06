@@ -20,9 +20,10 @@ from services.qdrant_search import (
 )
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import sugerencias_por_rubro
-from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_talk, es_rubro_publico # Añadir es_rubro_publico
+from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_talk, es_rubro_publico
 from services.ticket_service import servicio_tickets
 from services.webinfo import obtener_info_web
+from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
 from services.preferences import add_preference
 from services import cart as cart_service
 from services.promocion_service import promocion_service
@@ -561,9 +562,18 @@ class PedidoHandler(BaseHandler):
 # (Se asume que el resto del archivo sigue la estructura anterior, solo PedidoHandler y funciones relacionadas fueron modificadas extensamente)
 # ... (FaqHandler, HumanHandler, UnclearHandler, TicketStatusHandler, FallbackHandler, ToolHandlerPyme) ...
 
+# Temporal: Placeholder para coleccion_catalogo_para_rubro si no está definida globalmente
+def coleccion_catalogo_para_rubro(rubro_nombre: str) -> str:
+    # Lógica para determinar la colección basada en el rubro.
+    # Podría ser una config, o una convención.
+    # Ejemplo: return f"catalogo_{rubro_nombre.replace(' ', '_')}"
+    return CATALOGO_PYME # Usar la constante global por ahora
+
 def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     request_id = str(uuid.uuid4())
-    logger.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', UserPyme: {getattr(owner_user, 'id', 'N/A')}, ViewerCliente: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}")
+    # Añadir current_app al logger para acceso a config
+    logger_actual = current_app.logger if current_app else logger # Asegurar que logger_actual esté definido
+    logger_actual.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', UserPyme: {getattr(owner_user, 'id', 'N/A')}, ViewerCliente: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}")
 
     # --- Contexto General ---
     pyme_id_para_servicios = getattr(owner_user, "id", None)
@@ -576,24 +586,28 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
 
     # --- Historial de Chat ---
     historial_actual_sesion = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
-    if not historial_actual_sesion and chat_session_uuid_actual:
+    if not historial_actual_sesion and chat_session_uuid_actual: # Solo intentar cargar si no hay nada y hay session_id
         try:
             # Cargar últimos N mensajes (user y bot) para el session_id
             conversaciones_db = Conversacion.query.filter_by(session_id=chat_session_uuid_actual).order_by(Conversacion.timestamp.desc()).limit(MAX_HISTORIAL_CHAT).all()
-            conversaciones_db.reverse() # De más antiguo a más reciente
-            historial_actual_sesion = [{"role": "USER" if i%2==0 else "CHATBOT", "content": conv.pregunta if i%2==0 else conv.respuesta} for i, conv in enumerate(conversaciones_db)] # Simplificado
-            logger.info(f"Historial reconstruido desde DB para {chat_session_uuid_actual}: {len(historial_actual_sesion)} mensajes.")
-        except Exception as e_hist: logger.error(f"Error cargando historial DB: {e_hist}")
+            if conversaciones_db: # Solo si se encontraron conversaciones
+                conversaciones_db.reverse() # De más antiguo a más reciente
+                historial_actual_sesion = [{"role": "USER" if i%2==0 else "CHATBOT", "content": conv.pregunta if i%2==0 else conv.respuesta} for i, conv in enumerate(conversaciones_db)] # Simplificado
+                logger_actual.info(f"Historial reconstruido desde DB para {chat_session_uuid_actual}: {len(historial_actual_sesion)} mensajes.")
+        except Exception as e_hist: logger_actual.error(f"Error cargando historial DB: {e_hist}")
 
     # --- Contexto Principal para Handlers ---
-    # Este 'context' se pasa a todos los handlers. El PedidoHandler (y otros) usarán self.pyme_ctx para su estado interno.
+    # Cargar pyme_ctx desde flask_session si existe, sino, diccionario vacío.
+    pyme_ctx_actual = flask_session.get(CONTEXTO_PYME, {})
+
     context_general = {
         "user_id": pyme_id_para_servicios, # ID de la PYME
         "nombre_pyme": nombre_pyme_display,
         "rubro_nombre": rubro_nombre_actual,
         "mensajes_previos": historial_actual_sesion, # Para el LLM
-        CONTEXTO_PYME: flask_session.get(CONTEXTO_PYME, {}), # El diccionario de estado específico de pymes
+        CONTEXTO_PYME: pyme_ctx_actual, # Usar el pyme_ctx cargado
         "cliente_id": getattr(viewer_user, "id", None), # ID del ChatUser/User final
+        "viewer_user_obj": viewer_user, # <--- OBJETO USER COMPLETO DEL CLIENTE/VIEWER
         "anon_id": anon_id,
         "rubro_id": getattr(rubro_obj, "id", None) or (getattr(owner_user.rubro, "id", None) if owner_user and hasattr(owner_user, "rubro") else None),
         "coleccion_qdrant": coleccion_qdrant_usar,
@@ -603,10 +617,87 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "action_payload": kwargs.get("action_payload", pregunta.lower()) # Para botones
     }
 
-    # Clasificar intención usando el contexto
+    # ---- INICIO: Lógica de sugerencia de registro PROACTIVA ----
+    if not viewer_user and anon_id and current_app: # Solo para anónimos y si hay contexto de app
+        # Usar una copia del pyme_ctx_actual para modificar y luego decidir si se guarda
+        pyme_ctx_para_sugerencia = context_general[CONTEXTO_PYME] # Trabajar con la referencia directa
+
+        # Evitar sugerir si ya se está en un flujo que pide datos o confirmación final
+        # O si el bot acaba de dar una respuesta de sugerencia de registro
+        estado_actual_sugerencia = deserialize_state(pyme_ctx_para_sugerencia.get("estado_conversacion"))
+        ultima_fuente_bot = historial_actual_sesion[-1].get("content") if historial_actual_sesion and historial_actual_sesion[-1].get("role") == "CHATBOT" else ""
+
+        # No deberíamos necesitar verificar 'ultima_fuente_bot' si el frontend maneja 'sugerencia_registro'
+        # y no vuelve a llamar al backend inmediatamente. Pero como defensa:
+        # if context_general[CONTEXTO_PYME].get("ultima_respuesta_tipo") == "sugerencia_registro":
+        #    pass # No sugerir de nuevo si la última fue una sugerencia. Necesitaríamos guardar "ultima_respuesta_tipo".
+
+        estados_evitar_sugerencia = [
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE,
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO,
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION,
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_EMAIL,
+            PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS,
+            PymeConversationState.CONFIRMANDO_PEDIDO, # Podría ser muy pronto si acaba de confirmar un ítem
+            PymeConversationState.ESPERANDO_FEEDBACK # Ya terminó el flujo principal
+        ]
+
+        if estado_actual_sugerencia not in estados_evitar_sugerencia:
+            interacciones_anon_sesion = pyme_ctx_para_sugerencia.get("interacciones_anon_sesion", 0)
+            # Solo contar si la pregunta no es un simple "si", "no", "ok" (evitar contar respuestas a preguntas del bot)
+            if len(pregunta.split()) > 1 or pregunta.lower() not in ["si", "no", "ok", "dale", "bueno"]:
+                 interacciones_anon_sesion += 1
+            pyme_ctx_para_sugerencia["interacciones_anon_sesion"] = interacciones_anon_sesion
+
+            # Guardar pyme_ctx actualizado en flask_session ANTES de retornar la sugerencia
+            flask_session[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
+            flask_session.modified = True
+
+            umbral_sugerencia = current_app.config.get("PYME_UMBRAL_SUGERENCIA_REGISTRO", 3)
+
+            if umbral_sugerencia and umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia:
+                # Verificar si ya se sugirió en esta "ronda" de interacciones para no ser repetitivo
+                if not pyme_ctx_para_sugerencia.get("sugerencia_registro_emitida_ronda", False):
+                    logger_actual.info(f"[RESPONDER_PYME - {request_id}] Anon {anon_id} alcanzó umbral de {umbral_sugerencia} interacciones. Sugiriendo registro.")
+                    pyme_ctx_para_sugerencia["sugerencia_registro_emitida_ronda"] = True # Marcar como emitida
+                    flask_session[CONTEXTO_PYME] = pyme_ctx_para_sugerencia # Guardar el flag
+                    flask_session.modified = True
+
+                    respuesta_sugerencia = construir_respuesta_sugerir_registro(
+                        mensaje_personalizado="Hemos tenido una buena charla.",
+                        tipo_entidad="pyme"
+                    )
+                    # Asegurar que el contexto_pyme devuelto es el actualizado
+                    respuesta_sugerencia[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
+                    # Guardar la conversación ANTES de devolver la sugerencia
+                    if pyme_id_para_servicios or anon_id:
+                        try:
+                            db.session.add(Conversacion(
+                                user_id=context_general.get("cliente_id"), pregunta=pregunta,
+                                respuesta=respuesta_sugerencia.get("respuesta", ""), fuente=respuesta_sugerencia.get("fuente", "sugerencia_registro_pyme"),
+                                rubro=rubro_nombre_actual, session_id=chat_session_uuid_actual,
+                                pyme_id=pyme_id_para_servicios
+                            ))
+                            db.session.commit()
+                        except Exception as e_conv_sug: logger_actual.error(f"Error guardando Conversacion (sugerencia PYME): {e_conv_sug}")
+                    return respuesta_sugerencia
+            else: # Si no se alcanzó el umbral, resetear el flag de "emitida en ronda"
+                 pyme_ctx_para_sugerencia.pop("sugerencia_registro_emitida_ronda", None)
+                 flask_session[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
+                 flask_session.modified = True
+
+
+            # Criterio 2: Si la pregunta del usuario implica querer guardar algo o ver historial (más adelante)
+            # palabras_clave_historial = ["mi historial", "mis tickets", "guardar conversacion", "mis datos"]
+            # if any(keyword in pregunta.lower() for keyword in palabras_clave_historial) and not pyme_ctx_para_sugerencia.get("sugerencia_registro_emitida_ronda", False):
+            #     logger_actual.info(f"[RESPONDER_PYME - {request_id}] Anon {anon_id} preguntó por historial/guardar. Sugiriendo registro.")
+            #     # ... (construir y devolver respuesta, marcar como emitida) ...
+    # ---- FIN: Lógica de sugerencia de registro PROACTIVA ----
+
+    # Clasificar intención usando el contexto (pyme_ctx_actual ya está en context_general)
     intencion_clasificada = _clasificar_intencion_pyme_con_llm(pregunta, context_general)
-    context_general["intencion"] = intencion_clasificada
-    logger.info(f"[PYME_INTENCION - {request_id}] Para '{pregunta}', Intención: {intencion_clasificada}, Estado Pyme Ctx: {context_general[CONTEXTO_PYME].get('estado_conversacion')}")
+    context_general["intencion"] = intencion_clasificada # Actualizar la intención en el contexto general
+    logger_actual.info(f"[PYME_INTENCION - {request_id}] Para '{pregunta}', Intención: {intencion_clasificada}, Estado Pyme Ctx: {context_general[CONTEXTO_PYME].get('estado_conversacion')}")
 
     # --- Cadena de Handlers ---
     # (SmallTalk y Saludo podrían ir primero si no dependen mucho del estado del PedidoHandler)
