@@ -2,7 +2,20 @@
 import os
 import logging
 import cohere
-from cohere.core.api_error import ApiError # Import ApiError from core
+try:
+    # Attempt for v4.x style errors
+    from cohere.error import CohereAPIError, CohereError
+except ImportError:
+    # Fallback for v5.x style errors (which is what was just implemented)
+    # or if the above v4.x path is incorrect for 4.37
+    try:
+        from cohere.core.api_error import ApiError as CohereAPIError # Use ApiError as CohereAPIError
+        CohereError = CohereAPIError # Use ApiError as the base CohereError too for simplicity here
+    except ImportError:
+        # If neither works, this will cause issues later, but allows startup
+        CohereAPIError = Exception
+        CohereError = Exception
+
 from functools import wraps
 from time import sleep
 from typing import List, Dict, Any, Optional
@@ -35,11 +48,15 @@ def cohere_api_call(func):
             return None
         try:
             return func(*args, **kwargs)
-        except ApiError as e: # Catch the base ApiError from cohere.core.api_error
-            # ApiError likely has 'status_code' and 'body' or similar attributes
-            status_code = getattr(e, 'status_code', 'N/A')
-            body = getattr(e, 'body', str(e))
-            logger.error(f"❌ [COHERE_CLIENT] Error de Cohere API en '{func.__name__}': Status {status_code} - {body}", exc_info=False)
+        except CohereAPIError as e: 
+            status_code = getattr(e, 'http_status', getattr(e, 'status_code', 'N/A')) # Accommodate different attr names
+            message = getattr(e, 'message', str(e))
+            logger.error(f"❌ [COHERE_CLIENT] Error de Cohere API en '{func.__name__}': Status {status_code} - {message}", exc_info=False)
+            return None
+        except CohereError as e: # Broader Cohere error if CohereAPIError is not matched or is a parent
+            status_code = getattr(e, 'http_status', getattr(e, 'status_code', 'N/A'))
+            message = getattr(e, 'message', str(e))
+            logger.error(f"❌ [COHERE_CLIENT] Error general de Cohere en '{func.__name__}': Status {status_code} - {message}", exc_info=True)
             return None
         except Exception as e: # Non-Cohere unexpected errors
             logger.error(f"❌ [COHERE_CLIENT] Error inesperado (no Cohere) en '{func.__name__}': {e}", exc_info=True)
