@@ -32,16 +32,25 @@ from .common_utils import ( # Changed from services.utils to .common_utils
     validar_email,
     validar_telefono,
     formatear_telefono_e164,
+    construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
 )
 from .llm_utils import extract_complaint_details_llm # Epic 1 Enhancement
 import math
 
+try:
+    from flask import current_app, session as flask_session
+except ImportError: # pragma: no cover
+    # Mock para entornos sin Flask (ej. tests unitarios puros de lógica, aunque es mejor mockear Flask app)
+    current_app = None
+    flask_session = {}
+
+
 # --- Configuración de Logging (Asegúrate de que esto esté al inicio de tu aplicación o en un archivo de configuración de logging) ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s - %(message)s')
-logger = logging.getLogger(__name__)
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s - %(message)s') # Ya se configura en app.py
+logger = logging.getLogger(__name__) # Usar el logger de la app
 # ---------------------------------------------------------------------------------------------------
 
-CONTEXTO_MUNICIPIO = "contexto_municipio"
+CONTEXTO_MUNICIPIO = "contexto_municipio_v2" # Actualizar nombre de contexto para evitar colisiones si se cambia la estructura
 
 # Regex para detectar URLs en texto
 URL_REGEX = re.compile(r"https?://\S+")
@@ -3268,62 +3277,139 @@ BOTONES_COMANDOS_MUNICIPIO = {
 def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
     logger.info(f"[INICIO] Pregunta recibida: '{pregunta_original}'")
     
-    # --- MODIFICACIÓN CRÍTICA AQUÍ ---
-    # Combinar la pregunta original con los kwargs para formar un payload completo
+    # Añadir current_app al logger para acceso a config
+    logger_actual = current_app.logger if current_app else logger # Asegurar que logger_actual esté definido
+    logger_actual.info(f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}")
+
     received_payload = {}
-    if isinstance(pregunta_original, dict):  # Si el frontend envió un objeto JSON completo
+    pregunta_str = "" # Asegurar que pregunta_str esté definida
+    if isinstance(pregunta_original, dict):
         received_payload = pregunta_original
-        pregunta_str = received_payload.get("pregunta", "")  # El texto principal del mensaje
-    else:  # Si el frontend envió un string simple
+        pregunta_str = received_payload.get("pregunta", "")
+    elif isinstance(pregunta_original, str): # Solo procesar si es string
         pregunta_str = pregunta_original
-        received_payload["pregunta"] = pregunta_original  # Aseguramos que esté en el payload
+        received_payload["pregunta"] = pregunta_original
+    else: # Si no es dict ni str, loguear y tratar como pregunta vacía
+        logger_actual.warning(f"Tipo inesperado para pregunta_original: {type(pregunta_original)}. Contenido: {pregunta_original}")
+        pregunta_str = "" # Fallback a string vacío
+        received_payload["pregunta"] = ""
 
     # Merge de kwargs (tienen prioridad)
-    for key, value in kwargs.items():
-        received_payload[key] = value
+    if kwargs: # Solo iterar si kwargs no es None y tiene items
+        for key, value in kwargs.items():
+            received_payload[key] = value
 
-    # Recuperar contexto previo de sesión (si vino)
-    contexto_previo = received_payload.get("contexto_previo", {})
-    contexto_municipio = contexto_previo.get(CONTEXTO_MUNICIPIO, {})
+    # --- CONTEXTO ---
+    # Usar flask_session directamente aquí para el contexto_municipio
+    # Esto es crucial para que persista entre llamadas.
+    contexto_municipio_actual = flask_session.get(CONTEXTO_MUNICIPIO, {})
 
-    # Reconvertir string a Enum si hace falta
-    estado_guardado_str = contexto_municipio.get("estado_conversacion")
+    # Reconvertir estado de string a Enum si es necesario
+    estado_guardado_str = contexto_municipio_actual.get("estado_conversacion")
     if estado_guardado_str and isinstance(estado_guardado_str, str):
         try:
-            contexto_municipio["estado_conversacion"] = ConversationState[estado_guardado_str]
-        except KeyError:
-            logger.warning(f"[CONTEXTO] Estado inválido: {estado_guardado_str}. Se limpia.")
-            contexto_municipio["estado_conversacion"] = None
-    elif not isinstance(estado_guardado_str, ConversationState):
-        contexto_municipio["estado_conversacion"] = None
+            contexto_municipio_actual["estado_conversacion"] = ConversationState[estado_guardado_str]
+        except KeyError: # pragma: no cover
+            logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Estado inválido en sesión: {estado_guardado_str}. Se limpia.")
+            contexto_municipio_actual["estado_conversacion"] = None
+    elif not isinstance(estado_guardado_str, ConversationState) and estado_guardado_str is not None: # Si no es Enum ni None pero existe
+        logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Tipo de estado inesperado en sesión: {type(estado_guardado_str)}. Se limpia.")
+        contexto_municipio_actual["estado_conversacion"] = None
+
 
     # Diccionario de contexto completo para handlers
     context = {
-        "contexto_municipio": contexto_municipio,
-        "user_obj": owner_user,
-        "user_id": getattr(owner_user, "id", None),
-        "cliente_id": getattr(viewer_user, "id", None),
-        "anon_id": anon_id,
-        "intencion": None,
-        # Acciones y adjuntos
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # Usar el contexto cargado de flask_session
+        "user_obj": owner_user, # El User del Municipio/Entidad (dueño del bot)
+        "user_id": getattr(owner_user, "id", None), # ID del Municipio/Entidad
+        "cliente_id": getattr(viewer_user, "id", None), # ID del Ciudadano (si está logueado en el widget)
+        "viewer_user_obj": viewer_user, # <--- OBJETO USER COMPLETO DEL CIUDADANO/VIEWER
+        "anon_id": anon_id, # ID anónimo del ciudadano
+        "intencion": None, # Se llenará por IntentClassifierHandler
+        "rubro_obj": rubro_obj, # Objeto Rubro
         "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
         "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
         "es_foto": received_payload.get("es_foto", False),
         "es_ubicacion": received_payload.get("es_ubicacion", False),
-        "es_archivo": received_payload.get("es_archivo", False), # Este es un flag genérico
+        "es_archivo": received_payload.get("es_archivo", False),
         "action": received_payload.get("action"),
-        # Nuevos datos del análisis de archivos pasados desde logic.py
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        "chat_session_uuid": kwargs.get("chat_session_uuid"), # Asegurarse que chat_session_uuid también se pasa al contexto
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "session_obj": flask_session # Pasar la sesión de Flask para que los handlers puedan usarla si es necesario
     }
+
+    # ---- INICIO: Lógica de sugerencia de registro PROACTIVA ----
+    if not viewer_user and anon_id and current_app: # Solo para anónimos y si hay contexto de app
+        # Trabajar directamente con contexto_municipio_actual que es el de flask_session
+
+        estado_actual_sugerencia = contexto_municipio_actual.get("estado_conversacion")
+        # Definir estados de Municipio donde no queremos interrumpir con sugerencia de registro
+        estados_municipio_evitar_sugerencia = [
+            ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+            ConversationState.ESPERANDO_NOMBRE_VECINO,
+            ConversationState.ESPERANDO_TELEFONO_VECINO,
+            ConversationState.ESPERANDO_EMAIL_VECINO,
+            ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+            ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+            ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+            ConversationState.ESPERANDO_UBICACION_PANICO # No interrumpir flujo de pánico
+        ]
+
+        if estado_actual_sugerencia not in estados_municipio_evitar_sugerencia:
+            interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
+            if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok", "dale", "bueno"]:
+                 interacciones_anon_sesion += 1
+            contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_sesion
+
+            # Guardar contexto_municipio_actual actualizado en flask_session ANTES de retornar
+            flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+            flask_session.modified = True
+
+            umbral_sugerencia = current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3)
+
+            if umbral_sugerencia and umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia:
+                if not contexto_municipio_actual.get("sugerencia_registro_emitida_ronda", False):
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Anon {anon_id} alcanzó umbral de {umbral_sugerencia} interacciones. Sugiriendo registro.")
+                    contexto_municipio_actual["sugerencia_registro_emitida_ronda"] = True
+                    flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Guardar flag
+                    flask_session.modified = True
+
+                    respuesta_sugerencia = construir_respuesta_sugerir_registro(
+                        mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.",
+                        tipo_entidad="municipio" # Indicar el tipo para el campo contexto_
+                    )
+                    # El contexto_municipio ya está en flask_session, y la función helper lo añade a la respuesta.
+                    # Solo necesitamos asegurar que el que se devuelve en la respuesta es el actualizado.
+                    respuesta_sugerencia[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+
+                    # Guardar la conversación ANTES de devolver la sugerencia
+                    if anon_id and not viewer_user: # Doble chequeo
+                        try:
+                            db.session.add(Conversacion(
+                                session_id=context.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
+                                respuesta=respuesta_sugerencia.get("respuesta", ""), fuente=respuesta_sugerencia.get("fuente", "sugerencia_registro_municipio"),
+                                rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), # Usar getattr
+                                user_id=None, # Es anónimo
+                                municipio_id=getattr(owner_user, "id", None) # ID del municipio al que pertenece el bot
+                            ))
+                            db.session.commit()
+                        except Exception as e_conv_sug_muni:
+                            logger_actual.error(f"Error guardando Conversacion (sugerencia MUNICIPIO): {e_conv_sug_muni}")
+                            db.session.rollback() # Rollback en caso de error al guardar
+                    return respuesta_sugerencia
+            else: # Si no se alcanzó el umbral, resetear el flag
+                contexto_municipio_actual.pop("sugerencia_registro_emitida_ronda", None)
+                flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                flask_session.modified = True
+    # ---- FIN: Lógica de sugerencia de registro PROACTIVA ----
+
 
     # Si hay datos interpretados, loguearlo para saber que llegaron al handler de municipio
     if context.get("datos_interpretados_archivo"):
-        logger.info(f"[MUNICIPIOS_HANDLER] Recibidos datos interpretados de archivo: {context['datos_interpretados_archivo']}")
+        logger_actual.info(f"[MUNICIPIOS_HANDLER] Recibidos datos interpretados de archivo: {context['datos_interpretados_archivo']}")
     if context.get("archivo_id_para_asociar"):
-        logger.info(f"[MUNICIPIOS_HANDLER] Recibido archivo_id_para_asociar: {context['archivo_id_para_asociar']}")
-
+        logger_actual.info(f"[MUNICIPIOS_HANDLER] Recibido archivo_id_para_asociar: {context['archivo_id_para_asociar']}")
 
     # Detectar comando por texto del botón
     comando_from_text = BOTONES_COMANDOS_MUNICIPIO.get(pregunta_str.strip())
@@ -3471,15 +3557,19 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             }
 
     # Serializar estado actualizado para frontend/session
-    contexto_para_guardar = serializar_enum(context["contexto_municipio"])
-    media_url_to_send = contexto_municipio.get("foto_url") # Primarily for reclamo photos handled by ReclamoHandler
-    location_data_to_send = contexto_municipio.get("ubicacion_gps")
+    # Obtener la versión más reciente de contexto_municipio_actual de flask_session
+    # ya que los handlers podrían haberlo modificado.
+    contexto_para_guardar_final = serializar_enum(flask_session.get(CONTEXTO_MUNICIPIO, {}))
+
+    # media_url y location_data deben tomarse del contexto actualizado si los handlers los setean
+    media_url_to_send = contexto_para_guardar_final.get("foto_url")
+    location_data_to_send = contexto_para_guardar_final.get("ubicacion_gps")
 
     # Prepare the final response dictionary
     final_response_dict = {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar},
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar_final}, # <--- USAR EL FINAL
         "ticket_id": respuesta_final.get("ticket_id", None),
         "media_url": media_url_to_send, 
         "location_data": location_data_to_send,
@@ -3487,43 +3577,38 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     }
 
     # Check if a file was uploaded by the user in this turn and add its info for frontend display.
-    # This assumes 'received_payload' (which includes kwargs from routes/chat.py)
-    # might contain 'uploaded_file_info' if the frontend sent it after a successful upload via /archivos/subir.
-    # 'uploaded_file_info' structure: {'url': '/archivos/xyz.pdf', 'name': 'original.pdf', 'type': 'application/pdf'}
     uploaded_file_info = received_payload.get("uploaded_file_info")
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
             final_response_dict["adjuntos"].append({
                 "nombre_original": uploaded_file_info["name"],
-                "url_descarga": uploaded_file_info["url"], # This is the direct URL to the file from /archivos/subir
+                "url_descarga": uploaded_file_info["url"],
                 "tipo_mime": uploaded_file_info.get("type", 'application/octet-stream')
             })
-            logger.info(f"Adjuntando info de archivo subido a la respuesta: {uploaded_file_info['name']}")
+            logger_actual.info(f"Adjuntando info de archivo subido a la respuesta: {uploaded_file_info['name']}")
 
-    logger.info(f"[FIN] Respuesta final: '{final_response_dict.get('respuesta')}', Adjuntos: {len(final_response_dict['adjuntos'])}")
+    logger_actual.info(f"[RESPONDER_MUNICIPIO_END] Respuesta: '{final_response_dict.get('respuesta')[:100]}...', Adjuntos: {len(final_response_dict['adjuntos'])}")
 
     # Log anonymous conversation to Conversacion table
-    # Using pregunta_str (text part of user's message) and respuesta_final.get("respuesta") (text part of bot's message)
-    if anon_id and not viewer_user and respuesta_final: 
+    if anon_id and not viewer_user and respuesta_final and isinstance(respuesta_final, dict):
         try:
+            # La pregunta ya se guardó si se emitió sugerencia de registro.
+            # Solo guardar la respuesta del bot aquí.
+            # O mejor, guardar pregunta y respuesta siempre al final, y si hubo sugerencia, se duplica la pregunta.
+            # Por simplicidad, guardamos ambas aquí.
             db.session.add(Conversacion(
-                session_id=anon_id, 
+                session_id=kwargs.get("chat_session_uuid") or anon_id, # Priorizar chat_session_uuid si existe
                 pregunta=pregunta_str, 
-                respuesta="", 
-                fuente="municipio_anon_pregunta",
-                rubro=context.get("rubro_obj").nombre if context.get("rubro_obj") else "municipio_general"
-            ))
-            db.session.add(Conversacion(
-                session_id=anon_id,
-                pregunta=pregunta_str, 
-                respuesta=final_response_dict.get("respuesta"), # Use text response from final_response_dict
-                fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"),
-                rubro=context.get("rubro_obj").nombre if context.get("rubro_obj") else "municipio_general"
+                respuesta=final_response_dict.get("respuesta"),
+                fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"), # Usar fuente de la respuesta final
+                rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"),
+                user_id=None,
+                municipio_id=getattr(owner_user, "id", None)
             ))
             db.session.commit()
-            logger.info(f"Conversación anónima (municipio) para anon_id {anon_id} guardada.")
-        except Exception as e_conv:
-            logger.error(f"Error guardando conversación anónima de municipio para anon_id {anon_id}: {e_conv}", exc_info=True)
+            logger_actual.info(f"Conversación (municipio) para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')} guardada.")
+        except Exception as e_conv_muni:
+            logger_actual.error(f"Error guardando conversación de municipio para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')}: {e_conv_muni}", exc_info=True)
             db.session.rollback()
 
     return final_response_dict

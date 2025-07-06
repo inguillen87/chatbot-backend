@@ -176,9 +176,9 @@ def responder_chatboc(
         rubro_nombre = ""
         fuente = "no_encontrado"
 
-    logger.info(
-        f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
-    )
+    # logger.info(  # Comentado para reducir verbosidad, la siguiente línea es más completa.
+    #     f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
+    # )
 
     # Si el rubro indica un tipo específico de lógica, lo usamos siempre
     if rubro_nombre:
@@ -243,23 +243,31 @@ def responder_chatboc(
 
         esperado = "municipio" if es_rubro_publico(clave_para_chequeo_publico) else "pyme"
         if tipo_chat and tipo_chat != esperado:
-            logger.info(
-                "Ajustando tipo_chat de '%s' a '%s' por rubro público '%s' (clave chequeada: '%s')",
-                tipo_chat,
-                esperado,
-                rubro_nombre,
-                clave_para_chequeo_publico
+            logger.info( # Este log es importante si hay un ajuste
+                f"Ajustando tipo_chat de '{tipo_chat}' a '{esperado}' basado en rubro '{rubro_nombre}' (clave chequeada: '{clave_para_chequeo_publico}')"
             )
         tipo_chat = esperado
     elif tipo_chat not in ("municipio", "pyme"): # Si no hay rubro, el tipo_chat debe ser válido
         # Esta condición podría necesitar revisión. Si no hay rubro Y no hay tipo_chat válido,
         # es un error. Pero si tipo_chat es válido y no hay rubro, podría ser un chat genérico.
         # Por ahora, mantenemos: si no hay rubro, tipo_chat debe ser explícito y válido.
+        logger.error(f"Tipo de chat inválido ('{tipo_chat}') o no determinable sin un rubro claro.")
         raise ValueError(f"Tipo de chat inválido o no determinable sin rubro: {tipo_chat}")
 
     if not tipo_chat: # Si después de todo no se pudo determinar
+        logger.error("Error crítico: tipo_chat no pudo ser determinado.")
         raise ValueError("tipo_chat requerido y no pudo ser determinado.")
 
+    logger.info(
+        f"[LOGIC_DELEGATION_PREP] Preparando para delegar. "
+        f"OwnerUserID: {getattr(owner_user, 'id', 'N/A')}, "
+        f"ViewerUserID: {getattr(current_user, 'id', 'N/A')}, "
+        f"AnonID: {anon_id if anon_id else 'N/A'}, "
+        f"ChatSessionUUID: {chat_session_uuid if chat_session_uuid else 'N/A'}, "
+        f"RubroEfectivo: '{rubro_nombre}' (detectado de: {fuente}), "
+        f"RubroObjectID: {getattr(rubro_obj, 'id', 'N/A')}, "
+        f"TipoChatFinal: {tipo_chat}."
+    )
 
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")
