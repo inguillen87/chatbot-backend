@@ -52,16 +52,20 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         rubro_id = data.get("rubro_id")
         rubro_clave = data.get("rubro_clave")
         uploaded_file_info = data.get("uploaded_file_info") # Extract uploaded file info
+        archivo_adjunto_id = data.get("archivo_adjunto_id") # Nuevo: ID del ArchivoAdjunto si ya se creó
 
         # Validate uploaded_file_info structure if present
         if uploaded_file_info and not (
             isinstance(uploaded_file_info, dict) and
             "url" in uploaded_file_info and
-            "name" in uploaded_file_info
+            "name" in uploaded_file_info # Podríamos añadir 'id' aquí si el frontend lo manda
         ):
             raise ValueError("El campo 'uploaded_file_info' es inválido.")
 
-        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, uploaded_file_info, None
+        if archivo_adjunto_id and not isinstance(archivo_adjunto_id, int):
+            raise ValueError("El campo 'archivo_adjunto_id' debe ser un entero.")
+
+        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, uploaded_file_info, archivo_adjunto_id, None
 
     except (TypeError, ValueError) as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
@@ -71,6 +75,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             None,
             None,
             None,
+            None, # para archivo_adjunto_id
             jsonify({"error": str(e)}),
         )
     except Exception as e:
@@ -81,6 +86,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             None,
             None,
             None,
+            None, # para archivo_adjunto_id
             jsonify({"error": "Formato JSON inválido"}),
         )
 
@@ -115,19 +121,41 @@ def _procesar_chat(
             tipo_chat,
             rubro_id,
             rubro_clave,
-            uploaded_file_info, # Added this
+            uploaded_file_info,
+            archivo_adjunto_id, # Añadido
             error_response,
         ) = _parse_request(tipo_chat_fijo)
         if error_response:
             return error_response, 400
 
-        owner_obj = owner_user or current_user or _authenticate_and_get_user()
-        viewer_obj = current_user
-        if not owner_obj and not anon_id:
-            return jsonify({"error": "No autenticado."}), 401
+        # --- Autenticación y obtención de usuario ---
+        # owner_obj es el dueño del bot/configuración (ej. la PYME o el Municipio)
+        # viewer_obj es el usuario que está chateando (puede ser el mismo owner, un empleado, o un anónimo)
+        owner_obj = owner_user or current_user # Si hay token de "owner" (ej. widget embebido con clave API de pyme)
+        viewer_obj = current_user # El usuario autenticado por token JWT estándar, o None si es anónimo
+
+        # Si no hay owner_user (clave API específica del bot) Y no hay current_user (sesión JWT),
+        # Y además no hay anon_id, entonces no hay forma de identificar al que pregunta.
+        # El decorador @anon_o_token_requerido ya debería manejar que current_user o anon_id existan.
+        # La lógica de owner_obj es más para cuando el "bot" mismo es el dueño (ej. una PYME interactuando con su propio bot)
+        # o cuando se usa una clave API específica del "bot" para identificarlo.
+
+        # Simplificación: si hay owner_user (pasado por el decorador si el token es de un User que es owner), usarlo.
+        # Si no, usar current_user (si está autenticado).
+        # Si es anónimo, owner_obj será None aquí, lo cual es correcto.
+        # El `responder_chatboc` y otros servicios deben manejar owner_obj=None para anónimos.
+
+        # El owner_obj real (dueño del rubro/configuración) se determinará más adelante basado en rubro_id/clave,
+        # o si el current_user tiene un rubro propio.
+        # Por ahora, 'actor_principal' es quien realiza la acción o a quien se le atribuye (si está logueado).
+        actor_principal = owner_obj or viewer_obj
+
+
+        if not actor_principal and not anon_id: # Doble chequeo, aunque @anon_o_token_requerido debería cubrirlo
+            return jsonify({"error": "No autenticado o identificado."}), 401
 
         # --- CONTROL DE LÍMITES PARA USUARIOS ANÓNIMOS ---
-        if anon_id and not owner_obj: # Es anónimo
+        if anon_id and not actor_principal: # Es anónimo
             max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
             session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
 
@@ -165,101 +193,146 @@ def _procesar_chat(
             # Nota: El incremento de `preguntas_usadas` para anónimos (si se implementa un contador global)
             # o el registro de la `Conversacion` (que implícitamente cuenta) ocurrirá después de que `responder_chatboc` tenga éxito.
 
+        # --- Determinación del Rubro y Owner real del Bot ---
+        # El `owner_del_bot` es el User (PYME o Municipio) cuya configuración se usa.
+        # Puede ser encontrado por `rubro_id`, `rubro_clave`, o si el `actor_principal` (usuario logueado) tiene un rubro.
+        rubro_obj_global = None # Rubro que se usará para la lógica del bot.
+        owner_del_bot = None    # Usuario dueño de ese rubro/bot.
+
         if rubro_id:
-            rubro_obj = Rubro.query.get(rubro_id)
+            rubro_obj_global = Rubro.query.get(rubro_id)
+            if rubro_obj_global:
+                owner_del_bot = User.query.get(rubro_obj_global.user_id)
         elif rubro_clave:
-            rubro_obj = Rubro.query.filter(
-                func.lower(Rubro.clave) == rubro_clave.lower()
-            ).first()
-        else:
-            rubro_obj = owner_obj.rubro if owner_obj and owner_obj.rubro else None
+            rubro_obj_global = Rubro.query.filter(func.lower(Rubro.clave) == rubro_clave.lower()).first()
+            if rubro_obj_global:
+                owner_del_bot = User.query.get(rubro_obj_global.user_id)
+        elif actor_principal and actor_principal.rubro: # Si el usuario logueado tiene un rubro asociado directamente
+            rubro_obj_global = actor_principal.rubro
+            owner_del_bot = actor_principal # El usuario logueado es el dueño del bot
 
-        # Logueamos qué rubro se está usando para procesar la pregunta
-        if rubro_obj:
-            nombre_rubro = getattr(rubro_obj, "nombre", None) or getattr(rubro_obj, "clave", None)
-            current_app.logger.info(
-                f"Usando rubro ID {rubro_obj.id} - {nombre_rubro}"
-            )
-        else:
-            current_app.logger.info("Sin rubro asociado al usuario o en la petición")
+        if not owner_del_bot and rubro_obj_global: # Caso raro: rubro existe pero no tiene user_id o user no existe
+             current_app.logger.warning(f"Rubro ID {rubro_obj_global.id} encontrado pero sin User owner asociado.")
+             # Podríamos permitir continuar si el rubro es público y no requiere owner específico para su lógica base.
 
-        # --- CONTROL DE PLAN SOLO PARA USUARIOS AUTENTICADOS ---
-        if owner_obj:
+        if rubro_obj_global:
+            nombre_rubro_log = getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", "N/A")
+            owner_id_log = getattr(owner_del_bot, "id", "N/A")
+            current_app.logger.info(f"Usando Rubro ID {rubro_obj_global.id} ('{nombre_rubro_log}') perteneciente a User ID {owner_id_log} para la lógica del bot.")
+        else:
+            current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
+
+        # --- CONTROL DE PLAN (si el bot tiene un owner y éste tiene plan) ---
+        if owner_del_bot: # Solo aplicar límites si el bot pertenece a un User específico
             from utils.plan_limits import limite_para_usuario
-            limite = limite_para_usuario(owner_obj)
-            if limite is not None and owner_obj.preguntas_usadas >= limite:
-                return (
-                    jsonify(
-                        {
-                            "error": f"Alcanzaste el límite de preguntas de tu plan ({limite}). Mejorá tu plan para seguir consultando."
-                        }
-                    ),
-                    403,
-                )
+            limite = limite_para_usuario(owner_del_bot)
+            if limite is not None and owner_del_bot.preguntas_usadas >= limite:
+                return jsonify({
+                    "error": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."
+                }), 403
 
-        from flask import session as flask_request_session # Renombrar para evitar conflicto con session_obj
+        # --- MANEJO DE IMAGEN ADJUNTA ---
+        interpretacion_imagen_resultado = None
+        if uploaded_file_info and archivo_adjunto_id: # Asumimos que el frontend ya subió el archivo y nos pasa el ID
+            from models import ArchivoAdjunto # Import local para evitar ciclos
+            from services.interpretacion_imagen_service import interpretar_imagen_para_chat # Import local
+
+            archivo_obj = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
+            if archivo_obj:
+                current_app.logger.info(f"Procesando imagen adjunta ID: {archivo_adjunto_id} para chat tipo: {tipo_chat}")
+
+                tipo_interpretacion_img = None
+                pyme_owner_para_pedido = None
+
+                if tipo_chat == "pyme":
+                    tipo_interpretacion_img = "pedido_pyme"
+                    pyme_owner_para_pedido = owner_del_bot # La PYME dueña del bot/rubro
+                    if not pyme_owner_para_pedido:
+                         current_app.logger.warning(f"No se pudo determinar el owner PYME para interpretar pedido de imagen {archivo_adjunto_id}. Se intentará con el usuario actual si es PYME.")
+                         # Si el que chatea (viewer_obj) es una pyme y tiene catálogo, podría ser él.
+                         # Esto es menos común, usualmente el cliente de la pyme sube la imagen.
+                         # Por ahora, se requiere que el `owner_del_bot` (la pyme a la que se le habla) esté definido.
+                         # Si no, la interpretación de pedido no funcionará bien.
+                elif tipo_chat == "municipio":
+                    tipo_interpretacion_img = "reclamo_municipal"
+
+                if tipo_interpretacion_img:
+                    # Pasar owner_del_bot como pyme_user si es un pedido pyme
+                    interpretacion_imagen_resultado = interpretar_imagen_para_chat(
+                        archivo_obj,
+                        tipo_interpretacion_img,
+                        pyme_user=pyme_owner_para_pedido if tipo_interpretacion_img == "pedido_pyme" else None
+                    )
+                    current_app.logger.info(f"Resultado interpretación imagen: {interpretacion_imagen_resultado}")
+                    # Este resultado se pasará a `responder_chatboc` o se usará para modificar la respuesta.
+                else:
+                    current_app.logger.warning(f"Tipo de chat '{tipo_chat}' no tiene interpretación de imagen definida.")
+            else:
+                current_app.logger.error(f"No se encontró ArchivoAdjunto con ID {archivo_adjunto_id} en la DB.")
+
+        # --- OBTENER SESSION CHAT ID ---
+        from flask import session as flask_request_session
         import uuid
-
         session_chat_id = flask_request_session.get('chat_session_uuid')
         if not session_chat_id:
             session_chat_id = str(uuid.uuid4())
             flask_request_session['chat_session_uuid'] = session_chat_id
-
         current_app.logger.info(f"Chat Session ID: {session_chat_id}")
 
-        # Usamos la lógica centralizada que decide según el rubro
+        # --- LLAMADA A LA LÓGICA CENTRAL DEL CHATBOT ---
+        # `owner_del_bot` es el User dueño de la configuración del bot (PYME o Municipio).
+        # `viewer_obj` es el User que está chateando (puede ser None si es anónimo).
         resultado = responder_chatboc(
-            pregunta,
-            owner_user=owner_obj,
+            pregunta=pregunta,
+            owner_user=owner_del_bot,
             current_user=viewer_obj,
-            rubro_obj=rubro_obj,
-            rubro_nombre_frontend=rubro_clave,
-            tipo_chat=tipo_chat,
-            contexto_previo=contexto_previo, # Esto es el contexto_pyme o contexto_municipio de la sesión
+            rubro_obj=rubro_obj_global,
+            rubro_nombre_frontend=rubro_clave, # El que mandó el frontend, para consistencia
+            tipo_chat=tipo_chat, # El que mandó el frontend
+            contexto_previo=contexto_previo,
             anon_id=anon_id,
-            chat_session_uuid=session_chat_id, # Pasar el session_uuid
-            uploaded_file_info=uploaded_file_info # Pass file info
+            chat_session_uuid=session_chat_id,
+            uploaded_file_info=uploaded_file_info, # Información original del archivo
+            interpretacion_imagen_data=interpretacion_imagen_resultado # Nuevo: resultado del análisis de imagen
         )
 
         # --- Determinar si la conversación debe considerarse pública ---
-        rubro_seleccionado = (
-            rubro_obj
-            or rubro_clave
-            or (owner_obj.rubro if owner_obj and getattr(owner_obj, "rubro", None) else None)
-        )
-        rubro_nombre = normalizar_rubro(rubro_seleccionado)
-        es_publico = es_rubro_publico(rubro_seleccionado)
+        # Usar el rubro_obj_global que se determinó como el rubro efectivo para esta interacción.
+        es_publico = es_rubro_publico(rubro_obj_global)
+        nombre_rubro_log = getattr(rubro_obj_global, "clave", "N/A") if rubro_obj_global else "N/A"
 
         current_app.logger.info(
-            f"[RUBROS] user.rubro={getattr(owner_obj, 'rubro', None)} "
-            f"rubroSeleccionado={rubro_seleccionado} "
-            f"rubroNormalizado={rubro_nombre} esRubroPublico={es_publico}"
+            f"[RUBROS] Rubro efectivo: '{nombre_rubro_log}' (ID: {getattr(rubro_obj_global, 'id', 'N/A')}), esPublico={es_publico}"
         )
 
+        # --- INCREMENTAR CONTADOR DE PREGUNTAS (si el bot tiene owner) ---
+        if owner_del_bot:
+            owner_del_bot.preguntas_usadas += 1
+            # Nota: el commit de la sesión de DB se hace al final, o podría hacerse aquí
+            # si es crítico que se guarde incluso si `responder_chatboc` falla después.
+            # Por ahora, se asume que si `responder_chatboc` tiene éxito, la pregunta cuenta.
 
-        # --- INCREMENTAR CONTADOR SOLO SI TODO ESTÁ OK ---
-        if owner_obj:
-            owner_obj.preguntas_usadas += 1
-            try:
-                db.session.commit()
-            except Exception as e:
-                current_app.logger.error(
-                    f"Error al actualizar preguntas_usadas: {e}"
-                )
-                # NO frena el flujo del bot, pero loguea
-
-        # --- OPCIONAL: DEVOLVER CONTADOR ACTUALIZADO ---
+        # --- DEVOLVER RESULTADO ---
         if isinstance(resultado, dict):
             resultado["es_publico"] = es_publico
-            if owner_obj:
+            if owner_del_bot: # Si el bot tiene un owner específico
                 from utils.plan_limits import limite_para_usuario
-                resultado["preguntas_usadas"] = owner_obj.preguntas_usadas
-                resultado["limite_preguntas"] = limite_para_usuario(owner_obj)
+                resultado["preguntas_usadas"] = owner_del_bot.preguntas_usadas
+                resultado["limite_preguntas"] = limite_para_usuario(owner_del_bot)
 
+            # Si hubo interpretación de imagen, añadirla a la respuesta para el frontend
+            if interpretacion_imagen_resultado and not interpretacion_imagen_resultado.get("error"):
+                resultado["interpretacion_adjunto"] = interpretacion_imagen_resultado
+                # Ejemplo: si es un pedido Pyme y se detectaron items, el frontend puede usar esto
+                # para mostrar los items o preguntar si se añaden al carrito.
+                # Si es un reclamo, podría mostrar un resumen de lo detectado.
+
+        db.session.commit() # Commit de cambios (ej. preguntas_usadas)
         return jsonify(resultado), 200
 
     except Exception as e:
-        current_app.logger.error(f"❌ Error crítico en /ask: {e}", exc_info=True)
+        db.session.rollback() # Rollback en caso de error antes del commit final
+        current_app.logger.error(f"❌ Error crítico en _procesar_chat: {e}", exc_info=True)
         return jsonify({"error": "Error interno del servidor."}), 500
 
 

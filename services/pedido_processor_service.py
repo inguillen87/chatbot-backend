@@ -32,6 +32,102 @@ logger = logging.getLogger(__name__)
 
 # Umbral de similitud para aceptar un producto encontrado por nombre
 UMBRAL_SIMILITUD_PRODUCTO_PEDIDO = 0.80 # Ajustable
+UMBRAL_SIMILITUD_OCR_PEDIDO = 0.75 # Ligeramente más bajo para OCR
+
+
+def buscar_item_en_catalogo(
+    pyme_user_id: int,
+    nombre_busqueda: str,
+    sku_busqueda: Optional[str] = None,
+    umbral_similitud: float = UMBRAL_SIMILITUD_PRODUCTO_PEDIDO,
+    es_ocr: bool = False # Para aplicar lógicas ligeramente diferentes si la búsqueda viene de OCR
+) -> Optional[CatalogoItem]:
+    """
+    Busca un ítem en el catálogo de una PYME por SKU (si se provee o si el nombre parece SKU) y por nombre.
+
+    Args:
+        pyme_user_id: ID del usuario PYME dueño del catálogo.
+        nombre_busqueda: El nombre del producto a buscar (puede ser un SKU si sku_busqueda es None).
+        sku_busqueda: El SKU explícito a buscar (opcional).
+        umbral_similitud: Umbral para la comparación de nombres por Levenshtein.
+        es_ocr: Si es True, indica que la búsqueda proviene de un texto OCR, pudiendo aplicar heurísticas
+                o umbrales ligeramente diferentes.
+
+    Returns:
+        El objeto CatalogoItem encontrado, o None.
+    """
+    item_encontrado = None
+    nombre_limpio = limpiar_texto_base(nombre_busqueda)
+    sku_limpio = limpiar_texto_base(sku_busqueda) if sku_busqueda else None
+
+    # 1. Búsqueda por SKU explícito (si se proporciona)
+    if sku_limpio:
+        item_encontrado = CatalogoItem.query.filter_by(user_id=pyme_user_id, sku=sku_limpio).first()
+        if item_encontrado:
+            logger.info(f"[CATALOG_SEARCH] Encontrado por SKU explícito '{sku_limpio}' -> Cat.ID {item_encontrado.id} ('{item_encontrado.nombre}')")
+            return item_encontrado
+
+    # 2. Si no hay SKU explícito Y el nombre_busqueda parece un SKU (especialmente si es OCR)
+    #    O si simplemente queremos probar el nombre_busqueda como SKU.
+    #    Esta heurística de "parece SKU" es simple.
+    if not item_encontrado and (es_ocr and re.match(r"^[A-Za-z0-9-]{3,20}$", nombre_limpio)) or \
+       (not es_ocr and not sku_limpio): # Si no es OCR, probar nombre_limpio como SKU si no se dio sku_busqueda
+        # No loguear aquí como "búsqueda por SKU" si es solo una prueba del nombre_limpio como SKU.
+        # Se logueará si se encuentra de esta forma.
+        item_potencial_por_sku_en_nombre = CatalogoItem.query.filter_by(user_id=pyme_user_id, sku=nombre_limpio).first()
+        if item_potencial_por_sku_en_nombre:
+            logger.info(f"[CATALOG_SEARCH] Encontrado por nombre_busqueda '{nombre_limpio}' actuando como SKU -> Cat.ID {item_potencial_por_sku_en_nombre.id} ('{item_potencial_por_sku_en_nombre.nombre}')")
+            return item_potencial_por_sku_en_nombre
+
+
+    # 3. Búsqueda por similitud de nombre
+    if not item_encontrado and nombre_limpio: # Solo buscar por nombre si hay un nombre_limpio
+        nombre_norm = nombre_limpio.lower()
+
+        # Búsqueda inicial con ILIKE (más eficiente en DB que Levenshtein en toda la tabla)
+        # Usamos un query más permisivo si es OCR, o más restrictivo si es de Excel/directo
+        filtro_nombre = CatalogoItem.nombre.ilike(f"%{nombre_norm}%")
+        if es_ocr and len(nombre_norm.split()) > 1:
+             # Para OCR, si hay varias palabras, también buscar por la primera palabra si es significativa
+            primera_palabra_ocr = nombre_norm.split()[0]
+            if len(primera_palabra_ocr) > 2:
+                 filtro_nombre = func.or_(
+                     CatalogoItem.nombre.ilike(f"%{nombre_norm}%"),
+                     CatalogoItem.nombre.ilike(f"%{primera_palabra_ocr}%")
+                 )
+        elif not es_ocr and len(nombre_norm.split()) > 1: # Para Excel, si hay varias palabras, buscar la frase completa
+            # Podríamos mantener el contains simple o hacerlo más estricto si es necesario.
+            # Por ahora, el ilike(f"%{nombre_norm}%") es un buen punto de partida.
+            pass
+
+
+        candidatos = CatalogoItem.query.filter(
+            CatalogoItem.user_id == pyme_user_id,
+            filtro_nombre
+        ).limit(10).all() # Aumentar un poco el límite de candidatos para dar más margen a Levenshtein
+
+        if candidatos:
+            mejor_candidato = None
+            max_sim = -1.0
+
+            for candidato in candidatos:
+                sim = calcular_similitud_levenshtein(nombre_norm, candidato.nombre.lower())
+                if sim > max_sim:
+                    max_sim = sim
+                    mejor_candidato = candidato
+
+            if mejor_candidato and max_sim >= umbral_similitud:
+                item_encontrado = mejor_candidato
+                logger.info(f"[CATALOG_SEARCH] Encontrado por similitud de nombre '{nombre_limpio}' (Score: {max_sim:.2f}) -> Cat.ID {item_encontrado.id} ('{item_encontrado.nombre}')")
+                return item_encontrado
+            else:
+                logger.info(f"[CATALOG_SEARCH] Nombre '{nombre_limpio}' no alcanzó umbral de similitud (Mejor: {max_sim:.2f} vs Umbral: {umbral_similitud}). Mejor candidato: {getattr(mejor_candidato, 'nombre', 'N/A')}")
+
+    if not item_encontrado:
+        logger.info(f"[CATALOG_SEARCH] Producto '{nombre_busqueda}' (SKU: '{sku_busqueda}') no encontrado en catálogo de PYME {pyme_user_id} con los criterios actuales.")
+
+    return item_encontrado
+
 
 def procesar_pedido_excel(path_archivo: str, pyme_user_id: int) -> Dict[str, Any]:
     """
@@ -105,64 +201,33 @@ def procesar_pedido_excel(path_archivo: str, pyme_user_id: int) -> Dict[str, Any
         try:
             # Intentar convertir cantidad a float primero para manejar decimales, luego a int.
             cantidad_pedido_float = float(cantidad_excel_str.replace(',', '.'))
-            cantidad_pedido = int(cantidad_pedido_float)
+            cantidad_pedido = int(round(cantidad_pedido_float)) # Usar round para evitar truncamiento simple si es 2.9 -> 3
             if cantidad_pedido <= 0:
-                items_no_encontrados.append({"fila_excel": fila_excel_num, "producto_excel": nombre_producto_excel, "razon": "Cantidad no es positiva."})
+                items_no_encontrados.append({"fila_excel": fila_excel_num, "producto_excel": nombre_producto_excel, "sku_excel": sku_excel, "razon": "Cantidad no es positiva."})
                 continue
-            if cantidad_pedido_float != cantidad_pedido: # Si había decimales y se truncaron
-                 logger.warning(f"Fila {fila_excel_num}: Cantidad '{cantidad_excel_str}' tenía decimales, se usó {cantidad_pedido}.")
+            if abs(cantidad_pedido_float - cantidad_pedido) > 0.001: # Si había decimales significativos
+                 logger.warning(f"Fila {fila_excel_num}: Cantidad '{cantidad_excel_str}' tenía decimales, se redondeó a {cantidad_pedido}.")
 
         except ValueError:
-            items_no_encontrados.append({"fila_excel": fila_excel_num, "producto_excel": nombre_producto_excel, "razon": f"Cantidad '{cantidad_excel_str}' no es un número válido."})
+            items_no_encontrados.append({"fila_excel": fila_excel_num, "producto_excel": nombre_producto_excel, "sku_excel": sku_excel, "razon": f"Cantidad '{cantidad_excel_str}' no es un número válido."})
             continue
 
-        item_catalogo_encontrado = None
-        # 1. Buscar por SKU si se proporciona y existe
-        if sku_excel:
-            item_catalogo_encontrado = CatalogoItem.query.filter_by(user_id=pyme_user.id, sku=sku_excel).first()
-            if item_catalogo_encontrado:
-                 logger.info(f"Fila {fila_excel_num}: Producto '{nombre_producto_excel}' encontrado por SKU '{sku_excel}' -> Catálogo ID {item_catalogo_encontrado.id} ('{item_catalogo_encontrado.nombre}')")
+        # Usar la nueva función de búsqueda
+        item_catalogo_encontrado = buscar_item_en_catalogo(
+            pyme_user_id=pyme_user_id,
+            nombre_busqueda=nombre_producto_excel,
+            sku_busqueda=sku_excel, # Pasar el SKU del Excel si existe
+            umbral_similitud=UMBRAL_SIMILITUD_PRODUCTO_PEDIDO, # Usar el umbral estándar para Excel
+            es_ocr=False # No es OCR
+        )
 
-        # 2. Si no se encontró por SKU, buscar por nombre (más complejo)
-        if not item_catalogo_encontrado:
-            # Opción A: Búsqueda por similitud de Levenshtein en toda la base (puede ser lento)
-            # Opción B: Búsqueda con func.lower().contains() y luego Levenshtein sobre candidatos (mejor)
-            # Opción C: Búsqueda Vectorial (Qdrant) - ideal pero requiere indexación previa.
-
-            # Implementando Opción B (simplificada):
-            # Tomar los primeros 5 candidatos por 'contains' y luego el mejor por Levenshtein
-            nombre_norm_excel = nombre_producto_excel.lower()
-            candidatos = CatalogoItem.query.filter(
-                CatalogoItem.user_id == pyme_user.id,
-                func.lower(CatalogoItem.nombre).contains(nombre_norm_excel)
-            ).limit(5).all()
-
-            if not candidatos and len(nombre_norm_excel.split()) > 1 : # Si no hay con contains, probar con la primera palabra del nombre
-                primera_palabra = nombre_norm_excel.split()[0]
-                if len(primera_palabra) > 3: # Evitar palabras muy cortas
-                    candidatos = CatalogoItem.query.filter(
-                        CatalogoItem.user_id == pyme_user.id,
-                        func.lower(CatalogoItem.nombre).contains(primera_palabra)
-                    ).limit(5).all()
-
-            if candidatos:
-                mejor_candidato = None
-                max_sim = -1.0
-                for candidato in candidatos:
-                    sim = calcular_similitud_levenshtein(nombre_norm_excel, candidato.nombre.lower())
-                    if sim > max_sim:
-                        max_sim = sim
-                        mejor_candidato = candidato
-
-                if mejor_candidato and max_sim >= UMBRAL_SIMILITUD_PRODUCTO_PEDIDO:
-                    item_catalogo_encontrado = mejor_candidato
-                    logger.info(f"Fila {fila_excel_num}: Producto '{nombre_producto_excel}' encontrado por similitud de nombre (score: {max_sim:.2f}) -> Catálogo ID {item_catalogo_encontrado.id} ('{item_catalogo_encontrado.nombre}')")
-
-        # 3. Procesar el ítem si se encontró en el catálogo
         if item_catalogo_encontrado:
+            # Log específico para Excel si se desea, o confiar en los logs de buscar_item_en_catalogo
+            logger.info(f"Fila Excel {fila_excel_num}: Producto '{nombre_producto_excel}' (SKU: '{sku_excel}') -> Match con Cat.ID {item_catalogo_encontrado.id} ('{item_catalogo_encontrado.nombre}')")
+
             precio_str, precio_float, moneda = parse_precio_flexible(item_catalogo_encontrado.precio)
             if precio_float is None:
-                items_no_encontrados.append({"fila_excel": fila_excel_num, "producto_excel": nombre_producto_excel, "razon": f"Producto '{item_catalogo_encontrado.nombre}' (ID: {item_catalogo_encontrado.id}) encontrado pero sin precio válido en catálogo ('{item_catalogo_encontrado.precio}')."})
+                items_no_encontrados.append({"fila_excel": fila_excel_num, "producto_excel": nombre_producto_excel, "sku_excel": sku_excel, "razon": f"Producto '{item_catalogo_encontrado.nombre}' (ID: {item_catalogo_encontrado.id}) encontrado pero sin precio válido en catálogo ('{item_catalogo_encontrado.precio}')."})
                 continue
 
             items_procesados.append({
