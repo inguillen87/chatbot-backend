@@ -439,4 +439,88 @@ class PlantillasRespuesta(db.Model):
     def __repr__(self):
         return f"<PlantillasRespuesta id={self.id} name='{self.name}'>"
 
+
+class Promocion(db.Model):
+    __tablename__ = "promocion"
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    pyme_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    nombre_promocion = db.Column(db.String(255), nullable=False)
+    descripcion_publica = db.Column(db.Text, nullable=True)
+
+    # TIPO_PROMOCION: Define la lógica principal de la promoción
+    # PORCENTAJE_PRODUCTO, PORCENTAJE_CATEGORIA, PORCENTAJE_MARCA
+    # COMPRA_X_LLEVA_Y_PRODUCTOS (ej. 2x1, 3x2 donde Y es el total llevado, X el pagado)
+    # CANTIDAD_MINIMA_DESCUENTO_FIJO_PRODUCTO (ej. lleva 3 de X, obtén $50 de descuento en esos 3)
+    # CANTIDAD_MINIMA_DESCUENTO_PORCENTAJE_PRODUCTO (ej. lleva 3 de X, obtén 10% de descuento en esos 3)
+    # TOTAL_CARRITO_DESCUENTO_PORCENTAJE (ej. 10% off en compras > $5000)
+    # TOTAL_CARRITO_DESCUENTO_FIJO (ej. $200 off en compras > $3000)
+    tipo_promocion = db.Column(db.String(100), nullable=False)
+
+    valor_descuento = db.Column(db.Float, nullable=True) # Para % (ej 20.0) o monto fijo ($50)
+
+    # Para COMPRA_X_LLEVA_Y_PRODUCTOS
+    cantidad_condicion_x = db.Column(db.Integer, nullable=True) # Cantidad a pagar
+    cantidad_resultado_y = db.Column(db.Integer, nullable=True) # Cantidad total que se lleva
+
+    # Para CANTIDAD_MINIMA...
+    cantidad_minima_aplicable = db.Column(db.Integer, nullable=True)
+
+    # Para TOTAL_CARRITO...
+    monto_minimo_carrito = db.Column(db.Float, nullable=True)
+
+    fecha_inicio = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    fecha_fin = db.Column(db.DateTime, nullable=True) # Nullable si la promo no tiene fin
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+
+    codigo_promocion = db.Column(db.String(50), nullable=True, unique=True, index=True) # Si requiere un código
+    uso_maximo_general = db.Column(db.Integer, nullable=True) # Límite total de usos
+    usos_actuales_general = db.Column(db.Integer, default=0)
+    uso_maximo_por_cliente = db.Column(db.Integer, nullable=True) # Límite por cliente
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    pyme = db.relationship('User', backref=db.backref('promociones', lazy='dynamic'))
+    alcances = db.relationship('PromocionAlcance', back_populates='promocion', cascade="all, delete-orphan", lazy='dynamic')
+
+    def __repr__(self):
+        return f"<Promocion id={self.id} nombre='{self.nombre_promocion}' pyme_id={self.pyme_user_id}>"
+
+class PromocionAlcance(db.Model):
+    __tablename__ = "promocion_alcance"
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    promocion_id = db.Column(db.String(36), db.ForeignKey('promocion.id'), nullable=False, index=True)
+
+    # TIPO_ALCANCE: PRODUCTO, CATEGORIA, MARCA
+    # Si es PRODUCTO, catalogo_item_id es el relevante.
+    # Si es CATEGORIA, nombre_categoria es el relevante.
+    # Si es MARCA, nombre_marca es el relevante.
+    # Una promoción puede tener múltiples alcances (ej. aplica a ProductoA Y ProductoB)
+    tipo_alcance = db.Column(db.String(50), nullable=False) # PRODUCTO, CATEGORIA, MARCA
+
+    catalogo_item_id = db.Column(db.Integer, db.ForeignKey('catalogo_item.id'), nullable=True, index=True)
+    nombre_categoria = db.Column(db.String(100), nullable=True, index=True) # Debe coincidir con CatalogoItem.categoria
+    nombre_marca = db.Column(db.String(100), nullable=True, index=True) # Debe coincidir con CatalogoItem.marca
+
+    promocion = db.relationship('Promocion', back_populates='alcances')
+    item_catalogo = db.relationship('CatalogoItem', backref=db.backref('aplicaciones_promocion', lazy='dynamic'))
+
+    def __repr__(self):
+        return f"<PromocionAlcance id={self.id} promocion_id={self.promocion_id} tipo='{self.tipo_alcance}'>"
+
+# Opcional: Tabla para rastrear el uso de promociones por cliente, especialmente si hay límites.
+# class PromocionUsoCliente(db.Model):
+#     __tablename__ = "promocion_uso_cliente"
+#     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+#     promocion_id = db.Column(db.String(36), db.ForeignKey('promocion.id'), nullable=False, index=True)
+#     cliente_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True) # El User cliente
+#     pyme_pedido_id = db.Column(db.Integer, db.ForeignKey('pyme_pedido.id'), nullable=True, index=True) # Pedido donde se usó
+#     fecha_uso = db.Column(db.DateTime, default=datetime.utcnow)
+#     # Se podría añadir info sobre el descuento aplicado si es variable o para auditoría
+#
+#     promocion = db.relationship('Promocion', backref='usos_por_clientes')
+#     cliente = db.relationship('User', backref='promociones_usadas')
+#     pedido = db.relationship('PymePedido', backref='promociones_aplicadas_en_pedido')
+
+
 print("✅ models.py fue importado con éxito y contiene modelos.")

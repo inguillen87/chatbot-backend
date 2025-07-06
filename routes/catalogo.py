@@ -112,19 +112,35 @@ def _formatear_producto(data: dict) -> dict:
     if isinstance(precio_pack, str) and not precio_pack:
         precio_pack = None
 
+    # Priorizar descripción corta si existe
+    descripcion_final = data.get("descripcion_corta") or data.get("descripcion") or None
+
+    # Información de promoción
+    # En Qdrant se guarda como "promocion_texto", en CatalogoItem es "promocion_info"
+    # La función procesar_y_embedear_catalogo en upload_processor.py mapea
+    # prod_dict_final.get("promocion_texto", "") a CatalogoItem.promocion_info
+    # Así que al leer de CatalogoItem, es "promocion_info".
+    # Al leer de Qdrant (data), es "promocion_texto".
+    promo_info = data.get("promocion_texto") # Desde Qdrant
+    if not promo_info and "promocion_info" in data: # Desde CatalogoItem (si 'data' es un dict de su __dict__)
+        promo_info = data.get("promocion_info")
+
     return {
         "nombre": data.get("nombre", ""),
+        "marca": data.get("marca"), # Añadido aquí para consistencia en la estructura base
         "categoria": data.get("categoria") or data.get("categoria_qdrant", ""),
-        "descripcion": data.get("descripcion") or None,
+        "descripcion": descripcion_final, # Usa la descripción corta si está disponible
+        "promocion_info": promo_info if promo_info else None, # Añadido campo de promoción
         "sku": data.get("sku") or None,
-        "presentacion": data.get("unidad") or data.get("presentacion", ""),
+        "presentacion": data.get("unidad") or data.get("presentacion", "") or data.get("unidad_original",""), # Añadido fallback a unidad_original
         "talles": data.get("talles"),
         "colores": data.get("colores"),
         "precio_unitario": precio_unitario,
         "precio_pack": precio_pack if precio_pack != precio_unitario else None,
-        "stock": data.get("cantidad"),
-        "marca": data.get("marca"),
+        "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
         "imagen_url": data.get("imagen_url"),
+        # Podríamos añadir aquí una lista de acciones sugeridas para el bot
+        # "acciones_sugeridas": ["agregar_carrito", "mas_detalles"] # Ejemplo
     }
 
 
@@ -292,3 +308,49 @@ def resumen_catalogo(user):
         ],
     }
     return jsonify(data)
+
+
+@catalogo_bp.route('/publico/<int:pyme_user_id>/descargar', methods=['GET'])
+def descargar_catalogo_publico(pyme_user_id):
+    """
+    Permite la descarga pública del catálogo más reciente de una PYME específica.
+    Este endpoint no requiere token de cliente final.
+    """
+    from flask import current_app # Importar aquí para acceso al logger y config
+    from models import User, db # Importar User y db para la sesión
+
+    pyme_user = db.session.get(User, pyme_user_id)
+
+    if not pyme_user or pyme_user.rol not in ["admin", "empleado"]:
+        current_app.logger.warning(f"Intento de descarga de catálogo para PYME no válida o usuario no admin/empleado ID: {pyme_user_id}")
+        return jsonify({"error": "PYME no encontrada o no válida."}), 404
+
+    # Opcional: Añadir comprobación de una flag en pyme_user para permitir descarga pública
+    # if not getattr(pyme_user, 'permitir_descarga_catalogo_publica', True): # Asumir True si no existe
+    #     current_app.logger.info(f"Descarga pública de catálogo denegada para PYME ID: {pyme_user_id} (configuración).")
+    #     return jsonify({"error": "Esta PYME no permite la descarga pública de su catálogo."}), 403
+
+    adj = (
+        ArchivoAdjunto.query.filter_by(user_id=pyme_user.id, tipo="catalogo")
+        .order_by(ArchivoAdjunto.fecha.desc())
+        .first()
+    )
+    if not adj:
+        current_app.logger.info(f"No hay catálogo disponible para descarga pública para PYME ID: {pyme_user_id}")
+        return jsonify({"error": "No hay catálogo disponible para esta PYME."}), 404
+
+    # Asegurarse que CATALOGO_FOLDER es accesible aquí.
+    # Si CATALOGO_FOLDER se definió al inicio del archivo, ya está disponible.
+    # Si no, importarlo o definirlo.
+    # from services.upload_processor import CATALOGO_FOLDER (si está allí)
+    # O si está en config: current_app.config.get("CATALOGO_FOLDER_PATH")
+    # Por ahora, asumimos que CATALOGO_FOLDER (definido al inicio de este archivo) es correcto.
+
+    current_app.logger.info(f"Proporcionando descarga pública del catálogo '{adj.filename}' para PYME ID: {pyme_user_id} desde la carpeta {CATALOGO_FOLDER}")
+
+    # Verificar que el archivo exista antes de intentar enviarlo
+    if not os.path.exists(os.path.join(CATALOGO_FOLDER, adj.filename)):
+        current_app.logger.error(f"El archivo de catálogo '{adj.filename}' no fue encontrado en la ruta esperada: {os.path.join(CATALOGO_FOLDER, adj.filename)} para PYME ID: {pyme_user_id}")
+        return jsonify({"error": "Archivo de catálogo no encontrado en el servidor."}), 500
+
+    return send_from_directory(CATALOGO_FOLDER, adj.filename, as_attachment=True)

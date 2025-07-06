@@ -428,6 +428,77 @@ if __name__ == '__main__':
 print("Done with llm_utils.py basic execution tests.")
 
 
+def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int = 200, min_longitud: int = 50) -> str:
+    """
+    Resume una descripción de producto utilizando un LLM.
+
+    Args:
+        descripcion_larga: La descripción original del producto.
+        max_longitud: La longitud máxima deseada para el resumen (en caracteres).
+        min_longitud: La longitud mínima deseada para el resumen (en caracteres).
+
+    Returns:
+        La descripción resumida, o la original si ya es corta o falla el resumen.
+    """
+    if not descripcion_larga or not isinstance(descripcion_larga, str):
+        return ""
+
+    len_original = len(descripcion_larga)
+
+    if len_original <= max_longitud: # Si ya es suficientemente corta
+        # Podríamos incluso devolverla si es un poco más larga que min_longitud, para no resumir innecesariamente
+        if len_original >= min_longitud or len_original <= max_longitud * 0.75: # No resumir si ya está en un rango aceptable
+             return descripcion_larga.strip()
+
+
+    prompt = (
+        f"Eres un experto en marketing. Resume la siguiente descripción de producto para que sea concisa, atractiva y no exceda los {max_longitud} caracteres, "
+        f"pero intenta que tenga al menos {min_longitud} caracteres si es posible. "
+        "Destaca los beneficios clave o características únicas. Evita jerga innecesaria. "
+        "El resultado debe ser solo el texto resumido.\n\n"
+        f"Descripción Original:\n\"\"\"\n{descripcion_larga}\n\"\"\"\n\n"
+        "Resumen Optimizado:"
+    )
+
+    resumen = ""
+    try:
+        # Usar un modelo eficiente para resúmenes, como command-light o gpt-4o-mini si está disponible
+        # El modelo por defecto en robust_chat es command-r-plus, que puede ser overkill.
+        # Se podría añadir un parámetro model_override a robust_chat o tener una función específica.
+        # Por ahora, usamos el default de robust_chat.
+        resumen_candidato = robust_chat(message=prompt, model_override="gpt-4o-mini") # o cohere.command-light
+
+        if resumen_candidato:
+            resumen = resumen_candidato.strip()
+            # Validar longitud del resumen y ajustar si es necesario (simple recorte)
+            if len(resumen) > max_longitud:
+                # Intentar cortar por la última frase completa dentro del límite
+                last_period = resumen.rfind('.', 0, max_longitud)
+                if last_period != -1:
+                    resumen = resumen[:last_period+1]
+                else: # Si no hay punto, cortar bruscamente
+                    resumen = resumen[:max_longitud].rsplit(' ', 1)[0] + "..." if ' ' in resumen[:max_longitud] else resumen[:max_longitud]
+
+            if len(resumen) < min_longitud and len_original > min_longitud : # Si el resumen es demasiado corto y el original no
+                # Podríamos intentar re-prompting con "hazlo un poco más largo" o simplemente usar el original truncado
+                logger.warning(f"[LLM_RESUMEN_PROD] Resumen LLM ('{resumen}') más corto ({len(resumen)}) que min_longitud ({min_longitud}). Original era {len_original}.")
+                # Fallback a una porción del original si el resumen es insatisfactorio
+                return descripcion_larga[:max_longitud].strip()
+
+
+            logger.info(f"[LLM_RESUMEN_PROD] Descripción original (len {len_original}): '{descripcion_larga[:100]}...' -> Resumen (len {len(resumen)}): '{resumen[:100]}...'")
+        else:
+            logger.warning(f"[LLM_RESUMEN_PROD] LLM no devolvió resumen para: '{descripcion_larga[:100]}...'. Se usará original truncado si es necesario.")
+            return descripcion_larga[:max_longitud].strip()
+
+    except Exception as e:
+        logger.error(f"[LLM_RESUMEN_PROD] Error al resumir descripción: {e}. Original: '{descripcion_larga[:100]}...'", exc_info=True)
+        # Fallback a la descripción original (o una versión truncada si es muy larga)
+        return descripcion_larga[:max_longitud].strip()
+
+    return resumen
+
+
 # Google Cloud AI Service Placeholders
 
 try:

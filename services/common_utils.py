@@ -24,9 +24,29 @@ def limpiar_texto_base(texto: str) -> str:
     """
     if not isinstance(texto, str):
         return ""
-    texto_limpio = texto.lower().strip()
-    # Add more basic cleaning if necessary, e.g., remove multiple spaces
-    texto_limpio = re.sub(r'\s+', ' ', texto_limpio)
+
+    # Convertir a minúsculas
+    texto_limpio = texto.lower()
+
+    # Quitar acentos (opcional, pero bueno para la coincidencia)
+    # Necesita unidecode: from unidecode import unidecode
+    # texto_limpio = unidecode(texto_limpio)
+
+    # Reemplazar caracteres no alfanuméricos (excepto espacios) con nada, o con un espacio
+    # Esto ayuda a normalizar cosas como "Precio-Venta" o "Precio_Venta" a "precio venta"
+    # Mantendremos algunos caracteres si son parte de palabras comunes o unidades.
+    # Por ahora, un enfoque más simple: reemplazar guiones y underscores con espacios.
+    texto_limpio = texto_limpio.replace('-', ' ').replace('_', ' ')
+
+    # Eliminar caracteres especiales que no suelen ser parte de encabezados útiles,
+    # excepto puntos si son parte de abreviaturas (ej. desc.) o números.
+    # Esta regex mantiene letras, números, espacios y puntos.
+    # texto_limpio = re.sub(r'[^a-z0-9\s\.]', '', texto_limpio)
+
+
+    # Eliminar múltiples espacios y espacios al inicio/final
+    texto_limpio = re.sub(r'\s+', ' ', texto_limpio).strip()
+
     return texto_limpio
 
 def parse_precio_flexible(precio_str: str) -> Tuple[str, Optional[float], Optional[str]]:
@@ -37,37 +57,96 @@ def parse_precio_flexible(precio_str: str) -> Tuple[str, Optional[float], Option
     get_logger().warning(f"Using PLACEHOLDER parse_precio_flexible for: {precio_str}")
     if not isinstance(precio_str, str):
         return "", None, None
-    
-    cleaned_price_str = re.sub(r'[^\d,.]', '', precio_str) # Keep digits, comma, dot
-    
-    # Try to convert to float
-    # Handle cases like "1.234,56" (German) and "1,234.56" (US)
-    price_float = None
-    moneda = "ARS" # Default
-    
-    if not cleaned_price_str:
+
+    texto_original_limpio = precio_str.strip()
+    if not texto_original_limpio:
         return "", None, None
 
-    try:
-        # Attempt 1: "1.234,56" -> "1234.56"
-        temp_str = cleaned_price_str.replace('.', '').replace(',', '.')
-        price_float = float(temp_str)
-    except ValueError:
-        try:
-            # Attempt 2: "1,234.56" -> "1234.56"
-            temp_str = cleaned_price_str.replace(',', '')
-            price_float = float(temp_str)
-        except ValueError:
-            get_logger().error(f"Could not parse price string: {precio_str} (cleaned: {cleaned_price_str})")
-            return precio_str, None, None # Return original string if parsing fails
+    moneda_detectada = "ARS" # Default a ARS, o podría ser None
+    # Detectar monedas comunes
+    if "usd" in texto_original_limpio.lower() or "$" in texto_original_limpio:
+        # Si es solo "$", podría ser ARS en Argentina. Necesitaríamos más contexto o una lista de monedas prioritarias.
+        # Por ahora, si hay "$", asumimos USD a menos que se especifique ARS explícitamente.
+        # Esto puede necesitar ajuste según el mercado objetivo.
+        if "ars" in texto_original_limpio.lower():
+            moneda_detectada = "ARS"
+        else:
+            # Si "$" es el único indicador y no hay "USD" o "U$S", podría ser moneda local.
+            # Para ser más conservador, si solo es "$" y no hay "USD", no cambiar de ARS (default).
+            # Cambiar a USD solo si "USD" o "U$S" (o similar) está presente.
+            if "usd" in texto_original_limpio.lower() or "u$s" in texto_original_limpio.lower():
+                 moneda_detectada = "USD"
+            # else: moneda_detectada sigue siendo ARS (default) si solo hay "$"
 
-    # Basic currency symbol detection (example)
-    if '$' in precio_str:
-        moneda = "USD" # Or ARS if $ is used for pesos
-    elif '€' in precio_str:
-        moneda = "EUR"
-        
-    return cleaned_price_str, price_float, moneda
+    elif "€" in texto_original_limpio or "eur" in texto_original_limpio.lower():
+        moneda_detectada = "EUR"
+    elif "ars" in texto_original_limpio.lower(): # Ej. "100 ARS"
+        moneda_detectada = "ARS"
+
+
+    # Eliminar símbolos de moneda y texto no numérico, excepto separadores comunes
+    # Permitimos dígitos, punto, coma. Temporalmente también el signo menos por si acaso.
+    # Se quitan espacios para facilitar el parseo de números como "1 234,56"
+    texto_numerico = re.sub(r'[^\d,.\-]', '', texto_original_limpio.replace(" ", ""))
+
+    if not texto_numerico:
+        return texto_original_limpio, None, moneda_detectada # Devolver original si no queda nada numérico
+
+    precio_float = None
+    logger = get_logger()
+
+    # Intento 1: Asumir que la coma es decimal y los puntos son miles (ej. 1.234,56)
+    try:
+        s_intento1 = texto_numerico.replace('.', '').replace(',', '.')
+        precio_float = float(s_intento1)
+        # logger.debug(f"Parse precio (intento 1: '.' miles, ',' dec): '{texto_numerico}' -> {s_intento1} -> {precio_float}")
+    except ValueError:
+        # Intento 2: Asumir que el punto es decimal y las comas son miles (ej. 1,234.56)
+        try:
+            s_intento2 = texto_numerico.replace(',', '')
+            precio_float = float(s_intento2)
+            # logger.debug(f"Parse precio (intento 2: ',' miles, '.' dec): '{texto_numerico}' -> {s_intento2} -> {precio_float}")
+        except ValueError:
+            # Intento 3: Asumir que no hay separadores de miles, y el último punto/coma es decimal
+            # Esto es más riesgoso. Solo si los anteriores fallan.
+            s_intento3 = texto_numerico
+            if '.' in texto_numerico and ',' in texto_numerico:
+                last_dot_idx = texto_numerico.rfind('.')
+                last_comma_idx = texto_numerico.rfind(',')
+                if last_dot_idx > last_comma_idx: # punto es el último, probable decimal: 1,234.56
+                    s_intento3 = texto_numerico.replace(',', '')
+                else: # coma es la última, probable decimal: 1.234,56
+                    s_intento3 = texto_numerico.replace('.', '').replace(',', '.')
+            elif '.' in texto_numerico: # Solo puntos
+                 # Si hay múltiples puntos, quitar todos menos el último (asumiendo que es decimal)
+                 if texto_numerico.count('.') > 1:
+                    s_intento3 = texto_numerico.replace('.', '', texto_numerico.count('.') -1)
+                 # Si solo hay un punto, se asume que es decimal. s_intento3 ya es texto_numerico.
+            elif ',' in texto_numerico: # Solo comas
+                 # Si hay múltiples comas, quitar todas menos la última y reemplazar esa última por punto
+                 if texto_numerico.count(',') > 1:
+                    s_intento3 = texto_numerico.replace(',', '', texto_numerico.count(',') -1)
+                 s_intento3 = s_intento3.replace(',', '.') # Reemplazar la (única o última) coma por punto
+            # else: s_intento3 ya es texto_numerico (solo dígitos)
+
+            try:
+                precio_float = float(s_intento3)
+                # logger.debug(f"Parse precio (intento 3: heurística último sep): '{texto_numerico}' -> {s_intento3} -> {precio_float}")
+            except ValueError:
+                logger.warning(f"No se pudo parsear el precio de forma flexible: '{texto_original_limpio}' (procesado como '{texto_numerico}')")
+                return texto_original_limpio, None, moneda_detectada
+
+    precio_str_limpio_retorno = texto_numerico
+    if precio_float is not None:
+        if precio_float == int(precio_float):
+            precio_str_limpio_retorno = str(int(precio_float))
+        else:
+            # Formatear a string con hasta 2 decimales, usando punto como separador decimal.
+            # Esto es para consistencia, pero el número de decimales podría ser configurable.
+            precio_str_limpio_retorno = f"{precio_float:.2f}".rstrip('0').rstrip('.') if '.' in f"{precio_float:.2f}" else f"{precio_float:.0f}"
+
+
+    return precio_str_limpio_retorno, precio_float, moneda_detectada
 
 def crear_mapa_de_columnas_inteligente(df: pd.DataFrame) -> Optional[Tuple[Dict[str, Any], int]]:
     """
@@ -75,42 +154,231 @@ def crear_mapa_de_columnas_inteligente(df: pd.DataFrame) -> Optional[Tuple[Dict[
     Original implementation needs to be restored.
     This is a complex function and likely requires domain-specific logic.
     """
-    get_logger().warning("Using PLACEHOLDER crear_mapa_de_columnas_inteligente. This will likely not work correctly.")
+    # Import Levenshtein aquí para mantenerlo contenido si esta función evoluciona mucho
+    # o para facilitar el manejo de su ausencia si no se puede instalar.
+    try:
+        import Levenshtein
+    except ImportError:
+        get_logger().error("La biblioteca 'python-Levenshtein' no está instalada. El mapeo inteligente de columnas no funcionará. Por favor, instálala (pip install python-Levenshtein).")
+        # Fallback a una función no inteligente o error. Por ahora, error.
+        raise ImportError("python-Levenshtein no está instalado, es necesario para crear_mapa_de_columnas_inteligente.")
+
+    logger = get_logger() # Asegurar que el logger esté inicializado
+
+    def calcular_similitud_levenshtein(s1: str, s2: str) -> float:
+        """Calcula la similitud normalizada basada en la distancia de Levenshtein."""
+        if not s1 and not s2:
+            return 1.0
+        if not s1 or not s2:
+            return 0.0
+        distancia = Levenshtein.distance(s1, s2)
+        longitud_max = max(len(s1), len(s2))
+        if longitud_max == 0:
+            return 1.0
+        similitud = 1 - (distancia / longitud_max)
+        return similitud
+
+    logger.info("Iniciando mapeo inteligente de columnas...")
     if df.empty:
+        logger.warning("DataFrame vacío, no se puede mapear.")
         return None
+
+    # Para esta implementación, asumimos que la primera fila contiene los encabezados.
+    # La lógica de detección de encabezados o el uso de parámetros del usuario (ej. fila_encabezado)
+    # se puede añadir en el futuro.
+    nombres_columnas_usuario_original = [str(col) for col in df.columns]
+    fila_inicio_datos = 0 # Si df.columns son los encabezados, los datos empiezan en la fila 0 del df de datos.
+                         # Sin embargo, si la primera fila del *archivo* era el encabezado, y el df se leyó
+                         # con header=0 (default de pandas), entonces los datos empiezan en la fila 1 del archivo original.
+                         # Esto depende de cómo se haya leído el df ANTES de llamar a esta función.
+                         # Por ahora, asumimos que el df que llega aquí ya tiene los encabezados como df.columns
+                         # y los datos comienzan desde la primera fila del df (índice 0).
+                         # Los procesadores de Excel/DocAI deben asegurar esto.
+                         # Si el df fue leído con header=None y la primera fila es el encabezado,
+                         # entonces nombres_columnas_usuario_original debería ser df.iloc[0] y fila_inicio_datos = 1.
+                         # ---
+                         # Revisión: Los procesadores (excel, docai) leen el df con header=None
+                         # y luego esta función es llamada. El `crear_mapa_de_columnas_inteligente`
+                         # original (placeholder) usaba df.iloc[0].tolist() y devolvía fila_inicio_datos = 1.
+                         # Vamos a seguir ese patrón para consistencia con el flujo actual.
+
+    # --- Inicio de la Detección Mejorada de Fila de Encabezado ---
+    mejor_fila_encabezado_idx = -1
+    max_puntaje_encabezado = -1
+    MAX_FILAS_A_CHEQUEAR_PARA_ENCABEZADO = min(5, len(df)) # No chequear más de 5 filas o el total de filas
+
+    if MAX_FILAS_A_CHEQUEAR_PARA_ENCABEZADO == 0:
+        logger.warning("DataFrame con 0 filas pasado a crear_mapa_de_columnas_inteligente después del chequeo de df.empty.")
+        return None
+
+    for i in range(MAX_FILAS_A_CHEQUEAR_PARA_ENCABEZADO):
+        fila_actual_valores = [str(x) for x in df.iloc[i].tolist()]
+        if all(not valor.strip() for valor in fila_actual_valores): # Si toda la fila está vacía (o solo espacios)
+            logger.debug(f"Fila {i} está vacía, saltando para detección de encabezado.")
+            continue
+
+        fila_normalizada = [limpiar_texto_base(valor) for valor in fila_actual_valores]
+
+        puntaje_fila_actual = 0
+        celdas_mapeadas_en_fila = 0
+        celdas_texto_en_fila = 0
+
+        for celda_norm in fila_normalizada:
+            if not celda_norm: continue # Saltar celdas vacías en la fila normalizada
+            celdas_texto_en_fila +=1 # Contar celdas con texto
+            for campo_std, sinonimos_std in KEYWORD_MAP.items():
+                for sinonimo in sinonimos_std:
+                    sim = calcular_similitud_levenshtein(celda_norm, limpiar_texto_base(sinonimo))
+                    if sim >= umbral_similitud: # Usar el mismo umbral que para el mapeo final
+                        puntaje_fila_actual += sim
+                        if campo_std in ["nombre", "precio", "sku", "descripcion"]: # Dar más peso a campos clave
+                            puntaje_fila_actual += 0.5
+                        celdas_mapeadas_en_fila +=1
+                        break # Celda mapeada a un campo estándar, no necesita chequear más sinónimos para esta celda
         
-    # Extremely naive placeholder: assumes first row is header, maps known keywords
-    # This WILL NOT be robust.
-    headers = [str(h).lower().strip() for h in df.iloc[0].tolist()]
-    mapa = {}
-    possible_nombre = ['nombre', 'producto', 'descripción', 'item']
-    possible_precio = ['precio', 'valor', 'costo']
+        # Ajustar puntaje por proporción de celdas de texto y celdas mapeadas
+        if celdas_texto_en_fila > 0:
+            puntaje_fila_actual = (puntaje_fila_actual / celdas_texto_en_fila) * (celdas_mapeadas_en_fila / len(fila_normalizada))
+        else: # Fila sin texto
+            puntaje_fila_actual = 0
+
+        logger.debug(f"Fila {i} para encabezado: Valores: {fila_actual_valores}, Puntaje: {puntaje_fila_actual:.2f}, Celdas Mapeadas: {celdas_mapeadas_en_fila}, Celdas Texto: {celdas_texto_en_fila}")
+
+        if puntaje_fila_actual > max_puntaje_encabezado:
+            max_puntaje_encabezado = puntaje_fila_actual
+            mejor_fila_encabezado_idx = i
+
+    # Decidir si el mejor puntaje es suficientemente bueno
+    UMBRAL_MINIMO_PUNTAJE_ENCABEZADO = 0.2 # Ajustable. Si es muy bajo, puede tomar filas de datos.
+    if mejor_fila_encabezado_idx != -1 and max_puntaje_encabezado >= UMBRAL_MINIMO_PUNTAJE_ENCABEZADO:
+        nombres_columnas_usuario_original = [str(x) for x in df.iloc[mejor_fila_encabezado_idx].tolist()]
+        fila_inicio_datos = mejor_fila_encabezado_idx + 1
+        logger.info(f"Fila de encabezado detectada en índice {mejor_fila_encabezado_idx} con puntaje {max_puntaje_encabezado:.2f}.")
+    elif not df.empty and df.iloc[0].isnull().all() and len(df) > 1: # Si la primera está vacía y hay más filas
+        logger.warning("Primera fila vacía, usando segunda fila como encabezado (fallback).")
+        nombres_columnas_usuario_original = [str(x) for x in df.iloc[1].tolist()]
+        fila_inicio_datos = 2
+    elif not df.empty: # Fallback a la primera fila si la detección no fue clara pero hay datos
+        logger.warning(f"Detección de encabezado no fue clara (puntaje max: {max_puntaje_encabezado:.2f}). Usando primera fila como encabezado (fallback).")
+        nombres_columnas_usuario_original = [str(x) for x in df.iloc[0].tolist()]
+        fila_inicio_datos = 1
+    else: # DataFrame probablemente vacío o sin encabezados útiles
+        logger.error("No se pudo determinar una fila de encabezado válida.")
+        return None
+    # --- Fin de la Detección Mejorada de Fila de Encabezado ---
+
+
+    logger.info(f"Encabezados originales (de la fila detectada {mejor_fila_encabezado_idx if mejor_fila_encabezado_idx !=-1 else '0/1 por fallback'}): {nombres_columnas_usuario_original}")
     
-    for i, header in enumerate(headers):
-        if any(pn in header for pn in possible_nombre) and 'nombre' not in mapa:
-            mapa['nombre'] = df.columns[i] # Use original column name/index from df
-        elif any(pp in header for pp in possible_precio) and 'precio' not in mapa:
-            mapa['precio'] = df.columns[i]
+    nombres_columnas_usuario_normalizados = [limpiar_texto_base(col_name) for col_name in nombres_columnas_usuario_original]
+    logger.info(f"Encabezados normalizados para matching: {nombres_columnas_usuario_normalizados}")
+
+    mapa_columnas: Dict[str, Any] = {}
+    columnas_usuario_mapeadas_flags = [False] * len(nombres_columnas_usuario_normalizados)
+    # umbral_similitud ya está definido como parámetro de la función
+
+    for campo_estandar_backend, sinonimos_backend in KEYWORD_MAP.items():
+        mejor_similitud_para_campo_actual = -1.0
+        mejor_indice_col_usuario_para_campo_actual = -1
+        sinonimos_backend_normalizados = [limpiar_texto_base(s) for s in sinonimos_backend]
+
+        for idx_col_usuario, encabezado_usuario_norm in enumerate(nombres_columnas_usuario_normalizados):
+            if columnas_usuario_mapeadas_flags[idx_col_usuario] or not encabezado_usuario_norm: # Si ya mapeada o vacía
+                continue
+
+            similitud_max_con_sinonimos = 0.0
+            for sinonimo_norm in sinonimos_backend_normalizados:
+                if not sinonimo_norm: continue
+                sim = calcular_similitud_levenshtein(encabezado_usuario_norm, sinonimo_norm)
+                if sim > similitud_max_con_sinonimos:
+                    similitud_max_con_sinonimos = sim
             
-    if 'nombre' not in mapa: # Essential column
-        get_logger().error("Placeholder crear_mapa_de_columnas_inteligente: Could not find a 'nombre' column.")
+            # Considerar solo si esta columna es la mejor para este campo_estandar_backend HASTA AHORA
+            if similitud_max_con_sinonimos > mejor_similitud_para_campo_actual:
+                mejor_similitud_para_campo_actual = similitud_max_con_sinonimos
+                mejor_indice_col_usuario_para_campo_actual = idx_col_usuario
+            # Si hay empate en similitud, podríamos tener una lógica para preferir la primera columna de usuario
+            # o la que tenga un nombre de encabezado más corto/largo, etc. Por ahora, la primera que alcance la mejor similitud.
+
+        # Una vez evaluadas todas las columnas de usuario para el campo_estandar_backend actual:
+        if mejor_similitud_para_campo_actual >= umbral_similitud and mejor_indice_col_usuario_para_campo_actual != -1:
+            # Verificar si esta columna de usuario (mejor_indice_col_usuario_para_campo_actual)
+            # ya fue mapeada a OTRO campo_estandar_backend con MAYOR similitud.
+            # Esto requiere una estrategia más global o multi-pasada.
+            # Simplificación: si la columna no está mapeada AÚN, la tomamos.
+            if not columnas_usuario_mapeadas_flags[mejor_indice_col_usuario_para_campo_actual]:
+                columna_df_original_a_mapear = df.columns[mejor_indice_col_usuario_para_campo_actual]
+                mapa_columnas[campo_estandar_backend] = columna_df_original_a_mapear
+                columnas_usuario_mapeadas_flags[mejor_indice_col_usuario_para_campo_actual] = True
+                logger.info(f"MAPEADO: Campo Backend '{campo_estandar_backend}' -> Columna Usuario Original '{nombres_columnas_usuario_original[mejor_indice_col_usuario_para_campo_actual]}' (DF Col: {columna_df_original_a_mapear}) con similitud {mejor_similitud_para_campo_actual:.2f}")
+            else:
+                # Esta columna ya fue asignada a otro campo estándar, probablemente con mejor score para ESE campo.
+                logger.debug(f"Columna '{nombres_columnas_usuario_original[mejor_indice_col_usuario_para_campo_actual]}' ya mapeada. Campo '{campo_estandar_backend}' no pudo usarla aunque tuvo similitud {mejor_similitud_para_campo_actual:.2f}.")
+
+
+    if 'nombre' not in mapa_columnas:
+        logger.error("Error Crítico: El campo esencial 'nombre' no pudo ser mapeado.")
         return None
-        
-    return mapa, 1 # Assume data starts from row 1 (after header row 0)
+
+    logger.info(f"Mapeo final: {mapa_columnas}")
+    logger.info(f"Los datos del archivo comenzarán en la fila del archivo original: {fila_inicio_datos} (considerando la primera fila como índice 0). El DataFrame de datos se tomará desde df.iloc[{fila_inicio_datos}:]")
+
+    return mapa_columnas, fila_inicio_datos
 
 KEYWORD_MAP: Dict[str, List[str]] = {
-    # PLACEHOLDER: Basic keyword map. Original needs to be restored.
-    "nombre": ["nombre", "producto", "item", "descripción", "designacion"],
-    "precio": ["precio", "valor", "costo", "importe"],
-    "descripcion": ["descripcion", "detalle", "observaciones"],
-    "sku": ["sku", "código", "cod", "referencia", "ref"],
-    "marca": ["marca", "fabricante"],
-    "unidad": ["unidad", "presentacion", "empaque"],
-    "stock": ["stock", "cantidad", "disponible", "existencias"],
-    "categoria_producto": ["categoria", "rubro", "tipo", "familia"],
-    "talles": ["talle", "talles", "tamaño", "medida"],
-    "colores": ["color", "colores"],
-    "promocion_texto": ["promocion", "oferta", "descuento"]
+    "nombre": [
+        "nombre", "producto", "item", "articulo", "descripción", "descripcion",
+        "designacion", "titulo", "name", "product", "title"
+    ],
+    "precio": [
+        "precio", "valor", "costo", "importe", "precio venta", "precio unitario",
+        "price", "unit price", "cost"
+    ],
+    "descripcion": [
+        "descripcion", "descripción", "detalle", "observaciones", "info adicional",
+        "description", "details", "additional info", "long description", "full description"
+    ],
+    "descripcion_corta": [
+        "descripcion corta", "desc. corta", "desc corta", "resumen", "breve descripcion",
+        "short description", "summary", "short_description", "shortdescription"
+    ],
+    "sku": [
+        "sku", "código", "codigo", "cod", "referencia", "ref", "item code", "product code",
+        "codigo de barras", "barcode"
+    ],
+    "marca": [
+        "marca", "fabricante", "brand", "manufacturer"
+    ],
+    "unidad": [ # Formato de venta, ej: "Caja x 6", "Pack de 3", "Botella 750ml", "Kg", "Unidad"
+        "unidad", "presentacion", "empaque", "formato", "unit", "package", "presentation", "pack_size"
+    ],
+    "stock": [ # Cantidad disponible
+        "stock", "cantidad", "disponible", "existencias", "disponibilidad",
+        "quantity", "qty", "available", "in stock"
+    ],
+    "categoria_producto": [
+        "categoria", "rubro", "tipo", "familia", "linea", "category", "type", "group", "line"
+    ],
+    "talles": [ # Para indumentaria, calzado, etc.
+        "talle", "talles", "tamaño", "medida", "size", "sizes"
+    ],
+    "colores": [ # Para productos con variantes de color
+        "color", "colores", "colour", "colours"
+    ],
+    "promocion_texto": [ # Texto descriptivo de una promoción
+        "promocion", "promo", "oferta", "descuento", "rebaja", "promotion", "offer", "discount", "sale"
+    ],
+    "imagen_url": [ # Si el catálogo incluye URLs de imágenes
+        "imagen", "foto", "url imagen", "link imagen", "image", "picture", "image url", "img_url"
+    ],
+    # Campos adicionales que podrían ser útiles
+    "peso": ["peso", "weight"],
+    "dimensiones": ["dimensiones", "medidas", "largo", "ancho", "alto", "dimensions", "length", "width", "height"],
+    "ean_upc": ["ean", "upc", "codigo ean", "codigo upc"],
+    "material": ["material", "composicion"],
+    "origen": ["origen", "pais de origen", "fabricado en", "origin", "made in"],
+    "precio_lista": ["precio lista", "precio regular", "list price", "regular price"], # Precio antes de descuento
+    "moneda": ["moneda", "divisa", "currency"]
 }
 
 def parse_unidad_y_cantidad_empaque(unidad_str: str) -> Tuple[str, Optional[int]]:
@@ -119,40 +387,91 @@ def parse_unidad_y_cantidad_empaque(unidad_str: str) -> Tuple[str, Optional[int]
     Original implementation needs to be restored.
     Example: "Caja x 6 botellas" -> ("Caja botellas", 6)
     """
-    get_logger().warning(f"Using PLACEHOLDER parse_unidad_y_cantidad_empaque for: {unidad_str}")
-    if not isinstance(unidad_str, str):
+    logger = get_logger()
+    if not isinstance(unidad_str, str) or not unidad_str.strip():
         return "", None
 
-    unidad_desc = unidad_str
+    texto_original = unidad_str.strip()
+    unidad_desc_limpia = texto_original # Default
     cantidad_empaque = None
 
-    # Naive attempt to find "x NUMERO" or "NUMERO unidades"
-    match_x_num = re.search(r'[xX]\s*(\d+)', unidad_str)
-    if match_x_num:
-        try:
-            cantidad_empaque = int(match_x_num.group(1))
-            # Try to remove the quantity part from description for a cleaner desc
-            unidad_desc = re.sub(r'[xX]\s*\d+\s*', '', unidad_str, flags=re.IGNORECASE).strip()
-            unidad_desc = re.sub(r'\s+', ' ', unidad_desc) # Clean up multiple spaces
-        except ValueError:
-            pass # Should not happen with \d+
-    else:
-        match_num_unidad = re.search(r'(\d+)\s*\w+', unidad_str) # e.g. "6 unidades"
-        if match_num_unidad:
-            try:
-                # This is more ambiguous, could be "Pack 6" or "6 items"
-                # For now, let's assume if a number is at the start of a word, it might be quantity
-                # This needs much better logic from original.
-                # cantidad_empaque = int(match_num_unidad.group(1))
-                # unidad_desc = re.sub(r'\d+\s*', '', unidad_str, count=1).strip() # Remove first number
-                pass # Decided this is too ambiguous for a placeholder
-            except ValueError:
-                pass
-    
-    if not unidad_desc: # If stripping made it empty, revert to original
-        unidad_desc = unidad_str
+    # Regex para encontrar "X CANTIDAD", "POR CANTIDAD", "DE CANTIDAD" o simplemente "CANTIDAD"
+    patrones_cantidad = [
+        # Formato: (Desc Antes) [separador] (Cantidad) [separador] (Desc Después opcional)
+        # Ej: "Caja x 6 botellas", "Pack de 12 Unidades", "Bolsa por 5 KG"
+        r'^(?P<desc_antes>.*?)[\s\-_]*(?:[xX]|POR|DE)[\s\-_]+(?P<cantidad>\d+)[\s\-_]*(?P<desc_despues>.*)$',
+        # Formato: (Cantidad) [separador] (Desc Después)
+        # Ej: "6 Botellas", "12 Unidades Pack"
+        r'^(?P<cantidad>\d+)[\s\-_]+(?P<desc_despues>.*?)$',
+        # Formato: (Desc Antes) [separador] (Cantidad) (SIN Desc Después explícita, pero puede haber unidad pegada al número)
+        # Ej: "Caja Pack x6", "Botella 750ml" (este último es mejor manejado por el bloque de abajo)
+        r'^(?P<desc_antes>.*?)[\s\-_]*(?:[xX]|POR|DE)?[\s\-_]*(?P<cantidad>\d+)$',
+    ]
 
-    return limpiar_texto_base(unidad_desc), cantidad_empaque
+    for patron_regex in patrones_cantidad:
+        match = re.search(patron_regex, texto_original, re.IGNORECASE)
+        if match:
+            dict_match = match.groupdict()
+            try:
+                cand_cantidad = dict_match.get('cantidad')
+                if cand_cantidad:
+                    cantidad_empaque = int(cand_cantidad)
+                    if cantidad_empaque > 0:
+                        desc_antes = limpiar_texto_base(dict_match.get('desc_antes', '')).strip()
+                        desc_despues = limpiar_texto_base(dict_match.get('desc_despues', '')).strip()
+
+                        if desc_antes and desc_despues:
+                            unidad_desc_limpia = f"{desc_antes} {desc_despues}".strip()
+                        elif desc_despues: # Cantidad al inicio
+                            unidad_desc_limpia = desc_despues
+                        elif desc_antes: # Cantidad al final
+                            unidad_desc_limpia = desc_antes
+                        else: # Solo cantidad? Raro.
+                             unidad_desc_limpia = "" # Será reemplazado por texto_original si queda vacío
+
+                        # Si la descripción es solo la unidad (ej. "ml", "kg") y la cantidad es grande, puede ser correcto.
+                        # Si la descripción quedó vacía, usar el texto original sin el número y separadores.
+                        if not unidad_desc_limpia.strip():
+                            temp_desc = texto_original
+                            # Quitar el número y los separadores que lo rodean.
+                            temp_desc = re.sub(r'[\s\-_]*(?:[xX]|POR|DE)?[\s\-_]*' + re.escape(cand_cantidad) + r'[\s\-_]*', ' ', temp_desc, flags=re.IGNORECASE)
+                            unidad_desc_limpia = limpiar_texto_base(temp_desc).strip()
+                            if not unidad_desc_limpia.strip(): # Si aún así queda vacío
+                                unidad_desc_limpia = texto_original # Fallback final a todo el texto original
+
+                        logger.debug(f"Parse unidad (patrón '{patron_regex}'): '{texto_original}' -> desc='{unidad_desc_limpia}', cant={cantidad_empaque}")
+                        return unidad_desc_limpia, cantidad_empaque
+                cantidad_empaque = None # Resetear si la cantidad no fue válida
+            except ValueError:
+                cantidad_empaque = None
+    
+    # Caso especial para unidades pegadas al número: "750ml", "1kg", "5L"
+    # Este regex busca un número seguido inmediatamente por letras (la unidad)
+    match_num_unidad_pegada = re.match(r'^(?P<cantidad>\d+)(?P<unidad_pegada>[a-zA-Z]+)$', texto_original.replace(" ","")) # Quitar espacios para ej "750 ml" -> "750ml"
+    if not cantidad_empaque and match_num_unidad_pegada:
+        try:
+            cand_cantidad = match_num_unidad_pegada.group('cantidad')
+            unidad_pegada = match_num_unidad_pegada.group('unidad_pegada')
+            if cand_cantidad and unidad_pegada:
+                cantidad_empaque = int(cand_cantidad)
+                # Aquí la descripción es la unidad pegada. Podríamos tener un map para expandirlas (ml -> mililitros)
+                unidad_desc_limpia = limpiar_texto_base(unidad_pegada)
+                logger.debug(f"Parse unidad (num+unidad pegada): '{texto_original}' -> desc='{unidad_desc_limpia}', cant={cantidad_empaque}")
+                return unidad_desc_limpia, cantidad_empaque
+            cantidad_empaque = None
+        except ValueError:
+            cantidad_empaque = None
+
+    # Fallback final: si no se pudo extraer cantidad, la descripción es el texto original limpio.
+    if not cantidad_empaque:
+        unidad_desc_limpia = limpiar_texto_base(texto_original)
+        logger.debug(f"Parse unidad (sin cantidad extraída): '{texto_original}' -> desc='{unidad_desc_limpia}', cant=None")
+        return unidad_desc_limpia, None
+
+    # Este return es por si algún flujo anterior asignó cantidad_empaque pero no retornó.
+    # Debería ser cubierto por los returns dentro del bucle/condiciones.
+    return limpiar_texto_base(unidad_desc_limpia), cantidad_empaque
+
 
 def unir_codigos_alfa_numericos(texto: str) -> str:
     """

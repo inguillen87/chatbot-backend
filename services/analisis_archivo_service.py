@@ -63,41 +63,76 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
         session.commit() # Commit temprano del estado "procesando"
 
         mime_type = archivo_adjunto.mime.lower() if archivo_adjunto.mime else ''
+        # También obtener la extensión del archivo para tipos como xlsx, csv
+        _, file_extension = os.path.splitext(archivo_adjunto.filename.lower())
+
+        # Determinar si el contexto es PYME
+        # Asumimos que user_obj.tipo_chat == "pyme" o que no es un rubro público.
+        es_contexto_pyme = user_obj.tipo_chat == "pyme" if user_obj.tipo_chat else \
+                           (user_obj.rubro and not es_rubro_publico(user_obj.rubro))
         
-        # GOOGLE_PROJECT_ID, GOOGLE_DOCAI_LOCATION, GOOGLE_DOCAI_PROCESSOR_ID needed for PDF
-        # These should be loaded from Config and passed to analyze_pdf_con_document_ai
-        project_id = current_app.config.get('GOOGLE_PROJECT_ID')
-        docai_location = current_app.config.get('GOOGLE_DOCAI_LOCATION')
-        docai_processor_id = current_app.config.get('GOOGLE_DOCAI_PROCESSOR_ID') # General purpose Form Parser or OCR
+        # Determinar si el contexto es Municipal (para la lógica de reclamos por imagen)
+        es_contexto_municipal = user_obj.tipo_chat == "municipio" if user_obj.tipo_chat else \
+                                (user_obj.rubro and es_rubro_publico(user_obj.rubro))
 
-        if mime_type.startswith("image/") and es_contexto_municipal:
-            logger.info(f"Archivo {archivo_adjunto_id} es una imagen en contexto municipal. Iniciando análisis de reclamo.")
-            resultado_interpretacion = interpretar_imagen_reclamo(archivo_adjunto, user_obj)
 
-            if resultado_interpretacion.get('error'):
-                logger.error(f"Error en interpretar_imagen_reclamo para {archivo_adjunto_id}: {resultado_interpretacion['error']}")
+        # --- LÓGICA DE PROCESAMIENTO DE ARCHIVOS ---
+
+        # 1. Procesamiento de Pedidos Excel para PYMEs
+        if es_contexto_pyme and file_extension in ['.xlsx', '.xls', '.csv']:
+            logger.info(f"Archivo {archivo_adjunto_id} ({archivo_adjunto.filename}) es un Excel/CSV en contexto PYME. Intentando procesar como pedido.")
+            from services.pedido_processor_service import procesar_pedido_excel # Importar aquí para evitar circularidad
+
+            ruta_fisica_archivo = obtener_ruta_fisica_archivo(archivo_adjunto)
+            if ruta_fisica_archivo:
+                resultado_pedido_excel = procesar_pedido_excel(ruta_fisica_archivo, user_obj.id)
+
+                if "error" in resultado_pedido_excel:
+                    analisis_archivo.estado_analisis = "error"
+                    analisis_archivo.error_analisis = resultado_pedido_excel["error"]
+                    logger.error(f"Error procesando Excel de pedido {archivo_adjunto_id}: {resultado_pedido_excel['error']}")
+                else:
+                    analisis_archivo.estado_analisis = "completado"
+                    analisis_archivo.datos_estructurados = resultado_pedido_excel # Guardar todo el resultado
+                    logger.info(f"Procesamiento de Excel de pedido {archivo_adjunto_id} completado. Items: {len(resultado_pedido_excel.get('items_procesados',[]))}")
+                analisis_archivo.tipo_analisis = "pedido_excel_v1"
             else:
-                logger.info(f"Interpretación de reclamo completada para {archivo_adjunto_id}. ¿Es reclamo?: {resultado_interpretacion.get('es_reclamo')}")
-            # El estado final (completado/error) es manejado por interpretar_imagen_reclamo
+                analisis_archivo.estado_analisis = "error"
+                analisis_archivo.error_analisis = "No se pudo obtener la ruta física del archivo para procesar el pedido Excel."
+                logger.error(f"No se pudo obtener ruta física para Excel de pedido {archivo_adjunto_id}.")
+                analisis_archivo.tipo_analisis = "pedido_excel_error_ruta"
 
-        elif mime_type.startswith("image/"):
-            logger.info(f"Archivo {archivo_adjunto_id} es una imagen ({mime_type}) en contexto no municipal. Realizando OCR simple.")
+        # 2. Procesamiento de Imágenes para Reclamos Municipales
+        elif mime_type.startswith("image/") and es_contexto_municipal:
+            logger.info(f"Archivo {archivo_adjunto_id} es una imagen en contexto municipal. Iniciando análisis de reclamo.")
+            # Esta función (interpretar_imagen_reclamo) ya maneja el estado de analisis_archivo internamente.
+            interpretar_imagen_reclamo(archivo_adjunto, user_obj)
+            # No necesitamos cambiar estado_analisis aquí, ya lo hace interpretar_imagen_reclamo.
+
+        # 3. OCR Simple para Imágenes en otros contextos (ej. PYME pero no es pedido Excel)
+        elif mime_type.startswith("image/"): # Si no es Excel de pedido y es PYME, o cualquier imagen no municipal
+            logger.info(f"Archivo {archivo_adjunto_id} es una imagen ({mime_type}) en contexto no municipal o no pedido Excel. Realizando OCR simple.")
+            # Esta función también maneja el estado de analisis_archivo internamente.
             _realizar_analisis_ocr_simple(session, analisis_archivo.id)
 
+        # 4. Análisis de PDF con Document AI (genérico)
         elif mime_type == "application/pdf":
             project_id = current_app.config.get('GOOGLE_PROJECT_ID')
             docai_location = current_app.config.get('GOOGLE_DOCAI_LOCATION')
-            docai_processor_id = current_app.config.get('GOOGLE_DOCAI_PROCESSOR_ID')
+            docai_processor_id = current_app.config.get('GOOGLE_DOCAI_PROCESSOR_ID') # General purpose
+
             if project_id and docai_location and docai_processor_id:
-                logger.info(f"Archivo {archivo_adjunto_id} es un PDF. Intentando análisis con Document AI.")
+                logger.info(f"Archivo {archivo_adjunto_id} es un PDF. Intentando análisis con Document AI (genérico).")
+                # Esta función también maneja el estado de analisis_archivo internamente.
                 analizar_pdf_con_document_ai_service(session, analisis_archivo.id, project_id, docai_location, docai_processor_id)
             else:
-                logger.warning(f"Configuración de Document AI incompleta. Saltando PDF para archivo {archivo_adjunto_id}.")
+                logger.warning(f"Configuración de Document AI (genérico) incompleta. Saltando PDF para archivo {archivo_adjunto_id}.")
                 analisis_archivo.estado_analisis = "omitido_config"
-                analisis_archivo.tipo_analisis = "pdf_config_faltante"
+                analisis_archivo.tipo_analisis = "pdf_docai_config_faltante"
         
+        # 5. Archivos de Texto Plano
         elif mime_type.startswith("text/"):
-            logger.info(f"Archivo {archivo_adjunto_id} es un archivo de texto ({mime_type}).")
+            logger.info(f"Archivo {archivo_adjunto_id} es un archivo de texto ({mime_type}). Extrayendo contenido.")
             file_content_bytes = obtener_contenido_archivo(archivo_adjunto)
             if file_content_bytes:
                 try:
