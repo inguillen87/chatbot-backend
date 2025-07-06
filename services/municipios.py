@@ -367,7 +367,7 @@ class GreetingHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         texto = normalizar_texto(pregunta_str.strip("!.,?"))
         saludos = [
             "hola",
@@ -423,7 +423,7 @@ class GreetingHandler(BaseMunicipioHandler):
 class SugerenciasVecinoHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "").strip()
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado_conversacion = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
         sugerencia_texto_directo = ""
@@ -527,7 +527,7 @@ class CancelHandler(BaseMunicipioHandler):
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
         texto = normalizar_texto(pregunta_str)
         if any(kw in texto for kw in self.CANCEL_KEYWORDS) or payload.get("action") == "cancelar": # Si la acción es cancelar
-            self.context.get("contexto_municipio", {}).clear()
+            self.context[CONTEXTO_MUNICIPIO].clear()
             return {
                 "respuesta": "Operación cancelada. ¿Necesitás ayuda con otro trámite o reclamo?",
                 "botones": [
@@ -551,8 +551,8 @@ class PoliteHandler(BaseMunicipioHandler):
         if texto in self.KEYWORDS:
             # No necesariamente limpiar toda la memoria, si está en medio de un flujo.
             # Solo si es un agradecimiento simple fuera de un flujo directo.
-            if not self.context.get("contexto_municipio", {}).get("estado_conversacion"):
-                self.context.get("contexto_municipio", {}).clear()
+            if not self.context[CONTEXTO_MUNICIPIO].get("estado_conversacion"):
+                self.context[CONTEXTO_MUNICIPIO].clear()
             return {
                 "respuesta": "¡De nada! ¿Necesitás ayuda con algo más?",
                 "botones": [
@@ -587,7 +587,7 @@ class RecoleccionHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         texto = normalizar_texto(pregunta_str)
 
@@ -677,7 +677,7 @@ class IntentClassifierHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
         logger.info(f"[INTENT] Analizando intención para: {pregunta_str}")
-        memoria = self.context.get("contexto_municipio", {}) # Usaremos el mismo contexto por ahora
+        memoria = self.context[CONTEXTO_MUNICIPIO] # Usaremos el mismo contexto por ahora
         texto_normalizado = normalizar_texto(pregunta_str)
         # tokens = texto_normalizado.split() # No se usa tokens directamente, se usa 'in'
 
@@ -790,7 +790,7 @@ class TicketStatusHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado_conversacion = memoria.get("estado_conversacion")
 
         # No interferir si estamos en un flujo de reclamo activo (ESPERANDO_..._RECLAMO)
@@ -949,7 +949,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
 
         # Solo si NO hay un flujo de reclamo ya iniciado (estado_conversacion de reclamo)
         # y la intención es iniciar un reclamo. Esto evita que se active en medio de un reclamo paso a paso.
@@ -1073,7 +1073,7 @@ class ReclamoHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         # --- Bloque 0: Inicialización de variables ---
         pregunta_str = payload.get("pregunta", "") or ""
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
 
@@ -1531,7 +1531,7 @@ class ReclamoHandler(BaseMunicipioHandler):
             # --- FIN: Lógica de Idempotencia ---
 
             # Verificar si es anónimo y ya excedió el límite de tickets
-            if self.context.get("anon_id") and not self.context.get("user_id"): # Es anónimo
+            if self.context.get("anon_id") and not self.context.get("cliente_id"): # Es anónimo
                 from flask import current_app # Acceder a config
                 from datetime import datetime, timedelta # Asegurar imports
                 max_tickets_anon = current_app.config.get("ANONYMOUS_MAX_TICKETS_PER_SESSION", 1)
@@ -1647,8 +1647,8 @@ class ReclamoHandler(BaseMunicipioHandler):
                                 )
                                 if asociacion_exitosa:
                                     logger.info(f"[ReclamoHandler] Archivos asociados exitosamente a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
-                                    if self.context.get("contexto_municipio") and "archivo_id_para_asociar" in self.context["contexto_municipio"]:
-                                        del self.context["contexto_municipio"]["archivo_id_para_asociar"]
+                                    if self.context[CONTEXTO_MUNICIPIO] and "archivo_id_para_asociar" in self.context[CONTEXTO_MUNICIPIO]:
+                                        del self.context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"]
                                 else:
                                     logger.warning(f"[ReclamoHandler] No se pudieron asociar archivos a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
                         else:
@@ -1751,7 +1751,7 @@ class TramitesHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         
         # BLOQUEO si hay flujo de reclamo en curso
@@ -1856,7 +1856,7 @@ class TramitesHandler(BaseMunicipioHandler):
 class ProductCatalogHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "").strip()
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         intencion = self.context.get("intencion")
 
         if intencion != "iniciar_compra":
@@ -1977,7 +1977,7 @@ class ProductInquiryHandler(BaseMunicipioHandler):
 
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "").strip()
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
 
@@ -2123,7 +2123,7 @@ class CartHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "").strip()
         action = payload.get("action", normalizar_texto(pregunta_str)) # Considerar acción de botón
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
         
@@ -2255,7 +2255,7 @@ class CheckoutHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "").strip()
         action = payload.get("action", normalizar_texto(pregunta_str))
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
 
@@ -2397,7 +2397,7 @@ class StoreLocationHandler(BaseMunicipioHandler):
 
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "").strip()
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         intencion = self.context.get("intencion")
         user_location = self.context.get("ubicacion_usuario") # Expected format: {'lat': float, 'lon': float}
 
@@ -2477,7 +2477,7 @@ class StoreLocationHandler(BaseMunicipioHandler):
 class PanicButtonHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "").strip() # Puede ser útil para loguear el trigger inicial
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         intencion = self.context.get("intencion")
         user_location = self.context.get("ubicacion_usuario")
@@ -2603,13 +2603,13 @@ class ImpuestosHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         if estado and estado in RECLAMO_STATES:
             return None
         intencion = self.context.get("intencion")
         if intencion == "consultar_impuestos":
-            self.context.get("contexto_municipio", {}).clear()
+            self.context[CONTEXTO_MUNICIPIO].clear()
             return {
                 "respuesta": obtener_respuesta_municipio("impuestos_info"),
                 "botones": obtener_respuesta_municipio("impuestos_botones"),
@@ -2621,7 +2621,7 @@ class GeneralHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         if estado and estado in RECLAMO_STATES:
             return None
@@ -2776,7 +2776,7 @@ class ToolHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         
         # Bloquear si hay un flujo de reclamo en curso
@@ -2913,7 +2913,7 @@ class HumanEscalationHandler(BaseMunicipioHandler):
                 f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada."
             )
             
-            self.context.get("contexto_municipio", {}).clear() # Limpiar contexto al escalar a un agente
+            self.context[CONTEXTO_MUNICIPIO].clear() # Limpiar contexto al escalar a un agente
             
             # Notificar al ADMIN_EMAIL ya se hace automáticamente cuando se crea el comentario del ticket.
             # El email que recibe el admin dirá:
@@ -2956,7 +2956,7 @@ class VectorMunicipioCatalogHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         if estado and estado in RECLAMO_STATES:
             return None
@@ -3051,7 +3051,7 @@ class TramiteInteligenteHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         
         # Bloquear si hay un flujo de reclamo en curso
@@ -3183,7 +3183,7 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
-        memoria = self.context.get("contexto_municipio", {})
+        memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
         
         # Solo se activa si el estado de conversación es el de espera de adjuntos
