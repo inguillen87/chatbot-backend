@@ -198,25 +198,46 @@ def _procesar_chat(
         # Puede ser encontrado por `rubro_id`, `rubro_clave`, o si el `actor_principal` (usuario logueado) tiene un rubro.
         rubro_obj_global = None # Rubro que se usará para la lógica del bot.
         owner_del_bot = None    # Usuario dueño de ese rubro/bot.
+        rubro_para_log = None   # For logging the rubro name/clave
 
-        if rubro_id:
+        if rubro_id: # Frontend explicitly provided a rubro_id
             rubro_obj_global = Rubro.query.get(rubro_id)
             if rubro_obj_global:
-                owner_del_bot = User.query.get(rubro_obj_global.user_id)
-        elif rubro_clave:
-            rubro_obj_global = Rubro.query.filter(func.lower(Rubro.clave) == rubro_clave.lower()).first()
+                rubro_para_log = rubro_obj_global.nombre or rubro_obj_global.clave
+                # Find the User who owns this rubro (typically an admin user with empresa_id=None)
+                owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, empresa_id=None).first()
+                if not owner_del_bot:
+                    # Fallback: maybe an admin user is linked via rol='admin' if empresa_id logic isn't strict for owners
+                    owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
+        elif rubro_clave: # Frontend explicitly provided a rubro_clave
+            rubro_obj_global = Rubro.query.filter(func.lower(Rubro.clave) == func.lower(rubro_clave)).first() # Ensure rubro_clave is lowercased for query
             if rubro_obj_global:
-                owner_del_bot = User.query.get(rubro_obj_global.user_id)
-        elif actor_principal and actor_principal.rubro: # Si el usuario logueado tiene un rubro asociado directamente
-            rubro_obj_global = actor_principal.rubro
-            owner_del_bot = actor_principal # El usuario logueado es el dueño del bot
+                rubro_para_log = rubro_obj_global.nombre or rubro_obj_global.clave
+                owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, empresa_id=None).first()
+                if not owner_del_bot:
+                    owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
+        elif actor_principal and actor_principal.rubro_id: # User is logged in and has an associated rubro_id
+            # It's better to query Rubro again using actor_principal.rubro_id to ensure rubro_obj_global is a Rubro instance
+            rubro_obj_global = Rubro.query.get(actor_principal.rubro_id)
+            if rubro_obj_global:
+                 rubro_para_log = rubro_obj_global.nombre or rubro_obj_global.clave
+            # If the logged-in user has a rubro, they are considered the owner of that bot interaction
+            # if their empresa_id is None (they are the company/admin account itself)
+            if actor_principal.empresa_id is None:
+                owner_del_bot = actor_principal
+            else:
+                # If logged-in user is an employee/client, find the actual owner of their rubro
+                if rubro_obj_global: # Ensure rubro_obj_global was found
+                    owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, empresa_id=None).first()
+                    if not owner_del_bot:
+                        owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
 
-        if not owner_del_bot and rubro_obj_global: # Caso raro: rubro existe pero no tiene user_id o user no existe
-             current_app.logger.warning(f"Rubro ID {rubro_obj_global.id} encontrado pero sin User owner asociado.")
-             # Podríamos permitir continuar si el rubro es público y no requiere owner específico para su lógica base.
+        if not owner_del_bot and rubro_obj_global : # Rubro was found, but no specific owner user for it.
+             current_app.logger.warning(f"Rubro ID {rubro_obj_global.id} ('{rubro_para_log}') encontrado pero sin User owner asociado (empresa_id=None o rol=admin). Se continuará sin owner específico si el rubro es público.")
+             # For public rubros, owner_del_bot might remain None, and responder_chatboc should handle this.
 
         if rubro_obj_global:
-            nombre_rubro_log = getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", "N/A")
+            nombre_rubro_log = rubro_para_log or getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", "N/A")
             owner_id_log = getattr(owner_del_bot, "id", "N/A")
             current_app.logger.info(f"Usando Rubro ID {rubro_obj_global.id} ('{nombre_rubro_log}') perteneciente a User ID {owner_id_log} para la lógica del bot.")
         else:
@@ -332,7 +353,24 @@ def _procesar_chat(
 
     except Exception as e:
         db.session.rollback() # Rollback en caso de error antes del commit final
-        current_app.logger.error(f"❌ Error crítico en _procesar_chat: {e}", exc_info=True)
+        # Log more details to help pinpoint the 500 error
+        error_details = {
+            "pregunta": pregunta if 'pregunta' in locals() else 'N/A',
+            "tipo_chat": tipo_chat if 'tipo_chat' in locals() else 'N/A',
+            "rubro_id": rubro_id if 'rubro_id' in locals() else 'N/A',
+            "rubro_clave": rubro_clave if 'rubro_clave' in locals() else 'N/A',
+            "actor_principal_id": actor_principal.id if 'actor_principal' in locals() and actor_principal else 'N/A',
+            "owner_del_bot_id": owner_del_bot.id if 'owner_del_bot' in locals() and owner_del_bot else 'N/A',
+            "viewer_obj_id": viewer_obj.id if 'viewer_obj' in locals() and viewer_obj else 'N/A',
+            "anon_id": anon_id if 'anon_id' in locals() else 'N/A',
+            "archivo_adjunto_id": archivo_adjunto_id if 'archivo_adjunto_id' in locals() else 'N/A',
+            "uploaded_file_info": uploaded_file_info if 'uploaded_file_info' in locals() else 'N/A',
+            "session_chat_id": session_chat_id if 'session_chat_id' in locals() else 'N/A'
+        }
+        current_app.logger.error(
+            f"❌ Error crítico en _procesar_chat. Details: {error_details}. Exception: {e}",
+            exc_info=True
+        )
         return jsonify({"error": "Error interno del servidor."}), 500
 
 
