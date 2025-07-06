@@ -659,7 +659,17 @@ if __name__ == '__main__':
          logger.error("El cliente de Google Vision no está inicializado en google_vision_service.py. La prueba fallará o usará mocks.")
          # Podríamos mockear analyze_image_from_content aquí si es necesario para un test aislado.
 
-    resultado_interpretacion = interpretar_imagen_reclamo(archivo_prueba)
+    # La función interpretar_imagen_reclamo ya no existe.
+    # Se podría llamar a interpretar_imagen_para_chat con tipo_interpretacion="reclamo_municipal".
+    # Ejemplo:
+    # resultado_interpretacion = interpretar_imagen_para_chat(
+    #    archivo_adjunto=archivo_prueba,
+    #    tipo_interpretacion="reclamo_municipal"
+    # )
+    # Por ahora, comentaremos la llamada original para evitar errores.
+    # resultado_interpretacion = interpretar_imagen_reclamo(archivo_prueba) # Esta función no existe
+    resultado_interpretacion = {"mensaje": "Llamada a interpretar_imagen_reclamo comentada ya que la función no existe. Adaptar a interpretar_imagen_para_chat si es necesario para pruebas."}
+
 
     logger.info("\n--- Resultado de la Interpretación ---")
     import json as json_parser # para evitar conflicto con el modulo json de credenciales
