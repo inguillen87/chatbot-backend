@@ -5,7 +5,7 @@ import os
 from enum import Enum, auto
 import unicodedata
 import difflib
-from models import MunicipioTicket, TicketComentario, db, SitioWebInfo
+from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion # Added Conversacion
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 from .logic import (
