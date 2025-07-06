@@ -226,10 +226,44 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
 
         if items_para_db_sql:
             try:
+                # Importar la función de resumen aquí para evitar importación circular si llm_utils importa algo de upload_processor indirectamente
+                from services.llm_utils import resumir_descripcion_producto_llm
+
+                # Procesar descripciones cortas ANTES de bulk_save_objects
+                for item_dict in productos_finales_para_qdrant_y_db: # Necesitamos iterar sobre los diccionarios originales
+                    desc_larga = str(item_dict.get("descripcion", ""))
+                    desc_corta_extraida = str(item_dict.get("descripcion_corta", ""))
+
+                    if not desc_corta_extraida and desc_larga:
+                        desc_corta_generada = resumir_descripcion_producto_llm(desc_larga)
+                        item_dict["descripcion_corta_final_para_db"] = desc_corta_generada # Guardar en el dict para usarla abajo
+                    else:
+                        item_dict["descripcion_corta_final_para_db"] = desc_corta_extraida
+
+                # Reconstruir items_para_db_sql con la descripción corta posiblemente generada
+                items_para_db_sql_actualizados: List[CatalogoItem] = []
+                for prod_dict_final_actualizado in productos_finales_para_qdrant_y_db:
+                    items_para_db_sql_actualizados.append(
+                        CatalogoItem(
+                            user_id=user_id,
+                            nombre=str(prod_dict_final_actualizado.get("nombre", "S/N"))[:255],
+                            descripcion=str(prod_dict_final_actualizado.get("descripcion", ""))[:1024],
+                            descripcion_corta=str(prod_dict_final_actualizado.get("descripcion_corta_final_para_db", ""))[:512], # Usar el campo actualizado
+                            promocion_info=str(prod_dict_final_actualizado.get("promocion_texto", ""))[:255],
+                            precio=str(prod_dict_final_actualizado.get("precio_str", ""))[:50],
+                            cantidad=str(prod_dict_final_actualizado.get("stock", "0"))[:50],
+                            categoria=str(prod_dict_final_actualizado.get("categoria_qdrant", pyme_rubro_nombre))[:100],
+                            unidad=str(prod_dict_final_actualizado.get("unidad", ""))[:50],
+                            sku=str(prod_dict_final_actualizado.get("sku", ""))[:100],
+                            marca=str(prod_dict_final_actualizado.get("marca", ""))[:100],
+                            texto=prod_dict_final_actualizado.get("texto_para_embedding", "")
+                        )
+                    )
+
                 CatalogoItem.query.filter_by(user_id=user_id).delete()
-                db.session.bulk_save_objects(items_para_db_sql)
+                db.session.bulk_save_objects(items_para_db_sql_actualizados)
                 db.session.commit()
-                logger.info(f"✅ {len(items_para_db_sql)} ítems guardados en DB relacional para user_id={user_id}")
+                logger.info(f"✅ {len(items_para_db_sql_actualizados)} ítems guardados en DB relacional para user_id={user_id} (desc. cortas procesadas).")
             except Exception as e_db_relacional:
                 db.session.rollback()
                 logger.error(f"❌ Error guardando en DB relacional para user_id={user_id}: {e_db_relacional}", exc_info=True)

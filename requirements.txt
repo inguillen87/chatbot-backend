@@ -29,3 +29,4 @@ spacy==3.7.2 # Usado en google_docai.py
 # PyJWT es dependencia de Flask-Session si se usa JWT.
 # Pillow es usado en el script de prueba de google_vision_service.py, no es core pero útil para dev.
 Pillow==10.1.0
+python-Levenshtein==0.23.0

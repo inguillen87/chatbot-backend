@@ -307,15 +307,48 @@ def interacciones_cliente(current_user: User, cliente_id: int):
 def enviar_campana(current_user: User):
     """Mock de envío de campañas masivas."""
     data = request.get_json(silent=True) or {}
-    mensaje = data.get('mensaje')
-    usuarios = data.get('usuarios', [])
-    if not mensaje or not isinstance(usuarios, list):
-        return jsonify({"error": "Datos inválidos"}), 400
+    asunto = data.get('asunto')
+    mensaje_html = data.get('mensaje_html')
+    mensaje_texto = data.get('mensaje_texto', '') # Opcional
+    lista_ids_usuarios = data.get('usuarios', []) # Lista de user_ids de clientes
 
-    clientes = User.query.filter(User.id.in_(usuarios), User.empresa_id == current_user.id).all()
-    for cli in clientes:
-        current_app.logger.info(f"[CRM] Enviar campaña a {cli.email}: {mensaje}")
-    return jsonify({"enviados": len(clientes)})
+    if not asunto or not mensaje_html or not isinstance(lista_ids_usuarios, list) or not lista_ids_usuarios:
+        return jsonify({"error": "Datos inválidos. Se requiere 'asunto', 'mensaje_html' y una lista de 'usuarios'."}), 400
+
+    # Validar que los usuarios pertenezcan a la empresa del current_user
+    clientes_destinatarios = User.query.filter(
+        User.id.in_(lista_ids_usuarios),
+        User.empresa_id == current_user.id,
+        User.email.isnot(None), # Solo usuarios con email
+        User.acepta_marketing == True # Solo usuarios que aceptan marketing
+    ).all()
+
+    if not clientes_destinatarios:
+        return jsonify({"error": "No se encontraron clientes válidos para esta campaña (deben tener email y aceptar marketing)."}), 400
+
+    current_app.logger.info(f"[CRM_CAMPAIGN] Iniciando envío de campaña '{asunto}' para {len(clientes_destinatarios)} clientes de la empresa ID {current_user.id}.")
+
+    # --- Implementación con Celery ---
+    from services.tasks import tarea_enviar_campana_email # Importar la tarea Celery
+
+    ids_clientes_finales = [cli.id for cli in clientes_destinatarios]
+
+    # Encolar la tarea Celery
+    tarea_enviar_campana_email.delay(
+        empresa_id_solicitante=current_user.id, # Para logging y contexto en la tarea
+        lista_ids_clientes_destinatarios=ids_clientes_finales,
+        asunto=asunto,
+        cuerpo_html=mensaje_html,
+        cuerpo_texto=mensaje_texto
+    )
+
+    current_app.logger.info(f"[CRM_CAMPAIGN] Tarea Celery para enviar campaña '{asunto}' a {len(ids_clientes_finales)} clientes ha sido encolada.")
+
+    return jsonify({
+        "mensaje": f"Campaña '{asunto}' programada para envío a {len(ids_clientes_finales)} clientes. El proceso se realizará en segundo plano.",
+        "clientes_potenciales": len(lista_ids_usuarios),
+        "clientes_contactados_programados": len(ids_clientes_finales)
+    }), 202 # 202 Accepted: la solicitud ha sido aceptada para procesamiento
 
 
 def _detalles_archivo(adjunto: ArchivoAdjunto, relacion: dict) -> dict:

@@ -109,3 +109,36 @@ class Config:
     #     # Para autodiscover de tareas si no se hace explícitamente en init_celery
     #     # "imports": ("services.analisis_archivo_service",) 
     # }
+
+    # --- CONFIGURACIÓN DE EMAIL (SMTP) ---
+    SMTP_HOST = os.getenv("SMTP_HOST")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", 587)) # Default a 587 para TLS
+    SMTP_USER = os.getenv("SMTP_USER")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+    SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ('true', '1', 't') # Convertir a booleano
+    SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "False").lower() in ('true', '1', 't') # Convertir a booleano
+
+    MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", SMTP_USER if SMTP_USER else "noreply@example.com")
+    MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "Chatboc Platform")
+
+    # Opcional: Configuraciones específicas para campañas (fallback a las generales si no se definen)
+    SMTP_HOST_CAMPAIGN = os.getenv("SMTP_HOST_CAMPAIGN", SMTP_HOST)
+    SMTP_PORT_CAMPAIGN = int(os.getenv("SMTP_PORT_CAMPAIGN", SMTP_PORT))
+    SMTP_USER_CAMPAIGN = os.getenv("SMTP_USER_CAMPAIGN", SMTP_USER)
+    SMTP_PASSWORD_CAMPAIGN = os.getenv("SMTP_PASSWORD_CAMPAIGN", SMTP_PASSWORD)
+    SMTP_USE_TLS_CAMPAIGN = os.getenv("SMTP_USE_TLS_CAMPAIGN", str(SMTP_USE_TLS)).lower() in ('true', '1', 't')
+    SMTP_USE_SSL_CAMPAIGN = os.getenv("SMTP_USE_SSL_CAMPAIGN", str(SMTP_USE_SSL)).lower() in ('true', '1', 't')
+    MAIL_FROM_ADDRESS_CAMPAIGN = os.getenv("MAIL_FROM_ADDRESS_CAMPAIGN", MAIL_FROM_ADDRESS)
+    MAIL_FROM_NAME_CAMPAIGN = os.getenv("MAIL_FROM_NAME_CAMPAIGN", MAIL_FROM_NAME)
+
+    # --- CONFIGURACIÓN DE TWILIO (para SMS/WhatsApp) ---
+    # email_service.py actualmente usa os.getenv() para estas, pero las centralizamos aquí
+    # para que la app Flask las conozca y puedan ser usadas por otros módulos si es necesario.
+    TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+    TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+    TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER") # Para SMS
+    TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER") # Para WhatsApp (ej. "whatsapp:+14155238886")
+
+    # --- CONFIGURACIÓN DE APP BASE URL (para generar links en emails/notificaciones) ---
+    # Usado en el paso de descarga de catálogo, también útil para links en campañas.
+    APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5000") # Default para desarrollo
