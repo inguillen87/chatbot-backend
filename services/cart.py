@@ -149,3 +149,57 @@ def get_cart_summary(pyme_id: int, cliente_user_id: Optional[int] = None) -> Dic
     # Solo añadimos el pyme_id para referencia.
     summary_con_promos["pyme_id"] = pyme_id
     return summary_con_promos
+
+# --- Compatibility wrapper functions for legacy single-cart operations ---
+
+def _cart() -> List[Dict[str, Any]]:
+    """Return cart list for legacy API using pyme_id 0."""
+    return _get_pyme_cart(0)
+
+
+def add_item(nombre: str, cantidad: int = 1) -> None:
+    """Add or increase quantity of a product in the legacy cart."""
+    if not nombre:
+        return
+    cart = _cart()
+    for item in cart:
+        if item.get("nombre", "").lower() == nombre.lower():
+            item["cantidad"] = item.get("cantidad", 0) + cantidad
+            session.modified = True
+            return
+    cart.append({"nombre": nombre, "cantidad": cantidad})
+    session.modified = True
+
+
+def remove_item(nombre: str) -> None:
+    """Remove a product from the legacy cart."""
+    cart = _cart()
+    for item in list(cart):
+        if item.get("nombre", "").lower() == nombre.lower():
+            cart.remove(item)
+            session.modified = True
+            break
+
+
+def update_item(nombre: str, cantidad: int) -> None:
+    """Update the quantity for a product in the legacy cart."""
+    cart = _cart()
+    for item in cart:
+        if item.get("nombre", "").lower() == nombre.lower():
+            item["cantidad"] = cantidad
+            session.modified = True
+            break
+
+
+def clear_cart() -> None:
+    """Clear all items from the legacy cart."""
+    session.setdefault(SESSION_CARTS_KEY, {})[0] = []
+    session.modified = True
+
+
+def get_summary() -> List[Dict[str, Any]]:
+    """Return a simplified summary of the legacy cart."""
+    return [
+        {"nombre": it.get("nombre"), "cantidad": it.get("cantidad", 0)}
+        for it in _cart()
+    ]
