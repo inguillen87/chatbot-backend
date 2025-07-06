@@ -22,7 +22,7 @@ def _get_or_create_analisis_archivo(session, archivo_adjunto_id: int) -> Analisi
 
 # En services/analisis_archivo_service.py
 # ... otras importaciones ...
-from services.interpretacion_imagen_service import interpretar_imagen_reclamo
+from services.interpretacion_imagen_service import interpretar_imagen_para_chat
 from services.logic import es_rubro_publico # Para determinar contexto municipal
 # ...
 
@@ -105,9 +105,10 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
         # 2. Procesamiento de Imágenes para Reclamos Municipales
         elif mime_type.startswith("image/") and es_contexto_municipal:
             logger.info(f"Archivo {archivo_adjunto_id} es una imagen en contexto municipal. Iniciando análisis de reclamo.")
-            # Esta función (interpretar_imagen_reclamo) ya maneja el estado de analisis_archivo internamente.
-            interpretar_imagen_reclamo(archivo_adjunto, user_obj)
-            # No necesitamos cambiar estado_analisis aquí, ya lo hace interpretar_imagen_reclamo.
+            # Llamar a la función correcta con los parámetros adecuados
+            interpretar_imagen_para_chat(archivo_adjunto=archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
+            # La función interpretar_imagen_para_chat maneja el estado de analisis_archivo internamente.
+            # No necesitamos cambiar estado_analisis aquí.
 
         # 3. OCR Simple para Imágenes en otros contextos (ej. PYME pero no es pedido Excel)
         elif mime_type.startswith("image/"): # Si no es Excel de pedido y es PYME, o cualquier imagen no municipal
