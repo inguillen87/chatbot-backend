@@ -36,7 +36,7 @@ from routes.notifications import notifications_bp
 from routes.municipal_legacy import municipal_bp
 from routes.reacciones import reacciones_bp
 from routes.carrito import carrito_bp
-from routes.cart import cart_bp
+# from routes.cart import cart_bp # This line caused an ImportError
 from routes.productos import productos_bp
 from routes.ai_templates import ai_templates_bp
 from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
@@ -169,7 +169,7 @@ def create_app(config_class=Config):
     app.register_blueprint(productos_bp)
     app.register_blueprint(pedidos_bp)
     app.register_blueprint(carrito_bp)
-    app.register_blueprint(cart_bp)
+    # app.register_blueprint(cart_bp) # Corresponds to the removed import
     app.register_blueprint(estadisticas_bp)
     app.register_blueprint(empleados_bp)
     app.register_blueprint(categorias_bp)
