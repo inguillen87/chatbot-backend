@@ -231,9 +231,9 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
 
                 # Procesar descripciones cortas ANTES de bulk_save_objects
                 for item_dict in productos_finales_para_qdrant_y_db: # Necesitamos iterar sobre los diccionarios originales
-                    desc_larga = str(item_dict.get("descripcion", ""))
+                    desc_larga = str(item_dict.get("descripcion", "")) 
                     desc_corta_extraida = str(item_dict.get("descripcion_corta", ""))
-
+                    
                     if not desc_corta_extraida and desc_larga:
                         desc_corta_generada = resumir_descripcion_producto_llm(desc_larga)
                         item_dict["descripcion_corta_final_para_db"] = desc_corta_generada # Guardar en el dict para usarla abajo
@@ -259,7 +259,7 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
                             texto=prod_dict_final_actualizado.get("texto_para_embedding", "")
                         )
                     )
-
+                
                 CatalogoItem.query.filter_by(user_id=user_id).delete()
                 db.session.bulk_save_objects(items_para_db_sql_actualizados)
                 db.session.commit()
