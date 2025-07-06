@@ -2,7 +2,7 @@
 import os
 import logging
 import cohere
-from cohere import CohereAPIError, CohereError # Import specific errors
+from cohere import CohereError # Import CohereError
 from functools import wraps
 from time import sleep
 from typing import List, Dict, Any, Optional
@@ -35,14 +35,12 @@ def cohere_api_call(func):
             return None
         try:
             return func(*args, **kwargs)
-        except CohereAPIError as e: # Use imported CohereAPIError
-            logger.error(f"❌ [COHERE_CLIENT] Error de API en '{func.__name__}': Status {getattr(e, 'http_status', 'N/A')} - {str(e)}", exc_info=False) # Use str(e) for message
-            return None
-        except CohereError as e: # Broader Cohere error
-            logger.error(f"❌ [COHERE_CLIENT] Error general de Cohere en '{func.__name__}': {str(e)}", exc_info=True)
+        except CohereError as e: # Catch the base CohereError
+            logger.error(f"❌ [COHERE_CLIENT] Error de Cohere API en '{func.__name__}': Status {getattr(e, 'http_status', 'N/A')} - {str(e)}", exc_info=False)
+            # You can further check e.status_code or isinstance(e, cohere. συγκεκριμένη_σφάλμα) if needed here
             return None
         except Exception as e: # Non-Cohere unexpected errors
-            logger.error(f"❌ [COHERE_CLIENT] Error inesperado no Cohere en '{func.__name__}': {e}", exc_info=True)
+            logger.error(f"❌ [COHERE_CLIENT] Error inesperado (no Cohere) en '{func.__name__}': {e}", exc_info=True)
             return None
     return wrapper
 

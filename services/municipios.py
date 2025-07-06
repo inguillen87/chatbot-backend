@@ -500,7 +500,7 @@ class CancelHandler(BaseMunicipioHandler):
     CANCEL_KEYWORDS = [
         "cancelar",
         "olvidalo",
-        "deja",
+        # "deja", # Eliminado temporalmente para evitar cancelación accidental en descripciones
         "no importa",
         "volver",
         "salir",
@@ -509,6 +509,9 @@ class CancelHandler(BaseMunicipioHandler):
         "parar",
         "detener",
     ]
+    # Considerar añadir una lógica más específica para "deja" si es un comando de cancelación común,
+    # por ejemplo, verificando que sea la única palabra o esté al inicio.
+    # Ejemplo: if texto == "deja" or texto.startswith("deja "): ...
 
     # MODIFICADO: acepta payload
     def handle(self, payload: dict) -> dict | None:
