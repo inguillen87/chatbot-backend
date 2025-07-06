@@ -22,6 +22,7 @@ google-auth==2.23.4 # Dependencia común para servicios Google
 cohere==4.37 # Ya se infiere su uso por cohere_ai.py
 pandas==2.0.3 # Usado en google_docai.py
 spacy==3.7.2 # Usado en google_docai.py
+es-core-news-md @ https://github.com/explosion/spacy-models/releases/download/es_core_news_md-3.7.0/es_core_news_md-3.7.0-py3-none-any.whl
 # Considerar añadir un modelo de spacy específico si es necesario, ej: es_core_news_sm
 # numpy es dependencia de pandas y spacy, se instalará automáticamente.
 # werkzeug es dependencia de Flask.
