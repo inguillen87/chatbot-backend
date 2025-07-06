@@ -9,21 +9,20 @@ from typing import Dict, List, Any
 try:
     import cohere
     # Prioriza el error más específico si existe y luego el más general de la librería
-    if hasattr(cohere, 'CohereAPIError'): # Para versiones más antiguas
+    if hasattr(cohere, 'CohereAPIError'):  # Para versiones más antiguas
         CohereAPIError = cohere.CohereAPIError
-    elif hasattr(cohere.errors, 'CohereAPIError'): # Estructura observada en el log
-         CohereAPIError = cohere.errors.CohereAPIError
-    elif hasattr(cohere, 'APIError'): # Para versiones más nuevas de la API v3 style
+    elif hasattr(cohere.errors, 'CohereAPIError'):  # Estructura observada en el log
+        CohereAPIError = cohere.errors.CohereAPIError
+    elif hasattr(cohere, 'APIError'):  # Para versiones más nuevas de la API v3 style
         CohereAPIError = cohere.APIError
-    elif hasattr(cohere, 'CohereError'): # Error base de la librería
+    elif hasattr(cohere, 'CohereError'):  # Error base de la librería
         CohereAPIError = cohere.CohereError
     else:
-        CohereAPIError = None # No se pudo encontrar un error específico de Cohere API
+        CohereAPIError = None  # No se pudo encontrar un error específico de Cohere API
 except ImportError:
     cohere = None
     CohereAPIError = None
     # robust_chat también dependería de 'cohere', así que el mock es importante si 'cohere' no está.
-
 
 try:
     from services.cohere_ai import robust_chat
@@ -42,7 +41,7 @@ except ImportError:
                     "email_cliente": "john.doe@example.com"
                 })
             elif "Jane Smith" in message:
-                 return json.dumps({"nombre_cliente": "Jane Smith"})
+                return json.dumps({"nombre_cliente": "Jane Smith"})
             return json.dumps({})
         elif "Extract complaint details" in message:
             # Simulate LLM response for complaint extraction
@@ -126,7 +125,7 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
 
     extracted_data = {}
     try:
-        response_content = robust_chat(message=prompt, model_override="gpt-4o") # Or your preferred model
+        response_content = robust_chat(message=prompt)  # Removed model_override
         if response_content:
             cleaned_response = _clean_llm_json_output(response_content)
             if cleaned_response:
@@ -175,7 +174,7 @@ def extract_complaint_details_llm(text: str) -> Dict[str, str]:
 
     extracted_details = {}
     try:
-        response_content = robust_chat(message=prompt, model_override="gpt-4o") # Or your preferred model
+        response_content = robust_chat(message=prompt)  # Removed model_override
         if response_content:
             cleaned_response = _clean_llm_json_output(response_content)
             if cleaned_response:
@@ -184,21 +183,21 @@ def extract_complaint_details_llm(text: str) -> Dict[str, str]:
                 # This might be better handled by the caller if specific keys are always expected.
                 # For now, just ensure the main keys are what we expect.
                 valid_keys = ["tipo_problema", "ubicacion_problema", "descripcion_problema"]
-                extracted_details = {k: v for k, v in extracted_details.items() if k in valid_keys and v} # Only keep non-empty values for expected keys
+                extracted_details = {k: v for k, v in extracted_details.items() if k in valid_keys and v}  # Only keep non-empty values for expected keys
             else:
-                 logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: {text}")
+                logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: {text}")
         else:
             logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM returned empty response for text: {text}")
 
     except json.JSONDecodeError as e:
         logger.error(f"[LLM_COMPLAINT_EXTRACT] JSONDecodeError parsing LLM response: {e}. Response: '{response_content}' for text: '{text}'")
-    except Exception as e: # Captura genérica al final
+    except Exception as e:  # Captura genérica al final
         # Si hemos identificado un error específico de Cohere y es de ese tipo, loguearlo específicamente.
         if CohereAPIError and isinstance(e, CohereAPIError):
             logger.error(f"[LLM_COMPLAINT_EXTRACT] Cohere API Error in extract_complaint_details_llm: {e} (Type: {type(e)}). Text: '{text}'")
         else:
             # Log de error genérico para otros tipos de excepciones
-            logger.error(f"[LLM_COMPLAINT_EXTRACT] Generic Error in extract_complaint_details_llm: {e} (Type: {type(e)}). Text: '{text}'", exc_info=True) # exc_info=True para traceback
+            logger.error(f"[LLM_COMPLAINT_EXTRACT] Generic Error in extract_complaint_details_llm: {e} (Type: {type(e)}). Text: '{text}'", exc_info=True)  # exc_info=True para traceback
 
     return extracted_details
 
@@ -223,9 +222,9 @@ def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dic
 
     # Check if robust_chat is the mock or real one by checking its __module__ or specific attribute
     # This is a bit hacky; a better way would be dependency injection or a config flag.
-    is_mock_chat = hasattr(robust_chat, '__module__') and robust_chat.__module__ == __name__ # if defined in this file
+    is_mock_chat = hasattr(robust_chat, '__module__') and robust_chat.__module__ == __name__  # if defined in this file
 
-    if not is_mock_chat: # Attempt to use LLM for a more intelligent merge
+    if not is_mock_chat:  # Attempt to use LLM for a more intelligent merge
         prompt = (
             "You are a text summarization assistant. Given a CURRENT SUMMARY and NEW DATA, "
             "intelligently update the summary. Integrate the new data naturally, avoid redundancy, "
@@ -236,10 +235,10 @@ def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dic
             "UPDATED SUMMARY:"
         )
         try:
-            updated_summary = robust_chat(message=prompt, model_override="gpt-4o-mini") # Cheaper model for summary
+            updated_summary = robust_chat(message=prompt, model_override="gpt-4o-mini")  # Cheaper model for summary
             if updated_summary:
                 return updated_summary.strip()
-            else: # Fallback if LLM returns empty
+            else:  # Fallback if LLM returns empty
                 logger.warning("[LLM_UPDATE_SUMMARY] LLM returned empty for summary update. Using basic append.")
         except Exception as e:
             logger.error(f"[LLM_UPDATE_SUMMARY] Error calling LLM for summary update: {e}. Using basic append.")
@@ -248,12 +247,12 @@ def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dic
     # Basic append logic (fallback or if mock is used)
     summary_lines = [current_summary] if current_summary else []
     for key, value in extracted_data.items():
-        if value: # Only add if there's a value
+        if value:  # Only add if there's a value
             # Try to make keys more readable
             readable_key = key.replace("_", " ").capitalize()
             # Avoid adding duplicate lines if the info seems to be already there (very basic check)
             if f"{readable_key}: {value}" not in current_summary:
-                 summary_lines.append(f"- {readable_key}: {value}")
+                summary_lines.append(f"- {readable_key}: {value}")
 
     return "\n".join(filter(None, summary_lines))
 
@@ -297,7 +296,7 @@ if __name__ == '__main__':
     print(f"Original Summary: \"{summary2}\"\nNew Data: {data2}\nUpdated Summary: \"{updated_summary2}\"")
 
     summary3 = "Resumen existente:\n- Nombre: Juan"
-    data3 = {"telefono_cliente": "12345", "Nombre": "Juan Perez"} # Test case sensitivity and overwrite logic (basic)
+    data3 = {"telefono_cliente": "12345", "Nombre": "Juan Perez"}  # Test case sensitivity and overwrite logic (basic)
     updated_summary3 = update_summary_with_llm_extraction(summary3, data3)
     print(f"Original Summary: \"{summary3}\"\nNew Data: {data3}\nUpdated Summary: \"{updated_summary3}\"")
 
@@ -353,7 +352,7 @@ if __name__ == '__main__':
     fields_for_alice = ["nombre_cliente", "telefono_cliente"]
     alice_details = extract_multiple_contact_details_llm(text_with_extra_info, fields_for_alice)
     print(f"Input: \"{text_with_extra_info}\"\nFields: {fields_for_alice}\nExtracted: {json.dumps(alice_details, indent=2, ensure_ascii=False)}")
-    assert "favorite_color" not in alice_details # Assuming LLM might include it if not instructed well
+    assert "favorite_color" not in alice_details  # Assuming LLM might include it if not instructed well
 
     # Test case for extract_complaint_details_llm with fewer details
     complaint_less_detail = "El agua no sale en mi casa."
@@ -378,7 +377,7 @@ if __name__ == '__main__':
     # (Assuming LLM might try to add "nivel_ruido": "alto" if not well-instructed)
     complaint_details_extra = extract_complaint_details_llm(complaint_with_extra)
     print(f"Input: \"{complaint_with_extra}\"\nExtracted: {json.dumps(complaint_details_extra, indent=2, ensure_ascii=False)}")
-    assert "nivel_ruido" not in complaint_details_extra # Check that only expected keys are present
+    assert "nivel_ruido" not in complaint_details_extra  # Check that only expected keys are present
 
     # Test summary update where new data is empty
     summary_no_new_data = "Existing info."
@@ -445,11 +444,10 @@ def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int =
 
     len_original = len(descripcion_larga)
 
-    if len_original <= max_longitud: # Si ya es suficientemente corta
+    if len_original <= max_longitud:  # Si ya es suficientemente corta
         # Podríamos incluso devolverla si es un poco más larga que min_longitud, para no resumir innecesariamente
-        if len_original >= min_longitud or len_original <= max_longitud * 0.75: # No resumir si ya está en un rango aceptable
-             return descripcion_larga.strip()
-
+        if len_original >= min_longitud or len_original <= max_longitud * 0.75:  # No resumir si ya está en un rango aceptable
+            return descripcion_larga.strip()
 
     prompt = (
         f"Eres un experto en marketing. Resume la siguiente descripción de producto para que sea concisa, atractiva y no exceda los {max_longitud} caracteres, "
@@ -462,11 +460,10 @@ def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int =
 
     resumen = ""
     try:
-        # Usar un modelo eficiente para resúmenes, como command-light o gpt-4o-mini si está disponible
-        # El modelo por defecto en robust_chat es command-r-plus, que puede ser overkill.
-        # Se podría añadir un parámetro model_override a robust_chat o tener una función específica.
-        # Por ahora, usamos el default de robust_chat.
-        resumen_candidato = robust_chat(message=prompt, model_override="gpt-4o-mini") # o cohere.command-light
+        # Usar un modelo eficiente para resúmenes.
+        # El modelo por defecto en robust_chat es command-r-plus.
+        # Si se necesita un modelo específico aquí, robust_chat debería ser adaptado.
+        resumen_candidato = robust_chat(message=prompt)  # Removed model_override
 
         if resumen_candidato:
             resumen = resumen_candidato.strip()
@@ -475,16 +472,15 @@ def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int =
                 # Intentar cortar por la última frase completa dentro del límite
                 last_period = resumen.rfind('.', 0, max_longitud)
                 if last_period != -1:
-                    resumen = resumen[:last_period+1]
-                else: # Si no hay punto, cortar bruscamente
+                    resumen = resumen[:last_period + 1]
+                else:  # Si no hay punto, cortar bruscamente
                     resumen = resumen[:max_longitud].rsplit(' ', 1)[0] + "..." if ' ' in resumen[:max_longitud] else resumen[:max_longitud]
 
-            if len(resumen) < min_longitud and len_original > min_longitud : # Si el resumen es demasiado corto y el original no
+            if len(resumen) < min_longitud and len_original > min_longitud:  # Si el resumen es demasiado corto y el original no
                 # Podríamos intentar re-prompting con "hazlo un poco más largo" o simplemente usar el original truncado
                 logger.warning(f"[LLM_RESUMEN_PROD] Resumen LLM ('{resumen}') más corto ({len(resumen)}) que min_longitud ({min_longitud}). Original era {len_original}.")
                 # Fallback a una porción del original si el resumen es insatisfactorio
                 return descripcion_larga[:max_longitud].strip()
-
 
             logger.info(f"[LLM_RESUMEN_PROD] Descripción original (len {len_original}): '{descripcion_larga[:100]}...' -> Resumen (len {len(resumen)}): '{resumen[:100]}...'")
         else:
@@ -503,7 +499,7 @@ def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int =
 
 try:
     from google.cloud import vision
-    from google.cloud import documentai_v1 as documentai # Alias to avoid conflict
+    from google.cloud import documentai_v1 as documentai  # Alias to avoid conflict
 except ImportError:
     logger.warning("Google Cloud Vision or DocumentAI libraries not found. Related functionalities will not work.")
     # Define dummy classes or objects if needed for the code to not break entirely
@@ -517,8 +513,7 @@ except ImportError:
                 self.pages = []
         # Add any other types that might be needed from documentai
     documentai = MockDocumentAI()
-    vision = None # Or a similar mock if attributes from it are directly used
-
+    vision = None  # Or a similar mock if attributes from it are directly used
 
 def analyze_image_with_google_vision_ocr(image_content: bytes) -> str:
     """
@@ -555,7 +550,7 @@ def analyze_document_with_google_document_ai(
     processor_id: str,
     file_content: bytes,
     mime_type: str
-) -> documentai.Document | None: # Return type includes None for error cases
+) -> documentai.Document | None:  # Return type includes None for error cases
     """
     Processes a document using Google Cloud Document AI.
 
@@ -569,7 +564,7 @@ def analyze_document_with_google_document_ai(
     Returns:
         A Document AI Document object, or None if an error occurs.
     """
-    if not documentai or not hasattr(documentai, 'DocumentProcessorServiceClient'): # Check if real or mock
+    if not documentai or not hasattr(documentai, 'DocumentProcessorServiceClient'):  # Check if real or mock
         logger.error("Google Cloud DocumentAI library not available or not fully mocked. Cannot analyze document.")
         return None
 
@@ -589,8 +584,8 @@ def analyze_document_with_google_document_ai(
 
     # Example of returning a mock Document object for placeholder purposes:
     # Ensure the mock object is compatible with what the calling code might expect.
-    if isinstance(documentai, type) and hasattr(documentai, 'Document'): # Check if it's the MockDocumentAI class
+    if isinstance(documentai, type) and hasattr(documentai, 'Document'):  # Check if it's the MockDocumentAI class
         mock_doc = documentai.Document(text="Placeholder text from Document AI via mock.", mime_type=mime_type)
-    else: # Assuming it's the real documentai or a more complete mock
-        mock_doc = documentai.types.Document(text="Placeholder text from Document AI.", mime_type=mime_type) # type: ignore
+    else:  # Assuming it's the real documentai or a more complete mock
+        mock_doc = documentai.types.Document(text="Placeholder text from Document AI.", mime_type=mime_type)  # type: ignore
     return mock_doc
