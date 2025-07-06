@@ -3,10 +3,18 @@ Flask-SQLAlchemy==3.1.1
 Flask-Migrate==4.0.7
 Flask-Cors==4.0.1
 Flask-Session==0.6.0
+Flask-Login==0.6.3
 SQLAlchemy==2.0.23
 psycopg2-binary==2.9.9 # Para PostgreSQL, si se usa en producción
 gunicorn==22.0.0 # Para producción
 python-dotenv==1.0.0
+celery==5.4.0
+kombu==5.4.0
+vine==5.1.0
+# billiard es una dependencia de Celery que a veces necesita ser explícita
+billiard==4.2.1
+qdrant-client==1.9.2
+twilio==9.6.4
 requests==2.31.0 # Añadido para descarga de imágenes
 google-cloud-vision==3.4.0 # Añadido para Google Vision API
 google-cloud-documentai==2.20.0 # Ya se infiere su uso por google_docai.py
