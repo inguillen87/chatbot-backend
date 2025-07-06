@@ -38,7 +38,7 @@ from routes.reacciones import reacciones_bp
 from routes.carrito import carrito_bp
 from routes.cart import cart_bp
 from routes.productos import productos_bp
-from routes.ai_templates import ai_templates_bp
+from routes.ai_templates import ai_templates_bp 
 from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
@@ -178,7 +178,7 @@ def create_app(config_class=Config):
     app.register_blueprint(notifications_bp)
     app.register_blueprint(municipal_bp)
     app.register_blueprint(reacciones_bp)
-    app.register_blueprint(ai_templates_bp)
+    app.register_blueprint(ai_templates_bp) 
     app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
 
     # --- Registro de comandos CLI ---
