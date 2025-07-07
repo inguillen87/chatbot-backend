@@ -1387,7 +1387,12 @@ class ReclamoHandler(BaseMunicipioHandler):
                     # Si el parseo falla o no obtiene los campos mínimos
                     respuesta_direccion_invalida = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresarla de nuevo? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad, Provincia' o que incluya al menos calle, número y localidad."
                     if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                        if current_app.config.get("ALLOW_ANON_GPS"):
+                    from flask import has_app_context
+                    allow_anon_gps = False
+                    if has_app_context():
+                        allow_anon_gps = current_app.config.get("ALLOW_ANON_GPS", False)
+
+                    if allow_anon_gps:
                             respuesta_direccion_invalida += (
                                 "\n\nSi tenés problemas con la dirección escrita, también podés compartir tu ubicación GPS "
                                 "mediante el botón de adjuntos." 
@@ -1526,10 +1531,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                     ]
                 }
             if accion == "compartir_ubicacion":
+                allow_anon_gps_for_sharing = False
+                from flask import has_app_context
+                if has_app_context():
+                    allow_anon_gps_for_sharing = current_app.config.get("ALLOW_ANON_GPS", False)
+
                 if (
                     self.context.get("anon_id")
                     and not self.context.get("user_id")
-                    and not current_app.config.get("ALLOW_ANON_GPS")
+                    and not allow_anon_gps_for_sharing
                 ):
                     return {
                         "respuesta": "Para compartir tu ubicación GPS de forma precisa para el reclamo, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?",
@@ -1648,10 +1658,23 @@ class ReclamoHandler(BaseMunicipioHandler):
 
             # Verificar si es anónimo y ya excedió el límite de tickets
             if self.context.get("anon_id") and not self.context.get("cliente_id"): # Es anónimo
-                from flask import current_app # Acceder a config
+                from flask import current_app, has_app_context # Acceder a config
                 from datetime import datetime, timedelta # Asegurar imports
-                max_tickets_anon = current_app.config.get("ANONYMOUS_MAX_TICKETS_PER_SESSION", 1)
-                session_timeout_minutes_config = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+
+                max_tickets_anon = 1 # Default
+                session_timeout_minutes_config = 15 # Default
+                app_context_available = has_app_context()
+
+                if app_context_available:
+                    max_tickets_anon = current_app.config.get("ANONYMOUS_MAX_TICKETS_PER_SESSION", 1)
+                    session_timeout_minutes_config = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+                    logger_to_use = current_app.logger
+                else: # pragma: no cover
+                    # Esto solo sucedería si se llama fuera de un contexto de app, lo cual es anómalo para este flujo.
+                    # Usar un logger genérico y defaults.
+                    logger_to_use = logging.getLogger(__name__) # o un logger global
+                    logger_to_use.warning("No hay contexto de aplicación Flask al verificar límite de tickets anónimos.")
+
 
                 # Contar tickets existentes para este anon_id DENTRO de la ventana de sesión actual
                 anon_tickets_count = MunicipioTicket.query\
@@ -1659,7 +1682,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     .filter(MunicipioTicket.fecha >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes_config))\
                     .count()
 
-                current_app.logger.info(f"Usuario anónimo {self.context['anon_id']} (Municipio): {anon_tickets_count} tickets en la sesión actual (límite: {max_tickets_anon}).")
+                logger_to_use.info(f"Usuario anónimo {self.context['anon_id']} (Municipio): {anon_tickets_count} tickets en la sesión actual (límite: {max_tickets_anon}).")
 
                 if anon_tickets_count >= max_tickets_anon:
                     memoria.clear() # Limpiar el flujo de reclamo
