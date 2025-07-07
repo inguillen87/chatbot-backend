@@ -38,11 +38,14 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN:
-    # Para que funcionen en un entorno con dominios separados (Vercel + Render).
-    SESSION_COOKIE_SECURE = True
-    SESSION_COOKIE_SAMESITE = 'None'
-    # Ajustado para funcionar en subdominios, si es necesario. Si no, se puede quitar.
-    # SESSION_COOKIE_DOMAIN = '.chatboc.ar' # Descomentar si tienes problemas entre www y api.
+    IS_PRODUCTION = os.getenv('FLASK_ENV') == 'production'
+
+    SESSION_COOKIE_SECURE = IS_PRODUCTION
+    SESSION_COOKIE_SAMESITE = 'None' if IS_PRODUCTION else 'Lax'
+    # Para producción, asegurarse que esta variable de entorno esté seteada a '.chatboc.ar'
+    # Para desarrollo local, None es usualmente correcto.
+    SESSION_COOKIE_DOMAIN = os.getenv('SESSION_COOKIE_DOMAIN_CONFIG') if IS_PRODUCTION else None
+
 
     # 4. CONFIGURACIÓN PARA SESIONES EN EL LADO DEL SERVIDOR (Flask-Session)
     # Le decimos a Flask-Session que guarde la "memoria" en nuestra base de datos.
