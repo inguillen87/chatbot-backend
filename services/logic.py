@@ -147,8 +147,24 @@ def responder_chatboc(
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
+    logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}'")
 
-    # 1. Detectar nombre de rubro (universal)
+    # 1. Determinar el 'effective_owner_user' (la entidad o bot dueño)
+    effective_owner_user = owner_user
+    if not effective_owner_user and current_user and current_user.empresa_id:
+        from models import User # Local import
+        logger.debug(f"[responder_chatboc] No owner_user arg, but current_user ({current_user.id}) has empresa_id ({current_user.empresa_id}). Attempting to load owner.")
+        potential_owner = User.query.get(current_user.empresa_id)
+        if potential_owner:
+            effective_owner_user = potential_owner
+            logger.info(f"[responder_chatboc] Set effective_owner_user to User ID {effective_owner_user.id} (Name: {effective_owner_user.nombre_empresa}) via current_user.empresa_id.")
+        else: #pragma: no cover
+            logger.warning(f"[responder_chatboc] current_user.empresa_id ({current_user.empresa_id}) did not resolve to a valid User. effective_owner_user remains None.")
+
+    if not effective_owner_user:
+        logger.warning(f"[responder_chatboc] 'effective_owner_user' could not be determined. This is critical for context-specific logic (e.g., for /ask/municipio). Check if a valid entity token is being passed for the bot instance.")
+
+    # 2. Detectar nombre de rubro (universal)
     rubro_nombre = ""
     fuente = ""
     if rubro_obj:
