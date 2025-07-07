@@ -81,6 +81,10 @@ class Config:
     # Número máximo de tickets (reclamos, pedidos, etc.) que un usuario anónimo puede crear por sesión.
     ANONYMOUS_MAX_TICKETS_PER_SESSION = int(os.getenv("ANONYMOUS_MAX_TICKETS_PER_SESSION", "1"))
 
+    # Permitir que usuarios anónimos compartan ubicación GPS en reclamos
+    # De forma predeterminada se requiere registro.
+    ALLOW_ANON_GPS = os.getenv("ALLOW_ANON_GPS", "false").lower() == "true"
+
     # Cantidad de tickets que se muestran por página en el panel
     TICKETS_PER_PAGE_DEFAULT = int(os.getenv("TICKETS_PER_PAGE_DEFAULT", "50"))
 
