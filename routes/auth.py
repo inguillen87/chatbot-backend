@@ -432,7 +432,14 @@ def chatuser_register_panel():
         data = request.form.to_dict() if request.form else {}
 
     empresa_token = data.get('empresa_token')
+    # Log received data for debugging, excluding password
+    logged_data = {k: v for k, v in data.items() if k != 'password'}
+    current_app.logger.info(f"[chatuser_register_panel] Received data (password excluded): {logged_data}")
+    current_app.logger.info(f"[chatuser_register_panel] Anon-Id header: {request.headers.get('Anon-Id')}")
+
+
     if not empresa_token:
+        current_app.logger.warning("[chatuser_register_panel] Registration attempt failed: Falta empresa_token")
         return jsonify({"error": "Falta empresa_token"}), 400
 
     owner_user = User.query.filter_by(token=empresa_token.strip()).first()

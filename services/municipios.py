@@ -1301,7 +1301,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if payload.get("es_foto") or payload.get("es_ubicacion"):
                     return {"respuesta": "Entendido. Para asociar tu foto/ubicación, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?"}
                 if not direccion_es_valida(pregunta_str):
-                    return {"respuesta": f"La dirección no parece completa o válida. ¿Podrías verificarla? Necesito algo como '{EJEMPLO_DIRECCION}'."}
+                    respuesta_direccion_invalida = f"La dirección no parece completa o válida. ¿Podrías verificarla? Necesito algo como '{EJEMPLO_DIRECCION}'."
+                    # Check if user is anonymous (has anon_id but not cliente_id)
+                    if self.context.get("anon_id") and not self.context.get("cliente_id"):
+                        respuesta_direccion_invalida += (
+                            "\n\nSi tenés problemas con la dirección escrita, recordá que luego de registrarte o iniciar sesión, "
+                            "podrás compartir tu ubicación GPS para mayor precisión."
+                        )
+                    return {"respuesta": respuesta_direccion_invalida}
                 memoria["direccion_reclamo"] = pregunta_str.strip()
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
                 if pregunta_str == payload.get("pregunta",""):
