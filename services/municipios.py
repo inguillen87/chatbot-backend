@@ -1071,22 +1071,26 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if validar_telefono(valor_campo):
                             memoria["telefono_vecino"] = valor_campo.strip()
                         else:
-                            logger.warning(f"Teléfono '{datos[campo]}' no válido. Se pedirá.")
+                            logger.warning(
+                                f"Teléfono '{valor_campo}' no válido. Se pedirá."
+                            )
                             pass
                     elif campo == "email":
-                        if validar_email(datos[campo]):
-                            memoria["email_vecino"] = datos[campo].strip()
+                        if validar_email(valor_campo):
+                            memoria["email_vecino"] = valor_campo.strip()
                         else:
-                            logger.warning(f"Email '{datos[campo]}' no válido. Se pedirá.")
+                            logger.warning(
+                                f"Email '{valor_campo}' no válido. Se pedirá."
+                            )
                             pass
                     else:
                         # Asegurarse de que el campo se guarda con el nombre correcto en memoria
                         if campo == "nombre":
-                            memoria["nombre_vecino"] = datos[campo].strip()
+                            memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion":
-                            memoria["descripcion_reclamo"] = datos[campo].strip()
+                            memoria["descripcion_reclamo"] = valor_campo.strip()
                         else:
-                             memoria[campo] = datos[campo].strip() # Para otros campos si los hubiera
+                            memoria[campo] = valor_campo.strip()  # Para otros campos si los hubiera
             
             # Si al menos se obtuvo una categoría o descripción inicial, o cualquier dato de reclamo,
             # forzamos el inicio del flujo paso a paso si no se pudo completar de una.
