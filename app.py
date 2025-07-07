@@ -62,32 +62,22 @@ def create_app(config_class=Config):
 
     app.config.from_object(config_class)
 
-    # Set SESSION_COOKIE_DOMAIN if not already set by environment or config_class
-    # This is crucial for cross-subdomain session persistence (e.g., api.chatboc.ar and www.chatboc.ar)
-    if app.config.get('SESSION_COOKIE_DOMAIN') is None:
-        # Attempt to infer the base domain or set to a known one.
-        # For chatboc.ar, api.chatboc.ar, www.chatboc.ar, the common domain is '.chatboc.ar'
-        # This needs to be adjusted if the actual domain structure is different.
-        # A more robust way might be to set this via an environment variable.
-        server_name = app.config.get('SERVER_NAME')
-        if server_name and server_name.count('.') > 1 and not server_name.startswith("localhost"):
-            parts = server_name.split('.')
-            app.config['SESSION_COOKIE_DOMAIN'] = f".{parts[-2]}.{parts[-1]}"
-            print(f"Inferred SESSION_COOKIE_DOMAIN: {app.config['SESSION_COOKIE_DOMAIN']}")
-        elif "chatboc.ar" in (os.environ.get("RENDER_EXTERNAL_URL", "") or ""): # Check if running on Render with expected domain
-             app.config['SESSION_COOKIE_DOMAIN'] = ".chatboc.ar"
-             print(f"Set SESSION_COOKIE_DOMAIN to: .chatboc.ar (based on RENDER_EXTERNAL_URL)")
-        else:
-            # Fallback or specific setting if not on Render or SERVER_NAME not useful
-            # For local development, this might not be needed or could be False.
-            # If you know the production domain, you can hardcode it here for production,
-            # but environment variable is better.
-            # Example: app.config['SESSION_COOKIE_DOMAIN'] = ".yourdomain.com"
-            print("SESSION_COOKIE_DOMAIN not set and could not be reliably inferred. Session might not work across subdomains.")
-
+    # SESSION_COOKIE_DOMAIN is now directly set by Config based on environment variables.
+    # The complex inference logic below is removed.
+    # if app.config.get('SESSION_COOKIE_DOMAIN') is None:
+    #     server_name = app.config.get('SERVER_NAME')
+    #     if server_name and server_name.count('.') > 1 and not server_name.startswith("localhost"):
+    #         parts = server_name.split('.')
+    #         app.config['SESSION_COOKIE_DOMAIN'] = f".{parts[-2]}.{parts[-1]}"
+    #         print(f"Inferred SESSION_COOKIE_DOMAIN: {app.config['SESSION_COOKIE_DOMAIN']}")
+    #     elif "chatboc.ar" in (os.environ.get("RENDER_EXTERNAL_URL", "") or ""):
+    #          app.config['SESSION_COOKIE_DOMAIN'] = ".chatboc.ar"
+    #          print(f"Set SESSION_COOKIE_DOMAIN to: .chatboc.ar (based on RENDER_EXTERNAL_URL)")
+    #     else:
+    #         print("SESSION_COOKIE_DOMAIN not set and could not be reliably inferred. Session might not work across subdomains.")
 
     # --- Diagnóstico de Sesión ---
-    print("--- DIAGNÓSTICO DE SESIÓN ---")
+    print("--- DIAGNÓSTICO DE SESIÓN (desde app.py) ---")
     print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
     print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
     print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
