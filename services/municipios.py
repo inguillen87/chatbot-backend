@@ -1078,13 +1078,12 @@ class ReclamoHandler(BaseMunicipioHandler):
         intencion = self.context.get("intencion")
 
         # --- Bloque 1: Inicio del flujo de reclamo ---
-        # Si la intención es iniciar un reclamo y no hay un estado de reclamo activo,
+        # Si la intención es iniciar un reclamo y no hay un estado de reclamo activo (estado_inicial_handler),
         # se limpia la memoria y se establece el primer estado para pedir la categoría.
-        if intencion == "iniciar_reclamo" and not estado:
+        if intencion == "iniciar_reclamo" and not estado: # 'estado' here is estado_inicial_handler
             logger.info(f"[ReclamoHandler] Iniciando nuevo flujo de reclamo. Intención: {intencion}")
-            memoria.clear() # Limpiar cualquier estado anterior de reclamo
+            memoria.clear()
 
-            # --- INICIO: Pre-llenado desde datos de archivo interpretados ---
             datos_archivo = self.context.get("datos_interpretados_archivo")
             if datos_archivo and isinstance(datos_archivo, dict):
                 logger.info(f"[ReclamoHandler] Intentando pre-llenar memoria con datos de archivo: {datos_archivo}")
@@ -1140,20 +1139,31 @@ class ReclamoHandler(BaseMunicipioHandler):
             # No devolvemos una respuesta aquí directamente, dejamos que el loop decida el primer paso.
             # Sin embargo, si después del pre-llenado, el primer estado (categoría) ya está cubierto,
             # el loop avanzará. Si no, la lógica de pedir categoría se activará.
+            # memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Already set if not pre-filled
 
-            sugeridas = sugerir_categorias_relevantes(pregunta_str)
-            botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
-            texto_respuesta = "Elegí la categoría del reclamo" if sugeridas else "¿Sobre qué categoría es tu reclamo?"
-            return {
-                "respuesta": texto_respuesta,
-                "botones": botones
-            }
+            # After potential pre-fill, check if category is now set
+            if memoria.get("categoria_reclamo"):
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
+                # If category was pre-filled, ask for the next piece of info (address)
+                return {"respuesta": f"Detecté la categoría: **{memoria['categoria_reclamo'].title()}**. Ahora, ¿La **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
+            else:
+                # Category not pre-filled, so ask for it
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+                sugeridas = sugerir_categorias_relevantes(pregunta_str) # Based on the trigger phrase like "reclamo puedo hacer?"
+                botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
+                texto_respuesta = "Elegí la categoría del reclamo" if sugeridas else "¿Sobre qué categoría es tu reclamo?"
+                return {
+                    "respuesta": texto_respuesta,
+                    "botones": botones
+                }
 
-        # Si el estado actual no pertenece al flujo de reclamos, este handler no actúa.
+        # Si el estado actual no pertenece al flujo de reclamos (e.g. was not initiated here, nor is it an ongoing reclamo state),
+        # this handler does not act further in this call.
         if estado not in RECLAMO_STATES:
             return None
 
         # --- Bloque 2: Extracción de detalles con LLM en cada paso (si aplica) ---
+        # This block will now only be reached if 'estado' was already a RECLAMO_STATE at the start of handle()
         # Intenta extraer múltiples detalles de la respuesta del usuario si no es una
         # simple confirmación o una acción de botón conocida, y si el estado es de recolección de datos.
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
@@ -1602,7 +1612,8 @@ class ReclamoHandler(BaseMunicipioHandler):
                         "telefono_vecino": telefono_raw,
                         "email": email,
                         "estado": "nuevo",
-                        "user_id": self.context.get("user_id"),
+                        "user_id": self.context.get("cliente_id"), # Corrected: Use cliente_id for the citizen
+                        "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None, # Ensure anon_id is passed if no cliente_id
                         "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
                         "ubicacion": memoria.get("ubicacion_gps"),
                         "foto_url": memoria.get("foto_url"),
