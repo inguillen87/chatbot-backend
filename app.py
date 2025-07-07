@@ -53,6 +53,13 @@ def my_on_connect_listener(dbapi_connection, connection_record):
 
 def create_app(config_class=Config):
     app = Flask(__name__)
+
+    # Apply ProxyFix if behind a proxy, BEFORE other configurations if they depend on URL scheme
+    # This helps Flask correctly identify the protocol (http/https) and other details
+    # when running behind a reverse proxy (like Nginx, Heroku, Render, etc.)
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
     app.config.from_object(config_class)
 
     # Set SESSION_COOKIE_DOMAIN if not already set by environment or config_class

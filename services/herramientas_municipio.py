@@ -90,13 +90,116 @@ def normalizar_texto(texto: str) -> str:
 
 # --- VALIDACIÓN DE DIRECCIONES ---
 def direccion_es_valida(texto: str) -> bool:
-    """Heurística simple para verificar si una dirección parece válida."""
+    """Heurística simple para verificar si una dirección parece válida a grandes rasgos."""
     if not texto:
         return False
     texto_norm = normalizar_texto(texto)
-    tiene_numero = bool(re.search(r"\d{1,5}", texto_norm))
-    tiene_palabras = len(re.findall(r"[a-zA-Z]+", texto_norm)) >= 1
-    return tiene_numero and tiene_palabras
+    # Verifica que haya al menos una palabra (nombre de calle) y al menos un número.
+    # Esta es una validación muy básica. La función `parse_direccion_completa` hará el trabajo pesado.
+    tiene_numero = bool(re.search(r"\d+", texto_norm)) # Un número cualquiera
+    tiene_palabras_calle = bool(re.search(r"[a-zA-Z]{2,}", texto_norm)) # Al menos una palabra de 2+ letras para la calle
+
+    # Podríamos añadir más heurísticas si es necesario, por ejemplo,
+    # si la parte numérica está muy separada de la parte de texto, etc.
+    # Pero es mejor dejar que el LLM lo maneje.
+    return tiene_numero and tiene_palabras_calle
+
+
+def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None) -> dict | None:
+    """
+    Usa un LLM para extraer componentes estructurados de una dirección.
+    Args:
+        texto_direccion: La dirección proporcionada por el usuario.
+        municipio_config: Configuración del municipio actual (puede contener ciudad/provincia por defecto).
+    Returns:
+        Un diccionario con los campos de la dirección o None si falla la extracción.
+    """
+    if not texto_direccion:
+        return None
+
+    if municipio_config is None:
+        municipio_config = {} # Evitar error si no se pasa
+
+    prompt = f"""
+Eres un experto en interpretar direcciones en Argentina. Dada la siguiente DIRECCIÓN PROPORCIONADA, extráela en un formato JSON con los campos: "calle", "numero", "localidad", "provincia", "codigo_postal", "barrio", "otros_detalles".
+
+Considera la siguiente información del municipio para el cual trabajas (si está disponible):
+- Localidad principal: {municipio_config.get('ciudad', 'N/A')}
+- Provincia principal: {municipio_config.get('provincia', 'N/A')}
+
+INSTRUCCIONES DETALLADAS:
+1.  **Calle y Número**: Identificá claramente el nombre de la calle y el número de puerta.
+2.  **Localidad y Provincia**:
+    *   Si la DIRECCIÓN PROPORCIONADA incluye explícitamente una localidad y/o provincia, utilizá esas.
+    *   Si la DIRECCIÓN PROPORCIONADA NO incluye localidad pero sí calle y número, y la calle y número parecen válidos para el contexto del municipio, podés ASUMIR la "Localidad principal" y "Provincia principal" del municipio si están definidas.
+    *   Si la DIRECCIÓN PROPORCIONADA NO incluye provincia pero sí localidad, y la localidad es conocida en el contexto de la "Provincia principal", podés ASUMIR la "Provincia principal".
+3.  **Código Postal, Barrio, Otros Detalles**: Extraelos si están presentes. Si no, dejalos como null o string vacío.
+4.  **Formato de Salida**: Respondé ÚNICAMENTE con el objeto JSON. No incluyas explicaciones adicionales.
+    *   Si un campo no se puede determinar, su valor debe ser `null` o un string vacío.
+    *   Asegurate que el JSON esté bien formado.
+
+EJEMPLOS:
+- DIRECCIÓN PROPORCIONADA: "San Martín 123, Junín, Mendoza"
+  (Asumiendo que el bot no tiene info de municipio_config o es genérico)
+  RESPUESTA JSON: {{"calle": "San Martín", "numero": "123", "localidad": "Junín", "provincia": "Mendoza", "codigo_postal": null, "barrio": null, "otros_detalles": null}}
+
+- DIRECCIÓN PROPORCIONADA: "Belgrano 456"
+  (Asumiendo municipio_config: {{"ciudad": "Godoy Cruz", "provincia": "Mendoza"}})
+  RESPUESTA JSON: {{"calle": "Belgrano", "numero": "456", "localidad": "Godoy Cruz", "provincia": "Mendoza", "codigo_postal": null, "barrio": null, "otros_detalles": null}}
+
+- DIRECCIÓN PROPORCIONADA: "Rivadavia al 789, Ciudad"
+  (Asumiendo municipio_config: {{"ciudad": "San Rafael", "provincia": "Mendoza"}})
+  RESPUESTA JSON: {{"calle": "Rivadavia", "numero": "789", "localidad": "Ciudad", "provincia": "Mendoza", "codigo_postal": null, "barrio": null, "otros_detalles": null}}
+  (Nota: "Ciudad" como localidad es común, el LLM debería tomarla si la provincia es Mendoza)
+
+- DIRECCIÓN PROPORCIONADA: "esquina de Soler y Paraguay, Palermo"
+  (Asumiendo municipio_config: {{"ciudad": "CABA", "provincia": "Buenos Aires"}})
+  RESPUESTA JSON: {{"calle": "esquina de Soler y Paraguay", "numero": null, "localidad": "Palermo", "provincia": "Buenos Aires", "codigo_postal": null, "barrio": "Palermo", "otros_detalles": "esquina"}}
+
+DIRECCIÓN PROPORCIONADA: "{texto_direccion}"
+
+RESPUESTA JSON:
+"""
+    try:
+        respuesta_llm = get_cohere_response(
+            message=prompt,
+            preamble="Sos un experto en extraer direcciones a formato JSON."
+        )
+        logger.info(f"[ParseDireccion] LLM response for address '{texto_direccion}': {respuesta_llm}")
+        parsed_data = json.loads(respuesta_llm)
+
+        # Validaciones básicas de la estructura devuelta
+        if not isinstance(parsed_data, dict):
+            logger.warning(f"[ParseDireccion] LLM no devolvió un diccionario para: {texto_direccion}")
+            return None
+
+        # Asegurar que al menos calle y número O calle y otros_detalles (para esquinas) estén presentes
+        calle = parsed_data.get("calle")
+        numero = parsed_data.get("numero")
+        otros_detalles = parsed_data.get("otros_detalles")
+
+        if not calle: # La calle es fundamental
+            logger.warning(f"[ParseDireccion] LLM no extrajo 'calle' para: {texto_direccion}")
+            return None
+
+        # Si no hay número, y 'otros_detalles' no indica una esquina o referencia válida, podría ser inválido.
+        # Esta lógica puede ser más compleja. Por ahora, si hay calle, se considera un intento válido de parseo.
+        # if not numero and not (otros_detalles and ("esquina" in otros_detalles.lower() or "entre" in otros_detalles.lower())):
+        #     logger.warning(f"[ParseDireccion] LLM no extrajo 'numero' ni detalles de esquina válidos para: {texto_direccion}")
+        #     return None
+
+        # Normalizar campos opcionales a None si son strings vacíos
+        for key in ["codigo_postal", "barrio", "otros_detalles", "numero", "localidad", "provincia"]:
+            if key in parsed_data and parsed_data[key] == "":
+                parsed_data[key] = None
+
+        return parsed_data
+    except json.JSONDecodeError:
+        logger.error(f"[ParseDireccion] Error al decodificar JSON del LLM para dirección: {texto_direccion}. Respuesta LLM: {respuesta_llm}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"[ParseDireccion] Error inesperado al parsear dirección con LLM: {e}", exc_info=True)
+        return None
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
