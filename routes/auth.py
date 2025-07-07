@@ -477,7 +477,8 @@ def chatuser_register_panel():
 
     owner_user = User.query.filter_by(token=empresa_token.strip()).first()
     if not owner_user:
-        return jsonify({"error": "Token de empresa inválido"}), 404
+        current_app.logger.warning(f"[chatuser_register_panel] Registration attempt failed: Token de empresa inválido o no encontrado: {empresa_token}")
+        return jsonify({"error": "Token de empresa inválido o no encontrado"}), 400 # Changed from 404 to 400 for clarity
 
     name = data.get('name')
     email = data.get('email')
