@@ -1379,10 +1379,16 @@ class ReclamoHandler(BaseMunicipioHandler):
                     # Si el parseo falla o no obtiene los campos mínimos
                     respuesta_direccion_invalida = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresarla de nuevo? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad, Provincia' o que incluya al menos calle, número y localidad."
                     if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                        respuesta_direccion_invalida += (
-                            "\n\nSi tenés problemas con la dirección escrita, recordá que luego de registrarte o iniciar sesión, "
-                            "podrás compartir tu ubicación GPS para mayor precisión."
-                        )
+                        if current_app.config.get("ALLOW_ANON_GPS"):
+                            respuesta_direccion_invalida += (
+                                "\n\nSi tenés problemas con la dirección escrita, también podés compartir tu ubicación GPS "
+                                "mediante el botón de adjuntos." 
+                            )
+                        else:
+                            respuesta_direccion_invalida += (
+                                "\n\nSi tenés problemas con la dirección escrita, recordá que luego de registrarte o iniciar sesión, "
+                                "podrás compartir tu ubicación GPS para mayor precisión."
+                            )
                     return {"respuesta": respuesta_direccion_invalida}
             
             # Sub-bloque 3.3: Esperando Nombre Vecino
@@ -1501,14 +1507,18 @@ class ReclamoHandler(BaseMunicipioHandler):
                     ]
                 }
             if accion == "compartir_ubicacion":
-                if self.context.get("anon_id") and not self.context.get("user_id"):
+                if (
+                    self.context.get("anon_id")
+                    and not self.context.get("user_id")
+                    and not current_app.config.get("ALLOW_ANON_GPS")
+                ):
                     return {
                         "respuesta": "Para compartir tu ubicación GPS de forma precisa para el reclamo, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?",
                         "botones": [
                             {"texto": "Iniciar Sesión", "action": "login"},
                             {"texto": "Registrarme Gratis", "action": "register"},
-                            {"texto": "Continuar sin compartir ubicación", "action": "sin_adjuntos"}
-                        ]
+                            {"texto": "Continuar sin compartir ubicación", "action": "sin_adjuntos"},
+                        ],
                     }
                 return {
                     "respuesta": "¡Claro! Podés compartir tu ubicación actual usando el botón del clip 📎 en tu WhatsApp o la opción de compartir ubicación de la web. Si preferís no hacerlo, solo decime 'continuar'.",
