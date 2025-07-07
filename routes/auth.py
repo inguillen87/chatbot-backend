@@ -765,7 +765,10 @@ def anon_o_token_requerido(f):
 
         user = User.query.filter_by(token=token).first() if token else None
         if token and not user:
-            current_app.logger.warning(f"Token proporcionado ('{token[:10]}...') pero inválido o usuario no encontrado.")
+            current_app.logger.warning(
+                f"Token proporcionado ('{token[:10]}...') pero inválido o usuario no encontrado. "
+                "Consulta docs/token-invalid-troubleshooting.md para verificarlo."
+            )
 
         if user and not anon_id: # Usuario autenticado por token, sin Anon-Id explícito en cabecera
             g.current_user = user
