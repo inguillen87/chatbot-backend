@@ -23,6 +23,7 @@ from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
     categorizar_reclamo_por_palabra_clave,
     sugerir_categorias_relevantes,
+    parse_direccion_completa,
     normalizar_texto,
     direccion_es_valida,
     TOOL_REGISTRY,
