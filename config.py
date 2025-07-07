@@ -44,7 +44,11 @@ class Config:
     SESSION_COOKIE_SAMESITE = 'None' if IS_PRODUCTION else 'Lax'
     # Para producción, asegurarse que esta variable de entorno esté seteada a '.chatboc.ar'
     # Para desarrollo local, None es usualmente correcto.
-    SESSION_COOKIE_DOMAIN = os.getenv('SESSION_COOKIE_DOMAIN_CONFIG') if IS_PRODUCTION else None
+    if IS_PRODUCTION:
+        # Default to '.chatboc.ar' if no explicit domain is provided
+        SESSION_COOKIE_DOMAIN = os.getenv('SESSION_COOKIE_DOMAIN_CONFIG', '.chatboc.ar')
+    else:
+        SESSION_COOKIE_DOMAIN = None
 
 
     # 4. CONFIGURACIÓN PARA SESIONES EN EL LADO DEL SERVIDOR (Flask-Session)
