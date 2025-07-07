@@ -1387,12 +1387,12 @@ class ReclamoHandler(BaseMunicipioHandler):
                     # Si el parseo falla o no obtiene los campos mínimos
                     respuesta_direccion_invalida = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresarla de nuevo? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad, Provincia' o que incluya al menos calle, número y localidad."
                     if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                    from flask import has_app_context
-                    allow_anon_gps = False
-                    if has_app_context():
-                        allow_anon_gps = current_app.config.get("ALLOW_ANON_GPS", False)
+                        from flask import has_app_context # Correctly unindented
+                        allow_anon_gps = False
+                        if has_app_context():
+                            allow_anon_gps = current_app.config.get("ALLOW_ANON_GPS", False)
 
-                    if allow_anon_gps:
+                        if allow_anon_gps:
                             respuesta_direccion_invalida += (
                                 "\n\nSi tenés problemas con la dirección escrita, también podés compartir tu ubicación GPS "
                                 "mediante el botón de adjuntos." 
