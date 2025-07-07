@@ -344,8 +344,37 @@ class BaseMunicipioHandler:
         partes = []
         if memoria.get("categoria_reclamo"):
             partes.append(f"Categoría: {memoria['categoria_reclamo']}")
-        if memoria.get("direccion_reclamo"):
+
+        # Mostrar dirección estructurada si está disponible
+        direccion_estructurada = memoria.get("direccion_estructurada_reclamo")
+        if direccion_estructurada and isinstance(direccion_estructurada, dict):
+            # Construir una representación legible de la dirección estructurada
+            dir_parts = []
+            if direccion_estructurada.get("calle"):
+                dir_parts.append(direccion_estructurada["calle"])
+            if direccion_estructurada.get("numero"):
+                dir_parts.append(direccion_estructurada["numero"])
+
+            # Formatear calle y número juntos, luego el resto
+            calle_numero_str = " ".join(filter(None, [direccion_estructurada.get("calle", ""), direccion_estructurada.get("numero", "")])).strip()
+            if calle_numero_str:
+                full_address_str = calle_numero_str
+                if direccion_estructurada.get("localidad"):
+                    full_address_str += f", {direccion_estructurada['localidad']}"
+                if direccion_estructurada.get("provincia"):
+                    full_address_str += f", {direccion_estructurada['provincia']}"
+                if direccion_estructurada.get("barrio"):
+                    full_address_str += f" (Barrio: {direccion_estructurada['barrio']})"
+                if direccion_estructurada.get("codigo_postal"):
+                    full_address_str += f" - CP: {direccion_estructurada['codigo_postal']}"
+                if direccion_estructurada.get("otros_detalles"):
+                    full_address_str += f" - Detalles: {direccion_estructurada['otros_detalles']}"
+                partes.append(f"Dirección: {full_address_str}")
+            else: # Fallback a la dirección en texto plano si la estructurada está mal formada
+                partes.append(f"Dirección: {memoria.get('direccion_reclamo', 'No especificada')}")
+        elif memoria.get("direccion_reclamo"): # Si no hay estructurada, usar la de texto plano
             partes.append(f"Dirección: {memoria['direccion_reclamo']}")
+
         if memoria.get("nombre_vecino"):
             partes.append(f"Nombre: {memoria['nombre_vecino']}")
         if memoria.get("telefono_vecino"):
@@ -987,33 +1016,60 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
             """
             try:
                 resp = get_cohere_response(message=prompt, preamble="Extraé los campos y devolvé solo JSON.")
-                datos = json.loads(resp) if resp else {}
-                logger.info(f"[ReclamoInteligenteHandler] Datos extraídos por LLM: {datos}")
+                datos_extraidos_reclamo_inteligente = json.loads(resp) if resp else {}
+                logger.info(f"[ReclamoInteligenteHandler] Datos extraídos por LLM: {datos_extraidos_reclamo_inteligente}")
             except Exception as e:
                 logger.error(f"[ReclamoInteligenteMunicipioHandler] Error Cohere/JSON: {e}", exc_info=True)
-                datos = {}
+                datos_extraidos_reclamo_inteligente = {}
             
             # Limpiar memoria al iniciar un reclamo inteligente para asegurar que empezamos de cero
             memoria.clear() 
+
+            # Procesar dirección primero con la nueva función
+            direccion_texto_original = datos_extraidos_reclamo_inteligente.get("direccion")
+            if direccion_texto_original:
+                # Usar CONFIG_MUNICIPIO que debería estar disponible en el contexto o cargarlo
+                config_muni_para_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
+                parsed_address = parse_direccion_completa(direccion_texto_original, config_muni_para_parseo)
+                if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"): # Chequeo mínimo
+                    memoria["direccion_estructurada_reclamo"] = parsed_address
+                    # Para compatibilidad con build_detalles_memoria y otros usos, también guardar la versión en texto
+                    memoria["direccion_reclamo"] = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,", ",").strip()
+                    logger.info(f"[ReclamoInteligenteHandler] Dirección parseada y guardada: {memoria['direccion_estructurada_reclamo']}")
+                else:
+                    # Si el parseo falla pero el LLM original extrajo algo, lo guardamos como texto plano
+                    # y el ReclamoHandler lo pedirá/validará después si es necesario.
+                    if direccion_es_valida(direccion_texto_original): # Usar la validación básica
+                        memoria["direccion_reclamo"] = direccion_texto_original.strip()
+                        logger.warning(f"[ReclamoInteligenteHandler] Dirección '{direccion_texto_original}' no pudo ser parseada estructuradamente pero pasó validación básica.")
+                    else:
+                        logger.warning(f"[ReclamoInteligenteHandler] Dirección '{direccion_texto_original}' no válida o no parseable. Se pedirá.")
+
             for campo in self.CAMPOS_RECLAMO:
-                if datos.get(campo):
-                    # Validar y asignar campos. Para categoría, intentar un fuzzy match.
+                if campo == "direccion": # Ya procesado arriba
+                    continue
+
+                valor_campo = datos_extraidos_reclamo_inteligente.get(campo)
+                if valor_campo:
                     if campo == "categoria":
-                        matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(datos[campo])), None)
+                        matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(valor_campo)), None)
+                        if not matched_category: # Fuzzy match si no hay coincidencia exacta
+                            from difflib import get_close_matches
+                            # Asegurarse que categorias_normalizadas está disponible en este scope
+                            # Si no, obtenerla de CATEGORIAS_RECLAMO
+                            # categorias_normalizadas_local = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
+                            close_matches = get_close_matches(normalizar_texto(valor_campo), categorias_normalizadas, n=1, cutoff=0.7)
+                            if close_matches:
+                                idx = categorias_normalizadas.index(close_matches[0])
+                                matched_category = CATEGORIAS_RECLAMO[idx]
+
                         if matched_category:
                             memoria["categoria_reclamo"] = matched_category
-                        else: # Si no matchea, se considerará faltante
-                            logger.warning(f"Categoría '{datos[campo]}' no válida. Se pedirá.")
-                            pass
-                    elif campo == "direccion":
-                        if direccion_es_valida(datos[campo]):
-                            memoria["direccion_reclamo"] = datos[campo].strip()
                         else:
-                            logger.warning(f"Dirección '{datos[campo]}' no válida. Se pedirá.")
-                            pass # No se asigna si no es válida, se pedirá más adelante
+                            logger.warning(f"Categoría '{valor_campo}' no válida o no reconocida. Se pedirá.")
                     elif campo == "telefono":
-                        if validar_telefono(datos[campo]):
-                            memoria["telefono_vecino"] = datos[campo].strip()
+                        if validar_telefono(valor_campo):
+                            memoria["telefono_vecino"] = valor_campo.strip()
                         else:
                             logger.warning(f"Teléfono '{datos[campo]}' no válido. Se pedirá.")
                             pass
@@ -1300,20 +1356,34 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                 if payload.get("es_foto") or payload.get("es_ubicacion"):
                     return {"respuesta": "Entendido. Para asociar tu foto/ubicación, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?"}
-                if not direccion_es_valida(pregunta_str):
-                    respuesta_direccion_invalida = f"La dirección no parece completa o válida. ¿Podrías verificarla? Necesito algo como '{EJEMPLO_DIRECCION}'."
-                    # Check if user is anonymous (has anon_id but not cliente_id)
+
+                # Usar parse_direccion_completa
+                # Usar CONFIG_MUNICIPIO que debería estar disponible en el contexto o cargarlo
+                config_muni_para_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
+                parsed_address = parse_direccion_completa(pregunta_str, config_muni_para_parseo)
+
+                if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"): # Chequeo mínimo de validez
+                    memoria["direccion_estructurada_reclamo"] = parsed_address
+                    # Guardar también la versión en texto para compatibilidad y visualización simple
+                    direccion_texto_confirmacion = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}"
+                    if parsed_address.get("provincia"):
+                        direccion_texto_confirmacion += f", {parsed_address['provincia']}"
+                    memoria["direccion_reclamo"] = direccion_texto_confirmacion.replace(" ,", ",").strip()
+
+                    logger.info(f"[ReclamoHandler] Dirección parseada y guardada: {memoria['direccion_estructurada_reclamo']}")
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
+                    if pregunta_str == payload.get("pregunta",""): # Si esta fue la entrada directa del usuario
+                        return {"respuesta": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?"}
+                    continue # Si fue auto-llenado, continuar el loop
+                else:
+                    # Si el parseo falla o no obtiene los campos mínimos
+                    respuesta_direccion_invalida = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresarla de nuevo? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad, Provincia' o que incluya al menos calle, número y localidad."
                     if self.context.get("anon_id") and not self.context.get("cliente_id"):
                         respuesta_direccion_invalida += (
                             "\n\nSi tenés problemas con la dirección escrita, recordá que luego de registrarte o iniciar sesión, "
                             "podrás compartir tu ubicación GPS para mayor precisión."
                         )
                     return {"respuesta": respuesta_direccion_invalida}
-                memoria["direccion_reclamo"] = pregunta_str.strip()
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO
-                if pregunta_str == payload.get("pregunta",""):
-                     return {"respuesta": "¡Perfecto! Ya tengo la dirección. Ahora, ¿podrías decirme tu **nombre completo**?"}
-                continue
             
             # Sub-bloque 3.3: Esperando Nombre Vecino
             elif current_state_for_logic == ConversationState.ESPERANDO_NOMBRE_VECINO:
