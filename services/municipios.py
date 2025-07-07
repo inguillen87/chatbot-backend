@@ -3390,8 +3390,8 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                                 session_id=context.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
                                 respuesta=respuesta_sugerencia.get("respuesta", ""), fuente=respuesta_sugerencia.get("fuente", "sugerencia_registro_municipio"),
                                 rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), # Usar getattr
-                                user_id=None, # Es anónimo
-                                municipio_id=getattr(owner_user, "id", None) # ID del municipio al que pertenece el bot
+                                user_id=None # Es anónimo
+                                # municipio_id=getattr(owner_user, "id", None) # ID del municipio al que pertenece el bot - REMOVED
                             ))
                             db.session.commit()
                         except Exception as e_conv_sug_muni:
@@ -3602,8 +3602,8 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                 respuesta=final_response_dict.get("respuesta"),
                 fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"), # Usar fuente de la respuesta final
                 rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"),
-                user_id=None,
-                municipio_id=getattr(owner_user, "id", None)
+                user_id=None
+                # municipio_id=getattr(owner_user, "id", None) - REMOVED
             ))
             db.session.commit()
             logger_actual.info(f"Conversación (municipio) para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')} guardada.")
