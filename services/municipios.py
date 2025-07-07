@@ -1087,11 +1087,11 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if campo == "nombre":
                             memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion":
-                            # Aquí valor_campo ya es el resultado de .get("descripcion", "")
-                            memoria["descripcion_reclamo"] = valor_campo.strip() # MODIFICADO
+                            # CORRECCIÓN: Usar valor_campo que ya tiene datos_extraidos_reclamo_inteligente.get(campo, "")
+                            memoria["descripcion_reclamo"] = valor_campo.strip()
                         else:
                             # Aquí valor_campo ya es el resultado de .get(campo, "")
-                            memoria[campo] = valor_campo.strip()  # MODIFICADO (aunque este 'else' es menos probable que se use con CAMPOS_RECLAMO definidos)
+                            memoria[campo] = valor_campo.strip()
             
             # Si al menos se obtuvo una categoría o descripción inicial, o cualquier dato de reclamo,
             # forzamos el inicio del flujo paso a paso si no se pudo completar de una.
