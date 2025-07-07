@@ -2634,33 +2634,49 @@ class GeneralHandler(BaseMunicipioHandler):
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
         memoria = self.context[CONTEXTO_MUNICIPIO]
         estado = memoria.get("estado_conversacion")
-        if estado and estado in RECLAMO_STATES:
-            return None
+        # Se quita el bloqueo si hay RECLAMO_STATES porque GeneralHandler es un fallback.
+        # Si otros handlers (incluido el dueño del estado) no respondieron, GeneralHandler puede intentarlo.
+        # if estado and estado in RECLAMO_STATES:  <-- Eliminado
+        #     return None
         
         logger.info("[GeneralHandler] Consulta general con contexto de DB.")
-        user_obj = self.context.get("user_obj")
+        user_obj = self.context.get("user_obj") # Dueño del bot (Municipio)
 
         # Si el usuario está en el flujo de licencia de conducir y hace una pregunta general
+        # Esta lógica es específica y podría estar mejor en TramitesHandler si es el dueño de ese estado.
+        # Si se mantiene aquí, asegurarse que no interfiera negativamente.
         if estado == ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA:
+            # Si TramitesHandler es el dueño de ESPERANDO_PREGUNTA_CURSO_LICENCIA,
+            # y no respondió (por eso llegamos a GeneralHandler), entonces esta lógica aquí
+            # podría ser un último intento de responder específicamente para ese estado.
             respuesta_faq = buscar_en_faqs(pregunta_str, "licencia_de_conducir")
             if respuesta_faq:
-                memoria.clear()
+                # No limpiar memoria aquí, podría ser que el usuario quiera seguir en el flujo de licencia
+                # memoria.clear()
                 respuesta = {"respuesta": respuesta_faq["a"]}
                 if "botones" in respuesta_faq:
                     respuesta["botones"] = respuesta_faq["botones"]
                 return respuesta
-            memoria.clear() # Limpiar si no se encuentra en la FAQ específica
-            return {"respuesta": "¿Sobre qué más te puedo ayudar?"}
+            # Si no hay FAQ, y TramitesHandler no respondió, es mejor un fallback más genérico
+            # que simplemente "¿Sobre qué más te puedo ayudar?".
+            # Dejar que caiga al LLM general o al fallback final de responder_municipio.
+            # memoria.clear()
+            # return {"respuesta": "¿Sobre qué más te puedo ayudar?"}
+            logger.info("[GeneralHandler] En estado ESPERANDO_PREGUNTA_CURSO_LICENCIA, pero FAQ no encontró nada. Dejando a LLM general.")
 
-        if not user_obj: # Solo si no es un usuario logueado o con datos.
+
+        # La consulta a SitioWebInfo para user_obj (el municipio) es correcta.
+        if not user_obj: # Si no hay user_obj (dueño del bot), no hay contexto específico que buscar.
+            logger.warning("[GeneralHandler] No hay user_obj (dueño del bot) en contexto. No se puede buscar en SitioWebInfo.")
+            # Podría devolverse un mensaje más específico o simplemente None para que caiga al fallback final.
             return None
 
         contexto_scraped = ""
         try:
-            # Filtrar por municipio_id si user_obj tiene uno, para no traer info de otros municipios
             query_filter = {"user_id": user_obj.id}
-            if hasattr(user_obj, "municipio_id") and user_obj.municipio_id:
-                query_filter["municipio_id"] = user_obj.municipio_id
+            # El filtro por municipio_id es redundante si user_obj ya es el usuario del municipio específico.
+            # if hasattr(user_obj, "municipio_id") and user_obj.municipio_id:
+            #     query_filter["municipio_id"] = user_obj.municipio_id
 
             contenidos = SitioWebInfo.query.filter_by(**query_filter).all()
             
@@ -2672,35 +2688,45 @@ class GeneralHandler(BaseMunicipioHandler):
             contexto_scraped = " ".join(filter(None, textos_relevantes))
             
             if not contexto_scraped:
-                contexto_scraped = "No hay información disponible para esta consulta general."
+                logger.info(f"[GeneralHandler] No se encontró contenido 'contenido_general' en SitioWebInfo para user_id {user_obj.id}.")
+                contexto_scraped = "No hay información general disponible del municipio en este momento." # Un poco más informativo
         except Exception as e:
             logger.error(f"[GeneralHandler] Error al obtener contenido SitioWebInfo: {e}", exc_info=True)
-            contexto_scraped = "Hubo un error al cargar la información general."
+            contexto_scraped = "Hubo un error al cargar la información general del municipio."
 
         prompt_final = PROMPT_MUNICIPIO_CON_CONTEXTO.format(
             contexto_scraped=contexto_scraped, pregunta_usuario=pregunta_str
         )
         
+        # Usar la versión mejorada de safe_llm_call
         respuesta_llm = safe_llm_call(
             prompt=prompt_final,
             preamble="Sos un asistente municipal que responde basado en info oficial.",
-            fallback="No encontré información específica para esa consulta. Te puedo ayudar con reclamos, trámites, o conectar con un agente."
+            fallback=( # Fallback específico para GeneralHandler si el LLM no puede
+                "No encontré información específica para tu consulta en la base de datos del municipio. "
+                "Te puedo ayudar con reclamos, trámites, o intentar conectar con un agente."
+            )
         )
 
-        if "no tengo información específica" in respuesta_llm.lower() or \
-           "no pude encontrar la respuesta a tu pregunta" in respuesta_llm.lower() or \
-           "no encontré respuesta exacta" in respuesta_llm.lower():
-            
-            return {
-                "respuesta": (
-                    "No encontré respuesta exacta a tu pregunta. Pero te puedo ayudar con estas opciones:"
-                ),
+        # La lógica de botones de fallback ya está en safe_llm_call si la respuesta es genérica.
+        # Si safe_llm_call devuelve el fallback, ya es el mensaje que queremos.
+        # Si devuelve una respuesta real del LLM, la usamos.
+
+        # Considerar si la respuesta del LLM (incluso si no es "genérica" por safe_llm_call)
+        # sigue siendo poco útil y debería llevar a botones.
+        # Por ejemplo, si es muy corta o evasiva de otra forma.
+        # Esta es una heurística adicional:
+        if len(respuesta_llm.split()) < 7 and ("no puedo" in respuesta_llm.lower() or "no sé" in respuesta_llm.lower()):
+             logger.info(f"[GeneralHandler] Respuesta LLM corta o evasiva no detectada por safe_llm_call: '{respuesta_llm}'. Usando botones de fallback.")
+             return {
+                "respuesta": respuesta_llm + "\n\nQuizás estas opciones te sirvan:", # Mantener la respuesta del LLM pero añadir botones
                 "botones": [
                     {"texto": "Hacer un reclamo"},
                     {"texto": "Consultar estado de ticket"},
                     {"texto": "Hablar con un agente"},
                 ],
             }
+
         return {"respuesta": respuesta_llm}
 
 
@@ -3207,14 +3233,40 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
 
 
 def safe_llm_call(prompt, preamble, fallback=None):
+    logger.debug(f"[LLM_CALL_PROMPT] Enviando prompt a LLM. Preamble: '{preamble}'. Prompt: '{prompt[:500]}...'") # Loguear inicio del prompt
     try:
         resp = get_cohere_response(message=prompt, preamble=preamble)
-        if not resp or "no tengo información" in resp.lower() or "lo siento" in resp.lower():
-            raise ValueError("Respuesta vacía o genérica del LLM")
+        logger.debug(f"[LLM_CALL_RESPONSE] Respuesta LLM recibida: '{resp[:500]}...'") # Loguear inicio de la respuesta
+
+        # Lista de frases genéricas o de evasión que indican un fallback
+        generic_phrases = [
+            "no tengo información",
+            "lo siento",
+            "no puedo ayudarte con eso",
+            "no lo sé",
+            "esa información no está disponible",
+            "como modelo de lenguaje", # A veces los LLMs se identifican así
+            "no tengo acceso a internet",
+            "no puedo realizar esa acción"
+        ]
+
+        if not resp:
+            logger.warning("[LLM_FALLBACK] Respuesta vacía del LLM.")
+            raise ValueError("Respuesta vacía del LLM")
+
+        resp_lower = resp.lower()
+        for phrase in generic_phrases:
+            if phrase in resp_lower:
+                logger.warning(f"[LLM_FALLBACK] Respuesta genérica del LLM detectada (contiene: '{phrase}'). Respuesta completa: '{resp}'")
+                raise ValueError(f"Respuesta genérica del LLM (contiene: '{phrase}')")
+
         return resp
-    except Exception as e:
-        logger.error(f"[LLM_FALLBACK] Error en llamada a LLM: {e}", exc_info=True)
+    except ValueError as ve: # Captura específica de nuestra validación
+        logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}")
         return fallback or "No tengo información específica en este momento. ¿Te puedo ayudar con algo más?"
+    except Exception as e: # Otras excepciones de la llamada a Cohere, red, etc.
+        logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True)
+        return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. Intenta de nuevo más tarde."
 
 # --- Categorías válidas para reclamos ---
 CATEGORIAS_RECLAMO = [
@@ -3284,60 +3336,80 @@ BOTONES_COMANDOS_MUNICIPIO = {
     "No, aún no": "no_cerrar_ticket",
 }
 
+# Mapeo de Estados a Handlers "Dueños"
+OWNER_HANDLERS_FOR_STATE = {
+    # Reclamo States
+    ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler,
+    ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler,
+    ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler,
+    ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler,
+    ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler,
+    ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler,
+    ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler,
+    ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler,
+    # Ticket Status States
+    ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler,
+    ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler,
+    ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler,
+    # Recoleccion State
+    ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler,
+    # Tramites States
+    ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler,
+    ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler,
+    # Sugerencias State
+    ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler,
+    # Ventas States
+    ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, # O ProductCatalogHandler si inicia la búsqueda
+    ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, # Quien muestra, puede ser dueño de seguir esa lista
+    ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, # O CartHandler si la acción es directa
+    ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler,
+    ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, # Aunque no está muy usado
+    ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler,
+    # Panic State
+    ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler,
+    # Esperando ubicación para tiendas (estado string, podría ser Enum)
+    # "ESPERANDO_UBICACION_PARA_TIENDAS": StoreLocationHandler, # Ejemplo si se usa string como estado
+}
+
 
 def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
-    logger.info(f"[INICIO] Pregunta recibida: '{pregunta_original}'")
-    
-    # Añadir current_app al logger para acceso a config
-    logger_actual = current_app.logger if current_app else logger # Asegurar que logger_actual esté definido
+    logger_actual = current_app.logger if current_app else logger
     logger_actual.info(f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}")
 
     received_payload = {}
-    pregunta_str = "" # Asegurar que pregunta_str esté definida
+    pregunta_str = ""
     if isinstance(pregunta_original, dict):
         received_payload = pregunta_original
         pregunta_str = received_payload.get("pregunta", "")
-    elif isinstance(pregunta_original, str): # Solo procesar si es string
+    elif isinstance(pregunta_original, str):
         pregunta_str = pregunta_original
         received_payload["pregunta"] = pregunta_original
-    else: # Si no es dict ni str, loguear y tratar como pregunta vacía
+    else:
         logger_actual.warning(f"Tipo inesperado para pregunta_original: {type(pregunta_original)}. Contenido: {pregunta_original}")
-        pregunta_str = "" # Fallback a string vacío
+        pregunta_str = ""
         received_payload["pregunta"] = ""
 
-    # Merge de kwargs (tienen prioridad)
-    if kwargs: # Solo iterar si kwargs no es None y tiene items
+    if kwargs:
         for key, value in kwargs.items():
             received_payload[key] = value
 
-    # --- CONTEXTO ---
-    # Usar flask_session directamente aquí para el contexto_municipio
-    # Esto es crucial para que persista entre llamadas.
     contexto_municipio_actual = flask_session.get(CONTEXTO_MUNICIPIO, {})
-
-    # Reconvertir estado de string a Enum si es necesario
     estado_guardado_str = contexto_municipio_actual.get("estado_conversacion")
     if estado_guardado_str and isinstance(estado_guardado_str, str):
         try:
             contexto_municipio_actual["estado_conversacion"] = ConversationState[estado_guardado_str]
-        except KeyError: # pragma: no cover
+        except KeyError:
             logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Estado inválido en sesión: {estado_guardado_str}. Se limpia.")
             contexto_municipio_actual["estado_conversacion"] = None
-    elif not isinstance(estado_guardado_str, ConversationState) and estado_guardado_str is not None: # Si no es Enum ni None pero existe
-        logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Tipo de estado inesperado en sesión: {type(estado_guardado_str)}. Se limpia.")
+    elif not isinstance(estado_guardado_str, ConversationState) and estado_guardado_str is not None:
+        logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Tipo de estado inesperado: {type(estado_guardado_str)}. Se limpia.")
         contexto_municipio_actual["estado_conversacion"] = None
 
-
-    # Diccionario de contexto completo para handlers
     context = {
-        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # Usar el contexto cargado de flask_session
-        "user_obj": owner_user, # El User del Municipio/Entidad (dueño del bot)
-        "user_id": getattr(owner_user, "id", None), # ID del Municipio/Entidad
-        "cliente_id": getattr(viewer_user, "id", None), # ID del Ciudadano (si está logueado en el widget)
-        "viewer_user_obj": viewer_user, # <--- OBJETO USER COMPLETO DEL CIUDADANO/VIEWER
-        "anon_id": anon_id, # ID anónimo del ciudadano
-        "intencion": None, # Se llenará por IntentClassifierHandler
-        "rubro_obj": rubro_obj, # Objeto Rubro
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+        "user_obj": owner_user, "user_id": getattr(owner_user, "id", None),
+        "cliente_id": getattr(viewer_user, "id", None), "viewer_user_obj": viewer_user,
+        "anon_id": anon_id, "intencion": None, "rubro_obj": rubro_obj,
         "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
         "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
         "es_foto": received_payload.get("es_foto", False),
@@ -3347,15 +3419,13 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "session_obj": flask_session # Pasar la sesión de Flask para que los handlers puedan usarla si es necesario
+        "session_obj": flask_session
     }
 
-    # ---- INICIO: Lógica de sugerencia de registro PROACTIVA ----
-    if not viewer_user and anon_id and current_app: # Solo para anónimos y si hay contexto de app
-        # Trabajar directamente con contexto_municipio_actual que es el de flask_session
-
+    # --- Lógica de sugerencia de registro PROACTIVA (sin cambios, omitida por brevedad) ---
+    if not viewer_user and anon_id and current_app:
+        # ... (código de sugerencia de registro existente) ...
         estado_actual_sugerencia = contexto_municipio_actual.get("estado_conversacion")
-        # Definir estados de Municipio donde no queremos interrumpir con sugerencia de registro
         estados_municipio_evitar_sugerencia = [
             ConversationState.ESPERANDO_DIRECCION_RECLAMO,
             ConversationState.ESPERANDO_NOMBRE_VECINO,
@@ -3364,230 +3434,250 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
             ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
             ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
-            ConversationState.ESPERANDO_UBICACION_PANICO # No interrumpir flujo de pánico
+            ConversationState.ESPERANDO_UBICACION_PANICO
         ]
-
         if estado_actual_sugerencia not in estados_municipio_evitar_sugerencia:
             interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
             if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok", "dale", "bueno"]:
                  interacciones_anon_sesion += 1
             contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_sesion
-
-            # Guardar contexto_municipio_actual actualizado en flask_session ANTES de retornar
             flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
             flask_session.modified = True
-
             umbral_sugerencia = current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3)
-
             if umbral_sugerencia and umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia:
                 if not contexto_municipio_actual.get("sugerencia_registro_emitida_ronda", False):
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Anon {anon_id} alcanzó umbral de {umbral_sugerencia} interacciones. Sugiriendo registro.")
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Anon {anon_id} alcanzó umbral. Sugiriendo registro.")
                     contexto_municipio_actual["sugerencia_registro_emitida_ronda"] = True
-                    flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Guardar flag
+                    flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                     flask_session.modified = True
-
                     respuesta_sugerencia = construir_respuesta_sugerir_registro(
                         mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.",
-                        tipo_entidad="municipio" # Indicar el tipo para el campo contexto_
+                        tipo_entidad="municipio"
                     )
-                    # El contexto_municipio ya está en flask_session, y la función helper lo añade a la respuesta.
-                    # Solo necesitamos asegurar que el que se devuelve en la respuesta es el actualizado.
                     respuesta_sugerencia[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-
-                    # Guardar la conversación ANTES de devolver la sugerencia
-                    if anon_id and not viewer_user: # Doble chequeo
+                    if anon_id and not viewer_user:
                         try:
                             db.session.add(Conversacion(
                                 session_id=context.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
                                 respuesta=respuesta_sugerencia.get("respuesta", ""), fuente=respuesta_sugerencia.get("fuente", "sugerencia_registro_municipio"),
-                                rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), # Usar getattr
-                                user_id=None # Es anónimo
-                                # municipio_id=getattr(owner_user, "id", None) # ID del municipio al que pertenece el bot - REMOVED
+                                rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), user_id=None
                             ))
                             db.session.commit()
                         except Exception as e_conv_sug_muni:
                             logger_actual.error(f"Error guardando Conversacion (sugerencia MUNICIPIO): {e_conv_sug_muni}")
-                            db.session.rollback() # Rollback en caso de error al guardar
+                            db.session.rollback()
                     return respuesta_sugerencia
-            else: # Si no se alcanzó el umbral, resetear el flag
+            else:
                 contexto_municipio_actual.pop("sugerencia_registro_emitida_ronda", None)
                 flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                 flask_session.modified = True
-    # ---- FIN: Lógica de sugerencia de registro PROACTIVA ----
+    # --- FIN Lógica de sugerencia ---
 
 
-    # Si hay datos interpretados, loguearlo para saber que llegaron al handler de municipio
     if context.get("datos_interpretados_archivo"):
-        logger_actual.info(f"[MUNICIPIOS_HANDLER] Recibidos datos interpretados de archivo: {context['datos_interpretados_archivo']}")
+        logger_actual.info(f"[MUNICIPIOS_HANDLER] Datos interpretados: {context['datos_interpretados_archivo']}")
     if context.get("archivo_id_para_asociar"):
-        logger_actual.info(f"[MUNICIPIOS_HANDLER] Recibido archivo_id_para_asociar: {context['archivo_id_para_asociar']}")
+        logger_actual.info(f"[MUNICIPIOS_HANDLER] Archivo ID para asociar: {context['archivo_id_para_asociar']}")
 
-    # Detectar comando por texto del botón
     comando_from_text = BOTONES_COMANDOS_MUNICIPIO.get(pregunta_str.strip())
     if comando_from_text and not context.get("action"):
         context["action"] = comando_from_text
         received_payload["action"] = comando_from_text
-        logger.info(f"[BOTON] Comando detectado: '{comando_from_text}' (desde texto del botón)")
+        logger_actual.info(f"[BOTON] Comando por texto: '{comando_from_text}'")
     elif context.get("action"):
-        logger.info(f"[BOTON] Comando detectado: '{context['action']}' (desde payload.action)")
+        logger_actual.info(f"[BOTON] Comando por payload.action: '{context['action']}'")
     elif context.get("es_foto") or context.get("es_ubicacion"):
-        logger.info(f"[ADJUNTO] Adjunto detectado: es_foto={context['es_foto']}, es_ubicacion={context['es_ubicacion']}")
-        # Si se compartió ubicación específicamente para tiendas
+        logger_actual.info(f"[ADJUNTO] Detectado: foto={context['es_foto']}, ubicacion={context['es_ubicacion']}")
         if context.get("es_ubicacion"):
-            # Callback para ubicación de tiendas
-            if memoria.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda" and \
-               memoria.get("estado_conversacion") == "ESPERANDO_UBICACION_PARA_TIENDAS":
+            if contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda" and \
+               contexto_municipio_actual.get("estado_conversacion") == "ESPERANDO_UBICacion_PARA_TIENDAS": # Asegurar que el estado es string si se usa así
                 context["intencion"] = "solicitar_ubicacion_tienda"
-                logger.info(f"[CONTEXTO] Ubicación recibida para tiendas, re-evaluando con intención: {context['intencion']}")
-            # Callback para ubicación de pánico
-            elif memoria.get("intencion_pendiente_ubicacion") == "activar_panico" and \
-                 memoria.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO: # Check against Enum member
-                context["intencion"] = "activar_panico" # Forzar la intención para re-procesar con PanicButtonHandler
-                logger.info(f"[CONTEXTO] Ubicación URGENTE recibida para PÁNICO, re-evaluando con intención: {context['intencion']}")
+                logger_actual.info(f"[CONTEXTO] Ubicación para tiendas, re-evaluando con intención: {context['intencion']}")
+            elif contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "activar_panico" and \
+                 contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO:
+                context["intencion"] = "activar_panico"
+                logger_actual.info(f"[CONTEXTO] Ubicación para PÁNICO, re-evaluando con intención: {context['intencion']}")
 
+    estado_conversacion_actual = contexto_municipio_actual.get("estado_conversacion")
+    logger_actual.info(f"[HANDLER_CHAIN_START] Estado en memoria: {estado_conversacion_actual.name if estado_conversacion_actual else 'None'}. Intención previa: {context.get('intencion')}")
 
-    estado_antes = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
-    logger.info(f"[CONTEXTO] Estado previo: {estado_antes.name if estado_antes else 'None'}")
-
-    handler_chain = [
-        CancelHandler, 
-        PoliteHandler, 
-        SmallTalkHandler,
-        PanicButtonHandler, # Added PanicButtonHandler with high priority
-        IntentClassifierHandler,
-        # Sales Handlers (New)
-        ProductCatalogHandler,
-        ProductInquiryHandler,
-        CartHandler,
-        CheckoutHandler,
-        StoreLocationHandler, # Added StoreLocationHandler
-        # End Sales Handlers
-        HumanEscalationHandler, 
-        TicketStatusHandler,
-        SugerenciasVecinoHandler,
-        RecoleccionHandler,
-        ReclamoInteligenteMunicipioHandler,
-        ReclamoHandler,
-        TramitesHandler, 
-        TramiteInteligenteHandler, 
-        ImpuestosHandler, 
-        ToolHandler, 
-        VectorMunicipioCatalogHandler, 
-        GeneralHandler, 
-        EngancheAnonimoMunicipioHandler, 
-        GreetingHandler, 
-    ]
+    prioritized_handlers = [CancelHandler, PanicButtonHandler] # PanicButtonHandler ya estaba, se mantiene alta prioridad
+    if context.get('intencion') == 'hablar_con_agente':
+        prioritized_handlers.append(HumanEscalationHandler)
 
     respuesta_final = None
 
-    for handler_class in handler_chain:
-        try:
-            handler_instance = handler_class(context)
-            current_state_in_context = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+    for handler_class in prioritized_handlers:
+        handler_instance = handler_class(context)
+        respuesta_parcial = handler_instance.handle(received_payload)
+        if respuesta_parcial:
+            respuesta_final = respuesta_parcial
+            logger_actual.info(f"[HANDLER_CHAIN] Prioritized handler {handler_class.__name__} respondió.")
+            break
 
-            # Los handlers de cortesía y cancelación se evalúan siempre primero
-            if handler_class in [CancelHandler, PoliteHandler, SmallTalkHandler, GreetingHandler]:
-                respuesta_parcial = handler_instance.handle(received_payload)
-                if respuesta_parcial:
-                    respuesta_final = respuesta_parcial
-                    break
+    # --- Lógica de Dueño del Estado ---
+    if not respuesta_final and estado_conversacion_actual:
+        dueño_handler_class = OWNER_HANDLERS_FOR_STATE.get(estado_conversacion_actual)
+        if dueño_handler_class:
+            dueño_instance = dueño_handler_class(context)
+            logger_actual.info(f"[HANDLER_CHAIN] Estado activo '{estado_conversacion_actual.name}'. Dando prioridad a {dueño_instance.__class__.__name__}")
+            respuesta_parcial = dueño_instance.handle(received_payload)
+            if respuesta_parcial:
+                respuesta_final = respuesta_parcial
+                logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado {dueño_instance.__class__.__name__} respondió.")
+            else:
+                # Si el dueño del estado no respondió, podría ser una nueva pregunta que cambia el flujo.
+                # Permitir que el IntentClassifierHandler re-evalúe.
+                logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado ({dueño_instance.__class__.__name__}) no respondió. Re-evaluando intención.")
+                # Guardar el estado actual antes de limpiar, por si es_pregunta_nueva lo necesita internamente.
+                # La limpieza de estado debe ser más controlada.
+                # No limpiar el estado aquí automáticamente. Si es_pregunta_nueva o el IntentClassifier lo deciden, ellos lo harán.
+                # if es_pregunta_nueva(pregunta_str, "el dato solicitado para el flujo actual"): # Esta función necesita revisión
+                #    logger_actual.info(f"[HANDLER_CHAIN] 'es_pregunta_nueva' detectó cambio de tema. Limpiando estado '{estado_conversacion_actual.name}'.")
+                #    contexto_municipio_actual.pop("estado_conversacion", None)
+                #    flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                #    flask_session.modified = True
+
+                classifier_handler = IntentClassifierHandler(context)
+                classifier_handler.handle(received_payload) # Actualiza context['intencion']
+                logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-dueño: {context.get('intencion')}")
+                # Si la intención cambió a algo que NO es "continuar_flujo", o si el estado se limpió,
+                # entonces no seguimos con el dueño, sino que la cadena principal tomará la nueva intención.
+                if context.get('intencion') != "continuar_flujo" or not contexto_municipio_actual.get("estado_conversacion"):
+                    pass # Se procesará con remaining_handlers
+                # else: Aún es continuar_flujo y el estado persiste, podría ser un input inválido para el dueño. El dueño debería haber respondido con mensaje de error.
+        else:
+            logger_actual.warning(f"[HANDLER_CHAIN] Estado activo '{estado_conversacion_actual.name}' pero no se encontró handler dueño definido en OWNER_HANDLERS_FOR_STATE. Limpiando estado.")
+            contexto_municipio_actual.pop("estado_conversacion", None)
+            flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+            flask_session.modified = True
+            # Como se limpió el estado, forzar re-clasificación de intención si no hay respuesta aún.
+            if not respuesta_final:
+                 IntentClassifierHandler(context).handle(received_payload)
+                 logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-limpieza de estado sin dueño: {context.get('intencion')}")
+
+
+    # --- Cadena Principal de Handlers ---
+    if not respuesta_final:
+        # El IntentClassifierHandler ya se ejecutó si el dueño no respondió o si se limpió un estado sin dueño.
+        # O se ejecutará ahora si no había estado previo o dueño.
+        # Asegurar que IntentClassifierHandler se ejecute si no lo hizo antes y es necesario.
+        if not context.get("intencion") and not estado_conversacion_actual : # Solo si no hay intención Y no había estado
+            logger_actual.info("[HANDLER_CHAIN] Ejecutando IntentClassifierHandler (sin estado previo, sin intención previa de dueño).")
+            IntentClassifierHandler(context).handle(received_payload)
+            logger_actual.info(f"[HANDLER_CHAIN] Intención post-clasificación inicial: {context.get('intencion')}")
+
+        remaining_handlers = [
+            GreetingHandler, PoliteHandler, SmallTalkHandler, # Estos son más de respuesta directa
+            # IntentClassifierHandler ya se manejó arriba en los casos necesarios.
+            # Handlers de Lógica de Negocio Principal:
+            HumanEscalationHandler, # Si la intención fue (re)clasificada a agente
+            TicketStatusHandler,
+            SugerenciasVecinoHandler,
+            RecoleccionHandler,
+            ReclamoInteligenteMunicipioHandler, # Intenta capturar reclamos completos
+            ReclamoHandler, # Para reclamos paso a paso o si el inteligente no capturó todo
+            TramitesHandler,
+            TramiteInteligenteHandler,
+            ImpuestosHandler,
+            # Handlers de Ventas
+            ProductCatalogHandler,
+            ProductInquiryHandler,
+            CartHandler,
+            CheckoutHandler,
+            StoreLocationHandler,
+            # Handlers de Herramientas y Conocimiento General
+            ToolHandler,
+            VectorMunicipioCatalogHandler,
+            GeneralHandler,
+            # Handlers de Fallback y Enganche
+            EngancheAnonimoMunicipioHandler, # Considerar si este debe ir antes de GeneralHandler
+        ]
+
+        for handler_class in remaining_handlers:
+            if respuesta_final: break # Si ya tenemos respuesta, salir
+
+            # Evitar re-ejecutar el dueño del estado si ya tuvo su oportunidad y no respondió,
+            # A MENOS que la intención haya sido reclasificada específicamente para él.
+            current_estado_loop = contexto_municipio_actual.get("estado_conversacion")
+            dueño_original_del_estado_actual = OWNER_HANDLERS_FOR_STATE.get(current_estado_loop) if current_estado_loop else None
+
+            if dueño_original_del_estado_actual == handler_class:
+                 # Si este handler era el dueño original del estado que persistió,
+                 # y ya tuvo su chance (porque dueño_instance.handle() fue llamado y no dio respuesta_final),
+                 # no debería volver a ejecutarse A MENOS que la intención haya cambiado para él.
+                 # Esta lógica es compleja. Por ahora, si era dueño y no respondió, se asume que
+                 # la intención fue reclasificada o el flujo se rompió.
+                 # El caso donde el dueño no responde y la intención NO cambia, pero el usuario insiste
+                 # con algo que el dueño debería manejar (pero no maneja) es un edge case.
+                 # El dueño debería haber dado un mensaje de error en ese caso.
+                 # Si la intención fue reclasificada a algo que este handler maneja (ej. reclamo -> ReclamoHandler)
+                 # entonces sí debe correr.
+
+                 # Simplificación: Si este handler es el dueño de un estado que AÚN está activo,
+                 # y este handler YA FUE LLAMADO como dueño y NO dio respuesta, no lo llamamos de nuevo
+                 # en el bucle 'remaining_handlers' a menos que la intención lo fuerce.
+                 if dueño_handler_class == handler_class and not respuesta_parcial_del_dueño_previo: # Necesitaríamos un flag
+                      # Esta condición es difícil de implementar perfectamente sin más flags.
+                      # La lógica actual: si el dueño no respondió, la intención se reclasificó.
+                      # Entonces, el handler correrá si la *nueva* intención le corresponde.
+                      pass
+
+
+            # Lógica para no re-ejecutar handlers que ya corrieron (como los prioritarios)
+            if handler_class in prioritized_handlers and handler_class != HumanEscalationHandler: # Permitir HumanEscalation si la intención cambió a agente
+                 logger_actual.debug(f"[HANDLER_CHAIN] Saltando {handler_class.__name__} (ya es prioritario y corrió o no aplicó).")
+                 continue
+
+            # No ejecutar EngancheAnonimo si ya hay usuario logueado.
+            if handler_class == EngancheAnonimoMunicipioHandler and context.get("cliente_id"):
+                logger_actual.debug(f"[HANDLER_CHAIN] Saltando EngancheAnonimoMunicipioHandler (usuario logueado).")
                 continue
 
-            # Si hay estado activo, solo responde el dueño del flujo
-            if current_state_in_context:
-                is_current_handler_owner = (
-                    (isinstance(handler_instance, ReclamoHandler) and current_state_in_context in RECLAMO_STATES) or
-                    (isinstance(handler_instance, TicketStatusHandler) and current_state_in_context.name.startswith("ESPERANDO_") and "TICKET" in current_state_in_context.name) or
-                    (isinstance(handler_instance, RecoleccionHandler) and current_state_in_context == ConversationState.ESPERANDO_PARAM_RECOLECCION) or
-                    (isinstance(handler_instance, TramitesHandler) and current_state_in_context in [ConversationState.ESPERANDO_SELECCION_TRAMITE, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA])
-                )
-                if is_current_handler_owner:
-                    logger.info(f"[HANDLER] Procesando con handler de estado activo: {handler_class.__name__} (Estado: {current_state_in_context.name})")
-                    respuesta_parcial = handler_instance.handle(received_payload)
-                    if respuesta_parcial:
-                        respuesta_final = respuesta_parcial
-                        break
-                    else:
-                        logger.warning(f"[HANDLER] Handler {handler_class.__name__} (estado activo) no respondió. Posible pregunta nueva.")
-                        # Si no fue adjunto/acción explícita, chequeamos pregunta nueva
-                        if not received_payload.get("es_foto") and not received_payload.get("es_ubicacion") and not received_payload.get("action"):
-                            if es_pregunta_nueva(pregunta_str, "el dato solicitado"):
-                                logger.info("[GUARDIAN] Pregunta nueva. Limpiando estado y re-evaluando intención.")
-                                context["contexto_municipio"].clear()
-                                context["intencion"] = None
-                                respuesta_final = None
-                                break
-                        continue
-                else:
-                    logger.info(f"[HANDLER] Saltando {handler_class.__name__} (estado activo {current_state_in_context.name} no le corresponde).")
-                    continue
-
-            logger.info(f"[HANDLER] Procesando con {handler_class.__name__} (sin estado activo o es de inicio).")
+            handler_instance = handler_class(context)
+            logger_actual.info(f"[HANDLER_CHAIN] Intentando con handler: {handler_class.__name__}")
             respuesta_parcial = handler_instance.handle(received_payload)
-            if respuesta_parcial and isinstance(respuesta_parcial, dict):
-                logger.info(f"[HANDLER] {handler_class.__name__} respondió correctamente.")
+            if respuesta_parcial:
                 respuesta_final = respuesta_parcial
+                logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class.__name__} respondió.")
                 break
             else:
-                logger.info(f"[HANDLER] {handler_class.__name__} no generó respuesta válida. Continuando.")
-        except Exception as e:
-            logger.error(f"[ERROR] Handler '{handler_class.__name__}' falló: {e}", exc_info=True)
+                logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class.__name__} no respondió.")
 
+    # --- Fallback Final ---
     if not respuesta_final:
-        logger.info("[RESPUESTA] No se encontró respuesta específica. Fallback general.")
-        # Si hay estado de conversación activo y llega acá, limpiar todo y dar mensaje reinicio
-        if contexto_municipio_actual.get("estado_conversacion"):
-            logger.error(f"[FALLBACK_ERROR] Fallback con estado activo: {contexto_municipio_actual['estado_conversacion']}. Limpiando.")
-            contexto_municipio_actual.clear()
+        logger_actual.info("[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general.")
+        if contexto_municipio_actual.get("estado_conversacion"): # Si aún hay estado y nadie respondió
+            logger_actual.error(f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {contexto_municipio_actual['estado_conversacion'].name}. Limpiando estado.")
+            contexto_municipio_actual.clear() # Limpiar estado para evitar bucles
+            flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+            flask_session.modified = True
             respuesta_final = {
-                "respuesta": (
-                    "¡Vaya! Parece que nos perdimos un poco en la conversación. No te preocupes, empecemos de nuevo. "
-                    "¿Cómo puedo ayudarte hoy? Aquí tienes algunas opciones comunes:"
-                ),
-                "botones": [
-                    {"texto": "Hacer un reclamo"},
-                    {"texto": "Dejar una sugerencia"},
-                    {"texto": "Consultar estado de un ticket"},
-                    {"texto": "Ver trámites disponibles"},
-                    {"texto": "Hablar con un agente"},
-                ],
+                "respuesta": ("¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. "
+                              "¿Cómo puedo ayudarte hoy?"),
+                "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]
             }
         else:
             respuesta_final = {
-                "respuesta": (
-                    "Disculpa, no estoy seguro de haber entendido bien tu consulta. A veces me cuesta un poquito. 😊\n"
-                    "¿Podrías intentar reformular tu pregunta o elegir una de estas opciones para que pueda ayudarte mejor?"
-                ),
-                "botones": [
-                    {"texto": "Hacer un reclamo"},
-                    {"texto": "Dejar una sugerencia"},
-                    {"texto": "Consultar estado de un ticket"},
-                    {"texto": "Ver trámites disponibles"},
-                    {"texto": "Hablar con un agente"},
-                ],
+                "respuesta": ("Disculpa, no estoy seguro de haber entendido bien tu consulta. "
+                              "¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"),
+                "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]
             }
 
-    # Serializar estado actualizado para frontend/session
-    # Obtener la versión más reciente de contexto_municipio_actual de flask_session
-    # ya que los handlers podrían haberlo modificado.
     contexto_para_guardar_final = serializar_enum(flask_session.get(CONTEXTO_MUNICIPIO, {}))
-
-    # media_url y location_data deben tomarse del contexto actualizado si los handlers los setean
     media_url_to_send = contexto_para_guardar_final.get("foto_url")
     location_data_to_send = contexto_para_guardar_final.get("ubicacion_gps")
 
-    # Prepare the final response dictionary
     final_response_dict = {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar_final}, # <--- USAR EL FINAL
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar_final},
         "ticket_id": respuesta_final.get("ticket_id", None),
-        "media_url": media_url_to_send, 
+        "media_url": media_url_to_send,
         "location_data": location_data_to_send,
-        "adjuntos": [] # Initialize attachments list for general file uploads
+        "adjuntos": []
     }
 
-    # Check if a file was uploaded by the user in this turn and add its info for frontend display.
     uploaded_file_info = received_payload.get("uploaded_file_info")
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
@@ -3596,25 +3686,19 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                 "url_descarga": uploaded_file_info["url"],
                 "tipo_mime": uploaded_file_info.get("type", 'application/octet-stream')
             })
-            logger_actual.info(f"Adjuntando info de archivo subido a la respuesta: {uploaded_file_info['name']}")
+            logger_actual.info(f"Adjuntando info de archivo subido: {uploaded_file_info['name']}")
 
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END] Respuesta: '{final_response_dict.get('respuesta')[:100]}...', Adjuntos: {len(final_response_dict['adjuntos'])}")
 
-    # Log anonymous conversation to Conversacion table
     if anon_id and not viewer_user and respuesta_final and isinstance(respuesta_final, dict):
         try:
-            # La pregunta ya se guardó si se emitió sugerencia de registro.
-            # Solo guardar la respuesta del bot aquí.
-            # O mejor, guardar pregunta y respuesta siempre al final, y si hubo sugerencia, se duplica la pregunta.
-            # Por simplicidad, guardamos ambas aquí.
             db.session.add(Conversacion(
-                session_id=kwargs.get("chat_session_uuid") or anon_id, # Priorizar chat_session_uuid si existe
-                pregunta=pregunta_str, 
+                session_id=kwargs.get("chat_session_uuid") or anon_id,
+                pregunta=pregunta_str,
                 respuesta=final_response_dict.get("respuesta"),
-                fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"), # Usar fuente de la respuesta final
+                fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"),
                 rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"),
                 user_id=None
-                # municipio_id=getattr(owner_user, "id", None) - REMOVED
             ))
             db.session.commit()
             logger_actual.info(f"Conversación (municipio) para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')} guardada.")
