@@ -45,8 +45,16 @@ class Config:
     # Para producción, asegurarse que esta variable de entorno esté seteada a '.chatboc.ar'
     # Para desarrollo local, None es usualmente correcto.
     if IS_PRODUCTION:
-        # Default to '.chatboc.ar' if no explicit domain is provided
-        SESSION_COOKIE_DOMAIN = os.getenv('SESSION_COOKIE_DOMAIN_CONFIG', '.chatboc.ar')
+        # Default to '.chatboc.ar' if no explicit domain is provided via environment variable
+        # Ensure it is exactly '.chatboc.ar' as per requirements for this task.
+        SESSION_COOKIE_DOMAIN = os.getenv('SESSION_COOKIE_DOMAIN_CONFIG')
+        if SESSION_COOKIE_DOMAIN is None: # If env var is not set at all
+            SESSION_COOKIE_DOMAIN = '.chatboc.ar'
+        elif SESSION_COOKIE_DOMAIN.strip() == "": # If env var is set but is an empty string
+            SESSION_COOKIE_DOMAIN = '.chatboc.ar'
+        # If SESSION_COOKIE_DOMAIN_CONFIG is set to something else (and not empty), that value will be used.
+        # This ensures that if the admin explicitly sets a different valid domain, it's respected,
+        # but for the common case for 'chatboc.ar' where it's not set or empty, it defaults correctly.
     else:
         SESSION_COOKIE_DOMAIN = None
 

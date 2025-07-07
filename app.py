@@ -98,6 +98,13 @@ def create_app(config_class=Config):
         valor = session.get('clave_de_prueba', '¡LA MEMORIA ESTÁ VACÍA!')
         return f"<h1>El valor guardado en la memoria es: {valor}</h1>"
 
+    # --- Diagnóstico de Headers ---
+    @app.before_request
+    def log_headers():
+        from flask import request
+        app.logger.debug(f"Request Headers: {dict(request.headers)}")
+        app.logger.debug(f"Request Cookies: {dict(request.cookies)}")
+
     # --- Inicialización de Extensiones ---
     db.init_app(app)
     migrate.init_app(app, db)
@@ -136,13 +143,13 @@ def create_app(config_class=Config):
         else:
             allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
     else:
+        # Defaulting to specific origins as per user instructions for chatboc.ar
         allowed_origins = [
-            "http://localhost",
-            "http://localhost:3000",
-            "http://localhost:8080",
             "https://chatboc.ar",
-            "https://www.chatboc.ar",
-            "https://api.chatboc.ar"
+            "https://www.chatboc.ar"
+            # Localhost origins can be added here if needed for local development,
+            # but for the specific problem, these are the key production origins.
+            # "http://localhost:3000", # Example for local frontend
         ]
 
     CORS(
