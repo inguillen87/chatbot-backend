@@ -5,6 +5,7 @@ import os
 from enum import Enum, auto
 import unicodedata
 import difflib
+from flask import current_app # Ensure current_app is imported directly
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion # Added Conversacion
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
@@ -26,7 +27,7 @@ from .herramientas_municipio import (
     parse_direccion_completa,
     normalizar_texto,
     direccion_es_valida,
-    parse_direccion_completa, # IMPORTACIÓN AGREGADA
+    # parse_direccion_completa, # REMOVED DUPLICATE IMPORT
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
