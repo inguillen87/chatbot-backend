@@ -1088,7 +1088,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if campo == "nombre":
                             memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion":
-                            memoria["descripcion_reclamo"] = valor_campo.strip()
+                            memoria["descripcion_reclamo"] = datos_extraidos_reclamo_inteligente.get(campo, "").strip()
                         else:
                             memoria[campo] = valor_campo.strip()  # Para otros campos si los hubiera
             
