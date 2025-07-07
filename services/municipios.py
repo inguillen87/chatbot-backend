@@ -979,6 +979,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") # Extrae el string de la pregunta
         memoria = self.context[CONTEXTO_MUNICIPIO]
+        datos = payload.get("datos", {})  # Evita NameError si no viene "datos"
 
         # Solo si NO hay un flujo de reclamo ya iniciado (estado_conversacion de reclamo)
         # y la intención es iniciar un reclamo. Esto evita que se active en medio de un reclamo paso a paso.
@@ -1088,7 +1089,10 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if campo == "nombre":
                             memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion":
-                            memoria["descripcion_reclamo"] = valor_campo.strip()
+                            if campo in datos and datos[campo]:
+                                memoria["descripcion_reclamo"] = datos[campo].strip()
+                            else:
+                                memoria["descripcion_reclamo"] = valor_campo.strip() if valor_campo else ""
                         else:
                             memoria[campo] = valor_campo.strip()  # Para otros campos si los hubiera
             
