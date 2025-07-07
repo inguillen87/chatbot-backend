@@ -1049,15 +1049,14 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                 if campo == "direccion": # Ya procesado arriba
                     continue
 
-                valor_campo = datos_extraidos_reclamo_inteligente.get(campo, "")
+                # Usar .get(campo, "") para acceder a datos_extraidos_reclamo_inteligente
+                valor_campo = datos_extraidos_reclamo_inteligente.get(campo, "") # MODIFICADO
                 if valor_campo:
                     if campo == "categoria":
+                        # La variable valor_campo ya tiene el .get(campo, "")
                         matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(valor_campo)), None)
                         if not matched_category: # Fuzzy match si no hay coincidencia exacta
                             from difflib import get_close_matches
-                            # Asegurarse que categorias_normalizadas está disponible en este scope
-                            # Si no, obtenerla de CATEGORIAS_RECLAMO
-                            # categorias_normalizadas_local = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
                             close_matches = get_close_matches(normalizar_texto(valor_campo), categorias_normalizadas, n=1, cutoff=0.7)
                             if close_matches:
                                 idx = categorias_normalizadas.index(close_matches[0])
@@ -1088,9 +1087,11 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if campo == "nombre":
                             memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion":
-                            memoria["descripcion_reclamo"] = datos_extraidos_reclamo_inteligente.get(campo, "").strip()
+                            # Aquí valor_campo ya es el resultado de .get("descripcion", "")
+                            memoria["descripcion_reclamo"] = valor_campo.strip() # MODIFICADO
                         else:
-                            memoria[campo] = valor_campo.strip()  # Para otros campos si los hubiera
+                            # Aquí valor_campo ya es el resultado de .get(campo, "")
+                            memoria[campo] = valor_campo.strip()  # MODIFICADO (aunque este 'else' es menos probable que se use con CAMPOS_RECLAMO definidos)
             
             # Si al menos se obtuvo una categoría o descripción inicial, o cualquier dato de reclamo,
             # forzamos el inicio del flujo paso a paso si no se pudo completar de una.
