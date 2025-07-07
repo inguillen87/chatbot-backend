@@ -26,6 +26,7 @@ from .herramientas_municipio import (
     parse_direccion_completa,
     normalizar_texto,
     direccion_es_valida,
+    parse_direccion_completa, # IMPORTACIÓN AGREGADA
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
@@ -1088,8 +1089,8 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if campo == "nombre":
                             memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion":
-                            # CORRECCIÓN: Usar valor_campo que ya tiene datos_extraidos_reclamo_inteligente.get(campo, "")
-                            memoria["descripcion_reclamo"] = valor_campo.strip()
+                            # Reemplazo explícito y definitivo para asegurar que no haya NameError con 'datos'
+                            memoria["descripcion_reclamo"] = datos_extraidos_reclamo_inteligente.get("descripcion", "").strip()
                         else:
                             # Aquí valor_campo ya es el resultado de .get(campo, "")
                             memoria[campo] = valor_campo.strip()
