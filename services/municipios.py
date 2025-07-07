@@ -3472,7 +3472,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     for handler_class in handler_chain:
         try:
             handler_instance = handler_class(context)
-            current_state_in_context = context["contexto_municipio"].get("estado_conversacion")
+            current_state_in_context = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
 
             # Los handlers de cortesía y cancelación se evalúan siempre primero
             if handler_class in [CancelHandler, PoliteHandler, SmallTalkHandler, GreetingHandler]:
@@ -3525,9 +3525,9 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     if not respuesta_final:
         logger.info("[RESPUESTA] No se encontró respuesta específica. Fallback general.")
         # Si hay estado de conversación activo y llega acá, limpiar todo y dar mensaje reinicio
-        if contexto_municipio.get("estado_conversacion"):
-            logger.error(f"[FALLBACK_ERROR] Fallback con estado activo: {contexto_municipio['estado_conversacion']}. Limpiando.")
-            contexto_municipio.clear()
+        if contexto_municipio_actual.get("estado_conversacion"):
+            logger.error(f"[FALLBACK_ERROR] Fallback con estado activo: {contexto_municipio_actual['estado_conversacion']}. Limpiando.")
+            contexto_municipio_actual.clear()
             respuesta_final = {
                 "respuesta": (
                     "¡Vaya! Parece que nos perdimos un poco en la conversación. No te preocupes, empecemos de nuevo. "
