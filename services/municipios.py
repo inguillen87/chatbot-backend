@@ -3435,7 +3435,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                 logger.info(f"[CONTEXTO] Ubicación URGENTE recibida para PÁNICO, re-evaluando con intención: {context['intencion']}")
 
 
-    estado_antes = context["contexto_municipio"].get("estado_conversacion")
+    estado_antes = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
     logger.info(f"[CONTEXTO] Estado previo: {estado_antes.name if estado_antes else 'None'}")
 
     handler_chain = [
