@@ -25,6 +25,7 @@ from .herramientas_municipio import (
     sugerir_categorias_relevantes,
     normalizar_texto,
     direccion_es_valida,
+    parse_direccion_completa, # IMPORTACIÓN AGREGADA
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
