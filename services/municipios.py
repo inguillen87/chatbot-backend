@@ -1078,13 +1078,12 @@ class ReclamoHandler(BaseMunicipioHandler):
         intencion = self.context.get("intencion")
 
         # --- Bloque 1: Inicio del flujo de reclamo ---
-        # Si la intención es iniciar un reclamo y no hay un estado de reclamo activo,
+        # Si la intención es iniciar un reclamo y no hay un estado de reclamo activo (estado_inicial_handler),
         # se limpia la memoria y se establece el primer estado para pedir la categoría.
-        if intencion == "iniciar_reclamo" and not estado:
+        if intencion == "iniciar_reclamo" and not estado: # 'estado' here is estado_inicial_handler
             logger.info(f"[ReclamoHandler] Iniciando nuevo flujo de reclamo. Intención: {intencion}")
-            memoria.clear() # Limpiar cualquier estado anterior de reclamo
+            memoria.clear() 
 
-            # --- INICIO: Pre-llenado desde datos de archivo interpretados ---
             datos_archivo = self.context.get("datos_interpretados_archivo")
             if datos_archivo and isinstance(datos_archivo, dict):
                 logger.info(f"[ReclamoHandler] Intentando pre-llenar memoria con datos de archivo: {datos_archivo}")
@@ -1140,20 +1139,31 @@ class ReclamoHandler(BaseMunicipioHandler):
             # No devolvemos una respuesta aquí directamente, dejamos que el loop decida el primer paso.
             # Sin embargo, si después del pre-llenado, el primer estado (categoría) ya está cubierto,
             # el loop avanzará. Si no, la lógica de pedir categoría se activará.
+            # memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Already set if not pre-filled
 
-            sugeridas = sugerir_categorias_relevantes(pregunta_str)
-            botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
-            texto_respuesta = "Elegí la categoría del reclamo" if sugeridas else "¿Sobre qué categoría es tu reclamo?"
-            return {
-                "respuesta": texto_respuesta,
-                "botones": botones
-            }
+            # After potential pre-fill, check if category is now set
+            if memoria.get("categoria_reclamo"):
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO
+                # If category was pre-filled, ask for the next piece of info (address)
+                return {"respuesta": f"Detecté la categoría: **{memoria['categoria_reclamo'].title()}**. Ahora, ¿La **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
+            else:
+                # Category not pre-filled, so ask for it
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+                sugeridas = sugerir_categorias_relevantes(pregunta_str) # Based on the trigger phrase like "reclamo puedo hacer?"
+                botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
+                texto_respuesta = "Elegí la categoría del reclamo" if sugeridas else "¿Sobre qué categoría es tu reclamo?"
+                return {
+                    "respuesta": texto_respuesta,
+                    "botones": botones
+                }
 
-        # Si el estado actual no pertenece al flujo de reclamos, este handler no actúa.
+        # Si el estado actual no pertenece al flujo de reclamos (e.g. was not initiated here, nor is it an ongoing reclamo state), 
+        # this handler does not act further in this call.
         if estado not in RECLAMO_STATES:
             return None
 
         # --- Bloque 2: Extracción de detalles con LLM en cada paso (si aplica) ---
+        # This block will now only be reached if 'estado' was already a RECLAMO_STATE at the start of handle()
         # Intenta extraer múltiples detalles de la respuesta del usuario si no es una
         # simple confirmación o una acción de botón conocida, y si el estado es de recolección de datos.
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
@@ -1602,7 +1612,8 @@ class ReclamoHandler(BaseMunicipioHandler):
                         "telefono_vecino": telefono_raw,
                         "email": email,
                         "estado": "nuevo",
-                        "user_id": self.context.get("user_id"),
+                        "user_id": self.context.get("cliente_id"), # Corrected: Use cliente_id for the citizen
+                        "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None, # Ensure anon_id is passed if no cliente_id
                         "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
                         "ubicacion": memoria.get("ubicacion_gps"),
                         "foto_url": memoria.get("foto_url"),
@@ -3390,8 +3401,8 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                                 session_id=context.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
                                 respuesta=respuesta_sugerencia.get("respuesta", ""), fuente=respuesta_sugerencia.get("fuente", "sugerencia_registro_municipio"),
                                 rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), # Usar getattr
-                                user_id=None, # Es anónimo
-                                municipio_id=getattr(owner_user, "id", None) # ID del municipio al que pertenece el bot
+                                user_id=None # Es anónimo
+                                # municipio_id=getattr(owner_user, "id", None) # ID del municipio al que pertenece el bot - REMOVED
                             ))
                             db.session.commit()
                         except Exception as e_conv_sug_muni:
@@ -3472,7 +3483,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     for handler_class in handler_chain:
         try:
             handler_instance = handler_class(context)
-            current_state_in_context = context["contexto_municipio"].get("estado_conversacion")
+            current_state_in_context = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
 
             # Los handlers de cortesía y cancelación se evalúan siempre primero
             if handler_class in [CancelHandler, PoliteHandler, SmallTalkHandler, GreetingHandler]:
@@ -3502,7 +3513,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                         if not received_payload.get("es_foto") and not received_payload.get("es_ubicacion") and not received_payload.get("action"):
                             if es_pregunta_nueva(pregunta_str, "el dato solicitado"):
                                 logger.info("[GUARDIAN] Pregunta nueva. Limpiando estado y re-evaluando intención.")
-                                context[CONTEXTO_MUNICIPIO].clear()
+                                context["contexto_municipio"].clear()
                                 context["intencion"] = None
                                 respuesta_final = None
                                 break
@@ -3525,9 +3536,9 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     if not respuesta_final:
         logger.info("[RESPUESTA] No se encontró respuesta específica. Fallback general.")
         # Si hay estado de conversación activo y llega acá, limpiar todo y dar mensaje reinicio
-        if contexto_municipio.get("estado_conversacion"):
-            logger.error(f"[FALLBACK_ERROR] Fallback con estado activo: {contexto_municipio['estado_conversacion']}. Limpiando.")
-            contexto_municipio.clear()
+        if contexto_municipio_actual.get("estado_conversacion"):
+            logger.error(f"[FALLBACK_ERROR] Fallback con estado activo: {contexto_municipio_actual['estado_conversacion']}. Limpiando.")
+            contexto_municipio_actual.clear()
             respuesta_final = {
                 "respuesta": (
                     "¡Vaya! Parece que nos perdimos un poco en la conversación. No te preocupes, empecemos de nuevo. "
@@ -3577,15 +3588,6 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     }
 
     # Check if a file was uploaded by the user in this turn and add its info for frontend display.
-    # Also, the NameError: name 'contexto_municipio' is not defined was here.
-    # It should refer to 'contexto_para_guardar_final' if checking the state being saved,
-    # or context[CONTEXTO_MUNICIPIO] if checking the active context dict.
-    # The original line from the production log was:
-    # if contexto_municipio.get("estado_conversacion"):
-    # This has been changed to use contexto_para_guardar_final as it's more relevant to the final response.
-    if contexto_para_guardar_final.get("estado_conversacion"): # Corrected this line
-        logger_actual.info(f"Estado de conversación final: {contexto_para_guardar_final.get('estado_conversacion')}")
-
     uploaded_file_info = received_payload.get("uploaded_file_info")
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
@@ -3611,8 +3613,8 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                 respuesta=final_response_dict.get("respuesta"),
                 fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"), # Usar fuente de la respuesta final
                 rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"),
-                user_id=None,
-                municipio_id=getattr(owner_user, "id", None)
+                user_id=None
+                # municipio_id=getattr(owner_user, "id", None) - REMOVED
             ))
             db.session.commit()
             logger_actual.info(f"Conversación (municipio) para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')} guardada.")
