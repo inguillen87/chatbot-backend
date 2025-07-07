@@ -3610,10 +3610,10 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             respuesta_parcial = handler_instance.handle(received_payload)
             if respuesta_parcial:
                 respuesta_final = respuesta_parcial
-                logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class.__name__} respondió.")
+                logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class_iter_main.__name__} respondió.") # Corregido aquí
                 break
             else:
-                logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class.__name__} no respondió.")
+                logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class_iter_main.__name__} no respondió.") # Corregido aquí
 
     # --- Fallback Final ---
     if not respuesta_final:
