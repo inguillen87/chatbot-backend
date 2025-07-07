@@ -18,6 +18,7 @@ This project exposes several endpoints to process questions for different sector
   respuesta será `{"status": "falta_rubro", "token": "...", "email": "..."}`
   para que el frontend redirija a la selección de rubro.
 - `GET /token-info` – returns the company and sector linked to a token. Consulta `docs/verificar-token.md` si necesitas comprobar que tu token es válido.
+- Si el backend registra "token inválido" o la ruta `/chatuserregisterpanel` responde 404, revisa `docs/token-invalid-troubleshooting.md` para pasos de diagnóstico.
 - Returned JSON now includes `rol` and `empresa_id` so the frontend can show the
   appropriate admin or employee options. Login endpoints also return the user's
   `rubro` and the suggested `tipo_chat` ("pyme" o "municipio") so the UI can
