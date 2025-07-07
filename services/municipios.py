@@ -1071,22 +1071,27 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if validar_telefono(valor_campo):
                             memoria["telefono_vecino"] = valor_campo.strip()
                         else:
-                            logger.warning(f"Teléfono '{datos[campo]}' no válido. Se pedirá.")
+                            logger.warning(f"Teléfono '{valor_campo}' no válido (extraído por LLM). Se pedirá confirmación o reingreso.")
+                            # No guardamos un teléfono inválido, se pedirá explícitamente después.
                             pass
                     elif campo == "email":
-                        if validar_email(datos[campo]):
-                            memoria["email_vecino"] = datos[campo].strip()
+                        if validar_email(valor_campo): # Usar valor_campo que es el valor extraído
+                            memoria["email_vecino"] = valor_campo.strip()
                         else:
-                            logger.warning(f"Email '{datos[campo]}' no válido. Se pedirá.")
+                            logger.warning(f"Email '{valor_campo}' no válido (extraído por LLM). Se pedirá confirmación o reingreso.")
+                            # No guardamos un email inválido.
                             pass
+                    # ESTE ES EL BLOQUE QUE CAUSA EL ERROR SI 'campo' NO ES 'categoria', 'telefono', o 'email'.
+                    # Debe usar 'valor_campo' que ya fue extraído y validado por 'if valor_campo:'
+                    elif campo == "nombre":
+                        memoria["nombre_vecino"] = valor_campo.strip()
+                    elif campo == "descripcion":
+                        memoria["descripcion_reclamo"] = valor_campo.strip()
                     else:
-                        # Asegurarse de que el campo se guarda con el nombre correcto en memoria
-                        if campo == "nombre":
-                            memoria["nombre_vecino"] = datos[campo].strip()
-                        elif campo == "descripcion":
-                            memoria["descripcion_reclamo"] = datos[campo].strip()
-                        else:
-                             memoria[campo] = datos[campo].strip() # Para otros campos si los hubiera
+                         # Para otros campos genéricos futuros que puedan estar en CAMPOS_RECLAMO
+                         # y no sean categoria, direccion, telefono, email, nombre, descripcion.
+                         # Es importante que este también use valor_campo.
+                         memoria[campo] = valor_campo.strip()
             
             # Si al menos se obtuvo una categoría o descripción inicial, o cualquier dato de reclamo,
             # forzamos el inicio del flujo paso a paso si no se pudo completar de una.
@@ -1358,16 +1363,31 @@ class ReclamoHandler(BaseMunicipioHandler):
                     return {"respuesta": "Entendido. Para asociar tu foto/ubicación, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?"}
 
                 # Usar parse_direccion_completa
-                # Usar CONFIG_MUNICIPIO que debería estar disponible en el contexto o cargarlo
                 config_muni_para_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
-                parsed_address = parse_direccion_completa(pregunta_str, config_muni_para_parseo)
+                parsed_address_from_llm = parse_direccion_completa(pregunta_str, config_muni_para_parseo)
 
-                if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"): # Chequeo mínimo de validez
-                    memoria["direccion_estructurada_reclamo"] = parsed_address
+                final_parsed_address = None
+                if parsed_address_from_llm and parsed_address_from_llm.get("calle"):
+                    # LLM extrajo una calle. Intentar asegurar la localidad.
+                    if parsed_address_from_llm.get("localidad"):
+                        final_parsed_address = parsed_address_from_llm
+                    elif config_muni_para_parseo.get("ciudad"):
+                        # Usar la ciudad por defecto del municipio si el LLM no dio localidad
+                        final_parsed_address = parsed_address_from_llm.copy()
+                        final_parsed_address["localidad"] = config_muni_para_parseo.get("ciudad")
+                        logger.info(f"[ReclamoHandler] Localidad autocompletada con la ciudad del municipio: {final_parsed_address['localidad']}")
+                        # Intentar autocompletar provincia también si no está y hay config
+                        if not final_parsed_address.get("provincia") and config_muni_para_parseo.get("provincia"):
+                            final_parsed_address["provincia"] = config_muni_para_parseo.get("provincia")
+                            logger.info(f"[ReclamoHandler] Provincia autocompletada: {final_parsed_address['provincia']}")
+                    # else: LLM dio calle, sin localidad, y no hay ciudad por defecto en config. Se considerará inválido.
+
+                if final_parsed_address and final_parsed_address.get("calle") and final_parsed_address.get("localidad"): # Chequeo mínimo de validez
+                    memoria["direccion_estructurada_reclamo"] = final_parsed_address
                     # Guardar también la versión en texto para compatibilidad y visualización simple
-                    direccion_texto_confirmacion = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}"
-                    if parsed_address.get("provincia"):
-                        direccion_texto_confirmacion += f", {parsed_address['provincia']}"
+                    direccion_texto_confirmacion = f"{final_parsed_address['calle']} {final_parsed_address.get('numero', '')}, {final_parsed_address['localidad']}"
+                    if final_parsed_address.get("provincia"):
+                        direccion_texto_confirmacion += f", {final_parsed_address['provincia']}"
                     memoria["direccion_reclamo"] = direccion_texto_confirmacion.replace(" ,", ",").strip()
 
                     logger.info(f"[ReclamoHandler] Dirección parseada y guardada: {memoria['direccion_estructurada_reclamo']}")
@@ -1377,9 +1397,10 @@ class ReclamoHandler(BaseMunicipioHandler):
                     continue # Si fue auto-llenado, continuar el loop
                 else:
                     # Si el parseo falla o no obtiene los campos mínimos
+                    logger.warning(f"[ReclamoHandler] Dirección no válida tras parseo y autocompletado. Input: '{pregunta_str}', LLM_parsed: {parsed_address_from_llm}, Final: {final_parsed_address}")
                     respuesta_direccion_invalida = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresarla de nuevo? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad, Provincia' o que incluya al menos calle, número y localidad."
                     if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                        if current_app.config.get("ALLOW_ANON_GPS"):
+                        if current_app.config.get("ALLOW_ANON_GPS"): # Check if current_app is available
                             respuesta_direccion_invalida += (
                                 "\n\nSi tenés problemas con la dirección escrita, también podés compartir tu ubicación GPS "
                                 "mediante el botón de adjuntos." 

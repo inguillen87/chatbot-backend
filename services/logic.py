@@ -415,60 +415,60 @@ def responder_chatboc(
     # Si llegamos aquí, o no hubo archivo, o el análisis se completó (y datos_interpretados_archivo está poblado o es None).
 
     # --- Inicio: Intento de búsqueda y uso de Plantillas de Respuesta ---
-    respuesta_con_plantilla = None
-    if not procesamiento_archivo_en_curso: # No buscar plantillas si estamos esperando análisis de archivo
-        try:
-            from services.template_service import buscar_plantillas_relevantes, formatear_plantilla
-
-            # Construir un contexto básico para formatear plantillas
-            # Este contexto se puede enriquecer mucho más en los handlers específicos (pyme/municipio)
-            # si deciden usar una plantilla.
-            contexto_para_plantilla = {
-                "usuario": owner_user, # El objeto User completo
-                "pregunta_usuario": pregunta,
-                "datos_archivo": datos_interpretados_de_archivo, # Si los hay
-                # Se podrían añadir más datos generales aquí si son útiles para plantillas genéricas
-            }
-
-            plantillas_encontradas = buscar_plantillas_relevantes(texto_consulta=pregunta, top_n=1)
-
-            if plantillas_encontradas:
-                plantilla_seleccionada = plantillas_encontradas[0]
-                logger.info(f"Plantilla relevante encontrada: '{plantilla_seleccionada.name}' (ID: {plantilla_seleccionada.id})")
-
-                # Aquí es donde la lógica se puede complicar:
-                # 1. ¿La plantilla es suficiente por sí misma?
-                # 2. ¿Necesita datos adicionales que solo el handler pyme/municipio puede proveer?
-                # 3. ¿Debería el handler pyme/municipio ser responsable de llamar a formatear_plantilla?
-
-                # Opción A: Si la plantilla es muy genérica y se puede formatear con contexto_para_plantilla:
-                # texto_respuesta_plantilla = formatear_plantilla(plantilla_seleccionada.text, contexto_para_plantilla)
-                # respuesta_con_plantilla = {
-                #     "respuesta": texto_respuesta_plantilla,
-                #     "fuente": f"plantilla:{plantilla_seleccionada.id}",
-                #     "tipo_respuesta": "plantilla_directa",
-                #     # ... otros campos necesarios como contexto_pyme/municipio ...
-                # }
-                # logger.info(f"Respondiendo directamente con plantilla formateada ID {plantilla_seleccionada.id}")
-
-                # Opción B: Pasar la plantilla seleccionada al handler (pyme/municipio) para que decida.
-                # El handler puede entonces enriquecer el contexto y llamar a formatear_plantilla.
-                # Esto parece más flexible.
-                kwargs["plantilla_sugerida"] = plantilla_seleccionada
-                logger.info(f"Pasando plantilla sugerida '{plantilla_seleccionada.name}' al handler {tipo_chat}.")
-
-        except ImportError:
-            logger.warning("Modulo template_service no encontrado. Búsqueda de plantillas desactivada.")
-        except Exception as e_template:
-            logger.error(f"Error durante la búsqueda o formateo inicial de plantillas: {e_template}", exc_info=True)
-            # Continuar sin plantilla si hay error aquí.
-
-    # Si ya tenemos una respuesta de plantilla directa (Opción A), podríamos retornarla aquí.
-    # if respuesta_con_plantilla:
-    #    # Asegurarse de que el contexto de sesión (contexto_pyme/municipio) se actualice y devuelva correctamente.
-    #    # Esto es complejo si la plantilla es genérica y no actualiza el contexto específico.
-    #    # Por ahora, preferimos Opción B (pasar al handler).
-    #    pass
+    # respuesta_con_plantilla = None
+    # if not procesamiento_archivo_en_curso: # No buscar plantillas si estamos esperando análisis de archivo
+    #     try:
+    #         from services.template_service import buscar_plantillas_relevantes, formatear_plantilla
+    #
+    #         # Construir un contexto básico para formatear plantillas
+    #         # Este contexto se puede enriquecer mucho más en los handlers específicos (pyme/municipio)
+    #         # si deciden usar una plantilla.
+    #         contexto_para_plantilla = {
+    #             "usuario": owner_user, # El objeto User completo
+    #             "pregunta_usuario": pregunta,
+    #             "datos_archivo": datos_interpretados_de_archivo, # Si los hay
+    #             # Se podrían añadir más datos generales aquí si son útiles para plantillas genéricas
+    #         }
+    #
+    #         plantillas_encontradas = buscar_plantillas_relevantes(texto_consulta=pregunta, top_n=1)
+    #
+    #         if plantillas_encontradas:
+    #             plantilla_seleccionada = plantillas_encontradas[0]
+    #             logger.info(f"Plantilla relevante encontrada: '{plantilla_seleccionada.name}' (ID: {plantilla_seleccionada.id})")
+    #
+    #             # Aquí es donde la lógica se puede complicar:
+    #             # 1. ¿La plantilla es suficiente por sí misma?
+    #             # 2. ¿Necesita datos adicionales que solo el handler pyme/municipio puede proveer?
+    #             # 3. ¿Debería el handler pyme/municipio ser responsable de llamar a formatear_plantilla?
+    #
+    #             # Opción A: Si la plantilla es muy genérica y se puede formatear con contexto_para_plantilla:
+    #             # texto_respuesta_plantilla = formatear_plantilla(plantilla_seleccionada.text, contexto_para_plantilla)
+    #             # respuesta_con_plantilla = {
+    #             #     "respuesta": texto_respuesta_plantilla,
+    #             #     "fuente": f"plantilla:{plantilla_seleccionada.id}",
+    #             #     "tipo_respuesta": "plantilla_directa",
+    #             #     # ... otros campos necesarios como contexto_pyme/municipio ...
+    #             # }
+    #             # logger.info(f"Respondiendo directamente con plantilla formateada ID {plantilla_seleccionada.id}")
+    #
+    #             # Opción B: Pasar la plantilla seleccionada al handler (pyme/municipio) para que decida.
+    #             # El handler puede entonces enriquecer el contexto y llamar a formatear_plantilla.
+    #             # Esto parece más flexible.
+    #             kwargs["plantilla_sugerida"] = plantilla_seleccionada
+    #             logger.info(f"Pasando plantilla sugerida '{plantilla_seleccionada.name}' al handler {tipo_chat}.")
+    #
+    #     except ImportError:
+    #         logger.warning("Modulo template_service no encontrado. Búsqueda de plantillas desactivada.") # This will no longer be hit
+    #     except Exception as e_template:
+    #         logger.error(f"Error durante la búsqueda o formateo inicial de plantillas: {e_template}", exc_info=True)
+    #         # Continuar sin plantilla si hay error aquí.
+    #
+    # # Si ya tenemos una respuesta de plantilla directa (Opción A), podríamos retornarla aquí.
+    # # if respuesta_con_plantilla:
+    # #    # Asegurarse de que el contexto de sesión (contexto_pyme/municipio) se actualice y devuelva correctamente.
+    # #    # Esto es complejo si la plantilla es genérica y no actualiza el contexto específico.
+    # #    # Por ahora, preferimos Opción B (pasar al handler).
+    # #    pass
     # --- Fin: Intento de búsqueda y uso de Plantillas de Respuesta ---
 
 
