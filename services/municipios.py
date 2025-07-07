@@ -3506,136 +3506,107 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         prioritized_handlers.append(HumanEscalationHandler)
 
     respuesta_final = None
+    dueño_handler_class = None # Inicializar aquí
 
-    for handler_class in prioritized_handlers:
-        handler_instance = handler_class(context)
+    for handler_class_iter in prioritized_handlers: # Cambiado el nombre de la variable de iteración
+        handler_instance = handler_class_iter(context)
         respuesta_parcial = handler_instance.handle(received_payload)
         if respuesta_parcial:
             respuesta_final = respuesta_parcial
-            logger_actual.info(f"[HANDLER_CHAIN] Prioritized handler {handler_class.__name__} respondió.")
+            logger_actual.info(f"[HANDLER_CHAIN] Prioritized handler {handler_class_iter.__name__} respondió.")
             break
 
     # --- Lógica de Dueño del Estado ---
     if not respuesta_final and estado_conversacion_actual:
-        dueño_handler_class = OWNER_HANDLERS_FOR_STATE.get(estado_conversacion_actual)
-        if dueño_handler_class:
+        # dueño_handler_class ya está inicializado arriba
+        dueño_handler_class_actual = OWNER_HANDLERS_FOR_STATE.get(estado_conversacion_actual) # Usar una nueva variable para la asignación
+        if dueño_handler_class_actual:
+            dueño_handler_class = dueño_handler_class_actual # Asignar a la variable de alcance más amplio
             dueño_instance = dueño_handler_class(context)
             logger_actual.info(f"[HANDLER_CHAIN] Estado activo '{estado_conversacion_actual.name}'. Dando prioridad a {dueño_instance.__class__.__name__}")
-            respuesta_parcial = dueño_instance.handle(received_payload)
-            if respuesta_parcial:
-                respuesta_final = respuesta_parcial
+            respuesta_parcial_dueño = dueño_instance.handle(received_payload) # Nueva variable para la respuesta del dueño
+            if respuesta_parcial_dueño:
+                respuesta_final = respuesta_parcial_dueño
                 logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado {dueño_instance.__class__.__name__} respondió.")
             else:
-                # Si el dueño del estado no respondió, podría ser una nueva pregunta que cambia el flujo.
-                # Permitir que el IntentClassifierHandler re-evalúe.
                 logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado ({dueño_instance.__class__.__name__}) no respondió. Re-evaluando intención.")
-                # Guardar el estado actual antes de limpiar, por si es_pregunta_nueva lo necesita internamente.
-                # La limpieza de estado debe ser más controlada.
-                # No limpiar el estado aquí automáticamente. Si es_pregunta_nueva o el IntentClassifier lo deciden, ellos lo harán.
-                # if es_pregunta_nueva(pregunta_str, "el dato solicitado para el flujo actual"): # Esta función necesita revisión
-                #    logger_actual.info(f"[HANDLER_CHAIN] 'es_pregunta_nueva' detectó cambio de tema. Limpiando estado '{estado_conversacion_actual.name}'.")
-                #    contexto_municipio_actual.pop("estado_conversacion", None)
-                #    flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                #    flask_session.modified = True
-
                 classifier_handler = IntentClassifierHandler(context)
-                classifier_handler.handle(received_payload) # Actualiza context['intencion']
+                classifier_handler.handle(received_payload)
                 logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-dueño: {context.get('intencion')}")
-                # Si la intención cambió a algo que NO es "continuar_flujo", o si el estado se limpió,
-                # entonces no seguimos con el dueño, sino que la cadena principal tomará la nueva intención.
                 if context.get('intencion') != "continuar_flujo" or not contexto_municipio_actual.get("estado_conversacion"):
-                    pass # Se procesará con remaining_handlers
-                # else: Aún es continuar_flujo y el estado persiste, podría ser un input inválido para el dueño. El dueño debería haber respondido con mensaje de error.
+                    pass
         else:
-            logger_actual.warning(f"[HANDLER_CHAIN] Estado activo '{estado_conversacion_actual.name}' pero no se encontró handler dueño definido en OWNER_HANDLERS_FOR_STATE. Limpiando estado.")
+            logger_actual.warning(f"[HANDLER_CHAIN] Estado activo '{estado_conversacion_actual.name}' pero no se encontró handler dueño definido. Limpiando estado.")
             contexto_municipio_actual.pop("estado_conversacion", None)
             flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
             flask_session.modified = True
-            # Como se limpió el estado, forzar re-clasificación de intención si no hay respuesta aún.
             if not respuesta_final:
                  IntentClassifierHandler(context).handle(received_payload)
                  logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-limpieza de estado sin dueño: {context.get('intencion')}")
 
-
     # --- Cadena Principal de Handlers ---
     if not respuesta_final:
-        # El IntentClassifierHandler ya se ejecutó si el dueño no respondió o si se limpió un estado sin dueño.
-        # O se ejecutará ahora si no había estado previo o dueño.
-        # Asegurar que IntentClassifierHandler se ejecute si no lo hizo antes y es necesario.
-        if not context.get("intencion") and not estado_conversacion_actual : # Solo si no hay intención Y no había estado
+        if not context.get("intencion") and not estado_conversacion_actual :
             logger_actual.info("[HANDLER_CHAIN] Ejecutando IntentClassifierHandler (sin estado previo, sin intención previa de dueño).")
             IntentClassifierHandler(context).handle(received_payload)
             logger_actual.info(f"[HANDLER_CHAIN] Intención post-clasificación inicial: {context.get('intencion')}")
 
         remaining_handlers = [
-            GreetingHandler, PoliteHandler, SmallTalkHandler, # Estos son más de respuesta directa
-            # IntentClassifierHandler ya se manejó arriba en los casos necesarios.
-            # Handlers de Lógica de Negocio Principal:
-            HumanEscalationHandler, # Si la intención fue (re)clasificada a agente
+            GreetingHandler, PoliteHandler, SmallTalkHandler,
+            HumanEscalationHandler,
             TicketStatusHandler,
             SugerenciasVecinoHandler,
             RecoleccionHandler,
-            ReclamoInteligenteMunicipioHandler, # Intenta capturar reclamos completos
-            ReclamoHandler, # Para reclamos paso a paso o si el inteligente no capturó todo
+            ReclamoInteligenteMunicipioHandler,
+            ReclamoHandler,
             TramitesHandler,
             TramiteInteligenteHandler,
             ImpuestosHandler,
-            # Handlers de Ventas
             ProductCatalogHandler,
             ProductInquiryHandler,
             CartHandler,
             CheckoutHandler,
             StoreLocationHandler,
-            # Handlers de Herramientas y Conocimiento General
             ToolHandler,
             VectorMunicipioCatalogHandler,
             GeneralHandler,
-            # Handlers de Fallback y Enganche
-            EngancheAnonimoMunicipioHandler, # Considerar si este debe ir antes de GeneralHandler
+            EngancheAnonimoMunicipioHandler,
         ]
 
-        for handler_class in remaining_handlers:
-            if respuesta_final: break # Si ya tenemos respuesta, salir
+        for handler_class_iter_main in remaining_handlers: # Cambiado el nombre de la variable de iteración
+            if respuesta_final: break
 
-            # Evitar re-ejecutar el dueño del estado si ya tuvo su oportunidad y no respondió,
-            # A MENOS que la intención haya sido reclasificada específicamente para él.
             current_estado_loop = contexto_municipio_actual.get("estado_conversacion")
-            dueño_original_del_estado_actual = OWNER_HANDLERS_FOR_STATE.get(current_estado_loop) if current_estado_loop else None
+            # dueño_original_del_estado_actual = OWNER_HANDLERS_FOR_STATE.get(current_estado_loop) if current_estado_loop else None
 
-            if dueño_original_del_estado_actual == handler_class:
-                 # Si este handler era el dueño original del estado que persistió,
-                 # y ya tuvo su chance (porque dueño_instance.handle() fue llamado y no dio respuesta_final),
-                 # no debería volver a ejecutarse A MENOS que la intención haya cambiado para él.
-                 # Esta lógica es compleja. Por ahora, si era dueño y no respondió, se asume que
-                 # la intención fue reclasificada o el flujo se rompió.
-                 # El caso donde el dueño no responde y la intención NO cambia, pero el usuario insiste
-                 # con algo que el dueño debería manejar (pero no maneja) es un edge case.
-                 # El dueño debería haber dado un mensaje de error en ese caso.
-                 # Si la intención fue reclasificada a algo que este handler maneja (ej. reclamo -> ReclamoHandler)
-                 # entonces sí debe correr.
+            # La variable dueño_handler_class contiene el handler que fue dueño del estado *antes* de este bucle.
+            # Si el estado actual todavía tiene un dueño, y es este handler, y este handler ya fue
+            # el que se procesó como dueño y no dio respuesta (respuesta_parcial_dueño fue None),
+            # entonces no debería volver a correr A MENOS que la intención haya cambiado a algo que él maneja.
+            # Esta lógica es compleja de anidar aquí.
+            # La simplificación es: si el dueño_handler_class (el que se intentó antes) es el mismo que ahora,
+            # y no hubo respuesta de él, la intención ya se reclasificó. Si la nueva intención
+            # sigue apuntando a este handler (ej. 'iniciar_reclamo' para ReclamoHandler), entonces está bien que corra.
 
-                 # Simplificación: Si este handler es el dueño de un estado que AÚN está activo,
-                 # y este handler YA FUE LLAMADO como dueño y NO dio respuesta, no lo llamamos de nuevo
-                 # en el bucle 'remaining_handlers' a menos que la intención lo fuerce.
-                 if dueño_handler_class == handler_class and not respuesta_parcial_del_dueño_previo: # Necesitaríamos un flag
-                      # Esta condición es difícil de implementar perfectamente sin más flags.
-                      # La lógica actual: si el dueño no respondió, la intención se reclasificó.
-                      # Entonces, el handler correrá si la *nueva* intención le corresponde.
-                      pass
+            # Si el handler actual es el mismo que se identificó como dueño del estado
+            # Y ese dueño no proporcionó una respuesta final (respuesta_final sigue siendo None)
+            # Y la intención NO ha cambiado a algo que justifique re-intentar con este handler
+            # (Esta última parte es la más difícil de determinar genéricamente aquí)
+            # Por ahora, se elimina la condición compleja que usaba respuesta_parcial_del_dueño_previo
+            # y se confía en que la reclasificación de intención maneje esto.
+            # El `dueño_handler_class` de arriba se refiere al dueño del estado *inicial*.
+            # Si el estado cambió o la intención cambió drásticamente, ese `dueño_handler_class` puede no ser relevante.
 
-
-            # Lógica para no re-ejecutar handlers que ya corrieron (como los prioritarios)
-            if handler_class in prioritized_handlers and handler_class != HumanEscalationHandler: # Permitir HumanEscalation si la intención cambió a agente
-                 logger_actual.debug(f"[HANDLER_CHAIN] Saltando {handler_class.__name__} (ya es prioritario y corrió o no aplicó).")
+            if handler_class_iter_main in prioritized_handlers and handler_class_iter_main != HumanEscalationHandler:
+                 logger_actual.debug(f"[HANDLER_CHAIN] Saltando {handler_class_iter_main.__name__} (ya es prioritario y corrió o no aplicó).")
                  continue
 
-            # No ejecutar EngancheAnonimo si ya hay usuario logueado.
-            if handler_class == EngancheAnonimoMunicipioHandler and context.get("cliente_id"):
+            if handler_class_iter_main == EngancheAnonimoMunicipioHandler and context.get("cliente_id"):
                 logger_actual.debug(f"[HANDLER_CHAIN] Saltando EngancheAnonimoMunicipioHandler (usuario logueado).")
                 continue
 
-            handler_instance = handler_class(context)
-            logger_actual.info(f"[HANDLER_CHAIN] Intentando con handler: {handler_class.__name__}")
+            handler_instance = handler_class_iter_main(context)
+            logger_actual.info(f"[HANDLER_CHAIN] Intentando con handler: {handler_class_iter_main.__name__}")
             respuesta_parcial = handler_instance.handle(received_payload)
             if respuesta_parcial:
                 respuesta_final = respuesta_parcial
