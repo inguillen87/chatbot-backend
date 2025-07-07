@@ -145,10 +145,12 @@ def create_app(config_class=Config):
     else:
         # Defaulting to specific origins as per user instructions for chatboc.ar
         allowed_origins = [
-            "https://chatboc.ar",
-            "https://www.chatboc.ar"
-            # Localhost origins can be added here if needed for local development,
-            # but for the specific problem, these are the key production origins.
+             "https://chatboc.ar",
+            "https://www.chatboc.ar",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+                    # Localhost origins can be added here if needed for local development,
+                    # but for the specific problem, these are the key production origins.
             # "http://localhost:3000", # Example for local frontend
         ]
 
