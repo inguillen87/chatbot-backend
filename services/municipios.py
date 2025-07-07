@@ -1026,7 +1026,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
             memoria.clear() 
 
             # Procesar dirección primero con la nueva función
-            direccion_texto_original = datos_extraidos_reclamo_inteligente.get("direccion")
+            direccion_texto_original = datos_extraidos_reclamo_inteligente.get("direccion", "")
             if direccion_texto_original:
                 # Usar CONFIG_MUNICIPIO que debería estar disponible en el contexto o cargarlo
                 config_muni_para_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
@@ -1049,7 +1049,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                 if campo == "direccion": # Ya procesado arriba
                     continue
 
-                valor_campo = datos_extraidos_reclamo_inteligente.get(campo)
+                valor_campo = datos_extraidos_reclamo_inteligente.get(campo, "")
                 if valor_campo:
                     if campo == "categoria":
                         matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(valor_campo)), None)
