@@ -1449,10 +1449,21 @@ class ReclamoHandler(BaseMunicipioHandler):
                 
                 # If description is still missing (current input is not the description or was too short)
                 if not memoria.get("descripcion_reclamo"):
-                    descripcion = pregunta_str.strip()
-                    if not descripcion or len(descripcion) < 10: # Basic validation for length
+                    descripcion_final = ""
+                    # Try to get description from payload["datos"]["descripcion_reclamo"] as per user's fix pattern
+                    datos_sub_payload = payload.get("datos", {})
+                    campo_descripcion = "descripcion_reclamo" # Assuming this is the field name
+
+                    if campo_descripcion in datos_sub_payload:
+                        descripcion_final = datos_sub_payload[campo_descripcion].strip()
+                        logger.info(f"[ReclamoHandler] Descripción obtenida de payload['datos']['{campo_descripcion}']: '{descripcion_final[:50]}...'")
+                    elif pregunta_str: # Fallback to pregunta_str if not in datos_sub_payload
+                        descripcion_final = pregunta_str.strip()
+                        logger.info(f"[ReclamoHandler] Descripción obtenida de pregunta_str: '{descripcion_final[:50]}...'")
+
+                    if not descripcion_final or len(descripcion_final) < 10: # Basic validation for length
                         return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
-                    memoria["descripcion_reclamo"] = descripcion
+                    memoria["descripcion_reclamo"] = descripcion_final
 
                 # Transition to asking about attachments. This is an exit point from the while True loop for this turn.
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
