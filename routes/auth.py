@@ -67,7 +67,7 @@ def obtener_token():
         token_form = token_form.strip()
         current_app.logger.debug(f"[obtener_token] Found token in form data: '{token_form[:10]}...'")
         return token_form
-
+    
     # For /ask/municipio anonymous, check form data for 'empresa_token' as well
     if request.path == '/ask/municipio' or request.path.endswith('/ask/municipio'):
         empresa_token_form = request.form.get("empresa_token")
