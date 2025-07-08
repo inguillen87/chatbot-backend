@@ -64,7 +64,7 @@ def agregar_botones_para_links(texto: str, botones: list) -> list:
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+17432643718"
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
@@ -258,7 +258,7 @@ class GreetingHandler(BaseMunicipioHandler):
 
 class SugerenciasVecinoHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "").strip(); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_conversacion = memoria.get("estado_conversacion"); intencion = self.context.get("intencion"); sugerencia_texto_directo = ""
+        pregunta_str = payload.get("pregunta", "").strip(); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_conversacion_str = memoria.get("estado_conversacion"); estado_conversacion = ConversationState[estado_conversacion_str] if isinstance(estado_conversacion_str, str) else estado_conversacion_str; intencion = self.context.get("intencion"); sugerencia_texto_directo = ""
         if intencion == "hacer_sugerencia":
             palabras_clave_sugerencia = ["sugerencia", "sugerencias", "idea", "propuesta", "proponer", "mejorar"]; texto_limpio_de_keywords = pregunta_str
             for kw in palabras_clave_sugerencia:
@@ -311,7 +311,9 @@ class SmallTalkHandler(BaseMunicipioHandler):
 class RecoleccionHandler(BaseMunicipioHandler):
     KEYWORDS = ["basura", "recoleccion", "residuos", "basurero"]
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; estado = memoria.get("estado_conversacion"); texto = normalizar_texto(pregunta_str)
+        pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]
+        estado_str = memoria.get("estado_conversacion"); estado = ConversationState[estado_str] if isinstance(estado_str, str) else estado_str
+        texto = normalizar_texto(pregunta_str)
         if estado == ConversationState.ESPERANDO_PARAM_RECOLECCION:
             if es_pregunta_nueva(pregunta_str, "una dirección"): memoria.clear(); return None
             if not direccion_es_valida(pregunta_str): return {"respuesta": f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresar calle y número?"}
@@ -345,7 +347,23 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         if memoria.get("estado_conversacion"):
             if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE): self.context["intencion"] = "hablar_con_agente"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo)"); return None
             if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO): self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo)"); return None
-            self.context["intencion"] = "continuar_flujo"; logger.info(f"[MUNICIPIO] Intención: continuar_flujo (estado activo: {memoria.get('estado_conversacion')})"); return None
+            # If there's an active state, let the state owner handle it or re-evaluate if needed.
+            # Don't just set to 'continuar_flujo' if a specific state handler should act.
+            # This part is handled by the OWNER_HANDLERS_FOR_STATE logic in responder_municipio.
+            # So, if memoria.get("estado_conversacion") is true, this handler should probably return None
+            # to let the state-specific handler (or subsequent generic handlers) decide.
+            # However, the original logic was to set to 'continuar_flujo'. Let's refine.
+            # If there is a state, the main responder_municipio loop will try the OWNER_HANDLER first.
+            # This IntentClassifierHandler runs if no owner responded or no state was set initially.
+            # So, if memoria.get("estado_conversacion") is set here, it implies it might have been set by a *previous* handler
+            # in this same request cycle (e.g., ReclamoInteligente setting it before ReclamoHandler runs).
+            # The original logic seems okay: if a state is already active, intent is to continue that.
+            self.context["intencion"] = "continuar_flujo";
+            active_state_log = memoria.get('estado_conversacion')
+            if isinstance(active_state_log, Enum): active_state_log = active_state_log.name
+            logger.info(f"[MUNICIPIO] Intención: continuar_flujo (estado activo: {active_state_log})")
+            return None
+
         for kw in self.KEYWORDS_PANICO:
             if kw in texto_normalizado: self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword '{kw}')"); return None
         for kw in self.KEYWORDS_AGENTE:
@@ -368,13 +386,14 @@ class IntentClassifierHandler(BaseMunicipioHandler):
             if kw in texto_normalizado: self.context["intencion"] = "consultar_tramite"; logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por palabra clave '{kw}')"); return None
         for kw in self.KEYWORDS_SUGERENCIA:
             if kw in texto_normalizado: self.context["intencion"] = "hacer_sugerencia"; logger.info(f"[MUNICIPIO] Intención: hacer_sugerencia (por palabra clave '{kw}')"); return None
+
         intencion_llm = _clasificar_intencion_con_llm(pregunta_str) 
         self.context["intencion"] = intencion_llm
-        logger.info(f"[MUNICIPIO] Intención (final): {self.context.get('intencion')}"); return None
+        logger.info(f"[MUNICIPIO] Intención (final por LLM): {self.context.get('intencion')}"); return None
 
 class TicketStatusHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_conversacion = memoria.get("estado_conversacion")
+        pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_conversacion_str = memoria.get("estado_conversacion"); estado_conversacion = ConversationState[estado_conversacion_str] if isinstance(estado_conversacion_str, str) else estado_conversacion_str;
         if estado_conversacion and estado_conversacion in RECLAMO_STATES: return None
         if estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_CIERRE:
             if es_pregunta_nueva(pregunta_str, "una confirmación (sí o no)"): memoria.clear(); return None
@@ -422,9 +441,20 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
     CAMPOS_RECLAMO = ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]
-        if memoria.get("estado_conversacion") and memoria["estado_conversacion"] in RECLAMO_STATES: return None
+
+        current_state_obj_str = memoria.get("estado_conversacion")
+        current_state_obj = None
+        if isinstance(current_state_obj_str, str):
+            try: current_state_obj = ConversationState[current_state_obj_str]
+            except KeyError: pass
+        elif isinstance(current_state_obj_str, ConversationState):
+            current_state_obj = current_state_obj_str
+
+        if current_state_obj and current_state_obj in RECLAMO_STATES: return None
+
         if self.context.get("intencion") != "iniciar_reclamo": return None
-        if not memoria.get("categoria_reclamo") and not memoria.get("direccion_reclamo"):
+
+        if not memoria.get("categoria_reclamo") and not memoria.get("direccion_reclamo"): # Only run if no claim data already in memory
             prompt = f"""
             Extraé del siguiente mensaje los siguientes datos si están presentes, si algún campo no está presente, simplemente omitilo:
             - categoria (motivo del reclamo, ej: basura, agua, semáforo, etc. Usá las categorías: {", ".join(CATEGORIAS_RECLAMO)})
@@ -441,7 +471,9 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                 datos_extraidos_reclamo_inteligente = json.loads(resp) if resp else {}
                 logger.info(f"[ReclamoInteligenteHandler] Datos extraídos por LLM: {datos_extraidos_reclamo_inteligente}")
             except Exception as e: logger.error(f"[ReclamoInteligenteMunicipioHandler] Error Cohere/JSON: {e}", exc_info=True); datos_extraidos_reclamo_inteligente = {}
-            memoria.clear() 
+
+            memoria.clear() # Clear memory before pre-filling from LLM for a new intelligent claim attempt
+
             direccion_texto_original = datos_extraidos_reclamo_inteligente.get("direccion", "")
             if direccion_texto_original:
                 config_muni_para_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
@@ -474,21 +506,44 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if campo == "nombre": memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion": memoria["descripcion_reclamo"] = datos_extraidos_reclamo_inteligente.get("descripcion", "").strip()
                         else: memoria[campo] = valor_campo.strip()
-            if any(memoria.get(f"{c}_reclamo") or memoria.get(f"{c}_vecino") for c in self.CAMPOS_RECLAMO):
-                if all(memoria.get(f"{c}_reclamo" if c not in ["nombre", "telefono", "email"] else f"{c}_vecino") for c in self.CAMPOS_RECLAMO):
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name # Corrected
+
+            if any(memoria.get(f"{c}_reclamo") or memoria.get(f"{c}_vecino") for c in self.CAMPOS_RECLAMO): # If any field was extracted
+                if all(memoria.get(f"{c}_reclamo" if c not in ["nombre", "telefono", "email"] else f"{c}_vecino") for c in self.CAMPOS_RECLAMO): # If all fields extracted
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                     resumen = self.build_detalles_memoria(memoria)
                     return {"respuesta": f"Parece que tenemos todos los datos. ¿Confirmás el reclamo con estos datos?\n{resumen}", "botones": [{"texto": "Confirmar reclamo", "action": "confirmar_reclamo"}, {"texto": "Editar datos", "action": "editar_reclamo"}]}
                 else:
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO; return None # Corrected
-        return None
+                    # If not all data extracted, initiate step-by-step by asking the first question (category)
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
+                    # This handler will now respond to start the flow
+                    sugeridas = sugerir_categorias_relevantes(pregunta_str)
+                    botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
+                    primera_pregunta = ("Para tu reclamo, ¿podrías ayudarme seleccionando una categoría, "
+                                       "o describiendo brevemente de qué se trata?")
+                    if sugeridas:
+                        primera_pregunta = "Detecté que podría ser sobre algunos de estos temas. Para tu reclamo, ¿cuál sería la categoría?"
+                    logger.info(f"[ReclamoInteligenteHandler] No todos los datos extraídos. Iniciando reclamo paso a paso con pregunta de categoría.")
+                    return {"respuesta": primera_pregunta, "botones": botones}
+        return None # Only returns None if no claim fields were extracted at all initially, or if it's not its turn.
 
 class ReclamoHandler(BaseMunicipioHandler):
     EDIT_KEYWORDS = ["editar", "cambiar", "corregir", "modificar", "no era asi", "me equivoque", "error"]
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "") or ""; memoria = self.context[CONTEXTO_MUNICIPIO]; estado = memoria.get("estado_conversacion"); intencion = self.context.get("intencion")
-        if intencion == "iniciar_reclamo" and not estado:
-            logger.info(f"[ReclamoHandler] Iniciando nuevo flujo de reclamo. Intención: {intencion}"); memoria.clear()
+        pregunta_str = payload.get("pregunta", "") or ""; memoria = self.context[CONTEXTO_MUNICIPIO]
+
+        estado_str = memoria.get("estado_conversacion")
+        estado = None
+        if estado_str:
+            if isinstance(estado_str, str):
+                try: estado = ConversationState[estado_str]
+                except KeyError: logger.warning(f"[ReclamoHandler] Invalid state string '{estado_str}' found. Clearing state."); memoria.pop("estado_conversacion", None)
+            elif isinstance(estado_str, ConversationState): estado = estado_str
+
+        intencion = self.context.get("intencion")
+
+        # If intent is to start a claim AND no specific state is yet set (or was cleared due to invalid string)
+        if intencion == "iniciar_reclamo" and estado is None:
+            logger.info(f"[ReclamoHandler] Iniciando nuevo flujo de reclamo (estado is None). Intención: {intencion}"); memoria.clear()
             datos_archivo = self.context.get("datos_interpretados_archivo")
             if datos_archivo and isinstance(datos_archivo, dict):
                 logger.info(f"[ReclamoHandler] Intentando pre-llenar memoria con datos de archivo: {datos_archivo}")
@@ -509,19 +564,44 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if email_archivo and validar_email(email_archivo): memoria["email_vecino"] = email_archivo.strip(); logger.info(f"[ReclamoHandler] Pre-llenado email_vecino: {email_archivo.strip()}")
                 desc_archivo = datos_archivo.get("descripcion_corta_problema") or datos_archivo.get("descripcion_problema") or datos_archivo.get("detalles_adicionales")
                 if desc_archivo and len(desc_archivo) >= 10: memoria["descripcion_reclamo"] = desc_archivo.strip(); logger.info(f"[ReclamoHandler] Pre-llenado descripcion_reclamo: {desc_archivo.strip()}")
+
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-            if memoria.get("categoria_reclamo"):
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-                return {"respuesta": f"Detecté la categoría: **{memoria['categoria_reclamo'].title()}**. Ahora, ¿La **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
-            else:
+            estado = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Update local 'estado' for current pass
+
+            # This block will now proceed to the while loop if categoria_reclamo was not pre-filled,
+            # or it will ask for category directly if it was pre-filled and then ask for address.
+            # The first question is now consistently handled by the while loop logic below.
+
+        # Check if the current state is a valid reclamo state
+        # This condition handles ongoing claims or claims initiated by ReclamoInteligente
+        if estado not in RECLAMO_STATES:
+            # If state is None but intent was not "iniciar_reclamo", this handler isn't responsible
+            if estado is None and intencion != "iniciar_reclamo":
+                return None
+            # If state is not None but also not a RECLAMO_STATE, it's an invalid/unexpected state for this handler
+            if estado is not None:
+                 logger.info(f"[ReclamoHandler] Estado '{estado.name if isinstance(estado, Enum) else estado}' no es un estado de reclamo válido. Retornando None.")
+                 return None
+            # If estado is None and intencion was "iniciar_reclamo", the block above should have set it.
+            # If it's still None here, it means the init block didn't return and something is amiss.
+            if estado is None and intencion == "iniciar_reclamo":
+                logger.warning("[ReclamoHandler] Estado es None y la intención es iniciar_reclamo, pero el bloque de inicialización no respondió. Forzando pregunta de categoría.")
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-                sugeridas = sugerir_categorias_relevantes(pregunta_str); botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
-                texto_respuesta = "Elegí la categoría del reclamo" if sugeridas else "¿Sobre qué categoría es tu reclamo?"
-                return {"respuesta": texto_respuesta, "botones": botones}
-        if estado not in RECLAMO_STATES: return None
+                estado = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Ensure local 'estado' is updated
+                # Fall through to the while loop to ask the category question
+
+        # If we reach here, 'estado' must be a valid Enum member from RECLAMO_STATES
+        if not isinstance(estado, ConversationState) or estado not in RECLAMO_STATES:
+             logger.error(f"[ReclamoHandler] Critical error: Estado '{estado}' no es válido para el bucle de reclamos. Abortando.")
+             memoria.clear() # Clear to prevent loops
+             memoria["estado_conversacion"] = None
+             return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
+
+
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
         is_known_action_button = payload.get("action") in ["adjuntar_foto", "compartir_ubicacion", "sin_adjuntos", "confirmar_reclamo", "editar_reclamo"]
         llm_extraction_beneficial_states = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO]
+
         if estado in llm_extraction_beneficial_states and not is_simple_confirmation and not is_known_action_button and pregunta_str:
             logger.info(f"[ReclamoHandler_LLM] Attempting LLM extraction for state {estado.name if isinstance(estado, Enum) else estado} with input: '{pregunta_str}'")
             extracted_details = extract_complaint_details_llm(pregunta_str)
@@ -542,12 +622,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                     desc_text = extracted_details['descripcion_problema'].strip()
                     if len(desc_text) > 10 and not memoria.get("descripcion_reclamo"): memoria["descripcion_reclamo"] = desc_text; llm_updated_any_field_in_this_pass = True; logger.info(f"LLM set descripcion_reclamo: {desc_text}")
             else: logger.info(f"[ReclamoHandler_LLM] LLM returned no details for: '{pregunta_str}'")
+
         while True:
-            current_state_for_logic_str = memoria.get("estado_conversacion")
-            current_state_for_logic = ConversationState[current_state_for_logic_str] if isinstance(current_state_for_logic_str, str) else current_state_for_logic_str
+            # current_state_for_logic_str = memoria.get("estado_conversacion")
+            # current_state_for_logic = ConversationState[current_state_for_logic_str] if isinstance(current_state_for_logic_str, str) else current_state_for_logic_str
+            # Use 'estado' which is already an Enum object
+            current_state_for_logic = estado
 
             if current_state_for_logic == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-                if memoria.get("categoria_reclamo"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name; continue
+                if memoria.get("categoria_reclamo"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name; estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO; continue
                 texto_normalizado = normalizar_texto(pregunta_str); categoria_final = None
                 if texto_normalizado in categorias_normalizadas: idx = categorias_normalizadas.index(texto_normalizado); categoria_final = CATEGORIAS_RECLAMO[idx]
                 else:
@@ -559,7 +642,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                         if respuesta_llm_cat and respuesta_llm_cat in CATEGORIAS_RECLAMO: categoria_final = respuesta_llm_cat
                     except Exception: pass
                 if categoria_final:
-                    memoria["categoria_reclamo"] = categoria_final; memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                    memoria["categoria_reclamo"] = categoria_final; memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name; estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                     if pregunta_str == payload.get("pregunta",""): return { "respuesta": f"Perfecto, categoría: **{categoria_final.title()}**. ¿La **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
                     continue
                 else:
@@ -567,7 +650,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     respuesta_texto = "¡Ups! No encontré esa categoría. Estas opciones podrían ayudarte:" if sugeridas else "No entendí la categoría. ¿Podrías elegir una de estas opciones o describirla mejor?"
                     return {"respuesta": respuesta_texto, "botones": botones}
             elif current_state_for_logic == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
-                if memoria.get("direccion_reclamo"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name; continue
+                if memoria.get("direccion_reclamo"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name; estado = ConversationState.ESPERANDO_NOMBRE_VECINO; continue
                 if payload.get("es_foto") or payload.get("es_ubicacion"): return {"respuesta": "Entendido. Para asociar tu foto/ubicación, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?"}
                 config_muni_para_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
                 parsed_address = parse_direccion_completa(pregunta_str, config_muni_para_parseo)
@@ -577,7 +660,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     if parsed_address.get("provincia"): direccion_texto_confirmacion += f", {parsed_address['provincia']}"
                     memoria["direccion_reclamo"] = direccion_texto_confirmacion.replace(" ,", ",").strip()
                     logger.info(f"[ReclamoHandler] Dirección parseada y guardada: {memoria['direccion_estructurada_reclamo']}")
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name; estado = ConversationState.ESPERANDO_NOMBRE_VECINO
                     if pregunta_str == payload.get("pregunta",""): return {"respuesta": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?"}
                     continue
                 else:
@@ -589,29 +672,29 @@ class ReclamoHandler(BaseMunicipioHandler):
                         else: respuesta_direccion_invalida += ("\n\nSi tenés problemas con la dirección escrita, recordá que luego de registrarte o iniciar sesión, podrás compartir tu ubicación GPS para mayor precisión.")
                     return {"respuesta": respuesta_direccion_invalida}
             elif current_state_for_logic == ConversationState.ESPERANDO_NOMBRE_VECINO:
-                if memoria.get("nombre_vecino"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO.name; continue
+                if memoria.get("nombre_vecino"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO.name; estado = ConversationState.ESPERANDO_TELEFONO_VECINO; continue
                 nombre = pregunta_str.strip()
                 if not nombre or len(nombre.split()) < 2: return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido**. ¿Podrías ingresarlos?"}
-                memoria["nombre_vecino"] = nombre; memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO.name
+                memoria["nombre_vecino"] = nombre; memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO.name; estado = ConversationState.ESPERANDO_TELEFONO_VECINO
                 if pregunta_str == payload.get("pregunta",""): return {"respuesta": f"¡Gracias, {nombre.split()[0]}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
                 continue
             elif current_state_for_logic == ConversationState.ESPERANDO_TELEFONO_VECINO:
-                if memoria.get("telefono_vecino"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO.name; continue
+                if memoria.get("telefono_vecino"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO.name; estado = ConversationState.ESPERANDO_EMAIL_VECINO; continue
                 telefono = pregunta_str.strip()
                 if not validar_telefono(telefono): return {"respuesta": "El **teléfono** no parece válido. ¿Podrías revisarlo e ingresarlo de nuevo (solo números con código de área)?"}
-                memoria["telefono_vecino"] = telefono; memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO.name
+                memoria["telefono_vecino"] = telefono; memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO.name; estado = ConversationState.ESPERANDO_EMAIL_VECINO
                 if pregunta_str == payload.get("pregunta",""): return {"respuesta": "¡Excelente! Casi terminamos. ¿Cuál es tu **dirección de correo electrónico**?"}
                 continue
             elif current_state_for_logic == ConversationState.ESPERANDO_EMAIL_VECINO:
-                if memoria.get("email_vecino"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name; continue
+                if memoria.get("email_vecino"): memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name; estado = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO; continue
                 email = pregunta_str.strip()
                 if not validar_email(email): return {"respuesta": "El **correo electrónico** no parece tener el formato correcto. ¿Podrías revisarlo?"}
-                memoria["email_vecino"] = email; memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
+                memoria["email_vecino"] = email; memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name; estado = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
                 if pregunta_str == payload.get("pregunta",""): return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Luego podrás adjuntar foto/ubicación si querés."}
                 continue
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
                 if memoria.get("descripcion_reclamo"):
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name; estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
                     if memoria.get("descripcion_reclamo") != pregunta_str: continue
                 if not memoria.get("descripcion_reclamo"):
                     descripcion_final = ""
@@ -620,13 +703,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                     elif pregunta_str: descripcion_final = pregunta_str.strip(); logger.info(f"[ReclamoHandler] Descripción obtenida de pregunta_str: '{descripcion_final[:50]}...'")
                     if not descripcion_final or len(descripcion_final) < 10: return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
                     memoria["descripcion_reclamo"] = descripcion_final
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name; estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
                 return {"respuesta": "¡Gracias por la descripción! ¿Querés **adjuntar una foto o compartir tu ubicación GPS**? (Opcional)", "botones": [{"texto": "Adjuntar foto", "action": "adjuntar_foto"}, {"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Continuar sin adjuntos", "action": "sin_adjuntos"}]}
             break 
-        estado_str = memoria.get("estado_conversacion")
-        estado = ConversationState[estado_str] if isinstance(estado_str, str) else estado_str
 
-        if estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
+        estado_str_after_loop = memoria.get("estado_conversacion")
+        estado_after_loop = ConversationState[estado_str_after_loop] if isinstance(estado_str_after_loop, str) else estado_str_after_loop
+
+        if estado_after_loop == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
             SIN_ADJUNTOS_KEYWORDS = ["sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias", "completar", "completar reclamo", "completar el reclamo", "terminar", "terminar reclamo", "quiero completar", "quiero terminar"]
             if any(kw in accion for kw in SIN_ADJUNTOS_KEYWORDS):
@@ -664,12 +748,12 @@ class ReclamoHandler(BaseMunicipioHandler):
             except Exception: pass
             return {"respuesta": "No estoy seguro de haber recibido un adjunto. ¿Querés intentar adjuntar una foto o compartir tu ubicación? También podés elegir continuar sin adjuntos.", "botones": [{"texto": "Adjuntar foto", "action": "adjuntar_foto"}, {"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Continuar sin adjuntos", "action": "sin_adjuntos"}]}
 
-        estado_str_confirm = memoria.get("estado_conversacion") # Re-fetch as it might have changed
+        estado_str_confirm = memoria.get("estado_conversacion")
         estado_confirm = ConversationState[estado_str_confirm] if isinstance(estado_str_confirm, str) else estado_str_confirm
 
         if estado_confirm == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
             idempotency_key = payload.get("idempotency_key"); chat_session_uuid = self.context.get("chat_session_uuid")
-            chat_session_data = self.context.get("chat_db_context_data") # Este es chat_db_context.context_data
+            chat_session_data = self.context.get("chat_db_context_data")
             if idempotency_key and chat_session_uuid and chat_session_data is not None:
                 processed_keys = chat_session_data.get("processed_idempotency_keys", {})
                 if idempotency_key in processed_keys:
@@ -705,25 +789,22 @@ class ReclamoHandler(BaseMunicipioHandler):
                             processed_keys = chat_session_data.get("processed_idempotency_keys", {}); processed_keys[idempotency_key] = ticket.nro_ticket
                             chat_session_data["processed_idempotency_keys"] = processed_keys
                             logger.info(f"[ReclamoHandler] Idempotency key '{idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada en chat_db_context.context_data.")
-                        archivo_id_a_vincular = self.context.get("archivo_id_para_asociar"); chat_session_uuid_actual = self.context.get("chat_session_uuid"); user_id_actual_context = self.context.get("user_id") # user_id is owner_user.id here
+                        archivo_id_a_vincular = self.context.get("archivo_id_para_asociar"); chat_session_uuid_actual = self.context.get("chat_session_uuid"); user_id_actual_context = self.context.get("user_id")
                         if archivo_id_a_vincular or chat_session_uuid_actual:
                             from services.archivo_service import archivo_service 
                             criterio_asociacion = {}
                             if archivo_id_a_vincular: criterio_asociacion["ids_archivos"] = [archivo_id_a_vincular]; logger.info(f"[ReclamoHandler] Intentando asociar ArchivoAdjunto ID {archivo_id_a_vincular} a Ticket M-{ticket.nro_ticket}")
                             elif chat_session_uuid_actual:
                                 criterio_asociacion["session_id"] = chat_session_uuid_actual
-                                # user_id_actual_context aquí es el user_id del dueño del bot (pyme/municipio), no del cliente final.
-                                # Para asociar archivos de un viewer_user (cliente), necesitamos el ID del viewer_user.
-                                viewer_user_id_for_file = self.context.get("cliente_id") # ID del cliente/ciudadano
+                                viewer_user_id_for_file = self.context.get("cliente_id")
                                 if viewer_user_id_for_file: criterio_asociacion["user_id"] = viewer_user_id_for_file
                                 logger.info(f"[ReclamoHandler] Intentando asociar archivos por session_id {chat_session_uuid_actual} (ViewerUser: {viewer_user_id_for_file}) a Ticket M-{ticket.nro_ticket}")
                             if criterio_asociacion:
                                 asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(ticket_id=ticket.id, tipo_ticket="municipio", **criterio_asociacion)
                                 if asociacion_exitosa:
                                     logger.info(f"[ReclamoHandler] Archivos asociados exitosamente a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
-                                    # Correctly check and delete from memoria (which is self.context[CONTEXTO_MUNICIPIO])
-                                    if "archivo_id_para_asociar" in memoria:
-                                        del memoria["archivo_id_para_asociar"]
+                                    if self.context[CONTEXTO_MUNICIPIO] and "archivo_id_para_asociar" in self.context[CONTEXTO_MUNICIPIO]:
+                                        del self.context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"]
                                 else: logger.warning(f"[ReclamoHandler] No se pudieron asociar archivos a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
                         else: logger.info(f"[ReclamoHandler] No hay archivo_id específico ni session_id para asociar al Ticket M-{ticket.nro_ticket}.")
                     else: logger.error(f"[ReclamoHandler] No se pudo crear el ticket, no se intentará asociar archivos ni guardar idempotency key.")
@@ -759,7 +840,7 @@ class TramitesHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "")
         memoria = self.context[CONTEXTO_MUNICIPIO]
-        estado = memoria.get("estado_conversacion")
+        estado_str = memoria.get("estado_conversacion"); estado = ConversationState[estado_str] if isinstance(estado_str, str) else estado_str
         if estado and estado in RECLAMO_STATES: return None
         intencion = self.context.get("intencion")
         if intencion == "consultar_tramite" and not estado:
@@ -841,7 +922,7 @@ class ProductInquiryHandler(BaseMunicipioHandler):
             if item["producto"]["id"] not in final_seen_ids: final_products_list.append(item["producto"]); final_seen_ids.add(item["producto"]["id"])
         return final_products_list
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "").strip(); memoria = self.context[CONTEXTO_MUNICIPIO]; estado = memoria.get("estado_conversacion"); intencion = self.context.get("intencion")
+        pregunta_str = payload.get("pregunta", "").strip(); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_str = memoria.get("estado_conversacion"); estado = ConversationState[estado_str] if isinstance(estado_str, str) else estado_str; intencion = self.context.get("intencion")
         if not (estado == ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA or (intencion == "consultar_producto" and estado != ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO) ): return None
         if not PRODUCT_CATALOG: return {"respuesta": "Nuestro catálogo de productos no está disponible en este momento. Intenta más tarde, por favor."}
         logger.info(f"[ProductInquiryHandler] Procesando consulta de producto: '{pregunta_str}'")
@@ -895,7 +976,7 @@ class CartHandler(BaseMunicipioHandler):
         respuesta += f"\n✨ **Total General: ${total_general:.2f}**"; memoria['last_cart_total'] = total_general
         return respuesta
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "").strip(); action = payload.get("action", normalizar_texto(pregunta_str)); memoria = self.context[CONTEXTO_MUNICIPIO]; estado = memoria.get("estado_conversacion"); intencion = self.context.get("intencion")
+        pregunta_str = payload.get("pregunta", "").strip(); action = payload.get("action", normalizar_texto(pregunta_str)); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_str = memoria.get("estado_conversacion"); estado = ConversationState[estado_str] if isinstance(estado_str, str) else estado_str; intencion = self.context.get("intencion")
         self._initialize_cart(memoria)
         if (intencion == "agregar_al_carrito" or (estado == ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO and any(kw in action for kw in ["si", "sí", "agregar", "dale", "quiero"]))):
             product_to_add = memoria.get("last_discussed_product")
@@ -958,7 +1039,7 @@ class CheckoutHandler(BaseMunicipioHandler):
             cart_view = cart_handler_instance._format_cart_view(memoria); memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_PEDIDO.name
             return {"respuesta": f"Estás por finalizar tu compra. Por favor, revisá tu pedido:\n\n{cart_view}\n\n¿Confirmás este pedido?", "botones": [{"texto": "Sí, confirmar pedido"}, {"texto": "Modificar carrito"}, {"texto": "Cancelar"}]}
 
-        estado_str_confirm = memoria.get("estado_conversacion") # Re-fetch as it might have changed
+        estado_str_confirm = memoria.get("estado_conversacion")
         estado_confirm = ConversationState[estado_str_confirm] if isinstance(estado_str_confirm, str) else estado_str_confirm
 
         if estado_confirm == ConversationState.ESPERANDO_CONFIRMACION_PEDIDO:
@@ -1132,7 +1213,7 @@ class ToolHandler(BaseMunicipioHandler):
             if "faltan_parametros" in decision:
                 param_faltante = decision["faltan_parametros"][0]
                 if param_faltante == "direccion" and nombre_herramienta == "consultar_recoleccion_por_direccion":
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_PARAM_RECOLECCION.name # Corrected
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_PARAM_RECOLECCION.name
                     return {"respuesta": (f"¡Perfecto! Decime la dirección completa donde querés consultar el servicio municipal.\n{EJEMPLO_DIRECCION}")}
                 else: return {"respuesta": f"Necesito más información para usar la herramienta de {nombre_herramienta.replace('_', ' ')}. ¿Podrías proveer el dato: {param_faltante}?"}
             elif "parametros" in decision:
@@ -1264,7 +1345,7 @@ class TramiteInteligenteHandler(BaseMunicipioHandler):
 
 class ReclamoGeoHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; estado = memoria.get("estado_conversacion")
+        pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_str = memoria.get("estado_conversacion"); estado = ConversationState[estado_str] if isinstance(estado_str, str) else estado_str
         if estado != ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: return None
         return ReclamoHandler(self.context).handle(payload)
 
@@ -1348,57 +1429,91 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         if context.get("es_ubicacion"):
             if contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda" and contexto_municipio_actual.get("estado_conversacion") == "ESPERANDO_UBICacion_PARA_TIENDAS": context["intencion"] = "solicitar_ubicacion_tienda"; logger_actual.info(f"[CONTEXTO] Ubicación para tiendas, re-evaluando con intención: {context['intencion']}")
             elif contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "activar_panico" and contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO: context["intencion"] = "activar_panico"; logger_actual.info(f"[CONTEXTO] Ubicación para PÁNICO, re-evaluando con intención: {context['intencion']}")
-    estado_conversacion_actual = contexto_municipio_actual.get("estado_conversacion")
-    logger_actual.info(f"[HANDLER_CHAIN_START] Estado en memoria: {estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else estado_conversacion_actual}. Intención previa: {context.get('intencion')}")
+
+    estado_conversacion_actual = contexto_municipio_actual.get("estado_conversacion") # This is now an Enum or None
+    active_state_log_name = estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else str(estado_conversacion_actual)
+    logger_actual.info(f"[HANDLER_CHAIN_START] Estado en memoria: {active_state_log_name}. Intención previa: {context.get('intencion')}")
+
     prioritized_handlers = [CancelHandler, PanicButtonHandler]
     if context.get('intencion') == 'hablar_con_agente': prioritized_handlers.append(HumanEscalationHandler)
+
     respuesta_final = None; dueño_handler_class = None
     for handler_class_iter in prioritized_handlers:
         handler_instance = handler_class_iter(context); respuesta_parcial = handler_instance.handle(received_payload)
         if respuesta_parcial: respuesta_final = respuesta_parcial; logger_actual.info(f"[HANDLER_CHAIN] Prioritized handler {handler_class_iter.__name__} respondió."); break
-    if not respuesta_final and estado_conversacion_actual:
+
+    if not respuesta_final and estado_conversacion_actual: # estado_conversacion_actual is Enum or None
         dueño_handler_class_actual = OWNER_HANDLERS_FOR_STATE.get(estado_conversacion_actual)
         if dueño_handler_class_actual:
             dueño_handler_class = dueño_handler_class_actual; dueño_instance = dueño_handler_class(context)
-            logger_actual.info(f"[HANDLER_CHAIN] Estado activo '{estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else estado_conversacion_actual}'. Dando prioridad a {dueño_instance.__class__.__name__}")
+            active_state_name_log = estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else str(estado_conversacion_actual)
+            logger_actual.info(f"[HANDLER_CHAIN] Estado activo '{active_state_name_log}'. Dando prioridad a {dueño_instance.__class__.__name__}")
             respuesta_parcial_dueño = dueño_instance.handle(received_payload)
             if respuesta_parcial_dueño: respuesta_final = respuesta_parcial_dueño; logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado {dueño_instance.__class__.__name__} respondió.")
             else:
                 logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado ({dueño_instance.__class__.__name__}) no respondió. Re-evaluando intención.")
-                classifier_handler = IntentClassifierHandler(context); classifier_handler.handle(received_payload)
+                IntentClassifierHandler(context).handle(received_payload) # Re-classify intent
                 logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-dueño: {context.get('intencion')}")
-                if context.get('intencion') != "continuar_flujo" or not contexto_municipio_actual.get("estado_conversacion"): pass
         else:
-            estado_log_no_owner = contexto_municipio_actual.get("estado_conversacion")
-            logger_actual.warning(f"[HANDLER_CHAIN] Estado activo '{estado_log_no_owner.name if isinstance(estado_log_no_owner, Enum) else estado_log_no_owner}' pero no se encontró handler dueño definido. Limpiando estado.")
+            active_state_name_log_no_owner = estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else str(estado_conversacion_actual)
+            logger_actual.warning(f"[HANDLER_CHAIN] Estado activo '{active_state_name_log_no_owner}' pero no se encontró handler dueño definido. Limpiando estado.")
             contexto_municipio_actual.pop("estado_conversacion", None)
             chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
             if not respuesta_final: IntentClassifierHandler(context).handle(received_payload); logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-limpieza de estado sin dueño: {context.get('intencion')}")
+
     if not respuesta_final:
         if not context.get("intencion") and not estado_conversacion_actual :
             logger_actual.info("[HANDLER_CHAIN] Ejecutando IntentClassifierHandler (sin estado previo, sin intención previa de dueño).")
             IntentClassifierHandler(context).handle(received_payload); logger_actual.info(f"[HANDLER_CHAIN] Intención post-clasificación inicial: {context.get('intencion')}")
+
         remaining_handlers = [GreetingHandler, PoliteHandler, SmallTalkHandler, HumanEscalationHandler, TicketStatusHandler, SugerenciasVecinoHandler, RecoleccionHandler, ReclamoInteligenteMunicipioHandler, ReclamoHandler, TramitesHandler, TramiteInteligenteHandler, ImpuestosHandler, ProductCatalogHandler, ProductInquiryHandler, CartHandler, CheckoutHandler, StoreLocationHandler, ToolHandler, VectorMunicipioCatalogHandler, GeneralHandler, EngancheAnonimoMunicipioHandler]
+
         for handler_class_iter_main in remaining_handlers:
             if respuesta_final: break
             if handler_class_iter_main in prioritized_handlers and handler_class_iter_main != HumanEscalationHandler: logger_actual.debug(f"[HANDLER_CHAIN] Saltando {handler_class_iter_main.__name__} (ya es prioritario y corrió o no aplicó)."); continue
             if handler_class_iter_main == EngancheAnonimoMunicipioHandler and context.get("cliente_id"): logger_actual.debug(f"[HANDLER_CHAIN] Saltando EngancheAnonimoMunicipioHandler (usuario logueado)."); continue
-            handler_instance = handler_class_iter_main(context); logger_actual.info(f"[HANDLER_CHAIN] Intentando con handler: {handler_class_iter_main.__name__}")
+
+            # Ensure `context[CONTEXTO_MUNICIPIO]["estado_conversacion"]` is an Enum for the handler
+            current_memoria_state_str = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+            original_state_for_handler = None
+            if isinstance(current_memoria_state_str, str):
+                try: original_state_for_handler = ConversationState[current_memoria_state_str]
+                except KeyError: pass
+            elif isinstance(current_memoria_state_str, ConversationState):
+                original_state_for_handler = current_memoria_state_str
+
+            # Temporarily set the Enum version for the handler if it was a string
+            if isinstance(current_memoria_state_str, str) and original_state_for_handler:
+                 context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = original_state_for_handler
+
+            handler_instance = handler_class_iter_main(context);
+            logger_actual.info(f"[HANDLER_CHAIN] Intentando con handler: {handler_class_iter_main.__name__} (Intención: {context.get('intencion')}, Estado: {original_state_for_handler.name if original_state_for_handler else 'None'})")
             respuesta_parcial = handler_instance.handle(received_payload)
+
+            # Restore string state name in memory if it was temporarily converted for the handler
+            if isinstance(current_memoria_state_str, str) and original_state_for_handler: # If we converted it for the handler
+                 if "estado_conversacion" in context[CONTEXTO_MUNICIPIO] and isinstance(context[CONTEXTO_MUNICIPIO]["estado_conversacion"], Enum): # If handler changed it to Enum
+                     context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = context[CONTEXTO_MUNICIPIO]["estado_conversacion"].name # Store as string
+                 elif not ("estado_conversacion" in context[CONTEXTO_MUNICIPIO]): # if handler cleared it
+                     pass # it's already None
+                 else: # If handler kept it as string or set to something else non-Enum
+                     context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = current_memoria_state_str # revert to original string if not changed to Enum then string
+
             if respuesta_parcial: respuesta_final = respuesta_parcial; logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class_iter_main.__name__} respondió."); break
             else: logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class_iter_main.__name__} no respondió.")
+
     if not respuesta_final:
         logger_actual.info("[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general.")
-        if contexto_municipio_actual.get("estado_conversacion"):
-            estado_log = contexto_municipio_actual['estado_conversacion']
-            if isinstance(estado_log, Enum): estado_log = estado_log.name
+        current_fallback_state = contexto_municipio_actual.get("estado_conversacion") # This would be string name or None
+        if current_fallback_state:
+            estado_log = current_fallback_state # Already string or None
+            if isinstance(estado_log, Enum): estado_log = estado_log.name # Should not happen here due to saves
             logger_actual.error(f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log}. Limpiando estado.")
             contexto_municipio_actual.clear()
             respuesta_final = {"respuesta": ("¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"), "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]}
         else:
             respuesta_final = {"respuesta": ("Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"), "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]}
 
-    # Ensure 'estado_conversacion' is stored as a string name if it's an Enum object
     if "estado_conversacion" in contexto_municipio_actual and isinstance(contexto_municipio_actual["estado_conversacion"], Enum):
         contexto_municipio_actual["estado_conversacion"] = contexto_municipio_actual["estado_conversacion"].name
 
