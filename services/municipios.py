@@ -1581,29 +1581,60 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     if kwargs:
         for key, value in kwargs.items(): received_payload[key] = value
     if chat_db_context.context_data is None: chat_db_context.context_data = {}
-    contexto_municipio_actual = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
-    estado_guardado_str = contexto_municipio_actual.get("estado_conversacion")
-    if estado_guardado_str and isinstance(estado_guardado_str, str):
-        logger_actual.info(f"[CONTEXTO_MUNICIPIO] Intentando cargar estado desde string: '{estado_guardado_str}'")
+    # Carga inicial del contexto específico del municipio
+    contexto_municipio_data_from_db = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}")
+
+    # Crear una copia para modificar de forma segura para esta request.
+    # Esto es importante si `contexto_municipio_data_from_db` es directamente el objeto que se guardará.
+    # Si es una copia ya (ej. `dict(contexto_municipio_data_from_db)`), entonces no es estrictamente necesario, pero no hace daño.
+    contexto_municipio_actual = dict(contexto_municipio_data_from_db)
+
+    estado_guardado_raw = contexto_municipio_actual.get("estado_conversacion")
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE_RAW] 'estado_conversacion' crudo extraído del contexto_municipio_actual: '{estado_guardado_raw}' (Tipo: {type(estado_guardado_raw)})")
+
+    if estado_guardado_raw and isinstance(estado_guardado_raw, str):
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Intentando convertir estado string '{estado_guardado_raw}' a Enum ConversationState.")
         try:
-            contexto_municipio_actual["estado_conversacion"] = ConversationState[estado_guardado_str]
-            logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado cargado exitosamente como Enum: {contexto_municipio_actual['estado_conversacion']}")
+            estado_enum = ConversationState[estado_guardado_raw]
+            contexto_municipio_actual["estado_conversacion"] = estado_enum
+            logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Éxito. 'estado_conversacion' ahora es Enum: {estado_enum}")
         except KeyError:
-            logger_actual.error(f"[CONTEXTO_MUNICIPIO] ESTADO INVÁLIDO EN DB CONTEXT '{estado_guardado_str}' (KeyError). Se limpia el estado.")
+            logger_actual.error(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Falló conversión. String '{estado_guardado_raw}' no es un miembro válido de ConversationState. 'estado_conversacion' se establece a None.")
             contexto_municipio_actual["estado_conversacion"] = None
-    elif estado_guardado_str is None:
-        logger_actual.info("[CONTEXTO_MUNICIPIO] No hay estado guardado (None).")
+    elif estado_guardado_raw is None:
+        logger_actual.info("[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es None en los datos crudos. Se mantiene como None.")
+        contexto_municipio_actual["estado_conversacion"] = None # Asegurar que sea None explícito
+    elif isinstance(estado_guardado_raw, ConversationState):
+        logger_actual.warning(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' ya es un Enum ({estado_guardado_raw}) al cargar. Esto es inusual si se carga desde JSON/DB. Se usará tal cual.")
+        contexto_municipio_actual["estado_conversacion"] = estado_guardado_raw # Mantener el Enum
+    else: # Otros tipos inesperados
+        logger_actual.error(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Tipo inesperado para 'estado_conversacion' ({type(estado_guardado_raw)}): '{estado_guardado_raw}'. Se establece a None.")
         contexto_municipio_actual["estado_conversacion"] = None
-    elif isinstance(estado_guardado_str, ConversationState):
-        logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado ya es Enum en memoria (no debería ocurrir desde DB load): {estado_guardado_str}. Usando tal cual.")
-        # This case should ideally not happen if loading from JSON context, but good to log.
-        contexto_municipio_actual["estado_conversacion"] = estado_guardado_str
-    else:
-        logger_actual.error(f"[CONTEXTO_MUNICIPIO] TIPO DE ESTADO INESPERADO EN DB CONTEXT: type='{type(estado_guardado_str)}', value='{estado_guardado_str}'. Se limpia el estado.")
-        contexto_municipio_actual["estado_conversacion"] = None
-    context = {CONTEXTO_MUNICIPIO: contexto_municipio_actual, "user_obj": owner_user, "user_id": getattr(owner_user, "id", None), "cliente_id": getattr(viewer_user, "id", None), "viewer_user_obj": viewer_user, "anon_id": anon_id, "intencion": None, "rubro_obj": rubro_obj, "ubicacion_usuario": received_payload.get("ubicacion_usuario"), "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None, "es_foto": received_payload.get("es_foto", False), "es_ubicacion": received_payload.get("es_ubicacion", False), "es_archivo": received_payload.get("es_archivo", False), "action": received_payload.get("action"), "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"), "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"), "chat_session_uuid": kwargs.get("chat_session_uuid"), "chat_db_context_data": chat_db_context.context_data}
+
+    # Log del estado final que se usará en esta petición
+    final_loaded_state = contexto_municipio_actual.get("estado_conversacion")
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})")
+
+    context = {
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # Esta es la copia modificada
+        "user_obj": owner_user, "user_id": getattr(owner_user, "id", None),
+        "cliente_id": getattr(viewer_user, "id", None), "viewer_user_obj": viewer_user,
+        "anon_id": anon_id, "intencion": None, "rubro_obj": rubro_obj,
+        "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
+        "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
+        "es_foto": received_payload.get("es_foto", False),
+        "es_ubicacion": received_payload.get("es_ubicacion", False),
+        "es_archivo": received_payload.get("es_archivo", False),
+        "action": received_payload.get("action"),
+        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "chat_db_context_data": chat_db_context.context_data # Referencia al objeto de la DB para que los handlers puedan leer (pero no deberían escribir directamente aquí)
+    }
+
     if not viewer_user and anon_id and has_app_context():
-        estado_actual_sugerencia = contexto_municipio_actual.get("estado_conversacion")
+        estado_actual_para_sugerencia = contexto_municipio_actual.get("estado_conversacion") # Ya es Enum o None
         estados_municipio_evitar_sugerencia = [ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO, ConversationState.ESPERANDO_UBICACION_PANICO]
         if estado_actual_sugerencia not in estados_municipio_evitar_sugerencia:
             interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
@@ -1722,15 +1753,31 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         else:
             respuesta_final = {"respuesta": ("Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"), "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]}
 
-    if "estado_conversacion" in contexto_municipio_actual and isinstance(contexto_municipio_actual["estado_conversacion"], Enum):
-        contexto_municipio_actual["estado_conversacion"] = contexto_municipio_actual["estado_conversacion"].name
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Contenido de contexto_municipio_actual ANTES de serialización explícita de estado: {contexto_municipio_actual}")
+    estado_antes_serializacion = contexto_municipio_actual.get("estado_conversacion")
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] 'estado_conversacion' ANTES de serialización explícita: '{estado_antes_serializacion}' (Tipo: {type(estado_antes_serializacion)})")
+
+    if isinstance(estado_antes_serializacion, ConversationState):
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_SAVE] 'estado_conversacion' es Enum. Serializando '{estado_antes_serializacion.name}' a string.")
+        contexto_municipio_actual["estado_conversacion"] = estado_antes_serializacion.name
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_SAVE] 'estado_conversacion' DESPUÉS de serialización: '{contexto_municipio_actual['estado_conversacion']}' (Tipo: {type(contexto_municipio_actual['estado_conversacion'])})")
+    elif estado_antes_serializacion is not None: # Ya es string o None, o algo más
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_SAVE] 'estado_conversacion' no es Enum (Tipo: {type(estado_antes_serializacion)}, Valor: '{estado_antes_serializacion}'). No se serializa explícitamente aquí.")
+    else: # Es None
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_SAVE] 'estado_conversacion' es None. No se serializa.")
 
     chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_POST_SAVE_IN_DB_CONTEXT] Contexto municipio completo asignado a chat_db_context.data: {contexto_municipio_actual}")
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_POST_SAVE_IN_DB_CONTEXT] Estado final en 'contexto_municipio_actual' (que se acaba de asignar a chat_db_context): {contexto_municipio_actual.get('estado_conversacion')}")
 
-    contexto_serializado_para_respuesta = serializar_enum(contexto_municipio_actual)
-    media_url_to_send = contexto_serializado_para_respuesta.get("foto_url")
-    location_data_to_send = contexto_serializado_para_respuesta.get("ubicacion_gps")
-    final_response_dict = {"respuesta": respuesta_final.get("respuesta"), "botones": respuesta_final.get("botones", []), "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta}, "ticket_id": respuesta_final.get("ticket_id", None), "media_url": media_url_to_send, "location_data": location_data_to_send, "adjuntos": []}
+    # La función serializar_enum se usa para la estructura que se devuelve en la RESPUESTA HTTP,
+    # no necesariamente para cómo se guarda en la DB persistente.
+    # Lo importante es que `contexto_municipio_actual["estado_conversacion"]` sea un string
+    # ANTES de que `chat_db_context.context_data` se persista en la DB (lo cual ocurre fuera de esta función).
+    contexto_serializado_para_respuesta_http = serializar_enum(contexto_municipio_actual)
+    media_url_to_send = contexto_serializado_para_respuesta_http.get("foto_url")
+    location_data_to_send = contexto_serializado_para_respuesta_http.get("ubicacion_gps")
+    final_response_dict = {"respuesta": respuesta_final.get("respuesta"), "botones": respuesta_final.get("botones", []), "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta_http}, "ticket_id": respuesta_final.get("ticket_id", None), "media_url": media_url_to_send, "location_data": location_data_to_send, "adjuntos": []}
     uploaded_file_info = received_payload.get("uploaded_file_info")
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):

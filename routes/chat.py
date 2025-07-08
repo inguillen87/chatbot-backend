@@ -1,8 +1,12 @@
 import logging
 import random
 import uuid # Added for chat_session_id generation
+import logging
+import random
+import uuid # Added for chat_session_id generation
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
+from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
 from models import User, Rubro, Conversacion, db, ChatSessionContext # Added ChatSessionContext
 from services.logic import (
     responder_chatboc,
@@ -291,6 +295,12 @@ def _procesar_chat(
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
         # lo persistimos.
+
+        # Marcar explícitamente context_data como modificado para SQLAlchemy
+        if chat_context_obj:
+            flag_modified(chat_context_obj, "context_data")
+            current_app.logger.info(f"Se marcó 'context_data' como modificado para ChatSessionContext ID: {chat_context_obj.chat_session_id} antes del commit.")
+
         try:
             db.session.commit()
             current_app.logger.info(f"ChatSessionContext para {chat_session_id_header} guardado/actualizado en DB.")
