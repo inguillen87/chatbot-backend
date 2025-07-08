@@ -439,6 +439,34 @@ class PlantillasRespuesta(db.Model):
     def __repr__(self):
         return f"<PlantillasRespuesta id={self.id} name='{self.name}'>"
 
+class WhatsappNumero(db.Model):
+    __tablename__ = "whatsapp_numero"
+    id = db.Column(db.Integer, primary_key=True)
+    numero_whatsapp = db.Column(db.String(25), unique=True, nullable=False, index=True) # e.g., "+14155238886"
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) # FK to User.id
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship to the User model (the company/municipality account)
+    user = db.relationship('User', backref=db.backref('whatsapp_numeros', lazy='dynamic'))
+
+    def __repr__(self):
+        return f"<WhatsappNumero {self.numero_whatsapp} linked to User {self.user_id}>"
+
+    @property
+    def nombre_cliente_asociado(self):
+        """Helper to get the name of the associated User (company/municipality)."""
+        if self.user:
+            return self.user.nombre_empresa or self.user.name
+        return None
+
+    @property
+    def tipo_cliente_asociado(self):
+        """Helper to get the tipo_chat of the associated User."""
+        if self.user:
+            return self.user.tipo_chat # Assuming 'municipio' or 'pyme'
+        return None
 
 class Promocion(db.Model):
     __tablename__ = "promocion"
