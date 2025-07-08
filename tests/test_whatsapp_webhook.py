@@ -61,12 +61,22 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.twilio_client_patch = patch('routes.whatsapp_webhook.twilio_client.messages.create', MagicMock())
         self.mock_twilio_create = self.twilio_client_patch.start()
 
+        # Patch responder_chatboc to return a predictable echo response
+        def fake_responder_chatboc(pregunta, **kwargs):
+            return {
+                "respuesta": f"Eco de {self.client_name_for_test} (ID: {self.empresa_id_for_test}, Tipo: {self.client_type_for_test}): '{pregunta}'. Estado de sesión: inicio"
+            }
+
+        self.responder_patch = patch('routes.whatsapp_webhook.responder_chatboc', side_effect=fake_responder_chatboc)
+        self.mock_responder = self.responder_patch.start()
+
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
         self.validator_patch.stop()
         self.twilio_client_patch.stop()
+        self.responder_patch.stop()
 
     def test_whatsapp_webhook_valid_request(self):
         # Arrange

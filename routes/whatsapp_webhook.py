@@ -5,7 +5,8 @@ import os # For accessing environment variables
 from models import WhatsappNumero, User, ChatSessionContext # Import necessary models
 from extensions import db # Import db instance for database operations
 import uuid
-from services.logic import processar_interacao # Import the real chatbot logic processor
+# Import the main chatbot logic function used in the rest of the app
+from services.logic import responder_chatboc
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -66,7 +67,7 @@ def whatsapp_webhook():
     chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
     session_context_db_entry = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_internal).first()
 
-    current_session_data = {} # This will be passed to and updated by processar_interacao
+    current_session_data = {}  # This will be passed to and updated by responder_chatboc
 
     if session_context_db_entry:
         current_session_data = session_context_db_entry.context_data or {}
@@ -75,9 +76,9 @@ def whatsapp_webhook():
         current_session_data.setdefault("estado_conversacion", "continuando") # Or derive from actual context
         print(f"Session found for {chat_session_id_internal}. Context: {current_session_data}")
     else:
-        # For a new session, processar_interacao will likely initialize the context_data structure
+        # For a new session, responder_chatboc will likely initialize the context_data structure
         # We still need to create the ChatSessionContext DB entry.
-        current_session_data = { # Minimal initial context if processar_interacao doesn't create it entirely
+        current_session_data = {  # Minimal initial context if responder_chatboc doesn't create it entirely
             "historial_chat": [],
             "estado_conversacion": "inicio",
             "user_id_empresa": empresa_id,
@@ -92,68 +93,46 @@ def whatsapp_webhook():
         )
         db.session.add(session_context_db_entry)
         print(f"New session DB entry prepared for {chat_session_id_internal}.")
-        # Note: processar_interacao should ideally return the full session data to be saved.
+        # Note: responder_chatboc should ideally update the ChatSessionContext object in place.
 
     # --- Call Real Chatbot Logic ---
-    respuesta_del_bot_text = "Lo siento, no pude procesar tu solicitud en este momento." # Default error response
-    session_data_actualizada = current_session_data # Default to current if error
+    respuesta_del_bot_text = "Lo siento, no pude procesar tu solicitud en este momento."  # Default error
 
     try:
-        # Prepare parameters for processar_interacao
-        datos_usuario_param = {
-            "numero_whatsapp": from_number_cleaned,
-            "source_channel": "whatsapp",
-            "nombre_usuario_display": from_number_cleaned # Could be enhanced later if user name is known
-        }
-        metadata_chat_param = {
-            "client_name": client_name,
-            "client_type": client_type,
-            # Pass the whole current_session_data as part of metadata if processar_interacao expects it there
-            # or if it primarily works by mutating a passed session object.
-            # Adjust based on processar_interacao's design.
-            "current_context": current_session_data
-        }
-
-        print(f"Calling processar_interacao for session_id: {chat_session_id_internal}, owner_user_id: {empresa_id}")
-
-        # Assuming processar_interacao takes current_session_data and mutates it or returns a new one
-        # and returns a dictionary like {'respuesta': 'text', 'contexto_chat': session_dict}
-        # The exact signature and data flow of processar_interacao is critical here.
-        # For now, let's assume it might take the session data as part of metadata_chat or a separate param.
-        # If processar_interacao expects to receive and return the full session object:
-        raw_response = processar_interacao(
-            owner_user_id=empresa_id,
-            session_id=chat_session_id_internal, # Crucial for linking logs and context
-            texto_mensaje=message_body,
-            datos_usuario=datos_usuario_param,
-            metadata_chat=metadata_chat_param, # Passing current_session_data within metadata
-            # Pass current_session_data directly if that's the expected API for processar_interacao:
-            # current_chat_context=current_session_data
+        print(
+            f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user_id: {empresa_id}"
         )
 
-        print(f"Raw response from processar_interacao: {raw_response}")
+        raw_response = responder_chatboc(
+            pregunta=message_body,
+            owner_user=client_user,
+            current_user=None,
+            rubro_obj=None,
+            chat_db_context=session_context_db_entry,
+            rubro_nombre_frontend=None,
+            tipo_chat=client_type,
+            anon_id=from_number_cleaned,
+            chat_session_uuid=chat_session_id_internal,
+        )
+
+        print(f"Raw response from responder_chatboc: {raw_response}")
 
         if isinstance(raw_response, dict):
             respuesta_del_bot_text = raw_response.get("respuesta", respuesta_del_bot_text)
-            # processar_interacao should return the complete, updated session context
-            session_data_actualizada = raw_response.get("contexto_chat", current_session_data)
-        elif isinstance(raw_response, str): # If it only returns the text response
+        elif isinstance(raw_response, str):
             respuesta_del_bot_text = raw_response
-            # In this case, session_data_actualizada would rely on mutations if current_session_data was passed by reference
-            # or we'd need another way to get the updated session. This is less ideal.
-            # For robustness, ensure 'contexto_chat' is returned by processar_interacao.
-            print("Warning: processar_interacao returned a string. Assuming session data needs to be handled from input or is not updated by this function call directly for output.")
+        else:
+            print(
+                "Warning: responder_chatboc returned unexpected type; default response will be used"
+            )
 
-        print(f"Bot response: '{respuesta_del_bot_text}', Updated session: {session_data_actualizada}")
+        print(f"Bot response text: '{respuesta_del_bot_text}'")
 
     except Exception as e:
-        print(f"Error calling real chatbot logic (processar_interacao): {e}")
-        # Keep default error response and current session data
-        # Potentially log the stack trace: import traceback; traceback.print_exc()
+        print(f"Error calling real chatbot logic (responder_chatboc): {e}")
 
     # --- Save Updated Session ---
     try:
-        session_context_db_entry.context_data = session_data_actualizada
         session_context_db_entry.last_updated = db.func.now()
         db.session.commit()
         print(f"Session saved for {chat_session_id_internal}.")
