@@ -865,12 +865,12 @@ class ReclamoHandler(BaseMunicipioHandler):
                     if parse_direccion_completa(email_input, config_muni_para_parseo) and len(email_input.split()) > 1 :
                         logger.warning(f"[ReclamoHandler] Input '{email_input}' para EMAIL parece una dirección. Aclarando.")
                         return {"respuesta": "Estaba esperando un correo electrónico, pero eso parece una dirección. ¿Podrías darme tu email?"}
-                    if validar_telefono(email_input):
+                    elif validar_telefono(email_input): # Use elif here
                         logger.warning(f"[ReclamoHandler] Input '{email_input}' para EMAIL parece un teléfono. Aclarando.")
                         return {"respuesta": "Estaba esperando un correo electrónico, pero eso parece un número de teléfono. ¿Podrías darme tu email?"}
-
-                    logger.info(f"[ReclamoHandler] Input '{email_input}' no es un email válido. Repreguntando.")
-                    return {"respuesta": "El **correo electrónico** no parece tener el formato correcto. ¿Podrías revisarlo?"}
+                    else: # Default if not address and not phone
+                        logger.info(f"[ReclamoHandler] Input '{email_input}' no es un email válido. Repreguntando.")
+                        return {"respuesta": "El **correo electrónico** no parece tener el formato correcto. ¿Podrías revisarlo?"}
 
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
                 if memoria.get("descripcion_reclamo"):
