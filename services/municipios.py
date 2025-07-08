@@ -1037,10 +1037,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                 resumen = self.build_detalles_memoria(memoria)
                 return {"respuesta": f"No estoy seguro de qué quisiste decir. Por favor, confirmá si los datos son correctos o si querés editar algo:\n\n{resumen}\n\n¿Confirmamos o editamos?", "botones": [{"texto": "Sí, confirmar reclamo", "action": "confirmar_reclamo"}, {"texto": "No, quiero editar algo", "action": "editar_reclamo"}]}
         return None
-                if not validar_email(email): return {"respuesta": "El **correo electrónico** no parece tener el formato correcto. ¿Podrías revisarlo?"}
-                memoria["email_vecino"] = email; memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name; estado = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
-                if pregunta_str == payload.get("pregunta",""): return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Luego podrás adjuntar foto/ubicación si querés."}
-                continue
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
                 if memoria.get("descripcion_reclamo"):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name; estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
