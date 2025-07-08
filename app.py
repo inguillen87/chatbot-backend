@@ -101,10 +101,11 @@ def create_app(config_class=Config):
     # --- Diagnóstico de Headers ---
     @app.before_request
     def log_headers():
-        from flask import request
-        app.logger.debug(f"Request Headers: {dict(request.headers)}")
-        app.logger.debug(f"Request Cookies: {dict(request.cookies)}")
-
+        from flask import request, current_app
+        # Loguear las cookies que Flask ve directamente
+        current_app.logger.info(f"--- RAW FLASK REQUEST.COOKIES: {request.cookies} ---") 
+        # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
+        current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
     # --- Inicialización de Extensiones ---
     db.init_app(app)
     migrate.init_app(app, db)
