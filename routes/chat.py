@@ -295,7 +295,7 @@ def _procesar_chat(
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
         # lo persistimos.
-
+        
         # Marcar explícitamente context_data como modificado para SQLAlchemy
         if chat_context_obj:
             flag_modified(chat_context_obj, "context_data")

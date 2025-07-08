@@ -738,12 +738,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                     logger.info(f"[ReclamoHandler] Categoría guardada: {categoria_final}. Nuevo estado: ESPERANDO_DIRECCION_RECLAMO.")
-                    if pregunta_str == payload.get("pregunta",""): # Solo responder si el input actual fue procesado para esto
-                        return { "respuesta": f"Perfecto, categoría: **{categoria_final.title()}**. ¿La **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
-                    continue # Si la categoría ya estaba o se llenó por LLM inicial, continuar al siguiente dato
+                    # Si la categoría se acaba de obtener con la pregunta_str actual, pedir el siguiente dato (dirección)
+                    if pregunta_str == payload.get("pregunta", "") or not memoria.get("direccion_reclamo"):
+                        return {"respuesta": f"Perfecto, categoría: **{categoria_final.title()}**. Ahora, ¿podrías indicarme la **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
+                    continue # Si la categoría ya estaba Y la dirección también, continuar al siguiente dato.
                 else:
                     logger.info(f"No se pudo determinar la categoría para '{pregunta_str}'. Sugiriendo opciones.")
-                    sugeridas = sugerir_categorias_relevantes(pregunta_str); botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)]
+                    sugeridas = sugerir_categorias_relevantes(pregunta_str)
+                    botones = [{"texto": c.title()} for c in (sugeridas if sugeridas else CATEGORIAS_RECLAMO)] # BUG_FIX: Usar CATEGORIAS_RECLAMO como fallback
                     respuesta_texto = "¡Ups! No encontré esa categoría. Estas opciones podrían ayudarte:" if sugeridas else "No entendí la categoría. ¿Podrías elegir una de estas opciones o describirla mejor?"
                     return {"respuesta": respuesta_texto, "botones": botones}
 
@@ -770,9 +772,10 @@ class ReclamoHandler(BaseMunicipioHandler):
                     logger.info(f"[ReclamoHandler] Dirección parseada y guardada: {memoria['direccion_estructurada_reclamo']}. Nuevo estado: ESPERANDO_NOMBRE_VECINO.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
                     estado = ConversationState.ESPERANDO_NOMBRE_VECINO
-                    if pregunta_str == payload.get("pregunta",""):
+                    # Si la dirección se acaba de obtener con la pregunta_str actual, pedir el siguiente dato (nombre)
+                    if pregunta_str == payload.get("pregunta", "") or not memoria.get("nombre_vecino"):
                         return {"respuesta": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?"}
-                    continue
+                    continue # Si la dirección ya estaba Y el nombre también, continuar.
                 else:
                     logger.warning(f"[ReclamoHandler] Input '{pregunta_str}' no pudo ser parseado como dirección válida en ESPERANDO_DIRECCION_RECLAMO.")
                     respuesta_direccion_invalida = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresarla de nuevo? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad, Provincia' o que incluya al menos calle, número y localidad."
@@ -811,7 +814,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO.name
                 estado = ConversationState.ESPERANDO_TELEFONO_VECINO
                 logger.info(f"[ReclamoHandler] Nombre guardado: '{nombre_input}'. Nuevo estado: ESPERANDO_TELEFONO_VECINO.")
-                if pregunta_str == payload.get("pregunta",""):
+                if pregunta_str == payload.get("pregunta", "") or not memoria.get("telefono_vecino"):
                     return {"respuesta": f"¡Gracias, {nombre_input.split()[0]}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
                 continue
 
@@ -820,7 +823,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     logger.debug(f"[ReclamoHandler] Teléfono ya en memoria: '{memoria['telefono_vecino']}'. Avanzando.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO.name
                     estado = ConversationState.ESPERANDO_EMAIL_VECINO
-                    continue
+                    if pregunta_str != payload.get("pregunta", ""): continue
 
                 telefono_input = pregunta_str.strip()
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_TELEFONO_VECINO. Input: '{telefono_input}'.")
@@ -830,7 +833,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_EMAIL_VECINO.name
                     estado = ConversationState.ESPERANDO_EMAIL_VECINO
                     logger.info(f"[ReclamoHandler] Teléfono guardado: '{telefono_input}'. Nuevo estado: ESPERANDO_EMAIL_VECINO.")
-                    if pregunta_str == payload.get("pregunta",""):
+                    if pregunta_str == payload.get("pregunta", "") or not memoria.get("email_vecino"):
                         return {"respuesta": "¡Excelente! Casi terminamos. ¿Cuál es tu **dirección de correo electrónico**?"}
                     continue
                 else:
@@ -857,7 +860,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
                     logger.info(f"[ReclamoHandler] Email guardado: '{email_input}'. Nuevo estado: ESPERANDO_DESCRIPCION_RECLAMO.")
-                    if pregunta_str == payload.get("pregunta",""):
+                    if pregunta_str == payload.get("pregunta", "") or not memoria.get("descripcion_reclamo"):
                          return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Luego podrás adjuntar foto/ubicación si querés."}
                     continue
                 else:
@@ -1588,7 +1591,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     # Crear una copia para modificar de forma segura para esta request.
     # Esto es importante si `contexto_municipio_data_from_db` es directamente el objeto que se guardará.
     # Si es una copia ya (ej. `dict(contexto_municipio_data_from_db)`), entonces no es estrictamente necesario, pero no hace daño.
-    contexto_municipio_actual = dict(contexto_municipio_data_from_db)
+    contexto_municipio_actual = dict(contexto_municipio_data_from_db) 
 
     estado_guardado_raw = contexto_municipio_actual.get("estado_conversacion")
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE_RAW] 'estado_conversacion' crudo extraído del contexto_municipio_actual: '{estado_guardado_raw}' (Tipo: {type(estado_guardado_raw)})")
@@ -1615,7 +1618,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     # Log del estado final que se usará en esta petición
     final_loaded_state = contexto_municipio_actual.get("estado_conversacion")
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})")
-
+    
     context = {
         CONTEXTO_MUNICIPIO: contexto_municipio_actual, # Esta es la copia modificada
         "user_obj": owner_user, "user_id": getattr(owner_user, "id", None),
@@ -1632,12 +1635,9 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context.context_data # Referencia al objeto de la DB para que los handlers puedan leer (pero no deberían escribir directamente aquí)
     }
-
-    estado_actual_sugerencia = None # Initialize with a default value
+    
     if not viewer_user and anon_id and has_app_context():
         estado_actual_para_sugerencia = contexto_municipio_actual.get("estado_conversacion") # Ya es Enum o None
-        # Assign to estado_actual_sugerencia if the condition is met
-        estado_actual_sugerencia = estado_actual_para_sugerencia
         estados_municipio_evitar_sugerencia = [ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO, ConversationState.ESPERANDO_UBICACION_PANICO]
         if estado_actual_sugerencia not in estados_municipio_evitar_sugerencia:
             interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
