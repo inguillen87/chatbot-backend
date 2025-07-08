@@ -193,6 +193,17 @@ def deserialize_state(value):
     try: return PymeConversationState[value]
     except KeyError: return None
 
+# Helper to serialize Enum objects within dicts/lists for JSON
+def serializar_enum(obj):
+    if isinstance(obj, Enum):
+        return obj.name
+    elif isinstance(obj, dict):
+        return {k: serializar_enum(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [serializar_enum(v) for v in obj]
+    else:
+        return obj
+
 PROMPT_CLASIFICAR_INTENCION = """
 Sos el cerebro comercial de un chatbot para una pyme. Analizá la PREGUNTA DEL USUARIO y respondé sólo con una de estas intenciones de la lista.
 Si no encaja claramente, usa 'pregunta_ambigua'.
@@ -774,6 +785,14 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_co
     chat_db_context.context_data[CONTEXTO_PYME] = context_general[CONTEXTO_PYME]
     # La persistencia de chat_db_context.context_data se hace en routes/chat.py
 
+    # Ensure 'estado_conversacion' within pyme_ctx_actual (which is context_general[CONTEXTO_PYME]) is a string
+    pyme_context_to_save = context_general[CONTEXTO_PYME]
+    if "estado_conversacion" in pyme_context_to_save and isinstance(pyme_context_to_save["estado_conversacion"], Enum):
+        pyme_context_to_save["estado_conversacion"] = pyme_context_to_save["estado_conversacion"].name
+
+    chat_db_context.context_data[CONTEXTO_PYME] = pyme_context_to_save
+
+
     try:
         if pyme_id_para_servicios or anon_id:
             db.session.add(Conversacion(
@@ -789,15 +808,18 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_co
     except Exception as e_conv: logger.error(f"Error guardando Conversacion PYME: {e_conv}")
 
     # --- Preparar Respuesta Final ---
-    # El contexto actualizado (pyme_ctx) ya debería estar en flask_session.
-    # Solo necesitamos devolver los elementos principales de la respuesta.
+    # El contexto pyme para la respuesta debe ser serializado.
+    # pyme_context_to_save ya tiene estado_conversacion como string.
+    contexto_pyme_serializado_para_respuesta = serializar_enum(pyme_context_to_save)
+
+
     final_response_for_logic = {
         "respuesta": respuesta_final_obj.get("respuesta", "Error."),
         "fuente": respuesta_final_obj.get("fuente", "error_pyme_final"),
         "botones": respuesta_final_obj.get("botones", []),
         "estado_respuesta": respuesta_final_obj.get("estado_respuesta"), # Para UI
         "ticket_id": respuesta_final_obj.get("ticket_id"),
-        "contexto_pyme": flask_session.get(CONTEXTO_PYME, {}), # Devolver el estado actual del contexto pyme
+        "contexto_pyme": contexto_pyme_serializado_para_respuesta, # Devolver el estado actual del contexto pyme serializado
         "adjuntos": [] # Inicializar
     }
 
