@@ -1633,8 +1633,11 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "chat_db_context_data": chat_db_context.context_data # Referencia al objeto de la DB para que los handlers puedan leer (pero no deberían escribir directamente aquí)
     }
 
+    estado_actual_sugerencia = None # Initialize with a default value
     if not viewer_user and anon_id and has_app_context():
         estado_actual_para_sugerencia = contexto_municipio_actual.get("estado_conversacion") # Ya es Enum o None
+        # Assign to estado_actual_sugerencia if the condition is met
+        estado_actual_sugerencia = estado_actual_para_sugerencia
         estados_municipio_evitar_sugerencia = [ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO, ConversationState.ESPERANDO_UBICACION_PANICO]
         if estado_actual_sugerencia not in estados_municipio_evitar_sugerencia:
             interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
