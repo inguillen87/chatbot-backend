@@ -236,10 +236,25 @@ def analizar_sentimiento_llm(texto: str) -> str:
 
 class BaseHandler:
     def __init__(self, context):
-        self.context = context; self.pyme_ctx = self.context.setdefault(CONTEXTO_PYME, flask_session.get(CONTEXTO_PYME, {}))
+        self.context = context
+        # self.pyme_ctx se inicializa directamente desde context_general[CONTEXTO_PYME]
+        # que ya fue cargado desde chat_db_context.context_data en responder_pyme
+        self.pyme_ctx = self.context[CONTEXTO_PYME]
         self.pyme_id_actual = self.context.get("user_id"); self.cliente_id_actual = self.context.get("cliente_id")
         self.chat_session_uuid_actual = self.context.get("chat_session_uuid")
-    def _guardar_contexto_pyme(self): flask_session[CONTEXTO_PYME] = self.pyme_ctx
+
+    def _guardar_contexto_pyme(self):
+        # self.pyme_ctx es una referencia al diccionario dentro de self.context["chat_db_context_data"][CONTEXTO_PYME] (o similar)
+        # Las modificaciones a self.pyme_ctx ya se reflejan en self.context["chat_db_context_data"]
+        # La persistencia final de self.context["chat_db_context_data"] (que es chat_db_context.context_data)
+        # se hace en routes/chat.py después de que responder_pyme retorna.
+        # Esta función podría volverse un no-op o usarse para validaciones si es necesario.
+        # Por ahora, nos aseguramos que pyme_ctx esté en el lugar correcto en chat_db_context_data.
+        if self.context.get("chat_db_context_data"):
+            self.context["chat_db_context_data"][CONTEXTO_PYME] = self.pyme_ctx
+        else: # Fallback por si chat_db_context_data no está (no debería ocurrir)
+            logger.error("[BaseHandler._guardar_contexto_pyme] chat_db_context_data no encontrado en self.context.")
+
     def _actualizar_estado(self, nuevo_estado: PymeConversationState, reintentos: int = 0):
         self.pyme_ctx["estado_conversacion"] = serialize_state(nuevo_estado)
         self.pyme_ctx["reintentos"] = reintentos; self._guardar_contexto_pyme()
@@ -569,11 +584,12 @@ def coleccion_catalogo_para_rubro(rubro_nombre: str) -> str:
     # Ejemplo: return f"catalogo_{rubro_nombre.replace(' ', '_')}"
     return CATALOGO_PYME # Usar la constante global por ahora
 
-def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+# def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, **kwargs):
     request_id = str(uuid.uuid4())
     # Añadir current_app al logger para acceso a config
     logger_actual = current_app.logger if current_app else logger # Asegurar que logger_actual esté definido
-    logger_actual.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', UserPyme: {getattr(owner_user, 'id', 'N/A')}, ViewerCliente: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}")
+    logger_actual.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', UserPyme: {getattr(owner_user, 'id', 'N/A')}, ViewerCliente: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}")
 
     # --- Contexto General ---
     pyme_id_para_servicios = getattr(owner_user, "id", None)
@@ -584,28 +600,28 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
     coleccion_qdrant_usar = coleccion_catalogo_para_rubro(rubro_nombre_actual)
     chat_session_uuid_actual = kwargs.get("chat_session_uuid")
 
-    # --- Historial de Chat ---
-    historial_actual_sesion = flask_session.get(NOMBRE_HISTORIAL_SESION, [])
-    if not historial_actual_sesion and chat_session_uuid_actual: # Solo intentar cargar si no hay nada y hay session_id
+    # --- Cargar Historial y Contexto PYME desde chat_db_context.context_data ---
+    if chat_db_context.context_data is None:
+        chat_db_context.context_data = {}
+
+    historial_actual_sesion = chat_db_context.context_data.get(NOMBRE_HISTORIAL_SESION, [])
+    if not historial_actual_sesion and chat_session_uuid_actual: # Solo intentar cargar desde DB si no hay nada en el contexto actual y hay session_id
         try:
-            # Cargar últimos N mensajes (user y bot) para el session_id
             conversaciones_db = Conversacion.query.filter_by(session_id=chat_session_uuid_actual).order_by(Conversacion.timestamp.desc()).limit(MAX_HISTORIAL_CHAT).all()
-            if conversaciones_db: # Solo si se encontraron conversaciones
-                conversaciones_db.reverse() # De más antiguo a más reciente
-                historial_actual_sesion = [{"role": "USER" if i%2==0 else "CHATBOT", "content": conv.pregunta if i%2==0 else conv.respuesta} for i, conv in enumerate(conversaciones_db)] # Simplificado
+            if conversaciones_db:
+                conversaciones_db.reverse()
+                historial_actual_sesion = [{"role": "USER" if i%2==0 else "CHATBOT", "content": conv.pregunta if i%2==0 else conv.respuesta} for i, conv in enumerate(conversaciones_db)]
                 logger_actual.info(f"Historial reconstruido desde DB para {chat_session_uuid_actual}: {len(historial_actual_sesion)} mensajes.")
         except Exception as e_hist: logger_actual.error(f"Error cargando historial DB: {e_hist}")
 
-    # --- Contexto Principal para Handlers ---
-    # Cargar pyme_ctx desde flask_session si existe, sino, diccionario vacío.
-    pyme_ctx_actual = flask_session.get(CONTEXTO_PYME, {})
+    pyme_ctx_actual = chat_db_context.context_data.get(CONTEXTO_PYME, {})
 
     context_general = {
         "user_id": pyme_id_para_servicios, # ID de la PYME
         "nombre_pyme": nombre_pyme_display,
         "rubro_nombre": rubro_nombre_actual,
         "mensajes_previos": historial_actual_sesion, # Para el LLM
-        CONTEXTO_PYME: pyme_ctx_actual, # Usar el pyme_ctx cargado
+        CONTEXTO_PYME: pyme_ctx_actual, # Este es el diccionario que se modificará
         "cliente_id": getattr(viewer_user, "id", None), # ID del ChatUser/User final
         "viewer_user_obj": viewer_user, # <--- OBJETO USER COMPLETO DEL CLIENTE/VIEWER
         "anon_id": anon_id,
@@ -614,18 +630,16 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         "chat_session_uuid": chat_session_uuid_actual,
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        "action_payload": kwargs.get("action_payload", pregunta.lower()) # Para botones
+        "action_payload": kwargs.get("action_payload", pregunta.lower()), # Para botones
+        "chat_db_context_data": chat_db_context.context_data # Pasar el dict de context_data para que los handlers lo modifiquen
     }
 
     # ---- INICIO: Lógica de sugerencia de registro PROACTIVA ----
     if not viewer_user and anon_id and current_app: # Solo para anónimos y si hay contexto de app
-        # Usar una copia del pyme_ctx_actual para modificar y luego decidir si se guarda
-        pyme_ctx_para_sugerencia = context_general[CONTEXTO_PYME] # Trabajar con la referencia directa
+        pyme_ctx_para_sugerencia = context_general[CONTEXTO_PYME]
 
-        # Evitar sugerir si ya se está en un flujo que pide datos o confirmación final
-        # O si el bot acaba de dar una respuesta de sugerencia de registro
         estado_actual_sugerencia = deserialize_state(pyme_ctx_para_sugerencia.get("estado_conversacion"))
-        ultima_fuente_bot = historial_actual_sesion[-1].get("content") if historial_actual_sesion and historial_actual_sesion[-1].get("role") == "CHATBOT" else ""
+        # No necesitamos chequear historial_actual_sesion[-1] aquí, ya que la lógica de umbral y flag debería ser suficiente.
 
         # No deberíamos necesitar verificar 'ultima_fuente_bot' si el frontend maneja 'sugerencia_registro'
         # y no vuelve a llamar al backend inmediatamente. Pero como defensa:
@@ -649,9 +663,9 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
                  interacciones_anon_sesion += 1
             pyme_ctx_para_sugerencia["interacciones_anon_sesion"] = interacciones_anon_sesion
 
-            # Guardar pyme_ctx actualizado en flask_session ANTES de retornar la sugerencia
-            flask_session[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
-            flask_session.modified = True
+            # Guardar pyme_ctx actualizado en chat_db_context.context_data ANTES de retornar la sugerencia
+            chat_db_context.context_data[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
+            # No flask_session.modified = True
 
             umbral_sugerencia = current_app.config.get("PYME_UMBRAL_SUGERENCIA_REGISTRO", 3)
 
@@ -660,8 +674,8 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
                 if not pyme_ctx_para_sugerencia.get("sugerencia_registro_emitida_ronda", False):
                     logger_actual.info(f"[RESPONDER_PYME - {request_id}] Anon {anon_id} alcanzó umbral de {umbral_sugerencia} interacciones. Sugiriendo registro.")
                     pyme_ctx_para_sugerencia["sugerencia_registro_emitida_ronda"] = True # Marcar como emitida
-                    flask_session[CONTEXTO_PYME] = pyme_ctx_para_sugerencia # Guardar el flag
-                    flask_session.modified = True
+                    chat_db_context.context_data[CONTEXTO_PYME] = pyme_ctx_para_sugerencia # Guardar el flag
+                    # No flask_session.modified = True
 
                     respuesta_sugerencia = construir_respuesta_sugerir_registro(
                         mensaje_personalizado="Hemos tenido una buena charla.",
@@ -683,8 +697,8 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
                     return respuesta_sugerencia
             else: # Si no se alcanzó el umbral, resetear el flag de "emitida en ronda"
                  pyme_ctx_para_sugerencia.pop("sugerencia_registro_emitida_ronda", None)
-                 flask_session[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
-                 flask_session.modified = True
+                 chat_db_context.context_data[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
+                 # No flask_session.modified = True
 
 
             # Criterio 2: Si la pregunta del usuario implica querer guardar algo o ver historial (más adelante)
@@ -749,15 +763,16 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=No
         logger.error(f"[PYME_ROUTER - {request_id}] CRITICAL: Ningún handler produjo respuesta para: '{pregunta}'")
         respuesta_final_obj = {"respuesta": "No pude procesar tu solicitud.", "fuente": "error_no_handler_pyme_v2"}
 
-    # --- Guardar Conversación y Actualizar Sesión ---
+    # --- Guardar Conversación y Actualizar Contexto en DB ---
     historial_actual_sesion.append({"role": "USER", "content": pregunta})
     historial_actual_sesion.append({"role": "CHATBOT", "content": respuesta_final_obj.get("respuesta", "")})
-    flask_session[NOMBRE_HISTORIAL_SESION] = historial_actual_sesion[-MAX_HISTORIAL_CHAT:]
     
-    # El contexto específico de pyme (self.pyme_ctx) ya se guarda en flask_session[CONTEXTO_PYME]
-    # dentro de los _actualizar_estado o al final del handle de cada handler si es necesario.
-    # Aquí solo nos aseguramos que se persista si hubo algún cambio no guardado por un handler.
-    flask_session.modified = True # Marcarla como modificada para asegurar guardado.
+    # Guardar historial y contexto pyme en chat_db_context.context_data
+    # context_general[CONTEXTO_PYME] (que es pyme_ctx_actual) ya fue modificado por los handlers.
+    # context_general["mensajes_previos"] (que es historial_actual_sesion) también.
+    chat_db_context.context_data[NOMBRE_HISTORIAL_SESION] = historial_actual_sesion[-MAX_HISTORIAL_CHAT:]
+    chat_db_context.context_data[CONTEXTO_PYME] = context_general[CONTEXTO_PYME]
+    # La persistencia de chat_db_context.context_data se hace en routes/chat.py
 
     try:
         if pyme_id_para_servicios or anon_id:
