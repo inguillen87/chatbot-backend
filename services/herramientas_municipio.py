@@ -170,7 +170,7 @@ RESPUESTA JSON:
 
         # Validaciones básicas de la estructura devuelta
         if not isinstance(parsed_data, dict):
-            logger.warning(f"[ParseDireccion] LLM no devolvió un diccionario para: {texto_direccion}")
+            logger.info(f"[ParseDireccion] LLM no devolvió un diccionario para: {texto_direccion}")
             return None
 
         # Asegurar que al menos calle y número O calle y otros_detalles (para esquinas) estén presentes
@@ -178,8 +178,8 @@ RESPUESTA JSON:
         numero = parsed_data.get("numero")
         otros_detalles = parsed_data.get("otros_detalles")
 
-        if not calle: # La calle es fundamental
-            logger.warning(f"[ParseDireccion] LLM no extrajo 'calle' para: {texto_direccion}")
+        if not calle:  # La calle es fundamental
+            logger.info(f"[ParseDireccion] LLM no extrajo 'calle' para: {texto_direccion}")
             return None
 
         # Si no hay número, y 'otros_detalles' no indica una esquina o referencia válida, podría ser inválido.

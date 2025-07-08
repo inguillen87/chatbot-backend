@@ -156,9 +156,9 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
 
 def enviar_email_pedido_admin(pedido) -> bool:
     """Envía un correo al administrador con el nuevo pedido."""
-    admin_email_val = current_app.config.get("ADMIN_EMAIL", _get_config_val("MAIL_FROM_ADDRESS")) # Fallback a from_email
-    if not admin_email_val:
-        logger.warning("[EMAIL] ADMIN_EMAIL (o MAIL_FROM_ADDRESS como fallback) no configurado para notificación de pedido.")
+    admin_email_val = current_app.config.get("ADMIN_EMAIL")
+    if not admin_email_val or admin_email_val == "noreply@example.com":
+        logger.warning("[EMAIL] ADMIN_EMAIL no configurado para notificación de pedido. Envío omitido.")
         return False
 
     detalles = pedido.detalles
@@ -192,9 +192,9 @@ def enviar_email_pedido_cliente(pedido) -> bool:
 
 def enviar_email_ticket_admin(ticket) -> bool:
     """Envía un correo al administrador con el nuevo ticket."""
-    admin_email_val = current_app.config.get("ADMIN_EMAIL", _get_config_val("MAIL_FROM_ADDRESS"))
-    if not admin_email_val:
-        logger.warning("[EMAIL] ADMIN_EMAIL no configurado para notificación de ticket.")
+    admin_email_val = current_app.config.get("ADMIN_EMAIL")
+    if not admin_email_val or admin_email_val == "noreply@example.com":
+        logger.warning("[EMAIL] ADMIN_EMAIL no configurado para notificación de ticket. Envío omitido.")
         return False
 
     asunto = f"Nuevo ticket {ticket.nro_ticket}"

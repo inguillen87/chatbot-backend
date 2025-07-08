@@ -629,7 +629,12 @@ class RecoleccionHandler(BaseMunicipioHandler):
             if es_pregunta_nueva(pregunta_str, "una dirección"):
                 memoria.clear()
                 return None
-            
+
+            if not direccion_es_valida(pregunta_str):
+                return {
+                    "respuesta": f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresar calle y número?",
+                }
+
             resultado = consultar_recoleccion_por_direccion(direccion=pregunta_str)
             memoria.clear() # Limpiar memoria después de completar la consulta
             if not resultado or "No" in resultado:
@@ -1532,7 +1537,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                 }
             if accion == "compartir_ubicacion":
                 allow_anon_gps_for_sharing = False
-                from flask import has_app_context
                 if has_app_context():
                     allow_anon_gps_for_sharing = current_app.config.get("ALLOW_ANON_GPS", False)
 
