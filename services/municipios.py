@@ -5,7 +5,7 @@ import os
 from enum import Enum, auto
 import unicodedata
 import difflib
-from flask import current_app # Ensure current_app is imported directly
+from flask import current_app, has_app_context  # Ensure current_app is imported directly
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion # Added Conversacion
 from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
@@ -15,6 +15,7 @@ from .logic import (
     generar_respuesta_small_talk,
 )
 from twilio.rest import Client
+from datetime import datetime, timedelta
 from services.utils_placeholders import (
     reemplazar_placeholders,
     obtener_respuesta_municipio,
@@ -41,7 +42,7 @@ from .llm_utils import extract_complaint_details_llm # Epic 1 Enhancement
 import math
 
 try:
-    from flask import current_app, session as flask_session
+    from flask import current_app, session as flask_session, has_app_context
 except ImportError: # pragma: no cover
     # Mock para entornos sin Flask (ej. tests unitarios puros de lógica, aunque es mejor mockear Flask app)
     current_app = None
@@ -1387,10 +1388,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                     # Si el parseo falla o no obtiene los campos mínimos
                     respuesta_direccion_invalida = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla e ingresarla de nuevo? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad, Provincia' o que incluya al menos calle, número y localidad."
                     if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                        if current_app.config.get("ALLOW_ANON_GPS"):
+                        allow_gps = False
+                        if has_app_context():
+                            allow_gps = current_app.config.get("ALLOW_ANON_GPS", False)
+
+                        if allow_gps:
                             respuesta_direccion_invalida += (
                                 "\n\nSi tenés problemas con la dirección escrita, también podés compartir tu ubicación GPS "
-                                "mediante el botón de adjuntos." 
+                                "mediante el botón de adjuntos."
                             )
                         else:
                             respuesta_direccion_invalida += (
@@ -1529,7 +1534,10 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if (
                     self.context.get("anon_id")
                     and not self.context.get("user_id")
-                    and not current_app.config.get("ALLOW_ANON_GPS")
+                    and not (
+                        has_app_context()
+                        and current_app.config.get("ALLOW_ANON_GPS", False)
+                    )
                 ):
                     return {
                         "respuesta": "Para compartir tu ubicación GPS de forma precisa para el reclamo, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?",
@@ -1648,10 +1656,16 @@ class ReclamoHandler(BaseMunicipioHandler):
 
             # Verificar si es anónimo y ya excedió el límite de tickets
             if self.context.get("anon_id") and not self.context.get("cliente_id"): # Es anónimo
-                from flask import current_app # Acceder a config
-                from datetime import datetime, timedelta # Asegurar imports
-                max_tickets_anon = current_app.config.get("ANONYMOUS_MAX_TICKETS_PER_SESSION", 1)
-                session_timeout_minutes_config = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+                if has_app_context():
+                    max_tickets_anon = current_app.config.get(
+                        "ANONYMOUS_MAX_TICKETS_PER_SESSION", 1
+                    )
+                    session_timeout_minutes_config = current_app.config.get(
+                        "ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15
+                    )
+                else:
+                    max_tickets_anon = 1
+                    session_timeout_minutes_config = 15
 
                 # Contar tickets existentes para este anon_id DENTRO de la ventana de sesión actual
                 anon_tickets_count = MunicipioTicket.query\
@@ -1659,7 +1673,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                     .filter(MunicipioTicket.fecha >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes_config))\
                     .count()
 
-                current_app.logger.info(f"Usuario anónimo {self.context['anon_id']} (Municipio): {anon_tickets_count} tickets en la sesión actual (límite: {max_tickets_anon}).")
+                if has_app_context():
+                    current_app.logger.info(
+                        f"Usuario anónimo {self.context['anon_id']} (Municipio): {anon_tickets_count} tickets en la sesión actual (límite: {max_tickets_anon})."
+                    )
+                else:
+                    logger.info(
+                        f"Usuario anónimo {self.context['anon_id']} (Municipio): {anon_tickets_count} tickets en la sesión actual (límite: {max_tickets_anon})."
+                    )
 
                 if anon_tickets_count >= max_tickets_anon:
                     memoria.clear() # Limpiar el flujo de reclamo
@@ -3479,7 +3500,7 @@ OWNER_HANDLERS_FOR_STATE = {
 
 
 def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
-    logger_actual = current_app.logger if current_app else logger
+    logger_actual = current_app.logger if has_app_context() else logger
     logger_actual.info(f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}")
 
     received_payload = {}
@@ -3529,7 +3550,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     }
 
     # --- Lógica de sugerencia de registro PROACTIVA (sin cambios, omitida por brevedad) ---
-    if not viewer_user and anon_id and current_app:
+    if not viewer_user and anon_id and has_app_context():
         # ... (código de sugerencia de registro existente) ...
         estado_actual_sugerencia = contexto_municipio_actual.get("estado_conversacion")
         estados_municipio_evitar_sugerencia = [
@@ -3549,7 +3570,11 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_sesion
             flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
             flask_session.modified = True
-            umbral_sugerencia = current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3)
+            umbral_sugerencia = (
+                current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3)
+                if has_app_context()
+                else 3
+            )
             if umbral_sugerencia and umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia:
                 if not contexto_municipio_actual.get("sugerencia_registro_emitida_ronda", False):
                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Anon {anon_id} alcanzó umbral. Sugiriendo registro.")
