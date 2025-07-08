@@ -1777,6 +1777,12 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     # no necesariamente para cómo se guarda en la DB persistente.
     # Lo importante es que `contexto_municipio_actual["estado_conversacion"]` sea un string
     # ANTES de que `chat_db_context.context_data` se persista en la DB (lo cual ocurre fuera de esta función).
+
+    # Ensure SQLAlchemy detects changes to the JSON field
+    from sqlalchemy.orm.attributes import flag_modified
+    if chat_db_context: # Ensure chat_db_context exists
+        flag_modified(chat_db_context, "context_data")
+
     contexto_serializado_para_respuesta_http = serializar_enum(contexto_municipio_actual)
     media_url_to_send = contexto_serializado_para_respuesta_http.get("foto_url")
     location_data_to_send = contexto_serializado_para_respuesta_http.get("ubicacion_gps")
