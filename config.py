@@ -40,8 +40,10 @@ class Config:
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN:
     IS_PRODUCTION = os.getenv('FLASK_ENV') == 'production'
 
-    SESSION_COOKIE_SECURE = IS_PRODUCTION
-    SESSION_COOKIE_SAMESITE = 'None' if IS_PRODUCTION else 'Lax'
+    #SESSION_COOKIE_SECURE = IS_PRODUCTION
+    #SESSION_COOKIE_SAMESITE = 'None' if IS_PRODUCTION else 'Lax'
+    SESSION_COOKIE_SECURE = True  # FUERZA A TRUE
+    SESSION_COOKIE_SAMESITE = 'None' # FUERZA A 'None'
     # Para producción, asegurarse que esta variable de entorno esté seteada a '.chatboc.ar'
     # Para desarrollo local, None es usualmente correcto.
     if IS_PRODUCTION:
