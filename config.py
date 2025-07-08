@@ -45,20 +45,29 @@ class Config:
     SESSION_COOKIE_SECURE = True  # FUERZA A TRUE
     SESSION_COOKIE_SAMESITE = 'None' # FUERZA A 'None'
     # Para producción, asegurarse que esta variable de entorno esté seteada a '.chatboc.ar'
-    # Para desarrollo local, None es usualmente correcto.
-    if IS_PRODUCTION:
-        # Default to '.chatboc.ar' if no explicit domain is provided via environment variable
-        # Ensure it is exactly '.chatboc.ar' as per requirements for this task.
-        SESSION_COOKIE_DOMAIN = os.getenv('SESSION_COOKIE_DOMAIN_CONFIG')
-        if SESSION_COOKIE_DOMAIN is None: # If env var is not set at all
+    # Para desarrollo local, None es usualmente correcto. Sin embargo, algunas
+    # plataformas como Render pueden no establecer FLASK_ENV='production' de
+    # manera automática. Para evitar que la cookie sea "host-only" y no funcione
+    # entre subdominios, intentamos inferir un dominio base si el usuario no lo
+    # especifica explícitamente via SESSION_COOKIE_DOMAIN_CONFIG.
+    from urllib.parse import urlparse
+
+    SESSION_COOKIE_DOMAIN = os.getenv('SESSION_COOKIE_DOMAIN_CONFIG')
+
+    if not SESSION_COOKIE_DOMAIN:
+        candidate = os.getenv('RENDER_EXTERNAL_URL') or os.getenv('SERVER_NAME')
+        if candidate:
+            parsed = urlparse(candidate)
+            host = parsed.hostname or candidate.split('//')[-1].split(':')[0]
+            if host and host.count('.') >= 2:
+                parts = host.split('.')
+                SESSION_COOKIE_DOMAIN = f".{parts[-2]}.{parts[-1]}"
+
+    if not SESSION_COOKIE_DOMAIN:
+        if IS_PRODUCTION or os.getenv('RENDER') == 'true':
             SESSION_COOKIE_DOMAIN = '.chatboc.ar'
-        elif SESSION_COOKIE_DOMAIN.strip() == "": # If env var is set but is an empty string
-            SESSION_COOKIE_DOMAIN = '.chatboc.ar'
-        # If SESSION_COOKIE_DOMAIN_CONFIG is set to something else (and not empty), that value will be used.
-        # This ensures that if the admin explicitly sets a different valid domain, it's respected,
-        # but for the common case for 'chatboc.ar' where it's not set or empty, it defaults correctly.
-    else:
-        SESSION_COOKIE_DOMAIN = None
+        else:
+            SESSION_COOKIE_DOMAIN = None
 
 
     # 4. CONFIGURACIÓN PARA SESIONES EN EL LADO DEL SERVIDOR (Flask-Session)
