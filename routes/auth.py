@@ -491,12 +491,41 @@ def chatuser_register_panel():
             400,
         )
 
-    if User.query.filter_by(email=email.strip().lower()).first():
-        return (
-            jsonify({"error": "Email ya registrado.", "botones": [{"texto": "Volver al chat"}]}),
-            409,
-        )
+    # Check if user with this email already exists
+    existing_user = User.query.filter(func.lower(User.email) == func.lower(email.strip())).first()
 
+    if existing_user:
+        current_app.logger.info(f"[chatuser_register_panel] Email '{email}' ya existe. User ID: {existing_user.id}, Empresa ID: {existing_user.empresa_id}. Owner User ID: {owner_user.id}")
+        # User exists. Check if they belong to the same 'empresa'
+        if existing_user.empresa_id == owner_user.id:
+            # Email exists and is associated with the same empresa_id. Simulate login.
+            current_app.logger.info(f"[chatuser_register_panel] Usuario existente '{email}' pertenece a la misma entidad (Owner ID: {owner_user.id}). Devolviendo datos del usuario existente.")
+            # Migrate tickets if anon_id is present
+            if anon_id:
+                from services.ticket_service import servicio_tickets
+                servicio_tickets.migrar_tickets_de_anonimo(anon_id, existing_user.id)
+            return jsonify({
+                "id": existing_user.id,
+                "token": existing_user.token,
+                "name": existing_user.name,
+                "email": existing_user.email,
+                "rol": existing_user.rol,
+                "tipo_chat": existing_user.tipo_chat or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
+                "empresa_id": existing_user.empresa_id,
+                "already_registered": True,
+                "message": "Usuario ya registrado con esta entidad."
+            }), 200
+        else:
+            # Email exists but is associated with a different empresa_id.
+            current_app.logger.warning(f"[chatuser_register_panel] Usuario existente '{email}' (Empresa ID: {existing_user.empresa_id}) intentó registrarse bajo una entidad diferente (Owner ID: {owner_user.id}).")
+            return jsonify({
+                "error": "El email ya está registrado en otra entidad.",
+                "already_registered": True, # From the perspective of the email, it is registered.
+                "conflicting_entity": True # More specific flag
+            }), 409
+
+    # If user does not exist, proceed with creation
+    current_app.logger.info(f"[chatuser_register_panel] Email '{email}' no existe. Creando nuevo usuario para Owner ID: {owner_user.id}")
     acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
     if isinstance(tags, list):
@@ -524,6 +553,9 @@ def chatuser_register_panel():
         db.session.add(nuevo)
         db.session.commit()
 
+        # Log successful registration and association
+        current_app.logger.info(f"[chatuser_register_panel] Nuevo usuario '{nuevo.email}' (ID: {nuevo.id}) registrado y asociado con la empresa/owner ID: {owner_user.id} ({owner_user.nombre_empresa if owner_user.nombre_empresa else owner_user.email}).")
+
         if anon_id:
             from services.ticket_service import servicio_tickets
             servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
@@ -537,6 +569,7 @@ def chatuser_register_panel():
                 "rol": nuevo.rol,
                 "tipo_chat": nuevo.tipo_chat,
                 "empresa_id": nuevo.empresa_id,
+                "already_registered": False,
             }),
             201,
         )
