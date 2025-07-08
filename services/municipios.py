@@ -1588,7 +1588,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     # Crear una copia para modificar de forma segura para esta request.
     # Esto es importante si `contexto_municipio_data_from_db` es directamente el objeto que se guardará.
     # Si es una copia ya (ej. `dict(contexto_municipio_data_from_db)`), entonces no es estrictamente necesario, pero no hace daño.
-    contexto_municipio_actual = dict(contexto_municipio_data_from_db) 
+    contexto_municipio_actual = dict(contexto_municipio_data_from_db)
 
     estado_guardado_raw = contexto_municipio_actual.get("estado_conversacion")
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE_RAW] 'estado_conversacion' crudo extraído del contexto_municipio_actual: '{estado_guardado_raw}' (Tipo: {type(estado_guardado_raw)})")
@@ -1615,7 +1615,6 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     # Log del estado final que se usará en esta petición
     final_loaded_state = contexto_municipio_actual.get("estado_conversacion")
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})")
-    
     context = {
         CONTEXTO_MUNICIPIO: contexto_municipio_actual, # Esta es la copia modificada
         "user_obj": owner_user, "user_id": getattr(owner_user, "id", None),
@@ -1632,7 +1631,6 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context.context_data # Referencia al objeto de la DB para que los handlers puedan leer (pero no deberían escribir directamente aquí)
     }
-    
     if not viewer_user and anon_id and has_app_context():
         estado_actual_para_sugerencia = contexto_municipio_actual.get("estado_conversacion") # Ya es Enum o None
         estados_municipio_evitar_sugerencia = [ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO, ConversationState.ESPERANDO_UBICACION_PANICO]
