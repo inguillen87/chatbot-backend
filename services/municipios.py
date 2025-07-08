@@ -1423,4 +1423,3 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             logger_actual.error(f"Error guardando conversación de municipio para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')}: {e_conv_muni}", exc_info=True)
             db.session.rollback()
     return final_response_dict
-[end of services/municipios.py]
