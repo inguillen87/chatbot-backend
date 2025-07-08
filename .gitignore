@@ -10,6 +10,7 @@ instance/*
 !data/respuestas_municipio.json
 !data/product_synonyms.json
 !data/municipios/**
+!data/numeros_whatsapp.json
 __pycache__/
 *.pyc
 venv/
