@@ -1637,17 +1637,17 @@ class ReclamoHandler(BaseMunicipioHandler):
             
             # --- INICIO: Lógica de Idempotencia ---
             if idempotency_key and chat_session_uuid:
-                # Usamos un diccionario en la sesión de Flask para rastrear las claves de idempotencia procesadas
+                # Usamos un diccionario en chat_db_context.context_data para rastrear las claves de idempotencia procesadas
                 # y el ID del ticket que generaron.
-                # session_obj es la sesión de Flask, debe pasarse a self.context o accederse globalmente si es posible.
-                # Asumiendo que self.context tiene session_obj (lo cual es una buena práctica)
-                session_obj = self.context.get("session_obj") 
-                if session_obj: # Asegurarse que session_obj está disponible
-                    processed_keys = session_obj.get("processed_idempotency_keys", {})
+                chat_session_data = self.context.get("chat_db_context_data") # Este es chat_db_context.context_data
+                if chat_session_data is not None: # Asegurarse que chat_session_data está disponible
+                    processed_keys = chat_session_data.get("processed_idempotency_keys", {})
                     if idempotency_key in processed_keys:
                         existing_ticket_nro = processed_keys[idempotency_key]
                         logger.info(f"[ReclamoHandler] Idempotency key '{idempotency_key}' ya procesada. Ticket existente: M-{existing_ticket_nro}.")
-                        memoria.clear() # Limpiar el flujo de reclamo actual
+                        memoria.clear() # Limpiar el flujo de reclamo actual en CONTEXTO_MUNICIPIO
+                        # Asegurarse de que el CONTEXTO_MUNICIPIO se guarde en chat_session_data
+                        chat_session_data[CONTEXTO_MUNICIPIO] = memoria
                         return {
                             "respuesta": (
                                 f"Este reclamo ya fue registrado anteriormente con el número de ticket: **M-{existing_ticket_nro}**. "
@@ -1760,12 +1760,12 @@ class ReclamoHandler(BaseMunicipioHandler):
                     )
 
                     if ticket: # Ticket creado exitosamente
-                        # --- INICIO: Guardar idempotency_key en sesión ---
-                        if idempotency_key and chat_session_uuid and session_obj:
-                            processed_keys = session_obj.get("processed_idempotency_keys", {})
+                        # --- INICIO: Guardar idempotency_key en chat_db_context.context_data ---
+                        if idempotency_key and chat_session_uuid and chat_session_data is not None:
+                            processed_keys = chat_session_data.get("processed_idempotency_keys", {})
                             processed_keys[idempotency_key] = ticket.nro_ticket # Guardar el número de ticket
-                            session_obj["processed_idempotency_keys"] = processed_keys
-                            logger.info(f"[ReclamoHandler] Idempotency key '{idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada en sesión.")
+                            chat_session_data["processed_idempotency_keys"] = processed_keys
+                            logger.info(f"[ReclamoHandler] Idempotency key '{idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada en chat_db_context.context_data.")
                         # --- FIN: Guardar idempotency_key ---
 
                         # --- INICIO: Asociación de archivo al ticket recién creado ---
@@ -3508,9 +3508,10 @@ OWNER_HANDLERS_FOR_STATE = {
 }
 
 
-def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
+# def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=None, session_obj=None, anon_id=None, **kwargs):
+def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, **kwargs):
     logger_actual = current_app.logger if has_app_context() else logger
-    logger_actual.info(f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}")
+    logger_actual.info(f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}")
 
     received_payload = {}
     pregunta_str = ""
@@ -3529,20 +3530,24 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         for key, value in kwargs.items():
             received_payload[key] = value
 
-    contexto_municipio_actual = flask_session.get(CONTEXTO_MUNICIPIO, {})
+    # Cargar el contexto desde chat_db_context.context_data
+    if chat_db_context.context_data is None:
+        chat_db_context.context_data = {}
+
+    contexto_municipio_actual = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
     estado_guardado_str = contexto_municipio_actual.get("estado_conversacion")
     if estado_guardado_str and isinstance(estado_guardado_str, str):
         try:
             contexto_municipio_actual["estado_conversacion"] = ConversationState[estado_guardado_str]
         except KeyError:
-            logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Estado inválido en sesión: {estado_guardado_str}. Se limpia.")
+            logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Estado inválido en DB context: {estado_guardado_str}. Se limpia.")
             contexto_municipio_actual["estado_conversacion"] = None
     elif not isinstance(estado_guardado_str, ConversationState) and estado_guardado_str is not None:
-        logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Tipo de estado inesperado: {type(estado_guardado_str)}. Se limpia.")
+        logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Tipo de estado inesperado en DB context: {type(estado_guardado_str)}. Se limpia.")
         contexto_municipio_actual["estado_conversacion"] = None
 
     context = {
-        CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # Este es el diccionario que se modificará
         "user_obj": owner_user, "user_id": getattr(owner_user, "id", None),
         "cliente_id": getattr(viewer_user, "id", None), "viewer_user_obj": viewer_user,
         "anon_id": anon_id, "intencion": None, "rubro_obj": rubro_obj,
@@ -3555,12 +3560,11 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "session_obj": flask_session
+        "chat_db_context_data": chat_db_context.context_data # Pasar el dict de context_data para que los handlers lo modifiquen
     }
 
-    # --- Lógica de sugerencia de registro PROACTIVA (sin cambios, omitida por brevedad) ---
+    # --- Lógica de sugerencia de registro PROACTIVA ---
     if not viewer_user and anon_id and has_app_context():
-        # ... (código de sugerencia de registro existente) ...
         estado_actual_sugerencia = contexto_municipio_actual.get("estado_conversacion")
         estados_municipio_evitar_sugerencia = [
             ConversationState.ESPERANDO_DIRECCION_RECLAMO,
@@ -3577,8 +3581,10 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok", "dale", "bueno"]:
                  interacciones_anon_sesion += 1
             contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_sesion
-            flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-            flask_session.modified = True
+            # Guardar el contexto_municipio_actual en chat_db_context.context_data
+            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+            # No es necesario flask_session.modified = True, la persistencia se hace en routes/chat.py
+
             umbral_sugerencia = (
                 current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3)
                 if has_app_context()
@@ -3588,8 +3594,8 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                 if not contexto_municipio_actual.get("sugerencia_registro_emitida_ronda", False):
                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Anon {anon_id} alcanzó umbral. Sugiriendo registro.")
                     contexto_municipio_actual["sugerencia_registro_emitida_ronda"] = True
-                    flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                    flask_session.modified = True
+                    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                    # No flask_session.modified = True
                     respuesta_sugerencia = construir_respuesta_sugerir_registro(
                         mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.",
                         tipo_entidad="municipio"
@@ -3761,8 +3767,8 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         if contexto_municipio_actual.get("estado_conversacion"): # Si aún hay estado y nadie respondió
             logger_actual.error(f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {contexto_municipio_actual['estado_conversacion'].name}. Limpiando estado.")
             contexto_municipio_actual.clear() # Limpiar estado para evitar bucles
-            flask_session[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-            flask_session.modified = True
+            # El contexto_municipio_actual (que es una referencia a una parte de chat_db_context.context_data) ya está limpio.
+            # La persistencia general de chat_db_context.context_data se hace en routes/chat.py.
             respuesta_final = {
                 "respuesta": ("¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. "
                               "¿Cómo puedo ayudarte hoy?"),
@@ -3775,14 +3781,21 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
                 "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]
             }
 
-    contexto_para_guardar_final = serializar_enum(flask_session.get(CONTEXTO_MUNICIPIO, {}))
-    media_url_to_send = contexto_para_guardar_final.get("foto_url")
-    location_data_to_send = contexto_para_guardar_final.get("ubicacion_gps")
+    # Asegurar que el contexto_municipio_actual (que es una referencia a una parte de chat_db_context.context_data)
+    # esté correctamente reflejado en chat_db_context.context_data antes de serializar.
+    # Esto es crucial porque los handlers modifican contexto_municipio_actual directamente.
+    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+
+    # Serializar desde chat_db_context.context_data
+    contexto_serializado_para_respuesta = serializar_enum(chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {}))
+    media_url_to_send = contexto_serializado_para_respuesta.get("foto_url")
+    location_data_to_send = contexto_serializado_para_respuesta.get("ubicacion_gps")
 
     final_response_dict = {
         "respuesta": respuesta_final.get("respuesta"),
         "botones": respuesta_final.get("botones", []),
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_para_guardar_final},
+        # Enviar el contexto serializado del municipio al frontend
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta},
         "ticket_id": respuesta_final.get("ticket_id", None),
         "media_url": media_url_to_send,
         "location_data": location_data_to_send,

@@ -139,15 +139,16 @@ def responder_chatboc(
     owner_user=None,
     current_user=None,
     rubro_obj=None,
-    session_obj=None,
+    # session_obj=None, # <<< REPLACED by chat_db_context
+    chat_db_context=None, # <<< NEW: To pass the ChatSessionContext object
     rubro_nombre_frontend=None,
     tipo_chat=None,
     anon_id=None,
-    chat_session_uuid=None, # Nuevo parámetro
+    chat_session_uuid=None,
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
-    logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}'")
+    logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}', chat_session_uuid='{chat_session_uuid}'")
 
     # 1. Determinar el 'effective_owner_user' (la entidad o bot dueño)
     effective_owner_user = owner_user
@@ -329,8 +330,12 @@ def responder_chatboc(
                     current_app.logger.info(f"[LOGIC] Análisis para ArchivoAdjunto ID: {archivo_id} aún está '{estado_analisis_actual}'.")
                     procesamiento_archivo_en_curso = True
                     # Guardar en contexto de sesión que hay un archivo procesándose
-                    if session_obj: # session_obj es la sesión de Flask
-                         session_obj[f'archivo_procesando_{chat_session_uuid}'] = archivo_id
+                    if chat_db_context: # Usar el nuevo chat_db_context
+                        if chat_db_context.context_data is None: chat_db_context.context_data = {}
+                        chat_db_context.context_data[f'archivo_procesando_{chat_session_uuid}'] = archivo_id
+                        # La persistencia de chat_db_context.context_data se hará en routes/chat.py
+                    else: # Log si chat_db_context no está disponible (no debería pasar)
+                        current_app.logger.error(f"[responder_chatboc] chat_db_context no disponible para guardar 'archivo_procesando_{chat_session_uuid}'.")
                     # Devolver respuesta indicando que se está procesando
                     return {
                         "respuesta": "Estoy analizando el archivo que subiste. Te avisaré en cuanto termine. Mientras tanto, ¿puedo ayudarte con otra cosa o prefieres esperar?",
@@ -360,8 +365,11 @@ def responder_chatboc(
                 # O considerarlo un error si siempre debería existir.
                 # Por ahora, trataremos como si estuviera pendiente.
                 procesamiento_archivo_en_curso = True
-                if session_obj:
-                    session_obj[f'archivo_procesando_{chat_session_uuid}'] = archivo_id
+                if chat_db_context: # Usar el nuevo chat_db_context
+                    if chat_db_context.context_data is None: chat_db_context.context_data = {}
+                    chat_db_context.context_data[f'archivo_procesando_{chat_session_uuid}'] = archivo_id
+                else:
+                    current_app.logger.error(f"[responder_chatboc] chat_db_context no disponible para guardar 'archivo_procesando_{chat_session_uuid}' (no análisis previo).")
                 return {
                     "respuesta": "Estoy preparando tu archivo para el análisis. Te avisaré en breve. Mientras tanto, ¿puedo ayudarte con otra cosa?",
                     "contexto_pyme": kwargs.get("contexto_previo"),
@@ -480,7 +488,7 @@ def responder_chatboc(
 
     # La variable `session_obj` que se pasa a los handlers es la sesión de Flask.
     # Los handlers (responder_municipio, responder_pyme) son responsables de cargar/guardar
-    # su propio contexto de esa sesión Flask usando chat_session_uuid.
+    # su propio contexto desde/hacia chat_db_context.context_data usando chat_session_uuid como posible sub-key si es necesario.
 
     if tipo_chat == "municipio":
         from services.municipios import responder_municipio
@@ -489,7 +497,7 @@ def responder_chatboc(
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=current_user,
-            session_obj=session_obj, # Flask session
+            chat_db_context=chat_db_context, # Pasar el contexto de DB
             anon_id=anon_id,
             chat_session_uuid=chat_session_uuid,
             **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
@@ -501,7 +509,7 @@ def responder_chatboc(
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=current_user,
-            session_obj=session_obj, # Flask session
+            chat_db_context=chat_db_context, # Pasar el contexto de DB
             anon_id=anon_id,
             chat_session_uuid=chat_session_uuid,
             **kwargs,

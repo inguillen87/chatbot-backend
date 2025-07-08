@@ -1,8 +1,9 @@
 import logging
 import random
+import uuid # Added for chat_session_id generation
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
-from models import User, Rubro, Conversacion, db
+from models import User, Rubro, Conversacion, db, ChatSessionContext # Added ChatSessionContext
 from services.logic import (
     responder_chatboc,
     RUBROS_PUBLICOS,
@@ -231,27 +232,73 @@ def _procesar_chat(
             else:
                 current_app.logger.error(f"No se encontró ArchivoAdjunto con ID {archivo_adjunto_id} en la DB.")
 
-        from flask import session as flask_request_session
+        # Import uuid al inicio del archivo si no está ya
         import uuid
-        session_chat_id = flask_request_session.get('chat_session_uuid')
-        if not session_chat_id:
-            session_chat_id = str(uuid.uuid4())
-            flask_request_session['chat_session_uuid'] = session_chat_id
-        current_app.logger.info(f"Chat Session ID: {session_chat_id}")
+        from models import ChatSessionContext
+
+        # Leer el X-Chat-Session-Id del header
+        chat_session_id_header = request.headers.get("X-Chat-Session-Id")
+
+        if not chat_session_id_header:
+            # Fallback: Generar un nuevo ID si no viene en el header.
+            # Idealmente, el frontend SIEMPRE debería enviarlo.
+            chat_session_id_header = str(uuid.uuid4())
+            current_app.logger.warning(f"X-Chat-Session-Id no encontrado en headers. Generando uno nuevo: {chat_session_id_header}")
+
+        current_app.logger.info(f"Usando Chat Session ID (from header or generated): {chat_session_id_header}")
+
+        # Cargar o crear el contexto de la base de datos
+        chat_context_obj = ChatSessionContext.query.get(chat_session_id_header)
+        if not chat_context_obj:
+            current_app.logger.info(f"No se encontró ChatSessionContext para {chat_session_id_header}. Creando uno nuevo.")
+            chat_context_obj = ChatSessionContext(
+                chat_session_id=chat_session_id_header,
+                user_id=getattr(actor_principal, 'id', None), # Asociar con usuario logueado si existe
+                anon_id=anon_id if not actor_principal else None, # Asociar con anon_id si no hay usuario logueado
+                context_data={} # Inicializar con datos vacíos
+            )
+            db.session.add(chat_context_obj)
+            # No hacer commit aquí todavía, se hará después de procesar el chat
+        else:
+            current_app.logger.info(f"ChatSessionContext cargado para {chat_session_id_header}. User_id: {chat_context_obj.user_id}, Anon_id: {chat_context_obj.anon_id}")
+            # Actualizar user_id o anon_id si es necesario (ej. usuario anónimo inicia sesión)
+            if actor_principal and chat_context_obj.user_id != actor_principal.id:
+                current_app.logger.info(f"Actualizando user_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.user_id} a {actor_principal.id}")
+                chat_context_obj.user_id = actor_principal.id
+                chat_context_obj.anon_id = None # Limpiar anon_id si se asocia a un usuario
+            elif not actor_principal and anon_id and chat_context_obj.anon_id != anon_id:
+                 current_app.logger.info(f"Actualizando anon_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.anon_id} a {anon_id}")
+                 chat_context_obj.anon_id = anon_id
+                 # No limpiar user_id aquí, podría ser un usuario que cerró sesión y sigue como anónimo con el mismo session_id
+
+        # El objeto `chat_context_obj.context_data` será el que se pase y modifique
+        # en lugar de `flask_request_session` para el contexto específico del chat.
 
         resultado = responder_chatboc(
             pregunta=pregunta,
             owner_user=owner_del_bot,
-            current_user=viewer_obj,
+            current_user=viewer_obj, # El usuario que está viendo/interactuando
             rubro_obj=rubro_obj_global,
             rubro_nombre_frontend=rubro_clave,
             tipo_chat=tipo_chat,
-            contexto_previo=contexto_previo,
-            anon_id=anon_id,
-            chat_session_uuid=session_chat_id,
+            contexto_previo=contexto_previo, # Este 'contexto_previo' del request original podría necesitar ser integrado o reemplazado por el de la DB
+            anon_id=anon_id, # El anon_id de la cabecera, para lógica de límites de mensajes anónimos, etc.
+            chat_session_uuid=chat_session_id_header, # El ID de sesión único, ahora desde el header
+            chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
             uploaded_file_info=uploaded_file_info,
             interpretacion_imagen_data=interpretacion_imagen_resultado
         )
+
+        # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
+        # lo persistimos.
+        try:
+            db.session.commit()
+            current_app.logger.info(f"ChatSessionContext para {chat_session_id_header} guardado/actualizado en DB.")
+        except Exception as e_commit:
+            db.session.rollback()
+            current_app.logger.error(f"Error al hacer commit de ChatSessionContext para {chat_session_id_header}: {e_commit}", exc_info=True)
+            # Considerar si devolver un error al usuario o si el chat puede continuar con contexto en memoria
+            # por esta vez. Por ahora, la respuesta del chat ya se formó, así que continuamos.
 
         es_publico = es_rubro_publico(rubro_obj_global)
         nombre_rubro_log = getattr(rubro_obj_global, "clave", "N/A") if rubro_obj_global else "N/A"

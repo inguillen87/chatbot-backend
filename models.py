@@ -522,5 +522,17 @@ class PromocionAlcance(db.Model):
 #     cliente = db.relationship('User', backref='promociones_usadas')
 #     pedido = db.relationship('PymePedido', backref='promociones_aplicadas_en_pedido')
 
+class ChatSessionContext(db.Model):
+    __tablename__ = "chat_session_context"
+    chat_session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    anon_id = db.Column(db.String(80), nullable=True, index=True) # Similar to MunicipioTicket.anon_id
+    context_data = db.Column(db.JSON, nullable=True) # Stores combined context (municipio, pyme, history, idempotency keys)
+    last_updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = db.relationship('User', backref=db.backref('chat_session_contexts', lazy='dynamic'))
+
+    def __repr__(self):
+        return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
 
 print("✅ models.py fue importado con éxito y contiene modelos.")
