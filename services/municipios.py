@@ -1532,7 +1532,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                 }
             if accion == "compartir_ubicacion":
                 allow_anon_gps_for_sharing = False
-                from flask import has_app_context
                 if has_app_context():
                     allow_anon_gps_for_sharing = current_app.config.get("ALLOW_ANON_GPS", False)
 
