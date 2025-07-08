@@ -870,8 +870,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                         return {"respuesta": "Estaba esperando un correo electrónico, pero eso parece un número de teléfono. ¿Podrías darme tu email?"}
                     else: # This is the fallback if it's not a valid email, not an address, and not a phone.
                         logger.info(f"[ReclamoHandler] Input '{email_input}' no es un email válido. Repreguntando.")
-                        return {"respuesta": "El **correo electrónico** no parece tener el formato correcto. ¿Podrías revisarlo?"} # This line was the culprit
-
+                        return {"respuesta": "El **correo electrónico** no parece tener el formato correcto. ¿Podrías revisarlo?"}
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
                 if memoria.get("descripcion_reclamo"):
                     logger.debug(f"[ReclamoHandler] Descripción ya en memoria: '{memoria['descripcion_reclamo'][:50]}...'. Avanzando.")
@@ -900,21 +899,11 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if memoria.get("descripcion_reclamo") == pregunta_str.strip() or \
                    (payload.get("datos", {}).get("descripcion_reclamo") == memoria.get("descripcion_reclamo")):
                     return {"respuesta": "¡Gracias por la descripción! ¿Querés **adjuntar una foto o compartir tu ubicación GPS**? (Opcional)", "botones": [{"texto": "Adjuntar foto", "action": "adjuntar_foto"}, {"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Continuar sin adjuntos", "action": "sin_adjuntos"}]}
-                continue # Si la descripción ya estaba en memoria y el input no era para este estado, continuar el bucle.
+                continue
+            break
 
-            break # Salir del while si no se manejó ningún estado o se completó uno
-
-        # El resto del handler (manejo de adjuntos, confirmación, etc.) sigue aquí
-        # ... (código existente para ESPERANDO_ADJUNTOS_RECLAMO, ESPERANDO_CONFIRMACION_RECLAMO)
-        # Asegurarse que el estado se actualice correctamente en `memoria` antes de retornar o continuar.
-
-        # Actualizar 'estado' local con el que esté en memoria al final del bucle, por si cambió
         estado_str_after_loop = memoria.get("estado_conversacion")
         estado_after_loop = ConversationState[estado_str_after_loop] if isinstance(estado_str_after_loop, str) else estado_str_after_loop
-
-        # Aquí sigue la lógica para ESPERANDO_ADJUNTOS_RECLAMO y ESPERANDO_CONFIRMACION_RECLAMO
-        # Esta parte del código no se modifica en este commit, ya que el problema principal
-        # está en la recolección de datos iniciales.
 
         if estado_after_loop == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
             accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
