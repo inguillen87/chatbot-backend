@@ -156,15 +156,16 @@ def create_app(config_class=Config):
         ]
 
     CORS(
-        app,
-        origins=allowed_origins,
-        supports_credentials=True,
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Authorization", "Content-Type", "Origin", "Accept",
-            "Anon-Id", "x-entity-token"
-        ],
-    )
+    app,
+    origins=allowed_origins,
+    supports_credentials=True,
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization", "Content-Type", "Origin", "Accept",
+        "Anon-Id", "x-entity-token", "X-Entity-Token",
+        "X-Chat-Session-Id", "x-chat-session-id"
+    ],
+)
 
     # --- Fix universal de headers custom para CORS ---
     # Temporarily commented out to test if Flask-CORS handles this sufficiently
