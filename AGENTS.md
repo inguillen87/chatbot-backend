@@ -1,43 +1,114 @@
-# AGENTS.md - Instrucciones y Notas para Agentes IA
+## Working with this Chatboc API Project
 
-Este documento proporciona información importante para los agentes IA que trabajan con este codebase.
+This document provides guidance for AI agents working on this codebase.
 
-## Consideraciones de Seguridad
+### General Conventions
+- Follow standard Python coding conventions (PEP 8).
+- Write clear and concise commit messages.
+- Ensure new features are accompanied by relevant tests.
+- Update this `AGENTS.MD` if you introduce changes that require new setup or specific operational knowledge.
 
-### Token de Empresa para Widget Embebido
+### Running the Flask Application
+1.  **Set up a Python virtual environment:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **Set up Environment Variables:**
+    Create a `.env` file in the project root. See `config.py` for all possible variables. Essential ones include:
+    *   `FLASK_APP=app.py`
+    *   `FLASK_ENV=development` (or `production`)
+    *   `SECRET_KEY=your_super_secret_key`
+    *   `SQLALCHEMY_DATABASE_URI=your_database_url` (e.g., `postgresql://user:pass@host/dbname` or `sqlite:///instance/database.db`)
+    *   `LOG_LEVEL=INFO` (or `DEBUG`)
 
-**Contexto:** La funcionalidad de widget de chat embebido permite a las PYMEs y Municipios integrar el chatbot en sus propios sitios web. Para que el widget sepa a qué empresa pertenece, utiliza un token.
+4.  **Database Migrations:**
+    If this is the first time or there are new migrations:
+    ```bash
+    flask db init  # If first time initializing migrations
+    flask db migrate -m "Initial migration." # Or a descriptive message for new migrations
+    flask db upgrade
+    ```
+
+5.  **Run the development server:**
+    ```bash
+    flask run
+    ```
+
+### WhatsApp Business API Integration (`routes/whatsapp_webhook.py`)
+
+This integration allows the chatbot to communicate via WhatsApp using the Twilio API.
+
+**Environment Variables for WhatsApp Integration:**
+Ensure the following environment variables are set in your `.env` file or server configuration (e.g., on Render, Heroku):
+
+*   `TWILIO_ACCOUNT_SID`: Your Twilio Account SID.
+*   `TWILIO_AUTH_TOKEN`: Your Twilio Auth Token.
+*   `TWILIO_NUMEROS_JSON`: Path to a JSON file mapping Twilio numbers to client information.
+    *   Default path if not set: `data/numeros_whatsapp.json`
+    *   Example content for `numeros_whatsapp.json`:
+        ```json
+        {
+          "+17432643718": {"empresa_id": 1, "nombre": "Empresa Ejemplo 1", "tipo": "municipio"},
+          "+14153278900": {"empresa_id": 2, "nombre": "Negocio Ejemplo 2", "tipo": "pyme"}
+        }
+        ```
+        Ensure this JSON file is present at the specified path.
+
+**Webhook Configuration:**
+*   The webhook endpoint is exposed at `/webhook/whatsapp`.
+*   In your Twilio console, for each provisioned WhatsApp number, set the "A MESSAGE COMES IN" webhook URL to `https://<your_domain>/webhook/whatsapp` (ensure HTTPS).
+
+**Testing the WhatsApp Integration:**
+1.  Ensure your Flask application is running and accessible via HTTPS.
+2.  Verify the `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_NUMEROS_JSON` environment variables are correctly set.
+3.  Confirm the `numeros_whatsapp.json` file exists, is correctly formatted, and contains the Twilio number you are testing with.
+4.  Send a message from your WhatsApp account to the provisioned Twilio number.
+5.  Check the Flask application logs for incoming message details and any errors.
+6.  The application should (currently, with stubbed logic) echo back your message.
+7.  Check Twilio's console logs for details on the webhook request and response if issues arise.
+
+**Important Notes for WhatsApp Integration:**
+*   The `RequestValidator` in `routes/whatsapp_webhook.py` uses `TWILIO_AUTH_TOKEN` to validate incoming webhook signatures. This is crucial for security.
+*   The current implementation uses stubbed functions for session management (`recuperar_sesion`, `guardar_sesion`) and chatbot logic (`responder_chatboc`). These will need to be replaced with actual implementations for full functionality.
+*   The `twilio` library is used for sending messages. Ensure it's listed in `requirements.txt`.
+
+### Token de Empresa para Widget Embebido (`X-Entity-Token`)
+
+**Contexto:** El widget de chat embebido utiliza un token para identificar a la empresa (PYME/Municipio).
 
 **Implementación Actual:**
-*   El token que el widget embebido utiliza para identificar a la empresa (PYME/Municipio) es el `User.token` del usuario administrador de dicha entidad.
-*   Este token se envía en las cabeceras HTTP (ej. `Authorization`, `X-Token`, o preferiblemente `X-Entity-Token`) en las solicitudes desde el widget al backend.
-*   El backend valida este token y carga el `User` correspondiente como el `owner_user` (la empresa propietaria del widget).
+*   El token es el `User.token` del usuario administrador de la entidad.
+*   Se envía en la cabecera `X-Entity-Token`.
 
-**Advertencia de Seguridad Importante:**
-*   **Sensibilidad del Token:** El `User.token` del administrador es el mismo token que se utiliza para la autenticación en la plataforma principal de Chatboc. Por lo tanto, otorga los mismos privilegios que el usuario administrador.
-*   **Riesgo de Exposición:** Si este token se incrusta directamente en el código frontend (HTML/JavaScript) del sitio web donde se embebe el widget, queda expuesto y puede ser obtenido por cualquier persona que inspeccione el código fuente de la página.
-*   **Potencial Abuso:** Un token de administrador expuesto podría ser utilizado por un actor malicioso para acceder a las APIs de gestión de la empresa con privilegios de administrador. Esto podría incluir ver/modificar datos del perfil de la empresa, acceder a información de clientes/tickets, o interactuar con otras funcionalidades administrativas.
+**Advertencia de Seguridad:**
+*   El `User.token` del administrador otorga privilegios de administrador.
+*   **NO SE RECOMIENDA INCRUSTAR ESTE TOKEN DIRECTAMENTE EN CÓDIGO HTML/JS PÚBLICO.**
+*   Las empresas deben cargar el token desde una variable de entorno en su propio servidor y pasarlo de forma segura al widget o actuar como proxy.
 
-**Recomendaciones para Empresas Integradoras (Usuarios de Chatboc):**
-1.  **Tratar el Token como Secreto:** El token de empresa debe ser tratado con el máximo nivel de confidencialidad.
-2.  **Evitar Incrustación Directa:** **NO SE RECOMIENDA INCRUSTAR EL TOKEN DIRECTAMENTE EN EL CÓDIGO HTML/JS PÚBLICO.**
-3.  **Método de Integración Seguro (Recomendado):**
-    *   La empresa que integra el widget debería cargar el token desde una variable de entorno en su propio servidor.
-    *   Su backend debería obtener este token y pasarlo de forma segura al widget cuando se inicializa en el frontend del cliente, o actuar como un proxy para las solicitudes del widget al backend de Chatboc.
-4.  **Uso de Cabecera `X-Entity-Token`:** Al configurar el widget para que envíe el token, es preferible utilizar la cabecera `X-Entity-Token`.
-
-**Recomendación para el Desarrollo Futuro de Chatboc (Mediano/Largo Plazo):**
-*   **Implementar Tokens de API Específicos para Widgets:**
-    *   Desarrollar una funcionalidad que permita a los administradores de PYMEs/Municipios generar tokens de API dedicados exclusivamente para el uso del widget.
-    *   Estos tokens deberían tener permisos intrínsecamente restringidos:
-        *   Suficientes para identificar a la empresa (`owner_user`).
-        *   Permitir operaciones de chat para los clientes/ciudadanos de esa empresa (enviar mensajes, registrarse/loguearse bajo esa empresa).
-        *   **NO DEBERÍAN** permitir el acceso a APIs de gestión de la cuenta de la empresa (actualización de perfil de empresa, gestión de empleados, acceso a datos agregados sensibles, etc.).
-    *   Estos tokens deberían ser gestionables (crear, ver, revocar) desde el panel de administración de la empresa.
+**Recomendación Futura:**
+*   Implementar tokens de API específicos para widgets con permisos restringidos.
 
 **Agentes IA:**
-*   Al trabajar en funcionalidades relacionadas con el widget embebido o la autenticación de entidades, tened presente esta sensibilidad.
-*   Si se implementan nuevas rutas protegidas por `token_requerido` que acceden a datos o funciones administrativas, asegurar que existan chequeos de rol adicionales y considerar el contexto de si la llamada podría originarse desde un widget con un token de administrador.
+*   Al trabajar en el widget embebido o autenticación de entidades, considerar la sensibilidad del token.
 
-## Otras Notas
-*   (Vacío por ahora, añadir más notas según sea necesario)
+### Running Tests
+Unit tests are located in the `tests/` directory.
+To run all tests:
+```bash
+python -m unittest discover tests
+```
+To run a specific test file:
+```bash
+python -m unittest tests/test_your_module.py
+```
+Ensure all dependencies, including development/test dependencies, are installed before running tests. Due to sandbox limitations, `pip install` might time out; run it locally if needed.
+
+### Code Style and Linting
+(Placeholder for future instructions on linters or formatters if adopted, e.g., Black, Flake8)
+
+Remember to consult `README.md` for general project information.
