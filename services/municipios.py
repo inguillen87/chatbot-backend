@@ -480,7 +480,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                     resumen = self.build_detalles_memoria(memoria)
                     return {"respuesta": f"Parece que tenemos todos los datos. ¿Confirmás el reclamo con estos datos?\n{resumen}", "botones": [{"texto": "Confirmar reclamo", "action": "confirmar_reclamo"}, {"texto": "Editar datos", "action": "editar_reclamo"}]}
                 else:
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name; return None # Corrected
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO; return None # Corrected
         return None
 
 class ReclamoHandler(BaseMunicipioHandler):
