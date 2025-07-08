@@ -344,26 +344,47 @@ class IntentClassifierHandler(BaseMunicipioHandler):
     KEYWORDS_PANICO = ["ayuda urgente", "emergencia", "sos", "necesito ayuda inmediata", "panico", "pánico", "boton de panico", "botón de pánico", "peligro"]
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", ""); logger.info(f"[INTENT] Analizando intención para: {pregunta_str}"); memoria = self.context[CONTEXTO_MUNICIPIO]; texto_normalizado = normalizar_texto(pregunta_str)
-        if memoria.get("estado_conversacion"):
+
+        current_context_state_val = memoria.get("estado_conversacion")
+        active_state_is_reclamo = False
+        current_state_enum = None
+
+        if isinstance(current_context_state_val, ConversationState):
+            current_state_enum = current_context_state_val
+        elif isinstance(current_context_state_val, str):
+            try:
+                current_state_enum = ConversationState[current_context_state_val]
+            except KeyError:
+                pass # current_state_enum remains None
+
+        if current_state_enum and current_state_enum in RECLAMO_STATES:
+            active_state_is_reclamo = True
+
+        if active_state_is_reclamo:
+            # If a reclamo is active, and this IntentClassifierHandler is called,
+            # it means the ReclamoHandler (owner) decided not to handle the input (returned None).
+            # We should not try to classify intent for simple inputs like "sí" or "ok" as a new general intent.
+            # Let the ReclamoHandler get another chance in the remaining_handlers loop, or let it fall through to a generic "didn't understand".
+            logger.info(f"[INTENT_CLASSIFIER] Reclamo en curso (estado activo: {current_state_enum.name if current_state_enum else current_context_state_val}). IntentClassifier cede el control y no clasificará nueva intención.")
+            # Allow interruption keywords even if a reclamo is active
+            if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE):
+                self.context["intencion"] = "hablar_con_agente"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo de reclamo)"); return None
+            if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO):
+                self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo de reclamo)"); return None
+            return None # Cede control
+
+        # If not a reclamo state, or no state at all, proceed with normal intent classification
+        if memoria.get("estado_conversacion"): # Handles non-reclamo active states
             if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE): self.context["intencion"] = "hablar_con_agente"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo)"); return None
             if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO): self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo)"); return None
-            # If there's an active state, let the state owner handle it or re-evaluate if needed.
-            # Don't just set to 'continuar_flujo' if a specific state handler should act.
-            # This part is handled by the OWNER_HANDLERS_FOR_STATE logic in responder_municipio.
-            # So, if memoria.get("estado_conversacion") is true, this handler should probably return None
-            # to let the state-specific handler (or subsequent generic handlers) decide.
-            # However, the original logic was to set to 'continuar_flujo'. Let's refine.
-            # If there is a state, the main responder_municipio loop will try the OWNER_HANDLER first.
-            # This IntentClassifierHandler runs if no owner responded or no state was set initially.
-            # So, if memoria.get("estado_conversacion") is set here, it implies it might have been set by a *previous* handler
-            # in this same request cycle (e.g., ReclamoInteligente setting it before ReclamoHandler runs).
-            # The original logic seems okay: if a state is already active, intent is to continue that.
+
             self.context["intencion"] = "continuar_flujo";
             active_state_log = memoria.get('estado_conversacion')
             if isinstance(active_state_log, Enum): active_state_log = active_state_log.name
-            logger.info(f"[MUNICIPIO] Intención: continuar_flujo (estado activo: {active_state_log})")
+            logger.info(f"[MUNICIPIO] Intención: continuar_flujo (estado activo no-reclamo: {active_state_log})")
             return None
 
+        # No active state, classify intent from scratch
         for kw in self.KEYWORDS_PANICO:
             if kw in texto_normalizado: self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword '{kw}')"); return None
         for kw in self.KEYWORDS_AGENTE:
@@ -1389,10 +1410,23 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     contexto_municipio_actual = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
     estado_guardado_str = contexto_municipio_actual.get("estado_conversacion")
     if estado_guardado_str and isinstance(estado_guardado_str, str):
-        try: contexto_municipio_actual["estado_conversacion"] = ConversationState[estado_guardado_str]
-        except KeyError: logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Estado inválido en DB context: {estado_guardado_str}. Se limpia."); contexto_municipio_actual["estado_conversacion"] = None
-    elif not isinstance(estado_guardado_str, ConversationState) and estado_guardado_str is not None:
-        logger_actual.warning(f"[CONTEXTO_MUNICIPIO] Tipo de estado inesperado en DB context: {type(estado_guardado_str)}. Se limpia."); contexto_municipio_actual["estado_conversacion"] = None
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO] Intentando cargar estado desde string: '{estado_guardado_str}'")
+        try:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState[estado_guardado_str]
+            logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado cargado exitosamente como Enum: {contexto_municipio_actual['estado_conversacion']}")
+        except KeyError:
+            logger_actual.error(f"[CONTEXTO_MUNICIPIO] ESTADO INVÁLIDO EN DB CONTEXT '{estado_guardado_str}' (KeyError). Se limpia el estado.")
+            contexto_municipio_actual["estado_conversacion"] = None
+    elif estado_guardado_str is None:
+        logger_actual.info("[CONTEXTO_MUNICIPIO] No hay estado guardado (None).")
+        contexto_municipio_actual["estado_conversacion"] = None
+    elif isinstance(estado_guardado_str, ConversationState):
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado ya es Enum en memoria (no debería ocurrir desde DB load): {estado_guardado_str}. Usando tal cual.")
+        # This case should ideally not happen if loading from JSON context, but good to log.
+        contexto_municipio_actual["estado_conversacion"] = estado_guardado_str
+    else:
+        logger_actual.error(f"[CONTEXTO_MUNICIPIO] TIPO DE ESTADO INESPERADO EN DB CONTEXT: type='{type(estado_guardado_str)}', value='{estado_guardado_str}'. Se limpia el estado.")
+        contexto_municipio_actual["estado_conversacion"] = None
     context = {CONTEXTO_MUNICIPIO: contexto_municipio_actual, "user_obj": owner_user, "user_id": getattr(owner_user, "id", None), "cliente_id": getattr(viewer_user, "id", None), "viewer_user_obj": viewer_user, "anon_id": anon_id, "intencion": None, "rubro_obj": rubro_obj, "ubicacion_usuario": received_payload.get("ubicacion_usuario"), "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None, "es_foto": received_payload.get("es_foto", False), "es_ubicacion": received_payload.get("es_ubicacion", False), "es_archivo": received_payload.get("es_archivo", False), "action": received_payload.get("action"), "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"), "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"), "chat_session_uuid": kwargs.get("chat_session_uuid"), "chat_db_context_data": chat_db_context.context_data}
     if not viewer_user and anon_id and has_app_context():
         estado_actual_sugerencia = contexto_municipio_actual.get("estado_conversacion")
