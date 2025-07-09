@@ -1147,14 +1147,20 @@ class ReclamoHandler(BaseMunicipioHandler):
             # 1. ESPERANDO_CATEGORIA_RECLAMO
             if current_state_for_logic == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
                 categoria_desde_input = None
-                if pregunta_str:  # If there is current input, try to process it as category
-                    texto_normalizado_cat = normalizar_texto(pregunta_str)
-                    if texto_normalizado_cat in categorias_normalizadas:
-                        idx = categorias_normalizadas.index(texto_normalizado_cat)
+                # Definir una lista de IDs de acción que no son categorías y no deben usarse para sugerencias
+                action_ids_no_categoria = ["iniciarreclamo", "hacer_reclamo", "hacer un reclamo"]
+                texto_normalizado_pregunta_actual = normalizar_texto(pregunta_str)
+
+                is_action_id_input = texto_normalizado_pregunta_actual in action_ids_no_categoria
+
+                if pregunta_str and not is_action_id_input:  # Intentar extraer categoría solo si pregunta_str no es un ID de acción
+                    # texto_normalizado_cat es el mismo que texto_normalizado_pregunta_actual
+                    if texto_normalizado_pregunta_actual in categorias_normalizadas:
+                        idx = categorias_normalizadas.index(texto_normalizado_pregunta_actual)
                         categoria_desde_input = CATEGORIAS_RECLAMO[idx]
                     else:
                         from difflib import get_close_matches
-                        matches = get_close_matches(texto_normalizado_cat, categorias_normalizadas, n=1, cutoff=0.7)
+                        matches = get_close_matches(texto_normalizado_pregunta_actual, categorias_normalizadas, n=1, cutoff=0.7)
                         if matches:
                             idx = categorias_normalizadas.index(matches[0])
                             categoria_desde_input = CATEGORIAS_RECLAMO[idx]
@@ -1167,49 +1173,58 @@ class ReclamoHandler(BaseMunicipioHandler):
                         except Exception: pass
 
                 if categoria_desde_input:
-                    memoria["categoria_reclamo"] = categoria_desde_input # Overwrite/set category from current input
-                    logger.info(f"[ReclamoHandler] Categoría establecida/actualizada a: {categoria_desde_input} desde input '{pregunta_str}'.")
+                    memoria["categoria_reclamo"] = categoria_desde_input
+                    logger_actual.info(f"[ReclamoHandler] Categoría establecida/actualizada a: {categoria_desde_input} desde input '{pregunta_str}'.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                     if all(memoria.get(fld) for fld in ["direccion_reclamo", "nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
                         memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                         estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-                    pregunta_str = "" # Consumed current input for category
+                    pregunta_str = ""
                     continue
 
-                elif memoria.get("categoria_reclamo"): # No category from input, but one was already in memory
-                    logger.debug(f"[ReclamoHandler] Categoría ya en memoria: '{memoria['categoria_reclamo']}' y no se actualizó con input actual ('{pregunta_str}'). Avanzando.")
+                elif memoria.get("categoria_reclamo"):
+                    logger_actual.debug(f"[ReclamoHandler] Categoría ya en memoria: '{memoria['categoria_reclamo']}' y no se actualizó con input actual ('{pregunta_str}'). Avanzando.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                     if all(memoria.get(fld) for fld in ["direccion_reclamo", "nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
                         memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                         estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-                    # pregunta_str was not a category, keep it for next field processing (e.g. LLM might pick it up as address/name)
                     continue
 
-                else: # No category from input and none in memory, or input was not a category and nothing in memory. Ask for it.
-                    effective_input_for_suggestion = pregunta_str if pregunta_str else memoria.get("descripcion_reclamo", "")
-                    sugeridas_data = sugerir_categorias_relevantes(effective_input_for_suggestion)
-                    options_data = sugeridas_data if sugeridas_data else CATEGORIAS_RECLAMO
+                else: # Pedir categoría (porque no se extrajo, no estaba en memoria, o el input era un ID de acción)
+                    mensaje_adjunto = memoria.pop("mensaje_adjunto_recibido", "")
+
+                    # Usar descripción_reclamo (si existe, ej. de análisis de imagen) para sugerir categorías,
+                    # o nada si el input fue un ID de acción.
+                    texto_para_sugerir_categorias = memoria.get("descripcion_reclamo", "")
+                    if pregunta_str and not is_action_id_input: # Si el usuario escribió algo que no es ID de acción
+                        texto_para_sugerir_categorias = pregunta_str
+
+                    sugeridas_data = sugerir_categorias_relevantes(texto_para_sugerir_categorias)
+                    options_data = sugeridas_data if (sugeridas_data and len(sugeridas_data) > 0) else CATEGORIAS_RECLAMO
                     options = [{"id": normalizar_texto(c), "texto": c.title()} for c in options_data]
+                    if not any(opt['id'] == "otro motivo" for opt in options) and "otro motivo" in CATEGORIAS_RECLAMO:
+                        options.append({"id": "otro motivo", "texto": "Otro Motivo"})
+
 
                     respuesta_texto = ""
-                    if pregunta_str and not categoria_desde_input : # User provided input, but it wasn't recognized as a category
-                        respuesta_texto = "¡Ups! No reconocí eso como una categoría válida."
+                    # Si el input fue un ID de acción o no hubo input (ej. imagen sola), pedir categoría directamente.
+                    if is_action_id_input or not pregunta_str.strip():
+                        if sugeridas_data:
+                            respuesta_texto = f"{mensaje_adjunto}Detecté que podría ser sobre algunos de estos temas. Para tu reclamo, ¿cuál sería la categoría?"
+                        else:
+                            respuesta_texto = f"{mensaje_adjunto}Para tu reclamo, ¿podrías ayudarme seleccionando una categoría, o describiendo brevemente de qué se trata?"
+                    else: # El input no fue ID de acción, no se reconoció como categoría, y no estaba vacío.
+                        respuesta_texto = f"{mensaje_adjunto}¡Ups! No reconocí '{pregunta_str}' como una categoría válida."
                         if sugeridas_data:
                              respuesta_texto += " Quizás quisiste decir alguna de estas:"
                         else:
                              respuesta_texto += " Por favor, elegí una de las siguientes opciones o describila mejor:"
-                    else: # First time asking for category (pregunta_str is empty and no category in memory)
-                        respuesta_texto = ("Para tu reclamo, ¿podrías ayudarme seleccionando una categoría, "
-                                           "o describiendo brevemente de qué se trata?")
-                        if sugeridas_data:
-                            respuesta_texto = ("Detecté que podría ser sobre algunos de estos temas. "
-                                               "Para tu reclamo, ¿cuál sería la categoría?")
 
                     message_type = 'interactive_list' if len(options) > 3 else 'interactive_buttons'
-                    if len(options) > 10: logger.warning(f"ReclamoHandler Esperando Categoria: Too many options ({len(options)}) for WhatsApp list.")
-                    return {"message_body": respuesta_texto, "options_list": options, "message_type": message_type, "fuente": "solicitud_categoria_reclamo_interactivo_v2"}
+                    if len(options) > 10: logger_actual.warning(f"ReclamoHandler Esperando Categoria: Too many options ({len(options)}) for WhatsApp list.")
+                    return {"message_body": respuesta_texto, "options_list": options, "message_type": message_type, "fuente": "solicitud_categoria_reclamo_interactivo_v3"}
 
             # 2. ESPERANDO_DIRECCION_RECLAMO
             elif current_state_for_logic == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
