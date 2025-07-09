@@ -280,5 +280,18 @@ class TestLLMUtils(unittest.TestCase):
         }
         self.assertEqual(result, expected)
 
+    @patch('services.llm_utils.robust_chat')
+    def test_extract_contact_details_llm_regex_fallback(self, mock_robust_chat):
+        mock_robust_chat.return_value = json.dumps({})
+
+        text = "Hola, soy Ana Gomez. Tel 261-1234567, vivo en Mitre 123. Email ana@test.com"
+        potential_fields = ["nombre_cliente", "telefono_cliente", "direccion_cliente", "email_cliente"]
+        result = extract_multiple_contact_details_llm(text, potential_fields)
+
+        self.assertEqual(result.get("nombre_cliente"), "Ana Gomez")
+        self.assertTrue(result.get("telefono_cliente"))
+        self.assertEqual(result.get("email_cliente"), "ana@test.com")
+        self.assertTrue(result.get("direccion_cliente"))
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
