@@ -425,11 +425,15 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         current_app.logger.warning(f"Admin response con Content-Type no soportado: {request.content_type}")
         return jsonify({"error": "Unsupported Content-Type. Use application/json or multipart/form-data."}), 415
 
-    if not comentario_texto and not archivos_subidos: # Check after parsing
+    # Default comentario_texto to empty string if it's None *before* the check
+    if comentario_texto is None:
+        comentario_texto = ""
+
+    # Now check if there's actual content (non-whitespace text or any files)
+    if not comentario_texto.strip() and not archivos_subidos:
         return jsonify({"error": "El comentario o al menos un archivo son requeridos."}), 400
     
-    if comentario_texto is None:
-        comentario_texto = "" # Ensure it's a string if only files are sent via multipart
+    # comentario_texto is now guaranteed to be a string (potentially empty or whitespace only if not stripped yet for saving)
 
 
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket

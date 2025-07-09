@@ -2604,21 +2604,41 @@ class HumanEscalationHandler(BaseMunicipioHandler):
         email = memoria.get("email_vecino", "")
         direccion_mem = memoria.get("direccion_reclamo", "")
 
+        # Fallback to user profile data if details are missing from memoria
+        viewer_user = self.context.get("viewer_user_obj")
+        if not nombre and viewer_user and getattr(viewer_user, "name", None):
+            nombre = viewer_user.name
+            logger.info(f"[HumanEscalationHandler] Usando nombre del perfil de usuario: {nombre}")
+        if not telefono and viewer_user and getattr(viewer_user, "telefono", None):
+            # Asegurarse que el teléfono del perfil esté en formato E.164 si es posible, o usar como está.
+            # La lógica de formateo de teléfono podría ser necesaria aquí si el perfil no lo garantiza.
+            telefono = viewer_user.telefono
+            logger.info(f"[HumanEscalationHandler] Usando teléfono del perfil de usuario: {telefono}")
+        if not email and viewer_user and getattr(viewer_user, "email", None):
+            email = viewer_user.email
+            logger.info(f"[HumanEscalationHandler] Usando email del perfil de usuario: {email}")
+
         lat_mem, lon_mem = None, None
-        ubicacion_payload = self.context.get("ubicacion_usuario")
+        ubicacion_payload = self.context.get("ubicacion_usuario") # GPS from current payload/turn (e.g. user clicks "Share Location" then "Talk to agent")
         if ubicacion_payload and isinstance(ubicacion_payload, dict):
             lat_mem = ubicacion_payload.get("lat")
             lon_mem = ubicacion_payload.get("lon")
             logger.info(f"[HumanEscalationHandler] Usando ubicación GPS del payload actual: Lat {lat_mem}, Lon {lon_mem}")
-        elif memoria.get("ubicacion_gps") and isinstance(memoria.get("ubicacion_gps"), dict):
+        elif memoria.get("ubicacion_gps") and isinstance(memoria.get("ubicacion_gps"), dict): # GPS from prior reclamo context
             lat_mem = memoria.get("ubicacion_gps", {}).get("lat")
             lon_mem = memoria.get("ubicacion_gps", {}).get("lon")
             logger.info(f"[HumanEscalationHandler] Usando ubicación GPS de memoria de reclamo: Lat {lat_mem}, Lon {lon_mem}")
 
+        # If still no address/location, try from user profile (textual address only)
+        if not direccion_mem and not (lat_mem and lon_mem) and viewer_user and getattr(viewer_user, "direccion", None):
+            direccion_mem = viewer_user.direccion
+            logger.info(f"[HumanEscalationHandler] Usando dirección de texto del perfil de usuario: {direccion_mem}")
+
+
         ticket_data = {
             "asunto": f"Solicitud de Chat en Vivo por: {nombre if nombre else 'Vecino'}",
             "categoria": "Atención en Vivo",
-            "pregunta": memoria.get("descripcion_reclamo_original_para_idempotencia", pregunta_original_escalation),
+            "pregunta": memoria.get("descripcion_reclamo", pregunta_original_escalation), # Use current problem description if available
             "detalles": final_escalation_details,
             "user_id": self.context.get("cliente_id"),
             "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
@@ -2829,7 +2849,7 @@ def safe_llm_call(prompt, preamble, fallback=None):
     except ValueError as ve: logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}"); return fallback or "No tengo información específica en este momento. ¿Te puedo ayudar con algo más?"
     except Exception as e: logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True); return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. Intenta de nuevo más tarde."
 
-CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño", "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle", "rotura de semaforo", "tramites de obras privadas", "otro motivo"]
+CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño", "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle", "rotura de semaforo", "tramites de obras privadas", "incendio", "otro motivo"]
 categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
 RECLAMO_STATES = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]
 
@@ -2953,6 +2973,77 @@ def responder_municipio(
     logger_actual.info(
         f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})"
     )
+
+    # --- Image Analysis for New/Early Claims ---
+    uploaded_file_info = received_payload.get("uploaded_file_info")
+    is_new_image_upload = uploaded_file_info and uploaded_file_info.get("id") and \
+                          (uploaded_file_info.get("mime_type","").startswith("image/") or \
+                           any(uploaded_file_info.get("name","").lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"])) # Added more image extensions
+
+    should_analyze_image_for_claim = False
+    current_claim_state_for_img_check = contexto_municipio_actual.get("estado_conversacion") # This is Enum or None
+
+    # Potential intent from payload if already classified by a prior lightweight step (not standard here, but for robustness)
+    current_intent_for_img_check = kwargs.get("intencion") or context.get("intencion")
+
+
+    if is_new_image_upload:
+        # Analyze if:
+        # 1. Intent is 'iniciar_reclamo' and no specific claim sub-state is active yet.
+        # 2. Or, if the bot is currently in the state of asking for the category.
+        # 3. Or, if there's no state and no clear intent yet, but an image came in (could be an attempt to start claim with image).
+        if (current_intent_for_img_check == "iniciar_reclamo" and not current_claim_state_for_img_check) or \
+           current_claim_state_for_img_check == ConversationState.ESPERANDO_CATEGORIA_RECLAMO or \
+           (not current_claim_state_for_img_check and not current_intent_for_img_check): # Image as first interaction
+            should_analyze_image_for_claim = True
+
+    if should_analyze_image_for_claim:
+        try:
+            from models import ArchivoAdjunto # Ensure imported
+            from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+
+            archivo_obj = db.session.get(ArchivoAdjunto, uploaded_file_info["id"])
+
+            if archivo_obj:
+                logger_actual.info(f"[RESPONDER_MUNICIPIO] Imagen ID {archivo_obj.id} ({archivo_obj.nombre_original}) detectada. Intentando análisis para pre-llenar reclamo.")
+                analisis_resultado = interpretar_imagen_para_chat(
+                    archivo_adjunto=archivo_obj,
+                    tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                )
+                logger_actual.info(f"[RESPONDER_MUNICIPIO] Resultado análisis de imagen para reclamo: {analisis_resultado}")
+
+                if analisis_resultado and not analisis_resultado.get("error") and analisis_resultado.get('es_reclamo'):
+                    sugerida_cat = analisis_resultado.get("categoria_sugerida")
+                    sugerida_desc = analisis_resultado.get("descripcion_sugerida")
+
+                    if sugerida_cat and \
+                       (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                        contexto_municipio_actual["categoria_reclamo"] = sugerida_cat
+                        logger_actual.info(f"Categoría pre-llenada desde análisis de imagen: {sugerida_cat}")
+                        if not context.get("intencion"): context["intencion"] = "iniciar_reclamo"
+
+                    if sugerida_desc and \
+                       (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                        contexto_municipio_actual["descripcion_reclamo"] = sugerida_desc
+                        logger_actual.info(f"Descripción pre-llenada desde análisis de imagen: {sugerida_desc[:70]}...")
+                        if not context.get("intencion"): context["intencion"] = "iniciar_reclamo"
+
+                    contexto_municipio_actual["analisis_imagen_reclamo_auto"] = {
+                        "categoria": sugerida_cat,
+                        "descripcion": sugerida_desc,
+                        "ocr_texto": analisis_resultado.get("texto_ocr","")[:200]
+                    }
+                    # If image analysis provided category, update the current_claim_state_for_img_check
+                    # so that ReclamoInteligenteMunicipioHandler can correctly determine the next step.
+                    if sugerida_cat and current_claim_state_for_img_check == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
+                         current_claim_state_for_img_check = None # Allow ReclamoInteligente to re-evaluate next step
+            else:
+                logger_actual.warning(f"No se encontró ArchivoAdjunto con ID {uploaded_file_info['id']} para análisis de imagen.")
+        except Exception as e_img_analysis_main:
+            logger_actual.error(f"Error durante el análisis de imagen en responder_municipio: {e_img_analysis_main}", exc_info=True)
+
+    # Re-evaluate final_loaded_state for context if it was changed by image analysis (e.g. from None to ESPERANDO_CATEGORIA if intent set)
+    # This is tricky as 'context' is built after this. For now, handlers will pick up from 'contexto_municipio_actual'.
 
     context = {
         CONTEXTO_MUNICIPIO: contexto_municipio_actual,  # Esta es la copia modificada
