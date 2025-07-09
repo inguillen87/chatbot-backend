@@ -1416,19 +1416,22 @@ class ReclamoHandler(BaseMunicipioHandler):
         estado_str_after_loop = memoria.get("estado_conversacion")
         estado_after_loop = None # Initialize to None
         # Ensure estado_after_loop is an Enum for comparison, or None
+        estado_after_loop = None
         if isinstance(estado_str_after_loop, str):
             try:
                 estado_after_loop = ConversationState[estado_str_after_loop]
             except KeyError:
-                logger.error(f"[ReclamoHandler] Estado inválido '{estado_str_after_loop}' en memoria tras bucle. Limpiando.")
+                logger.error(
+                    f"[ReclamoHandler] Estado inválido '{estado_str_after_loop}' en memoria tras bucle. Limpiando."
+                )
                 memoria.clear()
                 return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
         elif isinstance(estado_str_after_loop, ConversationState):
-            estado_after_loop = estado_str_after_loop # It's already an Enum
-        elif estado_str_after_loop is None:
-            estado_after_loop = None # Explicitly set to None if it was None in memory
-        else: # Handles other unexpected types not caught by the first two specific checks
-            logger.error(f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' ({estado_str_after_loop}) en memoria tras bucle. Limpiando.")
+            estado_after_loop = estado_str_after_loop
+        elif estado_str_after_loop is not None:
+            logger.error(
+                f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' en memoria tras bucle. Limpiando."
+            )
             memoria.clear()
             return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
         
