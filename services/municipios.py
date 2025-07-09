@@ -2572,7 +2572,20 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     contexto_serializado_para_respuesta_http = serializar_enum(contexto_municipio_actual)
     media_url_to_send = contexto_serializado_para_respuesta_http.get("foto_url")
     location_data_to_send = contexto_serializado_para_respuesta_http.get("ubicacion_gps")
-    final_response_dict = {"respuesta": respuesta_final.get("respuesta"), "botones": respuesta_final.get("botones", []), "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta_http}, "ticket_id": respuesta_final.get("ticket_id", None), "media_url": media_url_to_send, "location_data": location_data_to_send, "adjuntos": []}
+    message_body_final = respuesta_final.get("message_body") or respuesta_final.get("respuesta")
+    options_list_final = respuesta_final.get("options_list") or respuesta_final.get("botones", [])
+    message_type_final = respuesta_final.get("message_type", "text")
+
+    final_response_dict = {
+        "message_body": message_body_final,
+        "options_list": options_list_final,
+        "message_type": message_type_final,
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta_http},
+        "ticket_id": respuesta_final.get("ticket_id", None),
+        "media_url": media_url_to_send,
+        "location_data": location_data_to_send,
+        "adjuntos": [],
+    }
     uploaded_file_info = received_payload.get("uploaded_file_info")
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
