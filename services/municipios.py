@@ -184,26 +184,63 @@ def enviar_notificacion_whatsapp_con_plantilla(numero_destino: str, nombre: str,
 def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str, categorias_validas=None) -> bool:
     texto = texto_usuario.strip().lower()
     if texto in {"ok", "gracias"}: return True
-    if any(kw in texto for kw in {"agente", "asesor", "humano", "operador", "persona"}): return True
+    texto_norm = normalizar_texto(texto_usuario) # Normalize once
+
+    UNIVERSAL_INTERRUPTS = {"cancelar", "salir", "menu", "menú", "ayuda", "inicio"}
+    COMMON_GREETINGS = {"hola", "buen día", "buen dia", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"}
+
+    if texto_norm in UNIVERSAL_INTERRUPTS:
+        logger.info(f"[Guardián de Flujo] Universal interrupt detected: '{texto_norm}'")
+        return True
+
+    if texto_norm in COMMON_GREETINGS and len(texto_norm.split()) <= 2:
+        logger.info(f"[Guardián de Flujo] Common greeting detected: '{texto_norm}'")
+        return True
+
+    if texto_norm == "gracias" or "muchas gracias" in texto_norm:
+        logger.info(f"[Guardián de Flujo] Thanks detected: '{texto_norm}'")
+        return True
+
+    # Specific rules to pass through valid-looking inputs to the handler
     if tipo_esperado == "una confirmación (sí o no)":
-        if texto in {"si", "sí", "no"}: return False
+        if texto_norm in {"si", "sí", "no", "afirmativo", "negativo"}: return False
     if tipo_esperado == "una calificación del 1 al 5":
-        if re.fullmatch(r"[1-5]", texto): return False
+        if re.fullmatch(r"[1-5]", texto_norm): return False
     if tipo_esperado == "un número de ticket":
-        if re.fullmatch(r"\d{5,}", texto): return False
-    if tipo_esperado in {"el dato solicitado", "una dirección"}:
-        if re.search(r"\d", texto): return False
+        # Allow M-12345, 12345, or even just a number if context is strong
+        if re.fullmatch(r"m?\-?\d{4,}", texto_norm) or (tipo_esperado == "un número de ticket" and texto_norm.isdigit()):
+             return False
+
     prompt = f"""
-    Analiza la RESPUESTA DEL USUARIO. El chatbot esperaba algo relacionado a: '{tipo_esperado}'.
+    Evalúa la RESPUESTA DEL USUARIO en el contexto de que el chatbot esperaba: '{tipo_esperado}'.
     RESPUESTA DEL USUARIO: "{texto_usuario}"
-    Si responde lo que esperabas, contestá 'RESPUESTA_VALIDA'.
-    Si cambia de tema, contestá 'PREGUNTA_NUEVA'.
+
+    Considera lo siguiente:
+    - Si la RESPUESTA DEL USUARIO es un intento de proveer la información esperada (aunque sea parcial o malformada), es 'RESPUESTA_VALIDA'.
+    - Si la RESPUESTA DEL USUARIO es una pregunta diferente, un saludo (ej: 'hola', 'buenas tardes'), una despedida, una solicitud de cancelación (ej: 'cancelar', 'salir'), o un cambio claro de tema, es 'PREGUNTA_NUEVA'.
+    - Si la RESPUESTA DEL USUARIO es una expresión de frustración o confusión pero aún relacionada al flujo, considérala 'RESPUESTA_VALIDA' (el bot necesitará manejar la frustración).
+    - Frases cortas como 'ok', 'bueno', 'dale' son ambiguas. Si el chatbot esperaba datos complejos (ej. una dirección completa, una descripción detallada) y recibe solo 'ok', es más probable que sea 'PREGUNTA_NUEVA' o un intento de resetear el flujo. Si esperaba una simple confirmación (sí/no), 'ok' puede ser 'RESPUESTA_VALIDA'.
+
+    Basado en esto, ¿la RESPUESTA DEL USUARIO es una continuación del flujo actual o es una PREGUNTA_NUEVA/cambio de tema?
+    Responde únicamente con 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.
     """
     try:
-        decision = get_cohere_response(message=prompt, preamble="Sos un clasificador. Solo respondé 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.")
-        logger.info(f"[Guardián de Flujo] Decisión: {decision.strip()}")
-        return "PREGUNTA_NUEVA" in decision
-    except Exception as e: logger.error(f"[Guardián de Flujo] Error al clasificar pregunta nueva: {e}", exc_info=True); return False
+        decision = get_cohere_response(message=prompt, preamble="Eres un clasificador experto en diálogos. Solo respondé 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.")
+        decision_clean = decision.strip().upper()
+        logger.info(f"[Guardián de Flujo] LLM Input: '{texto_usuario}', Esperado: '{tipo_esperado}', Decisión LLM: '{decision_clean}'")
+        return "PREGUNTA_NUEVA" in decision_clean
+    except Exception as e:
+        logger.error(f"[Guardián de Flujo] Error al clasificar pregunta nueva con LLM: {e}", exc_info=True)
+        # Fallback strategy: if LLM fails, be conservative.
+        # If text is very short (1-2 words) and not a clear "yes/no" when that's expected, assume new.
+        if len(texto_norm.split()) <= 2 and texto_norm not in {"si", "sí", "no"}:
+            # Also check if it's not a number if expecting a number (like rating)
+            if tipo_esperado == "una calificación del 1 al 5" and texto_norm.isdigit() and re.fullmatch(r"[1-5]", texto_norm):
+                return False # It's a valid rating
+            logger.warning(f"[Guardián de Flujo] LLM error, fallback determined it's a new question for short input: '{texto_norm}'")
+            return True
+        logger.warning(f"[Guardián de Flujo] LLM error, fallback determined it's NOT a new question: '{texto_norm}'")
+        return False
 
 PROMPT_MUNICIPIO_CON_CONTEXTO = """
 Sos el asistente digital del municipio. Respondé la PREGUNTA DEL USUARIO usando solo la INFORMACIÓN DE CONTEXTO.
@@ -294,6 +331,13 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
                     "fuente": "sugerencia_pedir_texto_v2"
                 }
         if estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA or sugerencia_texto_directo:
+            # If there's direct input (pregunta_str) and it's not a carry-over (sugerencia_texto_directo is empty)
+            if pregunta_str and not sugerencia_texto_directo and es_pregunta_nueva(pregunta_str, "el texto de tu sugerencia", memoria):
+                logger.info(f"[SugerenciasVecinoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba texto de sugerencia. Limpiando.")
+                memoria.clear()
+                self.context["intencion"] = None
+                return None
+
             sugerencia_final = sugerencia_texto_directo if sugerencia_texto_directo else pregunta_str
             if not sugerencia_final or len(sugerencia_final) < 5:
                 body_corto = "Por favor, ingresá el texto de tu sugerencia. Tiene que ser un poco más descriptiva para que podamos entenderla bien."
@@ -373,8 +417,13 @@ class SmallTalkHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "")
         if detectar_small_talk_con_llm(pregunta_str):
-            respuesta = generar_respuesta_small_talk(pregunta_str)
-            return {"respuesta": respuesta, "fuente": "smalltalk_municipio_llm"}
+            respuesta_text = generar_respuesta_small_talk(pregunta_str)
+            return {
+                "message_body": respuesta_text,
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "smalltalk_municipio_llm_v2"
+            }
         return None
 
 class RecoleccionHandler(BaseMunicipioHandler):
@@ -682,7 +731,17 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                 if all(memoria.get(f"{c}_reclamo" if c not in ["nombre", "telefono", "email"] else f"{c}_vecino") for c in self.CAMPOS_RECLAMO): # If all fields extracted
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                     resumen = self.build_detalles_memoria(memoria)
-                    return {"respuesta": f"Parece que tenemos todos los datos. ¿Confirmás el reclamo con estos datos?\n{resumen}", "botones": [{"texto": "Confirmar reclamo", "action": "confirmar_reclamo"}, {"texto": "Editar datos", "action": "editar_reclamo"}]}
+                    body = f"Parece que tenemos todos los datos. ¿Confirmás el reclamo con estos datos?\n{resumen}"
+                    options = [
+                        {"id": "confirmar_reclamo_inteligente", "texto": "Confirmar reclamo"},
+                        {"id": "editar_reclamo_inteligente", "texto": "Editar datos"}
+                    ]
+                    return {
+                        "message_body": body,
+                        "options_list": options,
+                        "message_type": 'interactive_buttons',
+                        "fuente": "reclamo_inteligente_confirmacion_v2"
+                    }
                 else:
                     # If not all data extracted, initiate step-by-step by asking the first question (category)
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
@@ -930,10 +989,24 @@ class ReclamoHandler(BaseMunicipioHandler):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
                     estado = ConversationState.ESPERANDO_NOMBRE_VECINO
                     continue
+
+                if pregunta_str: # Only check if there's actual input from the user for this turn
+                    # Pass relevant parts of memoria or the whole memoria dict for context
+                    if es_pregunta_nueva(pregunta_str, "una dirección", memoria):
+                        logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba dirección. Limpiando memoria de reclamo.")
+                        # Clear only reclamo-specific fields
+                        for key in list(memoria.keys()):
+                            if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']:
+                                memoria.pop(key, None)
+                        memoria["estado_conversacion"] = None
+                        self.context["intencion"] = None
+                        return None
+
                 if payload.get("es_foto") or payload.get("es_ubicacion"):
                     logger.info("[ReclamoHandler] Foto/ubicación recibida pero se esperaba dirección escrita primero.")
                     return {"respuesta": "Entendido. Para asociar tu foto/ubicación, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?"}
 
+                # If not a new question and not an attachment, proceed to parse as address
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_DIRECCION_RECLAMO. Input: '{pregunta_str}'. Intentando parsear como dirección.")
                 config_muni_para_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
                 parsed_address = parse_direccion_completa(pregunta_str, config_muni_para_parseo)
@@ -970,6 +1043,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                     estado = ConversationState.ESPERANDO_TELEFONO_VECINO
                     continue
 
+                if pregunta_str and es_pregunta_nueva(pregunta_str, "tu nombre completo", memoria):
+                    logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba nombre. Limpiando reclamo.")
+                    for key in list(memoria.keys()):
+                        if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']:
+                            memoria.pop(key, None)
+                    memoria["estado_conversacion"] = None
+                    self.context["intencion"] = None
+                    return None
+
                 nombre_input = pregunta_str.strip()
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_NOMBRE_VECINO. Input: '{nombre_input}'.")
 
@@ -1000,6 +1082,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                     estado = ConversationState.ESPERANDO_EMAIL_VECINO
                     if pregunta_str != payload.get("pregunta", ""): continue
 
+                if pregunta_str and es_pregunta_nueva(pregunta_str, "tu número de teléfono con código de área", memoria):
+                    logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba teléfono. Limpiando reclamo.")
+                    for key in list(memoria.keys()):
+                        if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']:
+                            memoria.pop(key, None)
+                    memoria["estado_conversacion"] = None
+                    self.context["intencion"] = None
+                    return None
+
                 telefono_input = pregunta_str.strip()
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_TELEFONO_VECINO. Input: '{telefono_input}'.")
 
@@ -1027,6 +1118,15 @@ class ReclamoHandler(BaseMunicipioHandler):
                     estado = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
                     continue
 
+                if pregunta_str and es_pregunta_nueva(pregunta_str, "tu dirección de correo electrónico", memoria):
+                    logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba email. Limpiando reclamo.")
+                    for key in list(memoria.keys()):
+                        if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']:
+                            memoria.pop(key, None)
+                    memoria["estado_conversacion"] = None
+                    self.context["intencion"] = None
+                    return None
+
                 email_input = pregunta_str.strip()
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_EMAIL_VECINO. Input: '{email_input}'.")
 
@@ -1053,8 +1153,20 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if memoria.get("descripcion_reclamo"):
                     logger.debug(f"[ReclamoHandler] Descripción ya en memoria: '{memoria['descripcion_reclamo'][:50]}...'. Avanzando.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name; estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-                    if memoria.get("descripcion_reclamo") != pregunta_str: continue
+                    # If description was pre-filled (e.g. by LLM) and is different from current input,
+                    # it means we are advancing state based on pre-fill, so continue to avoid processing current input here.
+                    if memoria.get("descripcion_reclamo") != pregunta_str.strip(): continue
 
+                if pregunta_str and es_pregunta_nueva(pregunta_str, "una descripción del problema", memoria):
+                    logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba descripción. Limpiando reclamo.")
+                    for key in list(memoria.keys()):
+                        if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']:
+                            memoria.pop(key, None)
+                    memoria["estado_conversacion"] = None
+                    self.context["intencion"] = None
+                    return None
+
+                # This check should now only run if es_pregunta_nueva is false or pregunta_str is empty
                 if not memoria.get("descripcion_reclamo"):
                     descripcion_final = ""
                     datos_sub_payload = payload.get("datos", {}); campo_descripcion = "descripcion_reclamo"
@@ -1382,11 +1494,20 @@ class TramitesHandler(BaseMunicipioHandler):
                 "fuente": "tramites_solicitar_seleccion_v2"
             }
         if estado == ConversationState.ESPERANDO_SELECCION_TRAMITE:
+            if pregunta_str and es_pregunta_nueva(pregunta_str, "el nombre de un trámite", memoria):
+                logger.info(f"[TramitesHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba trámite. Limpiando memoria.")
+                memoria.clear()
+                self.context["intencion"] = None # Allow re-classification
+                return None
+
             from .sinonimos import aplicar_sinonimos, TRAMITE_SYNONYMS, fuzzy_match
             texto = normalizar_texto(pregunta_str); texto_con_sinonimos = aplicar_sinonimos(texto, TRAMITE_SYNONYMS)
+            # Ensure texto_usuario_lower is defined if used, or use 'texto' (normalized pregunta_str)
+            texto_usuario_lower_for_id_check = normalizar_texto(pregunta_str) # Use normalized input for ID check
+
             clave_tramite = next((k for k in get_tramites_info().keys() if normalizar_texto(k) == texto_con_sinonimos), None)
             if not clave_tramite: # Try to find by ID if user clicked a button
-                clave_tramite = next((k for k in get_tramites_info().keys() if normalizar_texto(k) == texto_usuario_lower), None)
+                clave_tramite = next((k for k in get_tramites_info().keys() if normalizar_texto(k) == texto_usuario_lower_for_id_check), None)
 
             if not clave_tramite: # Fuzzy match if still not found
                 all_tramite_names = list(get_tramites_info().keys()) + list(TRAMITE_SYNONYMS.keys())
@@ -1470,18 +1591,17 @@ class TramitesHandler(BaseMunicipioHandler):
             #     # Adaptar respuesta_faq si tiene botones
             #     return {"message_body": respuesta_faq["a"], ... }
             memoria.clear()
-            # Re-presentar la info del curso o una respuesta genérica si la pregunta es muy específica y no hay FAQ.
-            info_curso_repregunta = obtener_respuesta_municipio("curso_licencia_info")
-            body_curso_repregunta = f"{info_curso_repregunta}\nNo encontré una respuesta específica para '{pregunta_str}', pero esta es la información general. Si necesitas sacar turno, el enlace es https://tlc.mendoza.gov.ar/turnos"
-            options_curso_repregunta = [
-                {"id": "consultar_otro_tramite_repregunta_lic", "texto": "Consultar otro trámite"},
-                {"id": "volver_inicio_repregunta_lic", "texto": "Volver al inicio"}
+            body_curso_fallback = obtener_respuesta_municipio("curso_licencia_info")
+            # Adding some generic follow-up options
+            options_curso_fallback = [
+                {"id": "consultar_otro_tramite_curso_fallback", "texto": "Consultar otro trámite"},
+                {"id": "volver_inicio_curso_fallback", "texto": "Volver al inicio"}
             ]
             return {
-                "message_body": body_curso_repregunta,
-                "options_list": options_curso_repregunta,
-                "message_type": 'interactive_buttons',
-                "fuente": "tramites_repregunta_curso_licencia_v2"
+                "message_body": body_curso_fallback,
+                "options_list": options_curso_fallback,
+                "message_type": "interactive_buttons",
+                "fuente": "tramites_curso_licencia_info_fallback_v2"
             }
         return None
 
@@ -1716,12 +1836,33 @@ class PanicButtonHandler(BaseMunicipioHandler):
         if not (intencion == "activar_panico" or estado == ConversationState.ESPERANDO_UBICACION_PANICO): return None
         logger.warning(f"[PANIC_HANDLER] Pánico activado. Intención: {intencion}, Estado: {estado}, Ubicación: {user_location}")
         if self.context.get("anon_id") and not self.context.get("user_id"):
-             return {"respuesta": ("🚨 **EMERGENCIA DETECTADA** 🚨\nPara enviar ayuda de forma efectiva, necesitamos tu ubicación. Compartir tu ubicación precisa requiere que inicies sesión o te registres. **Si estás en peligro inmediato y no puedes/quieres registrarte, llamá directamente al 911 o al número de emergencia local.**\n\nSi deseas continuar por aquí y compartir tu ubicación (requiere registro/login):"), "botones": [{"texto": "Iniciar Sesión para Emergencia", "action": "login"}, {"texto": "Registrarme para Emergencia", "action": "register"}, {"texto": "Cancelar Alerta (error mío)"}]}
+            body_anon_panic = "🚨 **EMERGENCIA DETECTADA** 🚨\nPara enviar ayuda de forma efectiva, necesitamos tu ubicación. Compartir tu ubicación precisa requiere que inicies sesión o te registres. **Si estás en peligro inmediato y no puedes/quieres registrarte, llamá directamente al 911 o al número de emergencia local.**\n\nSi deseas continuar por aquí y compartir tu ubicación (requiere registro/login):"
+            options_anon_panic = [
+                {"id": "login_panic_anon", "texto": "Iniciar Sesión para Emergencia"},
+                {"id": "register_panic_anon", "texto": "Registrarme para Emergencia"},
+                {"id": "cancelar_alerta_panic_anon", "texto": "Cancelar Alerta (error mío)"}
+            ]
+            return {
+                "message_body": body_anon_panic,
+                "options_list": options_anon_panic,
+                "message_type": 'interactive_buttons', # Could be list if text is long for buttons
+                "fuente": "panic_anon_login_required_v2"
+            }
         if not user_location and estado != ConversationState.ESPERANDO_UBICACION_PANICO:
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_UBICACION_PANICO.name
             memoria["intencion_pendiente_ubicacion"] = "activar_panico"
             if intencion == "activar_panico": memoria["mensaje_original_panico"] = pregunta_str
-            return {"respuesta": ("¡EMERGENCIA! Para ayudarte de inmediato, COMPARTÍ TU UBICACIÓN AHORA. Es crucial para enviar ayuda.\nSi no puedes compartirla, intentaremos ayudarte igualmente, pero la ubicación acelera la respuesta."), "botones": [{"texto": "🚨 COMPARTIR UBICACIÓN URGENTE", "action": "compartir_ubicacion_urgente"}, {"texto": "No puedo compartir ubicación"}]}
+            body_pide_ubicacion = "¡EMERGENCIA! Para ayudarte de inmediato, COMPARTÍ TU UBICACIÓN AHORA. Es crucial para enviar ayuda.\nSi no puedes compartirla, intentaremos ayudarte igualmente, pero la ubicación acelera la respuesta."
+            options_pide_ubicacion = [
+                {"id": "compartir_ubicacion_urgente_panic", "texto": "🚨 COMPARTIR UBICACIÓN URGENTE"},
+                {"id": "no_compartir_ubicacion_panic", "texto": "No puedo compartir ubicación"}
+            ]
+            return {
+                "message_body": body_pide_ubicacion,
+                "options_list": options_pide_ubicacion,
+                "message_type": 'interactive_buttons',
+                "fuente": "panic_pide_ubicacion_v2"
+            }
         if memoria.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO:
             memoria.pop("estado_conversacion", None); memoria.pop("intencion_pendiente_ubicacion", None)
         mensaje_original_guardado = memoria.pop("mensaje_original_panico", pregunta_str)
@@ -1749,7 +1890,43 @@ class ImpuestosHandler(BaseMunicipioHandler):
         intencion = self.context.get("intencion")
         if intencion == "consultar_impuestos":
             self.context[CONTEXTO_MUNICIPIO].clear()
-            return {"respuesta": obtener_respuesta_municipio("impuestos_info"), "botones": obtener_respuesta_municipio("impuestos_botones")}
+            body = obtener_respuesta_municipio("impuestos_info")
+            raw_options_data = obtener_respuesta_municipio("impuestos_botones")
+
+            options = []
+            if isinstance(raw_options_data, list):
+                for btn_data in raw_options_data:
+                    option_text = btn_data.get("texto", "Opción")
+                    option_id = btn_data.get("action", normalizar_texto(option_text)) # Default ID
+
+                    current_option = {"id": option_id, "texto": option_text}
+                    if "url" in btn_data:
+                        current_option["type"] = "url"
+                        current_option["url"] = btn_data["url"]
+                        if self.context.get("channel") == "whatsapp":
+                            body += f"\n\n{option_text}: {btn_data['url']}"
+                            # For WhatsApp, we don't add URL buttons to the interactive list itself
+                            # The URL is in the text. We might offer a generic button like "Siguiente".
+                            continue # Skip adding this as an interactive option for WhatsApp if it's purely a URL
+                    options.append(current_option)
+
+            # Filter out URL-only options for WhatsApp interactive count
+            interactive_options_count = sum(1 for opt in options if opt.get("type") != "url")
+            message_type = 'text'
+            if interactive_options_count == 1: message_type = 'interactive_buttons'
+            elif 1 < interactive_options_count <= 3: message_type = 'interactive_buttons'
+            elif interactive_options_count > 3: message_type = 'interactive_list'
+
+            # If all original buttons were URLs and it's WhatsApp, options list might be empty for interactive part
+            if self.context.get("channel") == "whatsapp" and interactive_options_count == 0:
+                message_type = 'text' # Body contains the info and URLs
+
+            return {
+                "message_body": body,
+                "options_list": options, # Formatter will handle web URL buttons
+                "message_type": message_type,
+                "fuente": "impuestos_info_interactivo_v2"
+            }
         return None
 
 class GeneralHandler(BaseMunicipioHandler):
@@ -2335,15 +2512,30 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
 
     if not respuesta_final:
         logger_actual.info("[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general.")
-        current_fallback_state = contexto_municipio_actual.get("estado_conversacion") # This would be string name or None
+            current_fallback_state = contexto_municipio_actual.get("estado_conversacion")
+
+            options_fallback = [
+                {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
+                {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
+                {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"}
+            ]
+            message_type_fallback = 'interactive_buttons'
+
         if current_fallback_state:
-            estado_log = current_fallback_state # Already string or None
-            if isinstance(estado_log, Enum): estado_log = estado_log.name # Should not happen here due to saves
-            logger_actual.error(f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log}. Limpiando estado.")
-            contexto_municipio_actual.clear()
-            respuesta_final = {"respuesta": ("¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"), "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]}
+                estado_log_val = current_fallback_state
+                if isinstance(current_fallback_state, Enum) : estado_log_val = current_fallback_state.name
+                logger_actual.error(f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log_val}. Limpiando estado.")
+                contexto_municipio_actual.clear() # Clear context if bot got confused with active state
+                body_fallback = "¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"
         else:
-            respuesta_final = {"respuesta": ("Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"), "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar un trámite"}, {"texto": "Hablar con un agente"}]}
+                body_fallback = "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
+
+            respuesta_final = {
+                "message_body": body_fallback,
+                "options_list": options_fallback,
+                "message_type": message_type_fallback,
+                "fuente": "municipio_fallback_general_v2"
+            }
 
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Contenido de contexto_municipio_actual ANTES de serialización explícita de estado: {contexto_municipio_actual}")
     estado_antes_serializacion = contexto_municipio_actual.get("estado_conversacion")

@@ -1010,8 +1010,8 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_co
             db.session.add(Conversacion(
                 user_id=context_general.get("cliente_id"), # ID del cliente final
                 pregunta=pregunta,
-                respuesta=respuesta_final_obj.get("respuesta", ""),
-                fuente=respuesta_final_obj.get("fuente", "desconocida_pyme"),
+                respuesta=respuesta_final_obj.get("message_body", ""), # Use message_body
+                fuente=respuesta_final_obj.get("fuente", "desconocida_pyme_v2"), # Update fuente default
                 rubro=rubro_nombre_actual,
                 session_id=chat_session_uuid_actual,
                 pyme_id=pyme_id_para_servicios # Guardar el ID de la pyme con la que se interactuó
@@ -1024,15 +1024,19 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_co
     # pyme_context_to_save ya tiene estado_conversacion como string.
     contexto_pyme_serializado_para_respuesta = serializar_enum(pyme_context_to_save)
 
-
+    # Standardize the output from responder_pyme
     final_response_for_logic = {
-        "respuesta": respuesta_final_obj.get("respuesta", "Error."),
-        "fuente": respuesta_final_obj.get("fuente", "error_pyme_final"),
-        "botones": respuesta_final_obj.get("botones", []),
-        "estado_respuesta": respuesta_final_obj.get("estado_respuesta"), # Para UI
+        "message_body": respuesta_final_obj.get("message_body", "Error procesando su solicitud."),
+        "options_list": respuesta_final_obj.get("options_list", []),
+        "message_type": respuesta_final_obj.get("message_type", "text"),
+        "header_text": respuesta_final_obj.get("header_text"),
+        "footer_text": respuesta_final_obj.get("footer_text"),
+        "fuente": respuesta_final_obj.get("fuente", "error_pyme_final_v2"),
+        "estado_respuesta": respuesta_final_obj.get("estado_respuesta"),
         "ticket_id": respuesta_final_obj.get("ticket_id"),
-        "contexto_pyme": contexto_pyme_serializado_para_respuesta, # Devolver el estado actual del contexto pyme serializado
-        "adjuntos": [] # Inicializar
+        "contexto_pyme": contexto_pyme_serializado_para_respuesta,
+        "contexto_actualizado": {CONTEXTO_PYME: contexto_pyme_serializado_para_respuesta}, # For consistency with municipios
+        "adjuntos": []
     }
 
     # Añadir info de archivo subido si venía en kwargs (pasado desde logic.py)
