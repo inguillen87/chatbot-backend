@@ -3026,7 +3026,7 @@ def responder_municipio(
         logger_actual.warning("No se pudo determinar un municipio_id específico del owner_user. Se usará la configuración global.")
         specific_municipio_config = CONFIG_MUNICIPIO # Fallback to global if owner_user is None or has no ID
 
-    # Reconstructing the context dictionary to ensure clean syntax
+        # Reconstructing the context dictionary to ensure clean syntax
     context = {}
     context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
     context["user_obj"] = owner_user
@@ -3052,132 +3052,147 @@ def responder_municipio(
 
     # --- Image Analysis for New/Early Claims (MOVED AFTER context INITIALIZATION) ---
     uploaded_file_info = received_payload.get("uploaded_file_info") 
-    is_new_image_upload = uploaded_file_info and uploaded_file_info.get("id") and \
-                          (uploaded_file_info.get("mime_type","").startswith("image/") or \
-                           any(uploaded_file_info.get("name","").lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]))
+    is_new_image_upload = (
+        uploaded_file_info
+        and uploaded_file_info.get("id")
+        and (
+            uploaded_file_info.get("mime_type", "").startswith("image/")
+            or any(
+                uploaded_file_info.get("name", "").lower().endswith(ext)
+                for ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]
+            )
+        )
+    )
 
     should_analyze_image_for_claim = False
     # current_claim_state_for_img_check is already final_loaded_state (which is an Enum or None)
-    
     # current_intent_for_img_check was removed as context["intencion"] is the source of truth.
-    
+
     if is_new_image_upload:
-        logger_actual.info(f"[RESPONDER_MUNICIPIO] New image upload detected. Current loaded state: {final_loaded_state}, Intent from kwargs: {kwargs.get('intencion')}, Intent in context: {context.get('intencion')}")
+        logger_actual.info(
+            f"[RESPONDER_MUNICIPIO] New image upload detected. Current loaded state: {final_loaded_state}, Intent from kwargs: {kwargs.get('intencion')}, Intent in context: {context.get('intencion')}"
+        )
         # Determine if image analysis for a new claim is appropriate
-        if (not final_loaded_state or final_loaded_state == ConversationState.ESPERANDO_CATEGORIA_RECLAMO):
+        if not final_loaded_state or final_loaded_state == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
             should_analyze_image_for_claim = True
-            
+
             # If intent is not already set, and this is an image upload, assume it's for initiating a claim.
             # This is crucial: context["intencion"] must be set before the conditional analysis block below.
-            if not context.get("intencion"): # Checks if 'intencion' key is missing or None/empty
-                if kwargs.get("intencion"): # Prioritize intent from kwargs if available
+            if not context.get("intencion"):  # Checks if 'intencion' key is missing or None/empty
+                if kwargs.get("intencion"):  # Prioritize intent from kwargs if available
                     context["intencion"] = kwargs.get("intencion")
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Image upload: Intent '{context['intencion']}' from kwargs propagated to context.")
-                else: # No intent from kwargs, and image is uploaded, so assume 'iniciar_reclamo'
+                    logger_actual.info(
+                        f"[RESPONDER_MUNICIPIO] Image upload: Intent '{context['intencion']}' from kwargs propagated to context."
+                    )
+                else:  # No intent from kwargs, and image is uploaded, so assume 'iniciar_reclamo'
                     context["intencion"] = "iniciar_reclamo"
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Image upload: No prior intent, setting intent to 'iniciar_reclamo'.")
+                    logger_actual.info(
+                        f"[RESPONDER_MUNICIPIO] Image upload: No prior intent, setting intent to 'iniciar_reclamo'."
+                    )
             else:
-                logger_actual.info(f"[RESPONDER_MUNICIPIO] Image upload: Intent already in context: '{context.get('intencion')}'. Will use this for analysis condition.")
+                logger_actual.info(
+                    f"[RESPONDER_MUNICIPIO] Image upload: Intent already in context: '{context.get('intencion')}'. Will use this for analysis condition."
+                )
 
         # Perform image analysis only if it's deemed appropriate AND the intent is to start a claim.
         if should_analyze_image_for_claim and context.get("intencion") == "iniciar_reclamo":
             logger_actual.info(f"[RESPONDER_MUNICIPIO] Proceeding with image analysis for 'iniciar_reclamo' intent.")
             try:
-                from models import ArchivoAdjunto 
+                from models import ArchivoAdjunto
                 from services.interpretacion_imagen_service import interpretar_imagen_para_chat
 
-            archivo_obj = db.session.get(ArchivoAdjunto, uploaded_file_info["id"])
-            
-            if archivo_obj: 
-                logger_actual.info(f"[RESPONDER_MUNICIPIO] Imagen ID {archivo_obj.id} ({archivo_obj.nombre_original}) detectada. Intentando análisis para pre-llenar reclamo.")
-                analisis_resultado = interpretar_imagen_para_chat(
-                    archivo_adjunto=archivo_obj,
-                    tipo_interpretacion="reclamo_auto_descripcion_categoria" 
-                )
-                logger_actual.info(f"[RESPONDER_MUNICIPIO] Resultado análisis de imagen para reclamo: {analisis_resultado}")
+                archivo_obj = db.session.get(ArchivoAdjunto, uploaded_file_info["id"])
 
-                if analisis_resultado and not analisis_resultado.get("error") and analisis_resultado.get('es_reclamo'):
-                    sugerida_cat = analisis_resultado.get("categoria_sugerida")
-                    sugerida_desc = analisis_resultado.get("descripcion_sugerida")
+                if archivo_obj:
+                    logger_actual.info(
+                        f"[RESPONDER_MUNICIPIO] Imagen ID {archivo_obj.id} ({archivo_obj.nombre_original}) detectada. Intentando análisis para pre-llenar reclamo."
+                    )
+                    analisis_resultado = interpretar_imagen_para_chat(
+                        archivo_adjunto=archivo_obj,
+                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                    )
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Resultado análisis de imagen para reclamo: {analisis_resultado}")
 
-                    if sugerida_cat and \
-                       (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
-                        contexto_municipio_actual["categoria_reclamo"] = sugerida_cat
-                        logger_actual.info(f"Categoría pre-llenada desde análisis de imagen: {sugerida_cat}")
+                    if analisis_resultado and not analisis_resultado.get("error") and analisis_resultado.get('es_reclamo'):
+                        sugerida_cat = analisis_resultado.get("categoria_sugerida")
+                        sugerida_desc = analisis_resultado.get("descripcion_sugerida")
 
-                    if sugerida_desc and \
-                       (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
-                        contexto_municipio_actual["descripcion_reclamo"] = sugerida_desc
-                        logger_actual.info(f"Descripción pre-llenada desde análisis de imagen: {sugerida_desc[:70]}...")
-                    
-                    contexto_municipio_actual["analisis_imagen_reclamo_auto"] = {
-                        "categoria": sugerida_cat,
-                        "descripcion": sugerida_desc,
-                        "ocr_texto": analisis_resultado.get("texto_ocr","")[:200] 
-                    }
-                    # If image analysis provided category and we were waiting for category, update state for handlers
-                    if sugerida_cat and contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-                         # The ReclamoInteligente or ReclamoHandler will pick this up.
-                         # If category and description are now filled, ReclamoInteligente might go to confirmation or next missing.
-                         pass # No direct state change here, let handlers use the pre-filled data.
-                    
-                    # If image analysis sets category/description for a new claim, and it's WhatsApp, try to prefill phone
-                    if channel == "whatsapp" and (sugerida_cat or sugerida_desc) and not contexto_municipio_actual.get("telefono_vecino"):
-                        whatsapp_phone_number = None
-                        if viewer_user and getattr(viewer_user, "telefono", None): # viewer_user is the User object for the person sending message
-                            whatsapp_phone_number = viewer_user.telefono
-                        # Alternative: Twilio payload might contain 'WaId' or 'ProfileName', from which phone might be part of WaId.
-                        # This part depends on how 'pregunta_original' or 'received_payload' is structured for WhatsApp messages.
-                        # Assuming viewer_user.telefono is the E.164 formatted WhatsApp number.
-                        
-                        if whatsapp_phone_number:
-                            # Basic validation, though viewer_user.telefono should ideally be clean
-                            if validar_telefono(whatsapp_phone_number):
-                                contexto_municipio_actual["telefono_vecino"] = formatear_telefono_e164(whatsapp_phone_number)
-                                logger_actual.info(f"[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: Teléfono pre-llenado: {contexto_municipio_actual['telefono_vecino']}")
+                        if sugerida_cat and (
+                            not contexto_municipio_actual.get("categoria_reclamo")
+                            or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"
+                        ):
+                            contexto_municipio_actual["categoria_reclamo"] = sugerida_cat
+                            logger_actual.info(f"Categoría pre-llenada desde análisis de imagen: {sugerida_cat}")
+
+                        if sugerida_desc and (
+                            not contexto_municipio_actual.get("descripcion_reclamo")
+                            or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20
+                        ):
+                            contexto_municipio_actual["descripcion_reclamo"] = sugerida_desc
+                            logger_actual.info(f"Descripción pre-llenada desde análisis de imagen: {sugerida_desc[:70]}...")
+
+                        contexto_municipio_actual["analisis_imagen_reclamo_auto"] = {
+                            "categoria": sugerida_cat,
+                            "descripcion": sugerida_desc,
+                            "ocr_texto": analisis_resultado.get("texto_ocr", "")[:200],
+                        }
+                        # If image analysis provided category and we were waiting for category, update state for handlers
+                        if (
+                            sugerida_cat
+                            and contexto_municipio_actual.get("estado_conversacion")
+                            == ConversationState.ESPERANDO_CATEGORIA_RECLAMO
+                        ):
+                            # The ReclamoInteligente or ReclamoHandler will pick this up.
+                            # If category and description are now filled, ReclamoInteligente might go to confirmation or next missing.
+                            pass  # No direct state change here, let handlers use the pre-filled data.
+
+                        # If image analysis sets category/description for a new claim, and it's WhatsApp, try to prefill phone
+                        if (
+                            channel == "whatsapp"
+                            and (sugerida_cat or sugerida_desc)
+                            and not contexto_municipio_actual.get("telefono_vecino")
+                        ):
+                            whatsapp_phone_number = None
+                            if viewer_user and getattr(viewer_user, "telefono", None):
+                                whatsapp_phone_number = viewer_user.telefono
+                            # Alternative: Twilio payload might contain 'WaId' or 'ProfileName', from which phone might be part of WaId.
+                            # This part depends on how 'pregunta_original' or 'received_payload' is structured for WhatsApp messages.
+                            # Assuming viewer_user.telefono is the E.164 formatted WhatsApp number.
+
+                            if whatsapp_phone_number:
+                                # Basic validation, though viewer_user.telefono should ideally be clean
+                                if validar_telefono(whatsapp_phone_number):
+                                    contexto_municipio_actual["telefono_vecino"] = formatear_telefono_e164(
+                                        whatsapp_phone_number
+                                    )
+                                    logger_actual.info(
+                                        f"[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: Teléfono pre-llenado: {contexto_municipio_actual['telefono_vecino']}"
+                                    )
+                                else:
+                                    logger_actual.warning(
+                                        f"[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: Teléfono '{whatsapp_phone_number}' de viewer_user no es válido."
+                                    )
                             else:
-                                logger_actual.warning(f"[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: Teléfono '{whatsapp_phone_number}' de viewer_user no es válido.")
-                        else:
-                            logger_actual.warning("[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: No se pudo obtener el número de teléfono del usuario de WhatsApp para pre-llenado.")
+                                logger_actual.warning(
+                                    "[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: No se pudo obtener el número de teléfono del usuario de WhatsApp para pre-llenado."
+                                )
 
-            else:
-                logger_actual.warning(f"No se encontró ArchivoAdjunto con ID {uploaded_file_info['id']} para análisis de imagen.")
-        except Exception as e_img_analysis_main:
-            logger_actual.error(f"Error durante el análisis de imagen en responder_municipio: {e_img_analysis_main}", exc_info=True)
-    
+                else:
+                    logger_actual.warning(
+                        f"No se encontró ArchivoAdjunto con ID {uploaded_file_info['id']} para análisis de imagen."
+                    )
+            except Exception as e_img_analysis_main:
+                logger_actual.error(f"Error durante el análisis de imagen en responder_municipio: {e_img_analysis_main}", exc_info=True)
+
     # Context now contains pre-filled image data if analysis was run and successful.
     # Proceed with standard context setup for handlers.
     # The 'intencion' for the context dictionary used by handlers will be set by IntentClassifierHandler later if not already set.
     # kwargs.get("intencion") was from the function call, context['intencion'] is for the handlers.
     # We must ensure context['intencion'] is correctly set before handlers that depend on it.
     # The image analysis block above now sets context["intencion"] = "iniciar_reclamo" if image is first input.
-    
+
     # --- Logic for suggesting registration to anonymous users --- (This also uses context)
 
-    # (The rest of the original context dictionary definition is now above this image block)
-    # context = { # THIS IS NOW DEFINED EARLIER
-    #    CONTEXTO_MUNICIPIO: contexto_municipio_actual,  # Esta es la copia modificada
-    #    "user_obj": owner_user,
-        "user_id": getattr(owner_user, "id", None),
-        "cliente_id": getattr(viewer_user, "id", None),
-        "viewer_user_obj": viewer_user,
-        "anon_id": anon_id,
-        "intencion": None,
-        "rubro_obj": rubro_obj,
-        "channel": channel,  # Pass channel into context for handlers
-        "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
-        "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
-        "es_foto": received_payload.get("es_foto", False),
-        "es_ubicacion": received_payload.get("es_ubicacion", False),
-        "es_archivo": received_payload.get("es_archivo", False),
-        "action": received_payload.get("action"),
-        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
-        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context.context_data,
-    }
-
-    # --- Logic for suggesting registration to anonymous users ---
     estado_para_chequeo_sugerencia = contexto_municipio_actual.get("estado_conversacion")  # Enum or None
 
     if not viewer_user and anon_id and has_app_context():
@@ -3212,7 +3227,7 @@ def responder_municipio(
                     respuesta_sugerencia_obj = construir_respuesta_sugerir_registro(
                         mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.",
                         tipo_entidad="municipio",
-                        channel=channel # Pass the channel
+                        channel=channel  # Pass the channel
                     )
 
                     sug_body = respuesta_sugerencia_obj.get(
