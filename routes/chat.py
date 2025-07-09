@@ -1,9 +1,6 @@
 import logging
 import random
-import uuid # Added for chat_session_id generation
-import logging
-import random
-import uuid # Added for chat_session_id generation
+import uuid  # Added for chat_session_id generation
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
@@ -272,11 +269,25 @@ def _procesar_chat(
                 chat_context_obj.anon_id = None # Limpiar anon_id si se asocia a un usuario
             elif not actor_principal and anon_id and chat_context_obj.anon_id != anon_id:
                  current_app.logger.info(f"Actualizando anon_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.anon_id} a {anon_id}")
-                 chat_context_obj.anon_id = anon_id
+                chat_context_obj.anon_id = anon_id
                  # No limpiar user_id aquí, podría ser un usuario que cerró sesión y sigue como anónimo con el mismo session_id
 
         # El objeto `chat_context_obj.context_data` será el que se pase y modifique
         # en lugar de `flask_request_session` para el contexto específico del chat.
+
+        # --- Deduplicar mensajes rápidos idénticos ---
+        last_msg = chat_context_obj.context_data.get("last_user_message")
+        last_time_str = chat_context_obj.context_data.get("last_user_message_time")
+        if last_msg == pregunta and last_time_str:
+            try:
+                last_dt = datetime.fromisoformat(last_time_str)
+                if datetime.utcnow() - last_dt < timedelta(seconds=2):
+                    current_app.logger.info("Mensaje duplicado detectado; reenviando última respuesta.")
+                    last_resp = chat_context_obj.context_data.get("last_bot_response")
+                    if last_resp:
+                        return jsonify(last_resp), 200
+            except Exception:
+                pass
 
         resultado = responder_chatboc(
             pregunta=pregunta,
@@ -350,6 +361,13 @@ def _procesar_chat(
             message_type=web_message_type,
             original_bot_response=resultado # Pass the full dict from responder_chatboc
         )
+
+        # Guardar datos del último mensaje para evitar duplicados
+        if chat_context_obj:
+            chat_context_obj.context_data["last_user_message"] = pregunta
+            chat_context_obj.context_data["last_user_message_time"] = datetime.utcnow().isoformat()
+            chat_context_obj.context_data["last_bot_response"] = formatted_web_response
+            flag_modified(chat_context_obj, "context_data")
 
         # This commit is for User.preguntas_usadas primarily, and any other DB changes by responder_chatboc
         db.session.commit()
