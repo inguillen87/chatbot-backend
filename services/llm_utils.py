@@ -168,12 +168,15 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
 
     return extracted_data
 
-def extract_complaint_details_llm(text: str) -> Dict[str, str]:
+def extract_complaint_details_llm(text: str, default_localidad: str | None = None, default_provincia: str | None = None) -> Dict[str, str]:
     """
-    Uses an LLM to extract key details from a user's complaint message.
+    Uses an LLM to extract key details from a user's complaint message,
+    considering default location context.
 
     Args:
         text: The user's complaint description.
+        default_localidad: The default city/locality for the bot's context.
+        default_provincia: The default province for the bot's context.
 
     Returns:
         A dictionary with keys like "tipo_problema", "ubicacion_problema",
@@ -182,12 +185,30 @@ def extract_complaint_details_llm(text: str) -> Dict[str, str]:
     if not text:
         return {}
 
+    location_context_instruction = ""
+    if default_localidad and default_provincia and default_localidad != 'N/A' and default_provincia != 'N/A':
+        location_context_instruction = (
+            f"Este reclamo es para el municipio de {default_localidad}, {default_provincia}. "
+            "Si el usuario menciona una calle y número pero no una ciudad o provincia, "
+            f"asumí que la dirección corresponde a {default_localidad}, {default_provincia}. "
+            "Solo usa estos valores por defecto para localidad y provincia si el usuario NO los especifica."
+        )
+    elif default_localidad and default_localidad != 'N/A':
+        location_context_instruction = (
+            f"Este reclamo es para el municipio de {default_localidad}. "
+            "Si el usuario menciona una calle y número pero no una ciudad, "
+            f"asumí que la dirección corresponde a {default_localidad}. "
+            "Solo usa este valor por defecto para localidad si el usuario NO lo especifica."
+        )
+
+
     prompt = (
         "You are an expert complaint analysis assistant. From the USER'S COMPLAINT below, "
         "extract the following details: "
         "1. 'tipo_problema': The general category or type of the issue (e.g., 'Alumbrado público', 'Recolección de residuos', 'Fuga de agua', 'Ruidos molestos', 'Problema con vecino'). "
         "2. 'ubicacion_problema': The specific location of the problem, including street names, numbers, landmarks, or neighborhood if mentioned. "
         "3. 'descripcion_problema': A concise summary of the complaint itself, capturing the core issue. "
+        f"{location_context_instruction} " # Added location context instruction
         "Return the information ONLY as a valid JSON object with these exact keys. "
         "If a detail is not found, omit its key from the JSON or set its value to an empty string. "
         "Do not add any explanations or conversational text.\n\n"

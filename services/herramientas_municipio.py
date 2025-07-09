@@ -118,22 +118,28 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
         return None
 
     if municipio_config is None:
-        municipio_config = {} # Evitar error si no se pasa
+        # This case should be less frequent if context always provides one (even the global one)
+        logger.warning("[ParseDireccion] municipio_config no fue proporcionado, usando un diccionario vacío como fallback para defaults.")
+        municipio_config = {}
 
-    default_localidad = municipio_config.get('ciudad', 'N/A')
-    default_provincia = municipio_config.get('provincia', 'N/A')
+    # Prioritize '_default' suffixed keys, then direct keys, then hardcoded N/A
+    default_localidad = municipio_config.get('ciudad_default', municipio_config.get('ciudad', 'N/A'))
+    default_provincia = municipio_config.get('provincia_default', municipio_config.get('provincia', 'N/A'))
+
+    logger.info(f"[ParseDireccion] Usando defaults para LLM - Localidad: '{default_localidad}', Provincia: '{default_provincia}' desde config: {municipio_config}")
+
 
     # If provincia is N/A (or not set) but ciudad field contains a comma, try to split them
-    # This handles cases where config might have "ciudad": "Junín, Mendoza"
+    # This handles cases where config might have "ciudad": "Junín, Mendoza" or "ciudad_default": "Junín, Mendoza"
     if (default_provincia == 'N/A' or not default_provincia) and isinstance(default_localidad, str) and ',' in default_localidad:
         parts = default_localidad.split(',', 1)
         potential_localidad = parts[0].strip()
         potential_provincia = parts[1].strip()
         # Basic check if the split parts look plausible as localidad and provincia
         if len(potential_localidad) > 2 and len(potential_provincia) > 2:
-            default_localidad = potential_localidad
+            default_localidad = potential_localidad # Update local variables for the prompt
             default_provincia = potential_provincia
-            logger.info(f"[ParseDireccion] Split 'ciudad' from config into Localidad: {default_localidad}, Provincia: {default_provincia}")
+            logger.info(f"[ParseDireccion] Split 'default_localidad' from config into Localidad: {default_localidad}, Provincia: {default_provincia}")
 
     prompt = f"""
 Eres un experto en interpretar direcciones en Argentina. Dada la siguiente DIRECCIÓN PROPORCIONADA, extráela en un formato JSON con los campos: "calle", "numero", "localidad", "provincia", "codigo_postal", "barrio", "otros_detalles".
