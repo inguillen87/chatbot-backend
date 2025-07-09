@@ -275,6 +275,14 @@ def _procesar_chat(
                  chat_context_obj.anon_id = anon_id
                  # No limpiar user_id aquí, podría ser un usuario que cerró sesión y sigue como anónimo con el mismo session_id
 
+            # Detect if user just logged in with this session
+            if actor_principal and chat_context_obj.user_id == actor_principal.id and not chat_context_obj.context_data.get("user_was_present_before"):
+                chat_context_obj.context_data["just_logged_in_flag"] = True
+                current_app.logger.info(f"User {actor_principal.id} just logged in with session {chat_session_id_header}. Setting just_logged_in_flag.")
+
+            chat_context_obj.context_data["user_was_present_before"] = bool(actor_principal)
+
+
         # El objeto `chat_context_obj.context_data` será el que se pase y modifique
         # en lugar de `flask_request_session` para el contexto específico del chat.
 
