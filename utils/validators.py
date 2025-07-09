@@ -60,7 +60,8 @@ def normalize_phone(telefono: str, region: str = "AR") -> Optional[str]:
 
 
 def validate_address(direccion: str) -> bool:
-    """Delegates to direccion_es_valida from municipio tools."""    return direccion_es_valida(direccion)
+    """Delegates to ``direccion_es_valida`` from municipio tools."""
+    return direccion_es_valida(direccion)
 
 
 def extract_email(text: str) -> Optional[str]:
