@@ -2510,14 +2510,14 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
 
     if not respuesta_final:
         logger_actual.info("[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general.")
-            current_fallback_state = contexto_municipio_actual.get("estado_conversacion") 
+        current_fallback_state = contexto_municipio_actual.get("estado_conversacion") 
             
-            options_fallback = [
+        options_fallback = [
                 {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
                 {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
                 {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"}
-            ]
-            message_type_fallback = 'interactive_buttons'
+        ]
+        message_type_fallback = 'interactive_buttons'
 
         if current_fallback_state:
                 estado_log_val = current_fallback_state
@@ -2528,7 +2528,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         else:
                 body_fallback = "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
             
-            respuesta_final = {
+        respuesta_final = {
                 "message_body": body_fallback,
                 "options_list": options_fallback,
                 "message_type": message_type_fallback,
