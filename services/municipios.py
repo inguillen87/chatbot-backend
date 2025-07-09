@@ -2344,10 +2344,16 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
             final_response_dict["adjuntos"].append({"nombre_original": uploaded_file_info["name"], "url_descarga": uploaded_file_info["url"], "tipo_mime": uploaded_file_info.get("type", 'application/octet-stream')})
             logger_actual.info(f"Adjuntando info de archivo subido: {uploaded_file_info['name']}")
-    logger_actual.info(f"[RESPONDER_MUNICIPIO_END] Respuesta: '{final_response_dict.get('respuesta')[:100]}...', Adjuntos: {len(final_response_dict['adjuntos'])}")
+
+    # Use 'message_body' for logging and provide a fallback for None
+    respuesta_log = (final_response_dict.get('message_body') or '')[:100]
+    adjuntos_len = len(final_response_dict.get('adjuntos', []))
+    logger_actual.info(f"[RESPONDER_MUNICIPIO_END] Respuesta: '{respuesta_log}...', Adjuntos: {adjuntos_len}")
+
     if anon_id and not viewer_user and respuesta_final and isinstance(respuesta_final, dict):
         try:
-            db.session.add(Conversacion(session_id=kwargs.get("chat_session_uuid") or anon_id, pregunta=pregunta_str, respuesta=final_response_dict.get("respuesta"), fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"), rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), user_id=None))
+            # Log the correct field for Conversacion as well
+            db.session.add(Conversacion(session_id=kwargs.get("chat_session_uuid") or anon_id, pregunta=pregunta_str, respuesta=final_response_dict.get("message_body"), fuente=respuesta_final.get("fuente", "municipio_anon_respuesta"), rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), user_id=None))
             db.session.commit()
             logger_actual.info(f"Conversación (municipio) para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')} guardada.")
         except Exception as e_conv_muni:
