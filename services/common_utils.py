@@ -668,16 +668,27 @@ def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
     similarity = dot_product / (norm_vec1 * norm_vec2)
     return float(similarity) # Asegurar que devuelve float nativo
 
-def construir_respuesta_sugerir_registro(mensaje_personalizado: Optional[str] = None, tipo_entidad: str = "pyme"):
+def construir_respuesta_sugerir_registro(mensaje_personalizado: Optional[str] = None, tipo_entidad: str = "pyme", channel: str = "web"):
     """
     Construye un diccionario de respuesta estándar para sugerir el registro o inicio de sesión.
     Se usa cuando el bot proactivamente quiere que el usuario anónimo se identifique.
     """
-    mensaje_base = "Para una experiencia más completa, guardar tu historial y acceder a todas las funciones, te recomiendo crear una cuenta o iniciar sesión."
+    mensaje_base_web = "Para una experiencia más completa, guardar tu historial y acceder a todas las funciones, te recomiendo crear una cuenta o iniciar sesión."
+    mensaje_base_whatsapp = "Para ayudarte mejor y guardar tu historial, te recomiendo crear una cuenta o iniciar sesión." # Shorter
+
+    mensaje_final = ""
+    # Use personalized message if provided, otherwise use channel-specific base.
     if mensaje_personalizado:
-        mensaje_final = f"{mensaje_personalizado} {mensaje_base}"
-    else:
-        mensaje_final = mensaje_base
+        # If personalized message is very short, it might be an intro. Append channel-specific base.
+        # Otherwise, assume personalized message is complete enough.
+        if len(mensaje_personalizado) < 30 and channel == "whatsapp": # Arbitrary threshold
+             mensaje_final = f"{mensaje_personalizado} {mensaje_base_whatsapp}"
+        elif len(mensaje_personalizado) < 40 and channel != "whatsapp":
+             mensaje_final = f"{mensaje_personalizado} {mensaje_base_web}"
+        else:
+            mensaje_final = mensaje_personalizado # Personalized message is likely complete
+    else: # No personalized message, use channel-specific base
+        mensaje_final = mensaje_base_whatsapp if channel == "whatsapp" else mensaje_base_web
 
     # Las acciones 'register_widget' y 'login_widget' deben ser manejadas por el frontend del widget embebido
     # para mostrar los formularios correspondientes que luego llaman a /widget/register y /widget/login.
