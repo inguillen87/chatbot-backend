@@ -1045,5 +1045,8 @@ def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_co
                 "tipo_mime": uploaded_file_info_kw.get("type", 'application/octet-stream')
             })
 
-    logger.info(f"[RESPONDER_PYME_END - {request_id}] Respuesta: '{final_response_for_logic['respuesta'][:100]}...', Fuente: {final_response_for_logic['fuente']}")
+    # Use 'message_body' for logging and provide a fallback for None
+    respuesta_log_pyme = (final_response_for_logic.get('message_body') or '')[:100]
+    fuente_log_pyme = final_response_for_logic.get('fuente', 'desconocida_pyme')
+    logger.info(f"[RESPONDER_PYME_END - {request_id}] Respuesta: '{respuesta_log_pyme}...', Fuente: {fuente_log_pyme}")
     return final_response_for_logic
