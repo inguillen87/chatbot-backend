@@ -1388,13 +1388,13 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                         config_muni_parseo_tel = self.context.get("municipio_config") or CONFIG_MUNICIPIO
                         if parse_direccion_completa(processed_phone_input, config_muni_parseo_tel) and len(processed_phone_input.split()) > 1:
-                            return {"respuesta": "Estaba esperando un teléfono, pero eso parece una dirección. ¿Tu teléfono, por favor?"}
+                            return {"message_body": "Estaba esperando un teléfono, pero eso parece una dirección. ¿Tu teléfono, por favor?", "options_list": [], "message_type": "text", "fuente": "reclamo_telefono_como_direccion_v2"}
                         if validar_email(processed_phone_input): # Check if it was an email
-                             return {"respuesta": "Estaba esperando un teléfono, pero eso parece un email. ¿Tu número de teléfono, por favor?"}
-                        return {"respuesta": error_msg} # Re-prompt for phone
+                             return {"message_body": "Estaba esperando un teléfono, pero eso parece un email. ¿Tu número de teléfono, por favor?", "options_list": [], "message_type": "text", "fuente": "reclamo_telefono_como_email_v2"}
+                        return {"message_body": error_msg, "options_list": [], "message_type": "text", "fuente": "reclamo_telefono_invalido_v3"} # Re-prompt for phone
                 else: # No pregunta_str, must ask for phone
                      nombre_mem = memoria.get("nombre_vecino", "tú").split(" ")[0].title()
-                     return {"respuesta": f"¡Gracias, {nombre_mem}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
+                     return {"message_body": f"¡Gracias, {nombre_mem}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?", "options_list": [], "message_type": "text", "fuente": "reclamo_pedir_telefono_v3"}
 
             # 5. ESPERANDO_EMAIL_VECINO
             elif current_state_for_logic == ConversationState.ESPERANDO_EMAIL_VECINO:
@@ -1462,14 +1462,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                         # Check for common misinterpretations again before generic error
                         config_muni_parseo_email = self.context.get("municipio_config") or CONFIG_MUNICIPIO
                         if parse_direccion_completa(processed_email_input, config_muni_parseo_email) and len(processed_email_input.split()) > 1 :
-                             return {"respuesta": "Estaba esperando un email, pero eso parece una dirección. ¿Tu email, por favor?"}
+                             return {"message_body": "Estaba esperando un email, pero eso parece una dirección. ¿Tu email, por favor?", "options_list": [], "message_type": "text", "fuente": "reclamo_email_como_direccion_v2"}
                         if validar_telefono(processed_email_input):
-                             return {"respuesta": "Estaba esperando un email, pero eso parece un teléfono. ¿Tu email, por favor?"}
-                        return {"respuesta": error_msg} # Re-prompt for email
+                             return {"message_body": "Estaba esperando un email, pero eso parece un teléfono. ¿Tu email, por favor?", "options_list": [], "message_type": "text", "fuente": "reclamo_email_como_telefono_v2"}
+                        return {"message_body": error_msg, "options_list": [], "message_type": "text", "fuente": "reclamo_email_invalido_v3"} # Re-prompt for email
                 else: # No pregunta_str, must ask for email
                     # This path is taken if previous state advanced to ESPERANDO_EMAIL_VECINO and pregunta_str was consumed/empty
                     nombre_mem = memoria.get("nombre_vecino", "tú").split(" ")[0].title()
-                    return {"respuesta": f"¡Excelente {nombre_mem}! Casi terminamos. ¿Cuál es tu **dirección de correo electrónico**?"}
+                    return {"message_body": f"¡Excelente {nombre_mem}! Casi terminamos. ¿Cuál es tu **dirección de correo electrónico**?", "options_list": [], "message_type": "text", "fuente": "reclamo_pedir_email_v3"}
             
             # 6. ESPERANDO_DESCRIPCION_RECLAMO
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
@@ -1807,11 +1807,13 @@ class ReclamoHandler(BaseMunicipioHandler):
                     ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data)
                     # ... (idempotency and file association logic remains the same) ...
                     if ticket:
-                        # ... (idempotency and file association logic as before) ...
-                        if idempotency_key and chat_session_uuid and chat_session_data is not None: # Copied for completeness
-                            processed_keys = chat_session_data.get("processed_idempotency_keys", {}); processed_keys[idempotency_key] = ticket.nro_ticket
+                        if effective_idempotency_key and chat_session_uuid and chat_session_data is not None:
+                            processed_keys = chat_session_data.get("processed_idempotency_keys", {})
+                            processed_keys[effective_idempotency_key] = ticket.nro_ticket
                             chat_session_data["processed_idempotency_keys"] = processed_keys
-                            logger.info(f"[ReclamoHandler] Idempotency key '{idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada en chat_db_context.context_data.")
+                            # flag_modified will be called at the end of responder_municipio
+                            logger.info(f"[ReclamoHandler] Effective idempotency key '{effective_idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada.")
+
                         archivo_id_a_vincular = self.context.get("archivo_id_para_asociar"); chat_session_uuid_actual = self.context.get("chat_session_uuid"); user_id_actual_context = self.context.get("user_id") 
                         if archivo_id_a_vincular or chat_session_uuid_actual:
                             from services.archivo_service import archivo_service
@@ -2572,9 +2574,56 @@ class HumanEscalationHandler(BaseMunicipioHandler):
             }
 
         logger.info(f"[HumanEscalationHandler] Usuario {self.context.get('cliente_id') or self.context.get('anon_id')} pide agente.")
-        ticket_data = {"asunto": "Solicitud de Chat en Vivo", "categoria": "Atención en Vivo", "detalles": f"El vecino solicitó chat en vivo con la pregunta: '{pregunta_str}'", "user_id": self.context.get("cliente_id"), "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None), "estado": "esperando_agente_en_vivo", "ubicacion": self.context.get("ubicacion_usuario")}
+
+        memoria = self.context.get(CONTEXTO_MUNICIPIO, {})
+        pregunta_original_escalation = payload.get("pregunta", "") # The message that triggered escalation
+
+        escalation_details_parts = ["El vecino solicitó chat en vivo."]
+        if pregunta_original_escalation and pregunta_original_escalation.lower() not in ["hablar con un agente", "agente", "humano", "hablar con alguien", "asesor"]:
+            escalation_details_parts.append(f"Mensaje original: '{pregunta_original_escalation}'.")
+
+        claim_description = memoria.get("descripcion_reclamo")
+        if claim_description:
+            escalation_details_parts.append(f"Descripción previa del problema: {claim_description}")
+
+        final_escalation_details = " ".join(escalation_details_parts)
+
+        nombre = memoria.get("nombre_vecino", "")
+        telefono = memoria.get("telefono_vecino", "")
+        email = memoria.get("email_vecino", "")
+        direccion_mem = memoria.get("direccion_reclamo", "")
+
+        lat_mem, lon_mem = None, None
+        ubicacion_payload = self.context.get("ubicacion_usuario")
+        if ubicacion_payload and isinstance(ubicacion_payload, dict):
+            lat_mem = ubicacion_payload.get("lat")
+            lon_mem = ubicacion_payload.get("lon")
+            logger.info(f"[HumanEscalationHandler] Usando ubicación GPS del payload actual: Lat {lat_mem}, Lon {lon_mem}")
+        elif memoria.get("ubicacion_gps") and isinstance(memoria.get("ubicacion_gps"), dict):
+            lat_mem = memoria.get("ubicacion_gps", {}).get("lat")
+            lon_mem = memoria.get("ubicacion_gps", {}).get("lon")
+            logger.info(f"[HumanEscalationHandler] Usando ubicación GPS de memoria de reclamo: Lat {lat_mem}, Lon {lon_mem}")
+
+        ticket_data = {
+            "asunto": f"Solicitud de Chat en Vivo por: {nombre if nombre else 'Vecino'}",
+            "categoria": "Atención en Vivo",
+            "pregunta": memoria.get("descripcion_reclamo_original_para_idempotencia", pregunta_original_escalation),
+            "detalles": final_escalation_details,
+            "user_id": self.context.get("cliente_id"),
+            "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+            "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
+            "estado": "esperando_agente_en_vivo",
+            "nombre_vecino": nombre if nombre else None, # Ensure None if empty string
+            "telefono_vecino": telefono if telefono else None,
+            "email_vecino": email if email else None,
+            "direccion": direccion_mem if direccion_mem else None,
+            "latitud": lat_mem,
+            "longitud": lon_mem
+        }
+        ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None} # Remove None values
+
         try:
-            sala_de_chat = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data)
+            sala_de_chat = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
             if not sala_de_chat: raise Exception("No se pudo crear el ticket de sala de chat.")
             servicio_tickets.crear_comentario(ticket_id=sala_de_chat.id, tipo_ticket="municipio", comentario_data={"comentario": pregunta_str, "es_admin": False, "user_id": self.context.get("cliente_id"), "anon_id": self.context.get("anon_id")}) # anon_id might be None here if cliente_id exists
             logger.info(f"[HumanEscalationHandler] Sala de chat #{sala_de_chat.nro_ticket} creada.")

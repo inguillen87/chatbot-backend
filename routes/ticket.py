@@ -409,15 +409,27 @@ def detalle_ticket(current_user, tipo, ticket_id):
 @token_requerido
 @admin_o_empleado_requerido
 def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
-    # Se espera multipart/form-data ahora
-    comentario_texto = request.form.get("comentario")
-    archivos_subidos = request.files.getlist("archivos") # 'archivos' es el name del input type="file"
+    comentario_texto = None
+    archivos_subidos = []
 
-    if not comentario_texto and not archivos_subidos:
+    if request.content_type.startswith('application/json'):
+        data = request.get_json()
+        comentario_texto = data.get("comentario")
+        # No files expected in JSON payload for this simplified handling
+        current_app.logger.info(f"Admin response via JSON: {comentario_texto}")
+    elif request.content_type.startswith('multipart/form-data'):
+        comentario_texto = request.form.get("comentario")
+        archivos_subidos = request.files.getlist("archivos") # 'archivos' es el name del input type="file"
+        current_app.logger.info(f"Admin response via multipart: text='{comentario_texto}', files_count={len(archivos_subidos)}")
+    else:
+        current_app.logger.warning(f"Admin response con Content-Type no soportado: {request.content_type}")
+        return jsonify({"error": "Unsupported Content-Type. Use application/json or multipart/form-data."}), 415
+
+    if not comentario_texto and not archivos_subidos: # Check after parsing
         return jsonify({"error": "El comentario o al menos un archivo son requeridos."}), 400
     
-    if comentario_texto is None: # Permitir enviar solo archivos
-        comentario_texto = ""
+    if comentario_texto is None:
+        comentario_texto = "" # Ensure it's a string if only files are sent via multipart
 
 
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
