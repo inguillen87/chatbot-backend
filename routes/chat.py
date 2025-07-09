@@ -319,17 +319,38 @@ def _procesar_chat(
         
         # Marcar explícitamente context_data como modificado para SQLAlchemy
         if chat_context_obj:
+            # Importar la función de serialización
+            from services.municipios import serializar_enum, CONTEXTO_MUNICIPIO # CONTEXTO_MUNICIPIO for logging clarity
+
+            # Serializar el context_data COMPLETO antes de marcarlo como modificado y hacer commit
+            if chat_context_obj.context_data:
+                # Log an example of what's in 'estado_conversacion' before and after, if it exists
+                # This is for debugging the specific issue observed.
+                raw_municipio_context = chat_context_obj.context_data.get(CONTEXTO_MUNICIPIO, {})
+                state_before_global_serialization = raw_municipio_context.get("estado_conversacion", "N/A_in_sub_context")
+
+                # Also check top-level estado_conversacion if it exists
+                top_level_state_before = chat_context_obj.context_data.get("estado_conversacion", "N/A_top_level")
+
+                chat_context_obj.context_data = serializar_enum(chat_context_obj.context_data)
+
+                # Log after serialization
+                serialized_municipio_context = chat_context_obj.context_data.get(CONTEXTO_MUNICIPIO, {})
+                state_after_global_serialization = serialized_municipio_context.get("estado_conversacion", "N/A_in_sub_context_after")
+                top_level_state_after = chat_context_obj.context_data.get("estado_conversacion", "N/A_top_level_after")
+
+                current_app.logger.info(f"ChatSessionContext Serialization: TopLevelState before='{top_level_state_before}', after='{top_level_state_after}'. SubContextState before='{state_before_global_serialization}', after='{state_after_global_serialization}'.")
+
             flag_modified(chat_context_obj, "context_data")
-            current_app.logger.info(f"Se marcó 'context_data' como modificado para ChatSessionContext ID: {chat_context_obj.chat_session_id} antes del commit.")
+            current_app.logger.info(f"ChatSessionContext.context_data (post-serialization) marcado como modificado para {chat_session_id_header}.")
 
         try:
-            db.session.commit()
-            current_app.logger.info(f"ChatSessionContext para {chat_session_id_header} guardado/actualizado en DB.")
+            db.session.commit() # Commit principal para ChatSessionContext y User.preguntas_usadas
+            current_app.logger.info(f"ChatSessionContext para {chat_session_id_header} guardado/actualizado en DB (Commit Principal).")
         except Exception as e_commit:
             db.session.rollback()
-            current_app.logger.error(f"Error al hacer commit de ChatSessionContext para {chat_session_id_header}: {e_commit}", exc_info=True)
-            # Considerar si devolver un error al usuario o si el chat puede continuar con contexto en memoria
-            # por esta vez. Por ahora, la respuesta del chat ya se formó, así que continuamos.
+            current_app.logger.error(f"Error en Commit Principal (ChatSessionContext) para {chat_session_id_header}: {e_commit}", exc_info=True)
+            # La respuesta al usuario ya se formó, pero el contexto no se guardó.
 
         es_publico = es_rubro_publico(rubro_obj_global)
         nombre_rubro_log = getattr(rubro_obj_global, "clave", "N/A") if rubro_obj_global else "N/A"

@@ -302,7 +302,15 @@ class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; texto = normalizar_texto(pregunta_str.strip("!.,?"))
         saludos = ["hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"]; tokens = re.sub(r"[!.,?]", "", texto).split(); set_saludo = {"hola", "buenos", "dias", "buenas", "tardes", "noches", "hey", "que", "tal"}
-        if texto in saludos or (0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)):
+        if texto in saludos or (0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)): # Simple greeting matches the whole input
+            if len(pregunta_str.split()) > 5 and any(kw in texto_normalizado for kw in IntentClassifierHandler.KEYWORDS_RECLAMO + IntentClassifierHandler.KEYWORDS_TRAMITE + IntentClassifierHandler.KEYWORDS_SUGERENCIA):
+                 # If the original message was long AND contains keywords for other intents,
+                 # despite the simple greeting match, let other handlers try.
+                logger.info("[GreetingHandler] Simple greeting detected in a longer, intentful message. Allowing other handlers to process details first.")
+                memoria["saludo_detectado_en_largo_mensaje"] = True
+                return None # Let other handlers try to parse the details
+
+            # Standard greeting response for short/simple greetings
             memoria.clear()
             greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. Estoy aquí para ayudarte. Podés consultarme sobre trámites, hacer un reclamo, dejar una sugerencia o resolver alguna duda que tengas. ¡Contame en qué te puedo colaborar hoy!"
             options = [
@@ -311,22 +319,25 @@ class GreetingHandler(BaseMunicipioHandler):
                 {"id": "consultar_tramite", "texto": "Consultar un trámite"},
                 {"id": "consultar_estado_ticket", "texto": "Estado de mi ticket"}
             ]
-            # Determine message_type based on number of options
             message_type = 'interactive_buttons' if len(options) <= 3 else 'interactive_list'
-            if len(options) > 3 and len(options) > 10: # WhatsApp list limit
-                logger.warning("GreetingHandler: Too many options for a single WhatsApp list. Truncating or consider sub-menus.")
-                # For now, it will be handled by formatter, but good to be aware.
-            
+            if len(options) > 10:
+                logger.warning("GreetingHandler: Too many options for WhatsApp list.")
+
             return {
-                "message_body": greeting_body,
-                "options_list": options,
-                "message_type": message_type,
-                "fuente": "saludo_municipio_interactivo_v2"
-                # contexto_actualizado will be handled by responder_municipio
+                "message_body": greeting_body, "options_list": options,
+                "message_type": message_type, "fuente": "saludo_municipio_interactivo_v2"
             }
-        for saludo in saludos:
-            if (texto.startswith(saludo + " ") or texto.startswith(saludo + ",") or texto.startswith(saludo + ".")): memoria["saludo_detectado"] = True; break
-        return None
+
+        # For greetings at the start of longer sentences like "hola, quiero hacer un reclamo..."
+        # The original loop `for saludo in saludos: if (texto.startswith...): memoria["saludo_detectado"] = True; break`
+        # only sets a flag but doesn't return. This is good, it lets other handlers proceed.
+        # We'll rely on ReclamoInteligenteMunicipioHandler or IntentClassifierHandler to pick up the rest.
+        for saludo_kw in saludos: # Use a different variable name to avoid conflict
+            if (texto.startswith(saludo_kw + " ") or texto.startswith(saludo_kw + ",") or texto.startswith(saludo_kw + ".")):
+                memoria["saludo_detectado_en_largo_mensaje"] = True # Flag that a greeting was seen
+                logger.info(f"[GreetingHandler] Leading greeting '{saludo_kw}' detected in longer message. Letting other handlers proceed.")
+                break # No need to check other greeting keywords
+        return None # Always return None if it's not a simple, standalone greeting, to allow other handlers.
 
 class SugerenciasVecinoHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
