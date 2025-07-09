@@ -1221,9 +1221,12 @@ def mapa_de_tickets(current_user: User, tipo: str):
     return jsonify(datos)
 
 # También se necesitará una ruta para servir los archivos.
+from flask_login import login_required, current_user as flask_login_current_user # Importar para Flask-Login
+
 @ticket_bp.route('/archivos/<filename>', methods=['GET'])
-@token_requerido # O una forma de autorización más laxa si los archivos deben ser accesibles por enlace directo temporalmente
-def get_ticket_adjunto(current_user, filename): # current_user es inyectado
+@login_required # Usar login_required de Flask-Login
+def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_current_user
+    current_user = flask_login_current_user # Obtener el usuario de Flask-Login
     # Validar filename para evitar directory traversal
     safe_filename = secure_filename(filename)
     if safe_filename != filename:

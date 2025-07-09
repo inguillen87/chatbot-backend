@@ -135,6 +135,11 @@ def login():
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
 
+    # Integrar Flask-Login
+    from flask_login import login_user
+    login_user(user) # Establecer la sesión para el usuario
+    current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
+
     return jsonify({
         "mensaje": "Login exitoso",
         "id": user.id,
@@ -187,6 +192,11 @@ def google_login():
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
         tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
+
+        # Integrar Flask-Login
+        from flask_login import login_user
+        login_user(user) # Establecer la sesión para el usuario
+        current_app.logger.info(f"Usuario {user.email} logueado vía Google y sesión Flask-Login establecida.")
 
         return jsonify({
             "id": user.id,

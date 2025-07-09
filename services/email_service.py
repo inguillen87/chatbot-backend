@@ -382,18 +382,36 @@ def enviar_whatsapp_ticket_novedad(ticket, mensaje: str, archivos_adjuntos: list
             else:
                 logger.warning(f"[WHATSAPP] Archivo adjunto para ticket {ticket_id_log} sin URL válida: {adjunto_obj}")
 
-    if not mensaje and not media_urls_para_envio:
-        logger.info(f"[WHATSAPP] No hay mensaje ni adjuntos válidos para enviar para ticket {ticket_id_log}. Envío omitido.")
-                    # Asegurarse de que la URL sea completa y accesible públicamente
-                    full_url = adjunto_obj.url
-                    if not full_url.startswith(('http://', 'https://')):
-                        full_url = app_base_url.rstrip('/') + adjunto_obj.url
-                    media_urls_para_envio.append(full_url)
-                else:
-                    logger.warning(f"[WHATSAPP] Archivo adjunto para ticket {ticket_id_log} sin URL válida: {adjunto_obj}")
+    if not mensaje and not media_urls_para_envio: # This check is fine here if it's meant to be before processing attachments
+        logger.info(f"[WHATSAPP] No hay mensaje ni adjuntos válidos para enviar para ticket {ticket_id_log} (chequeo inicial). Envío omitido.")
+        # return False # Let's not return yet, process attachments first, then re-check.
 
+    # The loop for processing attachments should be here.
+    # The original code had the attachment processing logic incorrectly indented.
+
+    # Corrected logic for processing attachments:
+    if archivos_adjuntos: # Ensure this block is processed only if there are attachments
+        app_base_url = current_app.config.get("APP_BASE_URL", "") # Get it once
+        # The following check for app_base_url was part of the original problem block,
+        # but it's better to have it here if we decide to make it critical.
+        # For now, let's assume it's logged if missing, and URLs might be relative.
+        if not app_base_url:
+             logger.error("[WHATSAPP] APP_BASE_URL no está configurada. URLs de adjuntos podrían no ser absolutas.")
+
+        for adjunto_obj in archivos_adjuntos: # This is the loop where the error was.
+            if hasattr(adjunto_obj, 'url') and adjunto_obj.url:
+                full_url = adjunto_obj.url # This was the problematic line (line 388 in original error)
+                if not full_url.startswith(('http://', 'https')) and app_base_url:
+                    full_url = app_base_url.rstrip('/') + '/' + adjunto_obj.url.lstrip('/')
+                elif not full_url.startswith(('http://', 'https')) and not app_base_url:
+                     logger.warning(f"[WHATSAPP] No se pudo construir URL absoluta para adjunto ID {getattr(adjunto_obj, 'id', 'N/A')} ({getattr(adjunto_obj, 'nombre_original', 'N/A')}) debido a APP_BASE_URL faltante. Usando URL relativa: {full_url}")
+                media_urls_para_envio.append(full_url)
+            else:
+                logger.warning(f"[WHATSAPP] Archivo adjunto para ticket {ticket_id_log} sin URL válida: {adjunto_obj}")
+
+    # Final check after processing attachments
     if not mensaje and not media_urls_para_envio:
-        logger.info(f"[WHATSAPP] No hay mensaje ni adjuntos válidos para enviar para ticket {ticket_id_log}. Envío omitido.")
+        logger.info(f"[WHATSAPP] No hay mensaje ni adjuntos válidos para enviar para ticket {ticket_id_log} (chequeo final). Envío omitido.")
         return False # Evitar enviar un mensaje completamente vacío
 
     logger.info(
