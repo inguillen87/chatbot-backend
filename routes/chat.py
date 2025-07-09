@@ -289,6 +289,7 @@ def _procesar_chat(
             anon_id=anon_id, # El anon_id de la cabecera, para lógica de límites de mensajes anónimos, etc.
             chat_session_uuid=chat_session_id_header, # El ID de sesión único, ahora desde el header
             chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
+            channel="web", # Set channel to web
             uploaded_file_info=uploaded_file_info,
             interpretacion_imagen_data=interpretacion_imagen_resultado
         )
@@ -329,8 +330,30 @@ def _procesar_chat(
             if interpretacion_imagen_resultado and not interpretacion_imagen_resultado.get("error"):
                 resultado["interpretacion_adjunto"] = interpretacion_imagen_resultado
 
+        # ... (previous commit for ChatSessionContext) ...
+
+        # Format the response for the web channel using the formatter
+        from services.response_formatter import build_interactive_response
+
+        # Ensure 'respuesta' and 'botones' are correctly populated in 'resultado'
+        # by the formatter, using the new structured fields.
+        web_body = resultado.get('message_body', resultado.get('respuesta', 'Error al procesar')) # Fallback
+        web_options = resultado.get('options_list', resultado.get('botones', [])) # Fallback
+        web_message_type = resultado.get('message_type', 'text')
+        if web_options and web_message_type == 'text': # If options are present, it should be an interactive type
+            web_message_type = 'interactive_buttons' # Default for web if options exist
+
+        formatted_web_response = build_interactive_response(
+            options=web_options,
+            body_text=web_body,
+            channel="web",
+            message_type=web_message_type,
+            original_bot_response=resultado # Pass the full dict from responder_chatboc
+        )
+
+        # This commit is for User.preguntas_usadas primarily, and any other DB changes by responder_chatboc
         db.session.commit()
-        return jsonify(resultado), 200
+        return jsonify(formatted_web_response), 200
 
     except Exception as e:
         db.session.rollback()

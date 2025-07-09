@@ -284,16 +284,30 @@ class BaseHandler:
 class SaludoHandler(BaseHandler):
     def handle(self, pregunta):
         nombre = self.context.get("nombre_pyme", "la empresa")
-        respuesta_saludo = f"¡Hola! Soy tu asistente para {nombre}. ¿En qué puedo ayudarte hoy?"
-        botones_saludo = [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Ver ofertas", "action": "ver_ofertas"}]
+        body = f"¡Hola! Soy tu asistente para {nombre}. ¿En qué puedo ayudarte hoy?"
+        options = [
+            {"id": "ver_catalogo_pyme", "texto": "Ver catálogo"},
+            {"id": "ver_ofertas_pyme", "texto": "Ver ofertas"}
+        ]
+
         if self.pyme_id_actual:
             resumen_carrito_existente = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
             if resumen_carrito_existente and resumen_carrito_existente.get("items_detalle"):
-                respuesta_saludo += f"\n\nVeo que tienes algunos productos en tu carrito. ¿Quieres continuar con ese pedido o empezar uno nuevo?"
-                botones_saludo = [{"texto": "Continuar pedido", "action": "ver_carrito"},
-                                  {"texto": "Nuevo pedido", "action": "limpiar_y_nuevo_pedido_saludo"},
-                                  {"texto": "Ver catálogo", "action": "ver_catalogo"}]
-        return {"respuesta": respuesta_saludo, "fuente": "saludo_v2", "botones": botones_saludo}
+                body += f"\n\nVeo que tienes algunos productos en tu carrito. ¿Quieres continuar con ese pedido o empezar uno nuevo?"
+                options = [
+                    {"id": "ver_carrito_pyme", "texto": "Continuar pedido"},
+                    {"id": "limpiar_y_nuevo_pedido_saludo_pyme", "texto": "Nuevo pedido"},
+                    {"id": "ver_catalogo_pyme_con_carrito", "texto": "Ver catálogo"}
+                ]
+
+        message_type = 'interactive_buttons' # Max 3 options in both cases
+
+        return {
+            "message_body": body,
+            "options_list": options,
+            "message_type": message_type,
+            "fuente": "pyme_saludo_interactivo_v2"
+        }
 
 class CatalogoHandler(BaseHandler):
     def handle(self, pregunta):
@@ -338,24 +352,88 @@ class CatalogoHandler(BaseHandler):
                 respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
         
-        if not respuesta_texto: respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
+        if not respuesta_texto:
+            respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
+            # No product-specific buttons if nothing found
+            botones_catalogo = []
 
-        botones_generales = [{"texto": "Buscar otra cosa", "action": "ver_catalogo"}, {"texto": "Hablar con un agente", "action": "hablar_con_agente"}]
+        body = respuesta_texto
+        options = []
+
+        # Add "Pedir {nombre}" buttons from botones_catalogo (which were generated from resultados_qdrant)
+        # Assuming botones_catalogo was populated correctly if resultados_qdrant had hits
+        for btn_cat_original in botones_catalogo: # botones_catalogo was defined earlier in your original code
+            # Original action: f"pedir_item_{identificador_accion}"
+            # We need the identificador_accion part for the ID.
+            action_str = btn_cat_original.get("action", "")
+            id_suffix = action_str.replace("pedir_item_", "") if action_str.startswith("pedir_item_") else normalizar_texto(btn_cat_original.get("texto", ""))
+
+            options.append({
+                "id": f"pedir_item_pyme_{id_suffix}",
+                "texto": btn_cat_original.get("texto", "Pedir producto")[:20] # Ensure text is suitable for button title
+            })
+            if len(options) >= 7 and self.context.get("channel") == 'whatsapp': # Limit Pedir buttons for WhatsApp to leave space for general ones
+                break
+
+        # Add general action buttons
+        options.append({"id": "ver_catalogo_pyme_buscar_otra", "texto": "Buscar otra cosa"})
+
         if tiene_archivo_catalogo(self.pyme_id_actual):
-             url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
-             botones_generales.insert(1, {"texto": "Descargar Catálogo PDF", "url": url_cat, "tipo": "link"})
-        return {"respuesta": respuesta_texto, "fuente": fuente_catalogo, "botones": botones_catalogo + botones_generales}
+            url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
+            if self.context.get("channel") == "whatsapp":
+                body += f"\n\nTambién puedes descargar nuestro catálogo completo en: {url_cat}"
+            else: # For web, add as a URL button
+                options.append({
+                    "id": "descargar_catalogo_pyme_pdf",
+                    "texto": "Descargar Catálogo PDF",
+                    "url": url_cat,
+                    "type": "url" # For formatter to handle for web
+                })
+
+        options.append({"id": "hablar_con_agente_pyme_catalogo", "texto": "Hablar con un agente"})
+
+        interactive_options_count = sum(1 for opt in options if opt.get("type") != "url")
+        message_type = 'text'
+        if interactive_options_count == 1: message_type = 'interactive_buttons'
+        elif 1 < interactive_options_count <= 3: message_type = 'interactive_buttons'
+        elif interactive_options_count > 3: message_type = 'interactive_list'
+
+        if interactive_options_count == 0 and any(opt.get("type") == "url" for opt in options):
+             message_type = 'text'
+
+        return {
+            "message_body": body,
+            "options_list": options,
+            "message_type": message_type,
+            "fuente": fuente_catalogo
+        }
 
 class OfertasHandler(BaseHandler):
     def handle(self, pregunta):
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "ofertas_sin_pyme_id_v2"}
         promos = promocion_service.get_promociones_for_pyme(self.pyme_id_actual, activas_unicamente=True)
+
+        options = [{"id": "ver_catalogo_pyme_ofertas", "texto": "Ver catálogo"}]
+        message_type = 'interactive_buttons' # Only 1 option
+
         if promos:
-            txt = "¡Tenemos estas promociones activas!\n" + "\n".join([f"\n**{p.nombre_promocion}**: {p.descripcion_publica}" for p in promos[:3]])
-            if len(promos) > 3: txt += f"\n... y {len(promos) - 3} más!"
-            txt += "\n\n¿Te interesa alguna o quieres ver productos?"
-            return {"respuesta": txt, "fuente": "ofertas_servicio_v2", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
-        return {"respuesta": "No tenemos ofertas especiales ahora, pero explora nuestro catálogo.", "fuente": "sin_ofertas_v2", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+            body = "¡Tenemos estas promociones activas!\n" + "\n".join([f"\n**{p.nombre_promocion}**: {p.descripcion_publica}" for p in promos[:3]])
+            if len(promos) > 3: body += f"\n... y {len(promos) - 3} más!"
+            body += "\n\n¿Te interesa alguna o quieres ver productos?"
+            return {
+                "message_body": body,
+                "options_list": options,
+                "message_type": message_type,
+                "fuente": "pyme_ofertas_con_promos_v2"
+            }
+
+        body_no_ofertas = "No tenemos ofertas especiales ahora, pero explora nuestro catálogo."
+        return {
+            "message_body": body_no_ofertas,
+            "options_list": options,
+            "message_type": message_type,
+            "fuente": "pyme_ofertas_sin_promos_v2"
+        }
 
 class PedidoHandler(BaseHandler):
     def _sugerir_productos_complementarios(self, ultimo_producto_nombre: str, items_recien_agregados: list) -> tuple[str, list]:
@@ -400,7 +478,13 @@ class PedidoHandler(BaseHandler):
         if accion_payload == "vaciar_carrito_accion":
             cart_service.clear_pyme_cart(self.pyme_id_actual)
             self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO) # Quedarse en modo pedido
-            return {"respuesta": "Tu carrito ha sido vaciado. ¿Qué deseas pedir ahora?", "fuente": "carrito_vaciado_v3", "botones": [{"texto": "Ver Catálogo", "action": "ver_catalogo"}]}
+            options_vaciado = [{"id": "ver_catalogo_pyme_carrito_vaciado", "texto": "Ver Catálogo"}]
+            return {
+                "message_body": "Tu carrito ha sido vaciado. ¿Qué deseas pedir ahora?",
+                "options_list": options_vaciado,
+                "message_type": 'interactive_buttons',
+                "fuente": "pyme_carrito_vaciado_v2"
+            }
 
         if intencion_actual == "eliminar_del_carrito" or accion_payload.startswith("eliminar_item_"):
             item_a_eliminar_id = None
@@ -415,8 +499,23 @@ class PedidoHandler(BaseHandler):
                 cart_service.remove_item_from_cart(self.pyme_id_actual, item_a_eliminar_id)
                 resumen_tras_eliminar = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
                 self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO)
-                return {"respuesta": f"Item eliminado.\n{formatear_carrito_desde_summary(resumen_tras_eliminar, self.context)}", "fuente": "item_eliminado_v2", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
-            return {"respuesta": "No pude identificar qué producto quitar. Puedes ver tu carrito y reintentar.", "fuente": "eliminar_item_no_identificado", "botones": [{"texto":"Ver Carrito", "action":"ver_carrito"}]}
+                options_eliminado = [
+                    {"id": "agregar_mas_pedido_pyme", "texto": "Agregar más"},
+                    {"id": "finalizar_pedido_pyme", "texto": "Finalizar pedido"}
+                ]
+                return {
+                    "message_body": f"Item eliminado.\n{formatear_carrito_desde_summary(resumen_tras_eliminar, self.context)}",
+                    "options_list": options_eliminado,
+                    "message_type": 'interactive_buttons',
+                    "fuente": "pyme_item_eliminado_v2"
+                }
+            options_no_id_elim = [{"id": "ver_carrito_pyme_no_id_elim", "texto": "Ver Carrito"}]
+            return {
+                "message_body": "No pude identificar qué producto quitar. Puedes ver tu carrito y reintentar.",
+                "options_list": options_no_id_elim,
+                "message_type": 'interactive_buttons',
+                "fuente": "pyme_eliminar_item_no_id_v2"
+            }
         
         if intencion_actual == "modificar_cantidad_carrito":
             items_extraidos_mod = extraer_productos_pedido(pregunta)
@@ -427,8 +526,17 @@ class PedidoHandler(BaseHandler):
                     cart_service.update_item_quantity_in_cart(self.pyme_id_actual, item_en_carrito["catalogo_item_id"], nueva_cant)
                     resumen_tras_modif = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
                     self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO)
-                    return {"respuesta": f"Cantidad actualizada.\n{formatear_carrito_desde_summary(resumen_tras_modif, self.context)}", "fuente": "item_cantidad_actualizada_v2", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
-            return {"respuesta": "No entendí qué producto o cantidad modificar. Ej: '3 vinos malbec' o 'cambiar manzanas a 5'.", "fuente": "modificar_cantidad_ayuda_v3"}
+                    options_qty_upd = [
+                        {"id": "agregar_mas_pedido_pyme_qty", "texto": "Agregar más"},
+                        {"id": "finalizar_pedido_pyme_qty", "texto": "Finalizar pedido"}
+                    ]
+                    return {
+                        "message_body": f"Cantidad actualizada.\n{formatear_carrito_desde_summary(resumen_tras_modif, self.context)}",
+                        "options_list": options_qty_upd,
+                        "message_type": 'interactive_buttons',
+                        "fuente": "pyme_item_cantidad_actualizada_v2"
+                    }
+            return {"message_body": "No entendí qué producto o cantidad modificar. Ej: '3 vinos malbec' o 'cambiar manzanas a 5'.", "options_list": [], "message_type": "text", "fuente": "pyme_modificar_cantidad_ayuda_v2"}
 
 
         # Flujo principal de estados
@@ -436,11 +544,18 @@ class PedidoHandler(BaseHandler):
             if accion_payload == "limpiar_y_nuevo_pedido_saludo": cart_service.clear_pyme_cart(self.pyme_id_actual)
             self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO)
             msg_ini = "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel."
-            # Si la pregunta original ya contenía productos, procesarlos
+
             if pregunta not in ["iniciar_pedido", "limpiar_y_nuevo_pedido_saludo"] and intencion_actual == "iniciar_pedido":
-                # Llamar a la lógica de ESPERANDO_PRODUCTO para procesar la pregunta actual como si fuera una adición
-                return self.handle(pregunta)
-            return {"respuesta": msg_ini, "fuente": "iniciar_pedido_flujo_v4", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+                # Process current question as if it's an addition to the order
+                return self.handle(pregunta) # Recursive call, will hit ESPERANDO_PRODUCTO
+
+            options_ini = [{"id": "ver_catalogo_pyme_pedido_inicio", "texto": "Ver catálogo"}]
+            return {
+                "message_body": msg_ini,
+                "options_list": options_ini,
+                "message_type": 'interactive_buttons',
+                "fuente": "pyme_iniciar_pedido_v2"
+            }
 
         elif estado_actual == PymeConversationState.ESPERANDO_PRODUCTO:
             # (Manejo de CANCEL_KEYWORDS, ver_carrito, finalizar_pedido ya están arriba o en intenciones)
@@ -456,7 +571,16 @@ class PedidoHandler(BaseHandler):
             
             if not items_extraidos and not accion_payload.startswith("pedir_item_"): # Si no se extrajo nada y no fue un botón de pedir
                  resumen_vacio = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
-                 return {"respuesta": f"No entendí qué producto agregar. {formatear_carrito_desde_summary(resumen_vacio, self.context)}", "fuente":"producto_no_entendido_carrito_actual", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}]}
+                 options_no_extr = [
+                     {"id": "ver_catalogo_pyme_no_extr", "texto": "Ver catálogo"},
+                     {"id": "finalizar_pedido_pyme_no_extr", "texto": "Finalizar pedido"}
+                 ]
+                 return {
+                     "message_body": f"No entendí qué producto agregar. {formatear_carrito_desde_summary(resumen_vacio, self.context)}",
+                     "options_list": options_no_extr,
+                     "message_type": 'interactive_buttons',
+                     "fuente": "pyme_producto_no_entendido_v2"
+                 }
 
             items_agregados_ok_nombres = []
             productos_no_hallados_nombres = []
@@ -484,14 +608,29 @@ class PedidoHandler(BaseHandler):
             msg_res += f"\n{formatear_carrito_desde_summary(resumen_obj, self.context)}"
             self.pyme_ctx["reintentos"] = 0; self._guardar_contexto_pyme()
             
-            # TODO: Sugerencias complementarias
-            return {"respuesta": msg_res, "fuente": "pedido_progreso_servicio_carrito_v3", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar pedido", "action": "finalizar_pedido"}, {"texto": "Vaciar carrito", "action": "vaciar_carrito_accion"}]}
+            options_agregado = [
+                {"id": "agregar_mas_pedido_pyme_agregado", "texto": "Agregar más"},
+                {"id": "finalizar_pedido_pyme_agregado", "texto": "Finalizar pedido"},
+                {"id": "vaciar_carrito_pyme_agregado", "texto": "Vaciar carrito"}
+            ]
+            return {
+                "message_body": msg_res,
+                "options_list": options_agregado,
+                "message_type": 'interactive_buttons', # Could be list if options grow
+                "fuente": "pyme_pedido_progreso_v2"
+            }
 
         elif estado_actual == PymeConversationState.CONFIRMANDO_PEDIDO:
             if any(k in accion_payload for k in CANCEL_KEYWORDS):
                 cart_service.clear_pyme_cart(self.pyme_id_actual)
                 self._actualizar_estado(PymeConversationState.IDLE)
-                return {"respuesta": "Pedido cancelado. ¿Necesitás otra cosa?", "fuente": "pedido_cancelado_confirmacion_v3", "botones": [{"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+                options_cancelado_conf = [{"id": "ver_catalogo_pyme_cancel_conf", "texto": "Ver catálogo"}]
+                return {
+                    "message_body": "Pedido cancelado. ¿Necesitás otra cosa?",
+                    "options_list": options_cancelado_conf,
+                    "message_type": 'interactive_buttons',
+                    "fuente": "pyme_pedido_cancelado_confirmacion_v2"
+                }
 
             if accion_payload == "confirmar_pedido":
                 viewer_user = db.session.get(User, self.cliente_id_actual) if self.cliente_id_actual else None
@@ -516,10 +655,29 @@ class PedidoHandler(BaseHandler):
             elif accion_payload == "modificar_pedido":
                  self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO)
                  res_obj_mod = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
-                 return {"respuesta": f"Ok, volvemos a tu pedido. Carrito:\n{formatear_carrito_desde_summary(res_obj_mod, self.context)}\n¿Qué quieres hacer?", "fuente": "modificando_pedido_v4", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar", "action": "finalizar_pedido"}]}
+                 options_mod_pedido = [
+                     {"id": "agregar_mas_pedido_pyme_mod", "texto": "Agregar más"},
+                     {"id": "finalizar_pedido_pyme_mod", "texto": "Finalizar"}
+                 ]
+                 return {
+                     "message_body": f"Ok, volvemos a tu pedido. Carrito:\n{formatear_carrito_desde_summary(res_obj_mod, self.context)}\n¿Qué quieres hacer?",
+                     "options_list": options_mod_pedido,
+                     "message_type": 'interactive_buttons',
+                     "fuente": "pyme_modificando_pedido_v2"
+                 }
             else: # Repreguntar
                 res_obj_reconf = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
-                return {"respuesta": f"Tu pedido es:\n{formatear_carrito_desde_summary(res_obj_reconf, self.context)}\n\n¿Confirmas? (Sí/Modificar/Cancelar)", "fuente": "reconfirmando_v4", "botones": [{"texto": "Sí", "action": "confirmar_pedido"}, {"texto": "Modificar", "action": "modificar_pedido"}, {"texto": "Cancelar", "action": "cancelar_pedido"}]}
+                options_reconf = [
+                    {"id": "confirmar_pedido_reconf", "texto": "Sí"}, # Action will be 'confirmar_pedido'
+                    {"id": "modificar_pedido_reconf", "texto": "Modificar"}, # Action 'modificar_pedido'
+                    {"id": "cancelar_pedido_reconf", "texto": "Cancelar"} # Action 'cancelar_pedido'
+                ]
+                return {
+                    "message_body": f"Tu pedido es:\n{formatear_carrito_desde_summary(res_obj_reconf, self.context)}\n\n¿Confirmas? (Sí/Modificar/Cancelar)",
+                    "options_list": options_reconf,
+                    "message_type": 'interactive_buttons',
+                    "fuente": "pyme_reconfirmando_pedido_v2"
+                }
         
         elif estado_actual in [PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE, PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO, PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION]:
             extracted = extract_multiple_contact_details_llm(pregunta, ['nombre_cliente', 'telefono_cliente', 'direccion_cliente', 'email_cliente'])
@@ -557,32 +715,86 @@ class PedidoHandler(BaseHandler):
                     cart_service.clear_pyme_cart(self.pyme_id_actual)
                     self._actualizar_estado(PymeConversationState.ESPERANDO_FEEDBACK)
                     self.pyme_ctx["nro_pedido_confirmado"] = np.nro_pedido; self._guardar_contexto_pyme()
-                    return {"respuesta": f"¡Listo! Pedido **#{np.nro_pedido}** registrado. Nos comunicaremos. ¿Comentarios? (Sí/No)", "fuente": "pedido_finalizado_v5", "botones": [{"texto": "Sí", "action": "dejar_feedback"}, {"texto": "No", "action": "no_feedback"}]}
-                except Exception as e: logger.error(f"Error PymePedido: {e}"); db.session.rollback(); return {"respuesta": "Error registrando pedido.", "fuente": "error_db_pedido"}
+                    options_pedido_finalizado = [
+                        {"id": "dejar_feedback_pyme", "texto": "Sí"},
+                        {"id": "no_feedback_pyme", "texto": "No"}
+                    ]
+                    return {
+                        "message_body": f"¡Listo! Pedido **#{np.nro_pedido}** registrado. Nos comunicaremos. ¿Comentarios? (Sí/No)",
+                        "options_list": options_pedido_finalizado,
+                        "message_type": 'interactive_buttons',
+                        "fuente": "pyme_pedido_finalizado_v2"
+                    }
+                except Exception as e:
+                    logger.error(f"Error PymePedido: {e}"); db.session.rollback()
+                    return {"message_body": "Error registrando pedido.", "options_list": [], "message_type": "text", "fuente": "pyme_error_db_pedido_v2"}
             
             elif accion_payload == "modificar_datos_cliente":
                 for k in ["nombre_cliente", "telefono_cliente", "direccion_cliente", "email_cliente"]: self.pyme_ctx.pop(k, None)
                 self._actualizar_estado(PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE)
-                return {"respuesta": "Ok, ingresemos tus datos de nuevo. ¿Nombre completo?", "fuente": "mod_datos_cliente_v4"}
+                return {"message_body": "Ok, ingresemos tus datos de nuevo. ¿Nombre completo?", "options_list": [], "message_type": "text", "fuente": "pyme_mod_datos_cliente_v2"}
             elif accion_payload == "modificar_pedido":
                  self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO)
                  res_obj_mod_final_conf = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
-                 return {"respuesta": f"Volvemos a tu pedido. Carrito:\n{formatear_carrito_desde_summary(res_obj_mod_final_conf, self.context)}\n¿Qué hacer?", "fuente": "mod_pedido_final_v5", "botones": [{"texto": "Agregar más", "action": "agregar_mas_pedido"}, {"texto": "Finalizar", "action": "finalizar_pedido"}]}
-            else: # Repreguntar
+                 options_mod_pedido_final = [
+                     {"id": "agregar_mas_pedido_pyme_mod_final", "texto": "Agregar más"},
+                     {"id": "finalizar_pedido_pyme_mod_final", "texto": "Finalizar"}
+                 ]
+                 return {
+                     "message_body": f"Volvemos a tu pedido. Carrito:\n{formatear_carrito_desde_summary(res_obj_mod_final_conf, self.context)}\n¿Qué hacer?",
+                     "options_list": options_mod_pedido_final,
+                     "message_type": 'interactive_buttons',
+                     "fuente": "pyme_mod_pedido_final_conf_v2"
+                 }
+            else: # Repreguntar en ESPERANDO_CONFIRMACION_FINAL_CON_DATOS
                 res_obj_reconf_final_datos = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
                 res_ped_str_reconf_final_datos = formatear_carrito_desde_summary(res_obj_reconf_final_datos, self.context)
                 res_datos_cli_reconf = f"Nombre: {self.pyme_ctx.get('nombre_cliente', 'N/A')}\nTel: {self.pyme_ctx.get('telefono_cliente', 'N/A')}\nDir: {self.pyme_ctx.get('direccion_cliente', 'N/A')}"
-                return {"respuesta": f"No entendí. Revisemos:\nPedido:\n{res_ped_str_reconf_final_datos}\nDatos:\n{res_datos_cli_reconf}\n¿Correcto? (Sí/Modificar datos/Modificar pedido)", "fuente": "reconfirmando_final_fallback_v4", "botones": [{"texto": "Sí", "action": "confirmar_final_con_datos"}, {"texto": "Modificar datos", "action": "modificar_datos_cliente"}, {"texto": "Modificar pedido", "action": "modificar_pedido"}]}
+                options_reconf_final_datos = [
+                    {"id": "confirmar_final_con_datos_reconf", "texto": "Sí, está correcto"},
+                    {"id": "modificar_datos_cliente_reconf", "texto": "Modificar datos"},
+                    {"id": "modificar_pedido_reconf", "texto": "Modificar pedido"}
+                ]
+                return {
+                    "message_body": f"No entendí. Revisemos:\nPedido:\n{res_ped_str_reconf_final_datos}\nDatos:\n{res_datos_cli_reconf}\n¿Correcto? (Sí/Modificar datos/Modificar pedido)",
+                    "options_list": options_reconf_final_datos,
+                    "message_type": 'interactive_list', # 3 options, could be buttons
+                    "fuente": "pyme_reconfirmando_final_datos_v2"
+                }
 
         elif estado_actual == PymeConversationState.ESPERANDO_FEEDBACK:
             self._actualizar_estado(PymeConversationState.IDLE); self.pyme_ctx.pop("nro_pedido_confirmado", None); self._guardar_contexto_pyme()
-            if accion_payload == "dejar_feedback" or texto_usuario_lower in {"si", "sí"}:
-                return {"respuesta": "¡Gracias por tus comentarios! ¿Algo más?", "fuente": "agradecimiento_feedback_v4", "botones": [{"texto": "Nuevo pedido", "action": "iniciar_pedido"}]}
-            return {"respuesta": "Entendido. ¿Nuevo pedido o ver catálogo?", "fuente": "feedback_omitido_v4", "botones": [{"texto": "Nuevo pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+            options_post_feedback = [
+                {"id": "iniciar_pedido_pyme_post_fb", "texto": "Nuevo pedido"},
+                {"id": "ver_catalogo_pyme_post_fb", "texto": "Ver catálogo"}
+            ]
+            if accion_payload == "dejar_feedback_pyme" or texto_usuario_lower in {"si", "sí"}:
+                # Ideally, would ask for feedback text here if "Sí"
+                return {
+                    "message_body": "¡Gracias por tus comentarios! ¿Algo más?",
+                    "options_list": options_post_feedback,
+                    "message_type": 'interactive_buttons',
+                    "fuente": "pyme_agradecimiento_feedback_v2"
+                }
+            return {
+                "message_body": "Entendido. ¿Nuevo pedido o ver catálogo?",
+                "options_list": options_post_feedback,
+                "message_type": 'interactive_buttons',
+                "fuente": "pyme_feedback_omitido_v2"
+            }
         
         logger.error(f"[PYME_HANDLER_FALLBACK] Estado no manejado: {estado_actual}, Intención: {intencion_actual}, Payload: '{accion_payload}'")
         self._actualizar_estado(PymeConversationState.IDLE)
-        return {"respuesta": "Hubo un inconveniente. ¿Empezamos de nuevo?", "fuente":"error_pedido_estado_desconocido_reinicio_v4","botones": [{"texto": "Iniciar pedido", "action": "iniciar_pedido"}, {"texto": "Ver catálogo", "action": "ver_catalogo"}]}
+        options_fallback_error = [
+            {"id": "iniciar_pedido_pyme_error_fallback", "texto": "Iniciar pedido"},
+            {"id": "ver_catalogo_pyme_error_fallback", "texto": "Ver catálogo"}
+        ]
+        return {
+            "message_body": "Hubo un inconveniente. ¿Empezamos de nuevo?",
+            "options_list": options_fallback_error,
+            "message_type": 'interactive_buttons',
+            "fuente": "pyme_error_pedido_estado_desconocido_v2"
+        }
 
 # --- Resto de Handlers y función responder_pyme ---
 # (Se asume que el resto del archivo sigue la estructura anterior, solo PedidoHandler y funciones relacionadas fueron modificadas extensamente)
@@ -596,11 +808,11 @@ def coleccion_catalogo_para_rubro(rubro_nombre: str) -> str:
     return CATALOGO_PYME # Usar la constante global por ahora
 
 # def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
-def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, **kwargs):
+def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
     request_id = str(uuid.uuid4())
     # Añadir current_app al logger para acceso a config
     logger_actual = current_app.logger if current_app else logger # Asegurar que logger_actual esté definido
-    logger_actual.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', UserPyme: {getattr(owner_user, 'id', 'N/A')}, ViewerCliente: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}")
+    logger_actual.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', UserPyme: {getattr(owner_user, 'id', 'N/A')}, ViewerCliente: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}")
 
     # --- Contexto General ---
     pyme_id_para_servicios = getattr(owner_user, "id", None)

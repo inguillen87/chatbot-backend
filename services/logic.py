@@ -145,10 +145,11 @@ def responder_chatboc(
     tipo_chat=None,
     anon_id=None,
     chat_session_uuid=None,
+    channel: str = "web", # Add channel parameter
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
-    logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}', chat_session_uuid='{chat_session_uuid}'")
+    logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}', chat_session_uuid='{chat_session_uuid}', channel='{channel}'")
 
     # 1. Determinar el 'effective_owner_user' (la entidad o bot dueño)
     effective_owner_user = owner_user
@@ -500,6 +501,7 @@ def responder_chatboc(
             chat_db_context=chat_db_context, # Pasar el contexto de DB
             anon_id=anon_id,
             chat_session_uuid=chat_session_uuid,
+            channel=channel, # Pass channel
             **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
         )
     elif tipo_chat == "pyme":
@@ -512,6 +514,7 @@ def responder_chatboc(
             chat_db_context=chat_db_context, # Pasar el contexto de DB
             anon_id=anon_id,
             chat_session_uuid=chat_session_uuid,
+            channel=channel, # Pass channel
             **kwargs,
         )
     else:

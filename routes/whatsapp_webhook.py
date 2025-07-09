@@ -39,7 +39,20 @@ def whatsapp_webhook():
 
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
-    message_body = post_vars.get("Body", "")
+
+    # Check for interactive message replies from Twilio
+    button_payload = post_vars.get("ButtonPayload") # For Button Reply ID
+    list_id = post_vars.get("ListId") # For List Reply ID
+
+    if button_payload:
+        message_body = button_payload # Use the ID from the button
+        print(f"Received WhatsApp Button Reply. Using ID: '{button_payload}' as message_body.")
+    elif list_id:
+        message_body = list_id # Use the ID from the list item
+        print(f"Received WhatsApp List Reply. Using ID: '{list_id}' as message_body.")
+    else:
+        message_body = post_vars.get("Body", "") # Standard text message
+        print(f"Received WhatsApp standard text message. Body: '{message_body}'")
 
     to_number_cleaned = to_number_raw.replace("whatsapp:", "")
     from_number_cleaned = from_number_raw.replace("whatsapp:", "") # User's phone number
@@ -126,6 +139,7 @@ def whatsapp_webhook():
             tipo_chat=client_type,
             anon_id=from_number_cleaned,
             chat_session_uuid=chat_session_id_internal,
+            channel="whatsapp", # Set channel to whatsapp
             **kwargs_for_bot
         )
 
@@ -178,14 +192,88 @@ def whatsapp_webhook():
     # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            message = twilio_client.messages.create(
-                from_=to_number_raw,
-                to=from_number_raw,
-                body=respuesta_del_bot_text
+            from services.response_formatter import build_interactive_response
+            import json
+
+            # Use new structured keys from bot_response_dict
+            body_for_formatter = bot_response_dict.get('message_body', respuesta_del_bot_text) # Fallback to old 'respuesta' if new key not present
+            options_for_formatter = bot_response_dict.get('options_list', [])
+            message_type_for_formatter = bot_response_dict.get('message_type', 'text')
+            header_for_formatter = bot_response_dict.get('header_text')
+            footer_for_formatter = bot_response_dict.get('footer_text')
+
+            # Ensure respuesta_del_bot_text (used for logging) is also from the new key if available
+            respuesta_del_bot_text = body_for_formatter
+
+            formatted_whatsapp_payload = build_interactive_response(
+                options=options_for_formatter,
+                body_text=body_for_formatter,
+                channel='whatsapp',
+                message_type=message_type_for_formatter,
+                original_bot_response=bot_response_dict, # Pass the whole original dict
+                header_text=header_for_formatter,
+                footer_text=footer_for_formatter
             )
+
+            message_params = {
+                'from_': to_number_raw,
+                'to': from_number_raw,
+                'body': formatted_whatsapp_payload.get("main_body", "Error: Cuerpo del mensaje no disponible.")
+            }
+
+            interactive_obj = formatted_whatsapp_payload.get("interactive_object")
+            if interactive_obj:
+                # PersistentAction expects a list of strings.
+                # The string should be 'whatsapp:' followed by the JSON of the interactive object.
+                # Note: The entire message object (type, interactive, etc.) is sometimes passed as a single JSON string.
+                # Meta's API itself takes the full JSON. How Twilio translates this via 'PersistentAction'
+                # or other params needs to be exact.
+                # If PersistentAction is 'whatsapp:<FULL_MESSAGE_JSON_OBJECT_AS_STRING>',
+                # then response_formatter should provide that full object.
+                # The current formatter provides the 'interactive' part separately.
+                # Let's assume PersistentAction takes the 'interactive' part directly for now.
+                # This is a common way for aggregators to handle it.
+
+                # Based on https://www.twilio.com/docs/whatsapp/api/buttons-lists (which is for templates)
+                # and general interactive message structure.
+                # For non-template messages sent via API, often the 'interactive' components are part of the main API call.
+                # Twilio's Python library might have a specific parameter for this.
+                # If `PersistentAction` is not correct, this will need adjustment.
+                # A common alternative is `content_variables` if using a generic template,
+                # or a direct `interactive` parameter if the lib supports it.
+                # For now, trying with PersistentAction for dynamic interactive part.
+
+                # Let's try a more direct approach if the library supports it by providing 'RichMessage' like params
+                # The `body` is the fallback or main text.
+                # `persistent_action` is one way, but sometimes there are direct params.
+                # Given the user's example `jsonify({"type": "interactive", ...})` for webhooks *responding* to Twilio,
+                # it implies Twilio can *receive* this structure.
+                # For *sending*, if not using templates, the mechanism is via the `messages.create` parameters.
+                # The most direct way to send the interactive object is often via a parameter named 'content' or similar
+                # or by structuring the 'body' itself if the API expects a JSON string there for certain message types.
+
+                # Re-checking common Twilio practices:
+                # For sending interactive messages without templates, you typically provide the 'Body'
+                # and then an 'Actions' or 'InteractiveMessage' parameter if the helper lib supports it.
+                # If not, `PersistentAction` is the fallback for more complex channel-specific features.
+                # The format for PersistentAction is `ChannelSpecificAddressOrKeyword:<Payload>`
+                # So, `whatsapp:<JSON_STRING_OF_INTERACTIVE_OBJECT>`
+
+                # The `response_formatter` currently returns:
+                # {"main_body": "...", "interactive_object": { "type": "button", ... } }
+                # So, `interactive_obj` is the dict for the "interactive" part.
+
+                persistent_action_payload = f"whatsapp:{json.dumps(interactive_obj)}"
+                message_params['persistent_action'] = [persistent_action_payload]
+                print(f"Preparing to send interactive message with PersistentAction: {persistent_action_payload[:200]}...")
+
+
+            message = twilio_client.messages.create(**message_params)
             print(f"Mensaje de respuesta enviado a {from_number_raw}, SID: {message.sid}")
         except Exception as e:
             print(f"Error al enviar mensaje de Twilio: {e}")
+            import traceback
+            traceback.print_exc()
     else:
         print("Warning: Twilio client no inicializado. No se puede enviar respuesta por WhatsApp.")
 
