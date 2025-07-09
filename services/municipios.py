@@ -3048,7 +3048,7 @@ def responder_municipio(
     context["archivo_id_para_asociar"] = kwargs.get("archivo_id_para_asociar")
     context["chat_session_uuid"] = kwargs.get("chat_session_uuid")
     context["chat_db_context_data"] = chat_db_context.context_data
-    # End of reconstructed context dictionary
+    # End of reconstructed context dictionary. Ensuring no trailing braces here.
 
     # --- Image Analysis for New/Early Claims (MOVED AFTER context INITIALIZATION) ---
     uploaded_file_info = received_payload.get("uploaded_file_info")
