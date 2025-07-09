@@ -3629,9 +3629,69 @@ def responder_municipio(
                     f"[HANDLER_CHAIN] Handler {handler_class_iter_main.__name__} no respondió."
                 )
 
+    # --- Re-evaluación de intención si hay imagen sin texto y la intención es genérica ---
+    if not respuesta_final and context.get("es_foto") and not pregunta_str.strip() and \
+       context.get("intencion") in ["general", "pregunta_general", None]:
+        logger_actual.info(f"[RE-ROUTE IMAGE INTENT] Imagen detectada sin texto y con intención débil ('{context.get('intencion')}'). "
+                           f"Forzando 'iniciar_reclamo' y re-intentando con ReclamoHandler.")
+        context["intencion"] = "iniciar_reclamo"
+
+        # Limpiar estado si no es un estado de reclamo, para que ReclamoHandler empiece de cero.
+        current_memoria_state_for_reroute_raw = contexto_municipio_actual.get("estado_conversacion")
+        current_memoria_state_for_reroute_enum = None
+        if isinstance(current_memoria_state_for_reroute_raw, str): # Puede ser string si ya se serializó
+            try: current_memoria_state_for_reroute_enum = ConversationState[current_memoria_state_for_reroute_raw]
+            except KeyError: pass
+        elif isinstance(current_memoria_state_for_reroute_raw, ConversationState): # O Enum si no se serializó aún
+            current_memoria_state_for_reroute_enum = current_memoria_state_for_reroute_raw
+
+        if current_memoria_state_for_reroute_enum not in RECLAMO_STATES and \
+           current_memoria_state_for_reroute_enum is not None:
+            logger_actual.info(f"[RE-ROUTE IMAGE INTENT] Estado actual '{current_memoria_state_for_reroute_enum.name}' no es de reclamo. Limpiando contexto de municipio.")
+            # Guardar interacciones_anon_sesion si existe, para no resetear el contador de sugerencia de registro
+            interacciones_previas = contexto_municipio_actual.get("interacciones_anon_sesion")
+            contexto_municipio_actual.clear()
+            if interacciones_previas is not None:
+                contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_previas
+            contexto_municipio_actual["estado_conversacion"] = None # Asegurar que esté explícitamente None como string o antes de serializar
+            context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Actualizar el 'context' que usa el handler
+
+        # Re-intentar con ReclamoHandler (y ReclamoInteligente por si acaso)
+        # Esto asume que ReclamoHandler no fue el que ya retornó None para esta misma situación.
+        # Si el análisis de imagen llenó datos, ReclamoInteligente podría actuar.
+        for handler_class_reroute in [ReclamoInteligenteMunicipioHandler, ReclamoHandler]:
+            # Restaurar el estado de conversación a Enum para el handler si es necesario
+            # (ya debería estar como Enum si no se ha serializado, o None)
+            state_before_reroute_call_raw = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+            state_before_reroute_call_enum = None
+            if isinstance(state_before_reroute_call_raw, str):
+                try: state_before_reroute_call_enum = ConversationState[state_before_reroute_call_raw]
+                except KeyError: pass
+            elif isinstance(state_before_reroute_call_raw, ConversationState):
+                 state_before_reroute_call_enum = state_before_reroute_call_raw
+            context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = state_before_reroute_call_enum
+
+
+            handler_instance_reroute = handler_class_reroute(context)
+            logger_actual.info(f"[RE-ROUTE IMAGE INTENT] Re-intentando con handler: {handler_class_reroute.__name__}")
+            respuesta_reroute = handler_instance_reroute.handle(received_payload)
+
+            state_after_reroute_handler = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+            if isinstance(state_after_reroute_handler, ConversationState): # Serializar para el contexto principal
+                context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = state_after_reroute_handler.name
+            elif state_after_reroute_handler is None:
+                context[CONTEXTO_MUNICIPIO].pop("estado_conversacion", None)
+
+
+            if respuesta_reroute:
+                respuesta_final = respuesta_reroute
+                logger_actual.info(f"[RE-ROUTE IMAGE INTENT] Handler {handler_class_reroute.__name__} respondió en re-intento.")
+                break
+
+
     if not respuesta_final:
         logger_actual.info(
-            "[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general."
+            "[HANDLER_CHAIN_FALLBACK] Ningún handler respondió (incluso tras re-intento por imagen). Usando fallback general."
         )
         current_fallback_state_raw = contexto_municipio_actual.get("estado_conversacion")
         current_fallback_state_enum = None
@@ -3643,7 +3703,7 @@ def responder_municipio(
         elif isinstance(current_fallback_state_raw, ConversationState):
             current_fallback_state_enum = current_fallback_state_raw
 
-        current_fallback_state = contexto_municipio_actual.get("estado_conversacion")
+        current_fallback_state = contexto_municipio_actual.get("estado_conversacion") # Ya debería ser string o None aquí
 
         options_fallback = [
             {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
@@ -3652,18 +3712,17 @@ def responder_municipio(
         ]
         message_type_fallback = "interactive_buttons"
 
-        if current_fallback_state:
-            estado_log_val = current_fallback_state
-            if isinstance(current_fallback_state, Enum):
-                estado_log_val = current_fallback_state.name
-            logger_actual.error(
-                f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log_val}. Limpiando estado."
+        if current_fallback_state: # Si AÚN hay un estado aquí (ej. si el re-intento de ReclamoHandler lo seteó pero retornó None)
+            estado_log_val = current_fallback_state # Ya es string o None
+            # No limpiar contexto aquí si el ReclamoHandler ya lo preparó para pedir algo.
+            # El mensaje de fallback debería ser más genérico.
+            logger_actual.warning(
+                f"[FALLBACK_WARN] Fallback con estado activo '{estado_log_val}' (posiblemente del re-intento de ReclamoHandler)."
             )
-            contexto_municipio_actual.clear()  # Clear context if bot got confused with active state
-            body_fallback = (
-                "¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"
+            body_fallback = ( # Mensaje más genérico si hay un estado activo que no llevó a respuesta
+                "No estoy seguro de cómo continuar desde aquí. ¿Podrías intentar reformular o elegir una opción?"
             )
-        else:
+        else: # No hay estado activo
             body_fallback = (
                 "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
             )
@@ -3672,7 +3731,7 @@ def responder_municipio(
             "message_body": body_fallback,
             "options_list": options_fallback,
             "message_type": message_type_fallback,
-            "fuente": "municipio_fallback_general_v2",
+            "fuente": "municipio_fallback_general_v3", # v3 para diferenciar
         }
 
     # Ensure estado_conversacion within contexto_municipio_actual is a string name if it's an Enum,
