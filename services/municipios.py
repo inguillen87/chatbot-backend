@@ -37,7 +37,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro
 )
-from .llm_utils import extract_complaint_details_llm
+from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 
 try:
@@ -686,13 +686,33 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
             Mensaje: "{pregunta_str}"
             Devolvé solo JSON con esos campos. Ejemplo: {{"categoria": "luminaria", "direccion": "Av. San Martín 500", "nombre": "Luis Pérez", "telefono": "2613334444", "email": "luis@gmail.com", "descripcion": "La luz del poste está apagada hace días."}}
             """
+            datos_extraidos_reclamo_inteligente = {} # Initialize as empty dict
             try:
                 resp = get_cohere_response(message=prompt, preamble="Extraé los campos y devolvé solo JSON.")
-                datos_extraidos_reclamo_inteligente = json.loads(resp) if resp else {}
-                logger.info(f"[ReclamoInteligenteHandler] Datos extraídos por LLM: {datos_extraidos_reclamo_inteligente}")
-            except Exception as e: logger.error(f"[ReclamoInteligenteMunicipioHandler] Error Cohere/JSON: {e}", exc_info=True); datos_extraidos_reclamo_inteligente = {}
+                if resp and resp.strip(): # Ensure response is not empty or just whitespace
+                    datos_extraidos_reclamo_inteligente = json.loads(resp)
+                    logger.info(f"[ReclamoInteligenteHandler] Datos extraídos por LLM: {datos_extraidos_reclamo_inteligente}")
+                else:
+                    logger.warning(f"[ReclamoInteligenteHandler] Respuesta vacía o solo espacios de Cohere para prompt: {prompt}")
+            except json.JSONDecodeError as e: # Catch only JSONDecodeError specifically
+                logger.error(f"[ReclamoInteligenteMunicipioHandler] Error Cohere/JSON al decodificar: {e}. Respuesta LLM: '{resp}'", exc_info=True)
+                # datos_extraidos_reclamo_inteligente remains {}
+            except Exception as e: # Catch other potential errors from get_cohere_response or other issues
+                logger.error(f"[ReclamoInteligenteMunicipioHandler] Error inesperado en extracción Cohere: {e}", exc_info=True)
+                # datos_extraidos_reclamo_inteligente remains {}
 
-            memoria.clear() # Clear memory before pre-filling from LLM for a new intelligent claim attempt
+            # It's important to NOT clear the whole memoria here if the intent is 'iniciar_reclamo'
+            # but we are already in a RECLAMO_STATE. This handler (ReclamoInteligenteMunicipioHandler)
+            # should only run if no reclamo is active.
+            # The check `if current_state_obj and current_state_obj in RECLAMO_STATES: return None`
+            # at the beginning of the handle method should prevent this.
+            # If it's truly a new reclamo (no relevant state, intent is iniciar_reclamo), then clear is fine.
+            if not (current_state_obj and current_state_obj in RECLAMO_STATES):
+                memoria.clear()
+                logger.info("[ReclamoInteligenteHandler] Memoria limpiada para nuevo intento de reclamo inteligente.")
+            else:
+                logger.info("[ReclamoInteligenteHandler] Reclamo ya en curso, no se limpiará la memoria globalmente aquí.")
+
 
             direccion_texto_original = datos_extraidos_reclamo_inteligente.get("direccion", "")
             if direccion_texto_original:
@@ -1070,23 +1090,43 @@ class ReclamoHandler(BaseMunicipioHandler):
                     pregunta_str = ""
                     continue
 
-                if pregunta_str and es_pregunta_nueva(pregunta_str, "tu nombre completo", memoria):
-                    logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva. Limpiando reclamo."); # ... (clear logic)
-                    for key in list(memoria.keys()):
-                        if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']: memoria.pop(key, None)
-                    memoria["estado_conversacion"] = None; self.context["intencion"] = None; return None
+                if not pregunta_str: # If pregunta_str is empty, we must ask for the name
+                     return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido**. ¿Podrías ingresarlos?"}
+
+                # Check for new question only if pregunta_str is not empty
+                if es_pregunta_nueva(pregunta_str, "tu nombre completo", memoria):
+                    logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba nombre. Limpiando reclamo.")
+                    # Conservar datos ya recolectados si es posible, solo limpiar estado para re-clasificar intención
+                    # memoria.clear() # Demasiado agresivo, comentado para prueba
+                    memoria.pop("estado_conversacion", None) # Limpiar solo el estado para permitir re-clasificación
+                    self.context["intencion"] = None # Forzar re-clasificación de intención
+                    # No retornar None inmediatamente, dejar que la cadena de handlers intente clasificar la "nueva pregunta"
+                    # Si nada más lo maneja, el fallback general actuará.
+                    # Esto es un cambio de estrategia para preservar datos.
+                    logger.warning(f"[ReclamoHandler] Intento de pregunta nueva '{pregunta_str}' en ESPERANDO_NOMBRE_VECINO. Se limpió estado y se intentará reclasificar. Datos en memoria: {memoria}")
+                    # Return None to allow IntentClassifier to run again.
+                    # This means the current ReclamoHandler pass stops here.
+                    return None
+
 
                 nombre_input = pregunta_str.strip()
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_NOMBRE_VECINO. Input: '{nombre_input}'.")
-                # ... (validations for address/phone in name field)
+
                 config_muni_parseo_nombre = self.context.get("municipio_config") or CONFIG_MUNICIPIO
-                if parse_direccion_completa(nombre_input, config_muni_parseo_nombre) and len(nombre_input.split()) > 1 : return {"respuesta": "Estaba esperando tu nombre, pero eso parece una dirección. ¿Tu nombre y apellido?"}
-                if validar_telefono(nombre_input): return {"respuesta": "Estaba esperando tu nombre, pero eso parece un teléfono. ¿Tu nombre y apellido?"}
+                if parse_direccion_completa(nombre_input, config_muni_parseo_nombre) and len(nombre_input.split()) > 1:
+                    return {"respuesta": "Estaba esperando tu nombre, pero eso parece una dirección. ¿Podrías ingresar tu nombre y apellido, por favor?"}
 
-                if not nombre_input or len(nombre_input.split()) < 1: # Allow single name for now, can be expanded by user if needed
-                    return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido**. ¿Podrías ingresarlos?"}
+                # Si la entrada es un número y podría ser un teléfono, no interrumpir el flujo de reclamo.
+                if validar_telefono(nombre_input):
+                    logger.warning(f"[ReclamoHandler] Input '{nombre_input}' para NOMBRE parece un teléfono. Repreguntando nombre sin perder contexto.")
+                    # No cambiar estado, no guardar el teléfono aquí, solo repreguntar el nombre.
+                    return {"respuesta": "Estaba esperando tu nombre y apellido, pero eso parece un número de teléfono. ¿Podrías decírmelos, por favor?"}
 
-                memoria["nombre_vecino"] = nombre_input; logger.info(f"[ReclamoHandler] Nombre guardado: '{nombre_input}'.")
+                if not nombre_input or len(nombre_input.split()) < 1: # Allow single name, can be expanded by user if needed. Original was < 2
+                    return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido** (o al menos un nombre). ¿Podrías ingresarlos?"}
+
+                memoria["nombre_vecino"] = nombre_input
+                logger.info(f"[ReclamoHandler] Nombre guardado: '{nombre_input}'.")
                 if all(memoria.get(campo) for campo in ["telefono_vecino", "email_vecino", "descripcion_reclamo"]):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
@@ -1247,38 +1287,47 @@ class ReclamoHandler(BaseMunicipioHandler):
                 return {"respuesta": "Parece que tuvimos un problema recopilando todos los datos. Por favor, intentá iniciar el reclamo de nuevo."}
 
             # If we are here, it means a field was filled (e.g. by LLM or previous step) and we are continuing the loop
-            # to the next state. `pregunta_str` should have been cleared if it was consumed.
-            if not pregunta_str and estado != ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
-                 # This means we advanced state based on pre-filled data, and now need to ask for the current state's data
-                 # Example: LLM filled category and address. Loop 1 fills category, advances to address. Loop 2 fills address, advances to name.
-                 # Now we need to *ask* for name.
+            # to the next state. `pregunta_str` should have been cleared if it was consumed by a previous step in this iteration.
+            if not pregunta_str and estado not in [ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]:
+                # This means we advanced state based on pre-filled data (likely from LLM or earlier user multi-input)
+                # and now need to *ask* for the current state's data if it's not already filled.
                 if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO and not memoria.get("direccion_reclamo"):
-                    return { "respuesta": f"Perfecto, categoría: **{memoria.get('categoria_reclamo','N/A').title()}**. ¿La **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
+                    cat_mem = memoria.get('categoria_reclamo','N/A')
+                    return { "respuesta": f"Perfecto, categoría: **{cat_mem.title() if cat_mem else 'N/A'}**. ¿La **dirección exacta** del problema?\nPor ejemplo: {EJEMPLO_DIRECCION}"}
                 elif estado == ConversationState.ESPERANDO_NOMBRE_VECINO and not memoria.get("nombre_vecino"):
-                    return {"respuesta": f"¡Perfecto! Dirección registrada como: **{memoria.get('direccion_reclamo','N/A')}**. Ahora, ¿podrías decirme tu **nombre completo**?"}
+                    dir_mem = memoria.get('direccion_reclamo','N/A')
+                    return {"respuesta": f"¡Perfecto! Dirección registrada como: **{dir_mem if dir_mem else 'N/A'}**. Ahora, ¿podrías decirme tu **nombre completo**?"}
                 elif estado == ConversationState.ESPERANDO_TELEFONO_VECINO and not memoria.get("telefono_vecino"):
-                    return {"respuesta": f"¡Gracias, {(memoria.get('nombre_vecino','Vecino').split()[0])}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
+                    nom_mem = memoria.get('nombre_vecino','Vecino')
+                    return {"respuesta": f"¡Gracias, {(nom_mem.split()[0] if nom_mem else 'Vecino')}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
                 elif estado == ConversationState.ESPERANDO_EMAIL_VECINO and not memoria.get("email_vecino"):
                     return {"respuesta": "¡Excelente! Casi terminamos. ¿Cuál es tu **dirección de correo electrónico**?"}
                 elif estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO and not memoria.get("descripcion_reclamo"):
                     return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Luego podrás adjuntar foto/ubicación si querés."}
-                elif estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: # This will be handled after the loop
-                    break
 
-            # If pregunta_str is still set here, it means it wasn't consumed by the current state logic (e.g. wrong type of input)
-            # but it also wasn't a "new question". This path should ideally not be hit if state logic is robust.
-            # For safety, break to avoid reprocessing the same input indefinitely if a state isn't handling it.
-            elif pregunta_str:
-                logger.warning(f"[ReclamoHandler] Pregunta '{pregunta_str}' no fue consumida por el estado {estado.name}. Rompiendo bucle.")
+            elif pregunta_str and estado == current_state_for_logic and iterations_count > 1 :
+                logger.warning(f"[ReclamoHandler] Pregunta '{pregunta_str}' no fue consumida y el estado {estado.name} no avanzó. Rompiendo bucle para evitar ciclo.")
+                break
+            elif estado == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO or estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
                 break
 
 
         # After the while loop, check the state. It should be ADJUNTOS or CONFIRMACION, or an error occurred.
         estado_str_after_loop = memoria.get("estado_conversacion")
-        estado_after_loop = ConversationState[estado_str_after_loop] if isinstance(estado_str_after_loop, str) else estado_str_after_loop
+        # Ensure estado_after_loop is an Enum for comparison, or None
+        if isinstance(estado_str_after_loop, str):
+            try:
+                estado_after_loop = ConversationState[estado_str_after_loop]
+            except KeyError:
+                logger.error(f"[ReclamoHandler] Estado inválido '{estado_str_after_loop}' en memoria tras bucle. Limpiando.")
+                memoria.clear()
+                return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
+        elif not isinstance(estado_str_after_loop, ConversationState) and estado_str_after_loop is not None:
+            logger.error(f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' en memoria tras bucle. Limpiando.")
+            memoria.clear()
+            return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
 
         if estado_after_loop == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
-            # Logic for ESPERANDO_ADJUNTOS_RECLAMO (same as before)
             accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
             SIN_ADJUNTOS_KEYWORDS = ["sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias", "completar", "completar reclamo", "completar el reclamo", "terminar", "terminar reclamo", "quiero completar", "quiero terminar"]
             if any(kw in accion for kw in SIN_ADJUNTOS_KEYWORDS):
