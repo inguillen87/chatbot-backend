@@ -341,15 +341,62 @@ class GreetingHandler(BaseMunicipioHandler):
 
 class SugerenciasVecinoHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "").strip(); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_conversacion_str = memoria.get("estado_conversacion"); estado_conversacion = ConversationState[estado_conversacion_str] if isinstance(estado_conversacion_str, str) else estado_conversacion_str; intencion = self.context.get("intencion"); sugerencia_texto_directo = ""
+        pregunta_str = payload.get("pregunta", "").strip(); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_conversacion_str = memoria.get("estado_conversacion"); estado_conversacion = ConversationState[estado_conversacion_str] if isinstance(estado_conversacion_str, str) else estado_conversacion_str; intencion = self.context.get("intencion");
+        sugerencia_texto_directo = "" # Inicializar aquí
+
         if intencion == "hacer_sugerencia":
-            palabras_clave_sugerencia = ["sugerencia", "sugerencias", "idea", "propuesta", "proponer", "mejorar"]; texto_limpio_de_keywords = pregunta_str
-            for kw in palabras_clave_sugerencia:
-                if texto_limpio_de_keywords.lower().startswith(kw): texto_limpio_de_keywords = texto_limpio_de_keywords[len(kw):].strip()
-            if texto_limpio_de_keywords and len(texto_limpio_de_keywords) > 5: sugerencia_texto_directo = texto_limpio_de_keywords
+            texto_normalizado_input = normalizar_texto(pregunta_str)
+
+            # Lista de frases introductorias comunes (ya normalizadas)
+            # Ordenadas por longitud descendente para matchear la más larga primero
+            frases_intro_norm = sorted([
+                normalizar_texto("quiero hacer una sugerencia"),
+                normalizar_texto("quiero dejar una sugerencia"),
+                normalizar_texto("me gustaria sugerir"),
+                normalizar_texto("tengo una sugerencia"),
+                normalizar_texto("quisiera proponer una idea"),
+                normalizar_texto("quisiera proponer"),
+                normalizar_texto("mi sugerencia es"),
+                normalizar_texto("mi idea es"),
+                normalizar_texto("sugerencia"),
+                normalizar_texto("proponer"),
+                normalizar_texto("sugerir"),
+                normalizar_texto("idea"),
+                normalizar_texto("propuesta")
+            ], key=len, reverse=True)
+
+            texto_procesado_para_sugerencia = texto_normalizado_input
+            prefijo_quitado = False
+            for frase_intro in frases_intro_norm:
+                if texto_procesado_para_sugerencia.startswith(frase_intro):
+                    texto_procesado_para_sugerencia = texto_procesado_para_sugerencia[len(frase_intro):].strip()
+                    prefijo_quitado = True
+                    # Quitar conectores comunes si están al principio del texto restante
+                    conectores_a_quitar = [":", ",", "que", "es que", "es"]
+                    for conector in conectores_a_quitar:
+                        # Normalizar también el conector para la comparación
+                        conector_norm_espacio = normalizar_texto(conector + " ")
+                        conector_norm_solo = normalizar_texto(conector)
+                        if texto_procesado_para_sugerencia.startswith(conector_norm_espacio):
+                            texto_procesado_para_sugerencia = texto_procesado_para_sugerencia[len(conector_norm_espacio):].strip()
+                            break
+                        elif texto_procesado_para_sugerencia.startswith(conector_norm_solo):
+                             texto_procesado_para_sugerencia = texto_procesado_para_sugerencia[len(conector_norm_solo):].strip()
+                             break
+                    break
+
+            # Si se quitó un prefijo y quedó algo, o si no se quitó nada pero el original no era solo una keyword de la lista.
+            # La validación de longitud se hará después sobre `sugerencia_final`.
+            if texto_procesado_para_sugerencia:
+                 # Si el texto original era solo una de las frases introductorias (ej. "sugerencia"),
+                 # entonces texto_procesado_para_sugerencia será vacío. En ese caso, no lo tomamos como sugerencia directa.
+                if not (prefijo_quitado and not texto_procesado_para_sugerencia and texto_normalizado_input in frases_intro_norm):
+                    sugerencia_texto_directo = texto_procesado_para_sugerencia
+
+
             if not sugerencia_texto_directo and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA:
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
-                body = "¡Genial! Nos interesa mucho tu opinión. Por favor, contanos tu sugerencia o idea para mejorar:"
+                body = "Bueno, a continuación escribe todo lo que quieras sugerir. Nuestro bot interpretará tu mensaje y lo guardará en nuestra base de datos como un ticket para que nuestro equipo lo estudie."
                 options = [{"id": "cancelar_sugerencia", "texto": "Cancelar sugerencia"}]
                 return {
                     "message_body": body,
@@ -357,31 +404,81 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
                     "message_type": 'interactive_buttons',
                     "fuente": "sugerencia_pedir_texto_v2"
                 }
+
         if estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA or sugerencia_texto_directo:
-            # If there's direct input (pregunta_str) and it's not a carry-over (sugerencia_texto_directo is empty)
-            if pregunta_str and not sugerencia_texto_directo and es_pregunta_nueva(pregunta_str, "el texto de tu sugerencia", memoria):
-                logger.info(f"[SugerenciasVecinoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba texto de sugerencia. Limpiando.")
+            sugerencia_para_validar = ""
+            texto_original_sugerencia = pregunta_str # Guardar el input original para el ticket
+
+            if sugerencia_texto_directo: # Vino del primer mensaje (ya está normalizado y procesado por la lógica anterior)
+                sugerencia_para_validar = sugerencia_texto_directo
+                # Si la sugerencia directa vino del primer mensaje, el texto original para guardar es pregunta_str
+                # que contiene esa frase inicial (ej. "sugerencia: que pongan luces").
+                # La lógica de extracción ya quitó "sugerencia:", así que `sugerencia_texto_directo` es "que pongan luces".
+                # Si queremos guardar el texto original completo, `pregunta_str` es la fuente.
+                # Si queremos guardar solo la parte extraída, necesitamos reconstruirla o usar `sugerencia_texto_directo`.
+                # Por simplicidad y para asegurar que no perdemos nada, si `sugerencia_texto_directo` existe,
+                # significa que `pregunta_str` contenía la sugerencia. `texto_original_sugerencia` ya es `pregunta_str`.
+            elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA:
+                sugerencia_para_validar = normalizar_texto(pregunta_str) # Normalizar el input actual para validación
+                # texto_original_sugerencia ya es pregunta_str.
+
+            if pregunta_str and not sugerencia_texto_directo and \
+               estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA and \
+               es_pregunta_nueva(pregunta_str, "el texto de tu sugerencia", memoria): # Solo chequear si es pregunta nueva si estamos esperando texto
+                logger_actual.info(f"[SugerenciasVecinoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba texto de sugerencia. Limpiando.")
                 memoria.clear()
                 self.context["intencion"] = None
                 return None
 
-            sugerencia_final = sugerencia_texto_directo if sugerencia_texto_directo else pregunta_str
-            if not sugerencia_final or len(sugerencia_final) < 5:
-                body_corto = "Por favor, ingresá el texto de tu sugerencia. Tiene que ser un poco más descriptiva para que podamos entenderla bien."
-                options_corto = [{"id": "cancelar_sugerencia_corta", "texto": "Cancelar sugerencia"}]
+            keywords_genericas_sugerencia_norm = sorted(list(set([normalizar_texto(s) for s in [
+                "sugerencia", "sugerencias", "idea", "propuesta", "proponer", "sugerir", "mejorar",
+                "mi sugerencia", "mi idea", "una propuesta", "tengo una idea", "tengo una sugerencia"
+            ]])))
+
+            MIN_LEN_SUGERENCIA = 15
+            sugerencia_valida_contenido = True
+            if not sugerencia_para_validar or len(sugerencia_para_validar) < MIN_LEN_SUGERENCIA:
+                sugerencia_valida_contenido = False
+            # Verificar si la sugerencia (después de normalizar) es solo una keyword genérica
+            # Esto es para el caso en que el usuario responda "sugerencia" cuando se le pide el detalle.
+            if sugerencia_para_validar in keywords_genericas_sugerencia_norm and len(sugerencia_para_validar.split()) <= 2 : # ej. "sugerencia" o "mi idea"
+                sugerencia_valida_contenido = False
+
+            if not sugerencia_valida_contenido:
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name # Mantener estado
+                body_reprompt = "Por favor, danos más detalles sobre tu sugerencia para que podamos entenderla y procesarla correctamente. Necesitamos al menos algunas palabras que describan tu idea."
+                if sugerencia_para_validar and sugerencia_para_validar in keywords_genericas_sugerencia_norm and len(sugerencia_para_validar.split()) <= 2:
+                    body_reprompt = f"'{pregunta_str.strip()}' es un poco genérico. ¿Podrías describir tu sugerencia con más detalle, por favor?"
+                elif sugerencia_para_validar and len(sugerencia_para_validar) < MIN_LEN_SUGERENCIA:
+                     body_reprompt = "Tu sugerencia es un poco corta. Para entenderla bien, ¿podrías detallarla un poco más?"
+
+                options_reprompt = [{"id": "cancelar_sugerencia_detalle", "texto": "Cancelar sugerencia"}]
                 return {
-                    "message_body": body_corto,
-                    "options_list": options_corto,
+                    "message_body": body_reprompt,
+                    "options_list": options_reprompt,
                     "message_type": 'interactive_buttons',
-                    "fuente": "sugerencia_texto_corto_v2"
+                    "fuente": "sugerencia_pedir_mas_detalle_v3"
                 }
+
+            # Si la validación pasa, usamos el texto original que el usuario ingresó para el ticket
+            sugerencia_a_guardar = texto_original_sugerencia.strip()
+
             try:
-                ticket_data = {"asunto": "Nueva Sugerencia/Mejora del Vecino", "categoria": "Sugerencia", "detalles": sugerencia_final, "pregunta": sugerencia_final, "estado": "nueva_sugerencia", "user_id": self.context.get("cliente_id"), "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None, "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None)}
-                tipo_ticket_para_sugerencia = "municipio"
+                ticket_data = {
+                    "asunto": "Nueva Sugerencia/Mejora del Vecino",
+                    "categoria": "Sugerencia",
+                    "detalles": sugerencia_a_guardar, # Guardar el texto completo y original
+                    "pregunta": sugerencia_a_guardar, # También en pregunta por consistencia
+                    "estado": "nueva_sugerencia",
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                    "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None)
+                }
+                tipo_ticket_para_sugerencia = "municipio" # Las sugerencias ciudadanas son para municipios
                 ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket=tipo_ticket_para_sugerencia, ticket_data=ticket_data)
                 if ticket:
-                    nro_ticket_str = f"M-{ticket.nro_ticket}" if tipo_ticket_para_sugerencia == "municipio" else str(ticket.nro_ticket)
-                    logger.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear()
+                    nro_ticket_str = f"M-{ticket.nro_ticket}" # Asumiendo que siempre es municipio para sugerencia
+                    logger_actual.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear()
                     body_exito = f"¡Muchas gracias por tu sugerencia! La hemos registrado y será revisada por nuestro equipo. Tu número de registro es {nro_ticket_str}. Valoramos mucho tu aporte."
                     options_exito = [
                         {"id": "hacer_otra_consulta_sug", "texto": "Hacer otra consulta"},
