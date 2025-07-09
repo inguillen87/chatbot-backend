@@ -50,6 +50,14 @@ logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
+# Keywords for confirming actions, especially in the reclamo (complaint) flow
+PALABRAS_CLAVE_CONFIRMACION = {
+    "confirmar_reclamo", "confirmar", "confirmo", "confirmado",
+    "si", "sí", "afirmativo", "dale", "ok", "proceder", "aceptar",
+    "confirmar_reclamo_final", "si, confirmar reclamo", "sí, confirmar reclamo", # From button texts
+    "yes" # English just in case
+}
+
 URL_REGEX = re.compile(r"https?://\S+")
 
 def agregar_botones_para_links(texto: str, botones: list) -> list:
@@ -1113,20 +1121,57 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_NOMBRE_VECINO. Input: '{nombre_input}'.")
                 
                 config_muni_parseo_nombre = self.context.get("municipio_config") or CONFIG_MUNICIPIO
-                if parse_direccion_completa(nombre_input, config_muni_parseo_nombre) and len(nombre_input.split()) > 1:
-                    return {"respuesta": "Estaba esperando tu nombre, pero eso parece una dirección. ¿Podrías ingresar tu nombre y apellido, por favor?"}
+                potential_address_parts = parse_direccion_completa(nombre_input, config_muni_parseo_nombre)
+                
+                is_likely_address = False
+                if potential_address_parts and isinstance(potential_address_parts, dict):
+                    has_street = bool(potential_address_parts.get("calle"))
+                    has_number = bool(potential_address_parts.get("numero"))
+                    has_locality = bool(potential_address_parts.get("localidad"))
+                    has_province = bool(potential_address_parts.get("provincia"))
+
+                    if (has_street and (has_number or has_locality)):
+                        is_likely_address = True
+                    elif has_locality and has_province and len(nombre_input.split()) > 1:
+                        is_likely_address = True
+                    
+                    if has_street and not has_number and not has_locality and not has_province:
+                        common_street_indicators = ["calle", "avenida", "avda", "av ", "pasaje", "psje", "ruta", "bv ", "bulevar", "diag", "diagonal"]
+                        if any(indicator in nombre_input.lower() for indicator in common_street_indicators) or \
+                           (potential_address_parts.get("calle") and not any(char.isdigit() for char in potential_address_parts.get("calle")) and len(potential_address_parts.get("calle").split()) > 1): # Heuristic: street name without numbers and multiple words
+                             is_likely_address = True # More likely an address if street indicators are present or street name is multi-word
+                        else:
+                             is_likely_address = False 
+                    elif has_locality and not has_street and not has_number and not has_province and len(nombre_input.split()) <= 2:
+                         is_likely_address = False
+
+
+                if is_likely_address:
+                    logger.warning(f"[ReclamoHandler] Input '{nombre_input}' para NOMBRE parece una dirección. Parsed: {potential_address_parts}. Repreguntando nombre.")
+                    return {"respuesta": "Estaba esperando tu nombre y apellido, pero parece que ingresaste una dirección. ¿Podrías decirme tu nombre, por favor?"}
                 
                 # Si la entrada es un número y podría ser un teléfono, no interrumpir el flujo de reclamo.
                 if validar_telefono(nombre_input):
                     logger.warning(f"[ReclamoHandler] Input '{nombre_input}' para NOMBRE parece un teléfono. Repreguntando nombre sin perder contexto.")
-                    # No cambiar estado, no guardar el teléfono aquí, solo repreguntar el nombre.
                     return {"respuesta": "Estaba esperando tu nombre y apellido, pero eso parece un número de teléfono. ¿Podrías decírmelos, por favor?"}
 
-                if not nombre_input or len(nombre_input.split()) < 1: # Allow single name, can be expanded by user if needed. Original was < 2
+                cleaned_name = nombre_input
+                prefixes_to_remove = [
+                    "es un nombre y un apellido real.. ",
+                    "mi nombre es ",
+                    "me llamo ",
+                    "soy ",
+                ]
+                for prefix in prefixes_to_remove:
+                    if cleaned_name.lower().startswith(prefix): # Use cleaned_name here for loop
+                        cleaned_name = cleaned_name[len(prefix):].strip()
+                        break
+                
+                if not cleaned_name or len(cleaned_name.split()) < 1: 
                     return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido** (o al menos un nombre). ¿Podrías ingresarlos?"}
 
-                memoria["nombre_vecino"] = nombre_input
-                logger.info(f"[ReclamoHandler] Nombre guardado: '{nombre_input}'.")
+                memoria["nombre_vecino"] = cleaned_name # Save cleaned_name
+                logger.info(f"[ReclamoHandler] Nombre guardado (cleaned): '{cleaned_name}'.")
                 if all(memoria.get(campo) for campo in ["telefono_vecino", "email_vecino", "descripcion_reclamo"]):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
