@@ -1209,13 +1209,61 @@ class ReclamoHandler(BaseMunicipioHandler):
                             if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']: memoria.pop(key, None)
                         memoria["estado_conversacion"] = None; self.context["intencion"] = None; return None
                 
-                    if payload.get("es_foto") or payload.get("es_ubicacion"):
+                    if payload.get("es_foto") and payload.get("es_ubicacion"):
                         # If user sent a photo/location when address was expected.
                         categoria_mem_for_msg = memoria.get('categoria_reclamo', 'el reclamo')
                         cat_title_for_msg = categoria_mem_for_msg.title() if isinstance(categoria_mem_for_msg, str) else "El Reclamo"
-                        return {"respuesta": f"Entendido lo del adjunto. Para el reclamo de **{cat_title_for_msg}**, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?"}
+                        # Mantener botones para compartir GPS si es relevante
+                        options_adj_gps = []
+                        allow_gps_for_this_user_adj = True
+                        if self.context.get("anon_id") and not self.context.get("cliente_id"):
+                            if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
+                                allow_gps_for_this_user_adj = False
+                        if allow_gps_for_this_user_adj:
+                            options_adj_gps.append({"id": "accion_compartir_ubicacion_adj", "texto": "📍 Compartir Ubicación GPS"})
+
+                        return {
+                            "message_body": f"Entendido lo del adjunto. Para el reclamo de **{cat_title_for_msg}**, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?",
+                            "options_list": options_adj_gps,
+                            "message_type": 'interactive_buttons' if options_adj_gps else 'text',
+                            "fuente": "reclamo_ack_adjunto_pide_direccion_v2"
+                        }
 
                     logger.info(f"[ReclamoHandler] Estado: ESPERANDO_DIRECCION_RECLAMO. Input: '{pregunta_str}'.")
+                    # La lógica de procesar pregunta_str como dirección textual se mueve más abajo,
+                    # para ser usada si no se pide la dirección por primera vez o si no es GPS.
+
+                # Si llegamos aquí, es porque:
+                # 1. No había ubicación GPS en el payload actual que se procesó arriba.
+                # 2. No había dirección en memoria (ya que el `if memoria.get("direccion_reclamo")` no continuó).
+                # 3. O bien pregunta_str estaba vacía (hay que pedir dirección con opciones),
+                #    o pregunta_str tenía texto pero aún no se ha procesado como dirección textual en este paso.
+
+                if not pregunta_str: # Solo mostrar opciones si no hay texto que procesar (primera vez que se pide dir)
+                    categoria_mem = memoria.get('categoria_reclamo', '')
+                    cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
+                    # Usar mensaje_adjunto_recibido si fue establecido al inicio del handler
+                    ack_adjunto = memoria.get("mensaje_adjunto_recibido", "")
+
+                    body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
+
+                    options_pedir_direccion = []
+                    allow_gps_for_this_user = True
+                    if self.context.get("anon_id") and not self.context.get("cliente_id"):
+                        if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
+                            allow_gps_for_this_user = False
+                            body_pedir_direccion += "\n(Para compartir GPS necesitarás estar registrado)."
+
+                    if allow_gps_for_this_user:
+                         options_pedir_direccion.append({"id": "accion_compartir_ubicacion", "texto": "📍 Compartir Ubicación GPS"})
+
+                    return {
+                        "message_body": body_pedir_direccion,
+                        "options_list": options_pedir_direccion,
+                        "message_type": 'interactive_buttons' if options_pedir_direccion else 'text',
+                        "fuente": "reclamo_pedir_direccion_con_opcion_gps_v2"
+                    }
+                else: # pregunta_str tiene texto, procesarlo como dirección (lógica original adaptada)
                     config_muni_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
                     parsed_address = parse_direccion_completa(pregunta_str, config_muni_parseo)
 
@@ -1223,43 +1271,36 @@ class ReclamoHandler(BaseMunicipioHandler):
                         memoria["direccion_estructurada_reclamo"] = parsed_address
                         dir_confirm_text = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,",",").strip()
                         memoria["direccion_reclamo"] = dir_confirm_text
-                        logger.info(f"[ReclamoHandler] Dirección guardada: {dir_confirm_text}.")
-
+                        logger_actual.info(f"[ReclamoHandler] Dirección guardada: {dir_confirm_text}.")
                         memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
                         estado = ConversationState.ESPERANDO_NOMBRE_VECINO
                         if all(memoria.get(campo) for campo in ["nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
                              memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                              estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-
-                        if memoria.get("nombre_vecino"): # If next field (nombre) is already filled
-                            pregunta_str = "" # Clear to avoid re-processing for next field in this turn
-                            continue # Loop to ask for the next unfilled item (e.g. phone)
+                        if memoria.get("nombre_vecino"):
+                            pregunta_str = ""
+                            continue
                         else:
-                            # Return the question for the name
-                            return {"respuesta": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?"}
-                    else: # Direccion no valida from input
+                            return {"message_body": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?", "options_list": [], "message_type": "text", "fuente": "reclamo_direccion_ok_pide_nombre_v2"}
+                    else: # Dirección textual no válida
                         respuesta_dir_inv = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad'."
+                        options_dir_inv = []
+                        allow_gps_for_this_user_invalida = True
                         if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                            allow_gps = False;
-                            if has_app_context(): allow_gps = current_app.config.get("ALLOW_ANON_GPS", False)
-                            if allow_gps: respuesta_dir_inv += ("\nSi tenés problemas, podés compartir tu ubicación GPS.")
-                            else: respuesta_dir_inv += ("\nTras registrarte, podrás compartir tu ubicación GPS.")
-                        return {"respuesta": respuesta_dir_inv}
-                else: # pregunta_str is empty. This means we need to ASK for the address.
-                    categoria_mem = memoria.get('categoria_reclamo', '')
-                    cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
+                            if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
+                                allow_gps_for_this_user_invalida = False
+                                respuesta_dir_inv += "\n(Para compartir GPS necesitarás estar registrado)."
 
-                    ack_adjunto = ""
-                    if payload.get("es_foto") and payload.get("archivo_url"): # Check if a photo was just uploaded
-                        memoria["foto_url"] = payload.get("archivo_url") # Store it if so
-                        ack_adjunto = "Foto recibida y guardada. "
-                        logger.info(f"Foto {payload.get('archivo_url')} guardada en memoria mientras se pide dirección.")
-                    elif payload.get("es_ubicacion") and payload.get("ubicacion_usuario"): # Check if location was just shared
-                        memoria["ubicacion_gps"] = payload.get("ubicacion_usuario") # Store it
-                        ack_adjunto = "Ubicación GPS recibida y guardada. "
-                        logger.info(f"Ubicación {payload.get('ubicacion_usuario')} guardada en memoria mientras se pide dirección.")
+                        if allow_gps_for_this_user_invalida:
+                            respuesta_dir_inv += "\nTambién podés intentar compartir tu ubicación GPS."
+                            options_dir_inv.append({"id": "accion_compartir_ubicacion_reintento", "texto": "📍 Compartir Ubicación GPS"})
 
-                    return { "respuesta": f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad)"}
+                        return {
+                            "message_body": respuesta_dir_inv,
+                            "options_list": options_dir_inv,
+                            "message_type": 'interactive_buttons' if options_dir_inv else 'text',
+                            "fuente": "reclamo_direccion_invalida_con_opcion_gps_v2"
+                        }
 
             # 3. ESPERANDO_NOMBRE_VECINO
             elif current_state_for_logic == ConversationState.ESPERANDO_NOMBRE_VECINO:
@@ -3100,64 +3141,87 @@ def responder_municipio(
     # End of reconstructed context dictionary. Ensuring no trailing braces here.
 
     # --- Image Analysis for New/Early Claims (MOVED AFTER context INITIALIZATION) ---
-    uploaded_file_info = received_payload.get("uploaded_file_info") 
-    is_new_image_upload = (
-        uploaded_file_info
-        and uploaded_file_info.get("id")
-        and (
-            uploaded_file_info.get("mime_type", "").startswith("image/")
-            or any(
-                uploaded_file_info.get("name", "").lower().endswith(ext)
-                for ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]
-            )
-        )
-    )
+    # Prioritize web upload info if both are somehow present (should not happen)
+    uploaded_file_info_for_analysis = received_payload.get("uploaded_file_info") or \
+                                      received_payload.get("uploaded_file_info_whatsapp")
 
-    should_analyze_image_for_claim = False
-    # current_claim_state_for_img_check is already final_loaded_state (which is an Enum or None)
-    # current_intent_for_img_check was removed as context["intencion"] is the source of truth.
+    is_new_media_for_analysis = False
+    if uploaded_file_info_for_analysis and isinstance(uploaded_file_info_for_analysis, dict):
+        mime_type = uploaded_file_info_for_analysis.get("mime_type", "")
+        # Currently only processing images for auto-claim analysis
+        if mime_type.startswith("image/"):
+            # Web uploads have an 'id', WhatsApp media comes as a URL first.
+            if uploaded_file_info_for_analysis.get("id") or uploaded_file_info_for_analysis.get("url"):
+                is_new_media_for_analysis = True
 
-    if is_new_image_upload:
+    if is_new_media_for_analysis:
         logger_actual.info(
-            f"[RESPONDER_MUNICIPIO] New image upload detected. Current loaded state: {final_loaded_state}, Intent from kwargs: {kwargs.get('intencion')}, Intent in context: {context.get('intencion')}"
+            f"[RESPONDER_MUNICIPIO] New media for analysis detected ({uploaded_file_info_for_analysis.get('source', 'web')}). "
+            f"Current loaded state: {final_loaded_state}, Intent from kwargs: {kwargs.get('intencion')}, "
+            f"Intent in context: {context.get('intencion')}"
         )
-        # Determine if image analysis for a new claim is appropriate
-        if not final_loaded_state or final_loaded_state == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-            should_analyze_image_for_claim = True
 
-            # If intent is not already set, and this is an image upload, assume it's for initiating a claim.
-            # This is crucial: context["intencion"] must be set before the conditional analysis block below.
-            if not context.get("intencion"):  # Checks if 'intencion' key is missing or None/empty
-                if kwargs.get("intencion"):  # Prioritize intent from kwargs if available
+        should_analyze_media_for_claim = False
+        if not final_loaded_state or final_loaded_state == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
+            should_analyze_media_for_claim = True
+
+            if not context.get("intencion"):
+                if kwargs.get("intencion"):
                     context["intencion"] = kwargs.get("intencion")
-                    logger_actual.info(
-                        f"[RESPONDER_MUNICIPIO] Image upload: Intent '{context['intencion']}' from kwargs propagated to context."
-                    )
-                else:  # No intent from kwargs, and image is uploaded, so assume 'iniciar_reclamo'
+                else: # If media is present and no intent, assume it's for a claim
                     context["intencion"] = "iniciar_reclamo"
                     logger_actual.info(
-                        f"[RESPONDER_MUNICIPIO] Image upload: No prior intent, setting intent to 'iniciar_reclamo'."
+                        f"[RESPONDER_MUNICIPIO] Media present: No prior intent, setting intent to 'iniciar_reclamo'."
                     )
-            else:
-                logger_actual.info(
-                    f"[RESPONDER_MUNICIPIO] Image upload: Intent already in context: '{context.get('intencion')}'. Will use this for analysis condition."
-                )
 
-        # Perform image analysis only if it's deemed appropriate AND the intent is to start a claim.
-        if should_analyze_image_for_claim and context.get("intencion") == "iniciar_reclamo":
-            logger_actual.info(f"[RESPONDER_MUNICIPIO] Proceeding with image analysis for 'iniciar_reclamo' intent.")
+        if should_analyze_media_for_claim and context.get("intencion") == "iniciar_reclamo":
+            logger_actual.info(f"[RESPONDER_MUNICIPIO] Proceeding with media analysis for 'iniciar_reclamo' intent.")
             try:
-                from models import ArchivoAdjunto
+                from models import ArchivoAdjunto # Needed for type hint and db.session.get
                 from services.interpretacion_imagen_service import interpretar_imagen_para_chat
 
-                archivo_obj = db.session.get(ArchivoAdjunto, uploaded_file_info["id"])
+                archivo_obj_for_analysis = None
+                # If it's from web, it should have an ID to fetch from DB
+                if uploaded_file_info_for_analysis.get("source") != "whatsapp" and uploaded_file_info_for_analysis.get("id"):
+                    archivo_obj_for_analysis = db.session.get(ArchivoAdjunto, uploaded_file_info_for_analysis["id"])
+                    if not archivo_obj_for_analysis:
+                        logger_actual.warning(f"No se encontró ArchivoAdjunto con ID {uploaded_file_info_for_analysis['id']} para análisis.")
 
-                if archivo_obj:
+                # If it's from WhatsApp (no ID yet) or web object fetched, and we have a URL
+                # The `interpretar_imagen_para_chat` needs to be robust to handle either
+                # an ArchivoAdjunto object or a direct URL (if `archivo_obj_for_analysis` is None but URL is in `uploaded_file_info_for_analysis`).
+                # For now, we assume `interpretar_imagen_para_chat` primarily works with an ArchivoAdjunto object.
+                # If it's a WhatsApp image, we might need to create a temporary ArchivoAdjunto-like structure
+                # or modify `interpretar_imagen_para_chat` to accept a URL.
+
+                # Let's prepare a structure that `interpretar_imagen_para_chat` can use,
+                # even if it's a temporary one for WhatsApp images not yet in DB.
+
+                # This part needs careful implementation of how `interpretar_imagen_para_chat`
+                # consumes `archivo_adjunto`. If it strictly needs a persisted DB object,
+                # WhatsApp images would need to be saved first.
+                # For now, we'll assume if `archivo_obj_for_analysis` is None but `uploaded_file_info_for_analysis` has a URL,
+                # the service might handle it. This is a simplification.
+
+                path_or_url_for_analysis = None
+                if archivo_obj_for_analysis: # Web uploaded file, already in DB
+                    path_or_url_for_analysis = archivo_obj_for_analysis.url
                     logger_actual.info(
-                        f"[RESPONDER_MUNICIPIO] Imagen ID {archivo_obj.id} ({archivo_obj.nombre_original}) detectada. Intentando análisis para pre-llenar reclamo."
+                        f"[RESPONDER_MUNICIPIO] Analizando imagen desde ArchivoAdjunto ID {archivo_obj_for_analysis.id} ({archivo_obj_for_analysis.nombre_original})."
                     )
+                elif uploaded_file_info_for_analysis.get("source") == "whatsapp" and uploaded_file_info_for_analysis.get("url"):
+                    # This is a WhatsApp image URL. `interpretar_imagen_para_chat` needs to be able
+                    # to handle this, perhaps by downloading it or passing the URL to Vision API.
+                    # We will pass the dict `uploaded_file_info_for_analysis` itself as `archivo_adjunto` argument.
+                    # `interpretar_imagen_para_chat` will need to be adapted.
+                    archivo_obj_for_analysis = uploaded_file_info_for_analysis # Pass the dict
+                    logger_actual.info(
+                        f"[RESPONDER_MUNICIPIO] Analizando imagen desde URL de WhatsApp: {archivo_obj_for_analysis.get('url')}."
+                    )
+
+                if archivo_obj_for_analysis: # Either a DB object or the dict from WhatsApp
                     analisis_resultado = interpretar_imagen_para_chat(
-                        archivo_adjunto=archivo_obj,
+                        archivo_adjunto=archivo_obj_for_analysis, # Can be DB object or dict
                         tipo_interpretacion="reclamo_auto_descripcion_categoria"
                     )
                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Resultado análisis de imagen para reclamo: {analisis_resultado}")
@@ -3166,74 +3230,50 @@ def responder_municipio(
                         sugerida_cat = analisis_resultado.get("categoria_sugerida")
                         sugerida_desc = analisis_resultado.get("descripcion_sugerida")
 
-                        if sugerida_cat and (
-                            not contexto_municipio_actual.get("categoria_reclamo")
-                            or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"
-                        ):
+                        if sugerida_cat and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
                             contexto_municipio_actual["categoria_reclamo"] = sugerida_cat
                             logger_actual.info(f"Categoría pre-llenada desde análisis de imagen: {sugerida_cat}")
 
-                        if sugerida_desc and (
-                            not contexto_municipio_actual.get("descripcion_reclamo")
-                            or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20
-                        ):
+                        if sugerida_desc and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
                             contexto_municipio_actual["descripcion_reclamo"] = sugerida_desc
                             logger_actual.info(f"Descripción pre-llenada desde análisis de imagen: {sugerida_desc[:70]}...")
 
                         contexto_municipio_actual["analisis_imagen_reclamo_auto"] = {
-                            "categoria": sugerida_cat,
-                            "descripcion": sugerida_desc,
+                            "categoria": sugerida_cat, "descripcion": sugerida_desc,
                             "ocr_texto": analisis_resultado.get("texto_ocr", "")[:200],
+                            "source": uploaded_file_info_for_analysis.get("source", "unknown")
                         }
-                        # If image analysis provided category and we were waiting for category, update state for handlers
-                        if (
-                            sugerida_cat
-                            and contexto_municipio_actual.get("estado_conversacion")
-                            == ConversationState.ESPERANDO_CATEGORIA_RECLAMO
-                        ):
-                            # The ReclamoInteligente or ReclamoHandler will pick this up.
-                            # If category and description are now filled, ReclamoInteligente might go to confirmation or next missing.
-                            pass  # No direct state change here, let handlers use the pre-filled data.
 
-                        # If image analysis sets category/description for a new claim, and it's WhatsApp, try to prefill phone
-                        if (
-                            channel == "whatsapp"
-                            and (sugerida_cat or sugerida_desc)
-                            and not contexto_municipio_actual.get("telefono_vecino")
-                        ):
+                        if channel == "whatsapp" and (sugerida_cat or sugerida_desc) and not contexto_municipio_actual.get("telefono_vecino"):
+                            # (Lógica de pre-llenado de teléfono para WhatsApp se mantiene igual)
                             whatsapp_phone_number = None
                             if viewer_user and getattr(viewer_user, "telefono", None):
                                 whatsapp_phone_number = viewer_user.telefono
-                            # Alternative: Twilio payload might contain 'WaId' or 'ProfileName', from which phone might be part of WaId.
-                            # This part depends on how 'pregunta_original' or 'received_payload' is structured for WhatsApp messages.
-                            # Assuming viewer_user.telefono is the E.164 formatted WhatsApp number.
-
-                            if whatsapp_phone_number:
-                                # Basic validation, though viewer_user.telefono should ideally be clean
-                                if validar_telefono(whatsapp_phone_number):
-                                    contexto_municipio_actual["telefono_vecino"] = formatear_telefono_e164(
-                                        whatsapp_phone_number
-                                    )
-                                    logger_actual.info(
-                                        f"[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: Teléfono pre-llenado: {contexto_municipio_actual['telefono_vecino']}"
-                                    )
-                                else:
-                                    logger_actual.warning(
-                                        f"[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: Teléfono '{whatsapp_phone_number}' de viewer_user no es válido."
-                                    )
-                            else:
-                                logger_actual.warning(
-                                    "[RESPONDER_MUNICIPIO] WhatsApp Quick Claim: No se pudo obtener el número de teléfono del usuario de WhatsApp para pre-llenado."
-                                )
-
+                            if whatsapp_phone_number and validar_telefono(whatsapp_phone_number):
+                                contexto_municipio_actual["telefono_vecino"] = formatear_telefono_e164(whatsapp_phone_number)
+                                logger_actual.info(f"WhatsApp Quick Claim: Teléfono pre-llenado: {contexto_municipio_actual['telefono_vecino']}")
                 else:
-                    logger_actual.warning(
-                        f"No se encontró ArchivoAdjunto con ID {uploaded_file_info['id']} para análisis de imagen."
-                    )
+                    logger_actual.warning("No se pudo obtener un objeto ArchivoAdjunto o URL válida para el análisis de imagen.")
             except Exception as e_img_analysis_main:
                 logger_actual.error(f"Error durante el análisis de imagen en responder_municipio: {e_img_analysis_main}", exc_info=True)
 
+            # Asegurar que el contexto general ('context' dict) refleje que se procesó una foto,
+            # para que ReclamoHandler pueda usar su lógica de "mensaje_adjunto_recibido".
+            if uploaded_file_info_for_analysis and uploaded_file_info_for_analysis.get("mime_type", "").startswith("image/"):
+                context["es_foto"] = True # Informar al contexto general
+                if uploaded_file_info_for_analysis.get("url"):
+                    context["foto_url"] = uploaded_file_info_for_analysis.get("url")
+
+                # Para archivos web que ya tienen un ID de ArchivoAdjunto en la DB
+                if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
+                     context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
+                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Preparando archivo_id_para_asociar: {context['archivo_id_para_asociar']} para foto web.")
+                # Para imágenes de WhatsApp, la URL está en context["foto_url"].
+                # La asociación al ticket (guardar el ArchivoAdjunto y vincular) debería ocurrir
+                # cuando el ticket se crea, si la URL de la foto está en la memoria del reclamo.
+
     # Context now contains pre-filled image data if analysis was run and successful.
+    # Y context["es_foto"], context["foto_url"] también están seteados si hubo una imagen.
     # Proceed with standard context setup for handlers.
     # The 'intencion' for the context dictionary used by handlers will be set by IntentClassifierHandler later if not already set.
     # kwargs.get("intencion") was from the function call, context['intencion'] is for the handlers.

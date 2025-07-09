@@ -54,10 +54,41 @@ def whatsapp_webhook():
         message_body = post_vars.get("Body", "") # Standard text message
         print(f"Received WhatsApp standard text message. Body: '{message_body}'")
 
+    # --- Manejo de Archivos Adjuntos de WhatsApp ---
+    media_url = post_vars.get("MediaUrl0")
+    media_content_type = post_vars.get("MediaContentType0")
+    uploaded_file_info_whatsapp = None
+
+    if media_url and media_content_type:
+        print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
+        # Por ahora, solo procesaremos imágenes como un ejemplo inicial.
+        # Podría expandirse a otros tipos de media si es necesario.
+        if media_content_type.startswith("image/"):
+            uploaded_file_info_whatsapp = {
+                "url": media_url,
+                "mime_type": media_content_type,
+                "name": f"whatsapp_image_{uuid.uuid4().hex[:8]}.jpg", # Nombre genérico
+                "source": "whatsapp"
+                # No tenemos un 'id' de ArchivoAdjunto aquí porque no lo hemos guardado en la DB aún.
+                # El servicio de interpretación de imagen deberá manejarlo por URL.
+            }
+            post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp # Añadir al payload para responder_chatboc
+            print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
+        else:
+            print(f"Media type {media_content_type} from WhatsApp not currently processed for automatic analysis.")
+    # --- Fin Manejo de Archivos Adjuntos de WhatsApp ---
+
     to_number_cleaned = to_number_raw.replace("whatsapp:", "")
     from_number_cleaned = from_number_raw.replace("whatsapp:", "") # User's phone number
 
-    print(f"Received WhatsApp message to: {to_number_cleaned}, from: {from_number_cleaned}, body: '{message_body}'")
+    log_message_parts = [
+        f"Received WhatsApp message to: {to_number_cleaned}",
+        f"from: {from_number_cleaned}",
+        f"body: '{message_body}'"
+    ]
+    if uploaded_file_info_whatsapp:
+        log_message_parts.append(f"with media: {uploaded_file_info_whatsapp['mime_type']}")
+    print(", ".join(log_message_parts))
 
     # Eager load the 'user' and 'user.rubro' relationships to avoid separate queries later
     whatsapp_mapping = WhatsappNumero.query.options(
