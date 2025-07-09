@@ -3001,6 +3001,31 @@ def responder_municipio(
         f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})"
     )
 
+    # --- Load instance-specific municipio_config ---
+    # owner_user is the User object for the bot owner (municipality/pyme)
+    specific_municipio_config = None
+    owner_user_municipio_id_str = None # For logging
+    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
+        # Assuming owner_user.municipio_id is the string key used for config folders (e.g., "junin", "concordia")
+        owner_user_municipio_id_str = str(owner_user.municipio_id) # Ensure it's a string if it's an int
+        specific_municipio_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+        if specific_municipio_config:
+            logger_actual.info(f"Configuración específica cargada para municipio_id: {owner_user_municipio_id_str}")
+        else:
+            logger_actual.warning(f"No se encontró configuración específica para municipio_id: {owner_user_municipio_id_str}. Se usará la global.")
+            specific_municipio_config = CONFIG_MUNICIPIO # Fallback to global
+    elif owner_user and hasattr(owner_user, 'id') and not hasattr(owner_user, 'municipio_id'):
+        # This case might apply if a User object can be a "municipality" itself,
+        # and its ID is used as the key for its config.
+        # This depends on how MUNICIPIO_ID is structured for different clients.
+        # For now, we assume municipio_id on User is the primary way.
+        # If not, this logic might need adjustment based on how different clients' configs are keyed.
+        logger_actual.info(f"Owner user {owner_user.id} no tiene 'municipio_id', usando MUNICIPIO_ID global ('{MUNICIPIO_ID}') para config.")
+        specific_municipio_config = CONFIG_MUNICIPIO # Fallback to global
+    else:
+        logger_actual.warning("No se pudo determinar un municipio_id específico del owner_user. Se usará la configuración global.")
+        specific_municipio_config = CONFIG_MUNICIPIO # Fallback to global if owner_user is None or has no ID
+
     # Reconstructing the context dictionary to ensure clean syntax
     context = {}
     context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
@@ -3012,6 +3037,7 @@ def responder_municipio(
     context["intencion"] = None  # Initialize intencion; it will be set by IntentClassifierHandler or other logic
     context["rubro_obj"] = rubro_obj
     context["channel"] = channel
+    context["municipio_config_actual"] = specific_municipio_config # Add the specific (or fallback global) config
     context["ubicacion_usuario"] = received_payload.get("ubicacion_usuario")
     context["foto_url"] = received_payload.get("archivo_url") if received_payload.get("es_foto") else None
     context["es_foto"] = received_payload.get("es_foto", False)
