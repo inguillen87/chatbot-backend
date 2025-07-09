@@ -77,20 +77,39 @@ def build_interactive_response(options: list,
             }
 
     elif channel == "web":
-        web_response = original_bot_response.copy()
-        web_response["respuesta"] = body_text
+        # Explicitly construct the response for the web channel
+        # to avoid sending unexpected new keys from original_bot_response.
+        web_response = {
+            "respuesta": body_text,
+            "botones": [], # Initialize
+            # Selectively copy other necessary fields from original_bot_response
+            # These are examples; ensure all keys the web frontend uses are included.
+            "fuente": original_bot_response.get("fuente"),
+            "contexto_actualizado": original_bot_response.get("contexto_actualizado"),
+            "ticket_id": original_bot_response.get("ticket_id"),
+            "es_publico": original_bot_response.get("es_publico"), # As seen in routes/chat.py
+            "preguntas_usadas": original_bot_response.get("preguntas_usadas"), # As seen in routes/chat.py
+            "limite_preguntas": original_bot_response.get("limite_preguntas"), # As seen in routes/chat.py
+            "interpretacion_adjunto": original_bot_response.get("interpretacion_adjunto"), # As seen in routes/chat.py
+            "estado_respuesta": original_bot_response.get("estado_respuesta"), # From municipios.py handlers
+            "adjuntos": original_bot_response.get("adjuntos", []) # Ensure adjuntos is passed if present
+        }
+        # Filter out keys that are None to keep the response clean, unless None is a valid/expected value for a key.
+        # For simplicity here, we'll keep None values if they were in original_bot_response and copied.
+        # A more robust way is to list expected keys and copy them if present.
+        # web_response = {k: v for k, v in web_response.items() if v is not None} # Be careful if None is meaningful
+
         if message_type in ['interactive_buttons', 'interactive_list'] and options:
             formatted_botones = []
             for o in options:
                 btn = {"texto": o["texto"], "action": o.get("action", o.get("id", o["texto"]))}
                 if o.get("type") == "url" and o.get("url"): # Handle URL type for web buttons
                     btn["url"] = o["url"]
-                    # Action could be a special value like 'open_url' or frontend handles based on presence of 'url'
-                    btn["action"] = o.get("action", "url") # Keep original action or default to 'url'
+                    btn["action"] = o.get("action", "url")
                 formatted_botones.append(btn)
             web_response["botones"] = formatted_botones
-        elif "botones" not in web_response: # Ensure 'botones' key exists even if empty
-             web_response["botones"] = []
+        # If no options or not an interactive type, "botones" remains empty list (initialized above)
+
         return web_response
     else:
         logger.error(f"Canal desconocido: {channel}. No se pudo formatear la respuesta.")
