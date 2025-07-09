@@ -531,7 +531,29 @@ class IntentClassifierHandler(BaseMunicipioHandler):
     KEYWORDS_RECLAMO_PEDIDO = ["pedido mal", "problema compra", "producto roto", "pedido incorrecto"]
     KEYWORDS_PANICO = ["ayuda urgente", "emergencia", "sos", "necesito ayuda inmediata", "panico", "pánico", "boton de panico", "botón de pánico", "peligro"]
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", ""); logger.info(f"[INTENT] Analizando intención para: {pregunta_str}"); memoria = self.context[CONTEXTO_MUNICIPIO]; texto_normalizado = normalizar_texto(pregunta_str)
+        pregunta_str = payload.get("pregunta", "").strip(); logger.info(f"[INTENT] Analizando intención para: '{pregunta_str}'"); memoria = self.context[CONTEXTO_MUNICIPIO]; texto_normalizado = normalizar_texto(pregunta_str)
+
+        # ---- INICIO NUEVA LÓGICA PARA NO SOBREESCRIBIR INTENCIÓN DE IMAGEN ----
+        # Si ya hay una intención de 'iniciar_reclamo' (establecida por responder_municipio debido a media)
+        # y el texto actual está vacío, no dejar que el LLM la cambie a 'general'.
+        # self.context.get("es_foto") se establece DESPUÉS del bloque de análisis de imagen en responder_municipio.
+        # Usaremos la presencia de 'uploaded_file_info_whatsapp' o 'uploaded_file_info' en el payload original.
+
+        # Accedemos a la info original de la imagen desde el payload que recibió el handler.
+        # `self.context` es el contexto global de `responder_municipio`.
+        # `payload` es `received_payload` que también tiene esta info.
+
+        _initial_media_info = self.context.get("uploaded_file_info_whatsapp_for_intent_classifier") or \
+                              self.context.get("uploaded_file_info_for_intent_classifier")
+                              # Estas claves se establecerían en responder_municipio si se decide pasar la info de esta forma
+
+        # Mejor: usar context["es_foto"] que ya se setea en responder_municipio si hubo una imagen procesada
+        if self.context.get("intencion") == "iniciar_reclamo" and \
+           not pregunta_str and \
+           self.context.get("es_foto"): # "es_foto" se establece en responder_municipio si se procesó una imagen
+            logger.info(f"[INTENT] Intención 'iniciar_reclamo' por imagen previa y texto vacío. Manteniendo intención actual.")
+            return None # No cambiar la intención, ReclamoHandler debería actuar.
+        # ---- FIN NUEVA LÓGICA ----
 
         current_context_state_val = memoria.get("estado_conversacion")
         active_state_is_reclamo = False
@@ -3124,10 +3146,29 @@ def responder_municipio(
     context["cliente_id"] = getattr(viewer_user, "id", None)
     context["viewer_user_obj"] = viewer_user
     context["anon_id"] = anon_id
-    context["intencion"] = None  # Initialize intencion; it will be set by IntentClassifierHandler or other logic
+    context["intencion"] = None  # Initialize intencion
     context["rubro_obj"] = rubro_obj
     context["channel"] = channel
-    context["municipio_config_actual"] = specific_municipio_config # Add the specific (or fallback global) config
+    context["municipio_config_actual"] = specific_municipio_config
+
+    # ---- INICIO NUEVA LÓGICA PARA PRIORIZAR INTENCIÓN POR IMAGEN ----
+    _uploaded_file_info_whatsapp = received_payload.get("uploaded_file_info_whatsapp")
+    _uploaded_file_info_web = received_payload.get("uploaded_file_info")
+    _media_info_for_intent = _uploaded_file_info_whatsapp or _uploaded_file_info_web
+
+    if _media_info_for_intent and \
+       isinstance(_media_info_for_intent, dict) and \
+       _media_info_for_intent.get("mime_type", "").startswith("image/"):
+
+        if not pregunta_str.strip(): # Si hay imagen y el texto está vacío
+            context["intencion"] = "iniciar_reclamo"
+            logger_actual.info(
+                f"[RESPONDER_MUNICIPIO PRE-INTENT] Imagen detectada sin texto ({_media_info_for_intent.get('source', 'unknown')}). "
+                f"Intención preestablecida a 'iniciar_reclamo'."
+            )
+    # ---- FIN NUEVA LÓGICA ----
+
+    # El resto de la inicialización del context que depende de received_payload
     context["ubicacion_usuario"] = received_payload.get("ubicacion_usuario")
     context["foto_url"] = received_payload.get("archivo_url") if received_payload.get("es_foto") else None
     context["es_foto"] = received_payload.get("es_foto", False)
