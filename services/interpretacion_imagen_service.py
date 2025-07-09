@@ -114,8 +114,10 @@ def interpretar_imagen_para_chat(
     db.session.commit()
 
 
-    if tipo_interpretacion == "reclamo_municipal":
+    if tipo_interpretacion == "reclamo_municipal": # Kept for compatibility if explicitly called
         return _procesar_interpretacion_reclamo(analisis, vision_results, extracted_ocr_text)
+    elif tipo_interpretacion == "reclamo_auto_descripcion_categoria": # New type
+        return _procesar_interpretacion_reclamo(analisis, vision_results, extracted_ocr_text, auto_mode=True)
     elif tipo_interpretacion == "pedido_pyme":
         if not pyme_user: # Doble chequeo, aunque ya se hizo arriba.
             logger.error("❌ Error interno: pyme_user es None para pedido_pyme en _procesar.")
@@ -132,101 +134,186 @@ def interpretar_imagen_para_chat(
         return {'error': analisis.error_analisis, 'analisis_id': analisis.id}
 
 
+# Define mapping from common Vision API labels (in lowercase normalized form) to our claim categories
+# This needs to be expanded and refined.
+VISION_LABEL_TO_RECLAMO_CATEGORIA = {
+    "pothole": "Arreglo de calle",
+    "street light": "Luminaria", "lamp post": "Luminaria",
+    "traffic light": "Rotura de semaforo",
+    "tree": "Arbol Caido",
+    "fallen tree": "Arbol Caido",
+    "fire": "Incendio", "smoke": "Incendio", "flame": "Incendio",
+    "trash": "Limpieza", "garbage": "Limpieza", "waste": "Limpieza",
+    "water leak": "Falta de agua, rotura de caño", "pipe": "Falta de agua, rotura de caño", "leak": "Falta de agua, rotura de caño",
+    "leakage": "Falta de agua, rotura de caño",
+    "road": "Arreglo de calle", # Generic, might need more context
+    "signage": "Rotura de semaforo", # If context implies damage/issue, could be other types of signs
+    "power line": "Luminaria" # Or a generic public service issue
+}
+# Also import CATEGORIAS_RECLAMO from municipios to validate against
+try:
+    from services.municipios import CATEGORIAS_RECLAMO, normalizar_texto as normalizar_texto_municipios
+except ImportError: # Fallback if circular or testing standalone
+    CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "incendio", "luminaria", "rotura de semaforo", "limpieza", "falta de agua, rotura de caño", "otro motivo"]
+    def normalizar_texto_municipios(s): return s.lower() if s else ""
+
+
+def _infer_category_from_vision_results(vision_results: Dict[str, Any], min_confidence: float = 0.55) -> Optional[str]:
+    """Infers a claim category from Vision API labels and objects."""
+    detected_items_with_confidence = []
+    for label in vision_results.get("labels", []):
+        confidence = label.get("confidence", 0)
+        if confidence >= min_confidence:
+            detected_items_with_confidence.append({
+                "text": normalizar_texto_municipios(label.get("description","")),
+                "score": confidence
+            })
+    for obj in vision_results.get("objects", []):
+        confidence = obj.get("confidence", 0)
+        if confidence >= min_confidence:
+             detected_items_with_confidence.append({
+                "text": normalizar_texto_municipios(obj.get("name","")),
+                "score": confidence
+            })
+
+    # Sort by confidence
+    detected_items_with_confidence.sort(key=lambda x: x["score"], reverse=True)
+    logger.info(f"[VISION_CAT_INFERENCE] Sorted detected items: {detected_items_with_confidence}")
+
+    for item in detected_items_with_confidence:
+        item_desc = item["text"]
+        # Direct mapping first
+        if item_desc in VISION_LABEL_TO_RECLAMO_CATEGORIA:
+            cat = VISION_LABEL_TO_RECLAMO_CATEGORIA[item_desc]
+            if cat in CATEGORIAS_RECLAMO:
+                logger.info(f"[VISION_CAT_INFERENCE] Mapped '{item_desc}' to category '{cat}' with score {item['score']}")
+                return cat
+        # Check if any part of a multi-word item_desc maps
+        for keyword, category_map in VISION_LABEL_TO_RECLAMO_CATEGORIA.items():
+            if keyword in item_desc:
+                 if category_map in CATEGORIAS_RECLAMO:
+                    logger.info(f"[VISION_CAT_INFERENCE] Mapped partial '{item_desc}' (found '{keyword}') to category '{category_map}' with score {item['score']}")
+                    return category_map
+    return None
+
+
 def _procesar_interpretacion_reclamo(
     analisis: AnalisisArchivo,
     vision_results: Dict[str, Any],
-    extracted_ocr_text: str
+    extracted_ocr_text: str,
+    auto_mode: bool = False # New flag for auto-description/category mode
 ) -> Dict[str, Any]:
     """Lógica específica para interpretar un reclamo municipal."""
-    logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL para Análisis ID: {analisis.id}")
-    analisis.tipo_analisis = 'reclamo_vision_llm_v1' # Actualizar si es necesario
+    logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL (auto_mode: {auto_mode}) para Análisis ID: {analisis.id}")
 
-    found_keywords = []
-    # Primero, revisar objetos detectados
-    for obj in vision_results.get("objects", []):
-        obj_name_lower = obj.get("name", "").lower()
-        if obj_name_lower in PALABRAS_CLAVE_RECLAMO_OBJETOS:
-            found_keywords.append(f"objeto:{obj_name_lower} (conf: {obj.get('confidence', 0):.2f})")
+    sugerida_categoria_vision = None
+    if auto_mode:
+        sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
+        analisis.tipo_analisis = 'reclamo_auto_vision_v1'
+    else: # Original mode, might use keywords or different LLM path
+        analisis.tipo_analisis = 'reclamo_vision_llm_v1'
 
-    # Luego, revisar etiquetas
-    for label in vision_results.get("labels", []):
-        label_desc_lower = label.get("description", "").lower()
-        if label_desc_lower in PALABRAS_CLAVE_RECLAMO_ETIQUETAS:
-            found_keywords.append(f"etiqueta:{label_desc_lower} (conf: {label.get('confidence', 0):.2f})")
 
-    # Guardar keywords encontradas en el análisis
-    current_datos_estructurados = analisis.datos_estructurados if isinstance(analisis.datos_estructurados, dict) else {}
-    current_datos_estructurados['keywords_detectadas_reclamo'] = found_keywords # Específico para reclamo
-    analisis.datos_estructurados = current_datos_estructurados
-
-    if not found_keywords and not extracted_ocr_text:
-        logger.info(f"ℹ️ [RECLAMO] No se encontraron palabras clave relevantes ni texto OCR en la imagen para Análisis ID: {analisis.id}.")
-        analisis.estado_analisis = "completado"
-        analisis.tipo_analisis = 'imagen_general_vision_v1'
-        db.session.commit()
-        return {'es_reclamo': False, 'motivo': 'No se detectaron elementos visuales o textuales de reclamo claros.', 'vision_results': vision_results, 'analisis_id': analisis.id}
-
-    logger.info(f"🔑 [RECLAMO] Palabras clave/elementos detectados: {found_keywords} para Análisis ID: {analisis.id}")
-
+    # Construct description for LLM from image content
     prompt_description_parts = []
-    if vision_results.get("objects"):
-        prompt_description_parts.append("Objetos detectados: " + ", ".join([f"{o['name']}" for o in vision_results["objects"][:5]]))
-    if vision_results.get("labels"):
-        prompt_description_parts.append("Etiquetas generales: " + ", ".join([f"{l['description']}" for l in vision_results["labels"][:5]]))
-    if extracted_ocr_text:
-        prompt_description_parts.append(f"Texto extraído de la imagen: '{extracted_ocr_text[:300]}'") # Aumentar un poco el límite para el prompt
+    top_labels_str = ", ".join([f"{l['description']}" for l in vision_results.get("labels", [])[:3]])
+    top_objects_str = ", ".join([f"{o['name']}" for o in vision_results.get("objects", [])[:2]])
+
+    if top_objects_str:
+        prompt_description_parts.append(f"Objetos principales detectados: {top_objects_str}")
+    if top_labels_str:
+        prompt_description_parts.append(f"Aspectos generales de la imagen: {top_labels_str}")
+
+    ocr_snippet_for_prompt = ""
+    if extracted_ocr_text and len(extracted_ocr_text) < 200: # Include if somewhat concise
+        ocr_snippet_for_prompt = extracted_ocr_text.strip().replace("\n", " ")
+        prompt_description_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'")
+
+    current_datos_estructurados = analisis.datos_estructurados if isinstance(analisis.datos_estructurados, dict) else {}
 
     if not prompt_description_parts:
-         logger.info(f"ℹ️ [RECLAMO] No hay suficiente información visual o textual para enviar al LLM para Análisis ID: {analisis.id}.")
-         analisis.estado_analisis = "completado"
-         # Si no hay keywords pero sí OCR, podría no ser 'imagen_general' aún.
-         # Se decide más adelante si el LLM tampoco lo ve.
-         # Por ahora, si no hay nada para el prompt, y no hubo keywords, es general.
-         if not found_keywords:
-            analisis.tipo_analisis = 'imagen_general_vision_v1'
+         logger.info(f"ℹ️ [RECLAMO_IMG_PROC] No hay suficiente información visual/textual para enviar al LLM (Análisis ID: {analisis.id}).")
+         analisis.estado_analisis = "completado_sin_info_suficiente"
+         current_datos_estructurados['vision_inferred_category'] = sugerida_categoria_vision
+         analisis.datos_estructurados = current_datos_estructurados
          db.session.commit()
-         return {'es_reclamo': False, 'motivo': 'Información visual/textual insuficiente para LLM.', 'vision_results': vision_results, 'analisis_id': analisis.id}
+         return {
+             'es_reclamo': bool(sugerida_categoria_vision),
+             'categoria_sugerida': sugerida_categoria_vision,
+             'descripcion_sugerida': "No se pudo generar una descripción automática. Por favor, describí el problema.",
+             'texto_ocr': extracted_ocr_text,
+             'analisis_id': analisis.id, 'error': None
+         }
 
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
-    logger.info(f"📝 [RECLAMO] Descripción para LLM: {imagen_descripcion_para_llm} (Análisis ID: {analisis.id})")
+    logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis.id})")
 
+    # Use LLM to refine/generate details based on image description
     detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
-    current_datos_estructurados['llm_complaint_extraction'] = detalles_llm
+
+    current_datos_estructurados['llm_complaint_extraction_from_image'] = detalles_llm
+    current_datos_estructurados['vision_inferred_category'] = sugerida_categoria_vision # Store what vision inferred
     analisis.datos_estructurados = current_datos_estructurados
 
-    es_reclamo_confirmado_por_llm = bool(detalles_llm.get("tipo_problema") or detalles_llm.get("descripcion_problema"))
+    # Determine final suggested category and description
+    final_categoria_sugerida = sugerida_categoria_vision # Start with Vision's inference
 
-    if es_reclamo_confirmado_por_llm:
-        logger.info(f"✅ [RECLAMO] LLM confirmó/interpretó como reclamo. Tipo: {detalles_llm.get('tipo_problema')}, Desc: {detalles_llm.get('descripcion_problema')} (Análisis ID: {analisis.id})")
-        analisis.estado_analisis = "completado"
-        # tipo_analisis ya es 'reclamo_vision_llm_v1' o similar.
-        db.session.commit()
-        return {
-            'es_reclamo': True,
-            'tipo_sugerido': detalles_llm.get("tipo_problema", "No especificado"),
-            'descripcion_sugerida': detalles_llm.get("descripcion_problema", "Por favor, describe el problema que ves en la imagen."),
-            'ubicacion_sugerida': detalles_llm.get("ubicacion_problema", ""),
-            'detalles_llm': detalles_llm,
-            'vision_results': vision_results, # Contiene full_text_annotation
-            'analisis_id': analisis.id,
-            'error': None
-        }
-    else:
-        logger.info(f"ℹ️ [RECLAMO] LLM no interpretó la descripción de la imagen como un reclamo claro. (Análisis ID: {analisis.id})")
-        analisis.estado_analisis = "completado"
-        if not found_keywords: # Si ni Vision (keywords) ni LLM vieron nada claro
-             analisis.tipo_analisis = 'imagen_general_vision_v1'
-        # Si Vision encontró keywords pero LLM no, mantenemos el tipo_analisis de reclamo (ej. 'reclamo_vision_llm_v1')
-        # pero devolvemos es_reclamo: False. Esto indica que hubo indicios pero no confirmación.
-        db.session.commit()
-        return {
-            'es_reclamo': False,
-            'motivo': 'El análisis por IA no pudo confirmar un reclamo específico a partir de la imagen, aunque se detectaron algunos elementos visuales o textuales.',
-            'detalles_llm': detalles_llm,
-            'vision_results': vision_results,
-            'analisis_id': analisis.id,
-            'error': None
-        }
+    llm_tipo_problema = detalles_llm.get("tipo_problema","").strip()
+    if llm_tipo_problema:
+        # If LLM suggests a category, try to match it to our known categories
+        normalized_llm_cat = normalizar_texto_municipios(llm_tipo_problema)
+        matched_llm_cat = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto_municipios(cat) == normalized_llm_cat), None)
+        if not matched_llm_cat: # Fuzzy match if direct fails
+             # Import here to avoid circular if this file is imported elsewhere before municipios fully loads
+            from services.herramientas_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
+            from difflib import get_close_matches as get_close_matches_hm
+
+            close_matches_llm = get_close_matches_hm(normalized_llm_cat, reclamo_categorias_norm_hm, n=1, cutoff=0.75)
+            if close_matches_llm:
+                idx = reclamo_categorias_norm_hm.index(close_matches_llm[0])
+                matched_llm_cat = CATEGORIAS_RECLAMO[idx]
+
+        if matched_llm_cat and matched_llm_cat != "otro motivo":
+            final_categoria_sugerida = matched_llm_cat # LLM's suggestion (if valid) overrides Vision's
+            logger.info(f"[RECLAMO_IMG_PROC] LLM propuso categoría: '{llm_tipo_problema}', mapeada a: '{final_categoria_sugerida}'")
+        elif not final_categoria_sugerida and matched_llm_cat == "otro motivo": # If vision found nothing, and LLM says "otro"
+            final_categoria_sugerida = "otro motivo"
+
+
+    final_descripcion_sugerida = detalles_llm.get("descripcion_problema", "").strip()
+    if not final_descripcion_sugerida or len(final_descripcion_sugerida) < 15 : # If LLM description is too short or missing
+        # Create a fallback description from image elements if LLM one is poor
+        desc_parts = []
+        if final_categoria_sugerida and final_categoria_sugerida != "otro motivo":
+            desc_parts.append(f"Posible problema de '{final_categoria_sugerida}'.")
+
+        if top_objects_str: desc_parts.append(f"Se observan: {top_objects_str}.")
+        elif top_labels_str: desc_parts.append(f"Aspectos generales: {top_labels_str}.") # Use labels if no objects
+
+        if ocr_snippet_for_prompt:
+            desc_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'.")
+
+        if desc_parts:
+            final_descripcion_sugerida = " ".join(desc_parts)
+            logger.info(f"[RECLAMO_IMG_PROC] Descripción generada por fallback: {final_descripcion_sugerida}")
+        else: # True fallback if nothing was found
+            final_descripcion_sugerida = "Por favor, describe el problema que observaste en la imagen."
+
+
+    es_reclamo_valido_sugerido = bool(final_categoria_sugerida and final_categoria_sugerida != "otro motivo") or \
+                                 (final_descripcion_sugerida and len(final_descripcion_sugerida) >= 15 and "describe el problema" not in final_descripcion_sugerida.lower())
+
+    analisis.estado_analisis = "completado"
+    db.session.commit()
+
+    return {
+        'es_reclamo': es_reclamo_valido_sugerido,
+        'categoria_sugerida': final_categoria_sugerida if final_categoria_sugerida else None,
+        'descripcion_sugerida': final_descripcion_sugerida if len(final_descripcion_sugerida) >=10 else None,
+        'texto_ocr': extracted_ocr_text,
+        'analisis_id': analisis.id,
+        'error': None
+    }
 
 # --- Lógica para Interpretación de Pedidos PYME ---
 def _procesar_interpretacion_pedido_pyme(
