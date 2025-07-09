@@ -741,38 +741,75 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                 else:
                     if direccion_es_valida(direccion_texto_original): memoria["direccion_reclamo"] = direccion_texto_original.strip(); logger.warning(f"[ReclamoInteligenteHandler] Dirección '{direccion_texto_original}' no pudo ser parseada estructuradamente pero pasó validación básica.")
                     else: logger.warning(f"[ReclamoInteligenteHandler] Dirección '{direccion_texto_original}' no válida o no parseable. Se pedirá.")
+            # Populate non-category fields first
             for campo in self.CAMPOS_RECLAMO:
-                if campo == "direccion": continue
+                if campo == "direccion" or campo == "categoria": continue # Handle category and address separately
                 valor_campo = datos_extraidos_reclamo_inteligente.get(campo, "")
                 if valor_campo:
-                    if campo == "categoria":
-                        matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(valor_campo)), None)
-                        if not matched_category:
-                            from difflib import get_close_matches; close_matches = get_close_matches(normalizar_texto(valor_campo), categorias_normalizadas, n=1, cutoff=0.7)
-                            if close_matches: idx = categorias_normalizadas.index(close_matches[0]); matched_category = CATEGORIAS_RECLAMO[idx]
-                        if matched_category: memoria["categoria_reclamo"] = matched_category
-                        else: logger.warning(f"Categoría '{valor_campo}' no válida o no reconocida. Se pedirá.")
-                    elif campo == "telefono":
+                    if campo == "telefono":
                         if validar_telefono(valor_campo):
-                            telefono_normalizado_intel = formatear_telefono_e164(valor_campo)
-                            memoria["telefono_vecino"] = telefono_normalizado_intel
-                            logger.info(f"[ReclamoInteligenteHandler] Teléfono extraído por LLM y normalizado: {telefono_normalizado_intel}")
-                        else:
-                            logger.warning(f"[ReclamoInteligenteHandler] Teléfono '{valor_campo}' extraído por LLM no válido. Se pedirá.")
+                            memoria["telefono_vecino"] = formatear_telefono_e164(valor_campo)
+                            logger.info(f"[ReclamoInteligenteHandler] LLM Teléfono: {memoria['telefono_vecino']}")
+                        else: logger.warning(f"[ReclamoInteligenteHandler] LLM Teléfono '{valor_campo}' no válido.")
                     elif campo == "email":
                         if validar_email(valor_campo):
-                            email_normalizado_intel = valor_campo.strip().lower()
-                            memoria["email_vecino"] = email_normalizado_intel
-                            logger.info(f"[ReclamoInteligenteHandler] Email extraído por LLM y normalizado: {email_normalizado_intel}")
+                            memoria["email_vecino"] = valor_campo.strip().lower()
+                            logger.info(f"[ReclamoInteligenteHandler] LLM Email: {memoria['email_vecino']}")
+                        else: logger.warning(f"[ReclamoInteligenteHandler] LLM Email '{valor_campo}' no válido.")
+                    elif campo == "nombre":
+                        memoria["nombre_vecino"] = valor_campo.strip()
+                        logger.info(f"[ReclamoInteligenteHandler] LLM Nombre: {memoria['nombre_vecino']}")
+                    elif campo == "descripcion": # Prioritize LLM description
+                        desc_val = valor_campo.strip()
+                        if len(desc_val) >= 10 : # Basic check for meaningful description
+                             memoria["descripcion_reclamo"] = desc_val
+                             logger.info(f"[ReclamoInteligenteHandler] LLM Descripción: {desc_val[:50]}")
                         else:
-                            logger.warning(f"[ReclamoInteligenteHandler] Email '{valor_campo}' extraído por LLM no válido. Se pedirá.")
-                    else:
-                        if campo == "nombre": memoria["nombre_vecino"] = valor_campo.strip()
-                        elif campo == "descripcion": memoria["descripcion_reclamo"] = datos_extraidos_reclamo_inteligente.get("descripcion", "").strip()
-                        else: memoria[campo] = valor_campo.strip()
+                             logger.info(f"[ReclamoInteligenteHandler] LLM Descripción '{desc_val}' muy corta, se pedirá si es necesario.")
+                    else: # Should not happen with current CAMPOS_RECLAMO
+                        memoria[campo] = valor_campo.strip()
 
-            if any(memoria.get(f"{c}_reclamo") or memoria.get(f"{c}_vecino") for c in self.CAMPOS_RECLAMO): # If any field was extracted
-                if all(memoria.get(f"{c}_reclamo" if c not in ["nombre", "telefono", "email"] else f"{c}_vecino") for c in self.CAMPOS_RECLAMO): # If all fields extracted
+            # Refined Category Logic
+            llm_category_raw = datos_extraidos_reclamo_inteligente.get("categoria", "").strip()
+            # Use description from memoria (which might be from LLM) or fallback to pregunta_str for keyword categorization
+            current_description_for_cat = memoria.get("descripcion_reclamo", pregunta_str)
+
+            if llm_category_raw:
+                matched_category_from_llm = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(llm_category_raw)), None)
+                if not matched_category_from_llm: # Try fuzzy match if exact fails
+                    close_matches_llm = difflib.get_close_matches(normalizar_texto(llm_category_raw), categorias_normalizadas, n=1, cutoff=0.7)
+                    if close_matches_llm:
+                        idx = categorias_normalizadas.index(close_matches_llm[0])
+                        matched_category_from_llm = CATEGORIAS_RECLAMO[idx]
+
+                if matched_category_from_llm and matched_category_from_llm != "otro motivo":
+                    memoria["categoria_reclamo"] = matched_category_from_llm
+                    logger.info(f"[ReclamoInteligenteHandler] Categoría por LLM: {matched_category_from_llm}")
+                else: # LLM category is "otro motivo" or not matched well, try keywords
+                    keyword_category = categorizar_reclamo_por_palabra_clave(current_description_for_cat)
+                    if keyword_category and keyword_category != "otro motivo":
+                        memoria["categoria_reclamo"] = keyword_category
+                        logger.info(f"[ReclamoInteligenteHandler] Categoría por keywords de descripción ('{current_description_for_cat[:30]}...'): {keyword_category}")
+                    elif matched_category_from_llm: # LLM said "otro motivo" and keywords found nothing better
+                         memoria["categoria_reclamo"] = matched_category_from_llm
+                         logger.info(f"[ReclamoInteligenteHandler] Categoría por LLM fue '{matched_category_from_llm}', keywords no mejoraron.")
+                    # If category is still not set (e.g. LLM no dio, keywords no dio), se pedirá en paso a paso
+            else: # LLM did not provide any category, rely on keywords from description/pregunta
+                keyword_category = categorizar_reclamo_por_palabra_clave(current_description_for_cat)
+                if keyword_category: # This can be "otro motivo" if keywords map to it
+                    memoria["categoria_reclamo"] = keyword_category
+                    logger.info(f"[ReclamoInteligenteHandler] Sin categoría LLM, usando categoría por keywords ('{current_description_for_cat[:30]}...'): {keyword_category}")
+
+            # Ensure 'descripcion_reclamo' is set if LLM provided it and it wasn't set by the loop above
+            # This handles if "descripcion" was not in CAMPOS_RECLAMO loop explicitly for some reason, or if it was empty there.
+            llm_description_check = datos_extraidos_reclamo_inteligente.get("descripcion", "").strip()
+            if llm_description_check and not memoria.get("descripcion_reclamo"):
+                if len(llm_description_check) >= 10:
+                    memoria["descripcion_reclamo"] = llm_description_check
+                    logger.info(f"[ReclamoInteligenteHandler] Descripción (re-check) por LLM: {llm_description_check[:50]}")
+
+            if any(memoria.get(key) for key in ["categoria_reclamo", "direccion_reclamo", "nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]): # If any field was extracted by LLM or parsing
+                if all(memoria.get(key) for key in ["categoria_reclamo", "direccion_reclamo", "nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]): # If all fields extracted
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                     resumen = self.build_detalles_memoria(memoria)
                     body = f"Parece que tenemos todos los datos. ¿Confirmás el reclamo con estos datos?\n{resumen}"
@@ -1371,14 +1408,29 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                 descripcion_final = ""
                 # ... (logic for getting description from payload['datos'] or pregunta_str)
+                descripcion_input = ""
                 datos_sub_payload = payload.get("datos", {}); campo_descripcion = "descripcion_reclamo"
-                if campo_descripcion in datos_sub_payload: descripcion_final = datos_sub_payload[campo_descripcion].strip()
-                elif pregunta_str: descripcion_final = pregunta_str.strip()
 
-                if not descripcion_final or len(descripcion_final) < 10:
+                if campo_descripcion in datos_sub_payload and isinstance(datos_sub_payload[campo_descripcion], str) and len(datos_sub_payload[campo_descripcion].strip()) >= 10:
+                    descripcion_input = datos_sub_payload[campo_descripcion].strip()
+                elif pregunta_str:
+                    # Check if pregunta_str is likely a button ID or too generic
+                    normalized_input_desc = normalizar_texto(pregunta_str)
+                    # Combine known confirmation/edit keywords with typical action prefixes
+                    KNOWN_BUTTON_LIKE_PHRASES = PALABRAS_CLAVE_CONFIRMACION.union(EDIT_KEYWORDS).union({"adjuntar_foto", "compartir_ubicacion", "sin_adjuntos", "confirmarreclamofinal", "editarreclamodatos", "arreglodecalle"}) # Add specific button IDs from logs
+
+                    is_likely_button_id_or_action = normalized_input_desc in KNOWN_BUTTON_LIKE_PHRASES or \
+                                                 (any(btn_id_part in normalized_input_desc for btn_id_part in ["confirmar", "editar", "adjuntar", "seleccion", "opcion", "reclamo", "calle"]) and len(normalized_input_desc.split()) <= 3)
+
+                    if not is_likely_button_id_or_action:
+                        descripcion_input = pregunta_str.strip()
+                    else:
+                        logger.warning(f"Input '{pregunta_str}' for description seems like a button ID/action or too generic. Normalized: '{normalized_input_desc}'. Re-prompting.")
+
+                if not descripcion_input or len(descripcion_input) < 10: # Min length for a meaningful description
                     return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
                 
-                memoria["descripcion_reclamo"] = descripcion_final
+                memoria["descripcion_reclamo"] = descripcion_input
                 logger.info(f"Descripción guardada: '{descripcion_final[:50]}...'.")
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
                 estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
@@ -1705,20 +1757,50 @@ class ReclamoHandler(BaseMunicipioHandler):
                         "message_type": 'interactive_buttons',
                         "fuente": "reclamo_error_creacion_v2"
                     }
-            elif accion == "editar_reclamo_datos" or any(kw in accion for kw in EDIT_KEYWORDS) or "editar" in accion or "cambiar" in accion : # Added specific action ID
+            elif accion == "editar_reclamo_datos" or any(kw in accion for kw in EDIT_KEYWORDS) or "editar" in accion or "cambiar" in accion :
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-                # Original: return {"respuesta": ("Entendido. Vamos a revisar los datos..."), "botones": [{"texto": cat.title()} for cat in CATEGORIAS_RECLAMO]}
-                body_editar = "Entendido. Vamos a revisar los datos desde el principio para que puedas corregir lo que necesites. Empecemos de nuevo con la categoría. ¿Cuál sería la categoría correcta para tu reclamo?"
-                options_editar = [{"id": normalizar_texto(cat), "texto": cat.title()} for cat in CATEGORIAS_RECLAMO]
+
+                current_summary = self.build_detalles_memoria(memoria)
+                current_category_display = memoria.get('categoria_reclamo')
+                if current_category_display:
+                    current_category_display = current_category_display.replace("_", " ").title()
+                else:
+                    current_category_display = "No definida"
+
+                body_editar = (f"Entendido, vamos a revisar los datos. Actualmente tenemos esto:\n\n{current_summary}\n\n"
+                               f"Empecemos por la categoría. La categoría actual es **{current_category_display}**. "
+                               "¿Es correcta o querés cambiarla? Podés seleccionar una nueva de la lista o escribirla.")
+
+                current_cat_norm = normalizar_texto(memoria.get("categoria_reclamo", ""))
+                # Use a relevant text for category suggestion if available (e.g., description)
+                text_for_edit_cat_suggestion = memoria.get("descripcion_reclamo", pregunta_str) # Fallback to current input if no description
+                sugeridas_data_edit = sugerir_categorias_relevantes(text_for_edit_cat_suggestion)
+                options_data_edit = sugeridas_data_edit if sugeridas_data_edit and len(sugeridas_data_edit) > 0 else CATEGORIAS_RECLAMO
+
+                options_editar = []
+                for c in options_data_edit:
+                    text = c.title()
+                    is_current = (normalizar_texto(c) == current_cat_norm)
+                    options_editar.append({"id": normalizar_texto(c), "texto": f"{text}{' (Actual)' if is_current else ''}"})
+
+                # Ensure "Otro Motivo" is an option if not already suggested and different from current (and not the only option)
+                if "otro motivo" not in [normalizar_texto(o['id']) for o in options_editar] and \
+                   (current_cat_norm != "otro motivo" or len(options_editar) == 0) :
+                     options_editar.append({"id": "otro motivo", "texto": "Otro Motivo"})
+                # Ensure there's at least one option if options_data_edit was empty and "otro motivo" was current
+                if not options_editar:
+                    options_editar = [{"id": normalizar_texto(cat), "texto": cat.title()} for cat in CATEGORIAS_RECLAMO]
+
+
                 return {
                     "message_body": body_editar,
                     "options_list": options_editar,
-                    "message_type": 'interactive_list', # Categories can be many
-                    "fuente": "reclamo_editar_datos_v2"
+                    "message_type": 'interactive_list',
+                    "fuente": "reclamo_editar_iniciar_desde_categoria_v2"
                 }
             else: # Fallback for ESPERANDO_CONFIRMACION_RECLAMO
-                try: 
-                    respuesta_llm = _clasificar_intencion_con_llm(pregunta_str, opciones=["confirmar", "editar"], tipo="confirmacion") 
+                try:
+                    respuesta_llm = _clasificar_intencion_con_llm(pregunta_str, opciones=["confirmar", "editar"], tipo="confirmacion")
                     if respuesta_llm and "confirm" in respuesta_llm.lower(): payload2 = payload.copy(); payload2["action"] = "confirmar_reclamo_final"; return self.handle(payload2) # Use specific action ID
                     elif respuesta_llm and "edit" in respuesta_llm.lower(): payload2 = payload.copy(); payload2["action"] = "editar_reclamo_datos"; return self.handle(payload2) # Use specific action ID
                 except Exception: pass
@@ -2752,6 +2834,7 @@ def responder_municipio(
                     respuesta_sugerencia_obj = construir_respuesta_sugerir_registro(
                         mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.",
                         tipo_entidad="municipio",
+                        channel=channel # Pass the channel
                     )
 
                     sug_body = respuesta_sugerencia_obj.get(
@@ -3050,33 +3133,38 @@ def responder_municipio(
             "fuente": "municipio_fallback_general_v2",
         }
 
+    # Ensure estado_conversacion within contexto_municipio_actual is a string name if it's an Enum,
+    # or remove if None, before general serialization for DB.
     estado_final_en_memoria = contexto_municipio_actual.get("estado_conversacion")
     if isinstance(estado_final_en_memoria, ConversationState):
         contexto_municipio_actual["estado_conversacion"] = estado_final_en_memoria.name
         logger_actual.info(
-            f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Estado Enum '{estado_final_en_memoria.name}' convertido a string para DB."
+            f"[CONTEXTO_MUNICIPIO_PRE_SERIALIZE_MAIN] Estado Enum '{estado_final_en_memoria.name}' convertido a string."
         )
     elif estado_final_en_memoria is None:
-        contexto_municipio_actual.pop("estado_conversacion", None)  # Ensure it's None or key removed
-        logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Estado es None. Se guardará como tal.")
-    else:
-        logger_actual.info(
-            f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Estado ya es string o tipo no-Enum: '{estado_final_en_memoria}'. Se guardará como tal."
-        )
+        contexto_municipio_actual.pop("estado_conversacion", None)
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SERIALIZE_MAIN] Estado es None.")
+    # else: it's already a string or other non-Enum (but potentially non-JSON-serializable) type.
+    # serializar_enum below will handle other nested Enums.
 
-    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+    # Apply the recursive serializar_enum to the whole contexto_municipio_actual
+    # before assigning it to chat_db_context.context_data
+    contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
+
+    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db  # Use the fully serialized version
     logger_actual.info(
-        f"[CONTEXTO_MUNICIPIO_POST_SAVE_IN_DB_CONTEXT] Contexto municipio completo asignado a chat_db_context.data: {contexto_municipio_actual}"
+        f"[CONTEXTO_MUNICIPIO_POST_SAVE_IN_DB_CONTEXT] Contexto municipio (serializado para DB) asignado a chat_db_context.data: {contexto_municipio_serializado_para_db}"
     )
 
-    # from sqlalchemy.orm.attributes import flag_modified # Moved to top-level import
     if chat_db_context:
         flag_modified(chat_db_context, "context_data")
 
-    contexto_serializado_para_respuesta_http = serializar_enum(contexto_municipio_actual)
+    # For the HTTP response, we can use the same serialized version
+    # No need to call serializar_enum again if it was already done for DB.
+    contexto_serializado_para_respuesta_http = contexto_municipio_serializado_para_db
 
-    media_url_to_send = contexto_serializado_para_respuesta_http.get("foto_url")
-    location_data_to_send = contexto_serializado_para_respuesta_http.get("ubicacion_gps")
+    media_url_to_send = contexto_serializado_para_respuesta_http.get("foto_url") # Already serialized
+    location_data_to_send = contexto_serializado_para_respuesta_http.get("ubicacion_gps") # Already serialized
 
     message_body_final = (
         respuesta_final.get("message_body") or respuesta_final.get("respuesta", "")
