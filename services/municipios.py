@@ -1395,15 +1395,22 @@ class ReclamoHandler(BaseMunicipioHandler):
         # After the while loop, check the state. It should be ADJUNTOS or CONFIRMACION, or an error occurred.
         estado_str_after_loop = memoria.get("estado_conversacion")
         # Ensure estado_after_loop is an Enum for comparison, or None
+        estado_after_loop = None
         if isinstance(estado_str_after_loop, str):
             try:
                 estado_after_loop = ConversationState[estado_str_after_loop]
             except KeyError:
-                logger.error(f"[ReclamoHandler] Estado inválido '{estado_str_after_loop}' en memoria tras bucle. Limpiando.")
+                logger.error(
+                    f"[ReclamoHandler] Estado inválido '{estado_str_after_loop}' en memoria tras bucle. Limpiando."
+                )
                 memoria.clear()
                 return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
-        elif not isinstance(estado_str_after_loop, ConversationState) and estado_str_after_loop is not None:
-            logger.error(f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' en memoria tras bucle. Limpiando.")
+        elif isinstance(estado_str_after_loop, ConversationState):
+            estado_after_loop = estado_str_after_loop
+        elif estado_str_after_loop is not None:
+            logger.error(
+                f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' en memoria tras bucle. Limpiando."
+            )
             memoria.clear()
             return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
         

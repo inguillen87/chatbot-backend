@@ -2,6 +2,12 @@ import json
 import logging
 import re
 from typing import Dict, List, Any
+from utils.validators import (
+    extract_email,
+    extract_phone,
+    extract_name,
+    extract_address,
+)
 
 # Intenta importar errores específicos de Cohere.
 # El nombre exacto puede variar según la versión de la librería 'cohere'.
@@ -9,16 +15,16 @@ from typing import Dict, List, Any
 try:
     import cohere
     # Prioriza el error más específico si existe y luego el más general de la librería
-    if hasattr(cohere, 'CohereAPIError'): # Para versiones más antiguas
+    if hasattr(cohere, "CohereAPIError"):
         CohereAPIError = cohere.CohereAPIError
-    elif hasattr(cohere.errors, 'CohereAPIError'): # Estructura observada en el log
-         CohereAPIError = cohere.errors.CohereAPIError
-    elif hasattr(cohere, 'APIError'): # Para versiones más nuevas de la API v3 style
+    elif hasattr(getattr(cohere, "errors", None), "CohereAPIError"):
+        CohereAPIError = cohere.errors.CohereAPIError  # type: ignore[attr-defined]
+    elif hasattr(cohere, "APIError"):
         CohereAPIError = cohere.APIError
-    elif hasattr(cohere, 'CohereError'): # Error base de la librería
+    elif hasattr(cohere, "CohereError"):
         CohereAPIError = cohere.CohereError
     else:
-        CohereAPIError = None # No se pudo encontrar un error específico de Cohere API
+        CohereAPIError = None  # No se pudo encontrar un error específico de Cohere API
 except ImportError:
     cohere = None
     CohereAPIError = None
@@ -143,6 +149,21 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
         # Optionally, try a more lenient parsing or regex for simple cases if JSON fails often
     except Exception as e:
         logger.error(f"[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: {e} for text: '{text}'")
+
+    # Fallback heuristics for fields not provided by LLM
+    for field in potential_fields:
+        if field not in extracted_data or not extracted_data.get(field):
+            heuristic_value = None
+            if field == "nombre_cliente":
+                heuristic_value = extract_name(text)
+            elif field == "telefono_cliente":
+                heuristic_value = extract_phone(text)
+            elif field == "direccion_cliente":
+                heuristic_value = extract_address(text)
+            elif field == "email_cliente":
+                heuristic_value = extract_email(text)
+            if heuristic_value:
+                extracted_data[field] = heuristic_value
 
     return extracted_data
 
