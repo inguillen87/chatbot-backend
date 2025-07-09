@@ -752,11 +752,19 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         if matched_category: memoria["categoria_reclamo"] = matched_category
                         else: logger.warning(f"Categoría '{valor_campo}' no válida o no reconocida. Se pedirá.")
                     elif campo == "telefono":
-                        if validar_telefono(valor_campo): memoria["telefono_vecino"] = valor_campo.strip()
-                        else: logger.warning(f"Teléfono '{valor_campo}' no válido. Se pedirá.")
+                        if validar_telefono(valor_campo):
+                            telefono_normalizado_intel = formatear_telefono_e164(valor_campo)
+                            memoria["telefono_vecino"] = telefono_normalizado_intel
+                            logger.info(f"[ReclamoInteligenteHandler] Teléfono extraído por LLM y normalizado: {telefono_normalizado_intel}")
+                        else:
+                            logger.warning(f"[ReclamoInteligenteHandler] Teléfono '{valor_campo}' extraído por LLM no válido. Se pedirá.")
                     elif campo == "email":
-                        if validar_email(valor_campo): memoria["email_vecino"] = valor_campo.strip()
-                        else: logger.warning(f"Email '{valor_campo}' no válido. Se pedirá.")
+                        if validar_email(valor_campo):
+                            email_normalizado_intel = valor_campo.strip().lower()
+                            memoria["email_vecino"] = email_normalizado_intel
+                            logger.info(f"[ReclamoInteligenteHandler] Email extraído por LLM y normalizado: {email_normalizado_intel}")
+                        else:
+                            logger.warning(f"[ReclamoInteligenteHandler] Email '{valor_campo}' extraído por LLM no válido. Se pedirá.")
                     else:
                         if campo == "nombre": memoria["nombre_vecino"] = valor_campo.strip()
                         elif campo == "descripcion": memoria["descripcion_reclamo"] = datos_extraidos_reclamo_inteligente.get("descripcion", "").strip()
@@ -939,14 +947,24 @@ class ReclamoHandler(BaseMunicipioHandler):
                          memoria["nombre_vecino"] = nombre_val; llm_updated_any_field_in_this_pass = True; logger.info(f"LLM set nombre_vecino: {nombre_val}")
 
                 if 'telefono_cliente' in extracted_details and extracted_details['telefono_cliente'] and not memoria.get("telefono_vecino"):
-                    tel_val = validar_telefono(extracted_details['telefono_cliente']) # validar_telefono already strips
-                    if tel_val:
-                        memoria["telefono_vecino"] = tel_val; llm_updated_any_field_in_this_pass = True; logger.info(f"LLM set telefono_vecino: {tel_val}")
+                    telefono_input_llm = extracted_details['telefono_cliente']
+                    if validar_telefono(telefono_input_llm):
+                        telefono_normalizado_llm = formatear_telefono_e164(telefono_input_llm)
+                        memoria["telefono_vecino"] = telefono_normalizado_llm
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set telefono_vecino (normalizado E.164): {telefono_normalizado_llm}")
+                    else:
+                        logger.warning(f"[ReclamoHandler_LLM_ENHANCED] Teléfono '{telefono_input_llm}' extraído por LLM no pasó la validación.")
 
                 if 'email_cliente' in extracted_details and extracted_details['email_cliente'] and not memoria.get("email_vecino"):
-                    email_val = validar_email(extracted_details['email_cliente']) # validar_email already strips
-                    if email_val:
-                        memoria["email_vecino"] = email_val; llm_updated_any_field_in_this_pass = True; logger.info(f"LLM set email_vecino: {email_val}")
+                    email_input_llm = extracted_details['email_cliente']
+                    if validar_email(email_input_llm):
+                        email_normalizado_llm = email_input_llm.strip().lower()
+                        memoria["email_vecino"] = email_normalizado_llm
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set email_vecino (normalizado): {email_normalizado_llm}")
+                    else:
+                        logger.warning(f"[ReclamoHandler_LLM_ENHANCED] Email '{email_input_llm}' extraído por LLM no pasó la validación.")
                 
                 if llm_updated_any_field_in_this_pass:
                     logger.info(f"[ReclamoHandler_LLM_ENHANCED] LLM pre-filled data. Memoria actual: {memoria}")
@@ -1242,9 +1260,10 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                 telefono_input = pregunta_str.strip()
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_TELEFONO_VECINO. Input: '{telefono_input}'.")
-                telefono_validado = validar_telefono(telefono_input)
-                if telefono_validado:
-                    memoria["telefono_vecino"] = telefono_validado; logger.info(f"[ReclamoHandler] Teléfono guardado: '{telefono_validado}'.")
+                if validar_telefono(telefono_input):
+                    telefono_normalizado = formatear_telefono_e164(telefono_input)
+                    memoria["telefono_vecino"] = telefono_normalizado
+                    logger.info(f"[ReclamoHandler] Teléfono guardado (normalizado E.164): '{telefono_normalizado}'.")
                     if all(memoria.get(campo) for campo in ["email_vecino", "descripcion_reclamo"]):
                         memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                         estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
@@ -1285,9 +1304,10 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                 email_input = pregunta_str.strip()
                 logger.info(f"[ReclamoHandler] Estado: ESPERANDO_EMAIL_VECINO. Input: '{email_input}'.")
-                email_validado = validar_email(email_input)
-                if email_validado:
-                    memoria["email_vecino"] = email_validado; logger.info(f"[ReclamoHandler] Email guardado: '{email_validado}'.")
+                if validar_email(email_input):
+                    email_normalizado = email_input.lower() # Normalizar a minúsculas
+                    memoria["email_vecino"] = email_normalizado
+                    logger.info(f"[ReclamoHandler] Email guardado (normalizado): '{email_normalizado}'.")
                     if memoria.get("descripcion_reclamo"): # If description also filled
                         memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                         estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
@@ -1394,6 +1414,7 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         # After the while loop, check the state. It should be ADJUNTOS or CONFIRMACION, or an error occurred.
         estado_str_after_loop = memoria.get("estado_conversacion")
+        estado_after_loop = None # Initialize to None
         # Ensure estado_after_loop is an Enum for comparison, or None
         if isinstance(estado_str_after_loop, str):
             try:
@@ -1402,8 +1423,12 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.error(f"[ReclamoHandler] Estado inválido '{estado_str_after_loop}' en memoria tras bucle. Limpiando.")
                 memoria.clear()
                 return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
-        elif not isinstance(estado_str_after_loop, ConversationState) and estado_str_after_loop is not None:
-            logger.error(f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' en memoria tras bucle. Limpiando.")
+        elif isinstance(estado_str_after_loop, ConversationState):
+            estado_after_loop = estado_str_after_loop # It's already an Enum
+        elif estado_str_after_loop is None:
+            estado_after_loop = None # Explicitly set to None if it was None in memory
+        else: # Handles other unexpected types not caught by the first two specific checks
+            logger.error(f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' ({estado_str_after_loop}) en memoria tras bucle. Limpiando.")
             memoria.clear()
             return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
         
