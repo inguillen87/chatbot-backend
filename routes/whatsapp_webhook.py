@@ -151,16 +151,25 @@ def whatsapp_webhook():
             # Update session_context_db_entry.context_data based on what responder_chatboc returns
             # If responder_chatboc directly modifies chat_db_context.context_data, this might not be strictly needed
             # but it's safer to explicitly set it if a specific context key is returned.
-            if "contexto_chat" in bot_response_dict:
-                session_context_db_entry.context_data = bot_response_dict["contexto_chat"]
-            elif client_type == "pyme" and "contexto_pyme" in bot_response_dict:
-                session_context_db_entry.context_data = bot_response_dict["contexto_pyme"]
-            elif client_type == "municipio" and "contexto_municipio" in bot_response_dict:
-                session_context_db_entry.context_data = bot_response_dict["contexto_municipio"]
+
+            # COMENTADO: responder_municipio (alias de responder_chatboc) ya modifica
+            # session_context_db_entry.context_data directamente y lo serializa.
+            # Esta reasignación aquí es redundante y potencialmente podría introducir errores
+            # si la estructura de bot_response_dict o las claves de contexto cambian.
+            # El contexto ya está correctamente serializado y actualizado en session_context_db_entry.context_data
+            # por la llamada a responder_municipio.
+
+            # if "contexto_chat" in bot_response_dict:
+            #     session_context_db_entry.context_data = bot_response_dict["contexto_chat"]
+            # elif client_type == "pyme" and "contexto_pyme" in bot_response_dict:
+            #     session_context_db_entry.context_data = bot_response_dict["contexto_pyme"]
+            # elif client_type == "municipio" and "contexto_municipio" in bot_response_dict:
+            #     session_context_db_entry.context_data = bot_response_dict["contexto_municipio"]
+
             # If no specific context key is returned, we assume chat_db_context.context_data was modified in place.
-            # Ensure it's a dict for saving.
+            # Ensure it's a dict for saving. (This check is still valid)
             if not isinstance(session_context_db_entry.context_data, dict):
-                print(f"Warning: context_data is not a dict after responder_chatboc. Resetting to minimal error state. Data: {session_context_db_entry.context_data}")
+                print(f"Warning: context_data in session_context_db_entry is not a dict after responder_chatboc. Resetting to minimal error state. Data: {session_context_db_entry.context_data}")
                 session_context_db_entry.context_data = {
                     "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format from bot logic."}],
                     "estado_conversacion": "error_context"
@@ -169,7 +178,13 @@ def whatsapp_webhook():
         else: # Should not happen if responder_chatboc always returns a dict
             print(f"Warning: responder_chatboc did not return a dictionary. Response: {bot_response_dict}")
             # respuesta_del_bot_text remains the default error message.
-            # session_context_db_entry.context_data might be stale or un-updated.
+            # session_context_db_entry.context_data might be stale or un-updated, ensure it's at least a dict
+            if not isinstance(session_context_db_entry.context_data, dict):
+                 session_context_db_entry.context_data = {
+                    "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format from bot logic (non-dict response)."}],
+                    "estado_conversacion": "error_context_non_dict"
+                }
+
 
         print(f"Bot response text: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 

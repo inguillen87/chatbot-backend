@@ -3240,7 +3240,10 @@ def responder_municipio(
                     ]
                     sug_message_type = "interactive_buttons" if sug_options_list else "text"
 
-                    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                    # Serializar contexto_municipio_actual ANTES de asignarlo a chat_db_context.context_data
+                    contexto_municipio_serializado_para_sugerencia = serializar_enum(contexto_municipio_actual)
+                    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_sugerencia
+
                     if chat_db_context:  # Ensure flag_modified is called if context is updated
                         flag_modified(chat_db_context, "context_data")
 
@@ -3269,7 +3272,8 @@ def responder_municipio(
                         "options_list": sug_options_list,
                         "message_type": sug_message_type,
                         "fuente": respuesta_sugerencia_obj.get("fuente", "sugerencia_registro_municipio_v2"),
-                        "contexto_actualizado": {CONTEXTO_MUNICIPIO: serializar_enum(contexto_municipio_actual)},
+                        # El contexto para la respuesta HTTP también debe usar el serializado
+                        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio_serializado_para_sugerencia},
                     }
             else:  # Not reached umbral or umbral is 0/disabled
                 contexto_municipio_actual.pop("sugerencia_registro_emitida_ronda", None)
