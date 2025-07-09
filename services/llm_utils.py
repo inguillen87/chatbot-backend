@@ -15,16 +15,16 @@ from utils.validators import (
 try:
     import cohere
     # Prioriza el error más específico si existe y luego el más general de la librería
-    if hasattr(cohere, 'CohereAPIError'): # Para versiones más antiguas
+    if hasattr(cohere, "CohereAPIError"):
         CohereAPIError = cohere.CohereAPIError
-    elif hasattr(cohere.errors, 'CohereAPIError'): # Estructura observada en el log
-         CohereAPIError = cohere.errors.CohereAPIError
-    elif hasattr(cohere, 'APIError'): # Para versiones más nuevas de la API v3 style
+    elif hasattr(getattr(cohere, "errors", None), "CohereAPIError"):
+        CohereAPIError = cohere.errors.CohereAPIError  # type: ignore[attr-defined]
+    elif hasattr(cohere, "APIError"):
         CohereAPIError = cohere.APIError
-    elif hasattr(cohere, 'CohereError'): # Error base de la librería
+    elif hasattr(cohere, "CohereError"):
         CohereAPIError = cohere.CohereError
     else:
-        CohereAPIError = None # No se pudo encontrar un error específico de Cohere API
+        CohereAPIError = None  # No se pudo encontrar un error específico de Cohere API
 except ImportError:
     cohere = None
     CohereAPIError = None
@@ -95,6 +95,7 @@ def _clean_llm_json_output(llm_output: str) -> str:
         cleaned_output = llm_output
 
     # Remove trailing commas before closing braces or brackets
+    cleaned_output = re.sub(r",\s*(?=[}\]])", "", cleaned_output)
 
     return cleaned_output.strip()
 
