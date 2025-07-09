@@ -58,6 +58,13 @@ PALABRAS_CLAVE_CONFIRMACION = {
     "yes" # English just in case
 }
 
+# Keywords for requesting to edit information during a flow
+EDIT_KEYWORDS = {
+    "editar", "cambiar", "corregir", "modificar", 
+    "no era asi", "me equivoque", "error", "equivocado",
+    "editar datos", "editar_reclamo_datos", "quiero editar", "necesito cambiar"
+}
+
 URL_REGEX = re.compile(r"https?://\S+")
 
 def agregar_botones_para_links(texto: str, botones: list) -> list:
@@ -1130,20 +1137,28 @@ class ReclamoHandler(BaseMunicipioHandler):
                     has_locality = bool(potential_address_parts.get("localidad"))
                     has_province = bool(potential_address_parts.get("provincia"))
 
-                    if (has_street and (has_number or has_locality)):
+                    if has_street and (has_number or has_locality):
                         is_likely_address = True
-                    elif has_locality and has_province and len(nombre_input.split()) > 1:
+                    elif has_locality and has_province and len(nombre_input.split()) >= 2:
                         is_likely_address = True
-                    
-                    if has_street and not has_number and not has_locality and not has_province:
-                        common_street_indicators = ["calle", "avenida", "avda", "av ", "pasaje", "psje", "ruta", "bv ", "bulevar", "diag", "diagonal"]
-                        if any(indicator in nombre_input.lower() for indicator in common_street_indicators) or \
-                           (potential_address_parts.get("calle") and not any(char.isdigit() for char in potential_address_parts.get("calle")) and len(potential_address_parts.get("calle").split()) > 1): # Heuristic: street name without numbers and multiple words
-                             is_likely_address = True # More likely an address if street indicators are present or street name is multi-word
-                        else:
-                             is_likely_address = False 
-                    elif has_locality and not has_street and not has_number and not has_province and len(nombre_input.split()) <= 2:
-                         is_likely_address = False
+                    elif has_street and has_province and len(nombre_input.split()) >= 2:
+                        is_likely_address = True
+                    elif has_street and not (has_number or has_locality or has_province):
+                        common_street_indicators = ["calle", "avenida", "avda", "av.", "av ", "pasaje", "psje", "ruta", "bv.", "bv ", "bulevar", "diag.", "diag ", "diagonal"]
+                        normalized_input_lower = nombre_input.lower()
+                        if any(normalized_input_lower.startswith(indicator) for indicator in common_street_indicators):
+                            is_likely_address = True
+                        elif potential_address_parts.get("calle") and any(indicator in potential_address_parts.get("calle").lower() for indicator in common_street_indicators):
+                             is_likely_address = True
+                        elif potential_address_parts.get("calle") and any(char.isdigit() for char in potential_address_parts.get("calle")):
+                            is_likely_address = True
+                        # If only a street name was parsed, and it's multi-word without indicators or numbers, it's ambiguous.
+                        # Example: "Marcelo Guillen" could be parsed as {'calle': 'Marcelo Guillen'}.
+                        # We want to avoid flagging this as an address.
+                        # So, if has_street is true ONLY because parse_direccion_completa put the whole input into "calle",
+                        # and it lacks other address signals, consider it NOT an address.
+                        elif len(potential_address_parts) == 1 and potential_address_parts.get("calle") == nombre_input and not any(char.isdigit() for char in nombre_input):
+                             is_likely_address = False
 
 
                 if is_likely_address:
@@ -1158,20 +1173,39 @@ class ReclamoHandler(BaseMunicipioHandler):
                 cleaned_name = nombre_input
                 prefixes_to_remove = [
                     "es un nombre y un apellido real.. ",
+                    "mi nombre completo es ", # More specific
                     "mi nombre es ",
                     "me llamo ",
                     "soy ",
+                    "me dicen ",
+                    "puede llamarme ",
+                    "registrame como ",
                 ]
+                temp_cleaned_name = cleaned_name.lower() # For matching prefixes
                 for prefix in prefixes_to_remove:
-                    if cleaned_name.lower().startswith(prefix): # Use cleaned_name here for loop
+                    if temp_cleaned_name.startswith(prefix):
                         cleaned_name = cleaned_name[len(prefix):].strip()
-                        break
+                        break # Remove only the first matching prefix
                 
-                if not cleaned_name or len(cleaned_name.split()) < 1: 
-                    return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido** (o al menos un nombre). ¿Podrías ingresarlos?"}
+                # Further clean common interjections if they are now at the start
+                interjections_to_remove_at_start = ["bueno ", "dale ", "ok ", "listo "]
+                temp_cleaned_name_for_interjection = cleaned_name.lower()
+                for interjection in interjections_to_remove_at_start:
+                    if temp_cleaned_name_for_interjection.startswith(interjection):
+                        cleaned_name = cleaned_name[len(interjection):].strip()
+                        break
 
-                memoria["nombre_vecino"] = cleaned_name # Save cleaned_name
+
+                if not cleaned_name or len(cleaned_name.split()) < 1 or len(cleaned_name) < 2: # Added min length for name
+                    return {"respuesta": "Para continuar, necesitaría tu **nombre y apellido** (o al menos un nombre válido). ¿Podrías ingresarlos?"}
+
+                memoria["nombre_vecino"] = cleaned_name 
                 logger.info(f"[ReclamoHandler] Nombre guardado (cleaned): '{cleaned_name}'.")
+                
+                # Prepare greeting name (first word of cleaned name)
+                greeting_name = cleaned_name.split()[0] if cleaned_name else "tú"
+
+
                 if all(memoria.get(campo) for campo in ["telefono_vecino", "email_vecino", "descripcion_reclamo"]):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
@@ -1179,13 +1213,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_TELEFONO_VECINO.name
                     estado = ConversationState.ESPERANDO_TELEFONO_VECINO
                 
-                if pregunta_str == payload.get("pregunta",""):
-                    if memoria.get("telefono_vecino"): # If next field already filled
-                        pregunta_str = ""
+                if pregunta_str == payload.get("pregunta",""): # Check if the original input was processed for this step
+                    if memoria.get("telefono_vecino"): 
+                        pregunta_str = "" 
                         continue
                     else:
-                        return {"respuesta": f"¡Gracias, {nombre_input.split()[0]}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
-                pregunta_str = ""
+                        # Use the cleaned first name for the greeting
+                        return {"respuesta": f"¡Gracias, {greeting_name.title()}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
+                pregunta_str = "" 
                 continue
             
             # 4. ESPERANDO_TELEFONO_VECINO
