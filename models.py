@@ -143,6 +143,10 @@ class MunicipioTicket(db.Model):
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
     fecha = db.Column(db.DateTime, default=get_local_now)
+    nombre_vecino = db.Column(db.String(150), nullable=True)
+    telefono_vecino = db.Column(db.String(30), nullable=True)
+    email_vecino = db.Column(db.String(120), nullable=True)
+    foto_url_directa = db.Column(db.String(255), nullable=True) # For simple photo URL if not using full ArchivoAdjunto flow initially
     # archivo_url = db.Column(db.String(255), nullable=True) # Campo obsoleto, se usará la relación
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
     archivos = db.relationship(
