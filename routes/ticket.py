@@ -421,9 +421,9 @@ def detalle_ticket(current_user, tipo, ticket_id):
         "pregunta": getattr(ticket, 'pregunta', ''),
         "detalles": detalles_texto, # Se sigue enviando el campo 'detalles' original por si se usa en otro lado
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "nombre_usuario": nombre_usuario, # Dato obtenido del User o fallback
-        "telefono": telefono_usuario,     # Dato obtenido del User o fallback
-        "email": email_usuario,           # Dato obtenido del User o fallback
+        "nombre_usuario": nombre_final_usuario, # CORREGIDO
+        "telefono": telefono_final_usuario,     # CORREGIDO (clave 'telefono' como espera el frontend)
+        "email_usuario": email_final_usuario,   # CORREGIDO (clave 'email_usuario' como espera el frontend)
         "direccion": direccion,           # Dato obtenido de ticket.direccion, User.direccion o fallback
         "archivos_adjuntos": archivos_adjuntos_data,
         "latitud": getattr(ticket, 'latitud', None),
