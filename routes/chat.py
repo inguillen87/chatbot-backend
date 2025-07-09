@@ -268,9 +268,10 @@ def _procesar_chat(
                 chat_context_obj.user_id = actor_principal.id
                 chat_context_obj.anon_id = None # Limpiar anon_id si se asocia a un usuario
             elif not actor_principal and anon_id and chat_context_obj.anon_id != anon_id:
-                 current_app.logger.info(f"Actualizando anon_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.anon_id} a {anon_id}")
+                current_app.logger.info(f"Actualizando anon_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.anon_id} a {anon_id}")
                 chat_context_obj.anon_id = anon_id
-                 # No limpiar user_id aquí, podría ser un usuario que cerró sesión y sigue como anónimo con el mismo session_id
+                # No limpiar user_id aquí, podría ser un usuario que cerró sesión y sigue como anónimo con el mismo session_id
+
 
             # Detect if user just logged in with this session
             if actor_principal and chat_context_obj.user_id == actor_principal.id and not chat_context_obj.context_data.get("user_was_present_before"):

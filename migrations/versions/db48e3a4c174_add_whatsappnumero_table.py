@@ -15,21 +15,25 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
-    op.create_table(
-        'whatsapp_numero',
-        sa.Column('id', sa.Integer(), primary_key=True),
-        sa.Column('numero_whatsapp', sa.String(length=25), nullable=False),
-        sa.Column('user_id', sa.Integer(), sa.ForeignKey('user.id'), nullable=False),
-        sa.Column('is_active', sa.Boolean(), nullable=False, default=True),
-        sa.Column('created_at', sa.DateTime(), nullable=True),
-        sa.Column('updated_at', sa.DateTime(), nullable=True)
-    )
-    op.create_index(
-        'ix_whatsapp_numero_numero_whatsapp',
-        'whatsapp_numero',
-        ['numero_whatsapp'],
-        unique=True
-    )
+    from sqlalchemy import inspect
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if 'whatsapp_numero' not in inspector.get_table_names():
+        op.create_table(
+            'whatsapp_numero',
+            sa.Column('id', sa.Integer(), primary_key=True),
+            sa.Column('numero_whatsapp', sa.String(length=25), nullable=False),
+            sa.Column('user_id', sa.Integer(), sa.ForeignKey('user.id'), nullable=False),
+            sa.Column('is_active', sa.Boolean(), nullable=False, default=True),
+            sa.Column('created_at', sa.DateTime(), nullable=True),
+            sa.Column('updated_at', sa.DateTime(), nullable=True)
+        )
+        op.create_index(
+            'ix_whatsapp_numero_numero_whatsapp',
+            'whatsapp_numero',
+            ['numero_whatsapp'],
+            unique=True
+        )
 
 def downgrade():
     op.drop_index('ix_whatsapp_numero_numero_whatsapp', table_name='whatsapp_numero')
