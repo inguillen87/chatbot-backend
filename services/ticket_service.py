@@ -44,7 +44,12 @@ class MunicipioTicketCreator(TicketCreator):
             nro_ticket=ticket_data.get("nro_ticket"),
             direccion=ticket_data.get("direccion"),
             latitud=lat,
-            longitud=lon
+            longitud=lon,
+            # Campos adicionales para información del vecino/contacto
+            nombre_vecino=ticket_data.get("nombre_vecino"),
+            telefono_vecino=ticket_data.get("telefono_vecino"),
+            email_vecino=ticket_data.get("email_vecino"),
+            foto_url_directa=ticket_data.get("foto_url_directa") # Para la foto inicial del reclamo
         )
 
 class PymeTicketCreator(TicketCreator):

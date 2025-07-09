@@ -275,8 +275,11 @@ def enviar_sms(destino: str, mensaje: str) -> bool:
         return False
 
 
-def enviar_whatsapp(destino: str, mensaje: str) -> bool:
-    """Envía un mensaje de WhatsApp usando Twilio."""
+def enviar_whatsapp(destino: str, mensaje: str, media_urls: list[str] | None = None) -> bool:
+    """
+    Envía un mensaje de WhatsApp usando Twilio.
+    Puede incluir un mensaje de texto y/o URLs de medios.
+    """
     twilio_account_sid = current_app.config.get("TWILIO_ACCOUNT_SID")
     twilio_auth_token = current_app.config.get("TWILIO_AUTH_TOKEN")
     twilio_whatsapp_number = current_app.config.get("TWILIO_WHATSAPP_NUMBER")
@@ -288,32 +291,59 @@ def enviar_whatsapp(destino: str, mensaje: str) -> bool:
         logger.error("[WHATSAPP] Faltan credenciales de Twilio para WhatsApp. Verificar configuración de la app.")
         return False
 
+    if not mensaje and not media_urls:
+        logger.warning("[WHATSAPP] Se intentó enviar un mensaje vacío (sin texto ni media_urls).")
+        return False
+
     numero_con_prefijo = f"whatsapp:{destino}" if not destino.startswith("whatsapp:") else destino
+
+    message_params = {
+        "from_": twilio_whatsapp_number,
+        "to": numero_con_prefijo
+    }
+
+    if mensaje: # Twilio permite enviar texto y media juntos. El texto actúa como caption.
+        message_params["body"] = mensaje
+
+    # Twilio's `media_url` parameter can be a list of URLs.
+    # For simplicity, if multiple are passed, we'll just use the first one for now,
+    # as sending multiple media items in a single WhatsApp "message" via API can have nuanced behavior
+    # depending on client rendering. Sending one primary media item with a caption is common.
+    # To send multiple distinct media, one would typically send multiple API calls.
+    if media_urls:
+        message_params["media_url"] = media_urls # Pass the list directly
 
     try:
         client = Client(twilio_account_sid, twilio_auth_token)
-        msg = client.messages.create(
-            body=mensaje,
-            from_=twilio_whatsapp_number,
-            to=numero_con_prefijo
-        )
-        logger.info(f"[WHATSAPP] Enviado a {numero_con_prefijo} (SID: {msg.sid}). Mensaje: '{mensaje[:30]}...'")
+        msg = client.messages.create(**message_params)
+
+        log_parts = []
+        if mensaje:
+            log_parts.append(f"Texto: '{mensaje[:30]}...'")
+        if media_urls:
+            log_parts.append(f"Media URLs: {media_urls}")
+
+        logger.info(f"[WHATSAPP] Enviado a {numero_con_prefijo} (SID: {msg.sid}). {' | '.join(log_parts)}")
         return True
     except Exception as e:
         error_message = str(e)
-        if hasattr(e, 'status') and hasattr(e, 'uri') and hasattr(e, 'msg'):
+        if hasattr(e, 'status') and hasattr(e, 'uri') and hasattr(e, 'msg'): # TwilioException attributes
             error_message = f"Twilio API Error: Status {e.status}, URI {e.uri}, Message: {e.msg}, Details: {getattr(e, 'details', {})}"
-        logger.error(f"[WHATSAPP] Error enviando mensaje a {numero_con_prefijo}: {error_message}")
+        logger.error(f"[WHATSAPP] Error enviando mensaje a {numero_con_prefijo}: {error_message}", exc_info=True)
         return False
 
 # --- Nueva función para enviar WhatsApp para tickets ---
-def enviar_whatsapp_ticket_novedad(ticket, mensaje: str) -> bool:
-    """Envía un WhatsApp al cliente cuando hay movimiento en su ticket."""
+def enviar_whatsapp_ticket_novedad(ticket, mensaje: str, archivos_adjuntos: list = None) -> bool:
+    """
+    Envía un WhatsApp al cliente cuando hay movimiento en su ticket.
+    Puede incluir archivos adjuntos si se proporcionan.
+    `archivos_adjuntos` debe ser una lista de objetos ArchivoAdjunto.
+    """
     ticket_id_log = getattr(ticket, 'id', 'N/A')
     original_destino = getattr(ticket, "telefono", None)
 
     if not original_destino and getattr(ticket, "user_id", None):
-        from models import User
+        from models import User # Importar User aquí para evitar importación circular a nivel de módulo
         usuario = User.query.get(ticket.user_id)
         if usuario:
             original_destino = getattr(usuario, "telefono", None)
@@ -326,16 +356,38 @@ def enviar_whatsapp_ticket_novedad(ticket, mensaje: str) -> bool:
         return False
 
     from utils.validators import normalize_phone
-    # normalize_phone ya devuelve el formato E.164 si el número es válido,
-    # que es el preferido por Twilio para WhatsApp.
     numero_limpio = normalize_phone(original_destino)
 
     if not numero_limpio:
         logger.warning(f"[WHATSAPP] Teléfono inválido o no normalizable a E.164 para ticket {ticket_id_log} (original: {original_destino}).")
         return False
 
-    logger.info(f"[WHATSAPP] Intentando enviar WhatsApp para ticket {ticket_id_log} a número original '{original_destino}', limpio como '{numero_limpio}'. Mensaje: '{mensaje[:30]}...'")
-    return enviar_whatsapp(numero_limpio, mensaje)
+    media_urls_para_envio = []
+    if archivos_adjuntos:
+        app_base_url = current_app.config.get("APP_BASE_URL", "")
+        if not app_base_url:
+            logger.error("[WHATSAPP] APP_BASE_URL no está configurada. No se pueden generar URLs completas para adjuntos.")
+        else:
+            for adjunto_obj in archivos_adjuntos:
+                if hasattr(adjunto_obj, 'url') and adjunto_obj.url:
+                    # Asegurarse de que la URL sea completa y accesible públicamente
+                    full_url = adjunto_obj.url
+                    if not full_url.startswith(('http://', 'https://')):
+                        full_url = app_base_url.rstrip('/') + adjunto_obj.url
+                    media_urls_para_envio.append(full_url)
+                else:
+                    logger.warning(f"[WHATSAPP] Archivo adjunto para ticket {ticket_id_log} sin URL válida: {adjunto_obj}")
+
+    if not mensaje and not media_urls_para_envio:
+        logger.info(f"[WHATSAPP] No hay mensaje ni adjuntos válidos para enviar para ticket {ticket_id_log}. Envío omitido.")
+        return False # Evitar enviar un mensaje completamente vacío
+
+    logger.info(
+        f"[WHATSAPP] Intentando enviar WhatsApp para ticket {ticket_id_log} "
+        f"a número original '{original_destino}', limpio como '{numero_limpio}'. "
+        f"Mensaje: '{mensaje[:30]}...' | Adjuntos: {len(media_urls_para_envio)}"
+    )
+    return enviar_whatsapp(numero_limpio, mensaje, media_urls=media_urls_para_envio if media_urls_para_envio else None)
 
 
 def enviar_sms_ticket_novedad(ticket, mensaje: str) -> bool:

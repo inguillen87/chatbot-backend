@@ -501,7 +501,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "No se pudo guardar la respuesta (ni comentario ni archivos)."}), 500
 
     try:
-        if ticket_obj.estado == "nuevo" and (nuevo_comentario_obj or archivos_adjuntados_db): # Si hay nuevo contenido
+        if ticket_obj.estado == "nuevo" and (comentario_texto.strip() or archivos_adjuntados_db): # Si hay nuevo contenido (texto o archivos)
             ticket_obj.estado = "en_proceso"
         
         db.session.commit() # Commit después de todas las operaciones (comentario y archivos)
@@ -510,8 +510,34 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         current_app.logger.error(f"Error al hacer commit final para respuesta de ticket {ticket_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al finalizar la respuesta."}), 500
 
+    # --- Notificaciones ---
+    # Construir el mensaje de notificación. Si hay texto, usarlo. Si solo hay archivos, un mensaje genérico.
+    mensaje_notificacion_base = comentario_texto if comentario_texto.strip() else "Se han adjuntado nuevos archivos a tu ticket."
 
-    # Actualizar la serialización del ticket para incluir los nuevos archivos.
+    # El objeto 'ticket_obj' ya está cargado.
+    # 'archivos_adjuntados_db' es la lista de objetos ArchivoAdjunto recién creados y guardados.
+    try:
+        from services.email_service import (
+            enviar_email_ticket_novedad,
+            enviar_sms_ticket_novedad,
+            enviar_whatsapp_ticket_novedad,
+        )
+        # Email siempre se envía si hay email
+        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion_base) # TODO: Email con adjuntos? Por ahora solo texto.
+
+        # SMS siempre se envía si hay teléfono (solo texto)
+        enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion_base)
+
+        # WhatsApp con adjuntos (si los hay)
+        if tipo == "municipio": # Asumiendo que WhatsApp es principalmente para municipio por ahora
+            enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
+        current_app.logger.info(f"Notificaciones para respuesta de ticket {ticket_id} (tipo {tipo}) procesadas.")
+
+    except Exception as e_notif:
+        current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de ticket {ticket_id}: {e_notif}", exc_info=True)
+        # No devolver error al cliente por fallo en notificaciones, ya que el ticket/comentario se guardó.
+
+    # --- Preparar respuesta JSON ---
     # La función detalle_ticket ya serializa los archivos, así que podemos reusar esa lógica
     # o simplemente devolver el ticket actualizado.
     
