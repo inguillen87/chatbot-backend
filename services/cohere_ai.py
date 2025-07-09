@@ -1,20 +1,23 @@
 # services/cohere_ai.py
 import os
 import logging
-import cohere
+
 try:
-    # Attempt for v4.x style errors
-    from cohere.error import CohereAPIError, CohereError
-except ImportError:
-    # Fallback for v5.x style errors (which is what was just implemented)
-    # or if the above v4.x path is incorrect for 4.37
+    import cohere  # type: ignore
     try:
-        from cohere.core.api_error import ApiError as CohereAPIError # Use ApiError as CohereAPIError
-        CohereError = CohereAPIError # Use ApiError as the base CohereError too for simplicity here
+        # Attempt for v4.x style errors
+        from cohere.error import CohereAPIError, CohereError
     except ImportError:
-        # If neither works, this will cause issues later, but allows startup
-        CohereAPIError = Exception
-        CohereError = Exception
+        try:
+            from cohere.core.api_error import ApiError as CohereAPIError
+            CohereError = CohereAPIError
+        except ImportError:
+            CohereAPIError = Exception
+            CohereError = Exception
+except Exception:  # pragma: no cover - library missing
+    cohere = None
+    CohereAPIError = Exception
+    CohereError = Exception
 
 from functools import wraps
 from time import sleep

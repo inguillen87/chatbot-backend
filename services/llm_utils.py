@@ -2,6 +2,12 @@ import json
 import logging
 import re
 from typing import Dict, List, Any
+from utils.validators import (
+    extract_email,
+    extract_phone,
+    extract_name,
+    extract_address,
+)
 
 # Intenta importar errores específicos de Cohere.
 # El nombre exacto puede variar según la versión de la librería 'cohere'.
@@ -143,6 +149,21 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
         # Optionally, try a more lenient parsing or regex for simple cases if JSON fails often
     except Exception as e:
         logger.error(f"[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: {e} for text: '{text}'")
+
+    # Fallback heuristics for fields not provided by LLM
+    for field in potential_fields:
+        if field not in extracted_data or not extracted_data.get(field):
+            heuristic_value = None
+            if field == "nombre_cliente":
+                heuristic_value = extract_name(text)
+            elif field == "telefono_cliente":
+                heuristic_value = extract_phone(text)
+            elif field == "direccion_cliente":
+                heuristic_value = extract_address(text)
+            elif field == "email_cliente":
+                heuristic_value = extract_email(text)
+            if heuristic_value:
+                extracted_data[field] = heuristic_value
 
     return extracted_data
 

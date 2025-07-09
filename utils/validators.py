@@ -60,5 +60,48 @@ def normalize_phone(telefono: str, region: str = "AR") -> Optional[str]:
 
 
 def validate_address(direccion: str) -> bool:
-    """Delegates to direccion_es_valida from municipio tools."""
-    return direccion_es_valida(direccion)
+    """Delegates to direccion_es_valida from municipio tools."""    return direccion_es_valida(direccion)
+
+
+def extract_email(text: str) -> Optional[str]:
+    """Extract the first valid email from a text string."""
+    if not text:
+        return None
+    match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    if match and validate_email_address(match.group(0)):
+        return match.group(0)
+    return None
+
+
+def extract_phone(text: str, region: str = "AR") -> Optional[str]:
+    """Extract and normalize the first phone number found in text."""
+    if not text:
+        return None
+    match = re.search(r"\+?\d[\d\s.-]{7,}\d", text)
+    if match:
+        return normalize_phone(match.group(0), region=region)
+    return None
+
+
+def extract_name(text: str) -> Optional[str]:
+    """Extract a probable name from phrases like 'soy NAME' or 'me llamo NAME'."""
+    if not text:
+        return None
+    m = re.search(r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,50})", text, re.IGNORECASE)
+    if m:
+        candidate = m.group(1).strip()
+        if validate_name(candidate):
+            return candidate
+    return None
+
+
+def extract_address(text: str) -> Optional[str]:
+    """Extract a simple address candidate from text using heuristics."""
+    if not text:
+        return None
+    match = re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s+\d+[\w\s,]*", text)
+    if match:
+        addr = match.group(0).strip()
+        if validate_address(addr):
+            return addr
+    return None
