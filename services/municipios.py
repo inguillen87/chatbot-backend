@@ -1828,9 +1828,16 @@ class ReclamoHandler(BaseMunicipioHandler):
                         "user_id": self.context.get("cliente_id"),
                         "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
                         "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
-                        "ubicacion": memoria.get("ubicacion_gps"),
+                        # "ubicacion": memoria.get("ubicacion_gps"), # Old composite key
                         "foto_url_directa": memoria.get("foto_url") # Using foto_url_directa to match model
                     }
+
+                    # Add latitud and longitud if available from ubicacion_gps
+                    ubicacion_gps_data = memoria.get("ubicacion_gps")
+                    if ubicacion_gps_data and isinstance(ubicacion_gps_data, dict):
+                        ticket_data["latitud"] = ubicacion_gps_data.get("lat")
+                        ticket_data["longitud"] = ubicacion_gps_data.get("lon")
+
                     ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data)
                     # ... (idempotency and file association logic remains the same) ...
                     if ticket:
@@ -2994,27 +3001,28 @@ def responder_municipio(
         f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})"
     )
 
-    context = {
-        CONTEXTO_MUNICIPIO: contexto_municipio_actual,  # Esta es la copia modificada
-        "user_obj": owner_user,
-        "user_id": getattr(owner_user, "id", None),
-        "cliente_id": getattr(viewer_user, "id", None),
-        "viewer_user_obj": viewer_user,
-        "anon_id": anon_id,
-        "intencion": None, # Initialize intencion; it will be set by IntentClassifierHandler or other logic
-        "rubro_obj": rubro_obj,
-        "channel": channel,  # Pass channel into context for handlers
-        "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
-        "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
-        "es_foto": received_payload.get("es_foto", False),
-        "es_ubicacion": received_payload.get("es_ubicacion", False),
-        "es_archivo": received_payload.get("es_archivo", False),
-        "action": received_payload.get("action"),
-        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
-        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context.context_data,
-    }
+    # Reconstructing the context dictionary to ensure clean syntax
+    context = {}
+    context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+    context["user_obj"] = owner_user
+    context["user_id"] = getattr(owner_user, "id", None)
+    context["cliente_id"] = getattr(viewer_user, "id", None)
+    context["viewer_user_obj"] = viewer_user
+    context["anon_id"] = anon_id
+    context["intencion"] = None  # Initialize intencion; it will be set by IntentClassifierHandler or other logic
+    context["rubro_obj"] = rubro_obj
+    context["channel"] = channel
+    context["ubicacion_usuario"] = received_payload.get("ubicacion_usuario")
+    context["foto_url"] = received_payload.get("archivo_url") if received_payload.get("es_foto") else None
+    context["es_foto"] = received_payload.get("es_foto", False)
+    context["es_ubicacion"] = received_payload.get("es_ubicacion", False)
+    context["es_archivo"] = received_payload.get("es_archivo", False)
+    context["action"] = received_payload.get("action")
+    context["datos_interpretados_archivo"] = kwargs.get("datos_interpretados_archivo")
+    context["archivo_id_para_asociar"] = kwargs.get("archivo_id_para_asociar")
+    context["chat_session_uuid"] = kwargs.get("chat_session_uuid")
+    context["chat_db_context_data"] = chat_db_context.context_data
+    # End of reconstructed context dictionary
 
     # --- Image Analysis for New/Early Claims (MOVED AFTER context INITIALIZATION) ---
     uploaded_file_info = received_payload.get("uploaded_file_info")
