@@ -2175,6 +2175,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "user_obj": owner_user, "user_id": getattr(owner_user, "id", None),
         "cliente_id": getattr(viewer_user, "id", None), "viewer_user_obj": viewer_user,
         "anon_id": anon_id, "intencion": None, "rubro_obj": rubro_obj,
+        "channel": channel, # Pass channel into context for handlers
         "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
         "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
         "es_foto": received_payload.get("es_foto", False),
@@ -2184,34 +2185,71 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context.context_data # Referencia al objeto de la DB para que los handlers puedan leer (pero no deberían escribir directamente aquí)
+        "chat_db_context_data": chat_db_context.context_data
     }
-    
+
+    # --- Logic for suggesting registration to anonymous users ---
+    # This is the block that might need adjustment based on the error at line 2193
+    estado_para_chequeo_sugerencia = contexto_municipio_actual.get("estado_conversacion") # Enum or None
+
     if not viewer_user and anon_id and has_app_context():
-        estado_actual_para_sugerencia = contexto_municipio_actual.get("estado_conversacion") # Ya es Enum o None
-        estados_municipio_evitar_sugerencia = [ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO, ConversationState.ESPERANDO_UBICACION_PANICO]
-        if estado_actual_sugerencia not in estados_municipio_evitar_sugerencia:
+        estados_a_evitar_sugerencia_para_anon = [
+            ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+            ConversationState.ESPERANDO_NOMBRE_VECINO,
+            ConversationState.ESPERANDO_TELEFONO_VECINO,
+            ConversationState.ESPERANDO_EMAIL_VECINO,
+            ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+            ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+            ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+            ConversationState.ESPERANDO_UBICACION_PANICO
+        ]
+
+        # This is where 'estado_actual_sugerencia' was used in the log (line 2193 refers to this condition)
+        # We now use 'estado_para_chequeo_sugerencia' which is guaranteed to be defined.
+        if estado_para_chequeo_sugerencia not in estados_a_evitar_sugerencia_para_anon:
             interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
-            if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok", "dale", "bueno"]: interacciones_anon_sesion += 1
+            if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok", "dale", "bueno"]:
+                interacciones_anon_sesion += 1
             contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_sesion
-            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+
             umbral_sugerencia = (current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3) if has_app_context() else 3)
+
             if umbral_sugerencia and umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia:
                 if not contexto_municipio_actual.get("sugerencia_registro_emitida_ronda", False):
                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Anon {anon_id} alcanzó umbral. Sugiriendo registro.")
                     contexto_municipio_actual["sugerencia_registro_emitida_ronda"] = True
+
+                    respuesta_sugerencia_obj = construir_respuesta_sugerir_registro(
+                        mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.",
+                        tipo_entidad="municipio"
+                    )
+
+                    sug_body = respuesta_sugerencia_obj.get("respuesta", "Te recomendamos registrarte para una mejor experiencia.")
+                    sug_options_raw = respuesta_sugerencia_obj.get("botones", [])
+                    sug_options_list = [{"id": btn.get("action", normalizar_texto(btn["texto"])), "texto": btn["texto"]} for btn in sug_options_raw]
+                    sug_message_type = 'interactive_buttons' if sug_options_list else 'text'
+
                     chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                    respuesta_sugerencia = construir_respuesta_sugerir_registro(mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.", tipo_entidad="municipio")
-                    respuesta_sugerencia[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                    if anon_id and not viewer_user:
+                    if chat_db_context: # Ensure flag_modified is called if context is updated
+                        flag_modified(chat_db_context, "context_data")
+
+                    if anon_id and not viewer_user: # Log conversation for this early return
                         try:
-                            db.session.add(Conversacion(session_id=context.get("chat_session_uuid") or anon_id, pregunta=pregunta_str, respuesta=respuesta_sugerencia.get("respuesta", ""), fuente=respuesta_sugerencia.get("fuente", "sugerencia_registro_municipio"), rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), user_id=None))
+                            db.session.add(Conversacion(session_id=context.get("chat_session_uuid") or anon_id, pregunta=pregunta_str, respuesta=sug_body, fuente=respuesta_sugerencia_obj.get("fuente", "sugerencia_registro_municipio"), rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), user_id=None))
                             db.session.commit()
-                        except Exception as e_conv_sug_muni: logger_actual.error(f"Error guardando Conversacion (sugerencia MUNICIPIO): {e_conv_sug_muni}"); db.session.rollback()
-                    return respuesta_sugerencia
-            else:
+                        except Exception as e_conv_sug_muni:
+                            logger_actual.error(f"Error guardando Conversacion (sugerencia MUNICIPIO): {e_conv_sug_muni}"); db.session.rollback()
+
+                    return { # Return the new structure
+                        "message_body": sug_body,
+                        "options_list": sug_options_list,
+                        "message_type": sug_message_type,
+                        "fuente": respuesta_sugerencia_obj.get("fuente", "sugerencia_registro_municipio_v2"),
+                        "contexto_actualizado": {CONTEXTO_MUNICIPIO: serializar_enum(contexto_municipio_actual)}
+                    }
+            else: # Not reached umbral or umbral is 0/disabled
                 contexto_municipio_actual.pop("sugerencia_registro_emitida_ronda", None)
-                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                # Context will be saved at the end of responder_municipio if no early return.
     if context.get("datos_interpretados_archivo"): logger_actual.info(f"[MUNICIPIOS_HANDLER] Datos interpretados: {context['datos_interpretados_archivo']}")
     if context.get("archivo_id_para_asociar"): logger_actual.info(f"[MUNICIPIOS_HANDLER] Archivo ID para asociar: {context['archivo_id_para_asociar']}")
     comando_from_text = BOTONES_COMANDOS_MUNICIPIO.get(pregunta_str.strip())
