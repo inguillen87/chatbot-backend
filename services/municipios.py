@@ -2510,30 +2510,37 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
 
     if not respuesta_final:
         logger_actual.info("[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general.")
-        current_fallback_state = contexto_municipio_actual.get("estado_conversacion") 
-            
+        current_fallback_state = contexto_municipio_actual.get("estado_conversacion")
+
         options_fallback = [
-                {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
-                {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
-                {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"}
+            {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
+            {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
+            {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"}
         ]
         message_type_fallback = 'interactive_buttons'
 
         if current_fallback_state:
-                estado_log_val = current_fallback_state
-                if isinstance(current_fallback_state, Enum) : estado_log_val = current_fallback_state.name
-                logger_actual.error(f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log_val}. Limpiando estado.")
-                contexto_municipio_actual.clear() # Clear context if bot got confused with active state
-                body_fallback = "¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"
+            estado_log_val = current_fallback_state
+            if isinstance(current_fallback_state, Enum):
+                estado_log_val = current_fallback_state.name
+            logger_actual.error(
+                f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log_val}. Limpiando estado."
+            )
+            contexto_municipio_actual.clear()  # Clear context if bot got confused with active state
+            body_fallback = (
+                "¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"
+            )
         else:
-                body_fallback = "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
-            
+            body_fallback = (
+                "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
+            )
+
         respuesta_final = {
-                "message_body": body_fallback,
-                "options_list": options_fallback,
-                "message_type": message_type_fallback,
-                "fuente": "municipio_fallback_general_v2"
-            }
+            "message_body": body_fallback,
+            "options_list": options_fallback,
+            "message_type": message_type_fallback,
+            "fuente": "municipio_fallback_general_v2",
+        }
 
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Contenido de contexto_municipio_actual ANTES de serialización explícita de estado: {contexto_municipio_actual}")
     estado_antes_serializacion = contexto_municipio_actual.get("estado_conversacion")
@@ -2565,7 +2572,20 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
     contexto_serializado_para_respuesta_http = serializar_enum(contexto_municipio_actual)
     media_url_to_send = contexto_serializado_para_respuesta_http.get("foto_url")
     location_data_to_send = contexto_serializado_para_respuesta_http.get("ubicacion_gps")
-    final_response_dict = {"respuesta": respuesta_final.get("respuesta"), "botones": respuesta_final.get("botones", []), "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta_http}, "ticket_id": respuesta_final.get("ticket_id", None), "media_url": media_url_to_send, "location_data": location_data_to_send, "adjuntos": []}
+    message_body_final = respuesta_final.get("message_body") or respuesta_final.get("respuesta")
+    options_list_final = respuesta_final.get("options_list") or respuesta_final.get("botones", [])
+    message_type_final = respuesta_final.get("message_type", "text")
+
+    final_response_dict = {
+        "message_body": message_body_final,
+        "options_list": options_list_final,
+        "message_type": message_type_final,
+        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta_http},
+        "ticket_id": respuesta_final.get("ticket_id", None),
+        "media_url": media_url_to_send,
+        "location_data": location_data_to_send,
+        "adjuntos": [],
+    }
     uploaded_file_info = received_payload.get("uploaded_file_info")
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
