@@ -120,12 +120,27 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     if municipio_config is None:
         municipio_config = {} # Evitar error si no se pasa
 
+    default_localidad = municipio_config.get('ciudad', 'N/A')
+    default_provincia = municipio_config.get('provincia', 'N/A')
+
+    # If provincia is N/A (or not set) but ciudad field contains a comma, try to split them
+    # This handles cases where config might have "ciudad": "Junín, Mendoza"
+    if (default_provincia == 'N/A' or not default_provincia) and isinstance(default_localidad, str) and ',' in default_localidad:
+        parts = default_localidad.split(',', 1)
+        potential_localidad = parts[0].strip()
+        potential_provincia = parts[1].strip()
+        # Basic check if the split parts look plausible as localidad and provincia
+        if len(potential_localidad) > 2 and len(potential_provincia) > 2:
+            default_localidad = potential_localidad
+            default_provincia = potential_provincia
+            logger.info(f"[ParseDireccion] Split 'ciudad' from config into Localidad: {default_localidad}, Provincia: {default_provincia}")
+
     prompt = f"""
 Eres un experto en interpretar direcciones en Argentina. Dada la siguiente DIRECCIÓN PROPORCIONADA, extráela en un formato JSON con los campos: "calle", "numero", "localidad", "provincia", "codigo_postal", "barrio", "otros_detalles".
 
 Considera la siguiente información del municipio para el cual trabajas (si está disponible):
-- Localidad principal: {municipio_config.get('ciudad', 'N/A')}
-- Provincia principal: {municipio_config.get('provincia', 'N/A')}
+- Localidad principal: {default_localidad}
+- Provincia principal: {default_provincia}
 
 INSTRUCCIONES DETALLADAS:
 1.  **Calle y Número**: Identificá claramente el nombre de la calle y el número de puerta.
