@@ -2510,30 +2510,37 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
 
     if not respuesta_final:
         logger_actual.info("[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general.")
-            current_fallback_state = contexto_municipio_actual.get("estado_conversacion") 
-            
-            options_fallback = [
-                {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
-                {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
-                {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"}
-            ]
-            message_type_fallback = 'interactive_buttons'
+        current_fallback_state = contexto_municipio_actual.get("estado_conversacion")
+
+        options_fallback = [
+            {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
+            {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
+            {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"}
+        ]
+        message_type_fallback = 'interactive_buttons'
 
         if current_fallback_state:
-                estado_log_val = current_fallback_state
-                if isinstance(current_fallback_state, Enum) : estado_log_val = current_fallback_state.name
-                logger_actual.error(f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log_val}. Limpiando estado.")
-                contexto_municipio_actual.clear() # Clear context if bot got confused with active state
-                body_fallback = "¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"
+            estado_log_val = current_fallback_state
+            if isinstance(current_fallback_state, Enum):
+                estado_log_val = current_fallback_state.name
+            logger_actual.error(
+                f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log_val}. Limpiando estado."
+            )
+            contexto_municipio_actual.clear()  # Clear context if bot got confused with active state
+            body_fallback = (
+                "¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"
+            )
         else:
-                body_fallback = "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
-            
-            respuesta_final = {
-                "message_body": body_fallback,
-                "options_list": options_fallback,
-                "message_type": message_type_fallback,
-                "fuente": "municipio_fallback_general_v2"
-            }
+            body_fallback = (
+                "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
+            )
+
+        respuesta_final = {
+            "message_body": body_fallback,
+            "options_list": options_fallback,
+            "message_type": message_type_fallback,
+            "fuente": "municipio_fallback_general_v2",
+        }
 
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Contenido de contexto_municipio_actual ANTES de serialización explícita de estado: {contexto_municipio_actual}")
     estado_antes_serializacion = contexto_municipio_actual.get("estado_conversacion")
