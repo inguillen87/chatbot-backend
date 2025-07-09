@@ -605,15 +605,64 @@ class TicketStatusHandler(BaseMunicipioHandler):
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; estado_conversacion_str = memoria.get("estado_conversacion"); estado_conversacion = ConversationState[estado_conversacion_str] if isinstance(estado_conversacion_str, str) else estado_conversacion_str;
         if estado_conversacion and estado_conversacion in RECLAMO_STATES: return None
         if estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_CIERRE:
+            # Si la pregunta está vacía (ej. usuario envió solo una imagen en WhatsApp),
+            # no lo consideramos una "pregunta nueva" que limpie el contexto, sino que reiteramos.
+            if not pregunta_str.strip():
+                ticket_id = memoria.get("ticket_id_activo")
+                # Re-obtener el ticket para construir el mensaje de reiteración.
+                ticket = db.session.get(MunicipioTicket, ticket_id) if ticket_id else None
+                asunto_ticket = ticket.asunto if ticket else "tu reclamo"
+                estado_ticket = ticket.estado.replace('_', ' ').title() if ticket else "actual"
+
+                body_reiteracion = f"Sigo esperando tu confirmación para el ticket sobre '{asunto_ticket}' (estado: {estado_ticket}). ¿Se resolvió tu problema?"
+                options_reiteracion = [
+                    {"id": "ticket_solucionado_reit", "texto": "Sí, solucionado"},
+                    {"id": "ticket_no_solucionado_reit", "texto": "No, aún no"}
+                ]
+                # No cambiar estado_conversacion aquí, sigue esperando la confirmación.
+                return {
+                    "message_body": body_reiteracion,
+                    "options_list": options_reiteracion,
+                    "message_type": 'interactive_buttons',
+                    "fuente": "ticket_status_reiterar_confirmacion_vacio_v2"
+                }
+
             if es_pregunta_nueva(pregunta_str, "una confirmación (sí o no)"): memoria.clear(); return None
             ticket_id = memoria.get("ticket_id_activo"); ticket = db.session.get(MunicipioTicket, ticket_id)
-            if not ticket: memoria.clear(); return {"respuesta": "No pude encontrar el ticket activo. ¿Necesitás ayuda con algo más?"}
-            if "si" in normalizar_texto(pregunta_str):
+            if not ticket: memoria.clear(); return {"message_body": "No pude encontrar el ticket activo. ¿Necesitás ayuda con algo más?", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_ticket_activo_v2"}
+
+            accion_confirmacion = normalizar_texto(pregunta_str)
+            # Usar IDs de botones para mayor robustez si es posible, o keywords
+            if accion_confirmacion == "ticket_solucionado" or "si" in accion_confirmacion:
                 ticket.estado = "resuelto"; db.session.commit()
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CALIFICACION.name
-                return {"respuesta": "¡Excelente! ¿Podés calificar la atención recibida del 1 al 5?"}
-            else: memoria.clear(); return {"respuesta": "Dejamos el ticket abierto para seguimiento del equipo. ¿Necesitás algo más?"}
+                return {"message_body": "¡Excelente! ¿Podés calificar la atención recibida del 1 al 5?", "options_list": [], "message_type": "text", "fuente": "ticket_status_pedir_calificacion_v2"}
+            elif accion_confirmacion == "ticket_no_solucionado" or "no" in accion_confirmacion:
+                memoria.clear();
+                return {"message_body": "Entendido. Dejamos el ticket abierto para que el equipo continúe con el seguimiento. ¿Necesitás algo más?", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_resuelto_v2"}
+            else: # Si no es "si" ni "no" claro, y tampoco era vacío (manejado arriba), podría ser una pregunta nueva (manejado por es_pregunta_nueva) o algo no entendido.
+                  # Si es_pregunta_nueva retornó False, significa que LLM consideró que NO es una pregunta nueva.
+                  # En este caso, reiterar la pregunta de confirmación es una buena estrategia.
+                ticket_id = memoria.get("ticket_id_activo")
+                ticket = db.session.get(MunicipioTicket, ticket_id) if ticket_id else None
+                asunto_ticket = ticket.asunto if ticket else "tu reclamo"
+                estado_ticket = ticket.estado.replace('_', ' ').title() if ticket else "actual"
+                body_reiteracion_no_entendido = f"No entendí bien tu respuesta para el ticket sobre '{asunto_ticket}' (estado: {estado_ticket}). Por favor, confirmame: ¿Se resolvió tu problema?"
+                options_reiteracion_no_entendido = [
+                    {"id": "ticket_solucionado_reit_ne", "texto": "Sí, solucionado"},
+                    {"id": "ticket_no_solucionado_reit_ne", "texto": "No, aún no"}
+                ]
+                return {
+                    "message_body": body_reiteracion_no_entendido,
+                    "options_list": options_reiteracion_no_entendido,
+                    "message_type": 'interactive_buttons',
+                    "fuente": "ticket_status_reiterar_confirmacion_no_entendido_v2"
+                }
+
         elif estado_conversacion == ConversationState.ESPERANDO_CALIFICACION:
+            if not pregunta_str.strip(): # Si la entrada es vacía
+                return {"message_body": "Aún espero tu calificación del 1 al 5 para la atención recibida. ¿Podrías indicármela?", "options_list": [], "message_type": "text", "fuente": "ticket_status_reiterar_calificacion_vacio_v2"}
+
             if es_pregunta_nueva(pregunta_str, "una calificación del 1 al 5"): memoria.clear(); return None
             if not re.fullmatch(r"[1-5]", pregunta_str.strip()): 
                 return {"message_body": "Por favor, ingresa una calificación del 1 al 5.", "options_list": [], "message_type": "text", "fuente": "ticket_status_pedir_calificacion_invalida_v2"}

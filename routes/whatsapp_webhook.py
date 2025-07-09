@@ -186,7 +186,13 @@ def whatsapp_webhook():
                 }
 
 
-        print(f"Bot response text: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
+        # Actualizar respuesta_del_bot_text para el logging DESPUÉS de obtenerla de bot_response_dict
+        if isinstance(bot_response_dict, dict) and "message_body" in bot_response_dict:
+            respuesta_del_bot_text = bot_response_dict["message_body"]
+        elif isinstance(bot_response_dict, dict) and "respuesta" in bot_response_dict: # Fallback por si acaso
+            respuesta_del_bot_text = bot_response_dict["respuesta"]
+
+        print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 
     except Exception as e:
         print(f"Error calling real chatbot logic (responder_chatboc): {e}")
