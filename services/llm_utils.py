@@ -95,6 +95,7 @@ def _clean_llm_json_output(llm_output: str) -> str:
         cleaned_output = llm_output
 
     # Remove trailing commas before closing braces or brackets
+    cleaned_output = re.sub(r",\s*(?=[}\]])", "", cleaned_output)
 
     return cleaned_output.strip()
 
