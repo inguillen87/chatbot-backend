@@ -37,7 +37,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro
 )
-from .llm_utils import extract_complaint_details_llm
+from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 
 try:
@@ -2374,57 +2374,93 @@ def serializar_enum(obj):
 BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
 OWNER_HANDLERS_FOR_STATE = {ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler, ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler, ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler, ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler, ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler, ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler, ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler, ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler, ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler, ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler, ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler}
 
-def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
+def responder_municipio(
+    pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None,
+    anon_id=None, channel: str = "web", **kwargs
+):
     logger_actual = current_app.logger if has_app_context() else logger
-    logger_actual.info(f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}")
-    received_payload = {}; pregunta_str = ""
-    if isinstance(pregunta_original, dict): received_payload = pregunta_original; pregunta_str = received_payload.get("pregunta", "")
-    elif isinstance(pregunta_original, str): pregunta_str = pregunta_original; received_payload["pregunta"] = pregunta_original
-    else: logger_actual.warning(f"Tipo inesperado para pregunta_original: {type(pregunta_original)}. Contenido: {pregunta_original}"); pregunta_str = ""; received_payload["pregunta"] = ""
+    logger_actual.info(
+        f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
+    )
+
+    received_payload = {}
+    pregunta_str = ""
+    if isinstance(pregunta_original, dict):
+        received_payload = pregunta_original
+        pregunta_str = received_payload.get("pregunta", "")
+    elif isinstance(pregunta_original, str):
+        pregunta_str = pregunta_original
+        received_payload["pregunta"] = pregunta_original
+    else:
+        logger_actual.warning(
+            f"Tipo inesperado para pregunta_original: {type(pregunta_original)}. Contenido: {pregunta_original}"
+        )
+        pregunta_str = ""
+        received_payload["pregunta"] = ""
+
     if kwargs:
-        for key, value in kwargs.items(): received_payload[key] = value
-    if chat_db_context.context_data is None: chat_db_context.context_data = {}
+        for key, value in kwargs.items():
+            received_payload[key] = value
+
+    if chat_db_context.context_data is None:
+        chat_db_context.context_data = {}
+
     # Carga inicial del contexto específico del municipio
     contexto_municipio_data_from_db = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}")
 
-    # Crear una copia para modificar de forma segura para esta request.
-    # Esto es importante si `contexto_municipio_data_from_db` es directamente el objeto que se guardará.
-    # Si es una copia ya (ej. `dict(contexto_municipio_data_from_db)`), entonces no es estrictamente necesario, pero no hace daño.
+    # Copia para modificar de forma segura
     contexto_municipio_actual = dict(contexto_municipio_data_from_db)
 
     estado_guardado_raw = contexto_municipio_actual.get("estado_conversacion")
-    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE_RAW] 'estado_conversacion' crudo extraído del contexto_municipio_actual: '{estado_guardado_raw}' (Tipo: {type(estado_guardado_raw)})")
+    logger_actual.info(
+        f"[CONTEXTO_MUNICIPIO_LOAD_STATE_RAW] 'estado_conversacion' crudo extraído del contexto_municipio_actual: '{estado_guardado_raw}' (Tipo: {type(estado_guardado_raw)})"
+    )
 
     if estado_guardado_raw and isinstance(estado_guardado_raw, str):
-        logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Intentando convertir estado string '{estado_guardado_raw}' a Enum ConversationState.")
+        logger_actual.info(
+            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Intentando convertir estado string '{estado_guardado_raw}' a Enum ConversationState."
+        )
         try:
             estado_enum = ConversationState[estado_guardado_raw]
             contexto_municipio_actual["estado_conversacion"] = estado_enum
-            logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Éxito. 'estado_conversacion' ahora es Enum: {estado_enum}")
+            logger_actual.info(
+                f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Éxito. 'estado_conversacion' ahora es Enum: {estado_enum}"
+            )
         except KeyError:
-            logger_actual.error(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Falló conversión. String '{estado_guardado_raw}' no es un miembro válido de ConversationState. 'estado_conversacion' se establece a None.")
+            logger_actual.error(
+                f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Falló conversión. String '{estado_guardado_raw}' no es un miembro válido de ConversationState. 'estado_conversacion' se establece a None."
+            )
             contexto_municipio_actual["estado_conversacion"] = None
     elif estado_guardado_raw is None:
         logger_actual.info("[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es None en los datos crudos. Se mantiene como None.")
-        contexto_municipio_actual["estado_conversacion"] = None # Asegurar que sea None explícito
+        contexto_municipio_actual["estado_conversacion"] = None
     elif isinstance(estado_guardado_raw, ConversationState):
-        logger_actual.warning(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' ya es un Enum ({estado_guardado_raw}) al cargar. Esto es inusual si se carga desde JSON/DB. Se usará tal cual.")
-        contexto_municipio_actual["estado_conversacion"] = estado_guardado_raw # Mantener el Enum
-    else: # Otros tipos inesperados
-        logger_actual.error(f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Tipo inesperado para 'estado_conversacion' ({type(estado_guardado_raw)}): '{estado_guardado_raw}'. Se establece a None.")
+        logger_actual.warning(
+            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' ya es un Enum ({estado_guardado_raw}) al cargar. Esto es inusual si se carga desde JSON/DB. Se usará tal cual."
+        )
+        contexto_municipio_actual["estado_conversacion"] = estado_guardado_raw
+    else:
+        logger_actual.error(
+            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Tipo inesperado para 'estado_conversacion' ({type(estado_guardado_raw)}): '{estado_guardado_raw}'. Se establece a None."
+        )
         contexto_municipio_actual["estado_conversacion"] = None
 
-    # Log del estado final que se usará en esta petición
     final_loaded_state = contexto_municipio_actual.get("estado_conversacion")
-    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})")
+    logger_actual.info(
+        f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' final para esta petición: '{final_loaded_state}' (Tipo: {type(final_loaded_state)})"
+    )
 
     context = {
-        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # Esta es la copia modificada
-        "user_obj": owner_user, "user_id": getattr(owner_user, "id", None),
-        "cliente_id": getattr(viewer_user, "id", None), "viewer_user_obj": viewer_user,
-        "anon_id": anon_id, "intencion": None, "rubro_obj": rubro_obj,
-        "channel": channel, # Pass channel into context for handlers
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+        "user_obj": owner_user,
+        "user_id": getattr(owner_user, "id", None),
+        "cliente_id": getattr(viewer_user, "id", None),
+        "viewer_user_obj": viewer_user,
+        "anon_id": anon_id,
+        "intencion": None,
+        "rubro_obj": rubro_obj,
+        "channel": channel,
         "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
         "foto_url": received_payload.get("archivo_url") if received_payload.get("es_foto") else None,
         "es_foto": received_payload.get("es_foto", False),
@@ -2434,214 +2470,211 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context.context_data 
+        "chat_db_context_data": chat_db_context.context_data,
     }
 
-    # --- Logic for suggesting registration to anonymous users ---
-    # This is the block that might need adjustment based on the error at line 2193
-    estado_para_chequeo_sugerencia = contexto_municipio_actual.get("estado_conversacion") # Enum or None
-
+    # Sugerencia de registro para anónimos
+    estado_para_chequeo_sugerencia = contexto_municipio_actual.get("estado_conversacion")
     if not viewer_user and anon_id and has_app_context():
         estados_a_evitar_sugerencia_para_anon = [
-            ConversationState.ESPERANDO_DIRECCION_RECLAMO, 
-            ConversationState.ESPERANDO_NOMBRE_VECINO, 
-            ConversationState.ESPERANDO_TELEFONO_VECINO, 
-            ConversationState.ESPERANDO_EMAIL_VECINO, 
-            ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, 
-            ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, 
-            ConversationState.ESPERANDO_CONFIRMACION_RECLAMO, 
-            ConversationState.ESPERANDO_UBICACION_PANICO
+            ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+            ConversationState.ESPERANDO_NOMBRE_VECINO,
+            ConversationState.ESPERANDO_TELEFONO_VECINO,
+            ConversationState.ESPERANDO_EMAIL_VECINO,
+            ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+            ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+            ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+            ConversationState.ESPERANDO_UBICACION_PANICO,
         ]
-        
-        # This is where 'estado_actual_sugerencia' was used in the log (line 2193 refers to this condition)
-        # We now use 'estado_para_chequeo_sugerencia' which is guaranteed to be defined.
         if estado_para_chequeo_sugerencia not in estados_a_evitar_sugerencia_para_anon:
             interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
             if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok", "dale", "bueno"]:
                 interacciones_anon_sesion += 1
             contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_sesion
-            
-            umbral_sugerencia = (current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3) if has_app_context() else 3)
-            
+            umbral_sugerencia = (
+                current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3) if has_app_context() else 3
+            )
             if umbral_sugerencia and umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia:
                 if not contexto_municipio_actual.get("sugerencia_registro_emitida_ronda", False):
                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Anon {anon_id} alcanzó umbral. Sugiriendo registro.")
                     contexto_municipio_actual["sugerencia_registro_emitida_ronda"] = True
-                    
                     respuesta_sugerencia_obj = construir_respuesta_sugerir_registro(
-                        mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.", 
-                        tipo_entidad="municipio"
+                        mensaje_personalizado="Para ayudarte mejor con tus gestiones y reclamos.",
+                        tipo_entidad="municipio",
                     )
-                    
                     sug_body = respuesta_sugerencia_obj.get("respuesta", "Te recomendamos registrarte para una mejor experiencia.")
                     sug_options_raw = respuesta_sugerencia_obj.get("botones", [])
-                    sug_options_list = [{"id": btn.get("action", normalizar_texto(btn["texto"])), "texto": btn["texto"]} for btn in sug_options_raw]
-                    sug_message_type = 'interactive_buttons' if sug_options_list else 'text'
-
+                    sug_options_list = [
+                        {"id": btn.get("action", normalizar_texto(btn["texto"])), "texto": btn["texto"]}
+                        for btn in sug_options_raw
+                    ]
+                    sug_message_type = "interactive_buttons" if sug_options_list else "text"
                     chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                    if chat_db_context: # Ensure flag_modified is called if context is updated
+                    if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
-
-                    if anon_id and not viewer_user: # Log conversation for this early return
+                    if anon_id and not viewer_user:
                         try:
-                            db.session.add(Conversacion(session_id=context.get("chat_session_uuid") or anon_id, pregunta=pregunta_str, respuesta=sug_body, fuente=respuesta_sugerencia_obj.get("fuente", "sugerencia_registro_municipio"), rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"), user_id=None))
+                            db.session.add(
+                                Conversacion(
+                                    session_id=context.get("chat_session_uuid") or anon_id,
+                                    pregunta=pregunta_str,
+                                    respuesta=sug_body,
+                                    fuente=respuesta_sugerencia_obj.get("fuente", "sugerencia_registro_municipio"),
+                                    rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"),
+                                    user_id=None,
+                                )
+                            )
                             db.session.commit()
-                        except Exception as e_conv_sug_muni: 
-                            logger_actual.error(f"Error guardando Conversacion (sugerencia MUNICIPIO): {e_conv_sug_muni}"); db.session.rollback()
-                    
-                    return { # Return the new structure
+                        except Exception as e_conv_sug_muni:
+                            logger_actual.error(f"Error guardando Conversacion (sugerencia MUNICIPIO): {e_conv_sug_muni}")
+                            db.session.rollback()
+                    return {
                         "message_body": sug_body,
                         "options_list": sug_options_list,
                         "message_type": sug_message_type,
                         "fuente": respuesta_sugerencia_obj.get("fuente", "sugerencia_registro_municipio_v2"),
-                        "contexto_actualizado": {CONTEXTO_MUNICIPIO: serializar_enum(contexto_municipio_actual)}
+                        "contexto_actualizado": {CONTEXTO_MUNICIPIO: serializar_enum(contexto_municipio_actual)},
                     }
-            else: # Not reached umbral or umbral is 0/disabled
+            else:
                 contexto_municipio_actual.pop("sugerencia_registro_emitida_ronda", None)
-                # Context will be saved at the end of responder_municipio if no early return.
-    if context.get("datos_interpretados_archivo"): logger_actual.info(f"[MUNICIPIOS_HANDLER] Datos interpretados: {context['datos_interpretados_archivo']}")
-    if context.get("archivo_id_para_asociar"): logger_actual.info(f"[MUNICIPIOS_HANDLER] Archivo ID para asociar: {context['archivo_id_para_asociar']}")
+    if context.get("datos_interpretados_archivo"):
+        logger_actual.info(f"[MUNICIPIOS_HANDLER] Datos interpretados: {context['datos_interpretados_archivo']}")
+    if context.get("archivo_id_para_asociar"):
+        logger_actual.info(f"[MUNICIPIOS_HANDLER] Archivo ID para asociar: {context['archivo_id_para_asociar']}")
     comando_from_text = BOTONES_COMANDOS_MUNICIPIO.get(pregunta_str.strip())
-    if comando_from_text and not context.get("action"): context["action"] = comando_from_text; received_payload["action"] = comando_from_text; logger_actual.info(f"[BOTON] Comando por texto: '{comando_from_text}'")
-    elif context.get("action"): logger_actual.info(f"[BOTON] Comando por payload.action: '{context['action']}'")
+    if comando_from_text and not context.get("action"):
+        context["action"] = comando_from_text
+        received_payload["action"] = comando_from_text
+        logger_actual.info(f"[BOTON] Comando por texto: '{comando_from_text}'")
+    elif context.get("action"):
+        logger_actual.info(f"[BOTON] Comando por payload.action: '{context['action']}'")
     elif context.get("es_foto") or context.get("es_ubicacion"):
         logger_actual.info(f"[ADJUNTO] Detectado: foto={context['es_foto']}, ubicacion={context['es_ubicacion']}")
         if context.get("es_ubicacion"):
-            if contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda" and contexto_municipio_actual.get("estado_conversacion") == "ESPERANDO_UBICacion_PARA_TIENDAS": context["intencion"] = "solicitar_ubicacion_tienda"; logger_actual.info(f"[CONTEXTO] Ubicación para tiendas, re-evaluando con intención: {context['intencion']}")
-            elif contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "activar_panico" and contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO: context["intencion"] = "activar_panico"; logger_actual.info(f"[CONTEXTO] Ubicación para PÁNICO, re-evaluando con intención: {context['intencion']}")
+            if (
+                contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "solicitar_ubicacion_tienda"
+                and contexto_municipio_actual.get("estado_conversacion") == "ESPERANDO_UBICacion_PARA_TIENDAS"
+            ):
+                context["intencion"] = "solicitar_ubicacion_tienda"
+                logger_actual.info(f"[CONTEXTO] Ubicación para tiendas, re-evaluando con intención: {context['intencion']}")
+            elif (
+                contexto_municipio_actual.get("intencion_pendiente_ubicacion") == "activar_panico"
+                and contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_PANICO
+            ):
+                context["intencion"] = "activar_panico"
+                logger_actual.info(f"[CONTEXTO] Ubicación para PÁNICO, re-evaluando con intención: {context['intencion']}")
 
-    estado_conversacion_actual = contexto_municipio_actual.get("estado_conversacion") # This is now an Enum or None
+    estado_conversacion_actual = contexto_municipio_actual.get("estado_conversacion")
     active_state_log_name = estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else str(estado_conversacion_actual)
     logger_actual.info(f"[HANDLER_CHAIN_START] Estado en memoria: {active_state_log_name}. Intención previa: {context.get('intencion')}")
 
     prioritized_handlers = [CancelHandler, PanicButtonHandler]
-    if context.get('intencion') == 'hablar_con_agente': prioritized_handlers.append(HumanEscalationHandler)
+    if context.get('intencion') == 'hablar_con_agente':
+        prioritized_handlers.append(HumanEscalationHandler)
 
-    respuesta_final = None; dueño_handler_class = None
+    respuesta_final = None
+
     for handler_class_iter in prioritized_handlers:
-        handler_instance = handler_class_iter(context); respuesta_parcial = handler_instance.handle(received_payload)
-        if respuesta_parcial: respuesta_final = respuesta_parcial; logger_actual.info(f"[HANDLER_CHAIN] Prioritized handler {handler_class_iter.__name__} respondió."); break
+        handler_instance = handler_class_iter(context)
+        respuesta_parcial = handler_instance.handle(received_payload)
+        if respuesta_parcial:
+            respuesta_final = respuesta_parcial
+            logger_actual.info(f"[HANDLER_CHAIN] Prioritized handler {handler_class_iter.__name__} respondió.")
+            break
 
-            if not respuesta_final and estado_conversacion_actual:
+    if not respuesta_final and estado_conversacion_actual:
         dueño_handler_class_actual = OWNER_HANDLERS_FOR_STATE.get(estado_conversacion_actual)
         if dueño_handler_class_actual:
-                    dueño_instance = dueño_handler_class_actual(context) # Create instance
+            dueño_instance = dueño_handler_class_actual(context)
             active_state_name_log = estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else str(estado_conversacion_actual)
             logger_actual.info(f"[HANDLER_CHAIN] Estado activo '{active_state_name_log}'. Dando prioridad a {dueño_instance.__class__.__name__}")
             respuesta_parcial_dueño = dueño_instance.handle(received_payload)
-                    if respuesta_parcial_dueño:
-                        respuesta_final = respuesta_parcial_dueño
-                        logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado {dueño_instance.__class__.__name__} respondió.")
-            else:
-                logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado ({dueño_instance.__class__.__name__}) no respondió. Re-evaluando intención.")
-                IntentClassifierHandler(context).handle(received_payload) # Re-classify intent
-                logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-dueño: {context.get('intencion')}")
-                else: # No owner handler for the current state
-            active_state_name_log_no_owner = estado_conversacion_actual.name if isinstance(estado_conversacion_actual, Enum) else str(estado_conversacion_actual)
-                    logger_actual.warning(f"[HANDLER_CHAIN] Estado activo '{active_state_name_log_no_owner}' pero no se encontró handler dueño definido. Limpiando estado y re-clasificando.")
-                    contexto_municipio_actual.pop("estado_conversacion", None) # Clear state
-                    # No need to save chat_db_context here, will be saved at the end.
-                    IntentClassifierHandler(context).handle(received_payload) # Re-classify intent
-                    logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-limpieza de estado sin dueño: {context.get('intencion')}")
+            if respuesta_parcial_dueño:
+                respuesta_final = respuesta_parcial_dueño
+                logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado {dueño_instance.__class__.__name__} respondió.")
+        else:
+            logger_actual.info(f"[HANDLER_CHAIN] Dueño del estado ({estado_conversacion_actual}) no respondió. Re-evaluando intención.")
+            IntentClassifierHandler(context).handle(received_payload)
+            logger_actual.info(f"[HANDLER_CHAIN] Nueva intención post-dueño: {context.get('intencion')}")
 
-    if not respuesta_final: # If no prioritized handler or owner handler responded
-        # Ensure intent is classified if not already set or if state was cleared
+    if not respuesta_final:
         if not context.get("intencion") and not contexto_municipio_actual.get("estado_conversacion"):
             logger_actual.info("[HANDLER_CHAIN] Ejecutando IntentClassifierHandler (sin estado activo, sin intención previa).")
             IntentClassifierHandler(context).handle(received_payload)
             logger_actual.info(f"[HANDLER_CHAIN] Intención post-clasificación inicial: {context.get('intencion')}")
 
-        # Define the general sequence of handlers
-        # EngancheAnonimoMunicipioHandler is now placed towards the end to allow other handlers to act first.
-        # ReclamoInteligenteMunicipioHandler runs before ReclamoHandler.
         remaining_handlers = [
             GreetingHandler, PoliteHandler, SmallTalkHandler,
-            HumanEscalationHandler,  # Already in prioritized, but check again if intent changed
+            HumanEscalationHandler,
             TicketStatusHandler, SugerenciasVecinoHandler, RecoleccionHandler,
-            ReclamoInteligenteMunicipioHandler, ReclamoHandler, # ReclamoInteligente first
+            ReclamoInteligenteMunicipioHandler, ReclamoHandler,
             TramitesHandler, TramiteInteligenteHandler, ImpuestosHandler,
             ProductCatalogHandler, ProductInquiryHandler, CartHandler, CheckoutHandler, StoreLocationHandler,
             ToolHandler, VectorMunicipioCatalogHandler,
-            GeneralHandler, # General context-based answers
-            EngancheAnonimoMunicipioHandler # Suggest login/register if still anonymous and no other handler took over
+            GeneralHandler,
+            EngancheAnonimoMunicipioHandler,
         ]
 
         for handler_class_iter_main in remaining_handlers:
-            if respuesta_final: break # If a handler in this loop responds, exit
-
-            # Skip if already run as prioritized and it's not HumanEscalation (which might run again if intent changes)
+            if respuesta_final:
+                break
             if handler_class_iter_main in prioritized_handlers and handler_class_iter_main != HumanEscalationHandler:
                 logger_actual.debug(f"[HANDLER_CHAIN] Saltando {handler_class_iter_main.__name__} (ya corrió como prioritario o no aplicó).")
                 continue
-
-            # Skip Enganche if user is logged in
             if handler_class_iter_main == EngancheAnonimoMunicipioHandler and context.get("cliente_id"):
                 logger_actual.debug(f"[HANDLER_CHAIN] Saltando EngancheAnonimoMunicipioHandler (usuario logueado).")
                 continue
 
-            # Ensure `context[CONTEXTO_MUNICIPIO]["estado_conversacion"]` is an Enum for the handler
-            # This conversion logic is important and should be robust.
             current_memoria_state_for_handler_raw = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
             current_memoria_state_for_handler_enum = None
             if isinstance(current_memoria_state_for_handler_raw, str):
-                try: current_memoria_state_for_handler_enum = ConversationState[current_memoria_state_for_handler_raw]
-                except KeyError: pass # Keep as None if invalid string
+                try:
+                    current_memoria_state_for_handler_enum = ConversationState[current_memoria_state_for_handler_raw]
+                except KeyError:
+                    pass
             elif isinstance(current_memoria_state_for_handler_raw, ConversationState):
                 current_memoria_state_for_handler_enum = current_memoria_state_for_handler_raw
 
-            original_state_in_context_before_handler = context[CONTEXTO_MUNICIPIO].get("estado_conversacion") # Store original (string or Enum or None)
-            context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = current_memoria_state_for_handler_enum # Set Enum for handler
+            original_state_in_context_before_handler = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+            context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = current_memoria_state_for_handler_enum
 
             handler_instance = handler_class_iter_main(context)
             log_state_for_handler = current_memoria_state_for_handler_enum.name if current_memoria_state_for_handler_enum else 'None'
             logger_actual.info(f"[HANDLER_CHAIN] Intentando con handler: {handler_class_iter_main.__name__} (Intención: {context.get('intencion')}, Estado para Handler: {log_state_for_handler})")
-
             respuesta_parcial = handler_instance.handle(received_payload)
 
-            # After handler execution, decide what state to persist.
-            # If handler changed state to an Enum, convert to string for persistence.
-            # If handler cleared state (set to None), persist None.
-            # If handler set to a string (should not happen if handlers use Enums), persist that string.
             state_after_handler = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
             if isinstance(state_after_handler, ConversationState):
-                context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = state_after_handler.name # Persist as string
+                context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = state_after_handler.name
             elif state_after_handler is None:
-                context[CONTEXTO_MUNICIPIO].pop("estado_conversacion", None) # Ensure it's None or key removed
-            # else: it's already a string or some other type, persist as is.
+                context[CONTEXTO_MUNICIPIO].pop("estado_conversacion", None)
 
             if respuesta_parcial:
                 respuesta_final = respuesta_parcial
                 logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class_iter_main.__name__} respondió.")
-                break # Exit loop once a handler provides a response
+                break
             else:
                 logger_actual.info(f"[HANDLER_CHAIN] Handler {handler_class_iter_main.__name__} no respondió.")
-                # Restore the original state string if the handler didn't change it,
-                # especially if it was temporarily converted from string to Enum for the handler.
-                # This is tricky because the handler *might* have intentionally changed it.
-                # The current logic (convert to string if Enum, else keep as is) after handler call handles most cases.
-                # If handler returned None (no response), the `context[CONTEXTO_MUNICIPIO]["estado_conversacion"]`
-                # reflects the state *after* the handler logic (which might have changed it).
 
-    if not respuesta_final: # Fallback if no handler responded
+    if not respuesta_final:
         logger_actual.info("[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Usando fallback general.")
-        # Ensure context state is cleared or reset if bot is confused
         current_fallback_state_raw = contexto_municipio_actual.get("estado_conversacion")
         current_fallback_state_enum = None
         if isinstance(current_fallback_state_raw, str):
-            try: current_fallback_state_enum = ConversationState[current_fallback_state_raw]
-            except KeyError: pass
-        elif isinstance(current_fallback_state_raw, ConversationState): # Should be string by now
+            try:
+                current_fallback_state_enum = ConversationState[current_fallback_state_raw]
+            except KeyError:
+                pass
+        elif isinstance(current_fallback_state_raw, ConversationState):
             current_fallback_state_enum = current_fallback_state_raw
-
-
         current_fallback_state = contexto_municipio_actual.get("estado_conversacion")
 
         options_fallback = [
             {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
             {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
-            {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"}
+            {"id": "hablar_con_agente_fallback_main", "texto": "Hablar con un agente"},
         ]
-        message_type_fallback = 'interactive_buttons'
+        message_type_fallback = "interactive_buttons"
 
         if current_fallback_state:
             estado_log_val = current_fallback_state
@@ -2650,7 +2683,7 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             logger_actual.error(
                 f"[FALLBACK_ERROR] Fallback con estado activo no manejado: {estado_log_val}. Limpiando estado."
             )
-            contexto_municipio_actual.clear()  # Clear context if bot got confused with active state
+            contexto_municipio_actual.clear()
             body_fallback = (
                 "¡Vaya! Parece que nos perdimos un poco. No te preocupes, empecemos de nuevo. ¿Cómo puedo ayudarte hoy?"
             )
@@ -2666,97 +2699,89 @@ def responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user=No
             "fuente": "municipio_fallback_general_v2",
         }
 
-    # Ensure the state in `contexto_municipio_actual` is a string before assigning to `chat_db_context.context_data`
-    # This was handled by the loop logic for `remaining_handlers`.
-    # If a prioritized or owner handler was the last one, ensure its state is also stringified.
+    # Guardado del estado final
     estado_final_en_memoria = contexto_municipio_actual.get("estado_conversacion")
     if isinstance(estado_final_en_memoria, ConversationState):
         contexto_municipio_actual["estado_conversacion"] = estado_final_en_memoria.name
         logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Estado Enum '{estado_final_en_memoria.name}' convertido a string para DB.")
     elif estado_final_en_memoria is None:
-         contexto_municipio_actual.pop("estado_conversacion", None) # Ensure it's None or key removed
-         logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Estado es None. Se guardará como tal.")
-    else: # Already a string or other type
+        contexto_municipio_actual.pop("estado_conversacion", None)
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Estado es None. Se guardará como tal.")
+    else:
         logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SAVE] Estado ya es string o tipo no-Enum: '{estado_final_en_memoria}'. Se guardará como tal.")
 
     chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_POST_SAVE_IN_DB_CONTEXT] Contexto municipio completo asignado a chat_db_context.data: {contexto_municipio_actual}")
 
-    # Ensure SQLAlchemy detects changes to the JSON field
     from sqlalchemy.orm.attributes import flag_modified
-    if chat_db_context: # Ensure chat_db_context exists
+    if chat_db_context:
         flag_modified(chat_db_context, "context_data")
 
-    # `serializar_enum` is for the HTTP response context, ensuring Enums are strings there too.
-    # `contexto_municipio_actual` should already have its 'estado_conversacion' as a string if it was an Enum.
     contexto_serializado_para_respuesta_http = serializar_enum(contexto_municipio_actual)
-
     media_url_to_send = contexto_serializado_para_respuesta_http.get("foto_url")
     location_data_to_send = contexto_serializado_para_respuesta_http.get("ubicacion_gps")
 
-    # Ensure message_body and options_list are correctly extracted from respuesta_final
-    message_body_final = respuesta_final.get("message_body") or respuesta_final.get("respuesta", "") # Default to empty string
-    options_list_final = respuesta_final.get("options_list") or respuesta_final.get("botones", []) # Default to empty list
+    message_body_final = respuesta_final.get("message_body") or respuesta_final.get("respuesta", "")
+    options_list_final = respuesta_final.get("options_list") or respuesta_final.get("botones", [])
 
-    # Determine message_type for WhatsApp, defaulting to 'text'
-    # This logic should align with how utils.whatsapp_utils.send_whatsapp_message formats messages
-    message_type_final = "text" # Default
+    message_type_final = "text"
     if isinstance(options_list_final, list) and options_list_final:
         num_options = len(options_list_final)
-        # Heuristic: if options are present, it's likely interactive.
-        # Specific type ('interactive_buttons' vs 'interactive_list') depends on WhatsApp limits.
-        # For simplicity, use 'interactive_buttons' if few, 'interactive_list' if many.
-        # The actual formatting and limits are handled by the WhatsApp sending utility.
-        # Here, we just hint at the intended type.
         if 0 < num_options <= 3:
-            message_type_final = respuesta_final.get("message_type") or 'interactive_buttons'
+            message_type_final = respuesta_final.get("message_type") or "interactive_buttons"
         elif num_options > 3:
-            message_type_final = respuesta_final.get("message_type") or 'interactive_list'
-        # If message_type was explicitly set in respuesta_final, respect it.
+            message_type_final = respuesta_final.get("message_type") or "interactive_list"
         if "message_type" in respuesta_final and respuesta_final["message_type"]:
-             message_type_final = respuesta_final["message_type"]
+            message_type_final = respuesta_final["message_type"]
 
     final_response_dict = {
         "message_body": message_body_final,
         "options_list": options_list_final,
-        "message_type": message_type_final, # This is now more dynamic
+        "message_type": message_type_final,
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado_para_respuesta_http},
         "ticket_id": respuesta_final.get("ticket_id", None),
         "media_url": media_url_to_send,
         "location_data": location_data_to_send,
-        "adjuntos": [], # Populate this if needed
-        "fuente": respuesta_final.get("fuente", "desconocida") # Add fuente for better tracking
+        "adjuntos": [],
+        "fuente": respuesta_final.get("fuente", "desconocida"),
     }
 
     uploaded_file_info = received_payload.get("uploaded_file_info")
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         if uploaded_file_info.get("url") and uploaded_file_info.get("name"):
-            final_response_dict["adjuntos"].append({
-                "nombre_original": uploaded_file_info["name"],
-                "url_descarga": uploaded_file_info["url"],
-                "tipo_mime": uploaded_file_info.get("type", 'application/octet-stream')
-            })
+            final_response_dict["adjuntos"].append(
+                {
+                    "nombre_original": uploaded_file_info["name"],
+                    "url_descarga": uploaded_file_info["url"],
+                    "tipo_mime": uploaded_file_info.get("type", "application/octet-stream"),
+                }
+            )
             logger_actual.info(f"Adjuntando info de archivo subido: {uploaded_file_info['name']}")
-    
-    respuesta_log = (final_response_dict.get('message_body') or '')[:100]
-    adjuntos_len = len(final_response_dict.get('adjuntos', []))
-    logger_actual.info(f"[RESPONDER_MUNICIPIO_END] Respuesta: '{respuesta_log}...', Opciones: {len(options_list_final)}, TipoMsg: {message_type_final}, Fuente: {final_response_dict['fuente']}, Adjuntos: {adjuntos_len}")
 
-    # Log conversation for anonymous users
+    respuesta_log = (final_response_dict.get("message_body") or "")[:100]
+    adjuntos_len = len(final_response_dict.get("adjuntos", []))
+    logger_actual.info(
+        f"[RESPONDER_MUNICIPIO_END] Respuesta: '{respuesta_log}...', Opciones: {len(options_list_final)}, TipoMsg: {message_type_final}, Fuente: {final_response_dict['fuente']}, Adjuntos: {adjuntos_len}"
+    )
+
     if anon_id and not viewer_user and respuesta_final and isinstance(respuesta_final, dict):
         try:
-            db.session.add(Conversacion(
-                session_id=kwargs.get("chat_session_uuid") or anon_id,
-                pregunta=pregunta_str,
-                respuesta=final_response_dict.get("message_body"),
-                fuente=final_response_dict.get("fuente", "municipio_anon_respuesta"),
-                rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"),
-                user_id=None
-            ))
+            db.session.add(
+                Conversacion(
+                    session_id=kwargs.get("chat_session_uuid") or anon_id,
+                    pregunta=pregunta_str,
+                    respuesta=final_response_dict.get("message_body"),
+                    fuente=final_response_dict.get("fuente", "municipio_anon_respuesta"),
+                    rubro=getattr(context.get("rubro_obj"), "nombre", "municipio_general"),
+                    user_id=None,
+                )
+            )
             db.session.commit()
             logger_actual.info(f"Conversación (municipio) para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')} guardada.")
         except Exception as e_conv_muni:
-            logger_actual.error(f"Error guardando conversación de municipio para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')}: {e_conv_muni}", exc_info=True)
+            logger_actual.error(
+                f"Error guardando conversación de municipio para anon_id {anon_id}/session {kwargs.get('chat_session_uuid')}: {e_conv_muni}", exc_info=True
+            )
             db.session.rollback()
 
     return final_response_dict
