@@ -11,7 +11,7 @@ from sqlalchemy import event
 session_ext = Session()
 
 from config import Config
-from extensions import db, migrate
+from extensions import db, migrate, login_manager # Import login_manager
 from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
 from models import User
 
@@ -111,6 +111,13 @@ def create_app(config_class=Config):
     db.init_app(app)
     migrate.init_app(app, db)
     init_celery(app) # Inicializar Celery con la app Flask
+    login_manager.init_app(app) # Initialize Flask-Login
+    login_manager.session_protection = "strong" # Configure session protection
+    login_manager.login_view = "auth.login" # Set the login view
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        return User.query.get(int(user_id))
 
     # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
     with app.app_context():
