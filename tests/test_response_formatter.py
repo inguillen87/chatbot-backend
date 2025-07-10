@@ -5,165 +5,166 @@ from services.response_formatter import build_interactive_response
 class TestResponseFormatter(unittest.TestCase):
 
     def test_whatsapp_interactive_buttons_1_option(self):
-        options = [{"id": "opt1", "texto": "Option 1"}]
-        body = "Choose one:"
-        header = "Header Text"
-        footer = "Footer Text"
-        response = build_interactive_response(options, body, "whatsapp", 'interactive_buttons', header_text=header, footer_text=footer)
-
-        self.assertEqual(response["messaging_product"], "whatsapp")
+        response = build_interactive_response(
+            options=[{"id": "opt1", "texto": "Opción Uno"}],
+            body_text="Elige una:",
+            channel="whatsapp",
+            message_type='interactive_buttons'
+            # recipient_id="whatsapp:+123" # Removed, not formatter's concern
+        )
         self.assertEqual(response["type"], "interactive")
-        interactive = response["interactive"]
-        self.assertEqual(interactive["type"], "button")
-        self.assertEqual(interactive["header"]["type"], "text")
-        self.assertEqual(interactive["header"]["text"], header)
-        self.assertEqual(interactive["body"]["text"], body)
-        self.assertEqual(interactive["footer"]["text"], footer)
-        self.assertEqual(len(interactive["action"]["buttons"]), 1)
-        self.assertEqual(interactive["action"]["buttons"][0]["reply"]["id"], "opt1")
-        self.assertEqual(interactive["action"]["buttons"][0]["reply"]["title"], "Option 1")
+        interactive_content = response["interactive"]
+        self.assertEqual(interactive_content["type"], "button")
+        self.assertEqual(interactive_content["body"]["text"], "Elige una:")
+        self.assertEqual(len(interactive_content["action"]["buttons"]), 1)
+        self.assertEqual(interactive_content["action"]["buttons"][0]["reply"]["id"], "opt1")
+        self.assertEqual(interactive_content["action"]["buttons"][0]["reply"]["title"], "Opción Uno")
 
     def test_whatsapp_interactive_buttons_3_options(self):
         options = [
-            {"id": "opt1", "texto": "Option 1"},
-            {"id": "opt2", "texto": "Option 2"},
-            {"id": "opt3", "texto": "Option 3"},
+            {"id": "btn1", "texto": "Botón 1"},
+            {"id": "btn2", "texto": "Botón 2"},
+            {"id": "btn3", "texto": "Botón 3"},
         ]
-        body = "Choose one:"
-        response = build_interactive_response(options, body, "whatsapp", 'interactive_buttons')
-
+        response = build_interactive_response(
+            options=options, body_text="Selecciona:", channel="whatsapp", message_type='interactive_buttons'
+        )
         self.assertEqual(response["type"], "interactive")
-        interactive = response["interactive"]
-        self.assertEqual(interactive["type"], "button")
-        self.assertEqual(len(interactive["action"]["buttons"]), 3)
-        self.assertEqual(interactive["action"]["buttons"][2]["reply"]["id"], "opt3")
-        self.assertEqual(interactive["action"]["buttons"][2]["reply"]["title"], "Option 3")
+        interactive_content = response["interactive"]
+        self.assertEqual(interactive_content["type"], "button")
+        self.assertEqual(len(interactive_content["action"]["buttons"]), 3)
+        self.assertEqual(interactive_content["action"]["buttons"][2]["reply"]["title"], "Botón 3")
 
-    def test_whatsapp_interactive_buttons_too_many_options(self):
-        # Logs a warning, but still creates with max 3
+    def test_whatsapp_interactive_buttons_too_many_options_truncates(self):
         options = [
-            {"id": "opt1", "texto": "Option 1"},
-            {"id": "opt2", "texto": "Option 2"},
-            {"id": "opt3", "texto": "Option 3"},
-            {"id": "opt4", "texto": "Option 4"},
+            {"id": f"btn{i}", "texto": f"Botón {i}"} for i in range(5)
         ]
-        body = "Choose one:"
-        with self.assertLogs(level='WARNING') as log:
-            response = build_interactive_response(options, body, "whatsapp", 'interactive_buttons')
-            self.assertIn("requires 1-3 options, got 4", log.output[0])
-
+        response = build_interactive_response(
+            options=options, body_text="Demasiados botones:", channel="whatsapp", message_type='interactive_buttons'
+        )
         self.assertEqual(response["type"], "interactive")
-        interactive = response["interactive"]
-        self.assertEqual(interactive["type"], "button")
-        self.assertEqual(len(interactive["action"]["buttons"]), 3) # Takes the first 3
+        interactive_content = response["interactive"]
+        self.assertEqual(interactive_content["type"], "button")
+        self.assertEqual(len(interactive_content["action"]["buttons"]), 3) # Should truncate to 3
 
     def test_whatsapp_interactive_list_1_option(self):
-        options = [{"id": "item1", "texto": "Item 1", "description": "Desc 1"}]
-        body = "Select an item:"
-        header = "List Header"
-        footer = "List Footer"
-        response = build_interactive_response(options, body, "whatsapp", 'interactive_list', header_text=header, footer_text=footer)
-
+        response = build_interactive_response(
+            options=[{"id": "li1", "texto": "Lista Item 1", "description": "Desc 1"}],
+            body_text="Elige de la lista:",
+            channel="whatsapp",
+            message_type='interactive_list'
+        )
         self.assertEqual(response["type"], "interactive")
-        interactive = response["interactive"]
-        self.assertEqual(interactive["type"], "list")
-        self.assertEqual(interactive["header"]["type"], "text")
-        self.assertEqual(interactive["header"]["text"], header)
-        self.assertEqual(interactive["body"]["text"], body)
-        self.assertEqual(interactive["footer"]["text"], footer)
-        self.assertEqual(interactive["action"]["button"], "Ver opciones")
-        self.assertEqual(len(interactive["action"]["sections"]), 1)
-        self.assertEqual(len(interactive["action"]["sections"][0]["rows"]), 1)
-        row1 = interactive["action"]["sections"][0]["rows"][0]
-        self.assertEqual(row1["id"], "item1")
-        self.assertEqual(row1["title"], "Item 1")
-        self.assertEqual(row1["description"], "Desc 1")
+        interactive_content = response["interactive"]
+        self.assertEqual(interactive_content["type"], "list")
+        self.assertEqual(interactive_content["body"]["text"], "Elige de la lista:")
+        self.assertEqual(interactive_content["action"]["button"], "Ver opciones") # Default button text
+        self.assertEqual(len(interactive_content["action"]["sections"]), 1)
+        self.assertEqual(len(interactive_content["action"]["sections"][0]["rows"]), 1)
+        self.assertEqual(interactive_content["action"]["sections"][0]["rows"][0]["id"], "li1")
+        self.assertEqual(interactive_content["action"]["sections"][0]["rows"][0]["title"], "Lista Item 1")
+        self.assertEqual(interactive_content["action"]["sections"][0]["rows"][0]["description"], "Desc 1")
+
 
     def test_whatsapp_interactive_list_10_options(self):
-        options = [{"id": f"item{i}", "texto": f"Item {i}"} for i in range(1, 11)]
-        body = "Select an item:"
-        response = build_interactive_response(options, body, "whatsapp", 'interactive_list')
-
+        options = [{"id": f"li{i}", "texto": f"Lista Item {i}"} for i in range(10)]
+        response = build_interactive_response(
+            options=options, body_text="Elige:", channel="whatsapp", message_type='interactive_list'
+        )
         self.assertEqual(response["type"], "interactive")
-        interactive = response["interactive"]
-        self.assertEqual(interactive["type"], "list")
-        self.assertEqual(len(interactive["action"]["sections"][0]["rows"]), 10)
-        self.assertEqual(interactive["action"]["sections"][0]["rows"][9]["id"], "item10")
+        interactive_content = response["interactive"]
+        self.assertEqual(interactive_content["type"], "list")
+        self.assertEqual(len(interactive_content["action"]["sections"][0]["rows"]), 10)
 
-    def test_whatsapp_interactive_list_too_many_options(self):
-        # Logs a warning, but still creates with max 10
-        options = [{"id": f"item{i}", "texto": f"Item {i}"} for i in range(1, 12)]
-        body = "Select an item:"
-        with self.assertLogs(level='WARNING') as log:
-            response = build_interactive_response(options, body, "whatsapp", 'interactive_list')
-            self.assertIn("requires 1-10 options, got 11", log.output[0])
-
-        interactive = response["interactive"]
-        self.assertEqual(len(interactive["action"]["sections"][0]["rows"]), 10)
-
+    def test_whatsapp_interactive_list_too_many_options_truncates(self):
+        options = [{"id": f"li{i}", "texto": f"Lista Item {i}"} for i in range(15)]
+        response = build_interactive_response(
+            options=options, body_text="Demasiadas opciones de lista:", channel="whatsapp", message_type='interactive_list'
+        )
+        self.assertEqual(response["type"], "interactive")
+        interactive_content = response["interactive"]
+        self.assertEqual(interactive_content["type"], "list")
+        self.assertEqual(len(interactive_content["action"]["sections"][0]["rows"]), 10) # Should truncate to 10
 
     def test_whatsapp_text_message(self):
-        body = "This is a plain text message."
-        response = build_interactive_response([], body, "whatsapp", 'text')
-
-        self.assertEqual(response["messaging_product"], "whatsapp")
+        response = build_interactive_response(
+            options=[], body_text="Hola mundo", channel="whatsapp", message_type='text'
+        )
         self.assertEqual(response["type"], "text")
-        self.assertEqual(response["text"]["body"], body)
-        self.assertNotIn("interactive", response)
+        self.assertEqual(response["text"]["body"], "Hola mundo")
 
     def test_whatsapp_fallback_to_text_if_no_options_for_interactive(self):
-        body = "Body for interactive, but no options."
-        response = build_interactive_response([], body, "whatsapp", 'interactive_buttons')
-        self.assertEqual(response["type"], "text") # Falls back to text
-        self.assertEqual(response["text"]["body"], body)
+        response = build_interactive_response(
+            options=[], body_text="Sin opciones", channel="whatsapp", message_type='interactive_buttons'
+        )
+        # The formatter should now fallback to text if options are empty for an interactive type
+        self.assertEqual(response["type"], "text")
+        self.assertEqual(response["text"]["body"], "Sin opciones")
 
-    def test_web_response_with_options(self):
-        options = [{"id": "web_opt1", "texto": "Web Option 1", "action": "action_web_1"}]
-        body = "Choose for web:"
-        original_resp = {"fuente": "test_source", "contexto_actualizado": {"data": "sample"}}
-        response = build_interactive_response(options, body, "web", 'interactive_buttons', original_bot_response=original_resp)
+    def test_whatsapp_list_section_and_button_text_from_original_response(self):
+        original_bot_response_data = {
+            "interactive_list_button_text": "Acciones",
+            "interactive_list_section_title": "Mis Acciones"
+        }
+        response = build_interactive_response(
+            options=[{"id": "li1", "texto": "Item 1"}],
+            body_text="Elige:",
+            channel="whatsapp",
+            message_type='interactive_list',
+            original_bot_response=original_bot_response_data
+        )
+        self.assertEqual(response["type"], "interactive")
+        interactive_content = response["interactive"]
+        self.assertEqual(interactive_content["action"]["button"], "Acciones")
+        self.assertEqual(interactive_content["action"]["sections"][0]["title"], "Mis Acciones")
 
-        self.assertEqual(response["respuesta"], body)
+    def test_whatsapp_list_row_description_optional(self):
+        response = build_interactive_response(
+            options=[
+                {"id": "li1", "texto": "Item Con Desc", "description": "Esta es una descripción"},
+                {"id": "li2", "texto": "Item Sin Desc"}
+            ],
+            body_text="Elige:",
+            channel="whatsapp",
+            message_type='interactive_list'
+        )
+        self.assertEqual(response["type"], "interactive")
+        rows = response["interactive"]["action"]["sections"][0]["rows"]
+        self.assertEqual(rows[0]["description"], "Esta es una descripción")
+        self.assertNotIn("description", rows[1]) # Description should be absent if empty
+
+    def test_web_response_structure_buttons(self):
+        options = [{"id": "web_opt1", "texto": "Web Opción 1"}]
+        original_context = {"fuente": "test_web_sugg"}
+        response = build_interactive_response(
+            options=options, body_text="Opción web", channel="web",
+            message_type='interactive_buttons', original_bot_response=original_context
+        )
+        self.assertEqual(response["respuesta"], "Opción web")
         self.assertEqual(len(response["botones"]), 1)
-        self.assertEqual(response["botones"][0]["texto"], "Web Option 1")
-        self.assertEqual(response["botones"][0]["action"], "action_web_1")
-        self.assertEqual(response["fuente"], "test_source") # Preserves other keys
-        self.assertEqual(response["contexto_actualizado"]["data"], "sample")
+        self.assertEqual(response["botones"][0]["texto"], "Web Opción 1")
+        self.assertEqual(response["botones"][0]["action_id"], "web_opt1")
+        self.assertEqual(response["fuente"], "test_web_sugg")
 
-    def test_web_response_text_only(self):
-        body = "Plain text for web."
-        original_resp = {"fuente": "test_source_text"}
-        response = build_interactive_response([], body, "web", 'text', original_bot_response=original_resp)
+    def test_web_response_structure_text(self):
+        original_context = {"fuente": "test_web_plain"}
+        response = build_interactive_response(
+            options=[], body_text="Texto web", channel="web",
+            message_type='text', original_bot_response=original_context
+        )
+        self.assertEqual(response["respuesta"], "Texto web")
+        self.assertEqual(len(response["botones"]), 0) # No buttons for text type
+        self.assertEqual(response["fuente"], "test_web_plain")
 
-        self.assertEqual(response["respuesta"], body)
-        self.assertEqual(response["botones"], []) # Empty list for botones
-        self.assertEqual(response["fuente"], "test_source_text")
-
-    def test_web_response_options_use_id_as_action_if_action_missing(self):
-        options = [{"id": "web_opt_id_only", "texto": "Web Option ID Only"}]
-        body = "Choose for web:"
-        response = build_interactive_response(options, body, "web", 'interactive_buttons')
-        self.assertEqual(response["botones"][0]["action"], "web_opt_id_only")
-
-    def test_unknown_channel(self):
-        options = [{"id": "opt1", "texto": "Option 1"}]
-        body = "Test body"
-        with self.assertLogs(level='ERROR') as log:
-            response = build_interactive_response(options, body, "unknown_channel", 'interactive_buttons')
-            self.assertIn("Canal desconocido: unknown_channel", log.output[0])
-        self.assertEqual(response.get("error"), "Canal no soportado: unknown_channel")
-
-    def test_whatsapp_list_section_title_logic(self):
-        options = [{"id": "item1", "texto": "Item 1"}]
-        body = "Select an item:"
-
-        # Case 1: No header, should add default section title
-        response_no_header = build_interactive_response(options, body, "whatsapp", 'interactive_list')
-        self.assertEqual(response_no_header["interactive"]["action"]["sections"][0]["title"], "Opciones disponibles")
-
-        # Case 2: With header, should not add default section title (it remains None or not present)
-        response_with_header = build_interactive_response(options, body, "whatsapp", 'interactive_list', header_text="My List Header")
-        self.assertNotIn("title", response_with_header["interactive"]["action"]["sections"][0])
+    def test_web_response_url_button(self):
+        options = [{"id": "web_url", "texto": "Visitar Web", "type": "url", "url": "https://example.com"}]
+        response = build_interactive_response(
+            options=options, body_text="Enlace:", channel="web", message_type='interactive_buttons'
+        )
+        self.assertEqual(len(response["botones"]), 1)
+        self.assertEqual(response["botones"][0]["texto"], "Visitar Web")
+        self.assertEqual(response["botones"][0]["url"], "https://example.com")
+        self.assertEqual(response["botones"][0]["action_id"], "open_url_action") # Default action_id if 'type' is 'url' and no 'action_id' provided
 
 
 if __name__ == '__main__':

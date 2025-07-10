@@ -31,11 +31,11 @@ class TicketServiceTests(unittest.TestCase):
         # Patch the 'models' module so ServicioTickets imports our dummy models
         self.mod_patch = patch.dict(sys.modules, {'models': models_stub})
         self.mod_patch.start()
-        importlib.reload(ts)
+        importlib.reload(ts) # Reload to make sure it picks up the patched models
 
     def tearDown(self):
         self.mod_patch.stop()
-        importlib.reload(ts)
+        importlib.reload(ts) # Reload again to restore original imports for other tests
 
     def test_guardar_encuesta_crea_objeto(self):
         service = ServicioTickets()
@@ -46,46 +46,80 @@ class TicketServiceTests(unittest.TestCase):
     def test_mapa_filtra_por_municipio(self):
         DummyTicket = SimpleNamespace
 
+        # Mocking the structure that obtener_tickets_con_ubicacion_para_mapa would query
+        # This test needs to be adapted if the internal logic of the method changes significantly.
+        # For now, we assume it queries and filters.
         class DummyQuery(list):
             def filter_by(self, **kwargs):
-                return DummyQuery([t for t in self if all(getattr(t, k) == v for k, v in kwargs.items())])
+                # Simple filter_by mock
+                return DummyQuery([t for t in self if all(getattr(t, k, None) == v for k, v in kwargs.items())])
+            def filter(self, *criterion): # Add basic filter mock
+                # This is a very basic mock for .filter(Model.latitud.isnot(None), ...)
+                # It won't actually evaluate complex SQLAlchemy criterion.
+                return self
             def all(self):
                 return list(self)
 
-        t1 = DummyTicket(id=1, estado='abierto', latitud=1, longitud=2, municipio_id=5)
-        t2 = DummyTicket(id=2, estado='abierto', latitud=3, longitud=4, municipio_id=6)
+        # Sample data that would be in the DB
+        from datetime import datetime # Needed for fecha
+        t1 = DummyTicket(id=1, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        t2 = DummyTicket(id=2, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None) # Same location as t1
+        t3 = DummyTicket(id=3, estado='abierto', latitud=11.0, longitud=21.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        t4 = DummyTicket(id=4, estado='abierto', latitud=12.0, longitud=22.0, municipio_id=6, fecha=datetime.utcnow(), categoria=None, asunto=None) # Different municipio
 
         class DummyModel:
-            query = DummyQuery([t1, t2])
+            query = DummyQuery([t1, t2, t3, t4])
 
-        with patch.object(ts, 'MunicipioTicket', DummyModel):
+        with patch.object(ts, 'MunicipioTicket', DummyModel): # Patch where MunicipioTicket is used in the service
             service = ServicioTickets()
-            res = service.obtener_tickets_abiertos_con_ubicacion('municipio', municipio_id=5)
+            # Call the CORRECTED method name
+            res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='municipio', municipio_id=5)
 
-        self.assertEqual(len(res), 1)
-        self.assertEqual(res[0]['id'], 1)
+        # The method now returns a list of dicts with "location" and "weight"
+        # We expect two distinct locations for municipio_id=5: (10.0, 20.0) with weight 2, and (11.0, 21.0) with weight 1
+        self.assertEqual(len(res), 2)
+
+        found_loc1 = False
+        found_loc2 = False
+        for item in res:
+            # Rounding might occur in the service, so compare with tolerance or ensure mock data uses expected precision
+            if abs(item['location']['lat'] - 10.0) < 0.0001 and abs(item['location']['lng'] - 20.0) < 0.0001 and item['weight'] == 2:
+                found_loc1 = True
+            if abs(item['location']['lat'] - 11.0) < 0.0001 and abs(item['location']['lng'] - 21.0) < 0.0001 and item['weight'] == 1:
+                found_loc2 = True
+
+        self.assertTrue(found_loc1, "Location (10.0, 20.0) with weight 2 not found")
+        self.assertTrue(found_loc2, "Location (11.0, 21.0) with weight 1 not found")
+
 
     def test_mapa_filtra_por_rubro(self):
         DummyTicket = SimpleNamespace
-
         class DummyQuery(list):
             def filter_by(self, **kwargs):
-                return DummyQuery([t for t in self if all(getattr(t, k) == v for k, v in kwargs.items())])
+                return DummyQuery([t for t in self if all(getattr(t, k, None) == v for k, v in kwargs.items())])
+            def filter(self, *criterion):
+                return self
             def all(self):
                 return list(self)
 
-        t1 = DummyTicket(id=1, estado='abierto', latitud=1, longitud=2, rubro_id=5)
-        t2 = DummyTicket(id=2, estado='abierto', latitud=3, longitud=4, rubro_id=7)
+        from datetime import datetime # Needed for fecha
+        t1 = DummyTicket(id=1, estado='abierto', latitud=10.0, longitud=20.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        t2 = DummyTicket(id=2, estado='abierto', latitud=11.0, longitud=21.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        t3 = DummyTicket(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None) # Different rubro
 
         class DummyModel:
-            query = DummyQuery([t1, t2])
+            query = DummyQuery([t1, t2, t3])
 
-        with patch.object(ts, 'PymeTicket', DummyModel):
+        with patch.object(ts, 'PymeTicket', DummyModel): # Patch where PymeTicket is used
             service = ServicioTickets()
-            res = service.obtener_tickets_abiertos_con_ubicacion('pyme', rubro_id=5)
+            # Call the CORRECTED method name
+            res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='pyme', rubro_id=5)
 
-        self.assertEqual(len(res), 1)
-        self.assertEqual(res[0]['id'], 1)
+        # Expecting two items for rubro_id=5, each with weight 1 as they are distinct locations
+        self.assertEqual(len(res), 2)
+        self.assertTrue(any(abs(d['location']['lat'] - 10.0) < 0.0001 and d['weight'] == 1 for d in res))
+        self.assertTrue(any(abs(d['location']['lat'] - 11.0) < 0.0001 and d['weight'] == 1 for d in res))
+
 
 if __name__ == '__main__':
     unittest.main()
