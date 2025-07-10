@@ -1464,42 +1464,70 @@ class ReclamoHandler(BaseMunicipioHandler):
                 config_muni_parseo_nombre = self.context.get("municipio_config") or CONFIG_MUNICIPIO
                 potential_address_parts = parse_direccion_completa(nombre_input, config_muni_parseo_nombre)
                 
-                is_likely_address = False
+                # NUEVA LÓGICA DE DESAMBIGUACIÓN:
+                is_actually_a_name = False
                 if potential_address_parts and isinstance(potential_address_parts, dict):
-                    has_street = bool(potential_address_parts.get("calle"))
-                    has_number = bool(potential_address_parts.get("numero"))
-                    has_locality = bool(potential_address_parts.get("localidad"))
-                    has_province = bool(potential_address_parts.get("provincia"))
+                    parsed_calle = potential_address_parts.get("calle")
+                    parsed_numero = potential_address_parts.get("numero")
 
-                    if has_street and (has_number or has_locality):
-                        is_likely_address = True
-                    elif has_locality and has_province and len(nombre_input.split()) >= 2:
-                        is_likely_address = True
-                    elif has_street and has_province and len(nombre_input.split()) >= 2:
-                        is_likely_address = True
-                    elif has_street and not (has_number or has_locality or has_province):
-                        common_street_indicators = ["calle", "avenida", "avda", "av.", "av ", "pasaje", "psje", "ruta", "bv.", "bv ", "bulevar", "diag.", "diag ", "diagonal"]
-                        normalized_input_lower = nombre_input.lower()
-                        if any(normalized_input_lower.startswith(indicator) for indicator in common_street_indicators):
+                    if parsed_calle == nombre_input and \
+                       not any(char.isdigit() for char in parsed_calle) and \
+                       parsed_numero is None:
+
+                        other_significant_details = False
+                        if potential_address_parts.get("otros_detalles") and \
+                           any(kword in potential_address_parts["otros_detalles"].lower() for kword in ["esquina", "entre", "frente a", "piso", "depto", "departamento"]):
+                            other_significant_details = True
+
+                        # Considerar solo las claves que NO son las esperadas como defaults o calle/numero(None)
+                        # Si solo quedan defaults (localidad, provincia) o ninguna otra clave significativa, es un nombre.
+                        keys_in_parsed_with_values = {k for k, v in potential_address_parts.items() if v is not None}
+                        non_default_or_simple_street_keys = keys_in_parsed_with_values - {"calle", "localidad", "provincia", "numero"}
+
+                        if not other_significant_details and not non_default_or_simple_street_keys:
+                             is_actually_a_name = True
+                             logger.info(f"[ReclamoHandler] Heurística: Input '{nombre_input}' parece nombre a pesar de parseo con defaults. Parsed: {potential_address_parts}")
+
+                if not is_actually_a_name:
+                    is_likely_address = False
+                    if potential_address_parts and isinstance(potential_address_parts, dict):
+                        has_street = bool(potential_address_parts.get("calle"))
+                        has_number = bool(potential_address_parts.get("numero"))
+                        has_locality = bool(potential_address_parts.get("localidad"))
+                        has_province = bool(potential_address_parts.get("provincia"))
+
+                        if has_street and (has_number or has_locality):
                             is_likely_address = True
-                        elif potential_address_parts.get("calle") and any(indicator in potential_address_parts.get("calle").lower() for indicator in common_street_indicators):
-                             is_likely_address = True
-                        elif potential_address_parts.get("calle") and any(char.isdigit() for char in potential_address_parts.get("calle")):
+                        elif has_locality and has_province and len(nombre_input.split()) >= 2:
                             is_likely_address = True
-                        # If only a street name was parsed, and it's multi-word without indicators or numbers, it's ambiguous.
-                        # Example: "Marcelo Guillen" could be parsed as {'calle': 'Marcelo Guillen'}.
-                        # We want to avoid flagging this as an address.
-                        # So, if has_street is true ONLY because parse_direccion_completa put the whole input into "calle",
-                        # and it lacks other address signals, consider it NOT an address.
-                        elif len(potential_address_parts) == 1 and potential_address_parts.get("calle") == nombre_input and not any(char.isdigit() for char in nombre_input):
-                             is_likely_address = False
+                        elif has_street and has_province and len(nombre_input.split()) >= 2: # e.g. "Calle Falsa, Mendoza"
+                            is_likely_address = True
+                        elif has_street and not (has_number or has_locality or has_province):
+                            common_street_indicators = ["calle", "avenida", "avda", "av.", "av ", "pasaje", "psje", "ruta", "bv.", "bv ", "bulevar", "diag.", "diag ", "diagonal"]
+                            normalized_input_lower = nombre_input.lower()
+                            if any(normalized_input_lower.startswith(indicator) for indicator in common_street_indicators):
+                                is_likely_address = True
+                            elif potential_address_parts.get("calle") and any(indicator in potential_address_parts.get("calle").lower() for indicator in common_street_indicators):
+                                 is_likely_address = True
+                            elif potential_address_parts.get("calle") and any(char.isdigit() for char in potential_address_parts.get("calle")):
+                                is_likely_address = True
+                            elif len(potential_address_parts) == 1 and potential_address_parts.get("calle") == nombre_input and not any(char.isdigit() for char in nombre_input):
+                                 is_likely_address = False
+
+                        # Adicional: si tiene "otros_detalles" como "esquina", "piso", "depto", es probable dirección
+                        if potential_address_parts.get("otros_detalles") and \
+                           any(kword in potential_address_parts["otros_detalles"].lower() for kword in ["esquina", "entre", "frente a", "piso", "depto", "departamento"]):
+                            if has_street : # solo si tambien tiene calle
+                                is_likely_address = True
 
 
-                if is_likely_address:
-                    logger.warning(f"[ReclamoHandler] Input '{nombre_input}' para NOMBRE parece una dirección. Parsed: {potential_address_parts}. Repreguntando nombre.")
-                    return {"respuesta": "Estaba esperando tu nombre y apellido, pero parece que ingresaste una dirección. ¿Podrías decirme tu nombre, por favor?"}
+                    if is_likely_address: # Solo si la lógica original lo marca como dirección
+                        logger.warning(f"[ReclamoHandler] Input '{nombre_input}' para NOMBRE parece una dirección (lógica original). Parsed: {potential_address_parts}. Repreguntando nombre.")
+                        return {"respuesta": "Estaba esperando tu nombre y apellido, pero parece que ingresaste una dirección. ¿Podrías decirme tu nombre, por favor?"}
+
+                # Si is_actually_a_name es True, O si la lógica original de is_likely_address resultó False,
+                # entonces NO se considera dirección y continúa el flujo normal.
                 
-                # Si la entrada es un número y podría ser un teléfono, no interrumpir el flujo de reclamo.
                 if validar_telefono(nombre_input):
                     logger.warning(f"[ReclamoHandler] Input '{nombre_input}' para NOMBRE parece un teléfono. Repreguntando nombre sin perder contexto.")
                     return {"respuesta": "Estaba esperando tu nombre y apellido, pero eso parece un número de teléfono. ¿Podrías decírmelos, por favor?"}
