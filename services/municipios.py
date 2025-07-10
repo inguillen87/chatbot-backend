@@ -789,6 +789,17 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         for kw in self.KEYWORDS_SUGERENCIA:
             if kw in texto_normalizado: self.context["intencion"] = "hacer_sugerencia"; logger.info(f"[MUNICIPIO] Intención: hacer_sugerencia (por palabra clave '{kw}')"); return None
 
+        # NEW: Check for direct category match for reclamo if no intent set yet and input is short
+        if not self.context.get("intencion") and len(texto_normalizado.split()) <= 3:
+            # CATEGORIAS_RECLAMO and categorias_normalizadas are defined at the bottom of this file.
+            # Make sure they are accessible here (e.g., defined globally in the module or imported if moved).
+            if texto_normalizado in categorias_normalizadas: # categorias_normalizadas is already lowercased
+                self.context["intencion"] = "iniciar_reclamo"
+                logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por match directo de categoría corta '{texto_normalizado}')")
+                # Do not clear memoria here, let ReclamoHandler decide based on this new intent.
+                # If 'analisis_imagen_reclamo_auto_raw' exists, it should be preserved.
+                return None # Important: return None to let the main loop call ReclamoHandler next.
+
         intencion_llm = _clasificar_intencion_con_llm(pregunta_str) 
         self.context["intencion"] = intencion_llm
         logger.info(f"[MUNICIPIO] Intención (final por LLM): {self.context.get('intencion')}"); return None
@@ -1077,11 +1088,15 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
                         memoria[campo] = valor_campo.strip()
             
             # Refined Category Logic
-            llm_category_raw = datos_extraidos_reclamo_inteligente.get("categoria", "").strip()
+            llm_category_value = datos_extraidos_reclamo_inteligente.get("categoria") # Get value, could be None or string
+            llm_category_raw = "" # Default to empty string
+            if isinstance(llm_category_value, str):
+                llm_category_raw = llm_category_value.strip()
+
             # Use description from memoria (which might be from LLM) or fallback to pregunta_str for keyword categorization
             current_description_for_cat = memoria.get("descripcion_reclamo", pregunta_str) 
 
-            if llm_category_raw:
+            if llm_category_raw: # This will now correctly be an empty string if category was not a string or not present
                 matched_category_from_llm = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(llm_category_raw)), None)
                 if not matched_category_from_llm: # Try fuzzy match if exact fails
                     close_matches_llm = difflib.get_close_matches(normalizar_texto(llm_category_raw), categorias_normalizadas, n=1, cutoff=0.7)
