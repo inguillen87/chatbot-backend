@@ -1297,7 +1297,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                     categoria_mem = memoria.get('categoria_reclamo', '')
                     cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
                     ack_adjunto = memoria.get("mensaje_adjunto_recibido", "")
-
                     body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
 
                     options_pedir_direccion = []
@@ -1347,23 +1346,27 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "fuente": "solicitud_categoria_reclamo_inicio_v4"
                 }
 
-        # If 'categoria_reclamo' was already in memoria and address was also in memoria,
-        # state is now ESPERANDO_NOMBRE_VECINO.
-        # pregunta_str might have been cleared if it was the category.
-        # The code will now fall through to the main while loop.
-        if estado is None and memoria.get("estado_conversacion"):  # Update local 'estado' if the block above set it
-            try:
-                estado = ConversationState[memoria["estado_conversacion"]]
-            except:
-                pass
-
+            # If 'categoria_reclamo' was already in memoria and address was also in memoria,
+            # state is now ESPERANDO_NOMBRE_VECINO.
+            # pregunta_str might have been cleared if it was the category.
+            # The code will now fall through to the main while loop.
+            if estado is None and memoria.get("estado_conversacion"):  # Update local 'estado' if the block above set it
+                try:
+                    estado = ConversationState[memoria["estado_conversacion"]]
+                except:
+                    pass
 
         if not estado or estado not in RECLAMO_STATES:
             # If intencion was "iniciar_reclamo" and estado is still None here, it means the initial block
             # (where the fix was applied) did NOT set a state and did NOT return. This would be an error in that block.
             if intencion == "iniciar_reclamo" and estado is None:
-                 logger.error("[ReclamoHandler] Lógica de inicio de reclamo (intencion 'iniciar_reclamo', estado None) no resultó en un estado válido para continuar ni retornó una pregunta de categoría. Esto indica un error en el flujo inicial. Abortando.")
-                 return {"message_body":"Error interno al procesar el inicio de su reclamo. Por favor, intente de nuevo más tarde.", "options_list":[], "message_type":"text", "fuente":"reclamo_error_flujo_inicio_inesperado"}
+                logger.error("[ReclamoHandler] Lógica de inicio de reclamo (intencion 'iniciar_reclamo', estado None) no resultó en un estado válido para continuar ni retornó una pregunta de categoría. Esto indica un error en el flujo inicial. Abortando.")
+                return {
+                    "message_body": "Error interno al procesar el inicio de su reclamo. Por favor, intente de nuevo más tarde.",
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "reclamo_error_flujo_inicio_inesperado"
+                }
 
             # If not an "iniciar_reclamo" intent, or if state is not a RECLAMO_STATE, then this handler is not active for this input.
             logger.debug(f"[ReclamoHandler] Intención '{intencion}' o estado '{estado.name if estado else 'None'}' no son para este handler en este punto (o el flujo inicial de reclamo no se activó). No se maneja aquí.")
@@ -1371,15 +1374,23 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
         is_known_action_button = payload.get("action") in ["adjuntar_foto", "compartir_ubicacion", "sin_adjuntos", "confirmar_reclamo", "editar_reclamo"]
-        llm_extraction_beneficial_states = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO]
+        llm_extraction_beneficial_states = [
+            ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
+            ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+            ConversationState.ESPERANDO_NOMBRE_VECINO,
+            ConversationState.ESPERANDO_TELEFONO_VECINO,
+            ConversationState.ESPERANDO_EMAIL_VECINO,
+            ConversationState.ESPERANDO_DESCRIPCION_RECLAMO
+        ]
 
         # Enhanced LLM extraction at the beginning of relevant states or for general input during reclamo
         # Only run LLM if pregunta_str is not a simple confirmation, not a known action, and is not empty.
-        if estado in llm_extraction_beneficial_states and \
-           pregunta_str and \
-           not is_simple_confirmation and \
-           not is_known_action_button:
-
+        if (
+            estado in llm_extraction_beneficial_states
+            and pregunta_str
+            and not is_simple_confirmation
+            and not is_known_action_button
+        ):
             logger.info(f"[ReclamoHandler_LLM_ENHANCED] Attempting LLM extraction for state {estado.name if isinstance(estado, Enum) else estado} with input: '{pregunta_str}'")
             # Use extract_multiple_contact_details_llm for broader extraction
             # Define fields relevant to the current state or all reclamo fields
@@ -1389,7 +1400,6 @@ class ReclamoHandler(BaseMunicipioHandler):
             ]
             # extracted_details = extract_complaint_details_llm(pregunta_str) # Original
             extracted_details = extract_multiple_contact_details_llm(pregunta_str, potential_fields_for_llm)
-
 
             if extracted_details:
                 logger.info(f"[ReclamoHandler_LLM_ENHANCED] LLM Extracted: {extracted_details}")
@@ -1401,9 +1411,13 @@ class ReclamoHandler(BaseMunicipioHandler):
                     matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(cat_text)), None)
                     if not matched_category:
                         close_matches = difflib.get_close_matches(normalizar_texto(cat_text), categorias_normalizadas, n=1, cutoff=0.7)
-                        if close_matches: idx = categorias_normalizadas.index(close_matches[0]); matched_category = CATEGORIAS_RECLAMO[idx]
+                        if close_matches:
+                            idx = categorias_normalizadas.index(close_matches[0])
+                            matched_category = CATEGORIAS_RECLAMO[idx]
                     if matched_category:
-                        memoria["categoria_reclamo"] = matched_category; llm_updated_any_field_in_this_pass = True; logger.info(f"LLM set categoria_reclamo: {matched_category}")
+                        memoria["categoria_reclamo"] = matched_category
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set categoria_reclamo: {matched_category}")
 
                 if 'ubicacion_problema' in extracted_details and extracted_details['ubicacion_problema'] and not memoria.get("direccion_reclamo"):
                     addr_text = extracted_details['ubicacion_problema'].strip()
@@ -1413,9 +1427,12 @@ class ReclamoHandler(BaseMunicipioHandler):
                         memoria["direccion_estructurada_reclamo"] = parsed_llm_address
                         direccion_llm_confirmacion = f"{parsed_llm_address['calle']} {parsed_llm_address.get('numero', '')}, {parsed_llm_address['localidad']}".replace(" ,", ",").strip()
                         memoria["direccion_reclamo"] = direccion_llm_confirmacion
-                        llm_updated_any_field_in_this_pass = True; logger.info(f"LLM set direccion_reclamo (structured): {direccion_llm_confirmacion}")
-                    elif direccion_es_valida(addr_text): # Fallback if structured parse fails but basic valid
-                        memoria["direccion_reclamo"] = addr_text; llm_updated_any_field_in_this_pass = True; logger.info(f"LLM set direccion_reclamo (basic valid): {addr_text}")
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set direccion_reclamo (structured): {direccion_llm_confirmacion}")
+                    elif direccion_es_valida(addr_text):  # Fallback if structured parse fails but basic valid
+                        memoria["direccion_reclamo"] = addr_text
+                        llm_updated_any_field_in_this_pass = True
+                        logger.info(f"LLM set direccion_reclamo (basic valid): {addr_text}")
 
                 if 'descripcion_problema' in extracted_details and extracted_details['descripcion_problema'] and not memoria.get("descripcion_reclamo"):
                     desc_text = extracted_details['descripcion_problema'].strip()
