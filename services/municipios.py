@@ -173,7 +173,7 @@ def agregar_botones_para_links(texto: str, botones: list) -> list:
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+17432643718"
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
