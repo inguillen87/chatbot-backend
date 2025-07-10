@@ -750,26 +750,49 @@ class IntentClassifierHandler(BaseMunicipioHandler):
             return None
 
         # No active state, classify intent from scratch
+
+        # --- START: More explicit phrase matching for common intents ---
+        # Order matters: more specific or critical intents first.
+        
+        # PANIC
         for kw in self.KEYWORDS_PANICO:
             if kw in texto_normalizado:
                 self.context["intencion"] = "activar_panico"
                 clear_memoria_preserving_image_analysis(memoria)
                 logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword '{kw}')"); return None
+        
+        # AGENTE
         for kw in self.KEYWORDS_AGENTE:
             if kw in texto_normalizado:
                 self.context["intencion"] = "hablar_con_agente"
                 clear_memoria_preserving_image_analysis(memoria)
                 logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword '{kw}')"); return None
 
-        # For intents that don't necessarily need to preserve image analysis if they take over:
-        # (Consider if image context should be cleared or preserved for these too)
-        # For now, let's assume these intents fully take over and previous image context might not be relevant.
-        # If image context IS relevant (e.g. "comprar ESTO que veo en la foto"), then
-        # `clear_memoria_preserving_image_analysis` should be used, or a more nuanced clearing.
-        # Current logic: these intents will clear the full memoria including image analysis.
-        # This is a design choice: if user asks to buy something after sending an image of a pothole,
-        # the pothole image context is probably not relevant to the purchase.
+        # Explicit RECLAMO phrases (added for more robustness)
+        reclamo_phrases = [
+            "quiero hacer un reclamo", "necesito hacer un reclamo", "vengo a reclamar", 
+            "hacer un reclamo", "presentar una queja", "reportar un problema"
+        ]
+        for phrase in reclamo_phrases:
+            if normalizar_texto(phrase) in texto_normalizado: # Check if the normalized phrase is IN the normalized input
+                self.context["intencion"] = "iniciar_reclamo"
+                logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por frase explícita '{phrase}')")
+                # memoria.clear() # Clearing memoria here might be too soon if image analysis data exists
+                                  # Let ReclamoHandler manage its own memory more carefully.
+                                  # However, if intent is clearly new, some clearing might be needed.
+                                  # For now, rely on ReclamoHandler's initial memory clear.
+                return None
 
+        # General RECLAMO keywords (original logic)
+        for kw in self.KEYWORDS_RECLAMO:
+            if kw in texto_normalizado: 
+                self.context["intencion"] = "iniciar_reclamo"
+                logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por palabra clave general '{kw}')")
+                return None
+        # --- END: More explicit phrase matching ---
+
+
+        # For intents that don't necessarily need to preserve image analysis if they take over:
         for kw in self.KEYWORDS_INICIAR_COMPRA:
             if kw in texto_normalizado: self.context["intencion"] = "iniciar_compra"; memoria.clear(); logger.info(f"[COMERCIO] Intención: iniciar_compra (por keyword '{kw}')"); return None
         for kw in self.KEYWORDS_VER_CARRITO:
@@ -780,16 +803,21 @@ class IntentClassifierHandler(BaseMunicipioHandler):
             if kw in texto_normalizado: self.context["intencion"] = "solicitar_ubicacion_tienda"; logger.info(f"[COMERCIO] Intención: solicitar_ubicacion_tienda (por keyword '{kw}')"); return None
         for kw in self.KEYWORDS_RECLAMO_PEDIDO:
             if kw in texto_normalizado: self.context["intencion"] = "reclamo_pedido"; logger.info(f"[COMERCIO] Intención: reclamo_pedido (por keyword '{kw}')"); return None
+        
+        # TICKET STATUS (moved after reclamo phrases, before general reclamo keywords)
         for kw in self.KEYWORDS_TICKET_STATUS:
             if kw in texto_normalizado: self.context["intencion"] = "consultar_estado_ticket"; logger.info(f"[MUNICIPIO] Intención: consultar_estado_ticket (por keyword '{kw}')"); return None
-        for kw in self.KEYWORDS_RECLAMO:
-            if kw in texto_normalizado: self.context["intencion"] = "iniciar_reclamo"; logger.info(f"[MUNICIPIO] Intención: iniciar_reclamo (por palabra clave '{kw}')"); return None
+        
+        # TRAMITE
         for kw in self.KEYWORDS_TRAMITE:
             if kw in texto_normalizado: self.context["intencion"] = "consultar_tramite"; logger.info(f"[MUNICIPIO] Intención: consultar_tramite (por palabra clave '{kw}')"); return None
+        
+        #SUGERENCIA
         for kw in self.KEYWORDS_SUGERENCIA:
             if kw in texto_normalizado: self.context["intencion"] = "hacer_sugerencia"; logger.info(f"[MUNICIPIO] Intención: hacer_sugerencia (por palabra clave '{kw}')"); return None
 
-        # NEW: Check for direct category match for reclamo if no intent set yet and input is short
+        # Direct category match for RECLAMO (if no other intent matched by keywords and input is short)
+        # This should come AFTER specific phrase matches for reclamo, but before LLM fallback.
         if not self.context.get("intencion") and len(texto_normalizado.split()) <= 3:
             # CATEGORIAS_RECLAMO and categorias_normalizadas are defined at the bottom of this file.
             # Make sure they are accessible here (e.g., defined globally in the module or imported if moved).
@@ -1092,7 +1120,7 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
             llm_category_raw = "" # Default to empty string
             if isinstance(llm_category_value, str):
                 llm_category_raw = llm_category_value.strip()
-
+            
             # Use description from memoria (which might be from LLM) or fallback to pregunta_str for keyword categorization
             current_description_for_cat = memoria.get("descripcion_reclamo", pregunta_str) 
 
@@ -1191,16 +1219,22 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
 
 class ReclamoHandler(BaseMunicipioHandler):
     EDIT_KEYWORDS = ["editar", "cambiar", "corregir", "modificar", "no era asi", "me equivoque", "error"]
+
     def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "") or ""; memoria = self.context[CONTEXTO_MUNICIPIO]
+        pregunta_str = payload.get("pregunta", "") or ""
+        memoria = self.context[CONTEXTO_MUNICIPIO]
 
         estado_str = memoria.get("estado_conversacion")
-        estado = None # Current state as Enum
+        estado = None  # Current state as Enum
         if estado_str:
             if isinstance(estado_str, str):
-                try: estado = ConversationState[estado_str]
-                except KeyError: logger.warning(f"[ReclamoHandler] Invalid state string '{estado_str}' found in memory. Clearing state."); memoria.pop("estado_conversacion", None)
-            elif isinstance(estado_str, ConversationState): estado = estado_str # Already an Enum
+                try:
+                    estado = ConversationState[estado_str]
+                except KeyError:
+                    logger.warning(f"[ReclamoHandler] Invalid state string '{estado_str}' found in memory. Clearing state.")
+                    memoria.pop("estado_conversacion", None)
+            elif isinstance(estado_str, ConversationState):
+                estado = estado_str  # Already an Enum
 
         intencion = self.context.get("intencion")
 
@@ -1211,29 +1245,36 @@ class ReclamoHandler(BaseMunicipioHandler):
             logger.info("[ReclamoHandler] Intención 'iniciar_reclamo' y sin estado previo.")
 
             interacciones_previas = memoria.get("interacciones_anon_sesion")
-            # Limpiar solo campos relevantes al reclamo, no todo el contexto del municipio
             campos_a_limpiar_reclamo = [
                 "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo",
                 "nombre_vecino", "telefono_vecino", "email_vecino",
                 "foto_url", "ubicacion_gps", "direccion_estructurada_reclamo",
-                "mensaje_adjunto_recibido", "analisis_imagen_reclamo_auto",
-                "estado_conversacion" # Limpiar el estado también para empezar de cero el flujo de reclamo
+                "mensaje_adjunto_recibido", "analisis_imagen_reclamo_auto", "estado_conversacion"
             ]
             for campo_limpiar in campos_a_limpiar_reclamo:
                 memoria.pop(campo_limpiar, None)
-
-            if interacciones_previas is not None: # Restaurar si existía
+            if interacciones_previas is not None:
                 memoria["interacciones_anon_sesion"] = interacciones_previas
             logger.info(f"[ReclamoHandler] Memoria de reclamo limpiada. Contexto actual: {memoria}")
 
-            if self.context.get("es_foto") and self.context.get("foto_url"): # No chequear memoria.get("foto_url") aquí
+            pregunta_str_consumida_como_categoria = False
+            logger.info(f"[ReclamoHandler_INIT_BLOCK] Start. pregunta_str: '{pregunta_str}', categoria_reclamo en memoria: {memoria.get('categoria_reclamo')}")
+
+            if self.context.get("es_foto") and self.context.get("foto_url"):
                 memoria["foto_url"] = self.context.get("foto_url")
                 memoria["mensaje_adjunto_recibido"] = "Veo que adjuntaste una foto. "
                 logger.info(f"[ReclamoHandler] Foto {memoria['foto_url']} reconocida del contexto global.")
 
+            if pregunta_str and not memoria.get("categoria_reclamo"):
+                texto_norm_pregunta = normalizar_texto(pregunta_str)
+                if texto_norm_pregunta in categorias_normalizadas:
+                    memoria["categoria_reclamo"] = CATEGORIAS_RECLAMO[categorias_normalizadas.index(texto_norm_pregunta)]
+                    logger.info(f"[ReclamoHandler_INIT_BLOCK] Categoría '{memoria['categoria_reclamo']}' establecida directamente desde pregunta_str '{pregunta_str}'.")
+                    pregunta_str_consumida_como_categoria = True
+
             if self.context.get("analisis_imagen_reclamo_auto"):
                 analisis_img = self.context.get("analisis_imagen_reclamo_auto")
-                if analisis_img.get("categoria") and not memoria.get("categoria_reclamo"): # Solo si no está ya seteada
+                if analisis_img.get("categoria") and not memoria.get("categoria_reclamo"):
                     memoria["categoria_reclamo"] = analisis_img["categoria"]
                     logger.info(f"[ReclamoHandler] Categoría pre-llenada por análisis de imagen: {memoria['categoria_reclamo']}")
                 if analisis_img.get("descripcion") and not memoria.get("descripcion_reclamo"):
@@ -1241,14 +1282,48 @@ class ReclamoHandler(BaseMunicipioHandler):
                     logger.info(f"[ReclamoHandler] Descripción pre-llenada por análisis de imagen: {memoria['descripcion_reclamo'][:50]}")
 
             if memoria.get("categoria_reclamo"):
-                logger.info(f"[ReclamoHandler] Categoría '{memoria['categoria_reclamo']}' ya en memoria. Avanzando a pedir dirección.")
+                logger.info(f"[ReclamoHandler] Categoría '{memoria['categoria_reclamo']}' en memoria. Avanzando a pedir dirección.")
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-                estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
-            else:
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
 
+                if memoria.get("direccion_reclamo"):  # Direccion ya conocida (e.g. de analisis imagen)
+                    logger.info(f"[ReclamoHandler] Dirección '{memoria['direccion_reclamo']}' ya en memoria. Avanzando a pedir nombre.")
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
+                    estado = ConversationState.ESPERANDO_NOMBRE_VECINO  # Update local enum state
+                    if pregunta_str_consumida_como_categoria:
+                        pregunta_str = ""  # Consume if it was the category
+                    # Fall through to the while loop, which will then ask for name if not present
+                else:
+                    # Category known, Address NOT known. Ask for address.
+                    categoria_mem = memoria.get('categoria_reclamo', '')
+                    cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
+                    ack_adjunto = memoria.get("mensaje_adjunto_recibido", "")
+
+                    body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
+
+                    options_pedir_direccion = []
+                    allow_gps = True
+                    if self.context.get("anon_id") and not self.context.get("cliente_id"):
+                        if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
+                            allow_gps = False
+                            body_pedir_direccion += "\n(Para compartir GPS necesitarás estar registrado)."
+                    # Simplified GPS option for testing the return path
+                    options_pedir_direccion.append({"id": "accion_compartir_ubicacion_test", "texto": "📍 GPS Test"})
+
+                    logger.info(f"[ReclamoHandler] TEST: Retornando solicitud de dirección para categoría '{cat_title}'.")
+                    return {
+                        "message_body": body_pedir_direccion,
+                        "options_list": options_pedir_direccion,
+                        "message_type": 'interactive_buttons',  # Assuming options_pedir_direccion will have at least one item
+                        "fuente": "reclamo_pedir_direccion_test_v1"
+                    }
+            else:
+                # Categoria NO en memoria (ni de pregunta_str, ni de imagen) -> pedir categoria
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
                 mensaje_adjunto = memoria.pop("mensaje_adjunto_recibido", "")
-                texto_para_sugerir_categorias = memoria.get("descripcion_reclamo", "")
+
+                texto_para_sugerir_categorias = memoria.get("descripcion_reclamo", "")  # from image
+                if not texto_para_sugerir_categorias and pregunta_str:  # or from current text if it wasn't a category
+                    texto_para_sugerir_categorias = pregunta_str
 
                 sugeridas_data = sugerir_categorias_relevantes(texto_para_sugerir_categorias)
                 options_data = sugeridas_data if (sugeridas_data and len(sugeridas_data) > 0) else CATEGORIAS_RECLAMO
@@ -1256,23 +1331,33 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if not any(opt['id'] == "otro motivo" for opt in options_cat) and "otro motivo" in CATEGORIAS_RECLAMO:
                     options_cat.append({"id": "otro motivo", "texto": "Otro Motivo"})
 
-                    respuesta_texto_cat = f"{mensaje_adjunto}Para continuar con tu reclamo, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
-                # Initialize respuesta_texto_cat before conditional assignment
                 respuesta_texto_cat = f"{mensaje_adjunto}Para continuar con tu reclamo, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
                 if sugeridas_data:
                     respuesta_texto_cat = f"{mensaje_adjunto}Detecté que podría ser sobre algunos de estos temas. Para tu reclamo, ¿cuál sería la categoría?"
 
                 message_type_cat = 'interactive_list' if len(options_cat) > 3 else 'interactive_buttons'
-                if len(options_cat) > 10: logger.warning(f"ReclamoHandler (inicio): Too many options for WhatsApp list.")
+                if len(options_cat) > 10:
+                    logger.warning(f"ReclamoHandler (inicio): Too many options for WhatsApp list.")
 
                 logger.info("[ReclamoHandler] Retornando solicitud de categoría (inicio de flujo, categoría no pre-llenada).")
-                return {"message_body": respuesta_texto_cat, "options_list": options_cat, "message_type": message_type_cat, "fuente": "solicitud_categoria_reclamo_inicio_v4"}
-            # If 'categoria_reclamo' was already in memoria, the code will now fall through to the main while loop,
-            # which is the correct behavior. The 'estado' is already set to ESPERANDO_DIRECCION_RECLAMO.
+                return {
+                    "message_body": respuesta_texto_cat,
+                    "options_list": options_cat,
+                    "message_type": message_type_cat,
+                    "fuente": "solicitud_categoria_reclamo_inicio_v4"
+                }
 
-        # This check needs to be robust. If "iniciar_reclamo" was handled above (either by returning or by setting state to continue),
-        # this condition might behave differently.
-        # The key is that if 'estado' was set (e.g. to ESPERANDO_DIRECCION_RECLAMO), this block should not incorrectly abort.
+        # If 'categoria_reclamo' was already in memoria and address was also in memoria,
+        # state is now ESPERANDO_NOMBRE_VECINO.
+        # pregunta_str might have been cleared if it was the category.
+        # The code will now fall through to the main while loop.
+        if estado is None and memoria.get("estado_conversacion"):  # Update local 'estado' if the block above set it
+            try:
+                estado = ConversationState[memoria["estado_conversacion"]]
+            except:
+                pass
+
+
         if not estado or estado not in RECLAMO_STATES:
             # If intencion was "iniciar_reclamo" and estado is still None here, it means the initial block
             # (where the fix was applied) did NOT set a state and did NOT return. This would be an error in that block.
@@ -1483,19 +1568,17 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                 # Address not known yet. Check for incoming GPS data or actions.
                 action_from_payload = payload.get("action", "").lower()
-                is_gps_action = action_from_payload in ["accion_compartir_ubicacion", "accion_compartir_ubicacion_adj", "accion_compartir_ubicacion_reintento"]
+                # Corrected action strings to match frontend (no underscores)
+                is_gps_action = action_from_payload in ["accioncompartirubicacion", "accioncompartirubicacionadj", "accioncompartirubicacionreintento"]
 
                 if is_gps_action:
                     logger.info(f"[ReclamoHandler] Usuario seleccionó acción GPS: {action_from_payload}")
                     # Acknowledge GPS action, frontend should send location in next request
-                    # We don't transition state yet, wait for actual coordinates.
-                    # TODO: Consider if a specific "AWAITING_GPS_COORDINATES" state would be better,
-                    # but for now, keeping ESPERANDO_DIRECCION_RECLAMO and checking payload.
                     return {
                         "message_body": "Intentando obtener tu ubicación GPS. Por favor, asegurate de tenerla activada y conceder permisos si tu navegador o app lo solicita.",
-                        "options_list": [], # No buttons needed here, awaiting frontend action
+                        "options_list": [], 
                         "message_type": "text",
-                        "fuente": "reclamo_esperando_coordenadas_gps_v1"
+                        "fuente": "reclamo_esperando_coordenadas_gps_v2" # Incremented version
                     }
 
                 if payload.get("es_ubicacion"): # GPS coordinates received from frontend
@@ -2559,69 +2642,38 @@ class TramitesHandler(BaseMunicipioHandler):
                 descripcion_tramite = reemplazar_placeholders(info.get("descripcion", "No hay descripción disponible."), data_placeholders)
                 # Botones de la info del trámite (ej. links) se pondrán en el cuerpo del mensaje para WhatsApp.
                 # Para web, se pueden mantener como botones si el frontend los maneja.
+                # Por ahora, simplificamos: la descripción contendrá todo, y las opciones serán genéricas.
                 
                 options_post_info = [
                     {"id": "consultar_otro_tramite", "texto": "Consultar otro trámite"},
                     {"id": "volver_inicio_tramites", "texto": "Volver al inicio"}
                 ]
-
-                final_options = []
+                # Agregar URLs como texto en la descripción para WhatsApp
+                # Para web, los botones originales de info.get("botones") podrían usarse si el formatter los soporta.
+                # Esta parte necesita más refinamiento si los botones de info son cruciales y variados.
+                # For now, URLs from info.get("botones") will be appended to description text if channel is WhatsApp.
+                # This is a simplification. A more robust solution would involve the formatter handling these.
+                
                 original_info_buttons = info.get("botones", [])
-
-                if self.context.get("channel") == "whatsapp":
-                    if original_info_buttons:
-                        links_texto = "\n\nEnlaces relevantes:\n"
-                        for btn_info in original_info_buttons:
-                            if btn_info.get("url"):
-                                links_texto += f"- {btn_info.get('texto', 'Abrir enlace')}: {btn_info['url']}\n"
-                        if links_texto.strip() != "Enlaces relevantes:":
-                             descripcion_tramite += links_texto
-                    final_options.extend(options_post_info) # Solo opciones genéricas para WhatsApp
-                else: # Para web y otros canales
-                    # Agregar botones del trámite (que pueden tener URLs)
-                    for btn_config in original_info_buttons:
-                        btn_to_add = {"texto": btn_config.get("texto", "Ver detalle")}
-                        if "url" in btn_config:
-                            btn_to_add["url"] = btn_config["url"]
-                            btn_to_add["type"] = "url" # Asegurar que el formatter lo reconozca
-                            # Usar el texto del botón o 'url_action' como fallback para el action ID si no está definido
-                            btn_to_add["action"] = btn_config.get("action", normalizar_texto(btn_config.get("texto", "url_action")))
-                        else:
-                            # Usar el texto del botón o 'default_action' como fallback para el action ID
-                            btn_to_add["action"] = btn_config.get("action", normalizar_texto(btn_config.get("texto", "default_action")))
-                        final_options.append(btn_to_add)
-                    final_options.extend(options_post_info) # Agregar opciones genéricas
+                if self.context.get("channel") == "whatsapp" and original_info_buttons:
+                    links_texto = "\n\nEnlaces relevantes:\n"
+                    for btn_info in original_info_buttons:
+                        if btn_info.get("url"):
+                            links_texto += f"- {btn_info.get('texto', 'Abrir enlace')}: {btn_info['url']}\n"
+                    if links_texto.strip() != "Enlaces relevantes:":
+                         descripcion_tramite += links_texto
 
                 # Clear state and intent to prevent duplication on next interaction
                 logger.info(f"[TramitesHandler] Trámite '{clave_tramite}' encontrado. Limpiando estado e intención post-respuesta.")
                 memoria.pop("estado_conversacion", None)
                 self.context["intencion"] = None
 
-                # Determinar message_type basado en las opciones finales
-                # Contar solo botones que no son de tipo URL para determinar el tipo de mensaje interactivo para WhatsApp
-                # Para web, el formatter se encarga de los botones URL.
-                interactive_options_count = sum(1 for opt in final_options if not (opt.get("type") == "url" and self.context.get("channel") == "whatsapp"))
-
-                message_type_final = "text" # Default a texto
-                if 0 < interactive_options_count <= 3:
-                    message_type_final = "interactive_buttons"
-                elif interactive_options_count > 3:
-                    message_type_final = "interactive_list"
-
-                # Si para web solo hay botones de URL, message_type_final podría ser 'text' si no hay otros interactivos.
-                # El response_formatter.py se encarga de añadir los botones URL para web si message_type es 'interactive_buttons' o 'interactive_list'.
-                # Si solo hay URLs y es web, podríamos querer 'interactive_buttons' para que se muestren.
-                if self.context.get("channel") == "web" and not interactive_options_count and any(opt.get("type") == "url" for opt in final_options):
-                    message_type_final = "interactive_buttons" # Para que formatter web procese los botones URL
-                elif self.context.get("channel") == "whatsapp" and interactive_options_count == 0:
-                    message_type_final = "text" # Si solo hay URLs para WhatsApp (ya en el body), y no otros botones.
-
-
                 return {
                     "message_body": descripcion_tramite, 
-                    "options_list": final_options,
-                    "message_type": message_type_final,
+                    "options_list": options_post_info, # Generic options after info
+                    "message_type": "interactive_buttons", # Assuming few generic options
                     "fuente": f"tramite_info_{normalizar_texto(clave_tramite)}_v2"
+                    # "original_buttons_from_config": original_info_buttons # For web channel to potentially use
                 }
 
             if "conducir" in texto and ("licencia" in texto or "carnet" in texto):
@@ -3461,7 +3513,7 @@ class TramiteInteligenteHandler(BaseMunicipioHandler):
                 else: # For web, suggest a URL button
                     options.append({
                         "id": f"tramite_intel_link_{normalizar_texto(nombre)}",
-                        "texto": "Ir al sitio del trámite", # Texto modificado
+                        "texto": "Más información",
                         "url": link,
                         "type": "url" 
                     })
@@ -4402,22 +4454,22 @@ def responder_municipio(
                 break
 
 
+    # Store the state from context *before* potentially overriding it with a fallback that shouldn't clear state
+    estado_activo_antes_fallback_check = contexto_municipio_actual.get("estado_conversacion") # This is Enum or None
+
     if not respuesta_final:
         logger_actual.info(
-            "[HANDLER_CHAIN_FALLBACK] Ningún handler respondió (incluso tras re-intento por imagen). Usando fallback general."
+            "[HANDLER_CHAIN_FALLBACK] Ningún handler respondió. Construyendo fallback general."
         )
-        current_fallback_state_raw = contexto_municipio_actual.get("estado_conversacion")
-        current_fallback_state_enum = None
-        if isinstance(current_fallback_state_raw, str):
-            try:
-                current_fallback_state_enum = ConversationState[current_fallback_state_raw]
-            except KeyError:
-                pass
-        elif isinstance(current_fallback_state_raw, ConversationState):
-            current_fallback_state_enum = current_fallback_state_raw
+        # current_fallback_state_raw = contexto_municipio_actual.get("estado_conversacion") # This is now estado_activo_antes_fallback_check
+        # current_fallback_state_enum = estado_activo_antes_fallback_check
 
-        current_fallback_state = contexto_municipio_actual.get("estado_conversacion") # Ya debería ser string o None aquí
-
+        # current_fallback_state_string_for_log = None
+        # if isinstance(estado_activo_antes_fallback_check, ConversationState):
+        #     current_fallback_state_string_for_log = estado_activo_antes_fallback_check.name
+        # elif isinstance(estado_activo_antes_fallback_check, str): # Should ideally be Enum or None here
+        #     current_fallback_state_string_for_log = estado_activo_antes_fallback_check
+        
         options_fallback = [
             {"id": "iniciar_reclamo_fallback_main", "texto": "Hacer un reclamo"},
             {"id": "consultar_tramite_fallback_main", "texto": "Consultar un trámite"},
@@ -4425,41 +4477,66 @@ def responder_municipio(
         ]
         message_type_fallback = "interactive_buttons"
 
-        if current_fallback_state: # Si AÚN hay un estado aquí (ej. si el re-intento de ReclamoHandler lo seteó pero retornó None)
-            estado_log_val = current_fallback_state # Ya es string o None
-            # No limpiar contexto aquí si el ReclamoHandler ya lo preparó para pedir algo.
-            # El mensaje de fallback debería ser más genérico.
+        body_fallback = ("Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?")
+        
+        if estado_activo_antes_fallback_check: # If there was any state before this fallback
+            estado_log_val = estado_activo_antes_fallback_check.name if isinstance(estado_activo_antes_fallback_check, ConversationState) else str(estado_activo_antes_fallback_check)
             logger_actual.warning(
-                f"[FALLBACK_WARN] Fallback con estado activo '{estado_log_val}' (posiblemente del re-intento de ReclamoHandler)."
+                f"[FALLBACK_WARN] Fallback triggered. Estado previo era '{estado_log_val}'."
             )
-            body_fallback = ( # Mensaje más genérico si hay un estado activo que no llevó a respuesta
-                "No estoy seguro de cómo continuar desde aquí. ¿Podrías intentar reformular o elegir una opción?"
-            )
-        else: # No hay estado activo
-            body_fallback = (
-                "Disculpa, no estoy seguro de haber entendido bien tu consulta. ¿Podrías intentar reformular tu pregunta o elegir una de estas opciones?"
-            )
+            # Potentially adjust body_fallback if needed, but generic is often safer for true fallbacks.
+            # body_fallback = ( 
+            #     f"No estoy seguro de cómo continuar con '{estado_log_val}'. ¿Podrías intentar reformular o elegir una opción?"
+            # )
 
         respuesta_final = {
             "message_body": body_fallback,
             "options_list": options_fallback,
             "message_type": message_type_fallback,
-            "fuente": "municipio_fallback_general_v3", # v3 para diferenciar
+            "fuente": "municipio_fallback_general_v3",
         }
+        
+        # State preservation logic:
+        INPUT_EXPECTING_STATES = RECLAMO_STATES + [
+            ConversationState.ESPERANDO_SELECCION_TRAMITE,
+            ConversationState.ESPERANDO_NUMERO_TICKET,
+            ConversationState.ESPERANDO_PARAM_RECOLECCION,
+            ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA,
+            ConversationState.ESPERANDO_TEXTO_SUGERENCIA,
+            ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA,
+            ConversationState.MOSTRANDO_PRODUCTOS,
+            ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO,
+            ConversationState.ESPERANDO_OPCION_CARRITO,
+            ConversationState.ESPERANDO_CONFIRMACION_PEDIDO,
+            ConversationState.ESPERANDO_UBICACION_PANICO,
+        ]
+        
+        if estado_activo_antes_fallback_check and isinstance(estado_activo_antes_fallback_check, ConversationState) and estado_activo_antes_fallback_check in INPUT_EXPECTING_STATES:
+            logger_actual.warning(
+                f"[FALLBACK_STATE_PRESERVE] Fallback response generated, but preserving previous active state: {estado_activo_antes_fallback_check.name}"
+            )
+            contexto_municipio_actual["estado_conversacion"] = estado_activo_antes_fallback_check # Restore the Enum state
+        else:
+            logger_actual.info(
+                f"[FALLBACK_STATE_CLEAR] Fallback response generated. Previous state ('{estado_activo_antes_fallback_check.name if estado_activo_antes_fallback_check else 'None'}') was not an input-expecting state or was already None. Setting state to None."
+            )
+            contexto_municipio_actual["estado_conversacion"] = None
+
 
     # Ensure estado_conversacion within contexto_municipio_actual is a string name if it's an Enum,
     # or remove if None, before general serialization for DB.
-    estado_final_en_memoria = contexto_municipio_actual.get("estado_conversacion")
+    estado_final_en_memoria = contexto_municipio_actual.get("estado_conversacion") # This is Enum or None (potentially restored)
     if isinstance(estado_final_en_memoria, ConversationState):
         contexto_municipio_actual["estado_conversacion"] = estado_final_en_memoria.name
         logger_actual.info(
             f"[CONTEXTO_MUNICIPIO_PRE_SERIALIZE_MAIN] Estado Enum '{estado_final_en_memoria.name}' convertido a string."
         )
     elif estado_final_en_memoria is None:
-        contexto_municipio_actual.pop("estado_conversacion", None)
-        logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SERIALIZE_MAIN] Estado es None.")
-    # else: it's already a string or other non-Enum (but potentially non-JSON-serializable) type.
-    # serializar_enum below will handle other nested Enums.
+        # If it's explicitly None (e.g. after fallback decided to clear), ensure key is removed or value is None for serialization
+        contexto_municipio_actual.pop("estado_conversacion", None) # Removes key if present, or does nothing if already None/absent
+        logger_actual.info(f"[CONTEXTO_MUNICIPIO_PRE_SERIALIZE_MAIN] Estado es None. Key 'estado_conversacion' será None o ausente en DB.")
+    # else: it's already a string (e.g. from DB load if not converted to Enum then back) or other non-Enum.
+    # serializar_enum below will handle any other nested Enums if they exist.
 
     # Apply the recursive serializar_enum to the whole contexto_municipio_actual
     # before assigning it to chat_db_context.context_data
