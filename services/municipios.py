@@ -869,6 +869,8 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
         normalizar_texto("generar reclamo"),
         normalizar_texto("un reclamo")
     }
+    _HANDLER_FILLER_WORDS = {"querer", "queria", "necesitar", "gustaria", "poder", "un", "una", "el", "la", "de", "del", "para", "mi", "yo", "tu", "quisiera", "me", "por", "favor", "podria", "podrias"}
+
 
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]
@@ -892,16 +894,25 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
         es_muy_generico = False
         if texto_normalizado_pregunta in self._HANDLER_FRASES_GENERICAS_RECLAMO:
             es_muy_generico = True
-        elif len(palabras_pregunta) <= 3: # Ajustar el umbral de palabras si es necesario
-            # Chequear si todas las palabras son de la lista de keywords genéricas
-            # Esto es una heurística, podría necesitar ajuste.
-            if palabras_pregunta and all(palabra in self._HANDLER_GENERIC_RECLAMO_KEYWORDS for palabra in palabras_pregunta):
-                es_muy_generico = True
+        else:
+            # Quitar palabras de relleno y ver si solo quedan keywords de reclamo
+            palabras_significativas = [p for p in palabras_pregunta if p not in self._HANDLER_FILLER_WORDS]
+
+            if not palabras_significativas:
+                pass # No hacer nada si solo eran fillers, no es genérico de reclamo per se
+
+            elif palabras_significativas and all(p in self._HANDLER_GENERIC_RECLAMO_KEYWORDS for p in palabras_significativas):
+                if len(palabras_pregunta) <= 5: # Umbral para frases como "queria hacer un reclamo" (4)
+                    es_muy_generico = True
+
+            if not es_muy_generico and len(palabras_pregunta) <= 3:
+                if palabras_pregunta and all(palabra in self._HANDLER_GENERIC_RECLAMO_KEYWORDS for palabra in palabras_pregunta):
+                    es_muy_generico = True
 
         if es_muy_generico:
-            logger.info(f"[ReclamoInteligenteHandler] Pregunta '{pregunta_str}' es demasiado genérica. Cediendo a ReclamoHandler para flujo paso a paso.")
+            logger.info(f"[ReclamoInteligenteHandler] Pregunta '{pregunta_str}' es demasiado genérica (lógica mejorada). Cediendo a ReclamoHandler.")
             return None
-        # --- FIN NUEVA CONDICIÓN ---
+        # --- FIN LÓGICA MEJORADA ---
 
         # La limpieza de memoria se hace DESPUÉS de la verificación de frase genérica,
         # solo si la frase NO es genérica y se va a proceder con la extracción inteligente.
@@ -1837,7 +1848,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
                 
                 memoria["descripcion_reclamo"] = descripcion_input
-                logger.info(f"Descripción guardada: '{descripcion_final[:50]}...'.")
+                logger.info(f"Descripción guardada: '{descripcion_input[:50]}...'.")
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
                 estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
                 logger.info("[ReclamoHandler] Nuevo estado: ESPERANDO_ADJUNTOS_RECLAMO.")
@@ -2025,12 +2036,18 @@ class ReclamoHandler(BaseMunicipioHandler):
             chat_session_data = self.context.get("chat_db_context_data") # This is the raw dict from chat_db_context.context_data
 
             effective_idempotency_key = idempotency_payload_key
-            # If no specific idempotency key from payload, and action is the final confirmation, generate one.
-            if not effective_idempotency_key and action_key == "confirmar_reclamo_final" and chat_session_uuid:
-                # Create a key based on session and action to prevent simple resubmits for this specific action.
-                # Hashing claim data could be more robust but adds complexity.
-                effective_idempotency_key = f"{chat_session_uuid}_{action_key}"
-                logger.info(f"[ReclamoHandler] No 'idempotency_key' en payload para 'confirmar_reclamo_final', usando generado: {effective_idempotency_key}")
+
+            normalized_action_key_for_idempotency = ""
+            if action_key and isinstance(action_key, str):
+                 normalized_action_key_for_idempotency = action_key.lower().replace("_", "").replace("-", "").strip()
+
+            FINAL_CONFIRM_ACTION_NORMALIZED = "confirmarreclamofinal" # Lo que parece llegar del frontend
+
+            if not effective_idempotency_key and \
+               normalized_action_key_for_idempotency == FINAL_CONFIRM_ACTION_NORMALIZED and \
+               chat_session_uuid:
+                effective_idempotency_key = f"{chat_session_uuid}_{FINAL_CONFIRM_ACTION_NORMALIZED}"
+                logger.info(f"[ReclamoHandler] No 'idempotency_key' en payload para acción '{normalized_action_key_for_idempotency}', usando generado: {effective_idempotency_key}")
             
             if effective_idempotency_key and chat_session_data is not None: # chat_session_data is critical
                 processed_keys = chat_session_data.get("processed_idempotency_keys", {})
