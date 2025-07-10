@@ -1,4 +1,5 @@
 import json
+import logging # Import logging
 # Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
 # from vertexai.preview.generative_models import GenerativeModel 
 # Por ahora, como no tenemos credenciales/API real, lo mockearemos.

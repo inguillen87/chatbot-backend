@@ -6,116 +6,129 @@ logger = logging.getLogger(__name__)
 def build_interactive_response(options: list,
                                body_text: str,
                                channel: str,
-                               message_type: str = 'text',
-                               original_bot_response: dict = None,
+                               message_type: str = 'text', # e.g. 'text', 'interactive_buttons', 'interactive_list'
+                               original_bot_response: dict = None, # The full dict from responder_pyme/municipio
                                header_text: str = None,
-                               footer_text: str = None
+                               footer_text: str = None,
+                               # recipient_id: str = None # Removed: To be handled by the sending service
                                ) -> dict:
     if original_bot_response is None:
         original_bot_response = {}
 
     if channel == "whatsapp":
-        interactive_payload = None
+        # This function will now return the content part of the WhatsApp message.
+        # The sending service (e.g., WhatsAppService) will add "messaging_product", "to".
 
         if message_type == 'interactive_buttons' and options:
             if not (1 <= len(options) <= 3):
-                logger.warning(f"WhatsApp 'button' type requires 1-3 options, got {len(options)}. Consider using 'list' or reducing options.")
+                logger.warning(f"WhatsApp 'button' type requires 1-3 options, got {len(options)}. Truncating or consider 'list'.")
 
-            interactive_payload = {
+            interactive_payload_content = {
                 "type": "button",
                 "body": {"text": body_text}
             }
             if header_text:
-                interactive_payload["header"] = {"type": "text", "text": header_text}
+                interactive_payload_content["header"] = {"type": "text", "text": header_text}
             if footer_text:
-                interactive_payload["footer"] = {"text": footer_text}
+                interactive_payload_content["footer"] = {"text": footer_text}
 
-            interactive_payload["action"] = {
+            interactive_payload_content["action"] = {
                 "buttons": [
-                    {"type": "reply", "reply": {"id": str(o.get("id", o["texto"])), "title": o["texto"][:20]}}
-                    for o in options[:3]
+                    {"type": "reply", "reply": {"id": str(o.get("id", o["texto"]))[:200], "title": o["texto"][:20]}}
+                    for o in options[:3] # Max 3 buttons
                 ]
+            }
+            return {
+                "type": "interactive",
+                "interactive": interactive_payload_content
             }
 
         elif message_type == 'interactive_list' and options:
             if not (1 <= len(options) <= 10):
-                logger.warning(f"WhatsApp 'list' type requires 1-10 options, got {len(options)}. Consider reducing options.")
+                logger.warning(f"WhatsApp 'list' type requires 1-10 options per section, got {len(options)}. Truncating.")
 
-            interactive_payload = {
+            list_button_text = original_bot_response.get("interactive_list_button_text", "Ver opciones")[:20]
+            section_title = original_bot_response.get("interactive_list_section_title", "Opciones disponibles")[:24]
+
+
+            interactive_payload_content = {
                 "type": "list",
                 "body": {"text": body_text}
             }
             if header_text:
-                interactive_payload["header"] = {"type": "text", "text": header_text}
+                interactive_payload_content["header"] = {"type": "text", "text": header_text}
             if footer_text:
-                interactive_payload["footer"] = {"text": footer_text}
+                interactive_payload_content["footer"] = {"text": footer_text}
 
-            interactive_payload["action"] = {
-                "button": "Ver opciones"[:20],
+            interactive_payload_content["action"] = {
+                "button": list_button_text,
                 "sections": [
                     {
+                        "title": section_title,
                         "rows": [
-                            {"id": str(o.get("id", o["texto"])), "title": o["texto"][:24], "description": o.get("description", "")[:72]}
-                            for o in options[:10]
+                            {"id": str(o.get("id", o["texto"]))[:200],
+                             "title": o["texto"][:24],
+                             "description": str(o.get("description", ""))[:72] if o.get("description") else ""}
+                            for o in options[:10] # Max 10 rows
                         ]
                     }
                 ]
             }
-            if not header_text and len(interactive_payload["action"]["sections"]) == 1:
-                 interactive_payload["action"]["sections"][0]["title"] = "Opciones disponibles"[:24]
+            # Ensure description is not present if empty, as WhatsApp API might reject empty string for description
+            for row in interactive_payload_content["action"]["sections"][0]["rows"]:
+                if not row["description"]:
+                    del row["description"]
 
-        if interactive_payload:
-            # This is the structure for the 'interactive' field of the main WhatsApp message object
             return {
-                "main_body": body_text,
-                "interactive_object": interactive_payload
+                "type": "interactive",
+                "interactive": interactive_payload_content
             }
-        else: # Simple text message
+
+        elif message_type == 'text' or not options: # Simple text message
             return {
-                "main_body": body_text,
-                "interactive_object": None
+                "type": "text",
+                "text": {"body": body_text}
+            }
+        else: # Fallback or unsupported message_type for WhatsApp by this formatter
+            logger.warning(f"Unsupported message_type '{message_type}' or missing options for WhatsApp interactive. Sending plain text.")
+            return {
+                "type": "text",
+                "text": {"body": body_text}
             }
 
     elif channel == "web":
-        # Explicitly construct the response for the web channel
-        # to avoid sending unexpected new keys from original_bot_response.
         web_response = {
-            "respuesta": body_text,
-            "botones": [], # Initialize
-            # Selectively copy other necessary fields from original_bot_response
-            # These are examples; ensure all keys the web frontend uses are included.
+            "respuesta": body_text, # "respuesta" is the key often used for web body
+            "botones": [],
             "fuente": original_bot_response.get("fuente"),
             "contexto_actualizado": original_bot_response.get("contexto_actualizado"),
             "ticket_id": original_bot_response.get("ticket_id"),
-            "es_publico": original_bot_response.get("es_publico"), # As seen in routes/chat.py
-            "preguntas_usadas": original_bot_response.get("preguntas_usadas"), # As seen in routes/chat.py
-            "limite_preguntas": original_bot_response.get("limite_preguntas"), # As seen in routes/chat.py
-            "interpretacion_adjunto": original_bot_response.get("interpretacion_adjunto"), # As seen in routes/chat.py
-            "estado_respuesta": original_bot_response.get("estado_respuesta"), # From municipios.py handlers
-            "adjuntos": original_bot_response.get("adjuntos", []) # Ensure adjuntos is passed if present
+            "es_publico": original_bot_response.get("es_publico"),
+            "preguntas_usadas": original_bot_response.get("preguntas_usadas"),
+            "limite_preguntas": original_bot_response.get("limite_preguntas"),
+            "interpretacion_adjunto": original_bot_response.get("interpretacion_adjunto"),
+            "estado_respuesta": original_bot_response.get("estado_respuesta"),
+            "adjuntos": original_bot_response.get("adjuntos", [])
         }
-        # Filter out keys that are None to keep the response clean, unless None is a valid/expected value for a key.
-        # For simplicity here, we'll keep None values if they were in original_bot_response and copied.
-        # A more robust way is to list expected keys and copy them if present.
-        # web_response = {k: v for k, v in web_response.items() if v is not None} # Be careful if None is meaningful
 
         if message_type in ['interactive_buttons', 'interactive_list'] and options:
             formatted_botones = []
             for o in options:
-                btn = {"texto": o["texto"], "action": o.get("action", o.get("id", o["texto"]))}
-                if o.get("type") == "url" and o.get("url"): # Handle URL type for web buttons
+                btn = {"texto": o["texto"], "action_id": o.get("id", o.get("action", o["texto"]))} # Use action_id for web
+                if o.get("type") == "url" and o.get("url"):
                     btn["url"] = o["url"]
-                    btn["action"] = o.get("action", "url")
+                    # btn["action_id"] = o.get("action_id", "open_url_action") # Or a specific action for URLs
                 formatted_botones.append(btn)
             web_response["botones"] = formatted_botones
-        # If no options or not an interactive type, "botones" remains empty list (initialized above)
 
+        # Clean None values from web_response for cleaner JSON, if desired
+        # web_response_cleaned = {k: v for k, v in web_response.items() if v is not None}
+        # return web_response_cleaned
         return web_response
     else:
         logger.error(f"Canal desconocido: {channel}. No se pudo formatear la respuesta.")
         return {"error": f"Canal no soportado: {channel}"}
 
-# Example Usage (for testing purposes, can be removed later)
 if __name__ == '__main__':
     sample_options_short = [
         {"id": "reclamo_basura_123", "texto": "🗑️ Basura"},
@@ -125,28 +138,43 @@ if __name__ == '__main__':
         {"id": "tramite_a", "texto": "Trámite A", "description": "Descripción del trámite A"},
         {"id": "tramite_b", "texto": "Trámite B"},
         {"id": "tramite_c", "texto": "Trámite C con un texto bastante largo para el título"},
-        {"id": "tramite_d", "texto": "Trámite D"},
-        {"id": "tramite_e", "texto": "Trámite E"},
-        {"id": "tramite_f", "texto": "Trámite F"},
-        {"id": "tramite_g", "texto": "Trámite G"},
-        {"id": "tramite_h", "texto": "Trámite H"},
-        {"id": "tramite_i", "texto": "Trámite I"},
-        {"id": "tramite_j", "texto": "Trámite J"},
-        {"id": "tramite_k", "texto": "Trámite K (este no aparecerá en lista de 10)"},
     ]
+    url_option = [{"id": "web_url", "texto": "Visitar Web", "type": "url", "url": "https://example.com"}]
+
 
     print("--- WhatsApp Interactive Output (Buttons) ---")
-    whatsapp_buttons = build_interactive_response(sample_options_short, "Elige una categoría de reclamo:", "whatsapp", message_type='interactive_buttons', header_text="Reclamos", footer_text="Selecciona una opción")
+    whatsapp_buttons = build_interactive_response(options=sample_options_short, body_text="Elige una categoría de reclamo:", channel="whatsapp", message_type='interactive_buttons', header_text="Reclamos", footer_text="Selecciona una opción")
     print(json.dumps(whatsapp_buttons, indent=2, ensure_ascii=False))
+    # Expected: {"type": "interactive", "interactive": {"type": "button", ...}}
 
     print("\n--- WhatsApp Interactive Output (List) ---")
-    whatsapp_list = build_interactive_response(sample_options_long, "Selecciona un trámite:", "whatsapp", message_type='interactive_list', header_text="Trámites Municipales", footer_text="Elige de la lista")
+    whatsapp_list = build_interactive_response(options=sample_options_long, body_text="Selecciona un trámite:", channel="whatsapp", message_type='interactive_list', header_text="Trámites Municipales", footer_text="Elige de la lista")
     print(json.dumps(whatsapp_list, indent=2, ensure_ascii=False))
+    # Expected: {"type": "interactive", "interactive": {"type": "list", ...}}
 
     print("\n--- WhatsApp Text Output ---")
-    whatsapp_text = build_interactive_response([], "Este es un mensaje de texto simple.", "whatsapp", message_type='text')
+    whatsapp_text = build_interactive_response(options=[], body_text="Este es un mensaje de texto simple.", channel="whatsapp", message_type='text')
     print(json.dumps(whatsapp_text, indent=2, ensure_ascii=False))
+    # Expected: {"type": "text", "text": {"body": "..."}}
 
     print("\n--- Web Response (con opciones) ---")
-    web_response_options = build_interactive_response(sample_options_short, "Elige una opción para la web:", "web", message_type='interactive_buttons', original_bot_response={"fuente": "test_web"})
+    web_response_options = build_interactive_response(
+        options=sample_options_short + url_option,
+        body_text="Elige una opción para la web:",
+        channel="web",
+        message_type='interactive_buttons',
+        original_bot_response={"fuente": "test_web_main_example"}
+    )
     print(json.dumps(web_response_options, indent=2, ensure_ascii=False))
+    # Expected: {"respuesta": "...", "botones": [{"texto": ..., "action_id": ...}, {"texto": ..., "action_id": ..., "url": ...}]}
+
+    print("\n--- Web Response (text only) ---")
+    web_response_text = build_interactive_response(
+        options=[],
+        body_text="Texto simple para web.",
+        channel="web",
+        message_type='text',
+        original_bot_response={"fuente": "test_web_text_example"}
+    )
+    print(json.dumps(web_response_text, indent=2, ensure_ascii=False))
+    # Expected: {"respuesta": "...", "botones": [], ...}
