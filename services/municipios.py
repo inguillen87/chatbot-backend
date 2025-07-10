@@ -1242,20 +1242,31 @@ class ReclamoHandler(BaseMunicipioHandler):
                     options_cat.append({"id": "otro motivo", "texto": "Otro Motivo"})
 
                     respuesta_texto_cat = f"{mensaje_adjunto}Para continuar con tu reclamo, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
+                # Initialize respuesta_texto_cat before conditional assignment
+                respuesta_texto_cat = f"{mensaje_adjunto}Para continuar con tu reclamo, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
                 if sugeridas_data:
                     respuesta_texto_cat = f"{mensaje_adjunto}Detecté que podría ser sobre algunos de estos temas. Para tu reclamo, ¿cuál sería la categoría?"
 
                 message_type_cat = 'interactive_list' if len(options_cat) > 3 else 'interactive_buttons'
                 if len(options_cat) > 10: logger.warning(f"ReclamoHandler (inicio): Too many options for WhatsApp list.")
 
-                logger.info("[ReclamoHandler] Retornando solicitud de categoría (inicio de flujo).")
+                logger.info("[ReclamoHandler] Retornando solicitud de categoría (inicio de flujo, categoría no pre-llenada).")
                 return {"message_body": respuesta_texto_cat, "options_list": options_cat, "message_type": message_type_cat, "fuente": "solicitud_categoria_reclamo_inicio_v4"}
+            # If 'categoria_reclamo' was already in memoria, the code will now fall through to the main while loop,
+            # which is the correct behavior. The 'estado' is already set to ESPERANDO_DIRECCION_RECLAMO.
 
+        # This check needs to be robust. If "iniciar_reclamo" was handled above (either by returning or by setting state to continue),
+        # this condition might behave differently.
+        # The key is that if 'estado' was set (e.g. to ESPERANDO_DIRECCION_RECLAMO), this block should not incorrectly abort.
         if not estado or estado not in RECLAMO_STATES:
+            # If intencion was "iniciar_reclamo" and estado is still None here, it means the initial block
+            # (where the fix was applied) did NOT set a state and did NOT return. This would be an error in that block.
             if intencion == "iniciar_reclamo" and estado is None:
-                 logger.error("[ReclamoHandler] Lógica de inicio de reclamo no retornó como se esperaba (estado aún None). Abortando.")
-                 return {"message_body":"Error al iniciar el reclamo. Por favor, intente de nuevo.", "options_list":[], "message_type":"text", "fuente":"reclamo_error_inicio_inesperado"}
-            logger.debug(f"[ReclamoHandler] Intención '{intencion}' o estado '{estado.name if estado else 'None'}' no son para este handler en este punto. No se maneja aquí.")
+                 logger.error("[ReclamoHandler] Lógica de inicio de reclamo (intencion 'iniciar_reclamo', estado None) no resultó en un estado válido para continuar ni retornó una pregunta de categoría. Esto indica un error en el flujo inicial. Abortando.")
+                 return {"message_body":"Error interno al procesar el inicio de su reclamo. Por favor, intente de nuevo más tarde.", "options_list":[], "message_type":"text", "fuente":"reclamo_error_flujo_inicio_inesperado"}
+
+            # If not an "iniciar_reclamo" intent, or if state is not a RECLAMO_STATE, then this handler is not active for this input.
+            logger.debug(f"[ReclamoHandler] Intención '{intencion}' o estado '{estado.name if estado else 'None'}' no son para este handler en este punto (o el flujo inicial de reclamo no se activó). No se maneja aquí.")
             return None
 
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
