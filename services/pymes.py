@@ -797,9 +797,203 @@ class PedidoHandler(BaseHandler):
             "fuente": "pyme_error_pedido_estado_desconocido_v2"
         }
 
-# --- Resto de Handlers y función responder_pyme ---
-# (Se asume que el resto del archivo sigue la estructura anterior, solo PedidoHandler y funciones relacionadas fueron modificadas extensamente)
-# ... (FaqHandler, HumanHandler, UnclearHandler, TicketStatusHandler, FallbackHandler, ToolHandlerPyme) ...
+class FaqHandler(BaseHandler):
+    def handle(self, pregunta):
+        if not self.pyme_id_actual:
+            return {"message_body": "No puedo buscar en las preguntas frecuentes sin identificar la tienda.", "fuente": "faq_sin_pyme_id_v2"}
+
+        # Asumimos que el owner_user tiene un 'id' y un 'rubro' con 'nombre'
+        owner_user_id = self.context.get("user_id")
+        rubro_nombre = self.context.get("rubro_nombre", "general")
+
+        if not owner_user_id:
+             return {"message_body": "Error interno: no se pudo determinar el propietario para la búsqueda de FAQ.", "fuente": "faq_error_owner_id_v2"}
+
+        # buscar_en_faq_spacy(pregunta, owner_id, rubro, top_n=1, umbral_similitud=0.7)
+        resultados_faq = buscar_en_faq_spacy(pregunta, owner_user_id, rubro_nombre, top_n=1, umbral_similitud=0.7)
+
+        if resultados_faq:
+            mejor_match = resultados_faq[0]
+            respuesta_faq = mejor_match.get("respuesta", "Encontré una respuesta relevante pero no puedo mostrarla ahora.")
+            # Podríamos añadir botones si la respuesta_faq tiene acciones asociadas
+            options = [{"id": "hablar_con_agente_pyme_faq", "texto": "Hablar con un agente"}]
+            return {
+                "message_body": respuesta_faq,
+                "options_list": options,
+                "message_type": "interactive_buttons",
+                "fuente": f"pyme_faq_encontrada_v2 (sim: {mejor_match.get('similitud',0):.2f})"
+            }
+        else:
+            options = [
+                {"id": "intentar_otra_pregunta_pyme_faq", "texto": "Probar otra pregunta"},
+                {"id": "hablar_con_agente_pyme_faq_no_encontrada", "texto": "Hablar con un agente"}
+            ]
+            return {
+                "message_body": "No encontré una respuesta directa a tu pregunta en nuestra base de conocimiento. ¿Quieres intentar otra pregunta o hablar con un agente?",
+                "options_list": options,
+                "message_type": "interactive_list",
+                "fuente": "pyme_faq_no_encontrada_v2"
+            }
+
+class HumanHandler(BaseHandler):
+    def handle(self, pregunta):
+        # Lógica para transferir a un humano o proveer info de contacto.
+        # Por ahora, un placeholder.
+        self._actualizar_estado(PymeConversationState.IDLE) # Resetear estado
+        nombre_pyme = self.context.get("nombre_pyme", "la empresa")
+        # TODO: Intentar obtener datos de contacto reales de la Pyme (owner_user)
+        # pyme_user_obj = db.session.get(User, self.pyme_id_actual) if self.pyme_id_actual else None
+        # telefono_pyme = getattr(pyme_user_obj, "telefono_contacto", "nuestro teléfono principal")
+        # email_pyme = getattr(pyme_user_obj, "email_contacto", "nuestro email de soporte")
+
+        body = f"Entendido. Para hablar con un representante de {nombre_pyme}, por favor contáctanos directamente."
+        # Idealmente, aquí se crearía un ticket o se notificaría a alguien.
+        # Por ahora, solo damos un mensaje.
+        # Crear ticket si servicio_tickets está disponible
+        ticket_creado_id = None
+        if self.pyme_id_actual and self.cliente_id_actual:
+            try:
+                asunto = f"Solicitud de contacto desde chat: {pregunta[:50]}"
+                descripcion = f"El cliente {self.cliente_id_actual} solicitó hablar con un agente. Última pregunta: '{pregunta}'."
+                historial_chat_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.context.get("mensajes_previos", [])[-5:]])
+                descripcion += f"\n\nÚltimos mensajes:\n{historial_chat_str}"
+
+                ticket_creado_id = servicio_tickets.crear_ticket(
+                    pyme_id=self.pyme_id_actual,
+                    cliente_id=self.cliente_id_actual, # Puede ser None si es anónimo
+                    asunto=asunto,
+                    descripcion=descripcion,
+                    fuente_ticket="CHATBOT_PYME",
+                    # estado_ticket="ABIERTO", # El servicio lo maneja
+                    # prioridad="MEDIA" # El servicio lo maneja
+                )
+                if ticket_creado_id:
+                    body = f"He generado el ticket #{ticket_creado_id} para que un agente se ponga en contacto contigo. ¿Hay algo más en lo que pueda ayudarte mientras tanto?"
+                    self.pyme_ctx["ultimo_ticket_creado"] = ticket_creado_id
+                    self._guardar_contexto_pyme()
+            except Exception as e:
+                logger.error(f"Error creando ticket en HumanHandler: {e}")
+                body += "\n(Hubo un problema al intentar generar un ticket automático)."
+
+
+        options = [{"id": "ver_catalogo_pyme_post_human", "texto": "Ver catálogo"}]
+        return {
+            "message_body": body,
+            "options_list": options,
+            "message_type": "interactive_buttons", # O 'text' si no hay opciones
+            "fuente": "pyme_human_handler_placeholder_v2",
+            "ticket_id": ticket_creado_id
+        }
+
+class UnclearHandler(BaseHandler): # Aunque no está en handler_map, es bueno tenerlo
+    def handle(self, pregunta):
+        self.pyme_ctx["reintentos_ambigua"] = self.pyme_ctx.get("reintentos_ambigua", 0) + 1
+        self._guardar_contexto_pyme()
+
+        if self.pyme_ctx["reintentos_ambigua"] > 2:
+            self.pyme_ctx["reintentos_ambigua"] = 0 # Reset
+            self._guardar_contexto_pyme()
+            return HumanHandler(self.context).handle("El usuario está teniendo dificultades para que lo entienda.")
+
+        sugerencias = sugerencias_por_rubro(self.context.get("rubro_nombre"))
+        msg = "No estoy seguro de cómo ayudarte con eso."
+        if sugerencias:
+            msg += "\nPuedes intentar preguntarme sobre:\n- " + "\n- ".join(sugerencias[:3])
+        msg += "\n\nO puedes reformular tu pregunta."
+
+        options = [{"id": "hablar_con_agente_pyme_unclear", "texto": "Hablar con un agente"}]
+        if tiene_archivo_catalogo(self.pyme_id_actual):
+             options.insert(0, {"id": "ver_catalogo_pyme_unclear", "texto": "Ver Catálogo"})
+
+
+        return {
+            "message_body": msg,
+            "options_list": options,
+            "message_type": "interactive_list" if len(options)>1 else "interactive_buttons",
+            "fuente": "pyme_unclear_handler_v2"
+        }
+
+class TicketStatusHandler(BaseHandler):
+    def handle(self, pregunta):
+        estado_actual = deserialize_state(self.pyme_ctx.get("estado_conversacion"))
+
+        if estado_actual == PymeConversationState.ESPERANDO_NUMERO_TICKET:
+            numero_ticket_buscado = re.findall(r'\d+', pregunta)
+            if numero_ticket_buscado:
+                num_ticket = numero_ticket_buscado[0]
+                # TODO: Buscar ticket en sistema de tickets usando servicio_tickets
+                # ticket_info = servicio_tickets.consultar_ticket(self.pyme_id_actual, num_ticket, cliente_id=self.cliente_id_actual)
+                ticket_info = None # Placeholder
+                self._actualizar_estado(PymeConversationState.IDLE)
+                if ticket_info:
+                    # respuesta = f"El ticket #{num_ticket} está en estado: {ticket_info.get('estado','Desconocido')}. Última actualización: {ticket_info.get('ultima_actualizacion','N/A')}."
+                    # if ticket_info.get('comentarios'):
+                    #     respuesta += f"\nÚltimo comentario: {ticket_info['comentarios'][-1]['texto']}"
+                    return {"message_body": f"Funcionalidad de consulta de ticket ({num_ticket}) aún no implementada.", "fuente": "pyme_ticket_status_found_placeholder_v2"}
+                else:
+                    return {"message_body": f"No encontré información para el ticket #{num_ticket}. Verifica el número e intenta de nuevo.", "fuente": "pyme_ticket_status_not_found_v2"}
+            else:
+                self.pyme_ctx["reintentos_numero_ticket"] = self.pyme_ctx.get("reintentos_numero_ticket", 0) + 1
+                if self.pyme_ctx["reintentos_numero_ticket"] > 2:
+                    self._actualizar_estado(PymeConversationState.IDLE)
+                    self.pyme_ctx["reintentos_numero_ticket"] = 0
+                    return {"message_body": "No pude identificar el número de ticket. Vuelvo al menú principal.", "fuente": "pyme_ticket_status_too_many_retries_v2"}
+                else:
+                    self._guardar_contexto_pyme()
+                    return {"message_body": "No entendí el número. Por favor, dime solo el número de tu ticket.", "fuente": "pyme_ticket_status_reintentando_numero_v2"}
+        else:
+            self._actualizar_estado(PymeConversationState.ESPERANDO_NUMERO_TICKET)
+            ultimo_ticket = self.pyme_ctx.get("ultimo_ticket_creado")
+            msg = "¿Cuál es el número de ticket que quieres consultar?"
+            options = []
+            if ultimo_ticket:
+                msg = f"¿Quieres consultar sobre tu último ticket (#{ultimo_ticket}) o ingresar otro número?"
+                options.append({"id": f"consultar_ticket_numero_{ultimo_ticket}", "texto": f"Sí, Ticket #{ultimo_ticket}"})
+                options.append({"id": "consultar_otro_ticket_numero", "texto": "Ingresar otro número"})
+
+            return {
+                "message_body": msg,
+                "options_list": options,
+                "message_type": "interactive_buttons" if options else "text",
+                "fuente": "pyme_ticket_status_solicitando_numero_v2"
+            }
+
+class FallbackHandler(BaseHandler):
+    def handle(self, pregunta):
+        # Este es el último recurso. Intenta dar una respuesta genérica o escalar.
+        logger.warning(f"[PYME_FALLBACK_HANDLER] Pregunta no manejada: '{pregunta}', Intención: {self.context.get('intencion')}, Estado: {self.pyme_ctx.get('estado_conversacion')}")
+        # Reutilizar UnclearHandler puede ser una buena estrategia aquí.
+        return UnclearHandler(self.context).handle(pregunta)
+
+class SmallTalkHandler(BaseHandler):
+    def handle(self, pregunta: str):
+        respuesta_small_talk = generar_respuesta_small_talk(pregunta, self.context.get("nombre_pyme", "la empresa"))
+        if respuesta_small_talk:
+            # El estado de la conversación no debería cambiar por un small talk.
+            # No llamamos a _actualizar_estado
+            return {
+                "message_body": respuesta_small_talk,
+                "options_list": [], # Generalmente small talk no lleva opciones
+                "message_type": "text",
+                "fuente": "pyme_small_talk_handler_v2"
+            }
+        # Si generar_respuesta_small_talk devuelve None (porque no fue realmente small talk),
+        # entonces este handler no debería manejarlo, y se pasará al siguiente.
+        return None
+
+
+class ToolHandlerPyme(BaseHandler):
+    def handle(self, pregunta: str):
+        # Ejemplo: si la pregunta es "qué información web tenés de [dominio]?"
+        match_webinfo = re.search(r"informaci[oó]n web de\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", pregunta, re.IGNORECASE)
+        if match_webinfo:
+            dominio = match_webinfo.group(1)
+            info = obtener_info_web(dominio) # Asumimos que esta función existe y devuelve un string formateado
+            if info:
+                return {"message_body": f"Información de {dominio}:\n{info}", "fuente": "pyme_tool_webinfo_v2"}
+            else:
+                return {"message_body": f"No pude obtener información web para {dominio}.", "fuente": "pyme_tool_webinfo_no_data_v2"}
+        return None # No es una pregunta para esta herramienta
 
 # Temporal: Placeholder para coleccion_catalogo_para_rubro si no está definida globalmente
 def coleccion_catalogo_para_rubro(rubro_nombre: str) -> str:
