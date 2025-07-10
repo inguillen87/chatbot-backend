@@ -1241,7 +1241,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 if not any(opt['id'] == "otro motivo" for opt in options_cat) and "otro motivo" in CATEGORIAS_RECLAMO:
                     options_cat.append({"id": "otro motivo", "texto": "Otro Motivo"})
 
-                respuesta_texto_cat = f"{mensaje_adjunto}Para tu reclamo, ¿podrías ayudarme seleccionando una categoría, o describiendo brevemente de qué se trata?"
+                    respuesta_texto_cat = f"{mensaje_adjunto}Para continuar con tu reclamo, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
                 if sugeridas_data:
                     respuesta_texto_cat = f"{mensaje_adjunto}Detecté que podría ser sobre algunos de estos temas. Para tu reclamo, ¿cuál sería la categoría?"
 
@@ -1445,59 +1445,149 @@ class ReclamoHandler(BaseMunicipioHandler):
 
             # 2. ESPERANDO_DIRECCION_RECLAMO
             elif current_state_for_logic == ConversationState.ESPERANDO_DIRECCION_RECLAMO:
-                if memoria.get("direccion_reclamo"): # Address already known
+                if memoria.get("direccion_reclamo"): # Address already known from a previous turn or LLM extraction
                     logger.debug(f"[ReclamoHandler] Dirección ya en memoria: '{memoria['direccion_reclamo']}'. Avanzando.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name; estado = ConversationState.ESPERANDO_NOMBRE_VECINO
                     if all(memoria.get(campo) for campo in ["nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
                         logger.info("[ReclamoHandler] Dirección y todos los demás datos ya en memoria. Saltando a confirmación.")
                         memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
                         estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-                    pregunta_str = ""
+                    pregunta_str = "" # Clear pregunta_str as it's not relevant for the next step if address was pre-filled
                     continue
 
-                # Address not known yet.
-                if pregunta_str: # User has provided some input, try to parse it as address
+                # Address not known yet. Check for incoming GPS data or actions.
+                action_from_payload = payload.get("action", "").lower()
+                is_gps_action = action_from_payload in ["accion_compartir_ubicacion", "accion_compartir_ubicacion_adj", "accion_compartir_ubicacion_reintento"]
+
+                if is_gps_action:
+                    logger.info(f"[ReclamoHandler] Usuario seleccionó acción GPS: {action_from_payload}")
+                    # Acknowledge GPS action, frontend should send location in next request
+                    # We don't transition state yet, wait for actual coordinates.
+                    # TODO: Consider if a specific "AWAITING_GPS_COORDINATES" state would be better,
+                    # but for now, keeping ESPERANDO_DIRECCION_RECLAMO and checking payload.
+                    return {
+                        "message_body": "Intentando obtener tu ubicación GPS. Por favor, asegurate de tenerla activada y conceder permisos si tu navegador o app lo solicita.",
+                        "options_list": [], # No buttons needed here, awaiting frontend action
+                        "message_type": "text",
+                        "fuente": "reclamo_esperando_coordenadas_gps_v1"
+                    }
+
+                if payload.get("es_ubicacion"): # GPS coordinates received from frontend
+                    ubicacion_data = payload.get("ubicacion_usuario")
+                    if ubicacion_data and isinstance(ubicacion_data, dict) and "lat" in ubicacion_data and "lon" in ubicacion_data:
+                        memoria["ubicacion_gps"] = ubicacion_data
+                        logger.info(f"[ReclamoHandler] Coordenadas GPS recibidas: {ubicacion_data}")
+
+                        # Attempt to get address from coordinates
+                        from .herramientas_municipio import obtener_direccion_de_coordenadas # Assuming this is added
+                        direccion_obtenida = obtener_direccion_de_coordenadas(ubicacion_data["lat"], ubicacion_data["lon"])
+
+                        if direccion_obtenida and direccion_obtenida.get("formatted_address"):
+                            memoria["direccion_reclamo"] = direccion_obtenida["formatted_address"]
+                            memoria["direccion_estructurada_reclamo"] = {
+                                k: direccion_obtenida.get(k) for k in ["calle", "numero", "localidad", "provincia", "codigo_postal", "barrio"]
+                            } # Store structured components
+                            logger.info(f"[ReclamoHandler] Dirección obtenida de GPS: {memoria['direccion_reclamo']}")
+                            memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
+                            estado = ConversationState.ESPERANDO_NOMBRE_VECINO
+                            if all(memoria.get(campo) for campo in ["nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
+                                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
+                                estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+
+                            # Ask for next piece of info, acknowledging the address.
+                            # If nombre_vecino is already filled (e.g., by LLM from a previous multi-input), skip asking for it.
+                            if memoria.get("nombre_vecino"):
+                                pregunta_str = "" # Consume, so next iteration asks for phone or confirms
+                                continue
+                            else:
+                                return {"message_body": f"¡Gracias! Obtuve tu ubicación como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?", "options_list": [], "message_type": "text", "fuente": "reclamo_gps_ok_pide_nombre_v1"}
+                        else: # Reverse geocoding failed
+                            logger.warning(f"[ReclamoHandler] No se pudo obtener dirección de GPS {ubicacion_data}. Solicitando manual.")
+                            # No options for GPS again, as it just failed.
+                            return {
+                                "message_body": f"No pude obtener una dirección precisa de tu ubicación GPS. Por favor, ¿podrías ingresar la dirección manualmente (Ej: {EJEMPLO_DIRECCION}, Localidad)?",
+                                "options_list": [],
+                                "message_type": "text",
+                                "fuente": "reclamo_gps_fallo_pide_manual_v1"
+                            }
+                    else: # es_ubicacion is true, but no ubicacion_usuario data (frontend failed to send coords)
+                        logger.warning("[ReclamoHandler] 'es_ubicacion' es True pero no se recibieron coordenadas. Solicitando manual.")
+                        return {
+                            "message_body": f"Parece que hubo un problema al compartir tu ubicación GPS. Por favor, ¿podrías ingresar la dirección manualmente (Ej: {EJEMPLO_DIRECCION}, Localidad)?",
+                            "options_list": [],
+                            "message_type": "text",
+                            "fuente": "reclamo_gps_sin_coords_pide_manual_v1"
+                        }
+
+                # If not a GPS action and not incoming GPS data, proceed with text input for address
+                if pregunta_str: # User has provided some text input
                     if es_pregunta_nueva(pregunta_str, "una dirección", memoria):
                         logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva. Limpiando reclamo.")
                         for key in list(memoria.keys()):
                             if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']: memoria.pop(key, None)
                         memoria["estado_conversacion"] = None; self.context["intencion"] = None; return None
                 
-                    if payload.get("es_foto") and payload.get("es_ubicacion"):
-                        # If user sent a photo/location when address was expected.
+                    if payload.get("es_foto") and payload.get("es_ubicacion"): # This case might be redundant if GPS handling above is comprehensive
                         categoria_mem_for_msg = memoria.get('categoria_reclamo', 'el reclamo')
                         cat_title_for_msg = categoria_mem_for_msg.title() if isinstance(categoria_mem_for_msg, str) else "El Reclamo"
-                        # Mantener botones para compartir GPS si es relevante
-                        options_adj_gps = []
-                        allow_gps_for_this_user_adj = True
-                        if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                            if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
-                                allow_gps_for_this_user_adj = False
-                        if allow_gps_for_this_user_adj:
-                            options_adj_gps.append({"id": "accion_compartir_ubicacion_adj", "texto": "📍 Compartir Ubicación GPS"})
-
+                        # This specific scenario (sending photo AND location when address text was expected) is less common.
+                        # Prioritize the location part if it's valid.
+                        # The GPS handling logic above should catch `es_ubicacion`. If it didn't, then this is a fallback.
+                        # For simplicity, let's assume if we reach here, the GPS part of a mixed payload wasn't primary.
                         return {
                             "message_body": f"Entendido lo del adjunto. Para el reclamo de **{cat_title_for_msg}**, primero necesito la dirección escrita del problema (ej. 'Av. San Martín 123'). ¿Me la decís?",
-                            "options_list": options_adj_gps,
-                            "message_type": 'interactive_buttons' if options_adj_gps else 'text',
-                            "fuente": "reclamo_ack_adjunto_pide_direccion_v2"
+                            "options_list": [], # No GPS button if it was part of this problematic payload
+                            "message_type": 'text',
+                            "fuente": "reclamo_ack_adjunto_pide_direccion_v2_alt"
                         }
 
-                    logger.info(f"[ReclamoHandler] Estado: ESPERANDO_DIRECCION_RECLAMO. Input: '{pregunta_str}'.")
-                    # La lógica de procesar pregunta_str como dirección textual se mueve más abajo,
-                    # para ser usada si no se pide la dirección por primera vez o si no es GPS.
+                    logger.info(f"[ReclamoHandler] Estado: ESPERANDO_DIRECCION_RECLAMO. Input textual: '{pregunta_str}'.")
+                    config_muni_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
+                    parsed_address = parse_direccion_completa(pregunta_str, config_muni_parseo)
 
-                # Si llegamos aquí, es porque:
-                # 1. No había ubicación GPS en el payload actual que se procesó arriba.
-                # 2. No había dirección en memoria (ya que el `if memoria.get("direccion_reclamo")` no continuó).
-                # 3. O bien pregunta_str estaba vacía (hay que pedir dirección con opciones),
-                #    o pregunta_str tenía texto pero aún no se ha procesado como dirección textual en este paso.
+                    if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"):
+                        memoria["direccion_estructurada_reclamo"] = parsed_address
+                        dir_confirm_text = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,",",").strip()
+                        memoria["direccion_reclamo"] = dir_confirm_text
+                        logger.info(f"[ReclamoHandler] Dirección textual guardada: {dir_confirm_text}.")
+                        memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
+                        estado = ConversationState.ESPERANDO_NOMBRE_VECINO
+                        if all(memoria.get(campo) for campo in ["nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
+                             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
+                             estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
 
-                if not pregunta_str: # Solo mostrar opciones si no hay texto que procesar (primera vez que se pide dir)
+                        if memoria.get("nombre_vecino"): # If name was pre-filled
+                            pregunta_str = ""
+                            continue
+                        else:
+                            return {"message_body": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?", "options_list": [], "message_type": "text", "fuente": "reclamo_direccion_ok_pide_nombre_v2"}
+                    else: # Dirección textual no válida
+                        respuesta_dir_inv = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad'."
+                        options_dir_inv = []
+                        # Offer GPS option ONLY if the current attempt was NOT a failed GPS attempt.
+                        if not payload.get("es_ubicacion"): # i.e., this was a failed text input, not a failed GPS that fell through
+                            allow_gps_for_this_user_invalida = True
+                            if self.context.get("anon_id") and not self.context.get("cliente_id"):
+                                if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
+                                    allow_gps_for_this_user_invalida = False
+                                    respuesta_dir_inv += "\n(Para compartir GPS necesitarás estar registrado)."
+                            if allow_gps_for_this_user_invalida:
+                                respuesta_dir_inv += "\nTambién podés intentar compartir tu ubicación GPS."
+                                options_dir_inv.append({"id": "accion_compartir_ubicacion_reintento", "texto": "📍 Compartir Ubicación GPS"})
+                        else: # Current attempt was a failed GPS that somehow fell through, don't offer GPS again.
+                            logger.info("[ReclamoHandler] Dirección textual inválida, y el payload indicaba 'es_ubicacion' (posiblemente fallido). No se ofrecerá GPS de nuevo.")
+
+
+                        return {
+                            "message_body": respuesta_dir_inv,
+                            "options_list": options_dir_inv,
+                            "message_type": 'interactive_buttons' if options_dir_inv else 'text',
+                            "fuente": "reclamo_direccion_invalida_con_opcion_gps_v2"
+                        }
+                else: # No pregunta_str (i.e. first time asking for address in this flow, or previous input was consumed)
                     categoria_mem = memoria.get('categoria_reclamo', '')
                     cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
-                    # Usar mensaje_adjunto_recibido si fue establecido al inicio del handler
-                    ack_adjunto = memoria.get("mensaje_adjunto_recibido", "")
+                    ack_adjunto = memoria.get("mensaje_adjunto_recibido", "") # If an image was processed earlier
 
                     body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
 
@@ -1507,7 +1597,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                         if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
                             allow_gps_for_this_user = False
                             body_pedir_direccion += "\n(Para compartir GPS necesitarás estar registrado)."
-
                     if allow_gps_for_this_user:
                          options_pedir_direccion.append({"id": "accion_compartir_ubicacion", "texto": "📍 Compartir Ubicación GPS"})
 
@@ -1517,44 +1606,6 @@ class ReclamoHandler(BaseMunicipioHandler):
                         "message_type": 'interactive_buttons' if options_pedir_direccion else 'text',
                         "fuente": "reclamo_pedir_direccion_con_opcion_gps_v2"
                     }
-                else: # pregunta_str tiene texto, procesarlo como dirección (lógica original adaptada)
-                    config_muni_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
-                    parsed_address = parse_direccion_completa(pregunta_str, config_muni_parseo)
-
-                    if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"):
-                        memoria["direccion_estructurada_reclamo"] = parsed_address
-                        dir_confirm_text = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,",",").strip()
-                        memoria["direccion_reclamo"] = dir_confirm_text
-                        logger.info(f"[ReclamoHandler] Dirección guardada: {dir_confirm_text}.")
-                        memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
-                        estado = ConversationState.ESPERANDO_NOMBRE_VECINO
-                        if all(memoria.get(campo) for campo in ["nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
-                             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
-                             estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-                        if memoria.get("nombre_vecino"):
-                            pregunta_str = ""
-                            continue
-                        else:
-                            return {"message_body": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?", "options_list": [], "message_type": "text", "fuente": "reclamo_direccion_ok_pide_nombre_v2"}
-                    else: # Dirección textual no válida
-                        respuesta_dir_inv = f"La dirección '{pregunta_str}' no parece completa o válida. ¿Podrías verificarla? Necesito algo como '{EJEMPLO_DIRECCION}, Localidad'."
-                        options_dir_inv = []
-                        allow_gps_for_this_user_invalida = True
-                        if self.context.get("anon_id") and not self.context.get("cliente_id"):
-                            if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
-                                allow_gps_for_this_user_invalida = False
-                                respuesta_dir_inv += "\n(Para compartir GPS necesitarás estar registrado)."
-
-                        if allow_gps_for_this_user_invalida:
-                            respuesta_dir_inv += "\nTambién podés intentar compartir tu ubicación GPS."
-                            options_dir_inv.append({"id": "accion_compartir_ubicacion_reintento", "texto": "📍 Compartir Ubicación GPS"})
-
-                        return {
-                            "message_body": respuesta_dir_inv,
-                            "options_list": options_dir_inv,
-                            "message_type": 'interactive_buttons' if options_dir_inv else 'text',
-                            "fuente": "reclamo_direccion_invalida_con_opcion_gps_v2"
-                        }
 
             # 3. ESPERANDO_NOMBRE_VECINO
             elif current_state_for_logic == ConversationState.ESPERANDO_NOMBRE_VECINO:
@@ -2916,21 +2967,68 @@ class GeneralHandler(BaseMunicipioHandler):
             if not contexto_scraped: logger.info(f"[GeneralHandler] No se encontró contenido 'contenido_general' en SitioWebInfo para user_id {user_obj.id}."); contexto_scraped = "No hay información general disponible del municipio en este momento."
         except Exception as e: logger.error(f"[GeneralHandler] Error al obtener contenido SitioWebInfo: {e}", exc_info=True); contexto_scraped = "Hubo un error al cargar la información general del municipio."
         prompt_final = PROMPT_MUNICIPIO_CON_CONTEXTO.format(contexto_scraped=contexto_scraped, pregunta_usuario=pregunta_str)
-        respuesta_llm = safe_llm_call(prompt=prompt_final, preamble="Sos un asistente municipal que responde basado en info oficial.", fallback=("No encontré información específica para tu consulta en la base de datos del municipio. Te puedo ayudar con reclamos, trámites, o intentar conectar con un agente."))
-        if len(respuesta_llm.split()) < 7 and ("no puedo" in respuesta_llm.lower() or "no sé" in respuesta_llm.lower()):
-             logger.info(f"[GeneralHandler] Respuesta LLM corta o evasiva no detectada por safe_llm_call: '{respuesta_llm}'. Usando botones de fallback.")
-             body = respuesta_llm + "\n\nQuizás estas opciones te sirvan:"
-             options = [
-                 {"id": "iniciar_reclamo_general_fallback", "texto": "Hacer un reclamo"},
-                 {"id": "consultar_estado_ticket_general_fallback", "texto": "Consultar estado de ticket"},
-                 {"id": "hablar_con_agente_general_fallback", "texto": "Hablar con un agente"}
-             ]
-             return {
-                 "message_body": body,
-                 "options_list": options,
-                 "message_type": 'interactive_buttons',
-                 "fuente": "general_handler_fallback_opciones_v2"
-             }
+        # The fallback for safe_llm_call is now more generic.
+        # GeneralHandler will try to make it more specific if LLM doesn't find an answer.
+        respuesta_llm = safe_llm_call(
+            prompt=prompt_final,
+            preamble="Sos un asistente municipal que responde basado en info oficial.",
+            fallback=None # Let safe_llm_call use its own improved default, or handle None here.
+        )
+
+        # Check if LLM returned its default fallback or a very generic "I don't know"
+        llm_returned_default_fallback = (
+            respuesta_llm is None or # Explicitly None from safe_llm_call if its internal fallback was also None
+            "No pude encontrar una respuesta directa a tu consulta" in respuesta_llm or
+            "Hubo un inconveniente al procesar tu solicitud" in respuesta_llm or
+            (len(respuesta_llm.split()) < 7 and ("no puedo" in respuesta_llm.lower() or "no sé" in respuesta_llm.lower() or "no tengo información" in respuesta_llm.lower()))
+        )
+
+        if llm_returned_default_fallback:
+            logger.info(f"[GeneralHandler] LLM no encontró respuesta específica o devolvió fallback. Respuesta LLM: '{respuesta_llm}'. Construyendo fallback contextual.")
+
+            body_contextual_fallback = "No encontré información específica para tu consulta."
+            options_contextual_fallback = []
+
+            # Check for context from memoria
+            categoria_reclamo_activa = memoria.get("categoria_reclamo")
+            estado_conversacion_actual = memoria.get("estado_conversacion") # This is Enum or None
+
+            if estado_conversacion_actual in RECLAMO_STATES and categoria_reclamo_activa:
+                body_contextual_fallback = f"No encontré información adicional sobre '{pregunta_str}', pero si te referías al reclamo sobre '{categoria_reclamo_activa.replace('_',' ').title()}', podemos continuar con eso."
+                # TODO: Add specific buttons to continue the claim, e.g., "Sí, continuar reclamo"
+                # This requires knowing what the next step for that claim would be.
+                # For now, offering generic options or asking for clarification.
+                options_contextual_fallback.extend([
+                    {"id": "continuar_reclamo_contextual", "texto": f"Continuar reclamo ({categoria_reclamo_activa.replace('_',' ').title()})"},
+                    {"id": "iniciar_nuevo_reclamo_contextual", "texto": "Iniciar nuevo reclamo"},
+                    {"id": "hablar_agente_contextual_reclamo", "texto": "Hablar con un agente"}
+                ])
+            elif estado_conversacion_actual == ConversationState.ESPERANDO_SELECCION_TRAMITE or memoria.get("ultimo_tramite_consultado"):
+                tramite_ref = memoria.get("ultimo_tramite_consultado", "trámites")
+                body_contextual_fallback = f"No encontré información específica sobre tu consulta relacionada con '{tramite_ref}'. Puedo mostrarte la lista de trámites nuevamente si querés."
+                options_contextual_fallback.extend([
+                    {"id": "ver_lista_tramites_contextual", "texto": "Ver lista de trámites"},
+                    {"id": "hablar_agente_contextual_tramite", "texto": "Hablar con un agente"}
+                ])
+            else: # Generic fallback if no strong context
+                body_contextual_fallback = "No encontré información específica para tu consulta. ¿Quizás querías hacer un reclamo, consultar sobre un trámite, o necesitas hablar con un agente?"
+                options_contextual_fallback.extend([
+                    {"id": "iniciar_reclamo_general_fallback_v3", "texto": "Hacer un reclamo"},
+                    {"id": "consultar_tramite_general_fallback_v3", "texto": "Consultar un trámite"},
+                    {"id": "hablar_con_agente_general_fallback_v3", "texto": "Hablar con un agente"}
+                ])
+
+            message_type_fallback = 'interactive_buttons' if options_contextual_fallback else 'text'
+            if len(options_contextual_fallback) > 3: message_type_fallback = 'interactive_list'
+
+            return {
+                "message_body": body_contextual_fallback,
+                "options_list": options_contextual_fallback,
+                "message_type": message_type_fallback,
+                "fuente": "general_handler_contextual_fallback_v3"
+            }
+
+        # If LLM gave a good answer, return it
         return {"message_body": respuesta_llm, "options_list": [], "message_type": "text", "fuente": "general_handler_respuesta_directa_v2"}
 
 class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
@@ -3356,8 +3454,8 @@ def safe_llm_call(prompt, preamble, fallback=None):
         for phrase in generic_phrases:
             if phrase in resp_lower: logger.warning(f"[LLM_FALLBACK] Respuesta genérica del LLM detectada (contiene: '{phrase}'). Respuesta completa: '{resp}'"); raise ValueError(f"Respuesta genérica del LLM (contiene: '{phrase}')")
         return resp
-    except ValueError as ve: logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}"); return fallback or "No tengo información específica en este momento. ¿Te puedo ayudar con algo más?"
-    except Exception as e: logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True); return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. Intenta de nuevo más tarde."
+    except ValueError as ve: logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}"); return fallback or "No pude encontrar una respuesta directa a tu consulta. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
+    except Exception as e: logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True); return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
 
 CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño", "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle", "rotura de semaforo", "tramites de obras privadas", "incendio", "otro motivo"]
 categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
