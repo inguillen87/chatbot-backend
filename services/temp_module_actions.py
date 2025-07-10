@@ -21,8 +21,8 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
     categoria = datos_llm.get("categoria", "Reclamo General")
     descripcion = datos_llm.get("descripcion")
     ubicacion_llm = datos_llm.get("ubicacion")
-    coordenadas_llm = datos_llm.get("coordenadas")
-    nombre_vecino_llm = datos_llm.get("usuario")
+    coordenadas_llm = datos_llm.get("coordenadas") 
+    nombre_vecino_llm = datos_llm.get("usuario") 
     telefono_llm = datos_llm.get("telefono")
     email_llm = datos_llm.get("email")
     foto_url_llm = datos_llm.get("foto_url_adjunta") # Campo hipotético si LLM extrae URL de imagen del texto
@@ -41,16 +41,16 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
     # --- 2. Recopilación de Información del Contexto ---
     viewer_user = context.get("viewer_user_obj")
     owner_user = context.get("user_obj") # Dueño del bot (municipio)
-
+    
     user_id_db = getattr(viewer_user, "id", None)
     anon_id_db = context.get("anon_id") if not user_id_db else None
-    municipio_config_actual = context.get("municipio_config_actual", CONFIG_MUNICIPIO)
+    municipio_config_actual = context.get("municipio_config_actual", CONFIG_MUNICIPIO) 
     municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None) # Asumiendo que owner_user tiene este attr.
     chat_session_uuid = context.get("chat_session_uuid")
     # chat_db_context_data = context.get("chat_db_context_data", {}) # Para idempotencia
 
     nombre_vecino_final = nombre_vecino_llm or getattr(viewer_user, "nombre", None) or "Ciudadano Anónimo"
-
+    
     telefono_final_validado_e164 = None
     temp_phone_str = str(telefono_llm or getattr(viewer_user, "telefono", ""))
     if temp_phone_str and validar_telefono(temp_phone_str):
@@ -76,13 +76,13 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
                 "message_body": f"La ubicación '{ubicacion_llm}' no parece válida. ¿Podrías verificarla?",
                 "options_list": [], "fuente": "accion_crear_reclamo_direccion_invalida_llm"
             }
-
+    
     # --- Lógica de Idempotencia (Simplificada por ahora, necesita el payload original o datos más específicos) ---
     # if chat_session_uuid and chat_db_context_data:
     #     idempotency_key_data = f"{categoria}-{descripcion[:20]}-{direccion_final_txt[:20]}"
     #     # Esta clave es muy simple, idealmente usar un hash o algo más robusto del payload del LLM.
     #     # O el LLM podría devolver un ID de interacción único.
-    #     idempotency_key = f"{chat_session_uuid}_{hash(idempotency_key_data)}"
+    #     idempotency_key = f"{chat_session_uuid}_{hash(idempotency_key_data)}" 
     #     processed_keys = chat_db_context_data.get("processed_idempotency_keys_reclamos_llm", {})
     #     if idempotency_key in processed_keys:
     #         existing_ticket_nro = processed_keys[idempotency_key]
@@ -120,7 +120,7 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
         ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
         if not ticket_creado:
             raise Exception("servicio_tickets.crear_nuevo_ticket retornó None")
-
+        
         nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
         logger_func.info(f"Ticket {nro_ticket_str} creado exitosamente vía LLM.")
 
@@ -152,7 +152,7 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
                 logger_func.info(f"Notificación WhatsApp enviada para ticket {nro_ticket_str}")
             except Exception as e_notify_wp:
                 logger_func.error(f"Error enviando notificación WhatsApp para {nro_ticket_str}: {e_notify_wp}")
-
+        
         return {
             "message_body": f"¡Gracias {nombre_vecino_final}! Tu reclamo sobre '{categoria}' ha sido registrado con el número {nro_ticket_str}. Te mantendremos informado.",
             "options_list": [
@@ -160,7 +160,7 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
                 {"id": "iniciar_otro_reclamo_llm", "texto": "Hacer otro reclamo"}
             ],
             "fuente": "accion_crear_reclamo_llm_exito",
-            "ticket_id": ticket_creado.id
+            "ticket_id": ticket_creado.id 
         }
     except Exception as e:
         logger_func.error(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Error al crear ticket: {e}", exc_info=True)

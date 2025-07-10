@@ -173,7 +173,7 @@ def agregar_botones_para_links(texto: str, botones: list) -> list:
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+17432643718"
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
@@ -245,6 +245,8 @@ class ConversationState(Enum):
     ESPERANDO_DETALLES_CHECKOUT = auto()
     ESPERANDO_CONFIRMACION_PEDIDO = auto()
     ESPERANDO_UBICACION_PANICO = auto()
+    ESPERANDO_INFO_RECLAMO_LLM = auto() # Nuevo estado para cuando el LLM está recopilando info para un reclamo
+    CONVERSACION_GENERAL_LLM = auto() # Nuevo estado para cuando el LLM está en una conversación general
 
 _PRODUCT_CATALOG_CACHE = None
 def cargar_catalogo_productos():
@@ -3735,11 +3737,11 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
     categoria = datos_llm.get("categoria", "Reclamo General")
     descripcion = datos_llm.get("descripcion")
     ubicacion_llm = datos_llm.get("ubicacion")
-    coordenadas_llm = datos_llm.get("coordenadas")
-    nombre_vecino_llm = datos_llm.get("usuario")
+    coordenadas_llm = datos_llm.get("coordenadas") 
+    nombre_vecino_llm = datos_llm.get("usuario") 
     telefono_llm = datos_llm.get("telefono")
     email_llm = datos_llm.get("email")
-    foto_url_llm = datos_llm.get("foto_url_adjunta")
+    foto_url_llm = datos_llm.get("foto_url_adjunta") 
 
     if not descripcion:
         return {
@@ -3754,17 +3756,17 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
 
     # --- 2. Recopilación de Información del Contexto ---
     viewer_user = context.get("viewer_user_obj")
-    owner_user = context.get("user_obj")
-
+    owner_user = context.get("user_obj") 
+    
     user_id_db = getattr(viewer_user, "id", None)
     anon_id_db = context.get("anon_id") if not user_id_db else None
-    municipio_config_actual = context.get("municipio_config_actual", CONFIG_MUNICIPIO)
+    municipio_config_actual = context.get("municipio_config_actual", CONFIG_MUNICIPIO) 
     municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
     # chat_session_uuid = context.get("chat_session_uuid") # Descomentar si se usa para idempotencia
-    # chat_db_context_data = context.get("chat_db_context_data", {})
+    # chat_db_context_data = context.get("chat_db_context_data", {}) 
 
     nombre_vecino_final = nombre_vecino_llm or getattr(viewer_user, "nombre", None) or "Ciudadano Anónimo"
-
+    
     telefono_final_validado_e164 = None
     temp_phone_str = str(telefono_llm or getattr(viewer_user, "telefono", ""))
     if temp_phone_str and validar_telefono(temp_phone_str): # common_utils.validar_telefono
@@ -3790,7 +3792,7 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
                 "message_body": f"La ubicación '{ubicacion_llm}' no parece válida. ¿Podrías verificarla?",
                 "options_list": [], "fuente": "accion_crear_reclamo_direccion_invalida_llm"
             }
-
+    
     ticket_data = {
         "asunto": f"Reclamo (LLM): {categoria}", "categoria": categoria, "detalles": descripcion,
         "direccion": direccion_final_txt, "nombre_vecino": nombre_vecino_final,
@@ -3799,9 +3801,9 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
         "municipio_id": municipio_db_id_para_ticket, "latitud": latitud_final, "longitud": longitud_final,
         "origen_reclamo": "LLM_CHATBOT"
     }
-    if context.get("foto_url"):
+    if context.get("foto_url"): 
         ticket_data["foto_url_directa"] = context.get("foto_url")
-    elif foto_url_llm:
+    elif foto_url_llm: 
         ticket_data["foto_url_directa"] = foto_url_llm
 
     ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
@@ -3811,21 +3813,21 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
         ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
         if not ticket_creado:
             raise Exception("servicio_tickets.crear_nuevo_ticket retornó None")
-
+        
         nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
         logger_func.info(f"Ticket {nro_ticket_str} creado exitosamente vía LLM.")
 
         archivo_id_a_vincular = context.get("archivo_id_para_asociar")
         if archivo_id_a_vincular:
-            from services.archivo_service import archivo_service
+            from services.archivo_service import archivo_service 
             asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(ticket_id=ticket_creado.id, tipo_ticket="municipio", ids_archivos=[archivo_id_a_vincular])
             if asociacion_exitosa: logger_func.info(f"Archivo ID {archivo_id_a_vincular} asociado a ticket {nro_ticket_str}.")
             else: logger_func.warning(f"No se pudo asociar archivo ID {archivo_id_a_vincular} a ticket {nro_ticket_str}.")
-
+            
             # Consumir del contexto. CONTEXTO_MUNICIPIO es el sub-diccionario.
             if CONTEXTO_MUNICIPIO in context and isinstance(context[CONTEXTO_MUNICIPIO], dict) and "archivo_id_para_asociar" in context[CONTEXTO_MUNICIPIO]:
-                 del context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"]
-            elif "archivo_id_para_asociar" in context:
+                 del context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"] 
+            elif "archivo_id_para_asociar" in context: 
                  context.pop("archivo_id_para_asociar", None)
 
 
@@ -3835,7 +3837,7 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
                 logger_func.info(f"Notificación WhatsApp enviada para ticket {nro_ticket_str}")
             except Exception as e_notify_wp:
                 logger_func.error(f"Error enviando notificación WhatsApp para {nro_ticket_str}: {e_notify_wp}")
-
+        
         return {
             "message_body": f"¡Gracias {nombre_vecino_final}! Tu reclamo sobre '{categoria}' ha sido registrado con el número {nro_ticket_str}. Te mantendremos informado.",
             "options_list": [
@@ -3843,7 +3845,7 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
                 {"id": "iniciar_otro_reclamo_llm", "texto": "Hacer otro reclamo"}
             ],
             "fuente": "accion_crear_reclamo_llm_exito",
-            "ticket_id": ticket_creado.id
+            "ticket_id": ticket_creado.id 
         }
     except Exception as e:
         logger_func.error(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Error al crear ticket: {e}", exc_info=True)
@@ -3874,8 +3876,9 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
-
-    USAR_LLM_PARA_RECLAMOS = True
+    
+    USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
+    respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
 
     received_payload = {}
     pregunta_str = ""
@@ -3933,192 +3936,320 @@ def responder_municipio(
 
     # --- End Handle post-login resumption ---
 
-    # !!! MOVED UP: Image Analysis and Intent Setting Block START !!!
-    # This block is now processed early to set intent based on images.
+    # --- LLM Integration for Reclamos (and potentially other intents later) ---
+    if USAR_LLM_PARA_RECLAMOS and not respuesta_manejada_por_llm: # Check flag here
+        estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion") # Enum or None
+        invocar_llm = False
+        if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM or \
+           estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM:
+            invocar_llm = True
+            logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado LLM activo: {estado_conversacion_para_llm}. Invocando LLM.")
+        elif not estado_conversacion_para_llm or contexto_municipio_actual.get("saludo_detectado_en_largo_mensaje"):
+            # Heurística para invocar LLM: texto sustantivo o imagen sin texto.
+            # El context["es_foto"] se setea en el bloque "EARLY_IMG_PROC" que está más abajo ahora.
+            # Para que el LLM use la foto en el primer turno, EARLY_IMG_PROC debe correr ANTES de este bloque LLM.
+            # Por ahora, el LLM se basará en `pregunta_str` y `contexto_municipio_actual` que podría tener info de imagen de un turno ANTERIOR.
+            # Si es una imagen NUEVA en ESTE turno, el EARLY_IMG_PROC más abajo la procesará para el *siguiente* turno del LLM,
+            # o para los handlers tradicionales si el LLM no maneja este turno.
+            # Esto es un punto a refinar: idealmente el análisis de imagen de ESTE turno debería estar disponible para el LLM en ESTE turno.
+            
+            # Para que el LLM pueda usar la imagen en el *mismo turno* que se envía,
+            # la detección de `context["es_foto"]` y `context["foto_url"]` debe ocurrir *antes* de este bloque.
+            # El bloque "EARLY_IMG_PROC" (que está más abajo) se encarga de esto.
+            # Entonces, aquí `context.get("es_foto")` reflejará si una imagen fue detectada en este turno.
+            if len(pregunta_str.strip().split()) > 1 or \
+               (context.get("es_foto") and not pregunta_str.strip()):
+                invocar_llm = True
+                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado inicial/saludo. Pregunta: '{pregunta_str[:50]}...', es_foto: {context.get('es_foto')}. Invocando LLM.")
+
+        if invocar_llm:
+            logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_INVOKE] Invocando LLM. Estado actual para LLM: {estado_conversacion_para_llm}")
+            usuario_info_llm = {
+                "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
+                "tipo_entidad": "municipio", 
+                "ubicacion": getattr(viewer_user, "direccion", None) if viewer_user else None,
+                "contacto": { "telefono": getattr(viewer_user, "telefono", None) if viewer_user else None, "email": getattr(viewer_user, "email", None) if viewer_user else None }
+            }
+            historial_para_llm = []
+            if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM: historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
+            elif estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM: historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
+
+            try:
+                mensaje_completo_para_llm = {"texto": pregunta_str}
+                if context.get("es_foto") and context.get("foto_url"):
+                    mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
+                    if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"): 
+                        analisis_previo = contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw")
+                        if isinstance(analisis_previo, dict):
+                             resumen_analisis = {k: analisis_previo.get(k) for k in ["categoria_sugerida", "descripcion_sugerida", "texto_ocr"] if analisis_previo.get(k)}
+                             if resumen_analisis: mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
+                
+                respuesta_llm_dict = llamar_gemini(mensaje=mensaje_completo_para_llm, usuario=usuario_info_llm, historial=historial_para_llm)
+                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_RESP] Respuesta LLM: {respuesta_llm_dict}")
+
+                respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
+                accion_backend_llm = respuesta_llm_dict.get("accion_backend")
+                datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
+                pedir_info_llm = respuesta_llm_dict.get("pedir_info")
+                botones_llm = respuesta_llm_dict.get("botones", [])
+
+                if respuesta_usuario_llm:
+                    nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
+                    hist_key = None
+                    if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
+                        hist_key = "historial_llm_reclamo"
+                        if not pedir_info_llm: # Acción completa, se creará ticket
+                            respuesta_accion = accion_crear_reclamo_municipio(datos_estructura_llm, context)
+                            respuesta_final = respuesta_accion
+                            for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]: contexto_municipio_actual.pop(k, None)
+                            contexto_municipio_actual["estado_conversacion"] = None
+                            respuesta_manejada_por_llm = True
+                        else: # Pide más info para reclamo
+                            contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
+                            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM
+                            contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                            respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}
+                            respuesta_manejada_por_llm = True
+                    elif accion_backend_llm == "derivar_humano":
+                        context["intencion"] = "hablar_con_agente"
+                        contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
+                        respuesta_manejada_por_llm = False # Deja a HumanEscalationHandler construir la respuesta
+                        logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM] LLM derivó a humano.")
+                    elif respuesta_usuario_llm: # Respuesta general
+                        hist_key = "historial_conversacion_general_llm"
+                        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM
+                        if pedir_info_llm: contexto_municipio_actual["esperando_info_general_llm"] = pedir_info_llm
+                        else: contexto_municipio_actual.pop("esperando_info_general_llm", None)
+                        respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}
+                        respuesta_manejada_por_llm = True
+                    
+                    if hist_key and respuesta_manejada_por_llm : # Solo agregar a historial si el LLM efectivamente manejó la respuesta y es un flujo continuo
+                        contexto_municipio_actual.setdefault(hist_key, []).append(nuevo_turno_historial)
+                
+                if not respuesta_usuario_llm and not accion_backend_llm : # LLM no dio nada útil
+                    logger_actual.warning("[RESPONDER_MUNICIPIO_LLM] LLM no devolvió respuesta_usuario ni acción_backend.")
+                    respuesta_manejada_por_llm = False # Fallback
+
+            except Exception as e_llm:
+                logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error: {e_llm}", exc_info=True)
+                respuesta_manejada_por_llm = False
+                for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
+                    if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM, ConversationState.CONVERSACION_GENERAL_LLM]:
+                        contexto_municipio_actual[k] = None
+                    elif k != "estado_conversacion":
+                        contexto_municipio_actual.pop(k, None)
+    
+    # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
+    # This block runs if LLM didn't handle the response, or to supplement LLM context
+    # by performing image analysis if new media is present and not yet analyzed by LLM.
+    # It sets context flags like 'es_foto', 'foto_url', 'archivo_id_para_asociar'
+    # and can pre-fill 'categoria_reclamo', 'descripcion_reclamo' from image analysis.
+    # It also loads results from asynchronous web image analysis if 'web_analisis_listo' is present.
+
+    # Note: The LLM block above might have already used context["es_foto"] and context["foto_url"]
+    # if the "EARLY_IMG_PROC" block (which is this one, now strategically placed) ran before it
+    # in a conceptual sense for setting up the 'context' dict.
+    # The key is that this block *also* runs if LLM is disabled or doesn't handle the response,
+    # ensuring image data is always processed for traditional handlers.
+
     uploaded_file_info_for_analysis = received_payload.get("uploaded_file_info") or \
                                       received_payload.get("uploaded_file_info_whatsapp")
 
+    # 1. Basic media info setting (es_foto, foto_url, archivo_id_para_asociar)
+    # This part ensures these general context keys are set if there's media,
+    # regardless of whether LLM used them or if analysis will be performed now.
     if uploaded_file_info_for_analysis and isinstance(uploaded_file_info_for_analysis, dict):
         mime_type = uploaded_file_info_for_analysis.get("mime_type", "")
-        if mime_type.startswith("image/"):
-            context["es_foto"] = True
-            context["foto_url"] = uploaded_file_info_for_analysis.get("url")
-            if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
+        if mime_type.startswith("image/"): # Assuming we only care about images for this advanced processing
+            if not context.get("es_foto"): # Only set if not already set (e.g. by an earlier phase if structure changes)
+                context["es_foto"] = True
+                logger_actual.info(f"[MEDIA_CONTEXT_SETUP] context['es_foto'] set to True.")
+            if not context.get("foto_url") and uploaded_file_info_for_analysis.get("url"):
+                context["foto_url"] = uploaded_file_info_for_analysis.get("url")
+                logger_actual.info(f"[MEDIA_CONTEXT_SETUP] context['foto_url'] set to {context['foto_url']}.")
+            if not context.get("archivo_id_para_asociar") and \
+               uploaded_file_info_for_analysis.get("id") and \
+               uploaded_file_info_for_analysis.get("source") != "whatsapp":
                 context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
+                logger_actual.info(f"[MEDIA_CONTEXT_SETUP] context['archivo_id_para_asociar'] set to {context['archivo_id_para_asociar']}.")
 
-            logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Imagen detectada. URL: {context['foto_url']}")
-
-            # Perform analysis immediately if it's an image from WhatsApp or a web upload without prior analysis info in context.
-            # For web uploads where `web_analisis_listo` might be set later, this direct analysis might be redundant
-            # if `web_analisis_listo` is handled separately. However, for WhatsApp, this is essential.
-            # Let's assume `interpretar_imagen_para_chat` is efficient enough or this path is mostly for WhatsApp.
-
-            # We need to decide if we analyze web uploads here too, or rely SOLELY on the async task + web_analisis_listo.
-            # For now, let's prioritize direct analysis for WhatsApp, and web_analisis_listo for web.
-            # This block will primarily set intent for WhatsApp images.
-
-            is_whatsapp_or_direct_file = uploaded_file_info_for_analysis.get("source") == "whatsapp" or \
-                                         not contexto_municipio_actual.get("web_analisis_listo") # Not already handled by web async
-
-            if is_whatsapp_or_direct_file:
-                try:
-                    from models import ArchivoAdjunto # Local import if needed
-                    from services.interpretacion_imagen_service import interpretar_imagen_para_chat
-
-                    # For WhatsApp, archivo_obj_for_analysis will be the dict.
-                    # For direct web uploads (if not handled by async), it would be ArchivoAdjunto.
-                    archivo_obj_for_input = uploaded_file_info_for_analysis
-                    if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
-                         # This implies it's a web upload being processed synchronously here, which is not the main plan for web.
-                         # The main plan is async for web. This path is more for WhatsApp or if sync web analysis was desired.
-                         # However, the `context["archivo_id_para_asociar"]` is set above.
-                         # If `interpretar_imagen_para_chat` is called with a DB object, it will try to update AnalisisArchivo.
-                         # This might conflict if an async task is also supposed to do it.
-                         # Let's refine: this early analysis should primarily focus on WhatsApp dict inputs.
-                        logger_actual.warning("[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Web file with ID detected in early image processing. This path is unusual if async analysis is primary for web.")
-                        # Potentially skip direct analysis here if it's a web file with an ID, to let async task handle it.
-                        # For now, allowing it for generality, but this needs testing for web flow race conditions.
-                        # Re-think: If it's a web file already with an ID, it means it was uploaded, and async task *should* handle it.
-                        # So, this early analysis should only be for WhatsApp dicts.
-                        if not (uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp"):
-                             # Only proceed if it's WhatsApp or a file without an ID (which shouldn't happen for web)
-                            analisis_resultado = interpretar_imagen_para_chat(
-                                archivo_adjunto=archivo_obj_for_input,
-                                tipo_interpretacion="reclamo_auto_descripcion_categoria"
-                            )
-                            logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Resultado análisis para imagen (source: {uploaded_file_info_for_analysis.get('source')}): {analisis_resultado}")
-                            contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado
-
-                            if analisis_resultado and not analisis_resultado.get("error") and analisis_resultado.get('es_reclamo'):
-                                context["intencion"] = "iniciar_reclamo"
-                                logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Intención fijada a 'iniciar_reclamo' por análisis de imagen.")
-                                if analisis_resultado.get("categoria_sugerida") and \
-                                   (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
-                                    contexto_municipio_actual["categoria_reclamo"] = analisis_resultado["categoria_sugerida"]
-                                if analisis_resultado.get("descripcion_sugerida") and \
-                                   (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo","")) < 20):
-                                    contexto_municipio_actual["descripcion_reclamo"] = analisis_resultado["descripcion_sugerida"]
-                except Exception as e_early_img:
-                    logger_actual.error(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Error en análisis temprano de imagen: {e_early_img}", exc_info=True)
-
-            # If text also suggests a claim, ensure intent is set, even if image analysis wasn't conclusive
-            # This should run *after* image analysis attempts to pre-fill context.
-            # This is a simplified keyword check for now.
-            claim_keywords_in_text = ["reclamo", "denuncia", "reportar", "problema con"] # Add more if needed
-            normalized_pregunta = pregunta_str.lower()
-            if any(kw in normalized_pregunta for kw in claim_keywords_in_text):
-                if context.get("intencion") != "iniciar_reclamo": # Only set if not already set by image analysis
-                    context["intencion"] = "iniciar_reclamo"
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_TXT_PROC] Intención fijada a 'iniciar_reclamo' por keywords en texto: '{pregunta_str}'.")
-                # Pre-fill description from text if not already filled by image and text seems descriptive
-                if not contexto_municipio_actual.get("descripcion_reclamo") and len(pregunta_str) > 20 : # Arbitrary length for "descriptive"
-                    contexto_municipio_actual["descripcion_reclamo"] = pregunta_str
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_TXT_PROC] Descripción pre-llenada por texto: '{pregunta_str[:50]}...'.")
-
-
-    # --- BEGIN: Check for completed web analysis results (moved slightly later, after direct image processing) ---
-    web_analisis_info = contexto_municipio_actual.pop("web_analisis_listo", None) # Pop to consume
+    # 2. Load completed web analysis results if 'web_analisis_listo' is in context
+    # This is for images uploaded via web and processed asynchronously.
+    web_analisis_info = contexto_municipio_actual.pop("web_analisis_listo", None) # Consume the flag
     if web_analisis_info and isinstance(web_analisis_info, dict) and web_analisis_info.get("archivo_id"):
         archivo_id_analizado = web_analisis_info["archivo_id"]
-        logger_actual.info(f"Detectado 'web_analisis_listo' para archivo_id: {archivo_id_analizado}. Intentando cargar análisis.")
+        logger_actual.info(f"[MEDIA_ANALYSIS] 'web_analisis_listo' para archivo ID: {archivo_id_analizado}. Cargando análisis.")
         try:
             from models import ArchivoAdjunto, AnalisisArchivo # Ensure models are imported
-            # Use the main db.session for this query
-            archivo_obj = db.session.query(ArchivoAdjunto).get(archivo_id_analizado)
+            archivo_obj = db.session.get(ArchivoAdjunto, archivo_id_analizado)
             if archivo_obj and archivo_obj.analisis and archivo_obj.analisis.estado_analisis == "completado":
                 analisis_obj = archivo_obj.analisis
-
-                # Reconstruct analisis_imagen_reclamo_auto_raw similar to how WhatsApp flow would get it
-                # from interpretar_imagen_para_chat's dictionary output.
-                # The key fields are 'categoria_sugerida', 'descripcion_sugerida', 'texto_ocr', 'mime_type', 'raw_analysis' (which holds vision_api_raw, llm_extraction)
-
-                # Extract data from analisis_obj.datos_estructurados (populated by _procesar_interpretacion_reclamo)
-                # and analisis_obj.texto_extraido
                 datos_estructurados_analisis = analisis_obj.datos_estructurados if isinstance(analisis_obj.datos_estructurados, dict) else {}
+                
+                categoria_sugerida_web = datos_estructurados_analisis.get("categoria_sugerida_final", datos_estructurados_analisis.get("vision_inferred_category"))
+                descripcion_sugerida_web = datos_estructurados_analisis.get("descripcion_sugerida_final", "Descripción basada en imagen adjunta.")
 
-                # _procesar_interpretacion_reclamo returns a dict with 'categoria_sugerida', 'descripcion_sugerida', 'texto_ocr', 'analisis_interno'
-                # 'analisis_interno' contains 'llm_complaint_extraction_from_image', 'vision_inferred_category', 'tipo_analisis_sugerido'
-                # 'raw_analysis' (for WhatsApp return) would have 'vision_api_raw', 'extracted_ocr_text', 'llm_complaint_extraction_from_image'
-
-                # For web, 'analisis_obj.datos_estructurados' should contain what 'analisis_interno' and 'vision_api_raw' would hold.
-                # Let's assume 'categoria_sugerida' and 'descripcion_sugerida' are not directly in datos_estructurados,
-                # but are derived by _procesar_interpretacion_reclamo.
-                # However, _procesar_interpretacion_reclamo *does* update analisis_db_record.datos_estructurados
-                # with 'llm_complaint_extraction_from_image' and 'vision_inferred_category'.
-                # We need to re-derive categoria_sugerida and descripcion_sugerida or ensure they are stored.
-
-                # For simplicity, let's assume a structure where `interpretar_imagen_para_chat` for DB objects
-                # stores enough in `AnalisisArchivo.datos_estructurados` or that we can re-derive.
-                # The `interpretar_imagen_para_chat` was modified to return `categoria_sugerida` and `descripcion_sugerida`
-                # which are then stored in `analisis_db_record.datos_estructurados` by `_procesar_interpretacion_reclamo`.
-                # Let's assume they are directly available or can be inferred.
-                # The most important thing is to get the pre-fillable fields.
-
-                # Simplified: we expect _procesar_interpretacion_reclamo (when called for a DB object)
-                # to have stored the key outcomes in analisis_obj.datos_estructurados.
-                # Let's assume it stores 'categoria_sugerida_final' and 'descripcion_sugerida_final'.
-                # This part might need refinement based on exact structure saved by _procesar_interpretacion_reclamo.
-
-                # Re-evaluating: _procesar_interpretacion_reclamo returns a dict, and if analisis_db_record exists,
-                # it updates analisis_db_record.datos_estructurados with 'llm_complaint_extraction_from_image' and 'vision_inferred_category'.
-                # The final 'categoria_sugerida' and 'descripcion_sugerida' are part of the *returned dictionary* from _procesar_interpretacion_reclamo,
-                # not directly stored under those exact keys in datos_estructurados.
-                # This means we need to re-run a part of that logic or ensure those final fields are stored.
-
-                # For now, let's assume that `analisis_obj.datos_estructurados` contains enough info.
-                # The most direct way is if `interpretar_imagen_para_chat` (for DB objects)
-                # stored `categoria_sugerida` and `descripcion_sugerida` in `AnalisisArchivo.datos_estructurados`.
-                # Let's assume it does for now, or we simulate getting them.
-                # This is a complex part due to how data is returned vs stored.
-
-                # Let's assume _procesar_interpretacion_reclamo stores its *final* suggestions in datos_estructurados
-                # under keys like 'final_categoria_sugerida' and 'final_descripcion_sugerida'.
-                # This would require a slight change in _procesar_interpretacion_reclamo if not already done.
-                # For now, we'll construct a placeholder `analisis_imagen_reclamo_auto_raw`.
-
-                temp_cat_sug = datos_estructurados_analisis.get("final_categoria_sugerida", datos_estructurados_analisis.get("vision_inferred_category"))
-                temp_desc_sug = datos_estructurados_analisis.get("final_descripcion_sugerida", "Descripción basada en imagen adjunta.")
-
+                # Store structured analysis in 'analisis_imagen_reclamo_auto_raw' for consistency
                 contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = {
-                    "es_reclamo": True, # Assume if it's here, it was deemed a claim
-                    "categoria_sugerida": temp_cat_sug,
-                    "descripcion_sugerida": temp_desc_sug,
+                    "es_reclamo": True, 
+                    "categoria_sugerida": categoria_sugerida_web,
+                    "descripcion_sugerida": descripcion_sugerida_web,
                     "texto_ocr": analisis_obj.texto_extraido or "",
                     "mime_type": archivo_obj.mime,
-                    "raw_analysis": { # Mimic structure from WhatsApp flow
-                        "vision_api_raw": datos_estructurados_analisis.get("vision_api_raw", {}),
-                        "extracted_ocr_text": analisis_obj.texto_extraido or "",
-                        "llm_complaint_extraction_from_image": datos_estructurados_analisis.get("llm_complaint_extraction_from_image", {})
-                    },
-                    "analisis_id": analisis_obj.id # Store actual analisis_id
+                    "raw_analysis": { "vision_api_raw": datos_estructurados_analisis.get("vision_api_raw", {}), "extracted_ocr_text": analisis_obj.texto_extraido or "", "llm_complaint_extraction_from_image": datos_estructurados_analisis.get("llm_complaint_extraction_from_image", {}) },
+                    "analisis_id": analisis_obj.id, 
+                    "source": "web_async_analysis"
                 }
-                logger_actual.info(f"Análisis de archivo web ID {archivo_id_analizado} cargado en contexto.")
+                logger_actual.info(f"Análisis de archivo web ID {archivo_id_analizado} (AnalisisID: {analisis_obj.id}) cargado en 'analisis_imagen_reclamo_auto_raw'.")
 
-                if contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"].get("categoria_sugerida") and \
-                   (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
-                    contexto_municipio_actual["categoria_reclamo"] = contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"]["categoria_sugerida"]
-
-                if contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"].get("descripcion_sugerida") and \
-                   (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
-                    contexto_municipio_actual["descripcion_reclamo"] = contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"]["descripcion_sugerida"]
-
-                context["es_foto"] = archivo_obj.mime.startswith("image/") if archivo_obj.mime else False
-                context["foto_url"] = archivo_obj.url
-                context["archivo_id_para_asociar"] = archivo_obj.id # Crucial for linking ticket
-
-                if not pregunta_str.strip() and not kwargs.get("intencion") and not context.get("intencion"):
+                if categoria_sugerida_web and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                    contexto_municipio_actual["categoria_reclamo"] = categoria_sugerida_web
+                if descripcion_sugerida_web and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                    contexto_municipio_actual["descripcion_reclamo"] = descripcion_sugerida_web
+                
+                if not respuesta_manejada_por_llm and not pregunta_str.strip() and not context.get("intencion"):
                     context["intencion"] = "iniciar_reclamo"
-                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis de archivo web completado y sin texto/intención previa.")
-
-                # Flag that this specific analysis has been loaded into context for this turn
-                # This helps if user sends multiple messages before this gets processed.
-                # The `web_analisis_listo` was already popped, so it's consumed for this session load.
-            else:
+                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis web completado (sin texto/intención previa y LLM no manejó).")
+            else: 
                 logger_actual.warning(f"Archivo ID {archivo_id_analizado} o su análisis completado no encontrado. 'web_analisis_listo' ignorado.")
         except Exception as e_load_web_analisis:
             logger_actual.error(f"Error cargando datos de análisis web para archivo ID {web_analisis_info.get('archivo_id')}: {e_load_web_analisis}", exc_info=True)
-    # --- END: Check for completed web analysis results ---
 
+    # 3. Direct analysis for new WhatsApp images if not already analyzed (e.g., by LLM or previous turn)
+    if not contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw") and \
+       uploaded_file_info_for_analysis and \
+       uploaded_file_info_for_analysis.get("source") == "whatsapp" and \
+       context.get("es_foto"): # es_foto should be set by now if it's an image
+        logger_actual.info("[MEDIA_ANALYSIS] Procesando imagen WhatsApp directamente (no 'analisis_imagen_reclamo_auto_raw' previo).")
+        try:
+            from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+            analisis_resultado_whatsapp = interpretar_imagen_para_chat(
+                archivo_adjunto=uploaded_file_info_for_analysis, 
+                tipo_interpretacion="reclamo_auto_descripcion_categoria"
+            )
+            logger_actual.info(f"Resultado análisis directo WhatsApp: {analisis_resultado_whatsapp}")
+            if analisis_resultado_whatsapp and not analisis_resultado_whatsapp.get("error"):
+                contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado_whatsapp
+                cat_sug_wp = analisis_resultado_whatsapp.get("categoria_sugerida")
+                desc_sug_wp = analisis_resultado_whatsapp.get("descripcion_sugerida")
+                if cat_sug_wp and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                    contexto_municipio_actual["categoria_reclamo"] = cat_sug_wp
+                if desc_sug_wp and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                    contexto_municipio_actual["descripcion_reclamo"] = desc_sug_wp
+                
+                if not respuesta_manejada_por_llm and not pregunta_str.strip() and not context.get("intencion") and analisis_resultado_whatsapp.get('es_reclamo'):
+                    context["intencion"] = "iniciar_reclamo"
+                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis WhatsApp (sin texto/intención previa y LLM no manejó).")
+        except Exception as e_img_direct_wp:
+            logger_actual.error(f"Error en análisis directo de imagen WhatsApp: {e_img_direct_wp}", exc_info=True)
+    
+    # --- End of Image Analysis & Web Analysis Check ---
+
+    # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
+    # This block runs if LLM didn't handle the response, or to supplement LLM context
+    # by performing image analysis if new media is present and not yet analyzed by LLM.
+    # It sets context flags like 'es_foto', 'foto_url', 'archivo_id_para_asociar'
+    # and can pre-fill 'categoria_reclamo', 'descripcion_reclamo' from image analysis.
+    # It also loads results from asynchronous web image analysis if 'web_analisis_listo' is present.
+
+    # Note: The LLM block above might have already used context["es_foto"] and context["foto_url"]
+    # if the "EARLY_IMG_PROC" block (which is this one, now strategically placed) ran before it
+    # in a conceptual sense for setting up the 'context' dict.
+    # The key is that this block *also* runs if LLM is disabled or doesn't handle the response,
+    # ensuring image data is always processed for traditional handlers.
+
+    uploaded_file_info_for_analysis = received_payload.get("uploaded_file_info") or \
+                                      received_payload.get("uploaded_file_info_whatsapp")
+
+    # 1. Basic media info setting (es_foto, foto_url, archivo_id_para_asociar)
+    # This part ensures these general context keys are set if there's media,
+    # regardless of whether LLM used them or if analysis will be performed now.
+    if uploaded_file_info_for_analysis and isinstance(uploaded_file_info_for_analysis, dict):
+        mime_type = uploaded_file_info_for_analysis.get("mime_type", "")
+        if mime_type.startswith("image/"): # Assuming we only care about images for this advanced processing
+            if not context.get("es_foto"): # Only set if not already set (e.g. by an earlier phase if structure changes)
+                context["es_foto"] = True
+                logger_actual.info(f"[MEDIA_CONTEXT_SETUP] context['es_foto'] set to True.")
+            if not context.get("foto_url") and uploaded_file_info_for_analysis.get("url"):
+                context["foto_url"] = uploaded_file_info_for_analysis.get("url")
+                logger_actual.info(f"[MEDIA_CONTEXT_SETUP] context['foto_url'] set to {context['foto_url']}.")
+            if not context.get("archivo_id_para_asociar") and \
+               uploaded_file_info_for_analysis.get("id") and \
+               uploaded_file_info_for_analysis.get("source") != "whatsapp":
+                context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
+                logger_actual.info(f"[MEDIA_CONTEXT_SETUP] context['archivo_id_para_asociar'] set to {context['archivo_id_para_asociar']}.")
+
+    # 2. Load completed web analysis results if 'web_analisis_listo' is in context
+    # This is for images uploaded via web and processed asynchronously.
+    web_analisis_info = contexto_municipio_actual.pop("web_analisis_listo", None) # Consume the flag
+    if web_analisis_info and isinstance(web_analisis_info, dict) and web_analisis_info.get("archivo_id"):
+        archivo_id_analizado = web_analisis_info["archivo_id"]
+        logger_actual.info(f"[MEDIA_ANALYSIS] 'web_analisis_listo' para archivo ID: {archivo_id_analizado}. Cargando análisis.")
+        try:
+            from models import ArchivoAdjunto, AnalisisArchivo # Ensure models are imported
+            archivo_obj = db.session.get(ArchivoAdjunto, archivo_id_analizado)
+            if archivo_obj and archivo_obj.analisis and archivo_obj.analisis.estado_analisis == "completado":
+                analisis_obj = archivo_obj.analisis
+                datos_estructurados_analisis = analisis_obj.datos_estructurados if isinstance(analisis_obj.datos_estructurados, dict) else {}
+                
+                categoria_sugerida_web = datos_estructurados_analisis.get("categoria_sugerida_final", datos_estructurados_analisis.get("vision_inferred_category"))
+                descripcion_sugerida_web = datos_estructurados_analisis.get("descripcion_sugerida_final", "Descripción basada en imagen adjunta.")
+
+                # Store structured analysis in 'analisis_imagen_reclamo_auto_raw' for consistency
+                contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = {
+                    "es_reclamo": True, 
+                    "categoria_sugerida": categoria_sugerida_web,
+                    "descripcion_sugerida": descripcion_sugerida_web,
+                    "texto_ocr": analisis_obj.texto_extraido or "",
+                    "mime_type": archivo_obj.mime,
+                    "raw_analysis": { "vision_api_raw": datos_estructurados_analisis.get("vision_api_raw", {}), "extracted_ocr_text": analisis_obj.texto_extraido or "", "llm_complaint_extraction_from_image": datos_estructurados_analisis.get("llm_complaint_extraction_from_image", {}) },
+                    "analisis_id": analisis_obj.id, 
+                    "source": "web_async_analysis"
+                }
+                logger_actual.info(f"Análisis de archivo web ID {archivo_id_analizado} (AnalisisID: {analisis_obj.id}) cargado en 'analisis_imagen_reclamo_auto_raw'.")
+
+                if categoria_sugerida_web and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                    contexto_municipio_actual["categoria_reclamo"] = categoria_sugerida_web
+                if descripcion_sugerida_web and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                    contexto_municipio_actual["descripcion_reclamo"] = descripcion_sugerida_web
+                
+                if not respuesta_manejada_por_llm and not pregunta_str.strip() and not context.get("intencion"):
+                    context["intencion"] = "iniciar_reclamo"
+                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis web completado (sin texto/intención previa y LLM no manejó).")
+            else: 
+                logger_actual.warning(f"Archivo ID {archivo_id_analizado} o su análisis completado no encontrado. 'web_analisis_listo' ignorado.")
+        except Exception as e_load_web_analisis:
+            logger_actual.error(f"Error cargando datos de análisis web para archivo ID {web_analisis_info.get('archivo_id')}: {e_load_web_analisis}", exc_info=True)
+
+    # 3. Direct analysis for new WhatsApp images if not already analyzed (e.g., by LLM or previous turn)
+    if not contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw") and \
+       uploaded_file_info_for_analysis and \
+       uploaded_file_info_for_analysis.get("source") == "whatsapp" and \
+       context.get("es_foto"): # es_foto should be set by now if it's an image
+        logger_actual.info("[MEDIA_ANALYSIS] Procesando imagen WhatsApp directamente (no 'analisis_imagen_reclamo_auto_raw' previo).")
+        try:
+            from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+            analisis_resultado_whatsapp = interpretar_imagen_para_chat(
+                archivo_adjunto=uploaded_file_info_for_analysis, 
+                tipo_interpretacion="reclamo_auto_descripcion_categoria"
+            )
+            logger_actual.info(f"Resultado análisis directo WhatsApp: {analisis_resultado_whatsapp}")
+            if analisis_resultado_whatsapp and not analisis_resultado_whatsapp.get("error"):
+                contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado_whatsapp
+                cat_sug_wp = analisis_resultado_whatsapp.get("categoria_sugerida")
+                desc_sug_wp = analisis_resultado_whatsapp.get("descripcion_sugerida")
+                if cat_sug_wp and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                    contexto_municipio_actual["categoria_reclamo"] = cat_sug_wp
+                if desc_sug_wp and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                    contexto_municipio_actual["descripcion_reclamo"] = desc_sug_wp
+                
+                if not respuesta_manejada_por_llm and not pregunta_str.strip() and not context.get("intencion") and analisis_resultado_whatsapp.get('es_reclamo'):
+                    context["intencion"] = "iniciar_reclamo"
+                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis WhatsApp (sin texto/intención previa y LLM no manejó).")
+        except Exception as e_img_direct_wp:
+            logger_actual.error(f"Error en análisis directo de imagen WhatsApp: {e_img_direct_wp}", exc_info=True)
+    
+    # --- End of Image Analysis & Web Analysis Check ---
 
     estado_guardado_raw = contexto_municipio_actual.get("estado_conversacion")
     logger_actual.info(
@@ -4221,161 +4352,406 @@ def responder_municipio(
     context["chat_db_context_data"] = chat_db_context.context_data
     # End of reconstructed context dictionary. Ensuring no trailing braces here.
 
-    # --- Image Analysis for New/Early Claims & Initial Intent Setting by Media ---
+    # --- LLM Integration for Reclamos (and potentially other intents later) ---
+    if USAR_LLM_PARA_RECLAMOS:
+        estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion") # Enum or None
+        # Determinar si se debe invocar el LLM
+        invocar_llm = False
+        if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM or \
+           estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM:
+            invocar_llm = True
+        elif not estado_conversacion_para_llm or \
+             estado_conversacion_para_llm == ConversationState.SALUDO_INICIAL_COMPLETADO or \
+             contexto_municipio_actual.get("saludo_detectado_en_largo_mensaje"):
+            # Podríamos añadir una heurística sobre la longitud de pregunta_str para no llamar al LLM por un "ok"
+            if len(pregunta_str.strip().split()) > 1 or \
+               (context.get("es_foto") and not pregunta_str.strip()): # Si hay foto y no texto, o texto sustantivo
+                invocar_llm = True
+                # Si es el inicio de una potencial conversación con LLM y no un estado LLM activo,
+                # y la intención no es clara aún, podríamos intentar una clasificación de intención con LLM primero,
+                # o directamente pasar al JULES prompt general. Por ahora, pasamos al JULES prompt general.
+                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado inicial o saludo. Pregunta: '{pregunta_str[:50]}...'. Invocando LLM.")
+
+        if invocar_llm:
+            logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_INVOKE] Invocando LLM. Estado actual: {estado_conversacion_para_llm}")
+            # Preparar datos para el LLM
+            usuario_info_llm = {
+                "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
+                "tipo_entidad": "municipio", # Hardcodeado para este servicio
+                "ubicacion": getattr(viewer_user, "direccion", None) if viewer_user else None,
+                "contacto": {
+                    "telefono": getattr(viewer_user, "telefono", None) if viewer_user else None,
+                    "email": getattr(viewer_user, "email", None) if viewer_user else None,
+                }
+            }
+            # Historial para el LLM (simplificado, podría mejorarse)
+            # El contexto_municipio_actual ya tiene "historial_llm_reclamo"
+            historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
+            if not historial_para_llm and contexto_municipio_actual.get("historial_conversacion_general_llm"):
+                 historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm")
+
+
+            try:
+                # Construir el mensaje completo para el LLM, incluyendo la imagen si existe
+                mensaje_completo_para_llm = {"texto": pregunta_str}
+                if context.get("es_foto") and context.get("foto_url"):
+                    mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
+                    # Si hay análisis previo de imagen (ej. de `interpretar_imagen_para_chat`), podríamos pasarlo también.
+                    # Por ahora, JULES se enfoca en la URL y el texto.
+                    if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
+                        analisis_previo = contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw")
+                        if isinstance(analisis_previo, dict): # Asegurar que es un dict
+                             # Pasar solo un resumen o los datos más relevantes, no todo el raw_analysis si es muy grande.
+                             resumen_analisis = {
+                                 "categoria_sugerida_imagen": analisis_previo.get("categoria_sugerida"),
+                                 "descripcion_sugerida_imagen": analisis_previo.get("descripcion_sugerida"),
+                                 "texto_ocr_imagen": analisis_previo.get("texto_ocr")
+                             }
+                             mensaje_completo_para_llm["analisis_previo_imagen"] = {k:v for k,v in resumen_analisis.items() if v}
+
+
+                respuesta_llm_dict = llamar_gemini(
+                    mensaje=mensaje_completo_para_llm, # Puede ser dict con texto e imagen_url
+                    usuario=usuario_info_llm,
+                    historial=historial_para_llm
+                )
+                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_RESP] Respuesta LLM: {respuesta_llm_dict}")
+
+                # Procesar respuesta del LLM
+                respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
+                accion_backend_llm = respuesta_llm_dict.get("accion_backend")
+                datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
+                pedir_info_llm = respuesta_llm_dict.get("pedir_info")
+                botones_llm = respuesta_llm_dict.get("botones", []) # Lista de dicts {"texto": "..."}
+
+                # Actualizar historial para LLM
+                nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
+                if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM or \
+                   (accion_backend_llm == "crear_reclamo" and pedir_info_llm):
+                    contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
+                else: # Para CONVERSACION_GENERAL_LLM o si no es un reclamo en progreso pidiendo info
+                    contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
+
+
+                if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and \
+                   datos_estructura_llm.get("target") == "municipio":
+                    if not pedir_info_llm: # LLM tiene toda la info para crear el reclamo
+                        # Llamar a la función de acción para crear el ticket
+                        # Pasar `context` completo a `accion_crear_reclamo_municipio`
+                        respuesta_accion = accion_crear_reclamo_municipio(datos_estructura_llm, context)
+                        respuesta_final = {
+                            "message_body": respuesta_accion.get("message_body", respuesta_usuario_llm),
+                            "options_list": respuesta_accion.get("options_list", botones_llm),
+                            "message_type": respuesta_accion.get("message_type", "interactive_buttons" if botones_llm else "text"),
+                            "fuente": respuesta_accion.get("fuente", "llm_crear_reclamo_directo"),
+                            "ticket_id": respuesta_accion.get("ticket_id")
+                        }
+                        # Limpiar contexto específico del reclamo LLM
+                        contexto_municipio_actual.pop("historial_llm_reclamo", None)
+                        contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                        contexto_municipio_actual["estado_conversacion"] = None # O un estado post-creacion
+                        respuesta_manejada_por_llm = True
+                    else: # LLM necesita más info para el reclamo
+                        contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
+                        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM
+                        contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                        respuesta_final = {
+                            "message_body": respuesta_usuario_llm,
+                            "options_list": botones_llm,
+                            "message_type": "interactive_buttons" if botones_llm else "text",
+                            "fuente": "llm_pide_info_reclamo"
+                        }
+                        respuesta_manejada_por_llm = True
+                elif accion_backend_llm == "derivar_humano":
+                    context["intencion"] = "hablar_con_agente" # Dejar que HumanEscalationHandler lo tome
+                    # HumanEscalationHandler usará la respuesta_usuario_llm si es provista y relevante
+                    # o generará su propio mensaje.
+                    # Aquí podríamos pasar la respuesta_usuario_llm al contexto para que H.E.H la use.
+                    contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
+                    respuesta_manejada_por_llm = False # Dejar que H.E.H construya la respuesta final
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM] LLM derivó a humano. Intención seteada. Mensaje previo: {respuesta_usuario_llm}")
+                elif respuesta_usuario_llm: # LLM dio una respuesta pero no una acción backend clara
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM
+                    # Si pide info, guardarla para referencia, aunque no sea para un reclamo específico
+                    if pedir_info_llm:
+                        contexto_municipio_actual["esperando_info_general_llm"] = pedir_info_llm
+                    else:
+                        contexto_municipio_actual.pop("esperando_info_general_llm", None)
+                    
+                    respuesta_final = {
+                        "message_body": respuesta_usuario_llm,
+                        "options_list": botones_llm,
+                        "message_type": "interactive_buttons" if botones_llm else "text",
+                        "fuente": "llm_respuesta_general"
+                    }
+                    respuesta_manejada_por_llm = True
+                else: # LLM no dio respuesta útil
+                    logger_actual.warning("[RESPONDER_MUNICIPIO_LLM] LLM no devolvió respuesta_usuario ni acción clara.")
+                    # Se continuará con la lógica de handlers tradicional.
+                    respuesta_manejada_por_llm = False
+                    # Limpiar historial de conversación general si no hubo interaccion util
+                    contexto_municipio_actual.pop("historial_conversacion_general_llm", None)
+
+
+            except Exception as e_llm:
+                logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error al llamar o procesar LLM: {e_llm}", exc_info=True)
+                respuesta_manejada_por_llm = False # Fallback a lógica tradicional
+                # Limpiar cualquier estado LLM que pudo haberse seteado antes del error
+                if contexto_municipio_actual.get("estado_conversacion") in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM, ConversationState.CONVERSACION_GENERAL_LLM]:
+                    contexto_municipio_actual["estado_conversacion"] = None
+                contexto_municipio_actual.pop("historial_llm_reclamo", None)
+                contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("historial_conversacion_general_llm", None)
+
+
+    # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
+    # This block runs if LLM didn't handle the response, or to supplement LLM context.
+    # It sets context flags like 'es_foto', 'foto_url', 'archivo_id_para_asociar'
+    # and can pre-fill 'categoria_reclamo', 'descripcion_reclamo' from image analysis.
+    # It also loads results from asynchronous web image analysis if 'web_analisis_listo' is present.
+
     uploaded_file_info_for_analysis = received_payload.get("uploaded_file_info") or \
                                       received_payload.get("uploaded_file_info_whatsapp")
 
-    is_new_media_for_analysis = False
+    # 1. Basic media info setting (es_foto, foto_url, archivo_id_para_asociar)
     if uploaded_file_info_for_analysis and isinstance(uploaded_file_info_for_analysis, dict):
         mime_type = uploaded_file_info_for_analysis.get("mime_type", "")
-        if mime_type.startswith("image/"): # Process only images for now
-            if uploaded_file_info_for_analysis.get("id") or uploaded_file_info_for_analysis.get("url"):
-                is_new_media_for_analysis = True
+        if mime_type.startswith("image/"):
+            context["es_foto"] = True
+            context["foto_url"] = uploaded_file_info_for_analysis.get("url")
+            if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
+                context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
+            logger_actual.info(f"[MEDIA_HANDLER_POST_LLM] Imagen detectada. es_foto, foto_url, archivo_id_para_asociar actualizados en context.")
 
-                # Establish es_foto and foto_url in the main context immediately if an image is detected
-                context["es_foto"] = True
-                context["foto_url"] = uploaded_file_info_for_analysis.get("url")
-                if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
-                    context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
-                logger_actual.info(f"[RESPONDER_MUNICIPIO] Imagen detectada en payload (source: {uploaded_file_info_for_analysis.get('source', 'web')}). context['es_foto'] y context['foto_url'] actualizados.")
+    # 2. Load completed web analysis results if available
+    web_analisis_info = contexto_municipio_actual.pop("web_analisis_listo", None)
+    if web_analisis_info and isinstance(web_analisis_info, dict) and web_analisis_info.get("archivo_id"):
+        archivo_id_analizado = web_analisis_info["archivo_id"]
+        logger_actual.info(f"[MEDIA_HANDLER_POST_LLM] 'web_analisis_listo' para archivo ID: {archivo_id_analizado}. Cargando análisis.")
+        try:
+            from models import ArchivoAdjunto, AnalisisArchivo
+            archivo_obj = db.session.get(ArchivoAdjunto, archivo_id_analizado)
+            if archivo_obj and archivo_obj.analisis and archivo_obj.analisis.estado_analisis == "completado":
+                analisis_obj = archivo_obj.analisis
+                datos_estructurados_analisis = analisis_obj.datos_estructurados if isinstance(analisis_obj.datos_estructurados, dict) else {}
+                
+                # Reconstruct 'analisis_imagen_reclamo_auto_raw' for consistency with WhatsApp flow
+                # This structure is what 'interpretar_imagen_para_chat' (for WhatsApp) returns.
+                # _procesar_interpretacion_reclamo (for web) should store these key fields in AnalisisArchivo.datos_estructurados.
+                categoria_sugerida_web = datos_estructurados_analisis.get("categoria_sugerida_final", datos_estructurados_analisis.get("vision_inferred_category"))
+                descripcion_sugerida_web = datos_estructurados_analisis.get("descripcion_sugerida_final", "Descripción basada en imagen adjunta.")
 
-                # If image is present and text is empty, and no prior intent from kwargs, set intent to iniciar_reclamo
-                if not pregunta_str.strip() and not kwargs.get("intencion") and not context.get("intencion"):
-                    context["intencion"] = "iniciar_reclamo"
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Imagen sin texto y sin intención previa por kwargs. Intención fijada a 'iniciar_reclamo'.")
+                contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = {
+                    "es_reclamo": True, # Assume true if analysis was done for reclamo
+                    "categoria_sugerida": categoria_sugerida_web,
+                    "descripcion_sugerida": descripcion_sugerida_web,
+                    "texto_ocr": analisis_obj.texto_extraido or "",
+                    "mime_type": archivo_obj.mime,
+                    "raw_analysis": { # Mimic structure for other parts of the system
+                        "vision_api_raw": datos_estructurados_analisis.get("vision_api_raw", {}),
+                        "extracted_ocr_text": analisis_obj.texto_extraido or "",
+                        "llm_complaint_extraction_from_image": datos_estructurados_analisis.get("llm_complaint_extraction_from_image", {})
+                    },
+                    "analisis_id": analisis_obj.id, # Actual ID of the AnalisisArchivo record
+                    "source": "web_async_analysis"
+                }
+                logger_actual.info(f"Análisis de archivo web ID {archivo_id_analizado} (AnalisisID: {analisis_obj.id}) cargado en contexto_municipio_actual['analisis_imagen_reclamo_auto_raw'].")
 
-    if is_new_media_for_analysis: # This 'if' is now primarily for logging and triggering the analysis itself
+                # Pre-fill categoria/descripcion en contexto_municipio_actual si no están ya o son genéricos
+                if categoria_sugerida_web and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                    contexto_municipio_actual["categoria_reclamo"] = categoria_sugerida_web
+                if descripcion_sugerida_web and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                    contexto_municipio_actual["descripcion_reclamo"] = descripcion_sugerida_web
+                
+                # Ensure general context flags are also set if this is the first time media info is processed
+                if not context.get("es_foto"): context["es_foto"] = archivo_obj.mime.startswith("image/") if archivo_obj.mime else False
+                if not context.get("foto_url"): context["foto_url"] = archivo_obj.url
+                if not context.get("archivo_id_para_asociar"): context["archivo_id_para_asociar"] = archivo_obj.id
+
+                # If no text from user and no LLM response yet, and web analysis suggests claim, set intent
+                if not respuesta_manejada_por_llm and not pregunta_str.strip() and not context.get("intencion"):
+                    context["intencion"] = "iniciar_reclamo" # Set main context intent
+                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis web completado (sin texto/intención previa).")
+            else: # Archivo o análisis no encontrado/completado
+                logger_actual.warning(f"Archivo ID {archivo_id_analizado} o su análisis completado no encontrado. 'web_analisis_listo' ignorado.")
+        except Exception as e_load_web_analisis:
+            logger_actual.error(f"Error cargando datos de análisis web para archivo ID {web_analisis_info.get('archivo_id')}: {e_load_web_analisis}", exc_info=True)
+
+    # 3. Direct analysis for WhatsApp images if not already processed by LLM (or to supplement)
+    #    This uses 'analisis_imagen_reclamo_auto_raw' if LLM didn't use it.
+    #    The LLM part now builds 'analisis_previo_imagen' from 'analisis_imagen_reclamo_auto_raw'.
+    #    This part is more about ensuring the context has the *results* of an analysis if one happened
+    #    and wasn't fully consumed by the LLM.
+    if not contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw") and \
+       uploaded_file_info_for_analysis and \
+       uploaded_file_info_for_analysis.get("source") == "whatsapp" and \
+       context.get("es_foto"):
+        logger_actual.info("[MEDIA_HANDLER_POST_LLM] Procesando imagen WhatsApp directamente (no había 'analisis_imagen_reclamo_auto_raw' previo).")
+        try:
+            from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+            # Pass the dict for WhatsApp images
+            analisis_resultado_whatsapp = interpretar_imagen_para_chat(
+                archivo_adjunto=uploaded_file_info_for_analysis, 
+                tipo_interpretacion="reclamo_auto_descripcion_categoria"
+            )
+            logger_actual.info(f"Resultado análisis directo WhatsApp: {analisis_resultado_whatsapp}")
+            if analisis_resultado_whatsapp and not analisis_resultado_whatsapp.get("error"):
+                contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado_whatsapp
+                # Pre-fill again if analysis provided new info and not already set by LLM or web analysis
+                cat_sug_wp = analisis_resultado_whatsapp.get("categoria_sugerida")
+                desc_sug_wp = analisis_resultado_whatsapp.get("descripcion_sugerida")
+                if cat_sug_wp and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                    contexto_municipio_actual["categoria_reclamo"] = cat_sug_wp
+                if desc_sug_wp and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                    contexto_municipio_actual["descripcion_reclamo"] = desc_sug_wp
+                
+                # If no text from user and no LLM response yet, and WhatsApp analysis suggests claim, set intent
+                if not respuesta_manejada_por_llm and not pregunta_str.strip() and not context.get("intencion") and analisis_resultado_whatsapp.get('es_reclamo'):
+                    context["intencion"] = "iniciar_reclamo" # Set main context intent
+                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis WhatsApp (sin texto/intención previa).")
+
+        except Exception as e_img_direct_wp:
+            logger_actual.error(f"Error en análisis directo de imagen WhatsApp: {e_img_direct_wp}", exc_info=True)
+    
+    # --- End of Image Analysis & Web Analysis Check ---
+
+    # --- Fallback to traditional Handlers if LLM didn't handle the response ---
+    if not respuesta_manejada_por_llm:
+        logger_actual.info(f"[RESPONDER_MUNICIPIO] LLM no manejó la respuesta (flag: {respuesta_manejada_por_llm}). Procediendo con cadena de handlers tradicional.")
+        # The rest of the handler chain logic follows here...
+        # This includes IntentClassifierHandler, ReclamoHandler, etc.
+        # Ensure context['intencion'] is set correctly before this chain runs if LLM didn't set it.
+        # If LLM was invoked but didn't set an intent and didn't handle, IntentClassifier should run.
+        # If LLM set an intent (e.g. derivar_humano), that intent will be used by the chain.
+
+        # --- Original Handler Chain Logic (slightly adapted) ---
+        estado_conversacion_actual = contexto_municipio_actual.get("estado_conversacion")  # Enum or None
+        active_state_log_name = (
+            estado_conversacion_actual.name
+            if isinstance(estado_conversacion_actual, Enum)
+            else str(estado_conversacion_actual)
+        )
         logger_actual.info(
-            f"[RESPONDER_MUNICIPIO] Media (imagen) detectada para posible análisis. "
-            f"Estado actual: {final_loaded_state}, Intención (pre-análisis): {context.get('intencion')}, Texto: '{pregunta_str[:30]}...'"
+            f"[HANDLER_CHAIN_START_TRAD] Estado en memoria: {active_state_log_name}. Intención (pre-cadena): {context.get('intencion')}"
         )
 
-        should_analyze_media_for_claim = False
-        # Analyze if no conversation state or if waiting for category, AND if intent is (or becomes) iniciar_reclamo
-        if not final_loaded_state or final_loaded_state == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-            # If no intent is set yet by text or previous logic, and we have media, assume it's for a claim.
-            if not context.get("intencion"): # Check if it's still None
-                 if kwargs.get("intencion"): # If intent was passed via kwargs (e.g. from a specific button action with media)
-                    context["intencion"] = kwargs["intencion"]
-                 else: # Default to iniciar_reclamo if media is present and no other intent source
-                    context["intencion"] = "iniciar_reclamo"
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Análisis: Media presente, sin intención específica, asumiendo 'iniciar_reclamo'.")
+        prioritized_handlers = [CancelHandler, PanicButtonHandler]
+        if context.get("intencion") == "hablar_con_agente": # If LLM (or other logic) set this intent
+            prioritized_handlers.append(HumanEscalationHandler)
 
-            if context.get("intencion") == "iniciar_reclamo": # Only analyze if intent is indeed for a claim
-                should_analyze_media_for_claim = True
-
-        if should_analyze_media_for_claim: # No need to check intent again here, already done
-            logger_actual.info(f"[RESPONDER_MUNICIPIO] Procediendo con análisis de imagen para intención '{context.get('intencion')}'.")
-            try:
-                from models import ArchivoAdjunto
-                from services.interpretacion_imagen_service import interpretar_imagen_para_chat
-
-                archivo_obj_for_analysis = None
-                # If it's from web, it should have an ID to fetch from DB
-                if uploaded_file_info_for_analysis.get("source") != "whatsapp" and uploaded_file_info_for_analysis.get("id"):
-                    archivo_obj_for_analysis = db.session.get(ArchivoAdjunto, uploaded_file_info_for_analysis["id"])
-                    if not archivo_obj_for_analysis:
-                        logger_actual.warning(f"No se encontró ArchivoAdjunto con ID {uploaded_file_info_for_analysis['id']} para análisis.")
-
-                # If it's from WhatsApp (no ID yet) or web object fetched, and we have a URL
-                # The `interpretar_imagen_para_chat` needs to be robust to handle either
-                # an ArchivoAdjunto object or a direct URL (if `archivo_obj_for_analysis` is None but URL is in `uploaded_file_info_for_analysis`).
-                # For now, we assume `interpretar_imagen_para_chat` primarily works with an ArchivoAdjunto object.
-                # If it's a WhatsApp image, we might need to create a temporary ArchivoAdjunto-like structure
-                # or modify `interpretar_imagen_para_chat` to accept a URL.
-
-                # Let's prepare a structure that `interpretar_imagen_para_chat` can use,
-                # even if it's a temporary one for WhatsApp images not yet in DB.
-
-                # This part needs careful implementation of how `interpretar_imagen_para_chat`
-                # consumes `archivo_adjunto`. If it strictly needs a persisted DB object,
-                # WhatsApp images would need to be saved first.
-                # For now, we'll assume if `archivo_obj_for_analysis` is None but `uploaded_file_info_for_analysis` has a URL,
-                # the service might handle it. This is a simplification.
-
-                path_or_url_for_analysis = None
-                if archivo_obj_for_analysis: # Web uploaded file, already in DB
-                    path_or_url_for_analysis = archivo_obj_for_analysis.url
+        # respuesta_final = None # Already initialized earlier if LLM ran
+        dueño_handler_class = None # Not really used beyond logging here
+        for handler_class_iter in prioritized_handlers:
+            # Only run if respuesta_final is not already set by LLM
+            if respuesta_final: break 
+            handler_instance = handler_class_iter(context)
+            respuesta_parcial = handler_instance.handle(received_payload)
+            if respuesta_parcial:
+                respuesta_final = respuesta_parcial
+                logger_actual.info(
+                    f"[HANDLER_CHAIN_TRAD] Prioritized handler {handler_class_iter.__name__} respondió."
+                )
+                break
+        
+        # If no prioritized handler responded and LLM didn't either
+        if not respuesta_final and estado_conversacion_actual:
+            dueño_handler_class_actual = OWNER_HANDLERS_FOR_STATE.get(estado_conversacion_actual)
+            if dueño_handler_class_actual:
+                dueño_instance = dueño_handler_class_actual(context)
+                active_state_name_log = (
+                    estado_conversacion_actual.name
+                    if isinstance(estado_conversacion_actual, Enum)
+                    else str(estado_conversacion_actual)
+                )
+                logger_actual.info(
+                    f"[HANDLER_CHAIN_TRAD] Estado activo '{active_state_name_log}'. Dando prioridad a {dueño_instance.__class__.__name__}"
+                )
+                respuesta_parcial_dueño = dueño_instance.handle(received_payload)
+                if respuesta_parcial_dueño:
+                    respuesta_final = respuesta_parcial_dueño
                     logger_actual.info(
-                        f"[RESPONDER_MUNICIPIO] Analizando imagen desde ArchivoAdjunto ID {archivo_obj_for_analysis.id} ({archivo_obj_for_analysis.nombre_original})."
+                        f"[HANDLER_CHAIN_TRAD] Dueño del estado {dueño_instance.__class__.__name__} respondió."
                     )
-                elif uploaded_file_info_for_analysis.get("source") == "whatsapp" and uploaded_file_info_for_analysis.get("url"):
-                    # This is a WhatsApp image URL. `interpretar_imagen_para_chat` needs to be able
-                    # to handle this, perhaps by downloading it or passing the URL to Vision API.
-                    # We will pass the dict `uploaded_file_info_for_analysis` itself as `archivo_adjunto` argument.
-                    # `interpretar_imagen_para_chat` will need to be adapted.
-                    archivo_obj_for_analysis = uploaded_file_info_for_analysis # Pass the dict
-                    logger_actual.info(
-                        f"[RESPONDER_MUNICIPIO] Analizando imagen desde URL de WhatsApp: {archivo_obj_for_analysis.get('url')}."
-                    )
+            # This 'else' for "Dueño del estado no respondió" was causing re-classification too early.
+            # Classification should happen in the main loop if no specific handler (prioritized or owner) responds.
+            # else:
+            #     logger_actual.info(
+            #         f"[HANDLER_CHAIN_TRAD] Dueño del estado ({dueño_handler_class_actual.__name__ if dueño_handler_class_actual else 'N/A'}) no respondió. Re-evaluando intención."
+            #     )
+            #     IntentClassifierHandler(context).handle(received_payload) 
+            #     logger_actual.info(
+            #         f"[HANDLER_CHAIN_TRAD] Nueva intención post-dueño: {context.get('intencion')}"
+            #     )
+        elif not respuesta_final and not estado_conversacion_actual: # No state, and no LLM/prioritized handler response
+            logger_actual.info("[HANDLER_CHAIN_TRAD] Sin estado activo y sin respuesta previa. Procediendo a clasificación de intención general.")
+            # IntentClassifierHandler will be called in the loop below if no intent is set.
 
-                if archivo_obj_for_analysis: # Either a DB object or the dict from WhatsApp
-                    analisis_resultado = interpretar_imagen_para_chat(
-                        archivo_adjunto=archivo_obj_for_analysis, # Can be DB object or dict
-                        tipo_interpretacion="reclamo_auto_descripcion_categoria",
-                        # pyme_user=owner_user if tipo_chat == "pyme" else None # Pasar pyme_user si es relevante
-                    )
-                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Resultado análisis de imagen para reclamo: {analisis_resultado}")
+        if not respuesta_final:
+            if not context.get("intencion") and not contexto_municipio_actual.get("estado_conversacion"):
+                logger_actual.info(
+                    "[HANDLER_CHAIN_TRAD] Ejecutando IntentClassifierHandler (sin estado activo, sin intención previa)."
+                )
+                IntentClassifierHandler(context).handle(received_payload)
+                logger_actual.info(
+                    f"[HANDLER_CHAIN_TRAD] Intención post-clasificación inicial: {context.get('intencion')}"
+                )
 
-                    # Guardar los resultados crudos del análisis en el contexto para uso posterior (ej. ReclamoHandler)
-                    # Esto es importante si la imagen vino de WhatsApp y no tiene un AnalisisArchivo.id todavía.
-                    if not (archivo_obj_for_analysis and hasattr(archivo_obj_for_analysis, 'id')): # Si es de WhatsApp (dict)
-                        contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado
-                        logger_actual.info(f"Análisis crudo de imagen WhatsApp guardado en contexto: {list(analisis_resultado.keys()) if analisis_resultado else 'None'}")
+            remaining_handlers = [ # Handlers from original logic
+                GreetingHandler, PoliteHandler, SmallTalkHandler, HumanEscalationHandler,
+                TicketStatusHandler, SugerenciasVecinoHandler, RecoleccionHandler,
+                ReclamoInteligenteMunicipioHandler, ReclamoHandler,
+                TramitesHandler, TramiteInteligenteHandler, ImpuestosHandler,
+                ProductCatalogHandler, ProductInquiryHandler, CartHandler, CheckoutHandler,
+                StoreLocationHandler, ToolHandler, VectorMunicipioCatalogHandler, GeneralHandler,
+                EngancheAnonimoMunicipioHandler,
+            ]
 
-                    # Pre-llenar campos si el análisis fue exitoso y es un reclamo
-                    if analisis_resultado and not analisis_resultado.get("error") and analisis_resultado.get('es_reclamo'):
-                        sugerida_cat = analisis_resultado.get("categoria_sugerida")
-                        sugerida_desc = analisis_resultado.get("descripcion_sugerida")
+            for handler_class_iter_main in remaining_handlers:
+                if respuesta_final: break
 
-                        if sugerida_cat and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
-                            contexto_municipio_actual["categoria_reclamo"] = sugerida_cat
-                            logger_actual.info(f"Categoría pre-llenada desde análisis de imagen: {sugerida_cat}")
+                if (handler_class_iter_main in prioritized_handlers and handler_class_iter_main != HumanEscalationHandler):
+                    continue
+                if handler_class_iter_main == EngancheAnonimoMunicipioHandler and context.get("cliente_id"):
+                    continue
+                
+                current_memoria_state_for_handler_raw = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+                current_memoria_state_for_handler_enum = None
+                if isinstance(current_memoria_state_for_handler_raw, str):
+                    try: current_memoria_state_for_handler_enum = ConversationState[current_memoria_state_for_handler_raw]
+                    except KeyError: pass
+                elif isinstance(current_memoria_state_for_handler_raw, ConversationState):
+                    current_memoria_state_for_handler_enum = current_memoria_state_for_handler_raw
+                
+                original_state_in_context_before_handler = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+                context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = current_memoria_state_for_handler_enum
 
-                        if sugerida_desc and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
-                            contexto_municipio_actual["descripcion_reclamo"] = sugerida_desc
-                            logger_actual.info(f"Descripción pre-llenada desde análisis de imagen: {sugerida_desc[:70]}...")
+                handler_instance = handler_class_iter_main(context)
+                log_state_for_handler = current_memoria_state_for_handler_enum.name if current_memoria_state_for_handler_enum else "None"
+                logger_actual.info(
+                    f"[HANDLER_CHAIN_TRAD] Intentando con handler: {handler_class_iter_main.__name__} (Intención: {context.get('intencion')}, Estado para Handler: {log_state_for_handler})"
+                )
+                respuesta_parcial = handler_instance.handle(received_payload)
 
-                        # Mantener la estructura de "analisis_imagen_reclamo_auto" para compatibilidad si ReclamoHandler la usa,
-                        # pero ahora se basa en los resultados directos, no en un AnalisisArchivo.id.
-                        # Si es un objeto de DB, el analisis_id estará en analisis_resultado.
-                        contexto_municipio_actual["analisis_imagen_reclamo_auto"] = {
-                            "categoria": sugerida_cat,
-                            "descripcion": sugerida_desc,
-                            "ocr_texto": analisis_resultado.get("texto_ocr", "")[:200],
-                            "source": uploaded_file_info_for_analysis.get("source", "unknown"),
-                            "analisis_id": analisis_resultado.get("analisis_id"), # Será None para WhatsApp
-                            "mime_type": analisis_resultado.get("mime_type") # Para WhatsApp, ahora se propaga
-                        }
+                state_after_handler = context[CONTEXTO_MUNICIPIO].get("estado_conversacion")
+                if isinstance(state_after_handler, ConversationState):
+                    context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = state_after_handler.name
+                elif state_after_handler is None:
+                    context[CONTEXTO_MUNICIPIO].pop("estado_conversacion", None)
+                
+                if respuesta_parcial:
+                    respuesta_final = respuesta_parcial
+                    logger_actual.info(f"[HANDLER_CHAIN_TRAD] Handler {handler_class_iter_main.__name__} respondió.")
+                    break
+                else: # Handler didn't respond
+                    # If IntentClassifier was supposed to run and didn't (e.g. because an intent was already set by LLM but LLM didn't give a response)
+                    # and this handler also didn't respond, we might need to re-classify if the intent is not fitting.
+                    # This part is complex. For now, just log.
+                    logger_actual.info(f"[HANDLER_CHAIN_TRAD] Handler {handler_class_iter_main.__name__} no respondió.")
+        # --- End of Original Handler Chain Logic ---
 
-
-                        if channel == "whatsapp" and (sugerida_cat or sugerida_desc) and not contexto_municipio_actual.get("telefono_vecino"):
-                            # (Lógica de pre-llenado de teléfono para WhatsApp se mantiene igual)
-                            whatsapp_phone_number = None
-                            if viewer_user and getattr(viewer_user, "telefono", None):
-                                whatsapp_phone_number = viewer_user.telefono
-                            if whatsapp_phone_number and validar_telefono(whatsapp_phone_number):
-                                contexto_municipio_actual["telefono_vecino"] = formatear_telefono_e164(whatsapp_phone_number)
-                                logger_actual.info(f"WhatsApp Quick Claim: Teléfono pre-llenado: {contexto_municipio_actual['telefono_vecino']}")
-                else:
-                    logger_actual.warning("No se pudo obtener un objeto ArchivoAdjunto o URL válida para el análisis de imagen.")
-            except Exception as e_img_analysis_main:
-                logger_actual.error(f"Error durante el análisis de imagen en responder_municipio: {e_img_analysis_main}", exc_info=True)
-
-            # Asegurar que el contexto general ('context' dict) refleje que se procesó una foto,
-            # para que ReclamoHandler pueda usar su lógica de "mensaje_adjunto_recibido".
-            if uploaded_file_info_for_analysis and uploaded_file_info_for_analysis.get("mime_type", "").startswith("image/"):
-                context["es_foto"] = True # Informar al contexto general
-                if uploaded_file_info_for_analysis.get("url"):
-                    context["foto_url"] = uploaded_file_info_for_analysis.get("url")
-
-                # Para archivos web que ya tienen un ID de ArchivoAdjunto en la DB
-                if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
-                     context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
-                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Preparando archivo_id_para_asociar: {context['archivo_id_para_asociar']} para foto web.")
-                # Para imágenes de WhatsApp, la URL está en context["foto_url"].
-                # La asociación al ticket (guardar el ArchivoAdjunto y vincular) debería ocurrir
-                # cuando el ticket se crea, si la URL de la foto está en la memoria del reclamo.
+    # --- Final Fallback & Context Serialization (common to both LLM and traditional paths) ---
 
     # Context now contains pre-filled image data if analysis was run and successful.
     # Y context["es_foto"], context["foto_url"] también están seteados si hubo una imagen.

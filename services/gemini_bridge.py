@@ -1,9 +1,9 @@
 import json
 # Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
-# from vertexai.preview.generative_models import GenerativeModel
+# from vertexai.preview.generative_models import GenerativeModel 
 # Por ahora, como no tenemos credenciales/API real, lo mockearemos.
 
-JULES_SYSTEM_PROMPT = """Sos el asistente IA de una plataforma multi-entidad que atiende a Municipios y Pymes.
+JULES_SYSTEM_PROMPT = """Sos el asistente IA de una plataforma multi-entidad que atiende a Municipios y Pymes. 
 Tu tarea es recibir y entender mensajes de ciudadanos o clientes, interpretar reclamos, consultas o pedidos, y devolver siempre un JSON estructurado y profesional para que el backend ejecute la acción adecuada.
 
 ### Qué hacés
@@ -100,17 +100,17 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
     # Para gemini-1.5-pro-preview y la librería actual, se puede guiar por prompt
     # o usar generation_config si está disponible y bien documentado para JSON mode.
     # Por ahora, confiaremos en el prompt que explícitamente pide JSON.
-
+    
     # Descomentar la siguiente línea e inicializar el modelo de Vertex AI
     # from vertexai.preview.generative_models import GenerativeModel, GenerationConfig # Añadir GenerationConfig
-
-    # model = GenerativeModel("gemini-1.5-pro-preview")
+    
+    # model = GenerativeModel("gemini-1.5-pro-preview") 
     # Si se quiere forzar JSON output con GenerationConfig (si el modelo y SDK lo soportan bien):
     # generation_config = GenerationConfig(
     #     response_mime_type="application/json",
     # )
     # response = model.generate_content(prompt_final_para_api, generation_config=generation_config)
-
+    
     # Llamada estándar (confiando en el prompt para el formato JSON):
     # response = model.generate_content(prompt_final_para_api)
 
@@ -120,7 +120,7 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
     print("--- ADVERTENCIA: USANDO RESPUESTA SIMULADA DE GEMINI ---")
     logger = logging.getLogger(__name__)
     logger.warning("LLAMADA A GEMINI SIMULADA. Reemplazar con la llamada real a la API.")
-
+    
     mensaje_lower = mensaje_usuario.lower()
     if "préstamo" in mensaje_lower or "credito" in mensaje_lower:
         simulated_response_text = json.dumps({
@@ -139,7 +139,7 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             "respuesta_usuario": "No entendí bien tu consulta (simulado). ¿Podrías reformularla?",
             "accion_backend": "derivar_humano", "datos_estructura": {"descripcion": mensaje_usuario, "usuario": usuario.get("nombre", "N/A"), "target": usuario.get("tipo_entidad", "municipio")},
             "pedir_info": "aclaracion", "botones": []})
-
+    
     # Simular el objeto response que tendría un atributo .text
     class SimulatedResponse:
         def __init__(self, text):
@@ -152,14 +152,14 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         # El prompt JULES pide explícitamente un JSON, así que response.text debería serlo.
         # A veces los LLMs pueden añadir ```json\n ... \n```. strip() ayuda con espacios,
         # pero el parseo de ```json ... ``` necesitaría un manejo más específico si ocurre consistentemente.
-
+        
         respuesta_texto_crudo = response.text.strip()
         # Intento básico de limpiar ```json ... ``` si está presente
         if respuesta_texto_crudo.startswith("```json"):
             respuesta_texto_crudo = respuesta_texto_crudo[7:]
             if respuesta_texto_crudo.endswith("```"):
                 respuesta_texto_crudo = respuesta_texto_crudo[:-3]
-
+        
         return json.loads(respuesta_texto_crudo)
     except Exception as e:
         logger = logging.getLogger(__name__)
@@ -169,8 +169,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             "respuesta_usuario": "Lo siento, hubo un error técnico al procesar tu solicitud. Un humano revisará tu caso.",
             "accion_backend": "derivar_humano", # Acción segura
             "datos_estructura": {"error_detalle": f"Fallo al parsear LLM: {str(e)}", "mensaje_original": mensaje_usuario},
-            "pedir_info": None,
-            "botones": []
+            "pedir_info": None, 
+            "botones": [] 
         }
     # --- FIN: LLAMADA REAL A GEMINI ---
 
