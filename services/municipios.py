@@ -652,6 +652,37 @@ class IntentClassifierHandler(BaseMunicipioHandler):
             return None # No cambiar la intención, ReclamoHandler debería actuar.
         # ---- FIN NUEVA LÓGICA ----
 
+        # --- BEGIN: Prioritize image-derived 'iniciar_reclamo' intent ---
+        if self.context.get("intencion") == "iniciar_reclamo" and self.context.get("es_foto"):
+            # If intent is already "iniciar_reclamo" due to an image,
+            # only allow very explicit keywords to override it.
+            is_explicit_override = False
+            # Check for PANIC keywords first, as they should always take precedence.
+            for kw_panic in self.KEYWORDS_PANICO:
+                if kw_panic in texto_normalizado:
+                    self.context["intencion"] = "activar_panico"
+                    clear_memoria_preserving_image_analysis(memoria) # Preserve image data even for panic
+                    logger.info(f"[IntentClassifier] Intención cambiada a 'activar_panico' por keyword '{kw_panic}' DESDE flujo de reclamo por imagen.")
+                    return None # Let PanicButtonHandler take over
+
+            # Check for AGENTE keywords. If user explicitly asks for agent after sending image for claim, allow it.
+            for kw_agente in self.KEYWORDS_AGENTE:
+                if kw_agente in texto_normalizado:
+                    # Check if the text is *only* about agent escalation or very generic.
+                    # If it still contains claim-like words, maybe don't switch.
+                    # This is a heuristic. For now, if agent keyword is present, we allow override.
+                    self.context["intencion"] = "hablar_con_agente"
+                    clear_memoria_preserving_image_analysis(memoria)
+                    logger.info(f"[IntentClassifier] Intención cambiada a 'hablar_con_agente' por keyword '{kw_agente}' DESDE flujo de reclamo por imagen.")
+                    return None # Let HumanEscalationHandler take over
+
+            # If no explicit override keywords were found, keep 'iniciar_reclamo'
+            if not is_explicit_override: # is_explicit_override will be false if neither panic nor agent keywords matched
+                logger.info(f"[IntentClassifier] Intención 'iniciar_reclamo' (from image) es prioritaria. Texto ('{pregunta_str}') no la anula explícitamente. Manteniendo 'iniciar_reclamo'.")
+                return None # Let ReclamoHandler proceed with the image claim.
+        # --- END: Prioritize image-derived 'iniciar_reclamo' intent ---
+
+
         current_context_state_val = memoria.get("estado_conversacion")
         active_state_is_reclamo = False
         current_state_enum = None
@@ -667,23 +698,50 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         if current_state_enum and current_state_enum in RECLAMO_STATES:
             active_state_is_reclamo = True
 
+        # Helper function for clearing context while preserving image analysis
+        def clear_memoria_preserving_image_analysis(m):
+            image_analysis_data = m.get("analisis_imagen_reclamo_auto_raw")
+            # foto_url_data = m.get("foto_url") # foto_url is in general context, not memoria directly
+            # es_foto_data = self.context.get("es_foto") # also in general context
+
+            # Preserve specific pre-fills if they came from the image analysis
+            categoria_prefill = m.get("categoria_reclamo")
+            descripcion_prefill = m.get("descripcion_reclamo")
+            is_prefill_from_image = image_analysis_data is not None # Approximation
+
+            m.clear()
+
+            if image_analysis_data:
+                m["analisis_imagen_reclamo_auto_raw"] = image_analysis_data
+                # self.context["foto_url"] = foto_url_data # Restore to general context if needed, but it's already there
+                # self.context["es_foto"] = es_foto_data
+                if is_prefill_from_image:
+                    if categoria_prefill: m["categoria_reclamo"] = categoria_prefill
+                    if descripcion_prefill: m["descripcion_reclamo"] = descripcion_prefill
+                logger.info("[IntentClassifier] Memoria limpiada, pero datos de análisis de imagen preservados.")
+
         if active_state_is_reclamo:
-            # If a reclamo is active, and this IntentClassifierHandler is called,
-            # it means the ReclamoHandler (owner) decided not to handle the input (returned None).
-            # We should not try to classify intent for simple inputs like "sí" or "ok" as a new general intent.
-            # Let the ReclamoHandler get another chance in the remaining_handlers loop, or let it fall through to a generic "didn't understand".
             logger.info(f"[INTENT_CLASSIFIER] Reclamo en curso (estado activo: {current_state_enum.name if current_state_enum else current_context_state_val}). IntentClassifier cede el control y no clasificará nueva intención.")
-            # Allow interruption keywords even if a reclamo is active
             if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE):
-                self.context["intencion"] = "hablar_con_agente"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo de reclamo)"); return None
+                self.context["intencion"] = "hablar_con_agente"
+                clear_memoria_preserving_image_analysis(memoria)
+                logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo de reclamo)"); return None
             if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO):
-                self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo de reclamo)"); return None
+                self.context["intencion"] = "activar_panico"
+                clear_memoria_preserving_image_analysis(memoria)
+                logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo de reclamo)"); return None
             return None # Cede control
 
         # If not a reclamo state, or no state at all, proceed with normal intent classification
         if memoria.get("estado_conversacion"): # Handles non-reclamo active states
-            if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE): self.context["intencion"] = "hablar_con_agente"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo)"); return None
-            if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO): self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo)"); return None
+            if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE):
+                self.context["intencion"] = "hablar_con_agente"
+                clear_memoria_preserving_image_analysis(memoria)
+                logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword, interrumpe flujo)"); return None
+            if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO):
+                self.context["intencion"] = "activar_panico"
+                clear_memoria_preserving_image_analysis(memoria)
+                logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword, interrumpe flujo)"); return None
 
             self.context["intencion"] = "continuar_flujo";
             active_state_log = memoria.get('estado_conversacion')
@@ -693,11 +751,27 @@ class IntentClassifierHandler(BaseMunicipioHandler):
 
         # No active state, classify intent from scratch
         for kw in self.KEYWORDS_PANICO:
-            if kw in texto_normalizado: self.context["intencion"] = "activar_panico"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword '{kw}')"); return None
+            if kw in texto_normalizado:
+                self.context["intencion"] = "activar_panico"
+                clear_memoria_preserving_image_analysis(memoria)
+                logger.info(f"[MUNICIPIO] Intención: activar_panico (por keyword '{kw}')"); return None
         for kw in self.KEYWORDS_AGENTE:
-            if kw in texto_normalizado: self.context["intencion"] = "hablar_con_agente"; memoria.clear(); logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword '{kw}')"); return None
+            if kw in texto_normalizado:
+                self.context["intencion"] = "hablar_con_agente"
+                clear_memoria_preserving_image_analysis(memoria)
+                logger.info(f"[MUNICIPIO] Intención: hablar_con_agente (por keyword '{kw}')"); return None
+
+        # For intents that don't necessarily need to preserve image analysis if they take over:
+        # (Consider if image context should be cleared or preserved for these too)
+        # For now, let's assume these intents fully take over and previous image context might not be relevant.
+        # If image context IS relevant (e.g. "comprar ESTO que veo en la foto"), then
+        # `clear_memoria_preserving_image_analysis` should be used, or a more nuanced clearing.
+        # Current logic: these intents will clear the full memoria including image analysis.
+        # This is a design choice: if user asks to buy something after sending an image of a pothole,
+        # the pothole image context is probably not relevant to the purchase.
+
         for kw in self.KEYWORDS_INICIAR_COMPRA:
-            if kw in texto_normalizado: self.context["intencion"] = "iniciar_compra"; logger.info(f"[COMERCIO] Intención: iniciar_compra (por keyword '{kw}')"); return None
+            if kw in texto_normalizado: self.context["intencion"] = "iniciar_compra"; memoria.clear(); logger.info(f"[COMERCIO] Intención: iniciar_compra (por keyword '{kw}')"); return None
         for kw in self.KEYWORDS_VER_CARRITO:
             if kw in texto_normalizado: self.context["intencion"] = "ver_carrito"; logger.info(f"[COMERCIO] Intención: ver_carrito (por keyword '{kw}')"); return None
         for kw in self.KEYWORDS_PAGAR:
@@ -2839,13 +2913,34 @@ class GeneralHandler(BaseMunicipioHandler):
 class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         if self.context.get("user_id"): return None # Already logged in, not for this handler
-        # Allow greeting/polite/smalltalk to pass through even if anon, they might respond before this handler.
-        if GreetingHandler(self.context).handle(payload) or PoliteHandler(self.context).handle(payload) or SmallTalkHandler(self.context).handle(payload):
-            # If these handlers respond, their response will be used.
-            # This Enganche handler should only act if those didn't, or if a specific risky intent is detected.
-            pass
 
         intencion = self.context.get("intencion")
+        # If the intent is already to start a claim (e.g., set by image analysis),
+        # let that flow proceed without suggesting registration at this exact moment.
+        if intencion == "iniciar_reclamo":
+            logger.info("[EngancheAnonimo] Intención 'iniciar_reclamo' detectada. Omitiendo sugerencia de registro para este turno.")
+            return None
+
+        # Allow greeting/polite/smalltalk to pass through even if anon, they might respond before this handler.
+        # This check should ideally be after the "iniciar_reclamo" check, so those handlers don't
+        # prevent the "iniciar_reclamo" intent from being respected by this handler.
+        # However, the main handler loop calls these before EngancheAnonimo if they are earlier in the list.
+        # The current placement implies that if Greeting/Polite/SmallTalk respond, Enganche won't run.
+        # If they don't respond, AND intent is not "iniciar_reclamo", then Enganche proceeds.
+        if GreetingHandler(self.context).handle(payload) or \
+           PoliteHandler(self.context).handle(payload) or \
+           SmallTalkHandler(self.context).handle(payload):
+            # If these handlers respond, their response will be used by the main loop,
+            # and EngancheAnonimoMunicipioHandler might not be called or its response ignored.
+            # For this specific handler, we are interested in what happens if THEY DON'T respond.
+            # The logic here is more about whether *this handler* should proceed.
+            # The check above for "iniciar_reclamo" is the more direct control for this handler.
+            pass # This pass means if those handlers *would* have responded, this handler won't actively do anything *different* yet.
+
+        # Re-fetch intencion as it might have been cleared or changed by Greeting/Polite/Smalltalk if they modified context
+        # though they typically don't clear intent if they are just providing a simple response.
+        # For safety, could re-fetch: intencion = self.context.get("intencion")
+
         # Ensure this handler only triggers if no other handler has already formed a response for the current input.
         # This check might be implicitly handled by the main loop, but good to be mindful.
 
@@ -3324,7 +3419,90 @@ def responder_municipio(
 
     # --- End Handle post-login resumption ---
 
-    # --- BEGIN: Check for completed web analysis results ---
+    # !!! MOVED UP: Image Analysis and Intent Setting Block START !!!
+    # This block is now processed early to set intent based on images.
+    uploaded_file_info_for_analysis = received_payload.get("uploaded_file_info") or \
+                                      received_payload.get("uploaded_file_info_whatsapp")
+
+    if uploaded_file_info_for_analysis and isinstance(uploaded_file_info_for_analysis, dict):
+        mime_type = uploaded_file_info_for_analysis.get("mime_type", "")
+        if mime_type.startswith("image/"):
+            context["es_foto"] = True
+            context["foto_url"] = uploaded_file_info_for_analysis.get("url")
+            if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
+                context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
+
+            logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Imagen detectada. URL: {context['foto_url']}")
+
+            # Perform analysis immediately if it's an image from WhatsApp or a web upload without prior analysis info in context.
+            # For web uploads where `web_analisis_listo` might be set later, this direct analysis might be redundant
+            # if `web_analisis_listo` is handled separately. However, for WhatsApp, this is essential.
+            # Let's assume `interpretar_imagen_para_chat` is efficient enough or this path is mostly for WhatsApp.
+
+            # We need to decide if we analyze web uploads here too, or rely SOLELY on the async task + web_analisis_listo.
+            # For now, let's prioritize direct analysis for WhatsApp, and web_analisis_listo for web.
+            # This block will primarily set intent for WhatsApp images.
+
+            is_whatsapp_or_direct_file = uploaded_file_info_for_analysis.get("source") == "whatsapp" or \
+                                         not contexto_municipio_actual.get("web_analisis_listo") # Not already handled by web async
+
+            if is_whatsapp_or_direct_file:
+                try:
+                    from models import ArchivoAdjunto # Local import if needed
+                    from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+
+                    # For WhatsApp, archivo_obj_for_analysis will be the dict.
+                    # For direct web uploads (if not handled by async), it would be ArchivoAdjunto.
+                    archivo_obj_for_input = uploaded_file_info_for_analysis
+                    if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
+                         # This implies it's a web upload being processed synchronously here, which is not the main plan for web.
+                         # The main plan is async for web. This path is more for WhatsApp or if sync web analysis was desired.
+                         # However, the `context["archivo_id_para_asociar"]` is set above.
+                         # If `interpretar_imagen_para_chat` is called with a DB object, it will try to update AnalisisArchivo.
+                         # This might conflict if an async task is also supposed to do it.
+                         # Let's refine: this early analysis should primarily focus on WhatsApp dict inputs.
+                        logger_actual.warning("[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Web file with ID detected in early image processing. This path is unusual if async analysis is primary for web.")
+                        # Potentially skip direct analysis here if it's a web file with an ID, to let async task handle it.
+                        # For now, allowing it for generality, but this needs testing for web flow race conditions.
+                        # Re-think: If it's a web file already with an ID, it means it was uploaded, and async task *should* handle it.
+                        # So, this early analysis should only be for WhatsApp dicts.
+                        if not (uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp"):
+                             # Only proceed if it's WhatsApp or a file without an ID (which shouldn't happen for web)
+                            analisis_resultado = interpretar_imagen_para_chat(
+                                archivo_adjunto=archivo_obj_for_input,
+                                tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                            )
+                            logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Resultado análisis para imagen (source: {uploaded_file_info_for_analysis.get('source')}): {analisis_resultado}")
+                            contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado
+
+                            if analisis_resultado and not analisis_resultado.get("error") and analisis_resultado.get('es_reclamo'):
+                                context["intencion"] = "iniciar_reclamo"
+                                logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Intención fijada a 'iniciar_reclamo' por análisis de imagen.")
+                                if analisis_resultado.get("categoria_sugerida") and \
+                                   (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                                    contexto_municipio_actual["categoria_reclamo"] = analisis_resultado["categoria_sugerida"]
+                                if analisis_resultado.get("descripcion_sugerida") and \
+                                   (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo","")) < 20):
+                                    contexto_municipio_actual["descripcion_reclamo"] = analisis_resultado["descripcion_sugerida"]
+                except Exception as e_early_img:
+                    logger_actual.error(f"[RESPONDER_MUNICIPIO EARLY_IMG_PROC] Error en análisis temprano de imagen: {e_early_img}", exc_info=True)
+
+            # If text also suggests a claim, ensure intent is set, even if image analysis wasn't conclusive
+            # This should run *after* image analysis attempts to pre-fill context.
+            # This is a simplified keyword check for now.
+            claim_keywords_in_text = ["reclamo", "denuncia", "reportar", "problema con"] # Add more if needed
+            normalized_pregunta = pregunta_str.lower()
+            if any(kw in normalized_pregunta for kw in claim_keywords_in_text):
+                if context.get("intencion") != "iniciar_reclamo": # Only set if not already set by image analysis
+                    context["intencion"] = "iniciar_reclamo"
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_TXT_PROC] Intención fijada a 'iniciar_reclamo' por keywords en texto: '{pregunta_str}'.")
+                # Pre-fill description from text if not already filled by image and text seems descriptive
+                if not contexto_municipio_actual.get("descripcion_reclamo") and len(pregunta_str) > 20 : # Arbitrary length for "descriptive"
+                    contexto_municipio_actual["descripcion_reclamo"] = pregunta_str
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO EARLY_TXT_PROC] Descripción pre-llenada por texto: '{pregunta_str[:50]}...'.")
+
+
+    # --- BEGIN: Check for completed web analysis results (moved slightly later, after direct image processing) ---
     web_analisis_info = contexto_municipio_actual.pop("web_analisis_listo", None) # Pop to consume
     if web_analisis_info and isinstance(web_analisis_info, dict) and web_analisis_info.get("archivo_id"):
         archivo_id_analizado = web_analisis_info["archivo_id"]
