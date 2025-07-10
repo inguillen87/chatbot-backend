@@ -66,6 +66,99 @@ EDIT_KEYWORDS = {
     "editar datos", "editar_reclamo_datos", "quiero editar", "necesito cambiar"
 }
 
+def extract_description_and_check_confirmation(text: str, confirmation_keywords: set) -> tuple[str | None, bool]:
+    """
+    Extracts description from text and checks for a confirmation intent.
+    Returns a tuple: (extracted_description, has_confirmation_intent).
+    """
+    if not text:
+        return None, False
+
+    normalized_text = normalizar_texto(text.strip())
+
+    # Sort keywords by length to match longer phrases first (e.g., "confirmar reclamo" before "confirmar")
+    sorted_confirmation_keywords = sorted(list(confirmation_keywords), key=len, reverse=True)
+
+    extracted_description = normalized_text
+    has_confirmation_intent = False
+
+    for keyword in sorted_confirmation_keywords:
+        # Check if the text ends with the keyword, possibly preceded by a space, comma, or period.
+        # Example: "description keyword", "description, keyword", "description. keyword"
+        # Or if the keyword itself is a multi-word phrase like "confirmar reclamo"
+
+        # Pattern 1: "description [., ]keyword"
+        # Regex to find keyword at the end, possibly preceded by common separators
+        # This needs to be careful not to strip too much if keyword is part of a legit description.
+        # Let's simplify: if a keyword is present AND the phrase is short, or keyword is at the end.
+
+        # If the keyword is a multi-word phrase itself (e.g., "confirmar reclamo")
+        if " " in keyword: # Multi-word keyword
+            if normalized_text.endswith(keyword):
+                # If a multi-word confirmation keyword is found at the end, it's a strong signal.
+                extracted_description = normalized_text[:-len(keyword)].strip(" .,")
+                if not extracted_description: # If original text was ONLY the multi-word keyword
+                    extracted_description = None
+                has_confirmation_intent = True
+                break
+        else: # Single-word keyword
+            # Check if keyword is at the very end
+            if normalized_text == keyword: # Input is ONLY the keyword
+                extracted_description = None
+                has_confirmation_intent = True
+                break
+            # Check if text ends with " keyword"
+            if normalized_text.endswith(f" {keyword}"):
+                potential_description = normalized_text[:-(len(keyword) + 1)].strip()
+                # If description is short, or keyword is strong.
+                if len(potential_description.split()) <= 4 or not potential_description: # Allow slightly longer desc like "nada de eso confirmar"
+                    extracted_description = potential_description if potential_description else None
+                    has_confirmation_intent = True
+                    break
+            # Check if text ends with ",keyword" or ".keyword" (less common for natural language confirmation)
+            for separator in [",", "."]:
+                if normalized_text.endswith(f"{separator}{keyword}"):
+                    potential_description = normalized_text[:-(len(keyword) + 1)].strip()
+                    if len(potential_description.split()) <= 4 or not potential_description:
+                        extracted_description = potential_description if potential_description else None
+                        has_confirmation_intent = True
+                        break
+            if has_confirmation_intent:
+                break
+
+    # If no specific pattern matched but a keyword is in a short text.
+    # This is a bit risky as "yes" or "ok" can be part of a description.
+    # Let's refine: if the *entire input* is very similar to a confirmation phrase or is short and contains one.
+    if not has_confirmation_intent:
+        # Check if the whole normalized_text is just a keyword or a keyword plus very little else
+        # e.g. "confirmar el reclamo" "si confirmar" "listo ok"
+        # This part needs to be more robust. For now, the endswith logic is primary.
+        # The critical case "nada confirmar el reclamo" should be caught if "confirmar reclamo" is a keyword.
+        # Let's add "confirmar reclamo" to PALABRAS_CLAVE_CONFIRMACION for this.
+        # The sorted_confirmation_keywords will handle it.
+        pass
+
+
+    # If after stripping, the description is one of the keywords itself, it means the original was likely just "keyword keyword"
+    # or the description part was empty.
+    if extracted_description and extracted_description in confirmation_keywords and has_confirmation_intent:
+        extracted_description = None # User likely meant only to confirm.
+
+    # If the original text was short and contained a keyword, it's likely a confirmation.
+    # The `endswith` logic handles this for clearer cases.
+    # This is a fallback for inputs like "ok es todo" -> desc: "ok es todo", confirm: False (which is correct)
+    # vs "es todo ok" -> desc: "es todo", confirm: True (if "ok" is a keyword)
+
+    # If has_confirmation_intent is true, extracted_description is what remains.
+    # If has_confirmation_intent is false, extracted_description is the original normalized_text.
+    if not has_confirmation_intent:
+        extracted_description = text.strip() # Return original cleaned text if no confirm intent
+
+    # Final check: if description is empty and intent is true, set desc to a placeholder if needed by caller
+    # For now, None is acceptable for an empty description part.
+    # logger.info(f"[extract_description_and_check_confirmation] Input: '{text}', Normalized: '{normalized_text}', Extracted Desc: '{extracted_description}', Confirmed: {has_confirmation_intent}")
+    return extracted_description, has_confirmation_intent
+
 URL_REGEX = re.compile(r"https?://\S+")
 
 def agregar_botones_para_links(texto: str, botones: list) -> list:
@@ -2072,43 +2165,69 @@ class ReclamoHandler(BaseMunicipioHandler):
                 descripcion_input = ""
                 datos_sub_payload = payload.get("datos", {}); campo_descripcion = "descripcion_reclamo"
 
-                if campo_descripcion in datos_sub_payload and isinstance(datos_sub_payload[campo_descripcion], str) and len(datos_sub_payload[campo_descripcion].strip()) >= 10:
+                # Prioritize description from payload.datos if available and valid
+                if campo_descripcion in datos_sub_payload and \
+                   isinstance(datos_sub_payload[campo_descripcion], str) and \
+                   len(datos_sub_payload[campo_descripcion].strip()) >= 1: # Allow shorter if confirm intent follows
                     descripcion_input = datos_sub_payload[campo_descripcion].strip()
                 elif pregunta_str:
-                    # Check if pregunta_str is likely a button ID or too generic
-                    normalized_input_desc = normalizar_texto(pregunta_str)
-                    # Combine known confirmation/edit keywords with typical action prefixes
-                    KNOWN_BUTTON_LIKE_PHRASES = PALABRAS_CLAVE_CONFIRMACION.union(EDIT_KEYWORDS).union({
-                        "adjuntar_foto", "compartir_ubicacion", "sin_adjuntos", 
-                        "confirmarreclamofinal", "editarreclamodatos", "arreglodecalle", "iniciarreclamo" # Added common action IDs
-                    })
-                    
-                    is_likely_button_id_or_action = normalized_input_desc in KNOWN_BUTTON_LIKE_PHRASES or \
-                                                 (any(btn_id_part in normalized_input_desc for btn_id_part in [
-                                                     "confirmar", "editar", "adjuntar", "seleccionar", "opcion", # Generic button actions
-                                                     "reclamo", "calle", "arbol", "agua", "luz", "limpieza", "iniciar" # Keywords often in button IDs/short commands
-                                                     ]) and len(normalized_input_desc.split()) <= 3) # Short phrases
+                    descripcion_input = pregunta_str.strip() # Use pregunta_str as potential description
+                
+                # Now, process the obtained descripcion_input with the helper function
+                actual_description, is_confirm_intent = extract_description_and_check_confirmation(descripcion_input, PALABRAS_CLAVE_CONFIRMACION)
+                
+                logger.info(f"[ReclamoHandler ESP_DESC] Input: '{descripcion_input}', Extracted Desc: '{actual_description}', Confirm Intent: {is_confirm_intent}")
 
-                    if not is_likely_button_id_or_action:
-                        descripcion_input = pregunta_str.strip()
-                    else:
-                        logger.warning(f"Input '{pregunta_str}' for description seems like a button ID/action or too generic. Normalized: '{normalized_input_desc}'. Re-prompting.")
-                        # descripcion_input remains empty, will trigger re-prompt below
-                
-                if not descripcion_input or len(descripcion_input) < 10: # Min length for a meaningful description
-                    return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
-                
-                memoria["descripcion_reclamo"] = descripcion_input
-                logger.info(f"Descripción guardada: '{descripcion_input[:50]}...'.")
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
-                estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-                logger.info("[ReclamoHandler] Nuevo estado: ESPERANDO_ADJUNTOS_RECLAMO.")
-                # This response is triggered if the current input (pregunta_str or from payload.datos) just filled the description
-                body_adj = "¡Gracias por la descripción! ¿Querés **adjuntar una foto o compartir tu ubicación GPS**? (Opcional)"
-                options_adj = [{"id": "adjuntar_foto", "texto": "Adjuntar foto"}, {"id": "compartir_ubicacion", "texto": "Compartir ubicación"}, {"id": "sin_adjuntos", "texto": "Continuar sin adjuntos"}]
-                return {"message_body": body_adj, "options_list": options_adj, "message_type": 'interactive_buttons', "fuente": "reclamo_pedir_adjuntos_v2"}
+                if is_confirm_intent:
+                    if actual_description and len(actual_description) >= 1: # Min length for description part
+                        memoria["descripcion_reclamo"] = actual_description
+                        logger.info(f"Descripción (con confirmación) guardada: '{actual_description[:50]}...'.")
+                    elif not actual_description: # Confirmation intent but no real description part (e.g., user just said "confirmar")
+                        # If a description was already in memory from image analysis, keep it. Otherwise, it might be empty.
+                        if not memoria.get("descripcion_reclamo"):
+                             memoria["descripcion_reclamo"] = "(confirmado sin descripción adicional)" # Placeholder
+                        logger.info(f"Confirmación directa detectada. Usando descripción existente o placeholder: '{memoria['descripcion_reclamo'][:50]}...'")
+
+                    # Transition to ESPERANDO_CONFIRMACION_RECLAMO
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
+                    estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+                    logger.info("[ReclamoHandler] Confirmación detectada en descripción. Saltando a ESPERANDO_CONFIRMACION_RECLAMO.")
+                    pregunta_str = "" # Consume input
+                    break # Exit while loop to trigger confirmation logic
+                else:
+                    # No confirmation intent, proceed with normal description validation and flow
+                    # actual_description here is the full input if no confirm intent was found
+                    if not actual_description or len(actual_description) < 10: # Min length for a meaningful description
+                        # Check if it was a button-like phrase if it's short
+                        normalized_input_desc_no_confirm = normalizar_texto(actual_description or "")
+                        KNOWN_BUTTON_LIKE_PHRASES_NO_CONFIRM = EDIT_KEYWORDS.union({ # Exclude confirmation keywords here
+                            "adjuntar_foto", "compartir_ubicacion", "sin_adjuntos",
+                            "editarreclamodatos", "arreglodecalle", "iniciarreclamo"
+                        })
+                        is_likely_button_id_or_action_no_confirm = normalized_input_desc_no_confirm in KNOWN_BUTTON_LIKE_PHRASES_NO_CONFIRM or \
+                                                                (any(btn_id_part in normalized_input_desc_no_confirm for btn_id_part in [
+                                                                    "editar", "adjuntar", "seleccionar", "opcion",
+                                                                    "reclamo", "calle", "arbol", "agua", "luz", "limpieza", "iniciar"
+                                                                    ]) and len(normalized_input_desc_no_confirm.split()) <= 3)
+
+                        if is_likely_button_id_or_action_no_confirm and (not actual_description or len(actual_description) < 10) :
+                             logger.warning(f"Input '{actual_description}' for description (no confirm intent) seems like a button ID/action or too generic. Re-prompting.")
+                             return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
+                        elif not actual_description or len(actual_description) < 10 :
+                             return {"respuesta": "Tu descripción es un poco corta. Para entender mejor, necesitaría un poco más de detalle sobre el problema. ¿Podrías contarme más?"}
+
+
+                    memoria["descripcion_reclamo"] = actual_description # Save the full description
+                    logger.info(f"Descripción guardada: '{actual_description[:50]}...'.")
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
+                    estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
+                    logger.info("[ReclamoHandler] Nuevo estado: ESPERANDO_ADJUNTOS_RECLAMO.")
+
+                    body_adj = "¡Gracias por la descripción! ¿Querés **adjuntar una foto o compartir tu ubicación GPS**? (Opcional)"
+                    options_adj = [{"id": "adjuntar_foto", "texto": "Adjuntar foto"}, {"id": "compartir_ubicacion", "texto": "Compartir ubicación"}, {"id": "sin_adjuntos", "texto": "Continuar sin adjuntos"}]
+                    return {"message_body": body_adj, "options_list": options_adj, "message_type": 'interactive_buttons', "fuente": "reclamo_pedir_adjuntos_v2"}
             
-            # 7. If all data is filled, this state will be reached
+            # 7. If all data is filled, this state will be reached (or if jumped by confirm intent)
             elif current_state_for_logic == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
                 logger.info("[ReclamoHandler] Todos los datos necesarios están en memoria. Procediendo a la confirmación final del reclamo.")
                 # The logic for ESPERANDO_CONFIRMACION_RECLAMO is outside this while loop.
