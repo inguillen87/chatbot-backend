@@ -2559,38 +2559,69 @@ class TramitesHandler(BaseMunicipioHandler):
                 descripcion_tramite = reemplazar_placeholders(info.get("descripcion", "No hay descripción disponible."), data_placeholders)
                 # Botones de la info del trámite (ej. links) se pondrán en el cuerpo del mensaje para WhatsApp.
                 # Para web, se pueden mantener como botones si el frontend los maneja.
-                # Por ahora, simplificamos: la descripción contendrá todo, y las opciones serán genéricas.
                 
                 options_post_info = [
                     {"id": "consultar_otro_tramite", "texto": "Consultar otro trámite"},
                     {"id": "volver_inicio_tramites", "texto": "Volver al inicio"}
                 ]
-                # Agregar URLs como texto en la descripción para WhatsApp
-                # Para web, los botones originales de info.get("botones") podrían usarse si el formatter los soporta.
-                # Esta parte necesita más refinamiento si los botones de info son cruciales y variados.
-                # For now, URLs from info.get("botones") will be appended to description text if channel is WhatsApp.
-                # This is a simplification. A more robust solution would involve the formatter handling these.
-                
+
+                final_options = []
                 original_info_buttons = info.get("botones", [])
-                if self.context.get("channel") == "whatsapp" and original_info_buttons:
-                    links_texto = "\n\nEnlaces relevantes:\n"
-                    for btn_info in original_info_buttons:
-                        if btn_info.get("url"):
-                            links_texto += f"- {btn_info.get('texto', 'Abrir enlace')}: {btn_info['url']}\n"
-                    if links_texto.strip() != "Enlaces relevantes:":
-                         descripcion_tramite += links_texto
+
+                if self.context.get("channel") == "whatsapp":
+                    if original_info_buttons:
+                        links_texto = "\n\nEnlaces relevantes:\n"
+                        for btn_info in original_info_buttons:
+                            if btn_info.get("url"):
+                                links_texto += f"- {btn_info.get('texto', 'Abrir enlace')}: {btn_info['url']}\n"
+                        if links_texto.strip() != "Enlaces relevantes:":
+                             descripcion_tramite += links_texto
+                    final_options.extend(options_post_info) # Solo opciones genéricas para WhatsApp
+                else: # Para web y otros canales
+                    # Agregar botones del trámite (que pueden tener URLs)
+                    for btn_config in original_info_buttons:
+                        btn_to_add = {"texto": btn_config.get("texto", "Ver detalle")}
+                        if "url" in btn_config:
+                            btn_to_add["url"] = btn_config["url"]
+                            btn_to_add["type"] = "url" # Asegurar que el formatter lo reconozca
+                            # Usar el texto del botón o 'url_action' como fallback para el action ID si no está definido
+                            btn_to_add["action"] = btn_config.get("action", normalizar_texto(btn_config.get("texto", "url_action")))
+                        else:
+                            # Usar el texto del botón o 'default_action' como fallback para el action ID
+                            btn_to_add["action"] = btn_config.get("action", normalizar_texto(btn_config.get("texto", "default_action")))
+                        final_options.append(btn_to_add)
+                    final_options.extend(options_post_info) # Agregar opciones genéricas
 
                 # Clear state and intent to prevent duplication on next interaction
                 logger.info(f"[TramitesHandler] Trámite '{clave_tramite}' encontrado. Limpiando estado e intención post-respuesta.")
                 memoria.pop("estado_conversacion", None)
                 self.context["intencion"] = None
 
+                # Determinar message_type basado en las opciones finales
+                # Contar solo botones que no son de tipo URL para determinar el tipo de mensaje interactivo para WhatsApp
+                # Para web, el formatter se encarga de los botones URL.
+                interactive_options_count = sum(1 for opt in final_options if not (opt.get("type") == "url" and self.context.get("channel") == "whatsapp"))
+
+                message_type_final = "text" # Default a texto
+                if 0 < interactive_options_count <= 3:
+                    message_type_final = "interactive_buttons"
+                elif interactive_options_count > 3:
+                    message_type_final = "interactive_list"
+
+                # Si para web solo hay botones de URL, message_type_final podría ser 'text' si no hay otros interactivos.
+                # El response_formatter.py se encarga de añadir los botones URL para web si message_type es 'interactive_buttons' o 'interactive_list'.
+                # Si solo hay URLs y es web, podríamos querer 'interactive_buttons' para que se muestren.
+                if self.context.get("channel") == "web" and not interactive_options_count and any(opt.get("type") == "url" for opt in final_options):
+                    message_type_final = "interactive_buttons" # Para que formatter web procese los botones URL
+                elif self.context.get("channel") == "whatsapp" and interactive_options_count == 0:
+                    message_type_final = "text" # Si solo hay URLs para WhatsApp (ya en el body), y no otros botones.
+
+
                 return {
                     "message_body": descripcion_tramite, 
-                    "options_list": options_post_info, # Generic options after info
-                    "message_type": "interactive_buttons", # Assuming few generic options
+                    "options_list": final_options,
+                    "message_type": message_type_final,
                     "fuente": f"tramite_info_{normalizar_texto(clave_tramite)}_v2"
-                    # "original_buttons_from_config": original_info_buttons # For web channel to potentially use
                 }
 
             if "conducir" in texto and ("licencia" in texto or "carnet" in texto):
@@ -3430,7 +3461,7 @@ class TramiteInteligenteHandler(BaseMunicipioHandler):
                 else: # For web, suggest a URL button
                     options.append({
                         "id": f"tramite_intel_link_{normalizar_texto(nombre)}",
-                        "texto": "Más información",
+                        "texto": "Ir al sitio del trámite", # Texto modificado
                         "url": link,
                         "type": "url" 
                     })
