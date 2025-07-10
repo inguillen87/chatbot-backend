@@ -1,140 +1,111 @@
-## Working with this Chatboc API Project
+## Working with this Chatboc API Project (LLM-Powered Architecture)
 
-This document provides guidance for AI agents working on this codebase.
+This document provides guidance for AI agents and human developers working on this codebase, which is transitioning to an architecture primarily driven by a Large Language Model (LLM) like Google's Gemini.
 
-### General Conventions
-- Follow standard Python coding conventions (PEP 8).
-- Write clear and concise commit messages.
-- Ensure new features are accompanied by relevant tests.
-- Update this `AGENTS.MD` if you introduce changes that require new setup or specific operational knowledge.
+### Core Architectural Philosophy
+The primary goal is to centralize language understanding, conversation flow management, and data extraction logic within the LLM, guided by a comprehensive system prompt. The Python backend should act as an executor of actions determined by the LLM and a manager of data persistence and external service interactions.
 
-### Running the Flask Application
-1.  **Set up a Python virtual environment:**
+**Key Principle:** The LLM is responsible for the "intelligence" and "comprehension"; Python code is responsible for "execution" and "validation" of structured data. Avoid adding complex language parsing, keyword-based logic, or extensive if-else chains for intent recognition in Python.
+
+### Main Chat Flow
+1.  **User Input**: Messages are received حياة `routes/chat.py` (endpoints `/ask`, `/ask/pyme`, `/ask/municipio`).
+2.  **Context Management**: `routes/chat.py` loads/manages `ChatSessionContext` to maintain conversation history and state across turns.
+3.  **Orchestration**: The request is passed to `services.logic.responder_chatboc`, which then routes to:
+    *   `services.municipios.responder_municipio` for municipal interactions.
+    *   `services.pymes.responder_pyme` for business interactions.
+4.  **LLM Interaction (New Flow)**:
+    *   Inside `responder_municipio`/`responder_pyme`, for relevant intents (e.g., "iniciar_reclamo", "crear_pedido") or when continuing an LLM-driven dialogue, a call is made to `services.gemini_bridge.llamar_gemini`.
+    *   **`services.gemini_bridge.JULES_SYSTEM_PROMPT`**: This is the master prompt that defines the LLM's persona, capabilities, input/output structure, and examples. **This is the primary place to adjust the bot's "vocabulary", understanding, and decision-making logic.**
+    *   The LLM is expected to return a JSON object with the following structure:
+        ```json
+        {
+          "respuesta_usuario": "...respuesta profesional y directa para mostrar al usuario...",
+          "accion_backend": "...crear_reclamo | consulta_estado | info_tramite | agregar_item_carrito | finalizar_pedido_pyme | derivar_humano...",
+          "datos_estructura": {
+            "categoria": "...",
+            "descripcion": "...",
+            "ubicacion": "...",
+            "coordenadas": {"lat": "...", "lon": "..."},
+            "usuario": "Nombre Usuario",
+            "telefono": "...",
+            "email": "...",
+            "target": "municipio | pyme",
+            // ... otros campos específicos de la acción ...
+          },
+          "pedir_info": null | "ubicacion" | "categoria" | "id_reclamo" | "producto" | "email_cliente" | ...,
+          "botones": [ { "texto": "Botón 1" }, { "texto": "Botón 2", "action_id": "accion_especifica" } ]
+        }
+        ```
+5.  **Action Execution**:
+    *   If `respuesta_llm.accion_backend` is set, `responder_municipio`/`responder_pyme` calls a corresponding Python function (e.g., `accion_crear_reclamo_municipio(datos_llm, context)`).
+    *   These `accion_` functions in `services/municipios.py` or `services/pymes.py` (or dedicated `actions_municipio.py`, `actions_pyme.py` modules) contain the business logic:
+        *   Validate data received in `datos_llm.datos_estructura`.
+        *   Interact with the database (create/update tickets, pedidos, etc.).
+        *   Call external services (notifications, geocoding APIs).
+        *   Return a response object for the user.
+6.  **Dialog Management**:
+    *   If `respuesta_llm.pedir_info` is set, the `respuesta_llm.respuesta_usuario` and `respuesta_llm.botones` are used to ask the user for more information. The conversation history (including the LLM's request for info) is passed back to the LLM in the next turn.
+7.  **Fallback**: If the LLM flow is not triggered (e.g., `USAR_LLM_PARA_RECLAMOS=False`) or if the LLM fails to provide a usable response, the system may fall back to the traditional handler-based logic (which is being progressively refactored).
+
+### Developing New Features / Modifying Behavior
+1.  **Primary Tool: `JULES_SYSTEM_PROMPT` (`services/gemini_bridge.py`)**
+    *   To change how the bot understands user requests, extracts information, or decides on next steps, **start by modifying this prompt.**
+    *   Add more examples, clarify rules, or refine descriptions of `accion_backend` and `datos_estructura`.
+    *   Ensure the prompt clearly instructs the LLM to *always* return the specified JSON structure.
+2.  **Adding New Backend Actions**:
+    *   Define the new `accion_backend` string (e.g., `solicitar_devolucion_producto`).
+    *   Update `JULES_SYSTEM_PROMPT` to include this new action in the list of possibilities and provide examples of when/how the LLM should use it and what `datos_estructura` are expected.
+    *   Create the corresponding Python function: `accion_solicitar_devolucion_producto(datos_llm: dict, context: dict)` in the relevant services module.
+    *   This function will perform the actual business logic (e.g., create a return ticket, update inventory, notify logistics).
+    *   Update the main orchestrator (`responder_pyme` or `responder_municipio`) to call this new action function when the LLM specifies it.
+3.  **Data Validation**:
+    *   Critical data validation (e.g., email format, phone number validity, valid address components *after* LLM extraction) should occur in the Python `accion_` functions.
+    *   **Future Enhancement**: If validation fails, the system should ideally inform the LLM (e.g., by adding a "system_feedback" turn to the history) so the LLM can re-ask the user for correct information naturally.
+4.  **Tools / Function Calling (Future)**:
+    *   To allow the LLM to query real-time data (e.g., "status of my ticket #123", "is product X in stock?", "what are the opening hours for Y office today?"), integrate LLM function calling capabilities.
+    *   The LLM would indicate a tool/function to call with specific parameters. The backend executes this tool and returns the result to the LLM, which then formulates the user-facing response.
+
+### Running the Flask Application & Tests
+(This section can largely remain as is, but ensure `pip install google-cloud-aiplatform` is included and credential setup for Google Cloud is mentioned.)
+
+1.  **Set up a Python virtual environment & Install Dependencies:**
     ```bash
     python -m venv venv
     source venv/bin/activate  # On Windows: venv\Scripts\activate
-    ```
-2.  **Install dependencies:**
-    ```bash
     pip install -r requirements.txt
+    # Ensure google-cloud-aiplatform is in requirements.txt or install separately:
+    # pip install google-cloud-aiplatform
     ```
-3.  **Set up Environment Variables:**
-    Create a `.env` file in the project root. See `config.py` for all possible variables. Essential ones include:
+2.  **Environment Variables:**
+    Create a `.env` file. Key variables:
     *   `FLASK_APP=app.py`
-    *   `FLASK_ENV=development` (or `production`)
-    *   `SECRET_KEY=your_super_secret_key`
-    *   `SQLALCHEMY_DATABASE_URI=your_database_url` (e.g., `postgresql://user:pass@host/dbname` or `sqlite:///instance/database.db`)
-    *   `LOG_LEVEL=INFO` (or `DEBUG`)
-
-4.  **Database Migrations:**
-    If this is the first time or there are new migrations:
+    *   `FLASK_ENV=development`
+    *   `SECRET_KEY=your_secret_key`
+    *   `SQLALCHEMY_DATABASE_URI=your_database_url`
+    *   `GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/gcp-credentials.json` (if not using default ADC)
+    *   (Twilio, Cohere, and other API keys as needed)
+3.  **Database Migrations & Run Server**: (As before)
     ```bash
-    flask db init  # If first time initializing migrations
-    flask db migrate -m "Your descriptive migration message."
     flask db upgrade
-    ```
-    After adding new models (like `WhatsappNumero`), ensure you run `flask db migrate` and `flask db upgrade`.
-
-5.  **Run the development server:**
-    ```bash
     flask run
     ```
+4.  **Running Tests**:
+    *   Unit tests are in `tests/`.
+    *   To run all: `python -m unittest discover tests`
+    *   To run specific file: `python -m unittest tests/test_file_name.py`
+    *   **LLM-related tests**:
+        *   `tests/test_gemini_bridge.py`: Tests the `llamar_gemini` function (mocked or real). Focus on prompt formatting and parsing of the LLM's JSON response.
+        *   `tests/test_acciones_municipio.py` (and similar for pyme): Test individual `accion_` functions. Mock the `datos_llm` input and dependencies (DB, external services).
+        *   **Integration Tests (within `responder_municipio`/`responder_pyme`)**: Mock `gemini_bridge.llamar_gemini` to return controlled LLM JSON responses. Verify that `responder_municipio`/`pyme` correctly calls the appropriate action functions or manages dialogue based on the LLM's output.
 
-### WhatsApp Business API Integration (`routes/whatsapp_webhook.py`)
+### Current LLM-Powered Flows (Example: Municipio Reclamos)
+*   The `USAR_LLM_PARA_RECLAMOS` flag in `services/municipios.py` controls the new flow.
+*   If active, `responder_municipio` calls `llamar_gemini`.
+*   `accion_crear_reclamo_municipio` is called if LLM provides all necessary data.
+*   A separate `historial_llm_reclamo` is maintained in the `contexto_municipio_actual` for multi-turn interactions guided by the LLM.
 
-This integration allows the chatbot to communicate via WhatsApp using the Twilio API. The mapping of Twilio numbers to client accounts (User model where rol is 'empresa' or 'municipio') is managed in the database via the `WhatsappNumero` table.
+### WhatsApp Business API Integration & Entity Token
+(These sections from the original AGENTS.md remain relevant and can be kept as is, but ensure they are placed after the new core architecture description.)
 
-**Database Model: `WhatsappNumero`**
-*   **Purpose:** Links an incoming Twilio WhatsApp number to a specific `User` record in the database. This `User` record represents the company or municipality associated with that WhatsApp number.
-*   **Key Fields in `WhatsappNumero` model:**
-    *   `numero_whatsapp`: The E.164 formatted WhatsApp number (e.g., "+14155238886").
-    *   `user_id`: Foreign Key to `user.id`. This is the ID of the 'empresa' or 'municipio' type User.
-    *   `is_active`: Boolean flag to enable/disable the mapping.
-*   **Client Information:** The webhook retrieves client details (like name, type, and the crucial `empresa_id` which is `User.id`) by joining `WhatsappNumero` with the `User` table.
-    *   Client Name: Derived from `User.nombre_empresa` or `User.name`.
-    *   Client Type: Derived from `User.tipo_chat` (e.g., 'pyme', 'municipio').
-
-**Environment Variables for WhatsApp Integration:**
-Ensure the following environment variables are set in your `.env` file or server configuration:
-*   `TWILIO_ACCOUNT_SID`: Your Twilio Account SID.
-*   `TWILIO_AUTH_TOKEN`: Your Twilio Auth Token.
-
-**Webhook Configuration:**
-*   The webhook endpoint is exposed at `/webhook/whatsapp`.
-*   In your Twilio console, for each provisioned WhatsApp number, set the "A MESSAGE COMES IN" webhook URL to `https://<your_domain>/webhook/whatsapp` (ensure HTTPS).
-
-**Managing WhatsApp Number Mappings:**
-*   **Crucial:** For the webhook to identify a client, a record must exist in the `whatsapp_numero` table linking the Twilio number (e.g., "+14155238886") to the corresponding `User.id` of the company/municipality.
-*   This table needs to be populated with these mappings. This can be done via:
-    *   A dedicated admin interface (to be developed).
-    *   CLI commands (to be developed).
-    *   Integration into the company/municipality onboarding process.
-*   If a message arrives for a number not in `whatsapp_numero` or if its entry is inactive, the webhook will return a 404 error.
-
-**Testing the WhatsApp Integration:**
-1.  Ensure your Flask application is running and accessible via HTTPS.
-2.  Verify the `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` environment variables are correctly set.
-3.  Confirm that an active entry exists in the `whatsapp_numero` table for the Twilio number you are testing, linking it to a valid `User` (company/municipality).
-4.  Send a message from your WhatsApp account to the provisioned Twilio number.
-5.  Check the Flask application logs for incoming message details, client identification, and any errors.
-6.  The application should (currently, with stubbed bot logic) echo back your message, including details of the identified client.
-7.  Check Twilio's console logs for details on the webhook request and response if issues arise.
-
-**Important Notes for WhatsApp Integration:**
-*   The `RequestValidator` in `routes/whatsapp_webhook.py` uses `TWILIO_AUTH_TOKEN` to validate incoming webhook signatures.
-*   The webhook now integrates with the application's core session management (using the `ChatSessionContext` model) and chatbot logic (by calling `services.logic.responder_chatboc`). Stubbed functions for these have been replaced. Ensure `responder_chatboc` correctly handles context and returns responses suitable for WhatsApp.
-
-**Manual Testing Guidance for WhatsApp Integration:**
-After deploying the changes:
-1.  **Ensure Pre-requisites:**
-    *   Verify `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` are correctly set in your environment.
-    *   Confirm an active entry exists in the `whatsapp_numero` table linking your test Twilio WhatsApp number to the correct `User.id` of the target company/municipality.
-    *   The Flask application must be running and accessible via HTTPS (e.g., through Render, ngrok for local testing).
-    *   The Twilio console for your WhatsApp number must be configured to point its "A MESSAGE COMES IN" webhook to your application's `/webhook/whatsapp` endpoint.
-2.  **Send a Test Message:**
-    *   From a personal WhatsApp account, send a message to your configured Twilio WhatsApp number.
-3.  **Observe Behavior & Logs:**
-    *   **Application Logs:** Check your Flask application's console output (or Render logs). You should see:
-        *   "Received WhatsApp message..." log with your number and message.
-        *   "Mensaje para cliente..." log showing the correct company/municipality identified.
-        *   Logs related to session creation/retrieval from `ChatSessionContext`.
-        *   Logs indicating `responder_chatboc` is being called.
-        *   The raw response from `responder_chatboc`.
-        *   "Session saved for..." log.
-        *   "Mensaje de respuesta enviado a..." log with a Twilio SID.
-    *   **WhatsApp Response:** You should receive a response on your personal WhatsApp from the bot, generated by `responder_chatboc`.
-    *   **Twilio Console Logs:** If messages are not sent/received as expected, or if Flask logs show errors sending to Twilio, check the Twilio dashboard (Messaging > Logs) for your number. It will show details of webhook requests, responses from your app, and any errors Twilio encountered delivering the message.
-4.  **Test Session Persistence:**
-    *   Send a follow-up message.
-    *   Verify in the application logs that the existing session (`ChatSessionContext`) is found and its context is loaded.
-    *   Confirm that the bot's response takes into account the previous interaction (if your bot logic supports conversational context).
-5.  **Troubleshooting:**
-    *   **No response / Flask errors:** Check Flask logs for tracebacks. Common issues could be:
-        *   Incorrect parameters passed to `responder_chatboc`.
-        *   Errors within `responder_chatboc` itself.
-        *   Database errors when reading/writing `ChatSessionContext`.
-        *   The `ChatSessionContext.context_data` not being structured as `responder_chatboc` expects.
-    *   **Twilio Errors (e.g., 502 Bad Gateway on Twilio logs):** Often means your webhook endpoint is erroring out before sending a 200 OK, or it's timing out.
-    *   **Incorrect Bot Behavior:** This would likely be an issue within `responder_chatboc` or how it interprets the session/context data.
-
-### Token de Empresa para Widget Embebido (`X-Entity-Token`)
-(This section remains relevant as is)
-**Contexto:** El widget de chat embebido utiliza un token para identificar a la empresa (PYME/Municipio).
-... (rest of section unchanged) ...
-
-### Running Tests
-Unit tests are located in the `tests/` directory.
-To run all tests:
-```bash
-python -m unittest discover tests
-```
-To run a specific test file (e.g., for the WhatsApp webhook):
-```bash
-python -m unittest tests/test_whatsapp_webhook.py
-```
-Ensure all dependencies are installed. Note: An unrelated issue in `services/llm_utils.py` concerning `cohere.errors` may currently prevent tests from running. This needs to be addressed separately.
-
-### Code Style and Linting
-(Placeholder for future instructions)
-
-Remember to consult `README.md` for general project information.
+---
+This document should be updated as the LLM integration evolves and more functionalities are migrated to this new pattern.
