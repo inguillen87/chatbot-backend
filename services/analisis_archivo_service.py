@@ -189,6 +189,49 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
     finally:
         session.remove()
 
+    # --- After all processing, if successful and relevant, update ChatSessionContext ---
+    if archivo_adjunto and analisis_archivo and analisis_archivo.estado_analisis == "completado" and \
+       analisis_archivo.tipo_analisis in ["reclamo_auto_descripcion_categoria", "reclamo_vision_llm_v1"]: # Add other relevant types if necessary
+
+        logger.info(f"Análisis completado y relevante para ArchivoAdjunto ID: {archivo_adjunto_id}. Intentando actualizar ChatSessionContext.")
+        from models import ChatSessionContext # Import here to avoid potential top-level circularity
+
+        chat_session_id_to_update = archivo_adjunto.session_id
+        if chat_session_id_to_update:
+            # Re-acquire session for ChatSessionContext modification if needed, or use existing if task is configured with app context
+            # Assuming db.session is still valid here or re-fetched if necessary for tasks.
+            # For simplicity, let's try to use the existing session from the task context first.
+            # If Celery tasks run outside Flask app context by default, this needs careful handling.
+            # However, the task starts with `session = db.session`, implying it has one.
+
+            try:
+                # Ensure we are using a session that can commit changes to ChatSessionContext
+                # This might require a new session if the previous one was closed or is specific to the task's isolated operations.
+                # For now, let's assume the `session` object from the start of the task is still usable.
+                # If not, one might need: session = db.create_scoped_session() or similar.
+
+                chat_context_record = session.query(ChatSessionContext).filter_by(chat_session_id=chat_session_id_to_update).first()
+                if chat_context_record:
+                    if chat_context_record.context_data is None:
+                        chat_context_record.context_data = {}
+
+                    # Store info about the completed analysis
+                    chat_context_record.context_data["web_analisis_listo"] = {
+                        "archivo_id": archivo_adjunto.id,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "tipo_analisis": analisis_archivo.tipo_analisis
+                    }
+                    # db.session.add(chat_context_record) # Not needed if already fetched and modified
+                    session.commit()
+                    logger.info(f"ChatSessionContext {chat_session_id_to_update} actualizado con web_analisis_listo para archivo ID {archivo_adjunto.id}.")
+                else:
+                    logger.warning(f"No se encontró ChatSessionContext con ID {chat_session_id_to_update} para actualizar tras análisis de archivo {archivo_adjunto.id}.")
+            except Exception as e_csc_update:
+                logger.error(f"Error actualizando ChatSessionContext para archivo {archivo_adjunto.id} tras análisis: {e_csc_update}", exc_info=True)
+                session.rollback() # Rollback ChatSessionContext update only
+        else:
+            logger.warning(f"ArchivoAdjunto ID {archivo_adjunto.id} no tiene session_id. No se puede actualizar ChatSessionContext.")
+
 
 # Nueva función para OCR simple, separada de la lógica de reclamos
 def _realizar_analisis_ocr_simple(session, analisis_archivo_id: int):

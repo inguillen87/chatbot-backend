@@ -69,70 +69,148 @@ def interpretar_imagen_para_chat(
 ) -> Dict[str, Any]:
     """
     Función principal para interpretar una imagen según el tipo de necesidad (reclamo o pedido).
+    Maneja tanto `ArchivoAdjunto` de la DB como diccionarios con info de URL (ej. de WhatsApp).
     """
-    if not archivo_adjunto or not archivo_adjunto.url:
-        return {'error': 'Archivo adjunto o URL no válidos.', 'analisis_id': None}
+    is_db_object = hasattr(archivo_adjunto, 'id') and archivo_adjunto.id is not None
+
+    input_url = None
+    input_mime_type = None
+    input_source_id_info = "" # For logging
+
+    if is_db_object:
+        input_url = archivo_adjunto.url
+        input_mime_type = archivo_adjunto.mime
+        input_source_id_info = f"ArchivoAdjunto ID {archivo_adjunto.id}"
+    elif isinstance(archivo_adjunto, dict):
+        input_url = archivo_adjunto.get("url")
+        input_mime_type = archivo_adjunto.get("mime_type") # Asumimos que el dict tiene 'mime_type'
+        input_source_id_info = f"Diccionario (URL: {input_url})"
+    else: # tipo inesperado
+        logger.error(f"❌ Tipo de archivo_adjunto no esperado: {type(archivo_adjunto)}")
+        return {'error': 'Tipo de archivo_adjunto no válido.', 'analisis_id': None}
+
+    if not input_url:
+        return {'error': 'URL del archivo no válida.', 'analisis_id': None}
 
     if tipo_interpretacion == "pedido_pyme" and not pyme_user:
-        logger.error("❌ Se requiere pyme_user para interpretar un pedido.")
+        logger.error("❌ Se requiere pyme_user para interpretar un pedido PYME.")
         return {'error': 'Usuario PYME no especificado para interpretación de pedido.', 'analisis_id': None}
 
-    # Determinar tipo de análisis inicial para el registro en DB
-    tipo_analisis_db = f'{tipo_interpretacion}_vision_v1' # Ej: reclamo_municipal_vision_v1
+    analisis_db_record = None # Será None si es un dict de WhatsApp, o el objeto AnalisisArchivo si es de DB
 
-    analisis = _inicializar_analisis_archivo(archivo_adjunto.id, tipo_analisis_db)
+    if is_db_object:
+        tipo_analisis_db_prefix = f'{tipo_interpretacion}_vision_v1'
+        analisis_db_record = _inicializar_analisis_archivo(archivo_adjunto.id, tipo_analisis_db_prefix)
+        logger.info(f"➡️ Iniciando interpretación '{tipo_interpretacion}' para {input_source_id_info}")
+    else: # Es un diccionario (ej. WhatsApp), no interactuamos con AnalisisArchivo todavía
+        logger.info(f"➡️ Iniciando interpretación '{tipo_interpretacion}' para imagen desde {input_source_id_info} (sin interacción con DB de AnalisisArchivo en esta etapa).")
 
-    logger.info(f"➡️ Iniciando interpretación '{tipo_interpretacion}' para imagen: Archivo ID {archivo_adjunto.id}, URL: {archivo_adjunto.url}")
 
-    image_content = _descargar_imagen(archivo_adjunto.url)
+    image_content = _descargar_imagen(input_url)
     if not image_content:
-        analisis.estado_analisis = "error"
-        analisis.error_analisis = "Fallo al descargar la imagen."
-        db.session.commit()
-        return {'error': analisis.error_analisis, 'analisis_id': analisis.id}
+        error_message = "Fallo al descargar la imagen."
+        if is_db_object and analisis_db_record:
+            analisis_db_record.estado_analisis = "error"
+            analisis_db_record.error_analisis = error_message
+            db.session.commit()
+            return {'error': error_message, 'analisis_id': analisis_db_record.id}
+        else: # WhatsApp dict, no hay analisis_db_record
+            return {'error': error_message, 'analisis_id': None, 'raw_analysis': None}
 
-    logger.info(f"🖼️  Enviando imagen (tamaño: {len(image_content)} bytes) a Vision API...")
-    vision_results = analyze_image_from_content(image_content)
-    current_datos = analisis.datos_estructurados or {}
-    current_datos['vision_api_raw'] = vision_results
-    analisis.datos_estructurados = current_datos
+    logger.info(f"🖼️  Enviando imagen (tamaño: {len(image_content)} bytes, mime: {input_mime_type}) a Vision API...")
+    vision_results = analyze_image_from_content(image_content) # Esta función ya loguea sus errores
+
+    # Si es un objeto de DB, guardar resultados parciales de Vision en AnalisisArchivo
+    if is_db_object and analisis_db_record:
+        current_datos_db = analisis_db_record.datos_estructurados or {}
+        current_datos_db['vision_api_raw'] = vision_results # Guardar el resultado crudo de Vision
+        analisis_db_record.datos_estructurados = current_datos_db
 
     if vision_results.get("error"):
-        logger.error(f"❌ Error de Vision API: {vision_results['error']}")
-        analisis.estado_analisis = "error"
-        analisis.error_analisis = f"Error de Vision API: {vision_results['error']}"
-        db.session.commit()
-        return {'error': analisis.error_analisis, 'analisis_id': analisis.id}
+        error_message_vision = f"Error de Vision API: {vision_results['error']}"
+        logger.error(f"❌ {error_message_vision}")
+        if is_db_object and analisis_db_record:
+            analisis_db_record.estado_analisis = "error"
+            analisis_db_record.error_analisis = error_message_vision
+            db.session.commit()
+            return {'error': error_message_vision, 'analisis_id': analisis_db_record.id}
+        else: # WhatsApp dict
+            return {'error': error_message_vision, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}}
 
     extracted_ocr_text = ""
     if vision_results.get("full_text_annotation"):
         extracted_ocr_text = vision_results["full_text_annotation"].get("description", "").strip()
-        analisis.texto_extraido = extracted_ocr_text
+        if is_db_object and analisis_db_record:
+            analisis_db_record.texto_extraido = extracted_ocr_text
         logger.info(f" टेक्स्ट OCR detectado: '{extracted_ocr_text[:200]}...'")
 
-    # Guardar el análisis con el texto OCR y los resultados de Vision antes de la lógica específica
-    db.session.commit()
-
-
-    if tipo_interpretacion == "reclamo_municipal": # Kept for compatibility if explicitly called
-        return _procesar_interpretacion_reclamo(analisis, vision_results, extracted_ocr_text)
-    elif tipo_interpretacion == "reclamo_auto_descripcion_categoria": # New type
-        return _procesar_interpretacion_reclamo(analisis, vision_results, extracted_ocr_text, auto_mode=True)
-    elif tipo_interpretacion == "pedido_pyme":
-        if not pyme_user: # Doble chequeo, aunque ya se hizo arriba.
-            logger.error("❌ Error interno: pyme_user es None para pedido_pyme en _procesar.")
-            analisis.estado_analisis = "error"
-            analisis.error_analisis = "Error interno: Usuario PYME no disponible."
-            db.session.commit()
-            return {'error': analisis.error_analisis, 'analisis_id': analisis.id}
-        return _procesar_interpretacion_pedido_pyme(analisis, vision_results, extracted_ocr_text, pyme_user)
-    else:
-        logger.error(f"❌ Tipo de interpretación '{tipo_interpretacion}' no soportado.")
-        analisis.estado_analisis = "error"
-        analisis.error_analisis = f"Tipo de interpretación no soportado: {tipo_interpretacion}"
+    # Si es un objeto de DB, guardar el análisis con texto OCR antes de la lógica específica.
+    if is_db_object and analisis_db_record:
         db.session.commit()
-        return {'error': analisis.error_analisis, 'analisis_id': analisis.id}
 
+    # ----- Lógica de procesamiento específica (reclamo o pedido) -----
+    # Estas funciones (_procesar_interpretacion_reclamo, _procesar_interpretacion_pedido_pyme)
+    # ahora recibirán `analisis_db_record` (que puede ser None si es un dict de WhatsApp).
+    # Deberán manejar esto: si es None, no intentan actualizarlo.
+    # Y la función principal retornará el resultado de estas, añadiendo `mime_type` si no es de DB.
+
+    resultado_procesamiento = None
+    if tipo_interpretacion == "reclamo_municipal":
+        resultado_procesamiento = _procesar_interpretacion_reclamo(analisis_db_record, vision_results, extracted_ocr_text)
+    elif tipo_interpretacion == "reclamo_auto_descripcion_categoria":
+        resultado_procesamiento = _procesar_interpretacion_reclamo(analisis_db_record, vision_results, extracted_ocr_text, auto_mode=True)
+    elif tipo_interpretacion == "pedido_pyme":
+        if not pyme_user: # Doble chequeo
+            error_msg_pyme = "Error interno: pyme_user es None para pedido_pyme en _procesar."
+            logger.error(f"❌ {error_msg_pyme}")
+            if is_db_object and analisis_db_record:
+                analisis_db_record.estado_analisis = "error"; analisis_db_record.error_analisis = error_msg_pyme; db.session.commit()
+                return {'error': error_msg_pyme, 'analisis_id': analisis_db_record.id}
+            else: return {'error': error_msg_pyme, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}} # Propagar error y raw vision
+        resultado_procesamiento = _procesar_interpretacion_pedido_pyme(analisis_db_record, vision_results, extracted_ocr_text, pyme_user)
+    else:
+        error_msg_tipo = f"Tipo de interpretación no soportado: {tipo_interpretacion}"
+        logger.error(f"❌ {error_msg_tipo}")
+        if is_db_object and analisis_db_record:
+            analisis_db_record.estado_analisis = "error"; analisis_db_record.error_analisis = error_msg_tipo; db.session.commit()
+            return {'error': error_msg_tipo, 'analisis_id': analisis_db_record.id}
+        else: return {'error': error_msg_tipo, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}}
+
+
+    # Si no es un objeto de DB (es un dict de WhatsApp), necesitamos enriquecer el resultado
+    # con la información cruda del análisis y el mime_type original.
+    if not is_db_object:
+        if resultado_procesamiento: # Si el procesamiento específico tuvo éxito
+            # Añadir los datos crudos de análisis y mime_type
+            # raw_analysis_data contendrá los resultados de vision y la extracción del LLM (si aplica)
+            raw_analysis_data_for_return = {
+                'vision_api_raw': vision_results,
+                'extracted_ocr_text': extracted_ocr_text,
+                # Si _procesar_interpretacion_reclamo/pedido devuelven datos adicionales
+                # (ej. llm_extraction), deberían estar en resultado_procesamiento.
+                # Aquí podemos decidir qué parte de resultado_procesamiento es "raw" vs "final".
+                # Por ahora, asumimos que resultado_procesamiento ya tiene la estructura deseada
+                # para 'categoria_sugerida', 'descripcion_sugerida', etc.
+                # Y 'raw_analysis' contendrá las fuentes primarias de datos.
+            }
+            if 'llm_complaint_extraction_from_image' in (resultado_procesamiento.get('analisis_interno', {})):
+                raw_analysis_data_for_return['llm_complaint_extraction_from_image'] = resultado_procesamiento['analisis_interno']['llm_complaint_extraction_from_image']
+
+            resultado_procesamiento['raw_analysis'] = raw_analysis_data_for_return
+            resultado_procesamiento['mime_type'] = input_mime_type # Agregar el mime_type original
+            resultado_procesamiento['analisis_id'] = None # Explicitar que no hay ID de AnalisisArchivo
+        else: # Si el procesamiento específico falló (devolvió None o dict con error)
+            # Esto no debería pasar si las funciones _procesar_ siempre devuelven un dict.
+            # Pero por si acaso:
+            logger.error("❌ Error inesperado: resultado_procesamiento es None para input tipo dict.")
+            return {
+                'error': 'Error interno en procesamiento específico de la imagen.',
+                'analisis_id': None,
+                'raw_analysis': {'vision_api_raw': vision_results, 'extracted_ocr_text': extracted_ocr_text},
+                'mime_type': input_mime_type
+            }
+
+    return resultado_procesamiento
 
 # Define mapping from common Vision API labels (in lowercase normalized form) to our claim categories
 # This needs to be expanded and refined.
@@ -198,21 +276,28 @@ def _infer_category_from_vision_results(vision_results: Dict[str, Any], min_conf
 
 
 def _procesar_interpretacion_reclamo(
-    analisis: AnalisisArchivo,
+    analisis_db_record: Optional[AnalisisArchivo], # Puede ser None si es de WhatsApp
     vision_results: Dict[str, Any],
     extracted_ocr_text: str,
-    auto_mode: bool = False # New flag for auto-description/category mode
+    auto_mode: bool = False
 ) -> Dict[str, Any]:
     """Lógica específica para interpretar un reclamo municipal."""
-    logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL (auto_mode: {auto_mode}) para Análisis ID: {analisis.id}")
+    analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
+    logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL (auto_mode: {auto_mode}) para Análisis ID: {analisis_id_for_log}")
 
     sugerida_categoria_vision = None
+    # Datos que se guardarán en AnalisisArchivo (si existe) o se retornarán en 'analisis_interno'
+    datos_internos_analisis = {}
+
     if auto_mode:
         sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
-        analisis.tipo_analisis = 'reclamo_auto_vision_v1'
-    else: # Original mode, might use keywords or different LLM path
-        analisis.tipo_analisis = 'reclamo_vision_llm_v1'
-
+        if analisis_db_record:
+            analisis_db_record.tipo_analisis = 'reclamo_auto_vision_v1'
+        datos_internos_analisis['tipo_analisis_sugerido'] = 'reclamo_auto_vision_v1'
+    else:
+        if analisis_db_record:
+            analisis_db_record.tipo_analisis = 'reclamo_vision_llm_v1'
+        datos_internos_analisis['tipo_analisis_sugerido'] = 'reclamo_vision_llm_v1'
 
     # Construct description for LLM from image content
     prompt_description_parts = []
@@ -229,31 +314,46 @@ def _procesar_interpretacion_reclamo(
         ocr_snippet_for_prompt = extracted_ocr_text.strip().replace("\n", " ")
         prompt_description_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'")
 
-    current_datos_estructurados = analisis.datos_estructurados if isinstance(analisis.datos_estructurados, dict) else {}
+    # current_datos_estructurados = analisis_db_record.datos_estructurados if analisis_db_record and isinstance(analisis_db_record.datos_estructurados, dict) else {}
+    # No, datos_internos_analisis es el que se está construyendo para el retorno o para DB.
+    # vision_api_raw ya está en vision_results, no es necesario agregarlo a datos_internos_analisis aquí explícitamente
+    # a menos que queramos sobreescribir la estructura de `raw_analysis` que se arma en la función principal.
 
     if not prompt_description_parts:
-         logger.info(f"ℹ️ [RECLAMO_IMG_PROC] No hay suficiente información visual/textual para enviar al LLM (Análisis ID: {analisis.id}).")
-         analisis.estado_analisis = "completado_sin_info_suficiente"
-         current_datos_estructurados['vision_inferred_category'] = sugerida_categoria_vision
-         analisis.datos_estructurados = current_datos_estructurados
-         db.session.commit()
+         logger.info(f"ℹ️ [RECLAMO_IMG_PROC] No hay suficiente información visual/textual para enviar al LLM (Análisis ID: {analisis_id_for_log}).")
+         if analisis_db_record:
+             analisis_db_record.estado_analisis = "completado_sin_info_suficiente"
+             # current_datos_estructurados['vision_inferred_category'] = sugerida_categoria_vision # Se guarda en datos_internos_analisis
+             # analisis_db_record.datos_estructurados = current_datos_estructurados # Se actualiza al final
+             db.session.commit() # Commit el estado
+
+         datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
          return {
              'es_reclamo': bool(sugerida_categoria_vision),
              'categoria_sugerida': sugerida_categoria_vision,
              'descripcion_sugerida': "No se pudo generar una descripción automática. Por favor, describí el problema.",
              'texto_ocr': extracted_ocr_text,
-             'analisis_id': analisis.id, 'error': None
+             'analisis_id': analisis_db_record.id if analisis_db_record else None, 'error': None,
+             'analisis_interno': datos_internos_analisis # Incluir los datos internos, aunque sea solo tipo_analisis y vision_inferred_category
          }
 
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
-    logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis.id})")
+    logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis_id_for_log})")
 
     # Use LLM to refine/generate details based on image description
     detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
 
-    current_datos_estructurados['llm_complaint_extraction_from_image'] = detalles_llm
-    current_datos_estructurados['vision_inferred_category'] = sugerida_categoria_vision # Store what vision inferred
-    analisis.datos_estructurados = current_datos_estructurados
+    # Guardar estos detalles en datos_internos_analisis
+    datos_internos_analisis['llm_complaint_extraction_from_image'] = detalles_llm
+    datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision # Store what vision inferred initially
+
+    # Si hay un registro de DB, actualizarlo.
+    # if analisis_db_record:
+    #     current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+    #     current_datos_db.update(datos_internos_analisis) # Agregar los nuevos datos
+    #     # current_datos_db['llm_complaint_extraction_from_image'] = detalles_llm
+    #     # current_datos_db['vision_inferred_category'] = sugerida_categoria_vision
+    #     analisis_db_record.datos_estructurados = current_datos_db
 
     # Determine final suggested category and description
     final_categoria_sugerida = sugerida_categoria_vision # Start with Vision's inference
@@ -303,46 +403,76 @@ def _procesar_interpretacion_reclamo(
     es_reclamo_valido_sugerido = bool(final_categoria_sugerida and final_categoria_sugerida != "otro motivo") or \
                                  (final_descripcion_sugerida and len(final_descripcion_sugerida) >= 15 and "describe el problema" not in final_descripcion_sugerida.lower())
 
-    analisis.estado_analisis = "completado"
-    db.session.commit()
+    # Añadir las conclusiones finales a datos_internos_analisis para que se guarden en DB si aplica
+    datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
+    datos_internos_analisis['final_descripcion_sugerida'] = final_descripcion_sugerida
+    datos_internos_analisis['es_reclamo_sugerido'] = es_reclamo_valido_sugerido
+
+    if analisis_db_record:
+        analisis_db_record.estado_analisis = "completado"
+        # Actualizar datos_estructurados con los datos_internos_analisis
+        current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+        # Ensure vision_api_raw is preserved if it was already there from the main function
+        if 'vision_api_raw' not in datos_internos_analisis and 'vision_api_raw' in current_datos_db:
+            datos_internos_analisis['vision_api_raw'] = current_datos_db['vision_api_raw']
+
+        current_datos_db.update(datos_internos_analisis)
+        analisis_db_record.datos_estructurados = current_datos_db
+        db.session.commit()
 
     return {
         'es_reclamo': es_reclamo_valido_sugerido,
         'categoria_sugerida': final_categoria_sugerida if final_categoria_sugerida else None,
         'descripcion_sugerida': final_descripcion_sugerida if len(final_descripcion_sugerida) >=10 else None,
         'texto_ocr': extracted_ocr_text,
-        'analisis_id': analisis.id,
-        'error': None
+        'analisis_id': analisis_db_record.id if analisis_db_record else None, # Será None si es de WhatsApp
+        'error': None,
+        'analisis_interno': datos_internos_analisis # Devolver los datos internos (incluye tipo_analisis_sugerido, llm_extraction, etc.)
     }
 
 # --- Lógica para Interpretación de Pedidos PYME ---
 def _procesar_interpretacion_pedido_pyme(
-    analisis: AnalisisArchivo,
+    analisis_db_record: Optional[AnalisisArchivo], # Puede ser None
     vision_results: Dict[str, Any],
     extracted_ocr_text: str,
     pyme_user: User
 ) -> Dict[str, Any]:
     """Lógica específica para interpretar una imagen como un pedido para una PYME."""
-    logger.info(f"⚙️ Procesando como PEDIDO PYME para Análisis ID: {analisis.id}, PYME ID: {pyme_user.id}")
-    analisis.tipo_analisis = 'pedido_pyme_vision_ocr_v1' # Tipo específico para esta interpretación
+    analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
+    logger.info(f"⚙️ Procesando como PEDIDO PYME para Análisis ID: {analisis_id_for_log}, PYME ID: {pyme_user.id}")
+
+    datos_internos_analisis = {'tipo_analisis_sugerido': 'pedido_pyme_vision_ocr_v1'}
+    if analisis_db_record:
+        analisis_db_record.tipo_analisis = 'pedido_pyme_vision_ocr_v1'
 
     items_pedido_detectados = []
     items_no_encontrados_catalogo = []
     resumen_ocr = ""
 
     if not extracted_ocr_text:
-        logger.info(f"ℹ️ [PEDIDO] No se detectó texto OCR en la imagen para Análisis ID: {analisis.id}.")
-        analisis.estado_analisis = "completado"
-        analisis.tipo_analisis = 'imagen_general_vision_v1' # No hay texto, no puede ser pedido
-        db.session.commit()
+        logger.info(f"ℹ️ [PEDIDO] No se detectó texto OCR en la imagen para Análisis ID: {analisis_id_for_log}.")
+        if analisis_db_record:
+            analisis_db_record.estado_analisis = "completado"
+            analisis_db_record.tipo_analisis = 'imagen_general_vision_v1' # No hay texto, no puede ser pedido
+            # Guardar datos internos aunque esté vacío el OCR
+            current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+            current_datos_db.update(datos_internos_analisis) # tipo_analisis_sugerido
+            analisis_db_record.datos_estructurados = current_datos_db
+            db.session.commit()
+
+        datos_internos_analisis.update({ # También para el retorno si es WhatsApp
+            'items_parseados_ocr': [], 'items_encontrados_catalogo': [],
+            'items_no_encontrados_catalogo': [], 'resumen_ocr_completo': None,
+        })
         return {
             'es_pedido': False,
             'motivo': 'No se detectó texto en la imagen que pueda interpretarse como un pedido.',
             'items_detectados': [],
             'items_no_encontrados': [],
             'resumen_ocr': None,
-            'analisis_id': analisis.id,
-            'error': None
+            'analisis_id': analisis_db_record.id if analisis_db_record else None,
+            'error': None,
+            'analisis_interno': datos_internos_analisis
         }
 
     resumen_ocr = extracted_ocr_text # Guardar el texto completo para referencia
@@ -400,29 +530,32 @@ def _procesar_interpretacion_pedido_pyme(
                 logger.warning(f"[PEDIDO] No se pudo convertir cantidad '{cantidad_ocr_str}' a número en línea: '{linea}'.")
 
     if not posibles_items_texto:
-        logger.info(f"ℹ️ [PEDIDO] OCR no produjo items parseables con nombre y cantidad. Texto OCR: {extracted_ocr_text[:200]} (Análisis ID: {analisis.id})")
-        # Guardar datos en AnalisisArchivo
-        current_datos_estructurados = analisis.datos_estructurados if isinstance(analisis.datos_estructurados, dict) else {}
-        current_datos_estructurados.update({
-            'items_parseados_ocr': [],
-            'items_encontrados_catalogo': [],
-            'items_no_encontrados_catalogo': [],
-            'resumen_ocr_completo': resumen_ocr,
+        logger.info(f"ℹ️ [PEDIDO] OCR no produjo items parseables con nombre y cantidad. Texto OCR: {extracted_ocr_text[:200]} (Análisis ID: {analisis_id_for_log})")
+
+        datos_internos_analisis.update({
+            'items_parseados_ocr': [], 'items_encontrados_catalogo': [],
+            'items_no_encontrados_catalogo': [], 'resumen_ocr_completo': resumen_ocr,
         })
-        analisis.datos_estructurados = current_datos_estructurados
-        analisis.estado_analisis = "completado"
-        db.session.commit()
+
+        if analisis_db_record:
+            current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+            current_datos_db.update(datos_internos_analisis) # tipo_analisis_sugerido y los de arriba
+            analisis_db_record.datos_estructurados = current_datos_db
+            analisis_db_record.estado_analisis = "completado"
+            db.session.commit()
+
         return {
             'es_pedido': False, # No se pudieron parsear items
             'motivo': 'El texto de la imagen no pudo ser interpretado como una lista de productos y cantidades.',
             'items_detectados': [],
             'items_no_encontrados': [],
             'resumen_ocr': resumen_ocr,
-            'analisis_id': analisis.id,
-            'error': None
+            'analisis_id': analisis_db_record.id if analisis_db_record else None,
+            'error': None,
+            'analisis_interno': datos_internos_analisis
         }
 
-    logger.info(f"📝 [PEDIDO] Items parseados del OCR: {posibles_items_texto} (Análisis ID: {analisis.id})")
+    logger.info(f"📝 [PEDIDO] Items parseados del OCR: {posibles_items_texto} (Análisis ID: {analisis_id_for_log})")
 
     # Buscar cada item parseado en el catálogo de la PYME
     for item_ocr in posibles_items_texto:
@@ -495,19 +628,23 @@ def _procesar_interpretacion_pedido_pyme(
                 "razon": "Producto no encontrado en el catálogo."
             })
 
-    # Guardar resultados en AnalisisArchivo
-    current_datos_estructurados = analisis.datos_estructurados if isinstance(analisis.datos_estructurados, dict) else {}
-    current_datos_estructurados.update({
+    # Guardar resultados en datos_internos_analisis (para retorno si es WhatsApp)
+    # y en analisis_db_record.datos_estructurados si existe.
+    datos_internos_analisis.update({
         'items_parseados_ocr': posibles_items_texto,
         'items_encontrados_catalogo': items_pedido_detectados,
         'items_no_encontrados_catalogo': items_no_encontrados_catalogo,
         'resumen_ocr_completo': resumen_ocr,
     })
-    analisis.datos_estructurados = current_datos_estructurados
-    analisis.estado_analisis = "completado"
-    db.session.commit()
 
-    if not items_pedido_detectados and not items_no_encontrados_catalogo: # Si el OCR parseo algo pero nada se busco (raro) o nada se encontro
+    if analisis_db_record:
+        current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+        current_datos_db.update(datos_internos_analisis) # tipo_analisis_sugerido y los de arriba
+        analisis_db_record.datos_estructurados = current_datos_db
+        analisis_db_record.estado_analisis = "completado"
+        db.session.commit()
+
+    if not items_pedido_detectados and not items_no_encontrados_catalogo:
          motivo_final = 'El texto de la imagen no parece corresponder a productos de nuestro catálogo.'
     elif not items_pedido_detectados and items_no_encontrados_catalogo:
         motivo_final = 'Algunos productos mencionados en la imagen no se encontraron en el catálogo o no tienen precio.'
@@ -519,10 +656,11 @@ def _procesar_interpretacion_pedido_pyme(
         'es_pedido': bool(items_pedido_detectados), # Es pedido si al menos un item se pudo matchear y tiene precio
         'motivo': motivo_final if not items_pedido_detectados else "Pedido interpretado desde la imagen.",
         'items_detectados': items_pedido_detectados,
-        'items_no_encontrados_catalogo': items_no_encontrados_catalogo, # Para informar al usuario
-        'resumen_ocr': resumen_ocr, # El texto completo para mostrar si es necesario
-        'analisis_id': analisis.id,
-        'error': None
+        'items_no_encontrados_catalogo': items_no_encontrados_catalogo,
+        'resumen_ocr': resumen_ocr,
+        'analisis_id': analisis_db_record.id if analisis_db_record else None,
+        'error': None,
+        'analisis_interno': datos_internos_analisis
     }
 
 
