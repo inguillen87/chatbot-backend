@@ -854,6 +854,22 @@ class TicketStatusHandler(BaseMunicipioHandler):
 
 class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
     CAMPOS_RECLAMO = ["categoria", "direccion", "nombre", "telefono", "email", "descripcion"]
+
+    # Definición simplificada para usar en ReclamoInteligenteMunicipioHandler
+    _HANDLER_GENERIC_RECLAMO_KEYWORDS = {
+        "reclamo", "reclamos", "queja", "quejas", "problema", "problemas",
+        "denuncia", "denuncias", "reportar", "reporte",
+        "hacer", "quiero", "necesito", "deseo", "ayuda", "consultar", "solicitar"
+    }
+    _HANDLER_FRASES_GENERICAS_RECLAMO = {
+        normalizar_texto("hacer un reclamo"),
+        normalizar_texto("quiero hacer un reclamo"),
+        normalizar_texto("iniciar reclamo"),
+        normalizar_texto("nuevo reclamo"),
+        normalizar_texto("generar reclamo"),
+        normalizar_texto("un reclamo")
+    }
+
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]
 
@@ -868,6 +884,33 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
         if current_state_obj and current_state_obj in RECLAMO_STATES: return None
 
         if self.context.get("intencion") != "iniciar_reclamo": return None
+
+        # --- NUEVA CONDICIÓN PARA EVITAR PROCESAR FRASES GENÉRICAS ---
+        texto_normalizado_pregunta = normalizar_texto(pregunta_str)
+        palabras_pregunta = texto_normalizado_pregunta.split()
+
+        es_muy_generico = False
+        if texto_normalizado_pregunta in self._HANDLER_FRASES_GENERICAS_RECLAMO:
+            es_muy_generico = True
+        elif len(palabras_pregunta) <= 3: # Ajustar el umbral de palabras si es necesario
+            # Chequear si todas las palabras son de la lista de keywords genéricas
+            # Esto es una heurística, podría necesitar ajuste.
+            if palabras_pregunta and all(palabra in self._HANDLER_GENERIC_RECLAMO_KEYWORDS for palabra in palabras_pregunta):
+                es_muy_generico = True
+
+        if es_muy_generico:
+            logger.info(f"[ReclamoInteligenteHandler] Pregunta '{pregunta_str}' es demasiado genérica. Cediendo a ReclamoHandler para flujo paso a paso.")
+            return None
+        # --- FIN NUEVA CONDICIÓN ---
+
+        # La limpieza de memoria se hace DESPUÉS de la verificación de frase genérica,
+        # solo si la frase NO es genérica y se va a proceder con la extracción inteligente.
+        if not (current_state_obj and current_state_obj in RECLAMO_STATES):
+            memoria.clear()
+            logger.info("[ReclamoInteligenteHandler] Memoria limpiada para nuevo intento de reclamo inteligente (pregunta no genérica).")
+        else:
+            logger.info("[ReclamoInteligenteHandler] Reclamo ya en curso, no se limpiará la memoria globalmente aquí.")
+
 
         if not memoria.get("categoria_reclamo") and not memoria.get("direccion_reclamo"): # Only run if no claim data already in memory
             prompt = f"""
