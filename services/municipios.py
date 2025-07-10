@@ -425,7 +425,7 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
             if pregunta_str and not sugerencia_texto_directo and \
                estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA and \
                es_pregunta_nueva(pregunta_str, "el texto de tu sugerencia", memoria): # Solo chequear si es pregunta nueva si estamos esperando texto
-                logger_actual.info(f"[SugerenciasVecinoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba texto de sugerencia. Limpiando.")
+                logger.info(f"[SugerenciasVecinoHandler] '{pregunta_str}' detectada como pregunta nueva mientras se esperaba texto de sugerencia. Limpiando.")
                 memoria.clear()
                 self.context["intencion"] = None
                 return None
@@ -1306,7 +1306,7 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                 if categoria_desde_input:
                     memoria["categoria_reclamo"] = categoria_desde_input
-                    logger_actual.info(f"[ReclamoHandler] Categoría establecida/actualizada a: {categoria_desde_input} desde input '{pregunta_str}'.")
+                    logger.info(f"[ReclamoHandler] Categoría establecida/actualizada a: {categoria_desde_input} desde input '{pregunta_str}'.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                     if all(memoria.get(fld) for fld in ["direccion_reclamo", "nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
@@ -1316,7 +1316,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     continue
 
                 elif memoria.get("categoria_reclamo"):
-                    logger_actual.debug(f"[ReclamoHandler] Categoría ya en memoria: '{memoria['categoria_reclamo']}' y no se actualizó con input actual ('{pregunta_str}'). Avanzando.")
+                    logger.debug(f"[ReclamoHandler] Categoría ya en memoria: '{memoria['categoria_reclamo']}' y no se actualizó con input actual ('{pregunta_str}'). Avanzando.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
                     estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
                     if all(memoria.get(fld) for fld in ["direccion_reclamo", "nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
@@ -1355,7 +1355,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                              respuesta_texto += " Por favor, elegí una de las siguientes opciones o describila mejor:"
 
                     message_type = 'interactive_list' if len(options) > 3 else 'interactive_buttons'
-                    if len(options) > 10: logger_actual.warning(f"ReclamoHandler Esperando Categoria: Too many options ({len(options)}) for WhatsApp list.")
+                    if len(options) > 10: logger.warning(f"ReclamoHandler Esperando Categoria: Too many options ({len(options)}) for WhatsApp list.")
                     return {"message_body": respuesta_texto, "options_list": options, "message_type": message_type, "fuente": "solicitud_categoria_reclamo_interactivo_v3"}
 
             # 2. ESPERANDO_DIRECCION_RECLAMO
@@ -1440,7 +1440,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                         memoria["direccion_estructurada_reclamo"] = parsed_address
                         dir_confirm_text = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,",",").strip()
                         memoria["direccion_reclamo"] = dir_confirm_text
-                        logger_actual.info(f"[ReclamoHandler] Dirección guardada: {dir_confirm_text}.")
+                        logger.info(f"[ReclamoHandler] Dirección guardada: {dir_confirm_text}.")
                         memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
                         estado = ConversationState.ESPERANDO_NOMBRE_VECINO
                         if all(memoria.get(campo) for campo in ["nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
