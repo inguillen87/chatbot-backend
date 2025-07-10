@@ -2143,34 +2143,93 @@ class ReclamoHandler(BaseMunicipioHandler):
                         ticket_data["longitud"] = ubicacion_gps_data.get("lon")
                     
                     ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data)
-                    # ... (idempotency and file association logic remains the same) ...
+
                     if ticket:
+                        # --- Idempotency Key Logic ---
                         if effective_idempotency_key and chat_session_uuid and chat_session_data is not None:
                             processed_keys = chat_session_data.get("processed_idempotency_keys", {})
                             processed_keys[effective_idempotency_key] = ticket.nro_ticket
                             chat_session_data["processed_idempotency_keys"] = processed_keys
-                            # flag_modified will be called at the end of responder_municipio
                             logger.info(f"[ReclamoHandler] Effective idempotency key '{effective_idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada.")
-                        
-                        archivo_id_a_vincular = self.context.get("archivo_id_para_asociar"); chat_session_uuid_actual = self.context.get("chat_session_uuid"); user_id_actual_context = self.context.get("user_id") 
-                        if archivo_id_a_vincular or chat_session_uuid_actual:
+
+                        # --- ArchivoAdjunto y AnalisisArchivo creation for WhatsApp images ---
+                        whatsapp_image_url = memoria.get("foto_url")
+                        raw_analysis_data = memoria.get("analisis_imagen_reclamo_auto_raw")
+
+                        if whatsapp_image_url and raw_analysis_data and raw_analysis_data.get("mime_type"):
+                            logger.info(f"[ReclamoHandler] Procesando imagen de WhatsApp para Ticket M-{ticket.nro_ticket}. URL: {whatsapp_image_url}")
+                            try:
+                                from models import ArchivoAdjunto, AnalisisArchivo # Ensure imports are here
+
+                                # 1. Create ArchivoAdjunto
+                                # Extract base filename and extension for more robust naming
+                                default_extension = ".jpg"
+                                mime_to_ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif"}
+                                image_mime_type = raw_analysis_data.get("mime_type", "image/jpeg")
+                                extension = mime_to_ext.get(image_mime_type, default_extension)
+                                nombre_archivo_whatsapp = f"whatsapp_image_claim_{ticket.id}{extension}"
+
+                                nuevo_archivo_adjunto = ArchivoAdjunto(
+                                    user_id=self.context.get("cliente_id"), # Puede ser None si es anónimo
+                                    anon_id=self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                                    session_id=self.context.get("chat_session_uuid"),
+                                    url=whatsapp_image_url, # URL original de WhatsApp
+                                    nombre_original=nombre_archivo_whatsapp,
+                                    mime=image_mime_type,
+                                    municipio_ticket_id=ticket.id, # Link directly to the new ticket
+                                    origen='whatsapp_claim_auto_created' # Nuevo origen
+                                )
+                                db.session.add(nuevo_archivo_adjunto)
+                                db.session.flush() # Para obtener el ID del nuevo_archivo_adjunto
+                                logger.info(f"Nuevo ArchivoAdjunto ID {nuevo_archivo_adjunto.id} creado para imagen WhatsApp y asociado a Ticket M-{ticket.nro_ticket}.")
+
+                                # 2. Create AnalisisArchivo
+                                nuevo_analisis_archivo = AnalisisArchivo(
+                                    archivo_adjunto_id=nuevo_archivo_adjunto.id,
+                                    estado_analisis='completado', # El análisis ya se hizo
+                                    tipo_analisis=raw_analysis_data.get("analisis_interno", {}).get("tipo_analisis_sugerido", 'reclamo_auto_vision_v1_whatsapp'),
+                                    datos_estructurados=raw_analysis_data.get("raw_analysis", {}), # Guardar los datos crudos del análisis
+                                    texto_extraido=raw_analysis_data.get("raw_analysis", {}).get("extracted_ocr_text", "")
+                                )
+                                db.session.add(nuevo_analisis_archivo)
+                                db.session.commit() # Commit both new records
+                                logger.info(f"Nuevo AnalisisArchivo ID {nuevo_analisis_archivo.id} creado y vinculado a ArchivoAdjunto ID {nuevo_archivo_adjunto.id}.")
+
+                                # Limpiar los datos crudos de la memoria para no reprocesarlos o reenviarlos innecesariamente
+                                memoria.pop("analisis_imagen_reclamo_auto_raw", None)
+                                # foto_url se usa para foto_url_directa, no limpiar aún.
+                                # El archivo_id_para_asociar NO se usó para esto, así que no es necesario limpiarlo aquí.
+
+                            except Exception as e_whatsapp_file:
+                                logger.error(f"[ReclamoHandler] Error creando ArchivoAdjunto/AnalisisArchivo para imagen WhatsApp (Ticket M-{ticket.nro_ticket}): {e_whatsapp_file}", exc_info=True)
+                                db.session.rollback()
+                        else:
+                             logger.info(f"[ReclamoHandler] No hay datos de imagen WhatsApp crudos ('analisis_imagen_reclamo_auto_raw' o 'foto_url') para Ticket M-{ticket.nro_ticket}. Saltando creación de ArchivoAdjunto para WhatsApp.")
+
+
+                        # --- Original File Association Logic (for files uploaded via /subir_archivo) ---
+                        archivo_id_a_vincular = self.context.get("archivo_id_para_asociar")
+                        chat_session_uuid_actual = self.context.get("chat_session_uuid")
+                        # user_id_actual_context = self.context.get("user_id") # This is owner_user.id, not viewer_user.id
+
+                        if archivo_id_a_vincular: # Si hay un ID específico de un archivo subido por web
                             from services.archivo_service import archivo_service
-                            criterio_asociacion = {}
-                            if archivo_id_a_vincular: criterio_asociacion["ids_archivos"] = [archivo_id_a_vincular]; logger.info(f"[ReclamoHandler] Intentando asociar ArchivoAdjunto ID {archivo_id_a_vincular} a Ticket M-{ticket.nro_ticket}")
-                            elif chat_session_uuid_actual:
-                                criterio_asociacion["session_id"] = chat_session_uuid_actual
-                                viewer_user_id_for_file = self.context.get("cliente_id")
-                                if viewer_user_id_for_file: criterio_asociacion["user_id"] = viewer_user_id_for_file
-                                logger.info(f"[ReclamoHandler] Intentando asociar archivos por session_id {chat_session_uuid_actual} (ViewerUser: {viewer_user_id_for_file}) a Ticket M-{ticket.nro_ticket}")
-                            if criterio_asociacion:
-                                asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(ticket_id=ticket.id, tipo_ticket="municipio", **criterio_asociacion)
-                                if asociacion_exitosa:
-                                    logger.info(f"[ReclamoHandler] Archivos asociados exitosamente a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
-                                    if self.context[CONTEXTO_MUNICIPIO] and "archivo_id_para_asociar" in self.context[CONTEXTO_MUNICIPIO]:
-                                        del self.context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"]
-                                else: logger.warning(f"[ReclamoHandler] No se pudieron asociar archivos a Ticket M-{ticket.nro_ticket} usando: {criterio_asociacion}")
-                        else: logger.info(f"[ReclamoHandler] No hay archivo_id específico ni session_id para asociar al Ticket M-{ticket.nro_ticket}.")
-                    else: logger.error(f"[ReclamoHandler] No se pudo crear el ticket, no se intentará asociar archivos ni guardar idempotency key.")
+                            criterio_asociacion = {"ids_archivos": [archivo_id_a_vincular]}
+                            logger.info(f"[ReclamoHandler] Intentando asociar ArchivoAdjunto ID {archivo_id_a_vincular} (subido por web) a Ticket M-{ticket.nro_ticket}")
+                            asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(ticket_id=ticket.id, tipo_ticket="municipio", **criterio_asociacion)
+                            if asociacion_exitosa:
+                                logger.info(f"[ReclamoHandler] Archivo (web) ID {archivo_id_a_vincular} asociado exitosamente a Ticket M-{ticket.nro_ticket}.")
+                                if CONTEXTO_MUNICIPIO in self.context and "archivo_id_para_asociar" in self.context[CONTEXTO_MUNICIPIO]:
+                                    del self.context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"]
+                            else:
+                                logger.warning(f"[ReclamoHandler] No se pudo asociar archivo (web) ID {archivo_id_a_vincular} a Ticket M-{ticket.nro_ticket}.")
+                        # No se usa session_id para asociar archivos subidos por web en este punto,
+                        # ya que `archivo_id_para_asociar` es el mecanismo primario para ellos.
+                        # La lógica de `asociar_archivos_a_ticket` por session_id es más para casos donde no hay un ticket_id inmediato.
+                        # Aquí ya tenemos el ticket_id.
+
+                    else: # Ticket creation failed
+                        logger.error(f"[ReclamoHandler] No se pudo crear el ticket, no se intentará asociar archivos ni guardar idempotency key.")
 
                     telefono_e164 = formatear_telefono_e164(telefono_raw)
                     if telefono_e164:
@@ -3455,10 +3514,18 @@ def responder_municipio(
                 if archivo_obj_for_analysis: # Either a DB object or the dict from WhatsApp
                     analisis_resultado = interpretar_imagen_para_chat(
                         archivo_adjunto=archivo_obj_for_analysis, # Can be DB object or dict
-                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                        tipo_interpretacion="reclamo_auto_descripcion_categoria",
+                        # pyme_user=owner_user if tipo_chat == "pyme" else None # Pasar pyme_user si es relevante
                     )
                     logger_actual.info(f"[RESPONDER_MUNICIPIO] Resultado análisis de imagen para reclamo: {analisis_resultado}")
 
+                    # Guardar los resultados crudos del análisis en el contexto para uso posterior (ej. ReclamoHandler)
+                    # Esto es importante si la imagen vino de WhatsApp y no tiene un AnalisisArchivo.id todavía.
+                    if not (archivo_obj_for_analysis and hasattr(archivo_obj_for_analysis, 'id')): # Si es de WhatsApp (dict)
+                        contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado
+                        logger_actual.info(f"Análisis crudo de imagen WhatsApp guardado en contexto: {list(analisis_resultado.keys()) if analisis_resultado else 'None'}")
+
+                    # Pre-llenar campos si el análisis fue exitoso y es un reclamo
                     if analisis_resultado and not analisis_resultado.get("error") and analisis_resultado.get('es_reclamo'):
                         sugerida_cat = analisis_resultado.get("categoria_sugerida")
                         sugerida_desc = analisis_resultado.get("descripcion_sugerida")
@@ -3471,11 +3538,18 @@ def responder_municipio(
                             contexto_municipio_actual["descripcion_reclamo"] = sugerida_desc
                             logger_actual.info(f"Descripción pre-llenada desde análisis de imagen: {sugerida_desc[:70]}...")
 
+                        # Mantener la estructura de "analisis_imagen_reclamo_auto" para compatibilidad si ReclamoHandler la usa,
+                        # pero ahora se basa en los resultados directos, no en un AnalisisArchivo.id.
+                        # Si es un objeto de DB, el analisis_id estará en analisis_resultado.
                         contexto_municipio_actual["analisis_imagen_reclamo_auto"] = {
-                            "categoria": sugerida_cat, "descripcion": sugerida_desc,
+                            "categoria": sugerida_cat,
+                            "descripcion": sugerida_desc,
                             "ocr_texto": analisis_resultado.get("texto_ocr", "")[:200],
-                            "source": uploaded_file_info_for_analysis.get("source", "unknown")
+                            "source": uploaded_file_info_for_analysis.get("source", "unknown"),
+                            "analisis_id": analisis_resultado.get("analisis_id"), # Será None para WhatsApp
+                            "mime_type": analisis_resultado.get("mime_type") # Para WhatsApp, ahora se propaga
                         }
+
 
                         if channel == "whatsapp" and (sugerida_cat or sugerida_desc) and not contexto_municipio_actual.get("telefono_vecino"):
                             # (Lógica de pre-llenado de teléfono para WhatsApp se mantiene igual)

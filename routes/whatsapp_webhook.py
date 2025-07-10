@@ -66,7 +66,7 @@ def whatsapp_webhook():
         if media_content_type.startswith("image/"):
             uploaded_file_info_whatsapp = {
                 "url": media_url,
-                "mime_type": media_content_type,
+                "mime_type": media_content_type, # Already present, just confirming
                 "name": f"whatsapp_image_{uuid.uuid4().hex[:8]}.jpg", # Nombre genérico
                 "source": "whatsapp"
                 # No tenemos un 'id' de ArchivoAdjunto aquí porque no lo hemos guardado en la DB aún.
