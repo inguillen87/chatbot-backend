@@ -1062,29 +1062,35 @@ class ReclamoHandler(BaseMunicipioHandler):
         intencion = self.context.get("intencion")
 
         # Log entry point
-        logger.info(f"[ReclamoHandler.handle ENTRY] Pregunta: '{pregunta_str[:100]}...', Estado actual: {estado.name if estado else 'None'}, Intención: {intencion}")
+        logger.info(f"[ReclamoHandler.handle ENTRY] Pregunta: '{pregunta_str[:100]}...', Estado Memoria: {estado.name if estado else 'None'}, Intención: {intencion}")
 
-
-        # If intent is to start a claim AND no specific state is yet set (or was cleared due to invalid string)
         if intencion == "iniciar_reclamo" and estado is None:
             logger.info("[ReclamoHandler] Intención 'iniciar_reclamo' y sin estado previo.")
 
-            # Limpiar memoria de reclamo anterior, preservando interacciones_anon_sesion si existe
             interacciones_previas = memoria.get("interacciones_anon_sesion")
-            memoria.clear()
-            if interacciones_previas is not None:
-                memoria["interacciones_anon_sesion"] = interacciones_previas
+            # Limpiar solo campos relevantes al reclamo, no todo el contexto del municipio
+            campos_a_limpiar_reclamo = [
+                "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo",
+                "nombre_vecino", "telefono_vecino", "email_vecino",
+                "foto_url", "ubicacion_gps", "direccion_estructurada_reclamo",
+                "mensaje_adjunto_recibido", "analisis_imagen_reclamo_auto",
+                "estado_conversacion" # Limpiar el estado también para empezar de cero el flujo de reclamo
+            ]
+            for campo_limpiar in campos_a_limpiar_reclamo:
+                memoria.pop(campo_limpiar, None)
 
-            # Manejo de foto adjunta (si la info está en el contexto global 'self.context')
-            if self.context.get("es_foto") and self.context.get("foto_url") and not memoria.get("foto_url"):
+            if interacciones_previas is not None: # Restaurar si existía
+                memoria["interacciones_anon_sesion"] = interacciones_previas
+            logger.info(f"[ReclamoHandler] Memoria de reclamo limpiada. Contexto actual: {memoria}")
+
+            if self.context.get("es_foto") and self.context.get("foto_url"): # No chequear memoria.get("foto_url") aquí
                 memoria["foto_url"] = self.context.get("foto_url")
                 memoria["mensaje_adjunto_recibido"] = "Veo que adjuntaste una foto. "
-                logger.info(f"[ReclamoHandler] Foto {memoria['foto_url']} reconocida del contexto.")
+                logger.info(f"[ReclamoHandler] Foto {memoria['foto_url']} reconocida del contexto global.")
 
-            # Si el análisis de imagen (hecho en responder_municipio) ya llenó la categoría o descripción
             if self.context.get("analisis_imagen_reclamo_auto"):
                 analisis_img = self.context.get("analisis_imagen_reclamo_auto")
-                if analisis_img.get("categoria") and not memoria.get("categoria_reclamo"):
+                if analisis_img.get("categoria") and not memoria.get("categoria_reclamo"): # Solo si no está ya seteada
                     memoria["categoria_reclamo"] = analisis_img["categoria"]
                     logger.info(f"[ReclamoHandler] Categoría pre-llenada por análisis de imagen: {memoria['categoria_reclamo']}")
                 if analisis_img.get("descripcion") and not memoria.get("descripcion_reclamo"):
@@ -1095,10 +1101,8 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.info(f"[ReclamoHandler] Categoría '{memoria['categoria_reclamo']}' ya en memoria. Avanzando a pedir dirección.")
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
                 estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
-                # El bucle while se encargará del resto.
             else:
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-                # No establecemos 'estado' local aquí porque vamos a retornar inmediatamente.
 
                 mensaje_adjunto = memoria.pop("mensaje_adjunto_recibido", "")
                 texto_para_sugerir_categorias = memoria.get("descripcion_reclamo", "")
@@ -1119,13 +1123,11 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.info("[ReclamoHandler] Retornando solicitud de categoría (inicio de flujo).")
                 return {"message_body": respuesta_texto_cat, "options_list": options_cat, "message_type": message_type_cat, "fuente": "solicitud_categoria_reclamo_inicio_v4"}
 
-        # Si el estado ya es uno de reclamo (o se acaba de setear a ESPERANDO_DIRECCION_RECLAMO arriba),
-        # o la intención no es iniciar_reclamo desde cero, se procede al bucle while.
-        if not estado or estado not in RECLAMO_STATES: # Si estado es None (y no era iniciar_reclamo) o no es un estado de reclamo
-            if intencion == "iniciar_reclamo" and estado is None: # Este caso ya fue manejado arriba y debió retornar. Si llega aquí, es un error.
-                 logger.error("[ReclamoHandler] Lógica de inicio de reclamo no retornó como se esperaba. Abortando para evitar error.")
-                 return {"respuesta":"Error iniciando el reclamo. Intente de nuevo."} # Fallback
-            logger.debug(f"[ReclamoHandler] Intención '{intencion}' no es 'iniciar_reclamo' desde cero o estado '{estado.name if estado else 'None'}' no es de reclamo. No se maneja aquí.")
+        if not estado or estado not in RECLAMO_STATES:
+            if intencion == "iniciar_reclamo" and estado is None:
+                 logger.error("[ReclamoHandler] Lógica de inicio de reclamo no retornó como se esperaba (estado aún None). Abortando.")
+                 return {"message_body":"Error al iniciar el reclamo. Por favor, intente de nuevo.", "options_list":[], "message_type":"text", "fuente":"reclamo_error_inicio_inesperado"}
+            logger.debug(f"[ReclamoHandler] Intención '{intencion}' o estado '{estado.name if estado else 'None'}' no son para este handler en este punto. No se maneja aquí.")
             return None
 
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
@@ -3253,27 +3255,18 @@ def responder_municipio(
     context["channel"] = channel
     context["municipio_config_actual"] = specific_municipio_config
 
-    # ---- INICIO NUEVA LÓGICA PARA PRIORIZAR INTENCIÓN POR IMAGEN ----
-    _uploaded_file_info_whatsapp = received_payload.get("uploaded_file_info_whatsapp")
-    _uploaded_file_info_web = received_payload.get("uploaded_file_info")
-    _media_info_for_intent = _uploaded_file_info_whatsapp or _uploaded_file_info_web
-
-    if _media_info_for_intent and \
-       isinstance(_media_info_for_intent, dict) and \
-       _media_info_for_intent.get("mime_type", "").startswith("image/"):
-
-        if not pregunta_str.strip(): # Si hay imagen y el texto está vacío
-            context["intencion"] = "iniciar_reclamo"
-            logger_actual.info(
-                f"[RESPONDER_MUNICIPIO PRE-INTENT] Imagen detectada sin texto ({_media_info_for_intent.get('source', 'unknown')}). "
-                f"Intención preestablecida a 'iniciar_reclamo'."
-            )
-    # ---- FIN NUEVA LÓGICA ----
-
+    context["user_id"] = getattr(owner_user, "id", None)
+    context["cliente_id"] = getattr(viewer_user, "id", None)
+    context["viewer_user_obj"] = viewer_user
+    context["anon_id"] = anon_id
+    context["intencion"] = None  # Initialize intencion
+    context["rubro_obj"] = rubro_obj
+    context["channel"] = channel
+    context["municipio_config_actual"] = specific_municipio_config
     # El resto de la inicialización del context que depende de received_payload
     context["ubicacion_usuario"] = received_payload.get("ubicacion_usuario")
-    context["foto_url"] = received_payload.get("archivo_url") if received_payload.get("es_foto") else None
-    context["es_foto"] = received_payload.get("es_foto", False)
+    context["foto_url"] = None # Se poblará después del análisis de imagen si es necesario
+    context["es_foto"] = False  # Se establecerá después del análisis de imagen
     context["es_ubicacion"] = received_payload.get("es_ubicacion", False)
     context["es_archivo"] = received_payload.get("es_archivo", False)
     context["action"] = received_payload.get("action")
@@ -3283,44 +3276,53 @@ def responder_municipio(
     context["chat_db_context_data"] = chat_db_context.context_data
     # End of reconstructed context dictionary. Ensuring no trailing braces here.
 
-    # --- Image Analysis for New/Early Claims (MOVED AFTER context INITIALIZATION) ---
-    # Prioritize web upload info if both are somehow present (should not happen)
+    # --- Image Analysis for New/Early Claims & Initial Intent Setting by Media ---
     uploaded_file_info_for_analysis = received_payload.get("uploaded_file_info") or \
                                       received_payload.get("uploaded_file_info_whatsapp")
 
     is_new_media_for_analysis = False
     if uploaded_file_info_for_analysis and isinstance(uploaded_file_info_for_analysis, dict):
         mime_type = uploaded_file_info_for_analysis.get("mime_type", "")
-        # Currently only processing images for auto-claim analysis
-        if mime_type.startswith("image/"):
-            # Web uploads have an 'id', WhatsApp media comes as a URL first.
+        if mime_type.startswith("image/"): # Process only images for now
             if uploaded_file_info_for_analysis.get("id") or uploaded_file_info_for_analysis.get("url"):
                 is_new_media_for_analysis = True
 
-    if is_new_media_for_analysis:
+                # Establish es_foto and foto_url in the main context immediately if an image is detected
+                context["es_foto"] = True
+                context["foto_url"] = uploaded_file_info_for_analysis.get("url")
+                if uploaded_file_info_for_analysis.get("id") and uploaded_file_info_for_analysis.get("source") != "whatsapp":
+                    context["archivo_id_para_asociar"] = uploaded_file_info_for_analysis.get("id")
+                logger_actual.info(f"[RESPONDER_MUNICIPIO] Imagen detectada en payload (source: {uploaded_file_info_for_analysis.get('source', 'web')}). context['es_foto'] y context['foto_url'] actualizados.")
+
+                # If image is present and text is empty, and no prior intent from kwargs, set intent to iniciar_reclamo
+                if not pregunta_str.strip() and not kwargs.get("intencion") and not context.get("intencion"):
+                    context["intencion"] = "iniciar_reclamo"
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Imagen sin texto y sin intención previa por kwargs. Intención fijada a 'iniciar_reclamo'.")
+
+    if is_new_media_for_analysis: # This 'if' is now primarily for logging and triggering the analysis itself
         logger_actual.info(
-            f"[RESPONDER_MUNICIPIO] New media for analysis detected ({uploaded_file_info_for_analysis.get('source', 'web')}). "
-            f"Current loaded state: {final_loaded_state}, Intent from kwargs: {kwargs.get('intencion')}, "
-            f"Intent in context: {context.get('intencion')}"
+            f"[RESPONDER_MUNICIPIO] Media (imagen) detectada para posible análisis. "
+            f"Estado actual: {final_loaded_state}, Intención (pre-análisis): {context.get('intencion')}, Texto: '{pregunta_str[:30]}...'"
         )
 
         should_analyze_media_for_claim = False
+        # Analyze if no conversation state or if waiting for category, AND if intent is (or becomes) iniciar_reclamo
         if not final_loaded_state or final_loaded_state == ConversationState.ESPERANDO_CATEGORIA_RECLAMO:
-            should_analyze_media_for_claim = True
-
-            if not context.get("intencion"):
-                if kwargs.get("intencion"):
-                    context["intencion"] = kwargs.get("intencion")
-                else: # If media is present and no intent, assume it's for a claim
+            # If no intent is set yet by text or previous logic, and we have media, assume it's for a claim.
+            if not context.get("intencion"): # Check if it's still None
+                 if kwargs.get("intencion"): # If intent was passed via kwargs (e.g. from a specific button action with media)
+                    context["intencion"] = kwargs["intencion"]
+                 else: # Default to iniciar_reclamo if media is present and no other intent source
                     context["intencion"] = "iniciar_reclamo"
-                    logger_actual.info(
-                        f"[RESPONDER_MUNICIPIO] Media present: No prior intent, setting intent to 'iniciar_reclamo'."
-                    )
+                    logger_actual.info(f"[RESPONDER_MUNICIPIO] Análisis: Media presente, sin intención específica, asumiendo 'iniciar_reclamo'.")
 
-        if should_analyze_media_for_claim and context.get("intencion") == "iniciar_reclamo":
-            logger_actual.info(f"[RESPONDER_MUNICIPIO] Proceeding with media analysis for 'iniciar_reclamo' intent.")
+            if context.get("intencion") == "iniciar_reclamo": # Only analyze if intent is indeed for a claim
+                should_analyze_media_for_claim = True
+
+        if should_analyze_media_for_claim: # No need to check intent again here, already done
+            logger_actual.info(f"[RESPONDER_MUNICIPIO] Procediendo con análisis de imagen para intención '{context.get('intencion')}'.")
             try:
-                from models import ArchivoAdjunto # Needed for type hint and db.session.get
+                from models import ArchivoAdjunto
                 from services.interpretacion_imagen_service import interpretar_imagen_para_chat
 
                 archivo_obj_for_analysis = None
