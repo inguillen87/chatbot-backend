@@ -3907,8 +3907,44 @@ def responder_municipio(
     # Crear una copia para modificar de forma segura para esta request.
     contexto_municipio_actual = dict(contexto_municipio_data_from_db)
 
-    # --- Handle post-login resumption ---
-    if viewer_user and chat_db_context.context_data.get("just_logged_in_flag"):
+    # --- 2. CONSTRUCT THE 'context' DICTIONARY FOR HANDLERS (EARLY INITIALIZATION) ---
+    # This dictionary is passed to handlers and used throughout this function.
+    context = {
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # The specific state for municipio flow
+        "user_obj": owner_user, # The User object of the bot instance (e.g., the Municipality)
+        "viewer_user_obj": viewer_user, # The User object of the end-user (vecino/ciudadano)
+        "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
+        "rubro_obj": rubro_obj,
+        "channel": channel,
+        "municipio_config_actual": CONFIG_MUNICIPIO_GLOBAL, # Default, will be updated later
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        # chat_db_context_data will point to the live dictionary from the ORM object's context_data
+        "chat_db_context_data": chat_db_context.context_data if chat_db_context and hasattr(chat_db_context, 'context_data') else {},
+        # Fields to be populated by payload/kwargs or later logic:
+        "intencion": kwargs.get("intencion"), # Initial intent from Orchestrator/kwargs
+        "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
+        "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
+        "es_ubicacion": received_payload.get("es_ubicacion", False),
+        "es_archivo": received_payload.get("es_archivo", False),
+        "action": received_payload.get("action"), # From button clicks, etc.
+        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+    }
+    if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
+        logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
+
+
+    logger_actual.info(
+        f"[RESPONDER_MUNICIPIO_START_CONTEXT_INIT] Context inicializado. UserMunicipio: {context['user_obj'].id if context['user_obj'] else 'N/A'}, "
+        f"ViewerCiudadano: {context['cliente_id'] or context['anon_id']}"
+    )
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto DB para {CONTEXTO_MUNICIPIO}: {contexto_municipio_data_from_db}")
+
+
+    # --- Handle post-login resumption (modifies context[CONTEXTO_MUNICIPIO] and context["intencion"]) ---
+    # Ensure to check within context["chat_db_context_data"] which is the live dict from the ORM object
+    if viewer_user and context["chat_db_context_data"].get("just_logged_in_flag"):
         logger_actual.info(f"User {viewer_user.id} identified as just logged in.")
         chat_db_context.context_data.pop("just_logged_in_flag") # Consume the flag
 
