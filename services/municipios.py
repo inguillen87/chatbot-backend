@@ -2444,16 +2444,31 @@ class TramitesHandler(BaseMunicipioHandler):
                 return None
 
             from .sinonimos import aplicar_sinonimos, TRAMITE_SYNONYMS, fuzzy_match
-            texto = normalizar_texto(pregunta_str); texto_con_sinonimos = aplicar_sinonimos(texto, TRAMITE_SYNONYMS)
-            # Ensure texto_usuario_lower is defined if used, or use 'texto' (normalized pregunta_str)
-            texto_usuario_lower_for_id_check = normalizar_texto(pregunta_str) # Use normalized input for ID check
+            texto = normalizar_texto(pregunta_str) # pregunta_str is 'forestales' from button payload
+            texto_con_sinonimos = aplicar_sinonimos(texto, TRAMITE_SYNONYMS)
 
-            clave_tramite = next((k for k in get_tramites_info().keys() if normalizar_texto(k) == texto_con_sinonimos), None)
-            if not clave_tramite: # Try to find by ID if user clicked a button
-                clave_tramite = next((k for k in get_tramites_info().keys() if normalizar_texto(k) == texto_usuario_lower_for_id_check), None)
+            # Ensure texto_usuario_lower is defined if used, or use 'texto' (normalized pregunta_str)
+            texto_usuario_lower_for_id_check = normalizar_texto(pregunta_str)
+
+            # --- DEBUG LOGGING START ---
+            loaded_tramites_keys = list(get_tramites_info().keys())
+            logger.info(f"[TramitesHandler DEBUG] Input pregunta_str: '{pregunta_str}'")
+            logger.info(f"[TramitesHandler DEBUG] Normalized texto: '{texto}'")
+            logger.info(f"[TramitesHandler DEBUG] Texto con sinonimos: '{texto_con_sinonimos}'")
+            logger.info(f"[TramitesHandler DEBUG] Keys in _TRAMITES_CACHE: {loaded_tramites_keys}")
+            normalized_cache_keys = [normalizar_texto(k) for k in loaded_tramites_keys]
+            logger.info(f"[TramitesHandler DEBUG] Normalized keys in _TRAMITES_CACHE: {normalized_cache_keys}")
+            # --- DEBUG LOGGING END ---
+
+            clave_tramite = next((k for k in loaded_tramites_keys if normalizar_texto(k) == texto_con_sinonimos), None)
+
+            if not clave_tramite: # Try to find by ID if user clicked a button (redundant if first check is good)
+                logger.info(f"[TramitesHandler DEBUG] First key match failed. Trying by ID check with: '{texto_usuario_lower_for_id_check}'")
+                clave_tramite = next((k for k in loaded_tramites_keys if normalizar_texto(k) == texto_usuario_lower_for_id_check), None)
 
             if not clave_tramite: # Fuzzy match if still not found
-                all_tramite_names = list(get_tramites_info().keys()) + list(TRAMITE_SYNONYMS.keys())
+                logger.info(f"[TramitesHandler DEBUG] Second key match failed. Trying fuzzy match.")
+                all_tramite_names = loaded_tramites_keys + list(TRAMITE_SYNONYMS.keys())
                 best_match_key = fuzzy_match(all_tramite_names, texto)
                 if best_match_key and best_match_key in get_tramites_info(): clave_tramite = best_match_key
                 elif best_match_key and best_match_key in TRAMITE_SYNONYMS: clave_tramite = TRAMITE_SYNONYMS[best_match_key]
@@ -2488,6 +2503,11 @@ class TramitesHandler(BaseMunicipioHandler):
                     if links_texto.strip() != "Enlaces relevantes:":
                          descripcion_tramite += links_texto
 
+                # Clear state and intent to prevent duplication on next interaction
+                logger.info(f"[TramitesHandler] Trámite '{clave_tramite}' encontrado. Limpiando estado e intención post-respuesta.")
+                memoria.pop("estado_conversacion", None)
+                self.context["intencion"] = None
+
                 return {
                     "message_body": descripcion_tramite, 
                     "options_list": options_post_info, # Generic options after info
@@ -2497,7 +2517,10 @@ class TramitesHandler(BaseMunicipioHandler):
                 }
 
             if "conducir" in texto and ("licencia" in texto or "carnet" in texto):
+                # This specific path for "curso_licencia_info" sets its own state.
+                # It should also clear the broader 'consultar_tramite' intent if it proceeds.
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA.name
+                self.context["intencion"] = None # Consume 'consultar_tramite' as we are going into a sub-flow
                 info_curso = obtener_respuesta_municipio("curso_licencia_info")
                 body_curso = f"{info_curso}\nSi necesitas sacar turno, puedes hacerlo en https://tlc.mendoza.gov.ar/turnos (este enlace se abrirá en tu navegador)."
                 options_curso = [
