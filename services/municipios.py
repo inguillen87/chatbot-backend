@@ -478,7 +478,7 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
                 ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket=tipo_ticket_para_sugerencia, ticket_data=ticket_data)
                 if ticket:
                     nro_ticket_str = f"M-{ticket.nro_ticket}" # Asumiendo que siempre es municipio para sugerencia
-                    logger_actual.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear()
+                    logger.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear() # CORREGIDO: logger_actual -> logger
                     body_exito = f"¡Muchas gracias por tu sugerencia! La hemos registrado y será revisada por nuestro equipo. Tu número de registro es {nro_ticket_str}. Valoramos mucho tu aporte."
                     options_exito = [
                         {"id": "hacer_otra_consulta_sug", "texto": "Hacer otra consulta"},
@@ -1067,76 +1067,66 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         # If intent is to start a claim AND no specific state is yet set (or was cleared due to invalid string)
         if intencion == "iniciar_reclamo" and estado is None:
-            pre_filled_fields = [
-                "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo", 
-                "nombre_vecino", "telefono_vecino", "email_vecino",
-                "foto_url", "ubicacion_gps", "direccion_estructurada_reclamo",
-                "categoria_reclamo_sugerida_img", "descripcion_reclamo_sugerida_img", # Legacy keys from earlier image analysis idea
-                "analisis_imagen_reclamo_auto" # Current key for image analysis results
-            ]
-            is_partially_filled = any(memoria.get(field) for field in pre_filled_fields)
+            logger.info("[ReclamoHandler] Intención 'iniciar_reclamo' y sin estado previo.")
 
-            if not is_partially_filled:
-                logger.info(f"[ReclamoHandler] Intención 'iniciar_reclamo', sin estado activo y sin datos pre-llenados. Limpiando memoria e iniciando nuevo flujo.")
-                memoria.clear() 
+            # Limpiar memoria de reclamo anterior, preservando interacciones_anon_sesion si existe
+            interacciones_previas = memoria.get("interacciones_anon_sesion")
+            memoria.clear()
+            if interacciones_previas is not None:
+                memoria["interacciones_anon_sesion"] = interacciones_previas
+
+            # Manejo de foto adjunta (si la info está en el contexto global 'self.context')
+            if self.context.get("es_foto") and self.context.get("foto_url") and not memoria.get("foto_url"):
+                memoria["foto_url"] = self.context.get("foto_url")
+                memoria["mensaje_adjunto_recibido"] = "Veo que adjuntaste una foto. "
+                logger.info(f"[ReclamoHandler] Foto {memoria['foto_url']} reconocida del contexto.")
+
+            # Si el análisis de imagen (hecho en responder_municipio) ya llenó la categoría o descripción
+            if self.context.get("analisis_imagen_reclamo_auto"):
+                analisis_img = self.context.get("analisis_imagen_reclamo_auto")
+                if analisis_img.get("categoria") and not memoria.get("categoria_reclamo"):
+                    memoria["categoria_reclamo"] = analisis_img["categoria"]
+                    logger.info(f"[ReclamoHandler] Categoría pre-llenada por análisis de imagen: {memoria['categoria_reclamo']}")
+                if analisis_img.get("descripcion") and not memoria.get("descripcion_reclamo"):
+                    memoria["descripcion_reclamo"] = analisis_img["descripcion"]
+                    logger.info(f"[ReclamoHandler] Descripción pre-llenada por análisis de imagen: {memoria['descripcion_reclamo'][:50]}")
+
+            if memoria.get("categoria_reclamo"):
+                logger.info(f"[ReclamoHandler] Categoría '{memoria['categoria_reclamo']}' ya en memoria. Avanzando a pedir dirección.")
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                estado = ConversationState.ESPERANDO_DIRECCION_RECLAMO
+                # El bucle while se encargará del resto.
             else:
-                logger.info(f"[ReclamoHandler] Intención 'iniciar_reclamo', sin estado activo, PERO con datos pre-llenados. NO se limpiará la memoria. Datos relevantes en memoria: {{ {', '.join(f'{k}: {memoria[k]}' for k in pre_filled_fields if memoria.get(k))} }}")
-
-            # This data comes from CSV/PDF interpretation, not the direct image analysis for quick claim.
-            # It might still be relevant if a file was uploaded then user typed 'iniciar reclamo'.
-            datos_archivo = self.context.get("datos_interpretados_archivo")
-            if datos_archivo and isinstance(datos_archivo, dict):
-                logger.info(f"[ReclamoHandler] Considerando pre-llenado adicional desde datos_interpretados_archivo: {datos_archivo}")
-                cat_archivo = datos_archivo.get("tipo_problema") or datos_archivo.get("categoria")
-                if cat_archivo:
-                    matched_category = next((c for c in CATEGORIAS_RECLAMO if normalizar_texto(c) == normalizar_texto(cat_archivo)), None)
-                    if not matched_category:
-                        from difflib import get_close_matches; close_matches = get_close_matches(normalizar_texto(cat_archivo), categorias_normalizadas, n=1, cutoff=0.7)
-                        if close_matches: idx = categorias_normalizadas.index(close_matches[0]); matched_category = CATEGORIAS_RECLAMO[idx]
-                    if matched_category: memoria["categoria_reclamo"] = matched_category; logger.info(f"[ReclamoHandler] Pre-llenado categoria_reclamo: {matched_category}")
-                dir_archivo = datos_archivo.get("direccion_problema") or datos_archivo.get("direccion")
-                if dir_archivo and direccion_es_valida(dir_archivo): memoria["direccion_reclamo"] = dir_archivo.strip(); logger.info(f"[ReclamoHandler] Pre-llenado direccion_reclamo: {dir_archivo.strip()}")
-                nombre_archivo = datos_archivo.get("nombre_ciudadano") or datos_archivo.get("nombre_cliente")
-                if nombre_archivo and len(nombre_archivo.split()) >= 1: memoria["nombre_vecino"] = nombre_archivo.strip(); logger.info(f"[ReclamoHandler] Pre-llenado nombre_vecino: {nombre_archivo.strip()}")
-                tel_archivo = datos_archivo.get("telefono_ciudadano") or datos_archivo.get("telefono_cliente")
-                if tel_archivo and validar_telefono(tel_archivo): memoria["telefono_vecino"] = tel_archivo.strip(); logger.info(f"[ReclamoHandler] Pre-llenado telefono_vecino: {tel_archivo.strip()}")
-                email_archivo = datos_archivo.get("email_ciudadano") or datos_archivo.get("email_cliente")
-                if email_archivo and validar_email(email_archivo): memoria["email_vecino"] = email_archivo.strip(); logger.info(f"[ReclamoHandler] Pre-llenado email_vecino: {email_archivo.strip()}")
-                desc_archivo = datos_archivo.get("descripcion_corta_problema") or datos_archivo.get("descripcion_problema") or datos_archivo.get("detalles_adicionales")
-                if desc_archivo and len(desc_archivo) >= 10: memoria["descripcion_reclamo"] = desc_archivo.strip(); logger.info(f"[ReclamoHandler] Pre-llenado descripcion_reclamo: {desc_archivo.strip()}")
-
-            memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-            estado = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Update local 'estado' for current pass
-
-            # This block will now proceed to the while loop if categoria_reclamo was not pre-filled,
-            # or it will ask for category directly if it was pre-filled and then ask for address.
-            # The first question is now consistently handled by the while loop logic below.
-
-        # Check if the current state is a valid reclamo state
-        # This condition handles ongoing claims or claims initiated by ReclamoInteligente
-        if estado not in RECLAMO_STATES:
-            # If state is None but intent was not "iniciar_reclamo", this handler isn't responsible
-            if estado is None and intencion != "iniciar_reclamo":
-                return None
-            # If state is not None but also not a RECLAMO_STATE, it's an invalid/unexpected state for this handler
-            if estado is not None:
-                 logger.info(f"[ReclamoHandler] Estado '{estado.name if isinstance(estado, Enum) else estado}' no es un estado de reclamo válido. Retornando None.")
-                 return None
-            # If estado is None and intencion was "iniciar_reclamo", the block above should have set it.
-            # If it's still None here, it means the init block didn't return and something is amiss.
-            if estado is None and intencion == "iniciar_reclamo":
-                logger.warning("[ReclamoHandler] Estado es None y la intención es iniciar_reclamo, pero el bloque de inicialización no respondió. Forzando pregunta de categoría.")
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-                estado = ConversationState.ESPERANDO_CATEGORIA_RECLAMO # Ensure local 'estado' is updated
-                # Fall through to the while loop to ask the category question
+                # No establecemos 'estado' local aquí porque vamos a retornar inmediatamente.
 
-        # If we reach here, 'estado' must be a valid Enum member from RECLAMO_STATES
-        if not isinstance(estado, ConversationState) or estado not in RECLAMO_STATES:
-             logger.error(f"[ReclamoHandler] Critical error: Estado '{estado}' no es válido para el bucle de reclamos. Abortando.")
-             memoria.clear() # Clear to prevent loops
-             memoria["estado_conversacion"] = None
-             return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
+                mensaje_adjunto = memoria.pop("mensaje_adjunto_recibido", "")
+                texto_para_sugerir_categorias = memoria.get("descripcion_reclamo", "")
 
+                sugeridas_data = sugerir_categorias_relevantes(texto_para_sugerir_categorias)
+                options_data = sugeridas_data if (sugeridas_data and len(sugeridas_data) > 0) else CATEGORIAS_RECLAMO
+                options_cat = [{"id": normalizar_texto(c), "texto": c.title()} for c in options_data]
+                if not any(opt['id'] == "otro motivo" for opt in options_cat) and "otro motivo" in CATEGORIAS_RECLAMO:
+                    options_cat.append({"id": "otro motivo", "texto": "Otro Motivo"})
+
+                respuesta_texto_cat = f"{mensaje_adjunto}Para tu reclamo, ¿podrías ayudarme seleccionando una categoría, o describiendo brevemente de qué se trata?"
+                if sugeridas_data:
+                    respuesta_texto_cat = f"{mensaje_adjunto}Detecté que podría ser sobre algunos de estos temas. Para tu reclamo, ¿cuál sería la categoría?"
+
+                message_type_cat = 'interactive_list' if len(options_cat) > 3 else 'interactive_buttons'
+                if len(options_cat) > 10: logger.warning(f"ReclamoHandler (inicio): Too many options for WhatsApp list.")
+
+                logger.info("[ReclamoHandler] Retornando solicitud de categoría (inicio de flujo).")
+                return {"message_body": respuesta_texto_cat, "options_list": options_cat, "message_type": message_type_cat, "fuente": "solicitud_categoria_reclamo_inicio_v4"}
+
+        # Si el estado ya es uno de reclamo (o se acaba de setear a ESPERANDO_DIRECCION_RECLAMO arriba),
+        # o la intención no es iniciar_reclamo desde cero, se procede al bucle while.
+        if not estado or estado not in RECLAMO_STATES: # Si estado es None (y no era iniciar_reclamo) o no es un estado de reclamo
+            if intencion == "iniciar_reclamo" and estado is None: # Este caso ya fue manejado arriba y debió retornar. Si llega aquí, es un error.
+                 logger.error("[ReclamoHandler] Lógica de inicio de reclamo no retornó como se esperaba. Abortando para evitar error.")
+                 return {"respuesta":"Error iniciando el reclamo. Intente de nuevo."} # Fallback
+            logger.debug(f"[ReclamoHandler] Intención '{intencion}' no es 'iniciar_reclamo' desde cero o estado '{estado.name if estado else 'None'}' no es de reclamo. No se maneja aquí.")
+            return None
 
         is_simple_confirmation = pregunta_str.lower() in ["si", "sí", "no", "ok", "dale", "cancelar"]
         is_known_action_button = payload.get("action") in ["adjuntar_foto", "compartir_ubicacion", "sin_adjuntos", "confirmar_reclamo", "editar_reclamo"]
