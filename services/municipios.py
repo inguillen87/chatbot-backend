@@ -3713,6 +3713,151 @@ def serializar_enum(obj):
     else: return obj
 
 BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
+
+import random # Asegurar que random está importado para el mock_ticket_nro
+from services.gemini_bridge import llamar_gemini # Asegurar import
+
+# Imports necesarios para la función accion_crear_reclamo_municipio
+# (Algunos pueden estar ya importados globalmente en el archivo)
+# from models import MunicipioTicket, db as global_db, User, ArchivoAdjunto, AnalisisArchivo # db ya está como global_db
+# from services.ticket_service import servicio_tickets # Ya importado
+# from .herramientas_municipio import parse_direccion_completa, direccion_es_valida # Ya importados globalmente
+# from .common_utils import validar_telefono, formatear_telefono_e164, validar_email # Ya importados globalmente
+# from .config_loader import CONFIG_MUNICIPIO # Ya importado globalmente
+# from services.municipios import enviar_notificacion_whatsapp_con_plantilla # Esta función está en este mismo archivo.
+
+# Definición completa de accion_crear_reclamo_municipio
+def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
+    logger_func = current_app.logger if has_app_context() else logging.getLogger(__name__)
+    logger_func.info(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Datos LLM: {datos_llm}")
+
+    # --- 1. Extracción y Validación de Datos ---
+    categoria = datos_llm.get("categoria", "Reclamo General")
+    descripcion = datos_llm.get("descripcion")
+    ubicacion_llm = datos_llm.get("ubicacion")
+    coordenadas_llm = datos_llm.get("coordenadas")
+    nombre_vecino_llm = datos_llm.get("usuario")
+    telefono_llm = datos_llm.get("telefono")
+    email_llm = datos_llm.get("email")
+    foto_url_llm = datos_llm.get("foto_url_adjunta")
+
+    if not descripcion:
+        return {
+            "message_body": "No pude entender la descripción del reclamo. Por favor, intenta describirlo de nuevo.",
+            "options_list": [], "fuente": "accion_crear_reclamo_error_sin_descripcion"
+        }
+    if not ubicacion_llm and not coordenadas_llm:
+        return {
+            "message_body": "No pude entender la ubicación del reclamo. Por favor, especifica dónde es el problema.",
+            "options_list": [], "fuente": "accion_crear_reclamo_error_sin_ubicacion"
+        }
+
+    # --- 2. Recopilación de Información del Contexto ---
+    viewer_user = context.get("viewer_user_obj")
+    owner_user = context.get("user_obj")
+
+    user_id_db = getattr(viewer_user, "id", None)
+    anon_id_db = context.get("anon_id") if not user_id_db else None
+    municipio_config_actual = context.get("municipio_config_actual", CONFIG_MUNICIPIO)
+    municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
+    # chat_session_uuid = context.get("chat_session_uuid") # Descomentar si se usa para idempotencia
+    # chat_db_context_data = context.get("chat_db_context_data", {})
+
+    nombre_vecino_final = nombre_vecino_llm or getattr(viewer_user, "nombre", None) or "Ciudadano Anónimo"
+
+    telefono_final_validado_e164 = None
+    temp_phone_str = str(telefono_llm or getattr(viewer_user, "telefono", ""))
+    if temp_phone_str and validar_telefono(temp_phone_str): # common_utils.validar_telefono
+        telefono_final_validado_e164 = formatear_telefono_e164(temp_phone_str) # common_utils.formatear_telefono_e164
+
+    email_final_validado = None
+    temp_email_str = str(email_llm or getattr(viewer_user, "email", ""))
+    if temp_email_str and validar_email(temp_email_str): # common_utils.validar_email
+        email_final_validado = temp_email_str.lower()
+
+    direccion_final_txt = ubicacion_llm
+    latitud_final = coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None
+    longitud_final = coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None
+
+    if ubicacion_llm and not (latitud_final and longitud_final): # Si tenemos texto de dirección pero no coords del LLM
+        # herramientas_municipio.parse_direccion_completa
+        parsed_address = parse_direccion_completa(ubicacion_llm, municipio_config_actual)
+        if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"):
+            direccion_final_txt = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,", ",").strip()
+            logger_func.info(f"Dirección parseada de LLM: {direccion_final_txt}")
+        elif not direccion_es_valida(ubicacion_llm): # herramientas_municipio.direccion_es_valida
+             return {
+                "message_body": f"La ubicación '{ubicacion_llm}' no parece válida. ¿Podrías verificarla?",
+                "options_list": [], "fuente": "accion_crear_reclamo_direccion_invalida_llm"
+            }
+
+    ticket_data = {
+        "asunto": f"Reclamo (LLM): {categoria}", "categoria": categoria, "detalles": descripcion,
+        "direccion": direccion_final_txt, "nombre_vecino": nombre_vecino_final,
+        "telefono_vecino": telefono_final_validado_e164, "email_vecino": email_final_validado,
+        "estado": "nuevo", "user_id": user_id_db, "anon_id": anon_id_db,
+        "municipio_id": municipio_db_id_para_ticket, "latitud": latitud_final, "longitud": longitud_final,
+        "origen_reclamo": "LLM_CHATBOT"
+    }
+    if context.get("foto_url"):
+        ticket_data["foto_url_directa"] = context.get("foto_url")
+    elif foto_url_llm:
+        ticket_data["foto_url_directa"] = foto_url_llm
+
+    ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+    logger_func.info(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Datos para ticket: {ticket_data_cleaned}")
+
+    try:
+        ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
+        if not ticket_creado:
+            raise Exception("servicio_tickets.crear_nuevo_ticket retornó None")
+
+        nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
+        logger_func.info(f"Ticket {nro_ticket_str} creado exitosamente vía LLM.")
+
+        archivo_id_a_vincular = context.get("archivo_id_para_asociar")
+        if archivo_id_a_vincular:
+            from services.archivo_service import archivo_service
+            asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(ticket_id=ticket_creado.id, tipo_ticket="municipio", ids_archivos=[archivo_id_a_vincular])
+            if asociacion_exitosa: logger_func.info(f"Archivo ID {archivo_id_a_vincular} asociado a ticket {nro_ticket_str}.")
+            else: logger_func.warning(f"No se pudo asociar archivo ID {archivo_id_a_vincular} a ticket {nro_ticket_str}.")
+
+            # Consumir del contexto. CONTEXTO_MUNICIPIO es el sub-diccionario.
+            if CONTEXTO_MUNICIPIO in context and isinstance(context[CONTEXTO_MUNICIPIO], dict) and "archivo_id_para_asociar" in context[CONTEXTO_MUNICIPIO]:
+                 del context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"]
+            elif "archivo_id_para_asociar" in context:
+                 context.pop("archivo_id_para_asociar", None)
+
+
+        if telefono_final_validado_e164:
+            try:
+                enviar_notificacion_whatsapp_con_plantilla(telefono_final_validado_e164, nombre_vecino_final, str(ticket_creado.nro_ticket), categoria)
+                logger_func.info(f"Notificación WhatsApp enviada para ticket {nro_ticket_str}")
+            except Exception as e_notify_wp:
+                logger_func.error(f"Error enviando notificación WhatsApp para {nro_ticket_str}: {e_notify_wp}")
+
+        return {
+            "message_body": f"¡Gracias {nombre_vecino_final}! Tu reclamo sobre '{categoria}' ha sido registrado con el número {nro_ticket_str}. Te mantendremos informado.",
+            "options_list": [
+                {"id": f"consultar_estado_ticket_{ticket_creado.nro_ticket}", "texto": "Consultar estado"},
+                {"id": "iniciar_otro_reclamo_llm", "texto": "Hacer otro reclamo"}
+            ],
+            "fuente": "accion_crear_reclamo_llm_exito",
+            "ticket_id": ticket_creado.id
+        }
+    except Exception as e:
+        logger_func.error(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Error al crear ticket: {e}", exc_info=True)
+        # Asegurar que db es accesible (puede ser global_db si se renombró en imports)
+        if hasattr(global_db, 'session') and hasattr(global_db.session, 'rollback'):
+            global_db.session.rollback()
+        elif hasattr(db, 'session') and hasattr(db.session, 'rollback'): # Fallback si db no fue renombrado
+            db.session.rollback()
+        return {
+            "message_body": "Hubo un problema al intentar registrar tu reclamo. Por favor, intenta de nuevo más tarde o contacta al municipio directamente.",
+            "options_list": [],
+            "fuente": "accion_crear_reclamo_llm_error_creacion"
+        }
+
 OWNER_HANDLERS_FOR_STATE = {ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler, ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler, ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler, ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler, ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler, ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler, ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler, ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler, ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler, ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler, ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler}
 
 def responder_municipio(
@@ -3729,6 +3874,9 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
+
+    USAR_LLM_PARA_RECLAMOS = True
+
     received_payload = {}
     pregunta_str = ""
     if isinstance(pregunta_original, dict):
