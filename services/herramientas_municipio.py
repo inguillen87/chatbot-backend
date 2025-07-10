@@ -369,3 +369,88 @@ TOOL_REGISTRY = {
 
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
+
+def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
+    """
+    Obtiene una dirección formateada y componentes estructurados a partir de coordenadas lat/lon
+    usando la API de Google Geocoding.
+    """
+    if not Maps_API_KEY:
+        logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
+        return None
+
+    reverse_geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={Maps_API_KEY}&language=es"
+
+    try:
+        response = requests.get(reverse_geocode_url)
+        response.raise_for_status() # Lanza HTTPError para respuestas 4xx/5xx
+        data = response.json()
+
+        if data and data.get('status') == 'OK' and data.get('results'):
+            # La primera resultado suele ser la más específica.
+            best_result = data['results'][0]
+            formatted_address = best_result.get('formatted_address')
+
+            # Inicializar campos
+            calle, numero, localidad, provincia, cp, barrio = "", "", "", "", "", ""
+
+            for component in best_result.get('address_components', []):
+                types = component.get('types', [])
+                if 'street_number' in types:
+                    numero = component['long_name']
+                if 'route' in types: # 'route' suele ser el nombre de la calle
+                    calle = component['long_name']
+                # 'locality' es la ciudad/localidad principal. 'postal_town' puede ser un fallback.
+                if 'locality' in types or 'postal_town' in types:
+                    localidad = component['long_name']
+                # 'administrative_area_level_1' suele ser la provincia/estado.
+                if 'administrative_area_level_1' in types:
+                    provincia = component['long_name']
+                if 'postal_code' in types:
+                    cp = component['long_name']
+                if 'neighborhood' in types: # Barrio
+                    barrio = component['long_name']
+
+            # Si no se pudo extraer calle pero sí localidad, y la dirección formateada existe,
+            # es posible que la dirección formateada contenga más detalles.
+            # No intentaremos un parseo complejo de formatted_address aquí,
+            # priorizamos los componentes estructurados.
+
+            if formatted_address: # Devolver siempre si hay una dirección formateada
+                return {
+                    "formatted_address": formatted_address,
+                    "calle": calle or None,
+                    "numero": numero or None,
+                    "localidad": localidad or None,
+                    "provincia": provincia or None,
+                    "codigo_postal": cp or None,
+                    "barrio": barrio or None
+                }
+            # Si no hay formatted_address pero sí componentes mínimos (calle y localidad)
+            elif calle and localidad:
+                 # Construir una dirección formateada básica si es posible
+                constructed_address_parts = []
+                if calle: constructed_address_parts.append(calle)
+                if numero: constructed_address_parts.append(numero)
+                if localidad: constructed_address_parts.append(localidad)
+                if provincia and localidad != provincia : constructed_address_parts.append(provincia) # Avoid "Junin, Junin"
+
+                return {
+                    "formatted_address": ", ".join(filter(None,constructed_address_parts)),
+                    "calle": calle, "numero": numero, "localidad": localidad, "provincia": provincia,
+                    "codigo_postal": cp, "barrio": barrio
+                }
+            else: # No hay suficiente información para una dirección útil
+                logger.warning(f"Google API no devolvió dirección formateada ni componentes suficientes para {lat},{lon}.")
+                return None
+
+        else:
+            logger.warning(f"Google API no pudo obtener dirección para {lat},{lon}. Status: {data.get('status')}, Error: {data.get('error_message', 'N/A')}")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error de conexión con Google API para reverse geocoding ({lat},{lon}): {e}")
+        return None
+    except Exception as e: # Captura errores de JSONDecodeError u otros inesperados
+        logger.error(f"Error inesperado en reverse geocoding para {lat},{lon}: {e}", exc_info=True)
+        return None
