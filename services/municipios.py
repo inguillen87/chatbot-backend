@@ -2152,12 +2152,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                             chat_session_data["processed_idempotency_keys"] = processed_keys
                             logger.info(f"[ReclamoHandler] Effective idempotency key '{effective_idempotency_key}' asociada al ticket M-{ticket.nro_ticket} y guardada.")
 
-                        # --- ArchivoAdjunto y AnalisisArchivo creation for WhatsApp images ---
+                        # --- ArchivoAdjunto y AnalisisArchivo creation specifically for WhatsApp images ---
+                        # This block should only run if it's a WhatsApp image flow (i.e., no pre-existing archivo_id_para_asociar)
                         whatsapp_image_url = memoria.get("foto_url")
                         raw_analysis_data = memoria.get("analisis_imagen_reclamo_auto_raw")
+                        is_whatsapp_image_flow_for_creation = not self.context.get("archivo_id_para_asociar")
 
-                        if whatsapp_image_url and raw_analysis_data and raw_analysis_data.get("mime_type"):
-                            logger.info(f"[ReclamoHandler] Procesando imagen de WhatsApp para Ticket M-{ticket.nro_ticket}. URL: {whatsapp_image_url}")
+                        if is_whatsapp_image_flow_for_creation and whatsapp_image_url and raw_analysis_data and raw_analysis_data.get("mime_type"):
+                            logger.info(f"[ReclamoHandler] Creando ArchivoAdjunto para imagen de WhatsApp (Ticket M-{ticket.nro_ticket}). URL: {whatsapp_image_url}")
                             try:
                                 from models import ArchivoAdjunto, AnalisisArchivo # Ensure imports are here
 
@@ -3321,6 +3323,110 @@ def responder_municipio(
                 received_payload["pregunta"] = ""
 
     # --- End Handle post-login resumption ---
+
+    # --- BEGIN: Check for completed web analysis results ---
+    web_analisis_info = contexto_municipio_actual.pop("web_analisis_listo", None) # Pop to consume
+    if web_analisis_info and isinstance(web_analisis_info, dict) and web_analisis_info.get("archivo_id"):
+        archivo_id_analizado = web_analisis_info["archivo_id"]
+        logger_actual.info(f"Detectado 'web_analisis_listo' para archivo_id: {archivo_id_analizado}. Intentando cargar análisis.")
+        try:
+            from models import ArchivoAdjunto, AnalisisArchivo # Ensure models are imported
+            # Use the main db.session for this query
+            archivo_obj = db.session.query(ArchivoAdjunto).get(archivo_id_analizado)
+            if archivo_obj and archivo_obj.analisis and archivo_obj.analisis.estado_analisis == "completado":
+                analisis_obj = archivo_obj.analisis
+
+                # Reconstruct analisis_imagen_reclamo_auto_raw similar to how WhatsApp flow would get it
+                # from interpretar_imagen_para_chat's dictionary output.
+                # The key fields are 'categoria_sugerida', 'descripcion_sugerida', 'texto_ocr', 'mime_type', 'raw_analysis' (which holds vision_api_raw, llm_extraction)
+
+                # Extract data from analisis_obj.datos_estructurados (populated by _procesar_interpretacion_reclamo)
+                # and analisis_obj.texto_extraido
+                datos_estructurados_analisis = analisis_obj.datos_estructurados if isinstance(analisis_obj.datos_estructurados, dict) else {}
+
+                # _procesar_interpretacion_reclamo returns a dict with 'categoria_sugerida', 'descripcion_sugerida', 'texto_ocr', 'analisis_interno'
+                # 'analisis_interno' contains 'llm_complaint_extraction_from_image', 'vision_inferred_category', 'tipo_analisis_sugerido'
+                # 'raw_analysis' (for WhatsApp return) would have 'vision_api_raw', 'extracted_ocr_text', 'llm_complaint_extraction_from_image'
+
+                # For web, 'analisis_obj.datos_estructurados' should contain what 'analisis_interno' and 'vision_api_raw' would hold.
+                # Let's assume 'categoria_sugerida' and 'descripcion_sugerida' are not directly in datos_estructurados,
+                # but are derived by _procesar_interpretacion_reclamo.
+                # However, _procesar_interpretacion_reclamo *does* update analisis_db_record.datos_estructurados
+                # with 'llm_complaint_extraction_from_image' and 'vision_inferred_category'.
+                # We need to re-derive categoria_sugerida and descripcion_sugerida or ensure they are stored.
+
+                # For simplicity, let's assume a structure where `interpretar_imagen_para_chat` for DB objects
+                # stores enough in `AnalisisArchivo.datos_estructurados` or that we can re-derive.
+                # The `interpretar_imagen_para_chat` was modified to return `categoria_sugerida` and `descripcion_sugerida`
+                # which are then stored in `analisis_db_record.datos_estructurados` by `_procesar_interpretacion_reclamo`.
+                # Let's assume they are directly available or can be inferred.
+                # The most important thing is to get the pre-fillable fields.
+
+                # Simplified: we expect _procesar_interpretacion_reclamo (when called for a DB object)
+                # to have stored the key outcomes in analisis_obj.datos_estructurados.
+                # Let's assume it stores 'categoria_sugerida_final' and 'descripcion_sugerida_final'.
+                # This part might need refinement based on exact structure saved by _procesar_interpretacion_reclamo.
+
+                # Re-evaluating: _procesar_interpretacion_reclamo returns a dict, and if analisis_db_record exists,
+                # it updates analisis_db_record.datos_estructurados with 'llm_complaint_extraction_from_image' and 'vision_inferred_category'.
+                # The final 'categoria_sugerida' and 'descripcion_sugerida' are part of the *returned dictionary* from _procesar_interpretacion_reclamo,
+                # not directly stored under those exact keys in datos_estructurados.
+                # This means we need to re-run a part of that logic or ensure those final fields are stored.
+
+                # For now, let's assume that `analisis_obj.datos_estructurados` contains enough info.
+                # The most direct way is if `interpretar_imagen_para_chat` (for DB objects)
+                # stored `categoria_sugerida` and `descripcion_sugerida` in `AnalisisArchivo.datos_estructurados`.
+                # Let's assume it does for now, or we simulate getting them.
+                # This is a complex part due to how data is returned vs stored.
+
+                # Let's assume _procesar_interpretacion_reclamo stores its *final* suggestions in datos_estructurados
+                # under keys like 'final_categoria_sugerida' and 'final_descripcion_sugerida'.
+                # This would require a slight change in _procesar_interpretacion_reclamo if not already done.
+                # For now, we'll construct a placeholder `analisis_imagen_reclamo_auto_raw`.
+
+                temp_cat_sug = datos_estructurados_analisis.get("final_categoria_sugerida", datos_estructurados_analisis.get("vision_inferred_category"))
+                temp_desc_sug = datos_estructurados_analisis.get("final_descripcion_sugerida", "Descripción basada en imagen adjunta.")
+
+                contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = {
+                    "es_reclamo": True, # Assume if it's here, it was deemed a claim
+                    "categoria_sugerida": temp_cat_sug,
+                    "descripcion_sugerida": temp_desc_sug,
+                    "texto_ocr": analisis_obj.texto_extraido or "",
+                    "mime_type": archivo_obj.mime,
+                    "raw_analysis": { # Mimic structure from WhatsApp flow
+                        "vision_api_raw": datos_estructurados_analisis.get("vision_api_raw", {}),
+                        "extracted_ocr_text": analisis_obj.texto_extraido or "",
+                        "llm_complaint_extraction_from_image": datos_estructurados_analisis.get("llm_complaint_extraction_from_image", {})
+                    },
+                    "analisis_id": analisis_obj.id # Store actual analisis_id
+                }
+                logger_actual.info(f"Análisis de archivo web ID {archivo_id_analizado} cargado en contexto.")
+
+                if contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"].get("categoria_sugerida") and \
+                   (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
+                    contexto_municipio_actual["categoria_reclamo"] = contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"]["categoria_sugerida"]
+
+                if contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"].get("descripcion_sugerida") and \
+                   (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
+                    contexto_municipio_actual["descripcion_reclamo"] = contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"]["descripcion_sugerida"]
+
+                context["es_foto"] = archivo_obj.mime.startswith("image/") if archivo_obj.mime else False
+                context["foto_url"] = archivo_obj.url
+                context["archivo_id_para_asociar"] = archivo_obj.id # Crucial for linking ticket
+
+                if not pregunta_str.strip() and not kwargs.get("intencion") and not context.get("intencion"):
+                    context["intencion"] = "iniciar_reclamo"
+                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis de archivo web completado y sin texto/intención previa.")
+
+                # Flag that this specific analysis has been loaded into context for this turn
+                # This helps if user sends multiple messages before this gets processed.
+                # The `web_analisis_listo` was already popped, so it's consumed for this session load.
+            else:
+                logger_actual.warning(f"Archivo ID {archivo_id_analizado} o su análisis completado no encontrado. 'web_analisis_listo' ignorado.")
+        except Exception as e_load_web_analisis:
+            logger_actual.error(f"Error cargando datos de análisis web para archivo ID {web_analisis_info.get('archivo_id')}: {e_load_web_analisis}", exc_info=True)
+    # --- END: Check for completed web analysis results ---
+
 
     estado_guardado_raw = contexto_municipio_actual.get("estado_conversacion")
     logger_actual.info(

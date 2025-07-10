@@ -403,10 +403,19 @@ def _procesar_interpretacion_reclamo(
     es_reclamo_valido_sugerido = bool(final_categoria_sugerida and final_categoria_sugerida != "otro motivo") or \
                                  (final_descripcion_sugerida and len(final_descripcion_sugerida) >= 15 and "describe el problema" not in final_descripcion_sugerida.lower())
 
+    # Añadir las conclusiones finales a datos_internos_analisis para que se guarden en DB si aplica
+    datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
+    datos_internos_analisis['final_descripcion_sugerida'] = final_descripcion_sugerida
+    datos_internos_analisis['es_reclamo_sugerido'] = es_reclamo_valido_sugerido
+
     if analisis_db_record:
         analisis_db_record.estado_analisis = "completado"
         # Actualizar datos_estructurados con los datos_internos_analisis
         current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+        # Ensure vision_api_raw is preserved if it was already there from the main function
+        if 'vision_api_raw' not in datos_internos_analisis and 'vision_api_raw' in current_datos_db:
+            datos_internos_analisis['vision_api_raw'] = current_datos_db['vision_api_raw']
+
         current_datos_db.update(datos_internos_analisis)
         analisis_db_record.datos_estructurados = current_datos_db
         db.session.commit()
