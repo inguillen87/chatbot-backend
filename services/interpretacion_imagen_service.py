@@ -481,56 +481,42 @@ def _procesar_interpretacion_pedido_pyme(
     # Asumimos que cada línea puede ser un ítem.
     # Buscamos patrones como "texto [separador] cantidad" o "cantidad [separador] texto"
     # Esto es muy básico y puede mejorarse mucho (ej. con regex más robustos o LLM).
-    lineas = extracted_ocr_text.split('\n')
-    posibles_items_texto = []
 
-    for i, linea_raw in enumerate(lineas):
-        linea = limpiar_texto_base(linea_raw)
-        if not linea:
-            continue
+    # --- Nueva lógica: Usar LLM para extraer items del OCR ---
+    from services.llm_utils import extraer_lista_pedido_de_texto_con_llm # Local import
 
-        # Intentar extraer una cantidad al final o al principio de la línea
-        # Regex para encontrar un número (posiblemente con decimales) al final, opcionalmente precedido por 'x', 'X', '*' o espacio.
-        # Y que antes del número haya algo de texto (nombre del producto).
-        match_cantidad_al_final = re.search(r"^(.*?)(?:[\sxX*])?\s*(\d+[\.,]?\d*)\s*$", linea)
-        # Regex para encontrar un número al principio, seguido de texto.
-        match_cantidad_al_principio = re.search(r"^\s*(\d+[\.,]?\d*)\s*(?:[\sxX*])?\s*(.+)", linea)
-
-        nombre_producto_ocr = None
-        cantidad_ocr_str = None
-
-        if match_cantidad_al_final:
-            nombre_producto_ocr = limpiar_texto_base(match_cantidad_al_final.group(1))
-            cantidad_ocr_str = match_cantidad_al_final.group(2).replace(',', '.')
-        elif match_cantidad_al_principio:
-            cantidad_ocr_str = match_cantidad_al_principio.group(1).replace(',', '.')
-            nombre_producto_ocr = limpiar_texto_base(match_cantidad_al_principio.group(2))
-        else:
-            # Si no hay un número claro, asumir que toda la línea es el nombre y cantidad es 1 por defecto
-            # O podríamos marcarlo como no parseable si no hay cantidad explícita.
-            # Por ahora, si no hay número, lo ignoramos o lo ponemos como "nombre_solo"
-            logger.debug(f"[PEDIDO] Línea OCR sin cantidad clara: '{linea}' (Análisis ID: {analisis.id})")
-            # Podríamos añadirlo a una lista de "lineas_no_parseadas"
-            continue
-
-        if nombre_producto_ocr and cantidad_ocr_str:
-            try:
-                cantidad_float = float(cantidad_ocr_str)
-                cantidad_int = int(round(cantidad_float)) # Redondear y luego convertir a int
-                if cantidad_int <= 0:
-                    logger.warning(f"[PEDIDO] Cantidad no positiva '{cantidad_ocr_str}' en línea: '{linea}'. Se ignora.")
-                    continue
-                posibles_items_texto.append({
-                    "nombre_ocr": nombre_producto_ocr,
-                    "cantidad_ocr": cantidad_int,
-                    "linea_original_ocr": linea_raw,
-                    "linea_idx_ocr": i
-                })
-            except ValueError:
-                logger.warning(f"[PEDIDO] No se pudo convertir cantidad '{cantidad_ocr_str}' a número en línea: '{linea}'.")
+    posibles_items_texto = extraer_lista_pedido_de_texto_con_llm(extracted_ocr_text, pyme_user.id if pyme_user else None)
 
     if not posibles_items_texto:
-        logger.info(f"ℹ️ [PEDIDO] OCR no produjo items parseables con nombre y cantidad. Texto OCR: {extracted_ocr_text[:200]} (Análisis ID: {analisis_id_for_log})")
+        # Fallback a la lógica regex si el LLM no devuelve nada o si se prefiere un intento regex primero.
+        # Por ahora, si LLM no devuelve nada, consideramos que no hay items parseables.
+        # Podríamos re-introducir el regex aquí como un segundo intento si el LLM falla.
+        # Ejemplo de re-introducción de regex (comentado por ahora):
+        # logger.info(f"[PEDIDO] LLM no extrajo items. Intentando con Regex. OCR: {extracted_ocr_text[:100]}")
+        # lineas = extracted_ocr_text.split('\n')
+        # for i, linea_raw in enumerate(lineas):
+        #     linea = limpiar_texto_base(linea_raw)
+        #     if not linea: continue
+        #     match_cantidad_al_final = re.search(r"^(.*?)(?:[\sxX*])?\s*(\d+[\.,]?\d*)\s*$", linea)
+        #     match_cantidad_al_principio = re.search(r"^\s*(\d+[\.,]?\d*)\s*(?:[\sxX*])?\s*(.+)", linea)
+        #     nombre_producto_ocr = None; cantidad_ocr_str = None
+        #     if match_cantidad_al_final:
+        #         nombre_producto_ocr = limpiar_texto_base(match_cantidad_al_final.group(1))
+        #         cantidad_ocr_str = match_cantidad_al_final.group(2).replace(',', '.')
+        #     elif match_cantidad_al_principio:
+        #         cantidad_ocr_str = match_cantidad_al_principio.group(1).replace(',', '.')
+        #         nombre_producto_ocr = limpiar_texto_base(match_cantidad_al_principio.group(2))
+        #     else: continue
+        #     if nombre_producto_ocr and cantidad_ocr_str:
+        #         try:
+        #             cantidad_float = float(cantidad_ocr_str); cantidad_int = int(round(cantidad_float))
+        #             if cantidad_int <= 0: continue
+        #             posibles_items_texto.append({
+        #                 "nombre_ocr": nombre_producto_ocr, "cantidad_ocr": cantidad_int,
+        #                 "linea_original_ocr": linea_raw, "linea_idx_ocr": i
+        #             })
+        #         except ValueError: pass
+        logger.info(f"ℹ️ [PEDIDO] Ni LLM ni Regex (si estuviera activo) produjeron items parseables. Texto OCR: {extracted_ocr_text[:200]} (Análisis ID: {analisis_id_for_log})")
 
         datos_internos_analisis.update({
             'items_parseados_ocr': [], 'items_encontrados_catalogo': [],

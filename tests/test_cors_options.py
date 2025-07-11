@@ -1,4 +1,11 @@
+import sys
+import os
 import unittest
+
+project_root_cors = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_cors not in sys.path:
+    sys.path.insert(0, project_root_cors)
+
 try:
     from app import create_app
 except Exception:

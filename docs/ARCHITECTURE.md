@@ -17,21 +17,31 @@ The system is structured around several key service modules:
 ```mermaid
 graph TD
     A[User Input (Web/WhatsApp)] --> B(Routes - chat.py / whatsapp_webhook.py);
-    B --> C{services/InputProcessor};
-    C --> D{services/Orchestrator};
-    D --LLM Interaction--> E(services/gemini_bridge.py - Gemini LLM);
-    E --Structured JSON (action, data, reply)--> D;
-    D --Execute Action--> F(services/actions/ActionHandlers);
-    F --Uses--> G[Business Logic Services (TicketService, PedidoService, CartService, etc.)];
-    F --Uses--> H[External API Services (Vision, DocAI, Qdrant, WhatsApp Sender, STT)];
+    B --> C(services/input_processor.py);
+    C --> D(services/Orchestrator);
+    D --LLM Interaction (Prompt + History)--> E(services/gemini_bridge.py - Gemini LLM);
+    E --Structured JSON (respuesta_usuario, accion_backend, datos_estructura, pedir_info, botones)--> D;
+    D --Execute Action (datos_accion = datos_estructura)--> F(services/actions/ActionHandlers e.g., CrearReclamo, ProcesarPedido);
+    F --Uses--> G[Business Logic Services (TicketService, PedidoService, CartService)];
+    F --Uses--> H[External API Services (Vision, DocAI, Qdrant Clients)];
     G --DB Interaction--> I[Database (models.py)];
-    H --External Calls--> J[External APIs (Google Cloud, Twilio, Qdrant)];
-    D --Format Response--> K(services/ResponseFormatter);
+    H --External Calls--> J[External APIs (Google Cloud AI/Vision/DocAI, Twilio, Qdrant)];
+    D --Format Response (respuesta_usuario, botones)--> K(services/response_formatter.py);
     K --Channel-Specific Response--> L[Output to User (Web/WhatsApp)];
-    M[ChatSessionContext (DB)] -.-> C;
+    M[ChatSessionContext (DB - Stores llm_conversation_history, pyme_ctx, municipio_ctx)] -.-> C;
     M -.-> D;
     D -.-> M;
     F -.-> M;
+    subgraph Specialized Analysis Services
+        H_Vision[services/interpretacion_imagen_service.py (Vision API)]
+        H_DocAI[services/google_docai.py (Document AI)]
+        H_Qdrant[services/qdrant_search.py (Qdrant Client)]
+        H_STT[services/external_apis/speech_to_text_service.py (STT)]
+    end
+    C --May Use for Voice--> H_STT;
+    F --May Use for Attachments/Search--> H_Vision;
+    F --May Use for Attachments/Search--> H_DocAI;
+    F --May Use for Attachments/Search--> H_Qdrant;
 ```
 
 1.  **User Input & Channel Handling (`routes/` & `services/input_processor.py`):**
@@ -39,58 +49,54 @@ graph TD
     *   `services/input_processor.py`:
         *   Standardizes input from all channels.
         *   Extracts text, media (images, voice notes, documents), location, and interactive payloads.
-        *   For voice notes, it utilizes `services/external_apis/speech_to_text_service.py` for transcription.
-        *   Loads and helps manage the `ChatSessionContext` (from `models.py`), which stores conversation history and session-specific state.
+        *   For voice notes, it may utilize a speech-to-text service (e.g., `services/external_apis/speech_to_text_service.py`).
+        *   Loads and helps manage the `ChatSessionContext` (from `models.py`), which stores conversation history (`llm_conversation_history`) and session-specific state (`contexto_municipio`, `contexto_pyme`).
 
-2.  **Orchestration (`services/orchestrator.py`):**
-    *   This is the central nervous system of the application.
-    *   It receives standardized input from the `InputProcessor`.
-    *   It constructs the prompt for the LLM using the current user message, conversation history (from `ChatSessionContext.context_data.llm_conversation_history`), and other relevant context.
+2.  **Orchestration (`services/orchestrator.py` or logic within `services/logic.py` -> `responder_municipio`/`responder_pyme`):**
+    *   This is the central component coordinating the interaction.
+    *   It receives standardized input.
+    *   It constructs the prompt for the LLM using the current user message, `llm_conversation_history`, and other relevant context (like current pyme/municipio state).
     *   It calls `services/gemini_bridge.llamar_gemini` to communicate with the LLM.
-    *   The LLM returns a structured JSON response containing:
-        *   `respuesta_usuario`: Text to display to the user.
-        *   `accion_backend`: A specific action for the backend to perform (e.g., "crear_reclamo_municipio", "procesar_adjunto_imagen_reclamo").
-        *   `datos_estructura`: Data extracted by the LLM for the action.
-        *   `pedir_info`: If the LLM needs more information from the user.
-        *   `botones`: Suggested interactive buttons for the user.
-    *   The Orchestrator then decides the next step based on the LLM's response:
-        *   If an `accion_backend` is specified, it invokes the corresponding **Action Handler** from `services/actions/`.
-        *   If `pedir_info` is set, it prepares to ask the user for the specified information.
+    *   The LLM returns a structured JSON response (see `AGENTS.md` for details) containing `respuesta_usuario`, `accion_backend`, `datos_estructura`, `pedir_info`, and `botones`.
+    *   The Orchestrator then decides the next step:
+        *   If an `accion_backend` is specified, it invokes the corresponding **Action Handler** (from `services/actions/` or directly as an `accion_` function), passing `datos_estructura` (as `datos_accion`) and the overall `context`.
+        *   If `pedir_info` is set, it prepares to ask the user for the specified information using `respuesta_usuario` and `botones` from the LLM.
+        *   Handles corrections if `accion_backend` is "corregir_datos" by updating context and re-triggering confirmation/flow.
         *   Otherwise, it prepares the LLM's conversational reply.
 
 3.  **LLM Interaction (`services/gemini_bridge.py`):**
-    *   Contains the master `JULES_SYSTEM_PROMPT` which defines the LLM's persona, capabilities, expected input/output format, and examples. This prompt is critical for guiding the LLM's behavior.
-    *   The `llamar_gemini` function handles the actual communication with the Gemini API.
+    *   Contains the master `JULES_SYSTEM_PROMPT` which defines the LLM's persona, capabilities, expected input/output format, and examples for various scenarios including claims, orders, tool usage, and corrections.
+    *   The `llamar_gemini` function handles communication with the Gemini API.
+    *   `llamar_gemini_para_generacion_texto` provides a utility for more general text generation tasks with custom system prompts.
 
-4.  **Action Handlers (`services/actions/`):**
-    *   A directory of modular handlers, each responsible for a specific `accion_backend`.
-    *   Examples:
-        *   `municipio_claim_actions.py` (e.g., `CrearReclamoAction`): Handles creating municipal claims.
-        *   `pyme_order_actions.py` (e.g., `AgregarItemCarritoAction`, `CrearPedidoAction`): Handles PYME order operations.
-        *   `common_actions.py` (e.g., `DerivarHumanoAction`, `ProcesarAdjuntoAction`): Handles actions common to multiple flows.
-    *   Action Handlers:
-        *   Receive `datos_estructura` from the Orchestrator.
-        *   Perform detailed data validation.
+4.  **Action Handlers (`services/actions/` or `accion_` functions):**
+    *   Modular functions/classes responsible for specific `accion_backend`s.
+    *   Examples: `accion_crear_reclamo_municipio`, `CrearPedidoAction` (conceptual for PYMEs).
+    *   Action Handlers/functions:
+        *   Receive `datos_accion` (from LLM's `datos_estructura`) and the main `context`.
+        *   Perform **rigorous data validation** on inputs from `datos_accion`.
         *   Interact with business logic services (e.g., `TicketService`, `PedidoService`, `CartService`).
-        *   Interact with `services/external_apis/` clients (e.g., `QdrantService`, `DocumentProcessorService`).
+        *   Call external API services (Qdrant, Vision, DocAI) as needed, often through intermediary services like `interpretacion_imagen_service.py`.
         *   Update the database via SQLAlchemy models.
-        *   Return a result to the Orchestrator (success/failure, messages, data).
+        *   Return a result to the Orchestrator.
 
-5.  **Business Logic Services (Various, e.g., `services/ticket_service.py`, `services/pedido_service.py`):**
-    *   These services encapsulate core business operations like creating a ticket, creating an order, managing cart contents, etc. They are called by Action Handlers.
+5.  **Business Logic Services (e.g., `services/ticket_service.py`, `services/pedido_service.py`, `services/cart.py`):**
+    *   Encapsulate core operations (creating tickets, managing orders/carts). Called by Action Handlers.
 
-6.  **External API Services (`services/external_apis/`):**
-    *   Dedicated client modules for interacting with third-party APIs:
-        *   `google_vision_service.py`: For image analysis.
-        *   `google_doc_ai_service.py`: For document parsing.
-        *   `qdrant_service.py`: For vector database search (product catalogs, FAQs).
-        *   `whatsapp_service.py`: For sending messages via the WhatsApp Business API (e.g., Twilio).
-        *   `speech_to_text_service.py`: For transcribing voice notes.
+6.  **Specialized Analysis & External API Services:**
+    *   `services/interpretacion_imagen_service.py`: Uses `services/google_vision_service.py` to analyze images (OCR, object detection). For PYME orders, its `_procesar_interpretacion_pedido_pyme` now also uses `extraer_lista_pedido_de_texto_con_llm` from `llm_utils.py` to parse OCR text more intelligently.
+    *   `services/google_docai.py` & `services/llm_utils.py` (for `analyze_document_with_google_document_ai`): For parsing structured data from documents using Google Document AI.
+    *   `services/qdrant_search.py` & `services/qdrant_utils.py`: Interface with Qdrant for semantic search (e.g., PYME product catalogs, FAQs). Embeddings are generated using Cohere (via `services.cohere_ai.embed_textos`).
+    *   `services/whatsapp_webhook.py` (and Twilio client): Handles sending messages via WhatsApp.
+    *   `services/external_apis/speech_to_text_service.py`: For transcribing voice notes.
+    *   `services/llm_utils.py`: Contains helper functions for more specific LLM tasks like `extract_multiple_contact_details_llm` or `extraer_lista_pedido_de_texto_con_llm`.
 
-7.  **Document Processing (`services/document_processor.py`):**
-    *   Coordinates the use of Vision API and Doc AI.
-    *   Called by `ProcesarAdjuntoAction` when an uploaded file needs analysis.
-    *   Stores structured analysis results in the `AnalisisArchivo` model, which can then be used by the LLM or other actions.
+7.  **Document & Image Processing Flow (General for Attachments):**
+    *   Files are uploaded, `ArchivoAdjunto` record is created.
+    *   A Celery task (`services.analisis_archivo_service.tarea_analizar_contenido_archivo`) is typically triggered.
+    *   This task calls `interpretar_imagen_para_chat` (for images) or `analizar_pdf_con_document_ai_service` (for PDFs).
+    *   These services perform the analysis (Vision, DocAI, internal LLM calls for refinement) and update the `AnalisisArchivo` record with extracted text and structured data.
+    *   The Orchestrator or relevant handlers can then use this processed information from `AnalisisArchivo` or directly from `datos_accion` if the analysis was synchronous with the LLM's main turn.
 
 8.  **Response Formatting & Delivery (`services/response_formatter.py`):**
     *   Takes the internal response object from the Orchestrator (containing text, button data, media URLs, etc.).

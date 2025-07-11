@@ -258,7 +258,8 @@ def delete_template(user, template_id):
         current_app.logger.error(f"Error al eliminar plantilla '{template_id}' por usuario {user.id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al eliminar la plantilla."}), 500
 
-from services.cohere_ai import get_cohere_response # Para la generación de texto
+# from services.cohere_ai import get_cohere_response # Reemplazado por Gemini
+from services.gemini_bridge import llamar_gemini_para_generacion_texto
 
 @ai_templates_bp.route('/generate-template-text', methods=['POST'])
 @token_requerido
@@ -289,24 +290,23 @@ def generate_template_text_from_prompt(user):
 
         current_app.logger.info(f"Usuario {user.id} solicitando generación de texto para plantilla con prompt: '{prompt_usuario[:100]}...'")
 
-        # Usar get_cohere_response o robust_chat directamente
-        # El modelo y temperatura por defecto se usan desde cohere_ai.py (command-r-plus, 0.3)
-        # Se pueden pasar explícitamente si se necesita un comportamiento diferente para este endpoint.
-        generated_text = get_cohere_response(
-            message=prompt_usuario
-            # preamble=preamble, # Descomentar si se define y usa un preámbulo específico
+        # Usar el nuevo servicio de Gemini para generación de texto
+        system_prompt_generacion = "Eres un asistente experto en redactar plantillas de respuesta. Genera un texto basado en la siguiente solicitud del usuario."
+        generated_text = llamar_gemini_para_generacion_texto(
+            system_prompt_especifico=system_prompt_generacion,
+            user_prompt=prompt_usuario,
+            temperature=0.7 # Puede ajustarse para más creatividad
         )
 
         if generated_text:
-            current_app.logger.info(f"Texto generado por Cohere para prompt de usuario {user.id}: '{generated_text[:100]}...'")
+            current_app.logger.info(f"Texto generado por Gemini para prompt de usuario {user.id}: '{generated_text[:100]}...'")
             return jsonify({"generated_text": generated_text.strip()}), 200
         else:
-            # Esto puede ocurrir si co_client no está inicializado o si la API de Cohere falla y devuelve None
-            current_app.logger.error(f"Cohere no devolvió texto para el prompt del usuario {user.id}: '{prompt_usuario[:100]}...'. Verificar API Key y logs de Cohere.")
+            current_app.logger.error(f"Gemini no devolvió texto para el prompt del usuario {user.id}: '{prompt_usuario[:100]}...'.")
             return jsonify({"error": "No se pudo generar el texto de la plantilla en este momento. Intente más tarde."}), 503 # Service Unavailable
 
     except Exception as e:
-        current_app.logger.error(f"Error al generar texto de plantilla para usuario {user.id} con prompt '{prompt_usuario[:100]}...': {e}", exc_info=True)
+        current_app.logger.error(f"Error al generar texto de plantilla (Gemini) para usuario {user.id} con prompt '{prompt_usuario[:100]}...': {e}", exc_info=True)
         return jsonify({"error": "Error interno al procesar la solicitud de generación de texto."}), 500
 
 @ai_templates_bp.route('/improve-template-text', methods=['POST'])
@@ -343,26 +343,25 @@ def improve_template_text(user):
 
         current_app.logger.info(f"Usuario {user.id} solicitando mejora de texto para plantilla: '{text_to_improve[:100]}...'")
 
-        improved_text = get_cohere_response(
-            message=prompt_para_cohere
-            # preamble=preamble_mejorar, # Si se define un preámbulo específico
+        # El prompt_para_cohere ya está bien formulado para ser un user_prompt para Gemini.
+        # El system_prompt puede ser más genérico o específico para la tarea de mejora.
+        system_prompt_mejora = "Eres un asistente experto en refinar y mejorar textos para plantillas de comunicación profesional. Responde únicamente con el texto mejorado."
+        improved_text = llamar_gemini_para_generacion_texto(
+            system_prompt_especifico=system_prompt_mejora,
+            user_prompt=prompt_para_cohere, # prompt_para_cohere ya contiene la instrucción y el texto
+            temperature=0.5 # Temperatura moderada para mejora
         )
 
         if improved_text:
-            # A veces Cohere puede añadir el texto original entrecomillado o similar, intentamos limpiarlo si es muy obvio.
-            # Esta es una heurística simple, podría necesitar ajustes.
             cleaned_text = improved_text.strip()
-            if f"\"{text_to_improve}\"" in cleaned_text : # Si repite el input exacto entre comillas
-                 # Intenta tomar lo que sigue o lo que precede, si hay algo más.
-                 # Esto es muy básico, una limpieza más robusta podría ser necesaria si Cohere es propenso a esto.
-                 pass # Por ahora, se deja como está, el FE podría necesitar manejarlo.
-
-            current_app.logger.info(f"Texto mejorado por Cohere para usuario {user.id}: '{cleaned_text[:100]}...'")
+            # La limpieza adicional que se hacía para Cohere podría no ser necesaria o ser diferente para Gemini.
+            # Se deja como está por ahora, pero se podría revisar si Gemini añade prefijos/sufijos no deseados.
+            current_app.logger.info(f"Texto mejorado por Gemini para usuario {user.id}: '{cleaned_text[:100]}...'")
             return jsonify({"improved_text": cleaned_text}), 200
         else:
-            current_app.logger.error(f"Cohere no devolvió texto mejorado para el input del usuario {user.id}: '{text_to_improve[:100]}...'. Verificar API Key y logs de Cohere.")
+            current_app.logger.error(f"Gemini no devolvió texto mejorado para el input del usuario {user.id}: '{text_to_improve[:100]}...'.")
             return jsonify({"error": "No se pudo mejorar el texto de la plantilla en este momento. Intente más tarde."}), 503
 
     except Exception as e:
-        current_app.logger.error(f"Error al mejorar texto de plantilla para usuario {user.id} con texto '{text_to_improve[:100]}...': {e}", exc_info=True)
+        current_app.logger.error(f"Error al mejorar texto de plantilla (Gemini) para usuario {user.id} con texto '{text_to_improve[:100]}...': {e}", exc_info=True)
         return jsonify({"error": "Error interno al procesar la solicitud de mejora de texto."}), 500

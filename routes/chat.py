@@ -1,6 +1,14 @@
+import sys
+import os
 import logging
 import random
 import uuid  # Added for chat_session_id generation
+
+# Add project root to sys.path for this routes file
+project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_chat_routes not in sys.path:
+    sys.path.insert(0, project_root_chat_routes)
+
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified

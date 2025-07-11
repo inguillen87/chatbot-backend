@@ -1,4 +1,12 @@
 import unittest
+import sys
+import os
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_token_utils = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_token_utils not in sys.path:
+    sys.path.insert(0, project_root_token_utils)
+
 from app import create_app
 from routes.auth import obtener_token
 

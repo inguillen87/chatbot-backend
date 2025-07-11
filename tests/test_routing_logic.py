@@ -4,6 +4,12 @@ import sys
 import importlib
 from contextlib import contextmanager
 import unittest.mock
+import os
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_routing_logic = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_routing_logic not in sys.path:
+    sys.path.insert(0, project_root_routing_logic)
 
 @contextmanager
 def stub_modules():

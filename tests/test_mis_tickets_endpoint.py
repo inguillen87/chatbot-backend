@@ -1,6 +1,13 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+import sys
+import os
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_mis_tickets = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_mis_tickets not in sys.path:
+    sys.path.insert(0, project_root_mis_tickets)
 
 from routes.ticket import get_mis_tickets
 

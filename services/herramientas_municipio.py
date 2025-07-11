@@ -46,19 +46,46 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
     """
     Usa el LLM para obtener una lista de categorías sugeridas basadas en el texto del usuario.
     """
-    todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
-    prompt = crear_prompt_sugerir_categorias(texto_usuario, todas_las_categorias)
-    try:
-        respuesta_llm = get_cohere_response(message=prompt, preamble="Eres un experto clasificador. Responde solo con el JSON solicitado.")
-        resultado = json.loads(respuesta_llm)
-        sugerencias = resultado.get("sugerencias", [])
-        if isinstance(sugerencias, list) and sugerencias:
-            return sugerencias[:3]
-    except Exception as e:
-        logger.error(f"[sugerir_categorias] Error al procesar sugerencias del LLM: {e}")
-    # Fallback: usa matcher clásico si el LLM no responde bien
-    fallback = categorizar_reclamo_por_palabra_clave(texto_usuario)
-    return [fallback] if fallback and fallback != "Otros" else []
+    todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values()))) # Still useful for keyword matching
+    # LLM call removed. Category suggestion is now expected from the main Gemini call.
+    # This function now performs basic keyword matching as a fallback or primary if called directly.
+    logger.info(f"Sugiriendo categorías (NO-LLM) para: '{texto_usuario[:50]}...'")
+    sugeridas = []
+    if not texto_usuario: return sugeridas
+
+    texto_norm = normalizar_texto(texto_usuario)
+    from services.municipios import CATEGORIAS_RECLAMO # Local import
+    # Contar ocurrencias de keywords para cada categoría
+    conteo_categorias = {cat: 0 for cat in CATEGORIAS_RECLAMO} # Use the defined list
+    palabras_usuario = set(texto_norm.split())
+
+    for keyword, category_target in KEYWORD_TO_CATEGORY_MAP.items():
+        # Usar una keyword normalizada para la comparación si es necesario,
+        # aunque KEYWORD_TO_CATEGORY_MAP ya tiene claves en minúscula y sin acentos (asumido).
+        if keyword in palabras_usuario:
+            conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 1
+            if keyword in texto_norm: # Dar más peso si es una frase
+                 conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 2
+
+
+    # Ordenar por conteo descendente
+    categorias_ordenadas = sorted(conteo_categorias.items(), key=lambda item: item[1], reverse=True)
+
+    for cat, count in categorias_ordenadas:
+        if count > 0 and len(sugeridas) < 3:
+            if cat not in sugeridas: # Evitar duplicados si diferentes keywords apuntan a la misma categoría
+                 sugeridas.append(cat)
+        if len(sugeridas) >= 3:
+            break
+
+    if not sugeridas and texto_usuario:
+        # Si después del keyword matching no hay nada, pero había texto, sugerir "Otro Motivo"
+        # Asegurarse que "Otro Motivo" sea una de las CATEGORIAS_RECLAMO válidas.
+        if "Otro Motivo" in CATEGORIAS_RECLAMO: # Check against the defined list
+            sugeridas.append("Otro Motivo")
+
+    logger.info(f"Categorías sugeridas (NO-LLM) para '{texto_usuario[:50]}...': {sugeridas}")
+    return sugeridas # Devuelve hasta 3, o menos si no hay suficientes matches.
    
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
@@ -123,104 +150,95 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
         municipio_config = {}
 
     # Prioritize '_default' suffixed keys, then direct keys, then hardcoded N/A
-    default_localidad = municipio_config.get('ciudad_default', municipio_config.get('ciudad', 'N/A'))
-    default_provincia = municipio_config.get('provincia_default', municipio_config.get('provincia', 'N/A'))
+    default_localidad = municipio_config.get('ciudad_default', municipio_config.get('ciudad', 'Localidad Desconocida'))
+    default_provincia = municipio_config.get('provincia_default', municipio_config.get('provincia', 'Provincia Desconocida'))
 
-    logger.info(f"[ParseDireccion] Usando defaults para LLM - Localidad: '{default_localidad}', Provincia: '{default_provincia}' desde config: {municipio_config}")
+    # LLM call removed. This function now performs basic regex/keyword parsing.
+    # The main Gemini call (JULES_SYSTEM_PROMPT) is expected to provide structured address if possible.
 
+    logger.info(f"[ParseDireccion NON-LLM] Parseando: '{texto_direccion}' con defaults: Loc='{default_localidad}', Prov='{default_provincia}'")
+    parsed_data = {}
+    if not texto_direccion or not isinstance(texto_direccion, str):
+        return parsed_data # Devuelve dict vacío si no hay texto
 
-    # If provincia is N/A (or not set) but ciudad field contains a comma, try to split them
-    # This handles cases where config might have "ciudad": "Junín, Mendoza" or "ciudad_default": "Junín, Mendoza"
-    if (default_provincia == 'N/A' or not default_provincia) and isinstance(default_localidad, str) and ',' in default_localidad:
-        parts = default_localidad.split(',', 1)
-        potential_localidad = parts[0].strip()
-        potential_provincia = parts[1].strip()
-        # Basic check if the split parts look plausible as localidad and provincia
-        if len(potential_localidad) > 2 and len(potential_provincia) > 2:
-            default_localidad = potential_localidad # Update local variables for the prompt
-            default_provincia = potential_provincia
-            logger.info(f"[ParseDireccion] Split 'default_localidad' from config into Localidad: {default_localidad}, Provincia: {default_provincia}")
+    # Limpiar y normalizar texto de entrada
+    direccion_limpia = texto_direccion.strip()
 
-    prompt = f"""
-Eres un experto en interpretar direcciones en Argentina. Dada la siguiente DIRECCIÓN PROPORCIONADA, extráela en un formato JSON con los campos: "calle", "numero", "localidad", "provincia", "codigo_postal", "barrio", "otros_detalles".
+    # Patrones para extraer número, piso, depto, etc.
+    # Este es un intento muy básico y puede necesitar mejoras significativas o una librería dedicada.
 
-Considera la siguiente información del municipio para el cual trabajas (si está disponible):
-- Localidad principal: {default_localidad}
-- Provincia principal: {default_provincia}
+    # Extraer CP al final (ej: ..., 5500 o (5500))
+    cp_match = re.search(r"(\b\d{4}\b|\(\d{4}\))$", direccion_limpia)
+    if cp_match:
+        parsed_data["codigo_postal"] = cp_match.group(1).replace("(", "").replace(")", "")
+        direccion_limpia = direccion_limpia[:cp_match.start()].strip().rstrip(',')
+        logger.debug(f"CP extraído: {parsed_data['codigo_postal']}, resto: '{direccion_limpia}'")
 
-INSTRUCCIONES DETALLADAS:
-1.  **Calle y Número**: Identificá claramente el nombre de la calle y el número de puerta.
-2.  **Localidad y Provincia**:
-    *   Si la DIRECCIÓN PROPORCIONADA incluye explícitamente una localidad y/o provincia, utilizá esas.
-    *   Si la DIRECCIÓN PROPORCIONADA NO incluye localidad pero sí calle y número, y la calle y número parecen válidos para el contexto del municipio, podés ASUMIR la "Localidad principal" y "Provincia principal" del municipio si están definidas.
-    *   Si la DIRECCIÓN PROPORCIONADA NO incluye provincia pero sí localidad, y la localidad es conocida en el contexto de la "Provincia principal", podés ASUMIR la "Provincia principal".
-3.  **Código Postal, Barrio, Otros Detalles**: Extraelos si están presentes. Si no, dejalos como null o string vacío.
-4.  **Formato de Salida**: Respondé ÚNICAMENTE con el objeto JSON. No incluyas explicaciones adicionales.
-    *   Si un campo no se puede determinar, su valor debe ser `null` o un string vacío.
-    *   Asegurate que el JSON esté bien formado.
+    match_calle_numero_final = re.match(r"^(.*?)\s+(\d+[a-zA-Z]?(?:\s*(?:bis|altos|piso\s*\w+|dpto\s*\w+))?)\s*(?:,\s*(.*))?$", direccion_limpia, re.IGNORECASE)
 
-EJEMPLOS:
-- DIRECCIÓN PROPORCIONADA: "San Martín 123, Junín, Mendoza"
-  (Asumiendo que el bot no tiene info de municipio_config o es genérico)
-  RESPUESTA JSON: {{"calle": "San Martín", "numero": "123", "localidad": "Junín", "provincia": "Mendoza", "codigo_postal": null, "barrio": null, "otros_detalles": null}}
+    calle_original = direccion_limpia
 
-- DIRECCIÓN PROPORCIONADA: "Belgrano 456"
-  (Asumiendo municipio_config: {{"ciudad": "Godoy Cruz", "provincia": "Mendoza"}})
-  RESPUESTA JSON: {{"calle": "Belgrano", "numero": "456", "localidad": "Godoy Cruz", "provincia": "Mendoza", "codigo_postal": null, "barrio": null, "otros_detalles": null}}
+    if match_calle_numero_final:
+        parsed_data["calle"] = match_calle_numero_final.group(1).strip().rstrip(',')
+        parsed_data["numero"] = match_calle_numero_final.group(2).strip()
+        resto_direccion_post_numero = (match_calle_numero_final.group(3) or "").strip()
+        calle_original = parsed_data["calle"]
+        logger.debug(f"Calle: {parsed_data['calle']}, Numero: {parsed_data['numero']}, Resto post-numero: '{resto_direccion_post_numero}'")
 
-- DIRECCIÓN PROPORCIONADA: "Rivadavia al 789, Ciudad"
-  (Asumiendo municipio_config: {{"ciudad": "San Rafael", "provincia": "Mendoza"}})
-  RESPUESTA JSON: {{"calle": "Rivadavia", "numero": "789", "localidad": "Ciudad", "provincia": "Mendoza", "codigo_postal": null, "barrio": null, "otros_detalles": null}}
-  (Nota: "Ciudad" como localidad es común, el LLM debería tomarla si la provincia es Mendoza)
+        num_lower = parsed_data["numero"].lower()
+        piso_depto_match_en_num = re.search(r"(?:piso|p)\s*(\w+)(?:\s*(?:dpto|d)\s*(\w+))?", num_lower)
+        if piso_depto_match_en_num:
+            parsed_data["piso"] = piso_depto_match_en_num.group(1)
+            if piso_depto_match_en_num.group(2): parsed_data["departamento"] = piso_depto_match_en_num.group(2)
+            parsed_data["numero"] = num_lower[:piso_depto_match_en_num.start()].strip()
 
-- DIRECCIÓN PROPORCIONADA: "esquina de Soler y Paraguay, Palermo"
-  (Asumiendo municipio_config: {{"ciudad": "CABA", "provincia": "Buenos Aires"}})
-  RESPUESTA JSON: {{"calle": "esquina de Soler y Paraguay", "numero": null, "localidad": "Palermo", "provincia": "Buenos Aires", "codigo_postal": null, "barrio": "Palermo", "otros_detalles": "esquina"}}
+        if not parsed_data.get("piso") and resto_direccion_post_numero:
+            piso_depto_match_resto = re.search(r"(?:Piso|P)\s*(\w+)(?:\s*(?:Dpto|D|Depto\.?)\s*(\w+))?", resto_direccion_post_numero, re.IGNORECASE)
+            if piso_depto_match_resto:
+                parsed_data["piso"] = piso_depto_match_resto.group(1)
+                if piso_depto_match_resto.group(2): parsed_data["departamento"] = piso_depto_match_resto.group(2)
+                resto_direccion_post_numero = resto_direccion_post_numero.replace(piso_depto_match_resto.group(0), "").strip().rstrip(',').strip()
 
-DIRECCIÓN PROPORCIONADA: "{texto_direccion}"
+        direccion_limpia = resto_direccion_post_numero
+    else:
+        parts_sin_numero = direccion_limpia.split(',', 1)
+        parsed_data["calle"] = parts_sin_numero[0].strip()
+        calle_original = parsed_data["calle"]
+        direccion_limpia = parts_sin_numero[1].strip() if len(parts_sin_numero) > 1 else ""
+        logger.debug(f"Calle (sin num claro en regex): {parsed_data['calle']}, Resto: '{direccion_limpia}'")
 
-RESPUESTA JSON:
-"""
-    try:
-        respuesta_llm = get_cohere_response(
-            message=prompt,
-            preamble="Sos un experto en extraer direcciones a formato JSON."
-        )
-        logger.info(f"[ParseDireccion] LLM response for address '{texto_direccion}': {respuesta_llm}")
-        parsed_data = json.loads(respuesta_llm)
+    partes_restantes = [p.strip() for p in direccion_limpia.split(',') if p.strip()]
 
-        # Validaciones básicas de la estructura devuelta
-        if not isinstance(parsed_data, dict):
-            logger.info(f"[ParseDireccion] LLM no devolvió un diccionario para: {texto_direccion}")
-            return None
+    if default_localidad != "Localidad Desconocida": parsed_data["localidad"] = default_localidad
+    if default_provincia != "Provincia Desconocida": parsed_data["provincia"] = default_provincia
 
-        # Asegurar que al menos calle y número O calle y otros_detalles (para esquinas) estén presentes
-        calle = parsed_data.get("calle")
-        numero = parsed_data.get("numero")
-        otros_detalles = parsed_data.get("otros_detalles")
+    if len(partes_restantes) == 1:
+        if parsed_data.get("localidad") == "Localidad Desconocida" and not any(char.isdigit() for char in partes_restantes[0]):
+            parsed_data["localidad"] = partes_restantes[0]
+        else:
+            parsed_data["barrio"] = partes_restantes[0]
 
-        if not calle:  # La calle es fundamental
-            logger.info(f"[ParseDireccion] LLM no extrajo 'calle' para: {texto_direccion}")
-            return None
+    elif len(partes_restantes) >= 2:
+        if (parsed_data.get("localidad") == "Localidad Desconocida" or partes_restantes[0].lower() != default_localidad.lower()) and \
+           not any(char.isdigit() for char in partes_restantes[0]):
+            parsed_data["localidad"] = partes_restantes[0]
+            if not any(char.isdigit() for char in partes_restantes[1]):
+                 parsed_data["provincia"] = partes_restantes[1]
+                 if len(partes_restantes) > 2 and not any(char.isdigit() for char in partes_restantes[2]):
+                     parsed_data["barrio"] = partes_restantes[0]
+                     parsed_data["localidad"] = partes_restantes[1]
+                     parsed_data["provincia"] = partes_restantes[2]
+        elif not any(char.isdigit() for char in partes_restantes[0]):
+            parsed_data["barrio"] = partes_restantes[0] if len(partes_restantes[0]) > 2 else None
+            if len(partes_restantes) > 1 and not any(char.isdigit() for char in partes_restantes[1]):
+                 pass
 
-        # Si no hay número, y 'otros_detalles' no indica una esquina o referencia válida, podría ser inválido.
-        # Esta lógica puede ser más compleja. Por ahora, si hay calle, se considera un intento válido de parseo.
-        # if not numero and not (otros_detalles and ("esquina" in otros_detalles.lower() or "entre" in otros_detalles.lower())):
-        #     logger.warning(f"[ParseDireccion] LLM no extrajo 'numero' ni detalles de esquina válidos para: {texto_direccion}")
-        #     return None
+    if not parsed_data.get("calle"):
+        logger.warning(f"No se pudo parsear la calle de la dirección (NON-LLM): '{texto_direccion}'")
+        return {}
 
-        # Normalizar campos opcionales a None si son strings vacíos
-        for key in ["codigo_postal", "barrio", "otros_detalles", "numero", "localidad", "provincia"]:
-            if key in parsed_data and parsed_data[key] == "":
-                parsed_data[key] = None
-
-        return parsed_data
-    except json.JSONDecodeError:
-        logger.error(f"[ParseDireccion] Error al decodificar JSON del LLM para dirección: {texto_direccion}. Respuesta LLM: {respuesta_llm}", exc_info=True)
-        return None
-    except Exception as e:
-        logger.error(f"[ParseDireccion] Error inesperado al parsear dirección con LLM: {e}", exc_info=True)
-        return None
+    logger.info(f"Dirección parseada (NON-LLM) para '{texto_direccion}': {parsed_data}")
+    return parsed_data
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:

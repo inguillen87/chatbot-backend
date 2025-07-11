@@ -15,6 +15,12 @@ from .herramientas_municipio import normalizar_texto
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
 
+# Columnas por defecto para la tabla de catálogo en formato Markdown
+DEFAULT_TABLE_COLUMNS = [
+    ("ID", "id"), ("Nombre", "nombre"), ("Desc", "descripcion"), ("Precio", "precio_str"),
+    ("Cat", "categoria_qdrant"), ("SKU", "sku"), ("Marca", "marca")
+]
+
 # Colecciones separadas para cada tipo de usuario
 CATALOGO_PYME = "catalogo_pyme"
 CATALOGO_MUNICIPIO = "catalogo_municipio"

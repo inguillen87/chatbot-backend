@@ -1,11 +1,15 @@
+import sys
+import os
+
+# Add project root to sys.path to ensure modules like 'models.py' are findable
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import unittest
 import json
 from unittest.mock import patch, MagicMock, ANY
-import os
-import sys
 
-# Asegurar que los módulos del proyecto se puedan importar
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import create_app, db, Config
 from models import User, Rubro, ArchivoAdjunto, AnalisisArchivo, Conversacion # Importar modelos necesarios
@@ -81,24 +85,30 @@ class ChatIntegrationTests(unittest.TestCase):
         self.app_context.pop()
 
     # Mock para la tarea Celery y servicios externos
-    @patch('services.analisis_archivo_service.interpretar_imagen_reclamo') # Mockear la función clave dentro de la tarea
-    @patch('services.archivo_service.boto3_client') # Si usa S3, mockear cliente boto3
-    def test_chat_con_imagen_reclamo_exitoso(self, mock_boto3_client, mock_interpretar_imagen_reclamo):
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
+    # boto3_client mock removed as it's not used by archivo_service.py directly in the tested flow.
+    def test_chat_con_imagen_reclamo_exitoso(self, mock_interpretar_imagen_para_chat): # Corrected mock argument name
         # 1. Simular la subida de un archivo (endpoint /archivos/subir)
         # Esto crea ArchivoAdjunto y dispara la tarea Celery (que se ejecutará síncrono)
 
-        # Mockear la subida a S3 si `subir_archivo` lo hace directamente
-        # Si `subir_archivo` solo guarda localmente para Celery, esto podría no ser necesario aquí.
-        # Asumimos que `subir_archivo` crea el ArchivoAdjunto y la tarea se encarga del resto.
-
-        # Configurar el mock de `interpretar_imagen_reclamo` para que devuelva un análisis exitoso
-        mock_interpretar_imagen_reclamo.return_value = {
+        # Configurar el mock de `interpretar_imagen_para_chat` para que devuelva un análisis exitoso
+        # El formato de retorno de interpretar_imagen_para_chat es un poco diferente,
+        # incluye 'categoria_sugerida' y 'descripcion_sugerida' directamente.
+        mock_interpretar_imagen_para_chat.return_value = {
             'es_reclamo': True,
-            'tipo_sugerido': 'Alumbrado Público',
+            'categoria_sugerida': 'Alumbrado Público',
             'descripcion_sugerida': 'Parece una luminaria rota en la calle.',
-            'ubicacion_sugerida': 'Calle Falsa 123 (inferido de imagen)', # Opcional
-            'vision_results': {'objects': [{'name': 'street light', 'confidence': 0.9}]},
-            'analisis_id': 1 # ID del AnalisisArchivo que se crearía/actualizaría
+            # 'ubicacion_sugerida': 'Calle Falsa 123 (inferido de imagen)', # No es un campo estándar de retorno
+            'analisis_id': 1, # ID del AnalisisArchivo que se crearía/actualizaría
+            'texto_ocr': 'Luz rota poste 123', # Ejemplo de OCR
+            'analisis_interno': {
+                'tipo_analisis_sugerido': 'reclamo_municipal', # o similar
+                'vision_inferred_category': 'Alumbrado Público',
+                'llm_complaint_extraction_from_image': {
+                    'tipo_problema': 'Alumbrado Público',
+                    'descripcion_problema': 'Parece una luminaria rota en la calle.'
+                }
+            }
         }
 
         # Simular la subida del archivo primero para tener un ID de ArchivoAdjunto
@@ -136,8 +146,8 @@ class ChatIntegrationTests(unittest.TestCase):
         # necesitamos asegurar que la tarea sí lo haga con el resultado del mock.
         # En la implementación actual de `interpretar_imagen_reclamo`, esta SI actualiza y hace commit.
         self.assertEqual(analisis_obj.estado_analisis, "completado")
-        self.assertEqual(analisis_obj.tipo_analisis, "reclamo_vision_llm_v1") # Puesto por interpretar_imagen_reclamo
-        self.assertTrue(json.loads(analisis_obj.datos_estructurados).get("llm_complaint_extraction").get("tipo_problema") == "Alumbrado Público")
+        self.assertEqual(analisis_obj.tipo_analisis, "reclamo_municipal") # Updated to match mock
+        self.assertTrue(json.loads(analisis_obj.datos_estructurados).get("llm_complaint_extraction_from_image").get("tipo_problema") == "Alumbrado Público")
 
 
         # 2. Enviar mensaje al chat con uploaded_file_info
@@ -172,16 +182,25 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(contexto_actualizado.get("archivo_id_reclamo_actual"), archivo_id)
 
 
-    @patch('services.analisis_archivo_service.interpretar_imagen_reclamo')
-    @patch('services.ticket_service.enviar_notificacion_whatsapp_con_plantilla') # Mockear notificaciones
-    @patch('services.ticket_service.enviar_notificacion_sms')
-    def test_chat_con_imagen_reclamo_confirmacion_si_y_creacion_ticket(self, mock_sms, mock_whatsapp, mock_interpretar_imagen_reclamo):
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
+    @patch('services.email_service.enviar_notificacion_whatsapp_con_plantilla') # Corrected mock target
+    @patch('services.email_service.enviar_sms_ticket_novedad') # Corrected mock target
+    def test_chat_con_imagen_reclamo_confirmacion_si_y_creacion_ticket(self, mock_sms_novedad, mock_whatsapp_plantilla, mock_interpretar_imagen_para_chat): # Corrected mock argument names
         # --- Parte 1: Subida y primer análisis (similar al test anterior) ---
-        archivo_id = 10 # Usar un ID diferente para evitar colisiones si las pruebas no limpian bien entre sí (aunque setUp/tearDown deberían)
+        archivo_id = 10
 
-        mock_interpretar_imagen_reclamo.return_value = {
-            'es_reclamo': True, 'tipo_sugerido': 'Bacheo',
-            'descripcion_sugerida': 'Parece un bache grande.', 'analisis_id': archivo_id
+        mock_interpretar_imagen_para_chat.return_value = { # Corrected mock configuration
+            'es_reclamo': True, 'categoria_sugerida': 'Bacheo',
+            'descripcion_sugerida': 'Parece un bache grande.', 'analisis_id': archivo_id,
+            'texto_ocr': 'Bache peligroso',
+            'analisis_interno': {
+                'tipo_analisis_sugerido': 'reclamo_municipal',
+                'vision_inferred_category': 'Bacheo',
+                'llm_complaint_extraction_from_image': {
+                    'tipo_problema': 'Bacheo',
+                    'descripcion_problema': 'Parece un bache grande.'
+                }
+            }
         }
 
         archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=self.test_user.id, filename="bache_test.jpg", url="/archivos/bache_test.jpg", mime="image/jpeg", tamano=123)
@@ -293,12 +312,21 @@ class ChatIntegrationTests(unittest.TestCase):
         # mock_whatsapp.assert_called_once()
         # mock_sms.assert_called_once()
 
-    @patch('services.analisis_archivo_service.interpretar_imagen_reclamo')
-    def test_chat_con_imagen_reclamo_confirmacion_no(self, mock_interpretar_imagen_reclamo):
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
+    def test_chat_con_imagen_reclamo_confirmacion_no(self, mock_interpretar_imagen_para_chat): # Corrected mock argument
         archivo_id = 20
-        mock_interpretar_imagen_reclamo.return_value = {
-            'es_reclamo': True, 'tipo_sugerido': 'Semáforo Roto',
-            'descripcion_sugerida': 'El semáforo de la esquina no funciona.', 'analisis_id': archivo_id
+        mock_interpretar_imagen_para_chat.return_value = { # Corrected mock configuration
+            'es_reclamo': True, 'categoria_sugerida': 'Semáforo Roto',
+            'descripcion_sugerida': 'El semáforo de la esquina no funciona.', 'analisis_id': archivo_id,
+            'texto_ocr': 'Semáforo apagado',
+            'analisis_interno': {
+                'tipo_analisis_sugerido': 'reclamo_municipal',
+                 'vision_inferred_category': 'Semáforo Roto',
+                'llm_complaint_extraction_from_image': {
+                    'tipo_problema': 'Semáforo Roto',
+                    'descripcion_problema': 'El semáforo de la esquina no funciona.'
+                }
+            }
         }
         archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=self.test_user.id, filename="semaforo_roto.jpg", url="/archivos/semaforo.jpg", mime="image/jpeg")
         db.session.add(archivo_adj); db.session.commit()
@@ -323,9 +351,10 @@ class ChatIntegrationTests(unittest.TestCase):
         contexto_manual = data_no.get("contexto_actualizado", {}).get("contexto_municipio", {})
         self.assertEqual(contexto_manual.get("estado_conversacion"), "ESPERANDO_CATEGORIA_RECLAMO")
         self.assertIsNone(contexto_manual.get("tipo_sugerido_imagen")) # Debe haberse limpiado
+        self.assertIsNone(contexto_manual.get("categoria_sugerida")) # Ensure this is also cleared
 
-    @patch('services.analisis_archivo_service.interpretar_imagen_reclamo') # Aunque no se usará, es parte de la tarea
-    def test_chat_analisis_imagen_en_progreso(self, mock_interpretar_imagen_reclamo):
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
+    def test_chat_analisis_imagen_en_progreso(self, mock_interpretar_imagen_para_chat): # Corrected mock argument
         archivo_id = 30
         archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=self.test_user.id, filename="procesando.jpg", url="/archivos/procesando.jpg", mime="image/jpeg")
         analisis = AnalisisArchivo(archivo_adjunto_id=archivo_id, estado_analisis="procesando", tipo_analisis="reclamo_vision_v1") # Simular estado
@@ -340,8 +369,8 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertIn("Estoy analizando el archivo que subiste.", data["respuesta"])
         self.assertEqual(data.get("tipo_respuesta"), "espera_analisis_archivo")
 
-    @patch('services.analisis_archivo_service.interpretar_imagen_reclamo')
-    def test_chat_analisis_imagen_error(self, mock_interpretar_imagen_reclamo):
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
+    def test_chat_analisis_imagen_error(self, mock_interpretar_imagen_para_chat): # Corrected mock argument
         archivo_id = 40
         archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=self.test_user.id, filename="error_analisis.jpg", url="/archivos/error.jpg", mime="image/jpeg")
         analisis = AnalisisArchivo(archivo_adjunto_id=archivo_id, estado_analisis="error", tipo_analisis="reclamo_vision_llm_v1", error_analisis="Falla simulada de Vision")
@@ -354,15 +383,21 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertIn("Hubo un problema al analizar el archivo: Falla simulada de Vision", data["respuesta"])
         self.assertEqual(data.get("tipo_respuesta"), "error_analisis_archivo")
 
-    @patch('services.analisis_archivo_service.interpretar_imagen_reclamo')
-    def test_chat_analisis_imagen_no_es_reclamo(self, mock_interpretar_imagen_reclamo):
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
+    def test_chat_analisis_imagen_no_es_reclamo(self, mock_interpretar_imagen_para_chat): # Corrected mock argument
         archivo_id = 50
         # Configurar el mock para que devuelva que no es un reclamo y un _mensaje_bot
-        mock_interpretar_imagen_reclamo.return_value = {
+        mock_interpretar_imagen_para_chat.return_value = { # Corrected mock configuration
             'es_reclamo': False,
-            '_mensaje_bot': "La imagen que subiste no parece ser un reclamo. ¿Podrías describir el problema?",
-            'analisis_id': archivo_id
-            # 'tipo_analisis' sería 'imagen_general_vision_v1' seteado por interpretar_imagen_reclamo
+            '_mensaje_bot': "La imagen que subiste no parece ser un reclamo. ¿Podrías describir el problema?", # This field might not be used; response comes from 'motivo' or structure
+            'motivo': "La imagen que subiste no parece ser un reclamo. ¿Podrías describir el problema?", # More likely field
+            'categoria_sugerida': None,
+            'descripcion_sugerida': None,
+            'analisis_id': archivo_id,
+            'texto_ocr': 'Imagen de un gato.',
+            'analisis_interno': {
+                'tipo_analisis_sugerido': 'imagen_general_vision_v1'
+            }
         }
         archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=self.test_user.id, filename="no_reclamo.jpg", url="/archivos/no_reclamo.jpg", mime="image/jpeg")
         db.session.add(archivo_adj); db.session.commit()

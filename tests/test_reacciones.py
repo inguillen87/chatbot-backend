@@ -1,21 +1,29 @@
 import unittest
+import sys
+import os
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_reacciones = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_reacciones not in sys.path:
+    sys.path.insert(0, project_root_reacciones)
 
 try:
     from app import create_app
+    from models import Conversacion # Moved to top
+    from extensions import db # Moved to top, though typically imported where used or in app context
 except Exception:
     create_app = None
+    Conversacion = None # Define for skipIf
+    db = None # Define for skipIf
 
-
-@unittest.skipIf(create_app is None, "Flask not available")
+@unittest.skipIf(create_app is None or Conversacion is None or db is None, "Flask or Models not available")
 class ReaccionesEndpointTests(unittest.TestCase):
     def setUp(self):
         app = create_app()
         app.config["TESTING"] = True
         self.client = app.test_client()
         with app.app_context():
-            from extensions import db
-            from models import Conversacion
-
+            # db and Conversacion are now imported at the top
             db.create_all()
             conv = Conversacion(pregunta="p", respuesta="r", fuente="bot")
             db.session.add(conv)

@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional # Added Optional
 from utils.validators import (
     extract_email,
     extract_phone,
@@ -470,6 +470,86 @@ if __name__ == '__main__':
 
 print("Done with llm_utils.py basic execution tests.")
 
+def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optional[int] = None) -> List[Dict[str, Any]]:
+    """
+    Utiliza un LLM (Gemini) para extraer una lista de productos y cantidades de un texto OCR.
+    Intenta ser robusto a errores comunes de OCR y formatos de lista variados.
+
+    Args:
+        texto_ocr: El texto completo extraído por OCR de una imagen de pedido.
+        pyme_id_context: Opcional, ID de la PYME para dar más contexto al LLM si es útil.
+
+    Returns:
+        Una lista de diccionarios, donde cada diccionario representa un item del pedido.
+        Ej: [{"nombre_producto_ocr": "Coca Cola 2L", "cantidad_ocr": 2, "unidad_ocr": "botellas"}, ...]
+        Retorna lista vacía si no se pueden extraer items o en caso de error.
+    """
+    logger_llm_utils = logging.getLogger(__name__)
+    if not texto_ocr or not texto_ocr.strip():
+        logger_llm_utils.warning("[LLM_PEDIDO_EXTRACT] texto_ocr vacío o solo espacios.")
+        return []
+
+    from services.gemini_bridge import llamar_gemini_para_generacion_texto # Local import
+
+    # TODO: Refinar este prompt
+    system_prompt_pedido = (
+        "Eres un asistente experto en procesar listas de pedidos escritas a mano o en tickets. "
+        "Dada la siguiente lista de productos extraída por OCR, identifica cada producto, su cantidad numérica y la unidad de medida si se especifica explícitamente (ej. kg, gr, lts, ml, caja, paquete, docena, etc.). "
+        "Si la unidad es implícita o genérica como 'unidades' o 'ítems', puedes omitir el campo 'unidad_ocr'. "
+        "Devuelve SOLAMENTE un array JSON de objetos. Cada objeto debe tener:\n"
+        "- \"nombre_producto_ocr\": El nombre descriptivo y completo del producto tal como aparece (string).\n"
+        "- \"cantidad_ocr\": La cantidad NUMÉRICA asociada al producto (integer o float).\n"
+        "- \"unidad_ocr\" (opcional): La unidad de medida específica si se menciona (string).\n"
+        "Si un ítem no tiene cantidad clara, intenta inferir 1. Si no puedes determinar un producto o cantidad para una línea, omítela de la lista.\n"
+        "Ejemplo de salida: [{\"nombre_producto_ocr\": \"Coca Cola 2L\", \"cantidad_ocr\": 2, \"unidad_ocr\": \"botellas\"}, {\"nombre_producto_ocr\": \"Papas Fritas Grandes\", \"cantidad_ocr\": 1}]"
+    )
+    user_prompt_pedido = (
+        "Por favor, procesa el siguiente texto OCR de un pedido y extrae los items en formato JSON array:\n"
+        "Texto OCR:\n"
+        "----------\n"
+        f"{texto_ocr}\n"
+        "----------\n"
+        "Array JSON:"
+    )
+
+    logger_llm_utils.info(f"[LLM_PEDIDO_EXTRACT] Llamando a Gemini para extraer de: {texto_ocr[:200]}...")
+    respuesta_gemini_texto = llamar_gemini_para_generacion_texto(
+        system_prompt_especifico=system_prompt_pedido,
+        user_prompt=user_prompt_pedido,
+        temperature=0.1 # Más determinista para extracción
+    )
+
+    if not respuesta_gemini_texto:
+        logger_llm_utils.warning(f"[LLM_PEDIDO_EXTRACT] Gemini no devolvió respuesta para el texto OCR.")
+        return []
+
+    cleaned_json_str = _clean_llm_json_output(respuesta_gemini_texto)
+    try:
+        items_extraidos = json.loads(cleaned_json_str)
+        if isinstance(items_extraidos, list):
+            # Validar estructura de cada item
+            items_validos = []
+            for item in items_extraidos:
+                if isinstance(item, dict) and "nombre_producto_ocr" in item and "cantidad_ocr" in item:
+                    try:
+                        item["cantidad_ocr"] = int(float(str(item["cantidad_ocr"]).replace(',','.'))) # Asegurar que sea int o float y luego int
+                        if item["cantidad_ocr"] < 0 : item["cantidad_ocr"] = 1 # No permitir cantidades negativas
+                    except ValueError:
+                        item["cantidad_ocr"] = 1 # Default si la cantidad no es numérica
+                    items_validos.append(item)
+                else:
+                    logger_llm_utils.warning(f"[LLM_PEDIDO_EXTRACT] Item de LLM no tiene campos requeridos: {item}")
+            logger_llm_utils.info(f"[LLM_PEDIDO_EXTRACT] Items válidos extraídos por LLM: {items_validos}")
+            return items_validos
+        else:
+            logger_llm_utils.error(f"[LLM_PEDIDO_EXTRACT] LLM no devolvió una lista JSON. Respuesta: {cleaned_json_str}")
+            return []
+    except json.JSONDecodeError as e:
+        logger_llm_utils.error(f"[LLM_PEDIDO_EXTRACT] Error decodificando JSON de LLM: {e}. Respuesta: {cleaned_json_str}")
+        return []
+    except Exception as e_gen:
+        logger_llm_utils.error(f"[LLM_PEDIDO_EXTRACT] Error general procesando respuesta de LLM: {e_gen}", exc_info=True)
+        return []
 
 def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int = 200, min_longitud: int = 50) -> str:
     """
@@ -631,8 +711,47 @@ def analyze_document_with_google_document_ai(
 
     # Example of returning a mock Document object for placeholder purposes:
     # Ensure the mock object is compatible with what the calling code might expect.
-    if isinstance(documentai, type) and hasattr(documentai, 'Document'): # Check if it's the MockDocumentAI class
-        mock_doc = documentai.Document(text="Placeholder text from Document AI via mock.", mime_type=mime_type)
-    else: # Assuming it's the real documentai or a more complete mock
-        mock_doc = documentai.types.Document(text="Placeholder text from Document AI.", mime_type=mime_type) # type: ignore
-    return mock_doc
+
+    # Actual Google Document AI client initialization and call
+    try:
+        # The opts dictionary should be defined using the location variable
+        opts = {}
+        if location: # Ensure location is not None or empty
+            opts["api_endpoint"] = f"{location}-documentai.googleapis.com"
+
+        # Initialize client with or without opts based on whether location was valid
+        if opts:
+            client = documentai.DocumentProcessorServiceClient(client_options=opts)
+        else: # Fallback if location is not set, though this might lead to errors if endpoint isn't default
+            logger.warning(f"Document AI location not set, using default endpoint for client. Project: {project_id}")
+            client = documentai.DocumentProcessorServiceClient()
+
+        name = client.processor_path(project_id, location, processor_id)
+
+        # Construct the RawDocument
+        raw_document = documentai.RawDocument(content=file_content, mime_type=mime_type)
+
+        # Construct the request
+        request = documentai.ProcessRequest(name=name, raw_document=raw_document)
+
+        logger.info(f"Processing document with Document AI. Processor: {name}")
+        result = client.process_document(request=request)
+        logger.info("Document AI processing complete.")
+        return result.document
+
+    except ImportError: # Should have been caught by the check at the top of the function
+        logger.error("Google Cloud DocumentAI library not available during client instantiation.")
+        return None
+    except Exception as e:
+        logger.error(f"Error in analyze_document_with_google_document_ai: {e}", exc_info=True)
+        # Return a mock/empty document with error information if possible, or just None
+        error_doc_text = f"Error processing document with Document AI: {str(e)}"
+        if isinstance(documentai, type) and hasattr(documentai, 'Document'): # Check if it's the MockDocumentAI class
+             # Create a mock document indicating error.
+            mock_error_doc = documentai.Document(text=error_doc_text, mime_type=mime_type)
+            # You could add custom fields/entities to this mock_error_doc if your calling code checks for them.
+            # For example: mock_error_doc.entities = [{'type_': 'error', 'mention_text': str(e)}]
+            return mock_error_doc
+        # If using the real library and an error occurs, it might raise an exception
+        # or return a response with an error field. Here we return None.
+        return None

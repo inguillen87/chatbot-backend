@@ -2,6 +2,12 @@ import unittest
 from types import SimpleNamespace, ModuleType
 from unittest.mock import patch
 import sys
+import os
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_pyme_logic = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_pyme_logic not in sys.path:
+    sys.path.insert(0, project_root_pyme_logic)
 
 # -- Crear stubs mínimos para dependencias pesadas --
 models_stub = ModuleType('models')
@@ -61,14 +67,14 @@ flask_stub.session = {}
 sys.modules['flask'] = flask_stub
 
 sys.modules['cohere'] = ModuleType('cohere')
-sqlalchemy_stub = ModuleType('sqlalchemy')
-sqlalchemy_exc_stub = ModuleType('sqlalchemy.exc')
-class _SAError(Exception):
-    pass
-sqlalchemy_exc_stub.SQLAlchemyError = _SAError
-sqlalchemy_stub.exc = sqlalchemy_exc_stub
-sys.modules['sqlalchemy'] = sqlalchemy_stub
-sys.modules['sqlalchemy.exc'] = sqlalchemy_exc_stub
+# sqlalchemy_stub = ModuleType('sqlalchemy') # Removed stubbing of entire sqlalchemy module
+# sqlalchemy_exc_stub = ModuleType('sqlalchemy.exc')
+# class _SAError(Exception):
+#     pass
+# sqlalchemy_exc_stub.SQLAlchemyError = _SAError
+# sqlalchemy_stub.exc = sqlalchemy_exc_stub
+# sys.modules['sqlalchemy'] = sqlalchemy_stub # Removed stubbing
+# sys.modules['sqlalchemy.exc'] = sqlalchemy_exc_stub # Removed stubbing
 sys.modules['requests'] = ModuleType('requests')
 pandas_stub = ModuleType('pandas')
 class _DummyDF: pass

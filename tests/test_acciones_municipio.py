@@ -10,14 +10,23 @@ if project_root not in sys.path:
 
 from services.municipios import accion_crear_reclamo_municipio
 from models import User
-from config import Config, TestConfig
+from config import Config # Removed TestConfig
 from app import create_app
 from extensions import db
+
+
+class TestConfigAll(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = os.environ.get('TEST_DATABASE_URL', 'sqlite:///:memory:')
+    WTF_CSRF_ENABLED = False
+    SESSION_COOKIE_SECURE = False
+    CELERY_TASK_ALWAYS_EAGER = True
+    DEBUG = False # Ensure debug is False for some tests if needed, or True if that's the default
 
 class TestAccionesMunicipio(unittest.TestCase):
 
     def setUp(self):
-        self.app = create_app(config_class=TestConfig)
+        self.app = create_app(config_class=TestConfigAll) # Use the new TestConfigAll class
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
