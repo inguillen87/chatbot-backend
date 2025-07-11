@@ -205,41 +205,13 @@ def serializar_enum(obj):
     else:
         return obj
 
-PROMPT_CLASIFICAR_INTENCION = """
-Sos el cerebro comercial de un chatbot para una pyme. Analizá la PREGUNTA DEL USUARIO y respondé sólo con una de estas intenciones de la lista.
-Si no encaja claramente, usa 'pregunta_ambigua'.
-INTENCIONES POSIBLES:
-- saludo
-- ver_catalogo
-- consultar_ofertas
-- iniciar_pedido
-- agregar_al_carrito
-- ver_carrito
-- modificar_cantidad_carrito
-- eliminar_del_carrito
-- vaciar_carrito
-- finalizar_pedido
-- continuar_flujo
-- cancelar_flujo
-- pregunta_faq
-- consultar_estado_ticket
-- hablar_con_agente
-- descargar_catalogo
-- pregunta_ambigua
-PREGUNTA DEL USUARIO: "{pregunta_usuario}"
-ESTADO_CONVERSACION_ACTUAL: {estado_conversacion_actual}
-INTENCIÓN: """ # Añadido estado_conversacion_actual al prompt
-
-def _clasificar_intencion_pyme_con_llm(pregunta: str, context_dict: dict) -> str:
-    estado_actual_str = context_dict.get(CONTEXTO_PYME, {}).get("estado_conversacion", "IDLE")
-    prompt_enriquecido = PROMPT_CLASIFICAR_INTENCION.format(pregunta_usuario=pregunta, estado_conversacion_actual=estado_actual_str)
-    historial_mensajes = context_dict.get("mensajes_previos", [])
-    try:
-        res = get_cohere_response(message=prompt_enriquecido, preamble="Eres un clasificador de intenciones para PYME.", chat_history=historial_mensajes[-6:]) # Últimos 3 intercambios
-        return res.strip().lower() if res else "pregunta_ambigua"
-    except Exception as e: logger.error(f"Error clasificando intención PYME: {e}"); return "pregunta_ambigua"
+# PROMPT_CLASIFICAR_INTENCION y _clasificar_intencion_pyme_con_llm eliminados.
+# La intención vendrá de la llamada principal a Gemini.
 
 def analizar_sentimiento_llm(texto: str) -> str:
+    # Esta función aún usa robust_chat (Cohere). Se revisará en una fase posterior si debe migrar a Gemini
+    # o si se mantiene para tareas específicas de análisis de sentimiento si Cohere es preferido para eso.
+    # Por ahora, se deja como está, asumiendo que `robust_chat` sigue funcional o será mockeado en tests.
     prompt = (f"Analiza el sentimiento del texto y responde 'positivo', 'negativo' o 'neutral'. TEXTO: '{texto}'\nSENTIMIENTO:")
     try:
         res = robust_chat(message=prompt); sentimiento = res.strip().lower()
@@ -544,82 +516,62 @@ class PedidoHandler(BaseHandler):
         if estado_actual == PymeConversationState.IDLE and (intencion_actual == "iniciar_pedido" or accion_payload == "iniciar_pedido" or accion_payload == "limpiar_y_nuevo_pedido_saludo"):
             if accion_payload == "limpiar_y_nuevo_pedido_saludo": cart_service.clear_pyme_cart(self.pyme_id_actual)
             self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO)
+
+            # --- BEGIN: Consume datos_accion from main Gemini call ---
+            datos_accion_llm = self.context.get("datos_accion")
+            items_pre_extraidos_llm = []
+            if datos_accion_llm and isinstance(datos_accion_llm, dict):
+                # Assuming datos_accion_llm might have a "productos_pedido" list
+                # or individual fields like "nombre_producto_mencionado", "cantidad_producto_mencionado"
+                if datos_accion_llm.get("productos_pedido") and isinstance(datos_accion_llm["productos_pedido"], list):
+                    items_pre_extraidos_llm = datos_accion_llm["productos_pedido"]
+                    logger.info(f"[PedidoHandler] Productos pre-extraídos por LLM principal: {items_pre_extraidos_llm}")
+                elif datos_accion_llm.get("nombre_producto_mencionado"):
+                    items_pre_extraidos_llm.append({
+                        "nombre": datos_accion_llm["nombre_producto_mencionado"],
+                        "cantidad": datos_accion_llm.get("cantidad_producto_mencionado", 1)
+                        # Unidad podría también venir de datos_accion_llm si el prompt de Gemini lo soporta
+                    })
+                    logger.info(f"[PedidoHandler] Producto individual pre-extraído por LLM principal: {items_pre_extraidos_llm}")
+
+                # Pre-fill contact details from LLM if available
+                if datos_accion_llm.get("nombre_usuario_detectado"): self.pyme_ctx["nombre_cliente"] = datos_accion_llm["nombre_usuario_detectado"]
+                if datos_accion_llm.get("telefono_detectado") and validar_telefono(datos_accion_llm["telefono_detectado"]):
+                    self.pyme_ctx["telefono_cliente"] = datos_accion_llm["telefono_detectado"] # Formateo se hará después si es necesario
+                if datos_accion_llm.get("email_detectado") and validar_email(datos_accion_llm["email_detectado"]):
+                    self.pyme_ctx["email_cliente"] = datos_accion_llm["email_detectado"]
+                # Dirección podría ser más compleja, la dejamos para el flujo normal por ahora o si viene muy clara del LLM.
+                if datos_accion_llm.get("ubicacion"): self.pyme_ctx["direccion_cliente"] = datos_accion_llm.get("ubicacion")
+                self._guardar_contexto_pyme() # Guardar datos pre-llenados
+            # --- END: Consume datos_accion ---
+
+            if items_pre_extraidos_llm:
+                # If LLM provided items, process them immediately (similar to ESPERANDO_PRODUCTO logic)
+                # Pass 'items_extraidos' to avoid re-running extraction on the original 'pregunta' for these items.
+                logger.info(f"[PedidoHandler] Procesando items pre-extraídos por LLM: {items_pre_extraidos_llm}")
+                # Temporarily set pregunta to empty to signal that items are coming from pre-extraction
+                return self._procesar_items_y_responder(items_pre_extraidos_llm, "productos_pre_extraidos_llm")
+
+            # If no items from LLM, or if `pregunta` still contains more after LLM (e.g. "quiero pedir X y Z" where LLM got X but Z is still in `pregunta`)
+            # The original `pregunta` might still be relevant.
+            # If `pregunta` is a generic "iniciar pedido" and LLM found no items, then ask.
+            if pregunta.strip() and pregunta not in ["iniciar_pedido", "limpiar_y_nuevo_pedido_saludo"] and intencion_actual == "iniciar_pedido":
+                # Process current question as if it's an addition to the order (will hit ESPERANDO_PRODUCTO)
+                # This could re-extract if LLM didn't clear pregunta or provide items.
+                logger.info(f"[PedidoHandler] LLM no extrajo items, o pregunta '{pregunta}' es para procesamiento adicional. Llamando a _procesar_items_y_responder.")
+                return self._procesar_items_y_responder(None, pregunta) # Let _procesar_items_y_responder call extraer_productos_pedido
+
             msg_ini = "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel."
-
-            if pregunta not in ["iniciar_pedido", "limpiar_y_nuevo_pedido_saludo"] and intencion_actual == "iniciar_pedido":
-                # Process current question as if it's an addition to the order
-                return self.handle(pregunta) # Recursive call, will hit ESPERANDO_PRODUCTO
-
             options_ini = [{"id": "ver_catalogo_pyme_pedido_inicio", "texto": "Ver catálogo"}]
             return {
                 "message_body": msg_ini,
                 "options_list": options_ini,
                 "message_type": 'interactive_buttons',
-                "fuente": "pyme_iniciar_pedido_v2"
+                "fuente": "pyme_iniciar_pedido_v2_sin_preextraccion"
             }
 
         elif estado_actual == PymeConversationState.ESPERANDO_PRODUCTO:
-            # (Manejo de CANCEL_KEYWORDS, ver_carrito, finalizar_pedido ya están arriba o en intenciones)
-            if accion_payload == "agregar_mas_pedido": return {"respuesta": "¿Qué más quieres agregar?", "fuente": "pidiendo_mas_productos_v2"}
-
-            texto_para_extraccion = pregunta
-            items_extraidos = []
-            if accion_payload.startswith("pedir_item_"):
-                identificador_item_accion = accion_payload.replace("pedir_item_", "").replace("_", " ")
-                items_extraidos = [{"nombre": identificador_item_accion, "cantidad": 1}] # Asumir cantidad 1
-            elif texto_para_extraccion.strip():
-                items_extraidos = extraer_productos_pedido(texto_para_extraccion)
-            
-            if not items_extraidos and not accion_payload.startswith("pedir_item_"): # Si no se extrajo nada y no fue un botón de pedir
-                 resumen_vacio = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
-                 options_no_extr = [
-                     {"id": "ver_catalogo_pyme_no_extr", "texto": "Ver catálogo"},
-                     {"id": "finalizar_pedido_pyme_no_extr", "texto": "Finalizar pedido"}
-                 ]
-                 return {
-                     "message_body": f"No entendí qué producto agregar. {formatear_carrito_desde_summary(resumen_vacio, self.context)}",
-                     "options_list": options_no_extr,
-                     "message_type": 'interactive_buttons',
-                     "fuente": "pyme_producto_no_entendido_v2"
-                 }
-
-            items_agregados_ok_nombres = []
-            productos_no_hallados_nombres = []
-
-            for item_ext in items_extraidos:
-                nombre_b = item_ext["nombre"]; cant_b = item_ext.get("cantidad",1)
-                res_q = buscar_catalogo_qdrant(self.pyme_id_actual, nombre_b, limite=1, coleccion=self.context.get("coleccion_qdrant"))
-                if res_q and res_q[0].payload:
-                    p = res_q[0].payload
-                    id_c = p.get("db_id") or (CatalogoItem.query.filter_by(user_id=self.pyme_id_actual, sku=p.get("sku")).first().id if p.get("sku") else None)
-                    if id_c and p.get("precio_float") is not None:
-                        info_p = {"catalogo_item_id": id_c, "nombre_producto": p.get("nombre"), "precio_unitario_original": p.get("precio_float"),
-                                  "moneda": p.get("moneda","ARS"), "sku": p.get("sku"), "presentacion": p.get("unidad_descripcion")or p.get("unidad_original"), "imagen_url": p.get("imagen_url")}
-                        cart_service.add_item_to_cart(self.pyme_id_actual, info_p, cant_b)
-                        items_agregados_ok_nombres.append(info_p["nombre_producto"])
-                        add_preference("productos", info_p["nombre_producto"])
-                    else: productos_no_hallados_nombres.append(nombre_b + (" (sin precio)" if id_c else " (ID no hallado)"))
-                else: productos_no_hallados_nombres.append(nombre_b + " (no en catálogo)")
-            
-            msg_res = ""
-            if items_agregados_ok_nombres: msg_res += f"Agregado(s): {', '.join(items_agregados_ok_nombres)}. "
-            if productos_no_hallados_nombres: msg_res += f"No pude agregar: {', '.join(productos_no_hallados_nombres)}. "
-            
-            resumen_obj = cart_service.get_cart_summary(self.pyme_id_actual, self.cliente_id_actual)
-            msg_res += f"\n{formatear_carrito_desde_summary(resumen_obj, self.context)}"
-            self.pyme_ctx["reintentos"] = 0; self._guardar_contexto_pyme()
-            
-            options_agregado = [
-                {"id": "agregar_mas_pedido_pyme_agregado", "texto": "Agregar más"},
-                {"id": "finalizar_pedido_pyme_agregado", "texto": "Finalizar pedido"},
-                {"id": "vaciar_carrito_pyme_agregado", "texto": "Vaciar carrito"}
-            ]
-            return {
-                "message_body": msg_res,
-                "options_list": options_agregado,
-                "message_type": 'interactive_buttons', # Could be list if options grow
-                "fuente": "pyme_pedido_progreso_v2"
-            }
+            return self._procesar_items_y_responder(None, pregunta)
 
         elif estado_actual == PymeConversationState.CONFIRMANDO_PEDIDO:
             if any(k in accion_payload for k in CANCEL_KEYWORDS):
@@ -962,290 +914,203 @@ class FallbackHandler(BaseHandler):
     def handle(self, pregunta):
         # Este es el último recurso. Intenta dar una respuesta genérica o escalar.
         logger.warning(f"[PYME_FALLBACK_HANDLER] Pregunta no manejada: '{pregunta}', Intención: {self.context.get('intencion')}, Estado: {self.pyme_ctx.get('estado_conversacion')}")
-        # Reutilizar UnclearHandler puede ser una buena estrategia aquí.
         return UnclearHandler(self.context).handle(pregunta)
 
 class SmallTalkHandler(BaseHandler):
     def handle(self, pregunta: str):
         respuesta_small_talk = generar_respuesta_small_talk(pregunta, self.context.get("nombre_pyme", "la empresa"))
         if respuesta_small_talk:
-            # El estado de la conversación no debería cambiar por un small talk.
-            # No llamamos a _actualizar_estado
-            return {
-                "message_body": respuesta_small_talk,
-                "options_list": [], # Generalmente small talk no lleva opciones
-                "message_type": "text",
-                "fuente": "pyme_small_talk_handler_v2"
-            }
-        # Si generar_respuesta_small_talk devuelve None (porque no fue realmente small talk),
-        # entonces este handler no debería manejarlo, y se pasará al siguiente.
+            return {"message_body": respuesta_small_talk, "options_list": [], "message_type": "text", "fuente": "pyme_small_talk_handler_v2"}
         return None
-
 
 class ToolHandlerPyme(BaseHandler):
     def handle(self, pregunta: str):
-        # Ejemplo: si la pregunta es "qué información web tenés de [dominio]?"
         match_webinfo = re.search(r"informaci[oó]n web de\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", pregunta, re.IGNORECASE)
         if match_webinfo:
             dominio = match_webinfo.group(1)
-            info = obtener_info_web(dominio) # Asumimos que esta función existe y devuelve un string formateado
-            if info:
-                return {"message_body": f"Información de {dominio}:\n{info}", "fuente": "pyme_tool_webinfo_v2"}
-            else:
-                return {"message_body": f"No pude obtener información web para {dominio}.", "fuente": "pyme_tool_webinfo_no_data_v2"}
-        return None # No es una pregunta para esta herramienta
+            info = obtener_info_web(dominio)
+            if info: return {"message_body": f"Información de {dominio}:\n{info}", "fuente": "pyme_tool_webinfo_v2"}
+            else: return {"message_body": f"No pude obtener información web para {dominio}.", "fuente": "pyme_tool_webinfo_no_data_v2"}
+        return None
 
-# Temporal: Placeholder para coleccion_catalogo_para_rubro si no está definida globalmente
 def coleccion_catalogo_para_rubro(rubro_nombre: str) -> str:
-    # Lógica para determinar la colección basada en el rubro.
-    # Podría ser una config, o una convención.
-    # Ejemplo: return f"catalogo_{rubro_nombre.replace(' ', '_')}"
-    return CATALOGO_PYME # Usar la constante global por ahora
+    return CATALOGO_PYME
 
-# def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, anon_id=None, **kwargs):
-def responder_pyme(pregunta, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
+from services.gemini_bridge import llamar_gemini # Importar llamar_gemini
+from .chat_orchestrator import ChatOrchestrator # Importar el nuevo Orchestrator
+
+def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
     request_id = str(uuid.uuid4())
-    # Añadir current_app al logger para acceso a config
-    logger_actual = current_app.logger if current_app else logger # Asegurar que logger_actual esté definido
-    logger_actual.info(f"[RESPONDER_PYME_START - {request_id}] Pregunta: '{pregunta}', UserPyme: {getattr(owner_user, 'id', 'N/A')}, ViewerCliente: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}")
+    logger_actual = current_app.logger if current_app else logger
 
-    # --- Contexto General ---
-    pyme_id_para_servicios = getattr(owner_user, "id", None)
-    nombre_pyme_display = getattr(owner_user, "nombre_empresa", "la tienda") if owner_user else "la tienda"
-    rubro_nombre_actual = getattr(rubro_obj, "nombre", "general").lower() if rubro_obj else \
-                          (getattr(owner_user.rubro, "nombre", "general").lower() if owner_user and hasattr(owner_user, "rubro") else "general")
-    
-    coleccion_qdrant_usar = coleccion_catalogo_para_rubro(rubro_nombre_actual)
-    chat_session_uuid_actual = kwargs.get("chat_session_uuid")
+    # --- 1. Procesamiento de Entrada y Carga de Contexto (simplificado) ---
+    received_payload = {}
+    pregunta_str = ""
+    if isinstance(pregunta_original, dict):
+        received_payload = pregunta_original
+        pregunta_str = received_payload.get("pregunta", "")
+    elif isinstance(pregunta_original, str):
+        pregunta_str = pregunta_original
+        received_payload["pregunta"] = pregunta_original
+    if kwargs: received_payload.update(kwargs)
 
-    # --- Cargar Historial y Contexto PYME desde chat_db_context.context_data ---
-    if chat_db_context.context_data is None:
-        chat_db_context.context_data = {}
-
-    historial_actual_sesion = chat_db_context.context_data.get(NOMBRE_HISTORIAL_SESION, [])
-    if not historial_actual_sesion and chat_session_uuid_actual: # Solo intentar cargar desde DB si no hay nada en el contexto actual y hay session_id
-        try:
-            conversaciones_db = Conversacion.query.filter_by(session_id=chat_session_uuid_actual).order_by(Conversacion.timestamp.desc()).limit(MAX_HISTORIAL_CHAT).all()
-            if conversaciones_db:
-                conversaciones_db.reverse()
-                historial_actual_sesion = [{"role": "USER" if i%2==0 else "CHATBOT", "content": conv.pregunta if i%2==0 else conv.respuesta} for i, conv in enumerate(conversaciones_db)]
-                logger_actual.info(f"Historial reconstruido desde DB para {chat_session_uuid_actual}: {len(historial_actual_sesion)} mensajes.")
-        except Exception as e_hist: logger_actual.error(f"Error cargando historial DB: {e_hist}")
-
+    if chat_db_context.context_data is None: chat_db_context.context_data = {}
     pyme_ctx_actual = chat_db_context.context_data.get(CONTEXTO_PYME, {})
+    historial_chat_para_gemini = chat_db_context.context_data.get("mensajes_previos_gemini_formato", [])
 
-    context_general = {
-        "user_id": pyme_id_para_servicios, # ID de la PYME
+    # --- 2. Construir Información de Usuario para Gemini ---
+    nombre_pyme_display = getattr(owner_user, "nombre_empresa", "la tienda") if owner_user else "la tienda"
+    usuario_info_for_gemini = {
+        "nombre": getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None) or pyme_ctx_actual.get("nombre_cliente") or "Cliente",
+        "tipo_entidad": "pyme",
+        "pyme_info": {"nombre_pyme": nombre_pyme_display, "rubro": getattr(owner_user.rubro, "nombre", "general") if owner_user and hasattr(owner_user, "rubro") else "general"}
+    }
+    loc_usuario_texto = getattr(viewer_user, "direccion", None) or pyme_ctx_actual.get("direccion_cliente")
+    if loc_usuario_texto: usuario_info_for_gemini["ubicacion_conocida"] = loc_usuario_texto
+
+    # --- 3. Llamada Principal a Gemini ---
+    mensaje_para_gemini = pregunta_str # Simplificado, podría añadir info de adjuntos si es relevante aquí
+    # (Manejo de adjuntos y su análisis se delega a ActionHandlers si Gemini lo indica)
+
+    llm_response_structured = llamar_gemini(
+        mensaje_usuario=mensaje_para_gemini,
+        usuario=usuario_info_for_gemini,
+        historial=historial_chat_para_gemini
+    )
+
+    # Actualizar historial para la próxima llamada a Gemini
+    if "mensajes_previos_gemini_formato" not in chat_db_context.context_data:
+        chat_db_context.context_data["mensajes_previos_gemini_formato"] = []
+    chat_db_context.context_data["mensajes_previos_gemini_formato"].append({"role": "user", "parts": [{"text": mensaje_para_gemini}]})
+    # La respuesta del modelo al historial se añade después del ActionHandler
+
+    # --- 4. Preparar Contexto Global para ChatOrchestrator y Action Handlers ---
+    global_context_for_orchestrator = {
+        CONTEXTO_PYME: pyme_ctx_actual,
+        "user_id": getattr(owner_user, "id", None), # ID de la PYME (owner)
         "nombre_pyme": nombre_pyme_display,
-        "rubro_nombre": rubro_nombre_actual,
-        "mensajes_previos": historial_actual_sesion, # Para el LLM
-        CONTEXTO_PYME: pyme_ctx_actual, # Este es el diccionario que se modificará
-        "cliente_id": getattr(viewer_user, "id", None), # ID del ChatUser/User final
-        "viewer_user_obj": viewer_user, # <--- OBJETO USER COMPLETO DEL CLIENTE/VIEWER
+        "rubro_nombre": getattr(owner_user.rubro, "nombre", "general").lower() if owner_user and hasattr(owner_user, "rubro") else "general",
+        "viewer_user_obj": viewer_user,
+        "cliente_id": getattr(viewer_user, "id", None), # ID del cliente final
         "anon_id": anon_id,
         "rubro_id": getattr(rubro_obj, "id", None) or (getattr(owner_user.rubro, "id", None) if owner_user and hasattr(owner_user, "rubro") else None),
-        "coleccion_qdrant": coleccion_qdrant_usar,
-        "chat_session_uuid": chat_session_uuid_actual,
-        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
-        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        "action_payload": kwargs.get("action_payload", pregunta.lower()), # Para botones
-        "chat_db_context_data": chat_db_context.context_data # Pasar el dict de context_data para que los handlers lo modifiquen
+        "coleccion_qdrant": coleccion_catalogo_para_rubro(getattr(owner_user.rubro, "nombre", "general").lower() if owner_user and hasattr(owner_user, "rubro") else "general"),
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "chat_db_context_data": chat_db_context.context_data, # El dict vivo
+        "channel": channel,
+        "target_entity_type": "pyme", # Para DerivarHumanoAction
+        # Pasar datos del payload que podrían ser útiles para handlers
+        "pregunta_actual_usuario": pregunta_str,
+        "action_button_payload": received_payload.get("action"),
+        "uploaded_file_info": received_payload.get("uploaded_file_info") or received_payload.get("uploaded_file_info_whatsapp"),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"), # Si ya se subió un archivo
     }
 
-    # ---- INICIO: Lógica de sugerencia de registro PROACTIVA ----
-    if not viewer_user and anon_id and current_app: # Solo para anónimos y si hay contexto de app
-        pyme_ctx_para_sugerencia = context_general[CONTEXTO_PYME]
+    # --- 5. Ejecutar Acción vía ChatOrchestrator ---
+    orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
+    action_handler_result = orchestrator.execute_action(llm_response_structured)
 
-        estado_actual_sugerencia = deserialize_state(pyme_ctx_para_sugerencia.get("estado_conversacion"))
-        # No necesitamos chequear historial_actual_sesion[-1] aquí, ya que la lógica de umbral y flag debería ser suficiente.
+    # --- 6. Procesar Resultado del Action Handler y Formatear Respuesta ---
+    respuesta_final_texto = action_handler_result.get("message_to_user")
+    if not respuesta_final_texto:
+        respuesta_final_texto = llm_response_structured.get("respuesta_usuario", "No estoy seguro de cómo proceder. ¿Podrías intentarlo de nuevo?")
 
-        # No deberíamos necesitar verificar 'ultima_fuente_bot' si el frontend maneja 'sugerencia_registro'
-        # y no vuelve a llamar al backend inmediatamente. Pero como defensa:
-        # if context_general[CONTEXTO_PYME].get("ultima_respuesta_tipo") == "sugerencia_registro":
-        #    pass # No sugerir de nuevo si la última fue una sugerencia. Necesitaríamos guardar "ultima_respuesta_tipo".
+    opciones_finales = llm_response_structured.get("botones", [])
+    pedir_info_final = action_handler_result.get("pedir_info") or llm_response_structured.get("pedir_info")
 
-        estados_evitar_sugerencia = [
-            PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE,
-            PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO,
-            PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION,
-            PymeConversationState.ESPERANDO_DATOS_CLIENTE_EMAIL,
-            PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS,
-            PymeConversationState.CONFIRMANDO_PEDIDO, # Podría ser muy pronto si acaba de confirmar un ítem
-            PymeConversationState.ESPERANDO_FEEDBACK # Ya terminó el flujo principal
+    # Actualizar estado de conversación en pyme_ctx_actual (que es global_context_for_orchestrator[CONTEXTO_PYME])
+    if action_handler_result.get("success") and not pedir_info_final:
+        if pyme_ctx_actual.get("estado_conversacion") not in [None, PymeConversationState.IDLE.name]:
+            logger_actual.info(f"Acción PYME '{llm_response_structured.get('accion_backend')}' exitosa y sin pedir_info. Limpiando estado PYME.")
+            pyme_ctx_actual.clear() # Limpia el sub-diccionario
+            # (preservar interacciones_anon_sesion si es necesario)
+    elif pedir_info_final:
+        # Mapear pedir_info_final a un PymeConversationState
+        # Esta lógica de mapeo es crucial y debe ser exhaustiva.
+        estado_objetivo_str_pyme = None
+        if pedir_info_final == "productos_del_pedido": estado_objetivo_str_pyme = PymeConversationState.ESPERANDO_PRODUCTO.name
+        elif pedir_info_final == "nombre_cliente_pedido": estado_objetivo_str_pyme = PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE.name
+        # ... más mapeos para PYME ...
+        if estado_objetivo_str_pyme:
+            pyme_ctx_actual["estado_conversacion"] = estado_objetivo_str_pyme
+        else:
+            logger_actual.warning(f"No se pudo mapear pedir_info_pyme '{pedir_info_final}' a PymeConversationState.")
+
+    # Guardar historial de chat_db_context con respuesta final
+    chat_db_context.context_data["mensajes_previos_gemini_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})
+    if len(chat_db_context.context_data["mensajes_previos_gemini_formato"]) > 20:
+        chat_db_context.context_data["mensajes_previos_gemini_formato"] = chat_db_context.context_data["mensajes_previos_gemini_formato"][-20:]
+
+    # --- Lógica de sugerencia de registro PROACTIVA (simplificada, similar a municipio) ---
+    if not viewer_user and anon_id and current_app and \
+       action_handler_result.get("fuente","") != "sugerencia_registro_pyme_v2": # No sugerir si ya es una sugerencia
+        
+        estado_actual_str_sug_pyme = pyme_ctx_actual.get("estado_conversacion")
+        estado_sug_pyme_enum = None
+        if estado_actual_str_sug_pyme:
+            try: estado_sug_pyme_enum = PymeConversationState[estado_actual_str_sug_pyme]
+            except KeyError: pass
+        
+        estados_evitar_sug_pyme = [ # Definir estados donde no se debe interrumpir con sugerencia
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE, PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO,
+            PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION, PymeConversationState.ESPERANDO_DATOS_CLIENTE_EMAIL,
+            PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS, PymeConversationState.CONFIRMANDO_PEDIDO
         ]
+        if not estado_sug_pyme_enum or estado_sug_pyme_enum not in estados_evitar_sug_pyme:
+            interacciones_anon_pyme = pyme_ctx_actual.get("interacciones_anon_sesion", 0)
+            if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok"]:
+                interacciones_anon_pyme += 1
+            pyme_ctx_actual["interacciones_anon_sesion"] = interacciones_anon_pyme
+            umbral_sug_pyme = current_app.config.get("PYME_UMBRAL_SUGERENCIA_REGISTRO", 3)
 
-        if estado_actual_sugerencia not in estados_evitar_sugerencia:
-            interacciones_anon_sesion = pyme_ctx_para_sugerencia.get("interacciones_anon_sesion", 0)
-            # Solo contar si la pregunta no es un simple "si", "no", "ok" (evitar contar respuestas a preguntas del bot)
-            if len(pregunta.split()) > 1 or pregunta.lower() not in ["si", "no", "ok", "dale", "bueno"]:
-                 interacciones_anon_sesion += 1
-            pyme_ctx_para_sugerencia["interacciones_anon_sesion"] = interacciones_anon_sesion
-
-            # Guardar pyme_ctx actualizado en chat_db_context.context_data ANTES de retornar la sugerencia
-            chat_db_context.context_data[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
-            # No flask_session.modified = True
-
-            umbral_sugerencia = current_app.config.get("PYME_UMBRAL_SUGERENCIA_REGISTRO", 3)
-
-            if umbral_sugerencia and umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia:
-                # Verificar si ya se sugirió en esta "ronda" de interacciones para no ser repetitivo
-                if not pyme_ctx_para_sugerencia.get("sugerencia_registro_emitida_ronda", False):
-                    logger_actual.info(f"[RESPONDER_PYME - {request_id}] Anon {anon_id} alcanzó umbral de {umbral_sugerencia} interacciones. Sugiriendo registro.")
-                    pyme_ctx_para_sugerencia["sugerencia_registro_emitida_ronda"] = True # Marcar como emitida
-                    chat_db_context.context_data[CONTEXTO_PYME] = pyme_ctx_para_sugerencia # Guardar el flag
-                    # No flask_session.modified = True
-
-                    respuesta_sugerencia = construir_respuesta_sugerir_registro(
-                        mensaje_personalizado="Hemos tenido una buena charla.",
-                        tipo_entidad="pyme"
-                    )
-                    # Asegurar que el contexto_pyme devuelto es el actualizado
-                    respuesta_sugerencia[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
-                    # Guardar la conversación ANTES de devolver la sugerencia
-                    if pyme_id_para_servicios or anon_id:
-                        try:
-                            db.session.add(Conversacion(
-                                user_id=context_general.get("cliente_id"), pregunta=pregunta,
-                                respuesta=respuesta_sugerencia.get("respuesta", ""), fuente=respuesta_sugerencia.get("fuente", "sugerencia_registro_pyme"),
-                                rubro=rubro_nombre_actual, session_id=chat_session_uuid_actual,
-                                pyme_id=pyme_id_para_servicios
-                            ))
-                            db.session.commit()
-                        except Exception as e_conv_sug: logger_actual.error(f"Error guardando Conversacion (sugerencia PYME): {e_conv_sug}")
-                    return respuesta_sugerencia
-            else: # Si no se alcanzó el umbral, resetear el flag de "emitida en ronda"
-                 pyme_ctx_para_sugerencia.pop("sugerencia_registro_emitida_ronda", None)
-                 chat_db_context.context_data[CONTEXTO_PYME] = pyme_ctx_para_sugerencia
-                 # No flask_session.modified = True
-
-
-            # Criterio 2: Si la pregunta del usuario implica querer guardar algo o ver historial (más adelante)
-            # palabras_clave_historial = ["mi historial", "mis tickets", "guardar conversacion", "mis datos"]
-            # if any(keyword in pregunta.lower() for keyword in palabras_clave_historial) and not pyme_ctx_para_sugerencia.get("sugerencia_registro_emitida_ronda", False):
-            #     logger_actual.info(f"[RESPONDER_PYME - {request_id}] Anon {anon_id} preguntó por historial/guardar. Sugiriendo registro.")
-            #     # ... (construir y devolver respuesta, marcar como emitida) ...
-    # ---- FIN: Lógica de sugerencia de registro PROACTIVA ----
-
-    # Clasificar intención usando el contexto (pyme_ctx_actual ya está en context_general)
-    intencion_clasificada = _clasificar_intencion_pyme_con_llm(pregunta, context_general)
-    context_general["intencion"] = intencion_clasificada # Actualizar la intención en el contexto general
-    logger_actual.info(f"[PYME_INTENCION - {request_id}] Para '{pregunta}', Intención: {intencion_clasificada}, Estado Pyme Ctx: {context_general[CONTEXTO_PYME].get('estado_conversacion')}")
-
-    # --- Cadena de Handlers ---
-    # (SmallTalk y Saludo podrían ir primero si no dependen mucho del estado del PedidoHandler)
-    # (ToolHandler también podría ir antes de PedidoHandler si las herramientas son genéricas)
-
-    # Priorizar el PedidoHandler si ya está en un flujo activo de pedido
-    estado_pyme_actual = deserialize_state(context_general[CONTEXTO_PYME].get("estado_conversacion"))
-
-    respuesta_final_obj = None
-
-    if estado_pyme_actual != PymeConversationState.IDLE and estado_pyme_actual is not None :
-        # Si estamos en un flujo de pedido, dejar que PedidoHandler lo maneje primero
-        # También si la intención es relacionada a pedido.
-        if intencion_clasificada in ["iniciar_pedido", "agregar_al_carrito", "ver_carrito",
-                                   "modificar_cantidad_carrito", "eliminar_del_carrito", "vaciar_carrito",
-                                   "finalizar_pedido", "continuar_flujo"] or \
-           estado_pyme_actual not in [PymeConversationState.IDLE, None]: # Si ya está en un estado de pedido
-
-            logger.info(f"[PYME_ROUTER - {request_id}] Dirigiendo a PedidoHandler. Estado: {estado_pyme_actual}, Intención: {intencion_clasificada}")
-            respuesta_final_obj = PedidoHandler(context_general).handle(pregunta)
-
-    if not respuesta_final_obj: # Si PedidoHandler no manejó o no era su turno
-        handler_map = {
-            "saludo": SaludoHandler, "ver_catalogo": CatalogoHandler, "consultar_ofertas": OfertasHandler,
-            "pregunta_faq": FaqHandler, "hablar_con_agente": HumanHandler,
-            "consultar_estado_ticket": TicketStatusHandler, "descargar_catalogo": CatalogoHandler, # Reutilizar para mostrar el botón
-            # "pregunta_ambigua": UnclearHandler # Unclear se maneja mejor con Fallback
-        }
-        handler_class = handler_map.get(intencion_clasificada)
-        
-        if handler_class:
-            logger.info(f"[PYME_ROUTER - {request_id}] Usando handler: {handler_class.__name__}")
-            respuesta_final_obj = handler_class(context_general).handle(pregunta)
-        
-        if not respuesta_final_obj and detectar_small_talk_con_llm(pregunta):
-            logger.info(f"[PYME_ROUTER - {request_id}] Usando SmallTalkHandler.")
-            respuesta_final_obj = SmallTalkHandler(context_general).handle(pregunta)
-
-        if not respuesta_final_obj: # Si ningún handler específico respondió
-            # Considerar ToolHandler antes del Fallback general
-            logger.info(f"[PYME_ROUTER - {request_id}] Intentando con ToolHandlerPyme.")
-            respuesta_final_obj = ToolHandlerPyme(context_general).handle(pregunta)
-
-            if not respuesta_final_obj: # Si ToolHandler tampoco, usar Fallback
-                logger.info(f"[PYME_ROUTER - {request_id}] Usando FallbackHandler.")
-                respuesta_final_obj = FallbackHandler(context_general).handle(pregunta)
-
-    if respuesta_final_obj is None: # Absolutamente ningún handler (no debería pasar con Fallback)
-        logger.error(f"[PYME_ROUTER - {request_id}] CRITICAL: Ningún handler produjo respuesta para: '{pregunta}'")
-        respuesta_final_obj = {"respuesta": "No pude procesar tu solicitud.", "fuente": "error_no_handler_pyme_v2"}
-
-    # --- Guardar Conversación y Actualizar Contexto en DB ---
-    historial_actual_sesion.append({"role": "USER", "content": pregunta})
-    historial_actual_sesion.append({"role": "CHATBOT", "content": respuesta_final_obj.get("respuesta", "")})
+            if umbral_sug_pyme > 0 and interacciones_anon_pyme >= umbral_sug_pyme and \
+               not pyme_ctx_actual.get("sugerencia_registro_emitida_ronda", False):
+                logger_actual.info(f"Anon {anon_id} (PYME) alcanzó umbral. Añadiendo sugerencia de registro.")
+                pyme_ctx_actual["sugerencia_registro_emitida_ronda"] = True
+                sug_obj_pyme = construir_respuesta_sugerir_registro("Para una mejor experiencia de compra.", "pyme", channel)
+                respuesta_final_texto += f"\n\n{sug_obj_pyme['respuesta']}"
+                opciones_finales.extend(sug_obj_pyme.get('botones',[]))
     
-    # Guardar historial y contexto pyme en chat_db_context.context_data
-    # context_general[CONTEXTO_PYME] (que es pyme_ctx_actual) ya fue modificado por los handlers.
-    # context_general["mensajes_previos"] (que es historial_actual_sesion) también.
-    chat_db_context.context_data[NOMBRE_HISTORIAL_SESION] = historial_actual_sesion[-MAX_HISTORIAL_CHAT:]
-    chat_db_context.context_data[CONTEXTO_PYME] = context_general[CONTEXTO_PYME]
-    # La persistencia de chat_db_context.context_data se hace en routes/chat.py
+    # Serializar y guardar contexto PYME final
+    estado_final_pyme_str = pyme_ctx_actual.get("estado_conversacion")
+    if isinstance(estado_final_pyme_str, PymeConversationState):
+        pyme_ctx_actual["estado_conversacion"] = estado_final_pyme_str.name
+    elif estado_final_pyme_str is None:
+        pyme_ctx_actual.pop("estado_conversacion", None)
 
-    # Ensure 'estado_conversacion' within pyme_ctx_actual (which is context_general[CONTEXTO_PYME]) is a string
-    pyme_context_to_save = context_general[CONTEXTO_PYME]
-    if "estado_conversacion" in pyme_context_to_save and isinstance(pyme_context_to_save["estado_conversacion"], Enum):
-        pyme_context_to_save["estado_conversacion"] = pyme_context_to_save["estado_conversacion"].name
+    contexto_pyme_serializado_para_db = serializar_enum(pyme_ctx_actual)
+    chat_db_context.context_data[CONTEXTO_PYME] = contexto_pyme_serializado_para_db
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
 
-    chat_db_context.context_data[CONTEXTO_PYME] = pyme_context_to_save
+    # Formatear respuesta
+    message_type_pyme = "text"
+    if opciones_finales:
+        num_opt = len(opciones_finales)
+        if 0 < num_opt <= 3: message_type_pyme = "interactive_buttons"
+        elif num_opt > 3: message_type_pyme = "interactive_list"
 
+    final_response_dict = {
+        "message_body": respuesta_final_texto, "options_list": opciones_finales,
+        "message_type": message_type_pyme,
+        "contexto_actualizado": {CONTEXTO_PYME: contexto_pyme_serializado_para_db},
+        "ticket_id": action_handler_result.get("data", {}).get("pedido_id"), # o ticket_id si es un reclamo pyme
+        "fuente": action_handler_result.get("fuente") or llm_response_structured.get("accion_backend", "pyme_general_v4"),
+        "adjuntos": [] # Manejar adjuntos si es necesario
+    }
 
-    try:
-        if pyme_id_para_servicios or anon_id:
+    # Log de conversación
+    if anon_id and not viewer_user:
+        try:
             db.session.add(Conversacion(
-                user_id=context_general.get("cliente_id"), # ID del cliente final
-                pregunta=pregunta,
-                respuesta=respuesta_final_obj.get("message_body", ""), # Use message_body
-                fuente=respuesta_final_obj.get("fuente", "desconocida_pyme_v2"), # Update fuente default
-                rubro=rubro_nombre_actual,
-                session_id=chat_session_uuid_actual,
-                pyme_id=pyme_id_para_servicios # Guardar el ID de la pyme con la que se interactuó
+                session_id=kwargs.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
+                respuesta=final_response_dict["message_body"], fuente=final_response_dict["fuente"],
+                rubro=global_context_for_orchestrator["rubro_nombre"], user_id=None, pyme_id=global_context_for_orchestrator["user_id"]
             ))
             db.session.commit()
-    except Exception as e_conv: logger.error(f"Error guardando Conversacion PYME: {e_conv}")
+        except Exception as e_conv_pyme_final:
+            logger_actual.error(f"Error guardando Conversacion final (PYME): {e_conv_pyme_final}", exc_info=True)
+            db.session.rollback()
 
-    # --- Preparar Respuesta Final ---
-    # El contexto pyme para la respuesta debe ser serializado.
-    # pyme_context_to_save ya tiene estado_conversacion como string.
-    contexto_pyme_serializado_para_respuesta = serializar_enum(pyme_context_to_save)
-
-    # Standardize the output from responder_pyme
-    final_response_for_logic = {
-        "message_body": respuesta_final_obj.get("message_body", "Error procesando su solicitud."),
-        "options_list": respuesta_final_obj.get("options_list", []),
-        "message_type": respuesta_final_obj.get("message_type", "text"),
-        "header_text": respuesta_final_obj.get("header_text"),
-        "footer_text": respuesta_final_obj.get("footer_text"),
-        "fuente": respuesta_final_obj.get("fuente", "error_pyme_final_v2"),
-        "estado_respuesta": respuesta_final_obj.get("estado_respuesta"),
-        "ticket_id": respuesta_final_obj.get("ticket_id"),
-        "contexto_pyme": contexto_pyme_serializado_para_respuesta,
-        "contexto_actualizado": {CONTEXTO_PYME: contexto_pyme_serializado_para_respuesta}, # For consistency with municipios
-        "adjuntos": []
-    }
-
-    # Añadir info de archivo subido si venía en kwargs (pasado desde logic.py)
-    uploaded_file_info_kw = kwargs.get("uploaded_file_info")
-    if uploaded_file_info_kw and isinstance(uploaded_file_info_kw, dict):
-        if uploaded_file_info_kw.get("url") and uploaded_file_info_kw.get("name"):
-            final_response_for_logic["adjuntos"].append({
-                "nombre_original": uploaded_file_info_kw["name"],
-                "url_descarga": uploaded_file_info_kw["url"],
-                "tipo_mime": uploaded_file_info_kw.get("type", 'application/octet-stream')
-            })
-
-    # Use 'message_body' for logging and provide a fallback for None
-    respuesta_log_pyme = (final_response_for_logic.get('message_body') or '')[:100]
-    fuente_log_pyme = final_response_for_logic.get('fuente', 'desconocida_pyme')
-    logger.info(f"[RESPONDER_PYME_END - {request_id}] Respuesta: '{respuesta_log_pyme}...', Fuente: {fuente_log_pyme}")
-    return final_response_for_logic
+    logger.info(f"[RESPONDER_PYME_END_V4 - {request_id}] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
+    return final_response_dict

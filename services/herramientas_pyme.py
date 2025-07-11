@@ -1,5 +1,11 @@
+import sys
+import os
 import json
 import logging
+
+project_root_herramientas_pyme = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_herramientas_pyme not in sys.path:
+    sys.path.insert(0, project_root_herramientas_pyme)
 import random
 import difflib
 import re # Import re for stock number extraction

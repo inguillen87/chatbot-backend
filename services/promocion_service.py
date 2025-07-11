@@ -1,6 +1,16 @@
 import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
+import sys # Import sys
+import os # Import os
+
+# Añadir el directorio raíz del proyecto al sys.path
+# Esto es inusual para un archivo de servicio, pero se intenta como medida drástica
+# para resolver problemas de importación de SQLAlchemy en el entorno de prueba.
+project_root_promo_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_promo_svc not in sys.path:
+    sys.path.insert(0, project_root_promo_svc)
+
 from sqlalchemy import func, or_ # Importar func y or_
 from sqlalchemy.orm import aliased # Importar aliased
 from models import db, Promocion, PromocionAlcance, CatalogoItem, User # User para pyme_user_id

@@ -1,6 +1,12 @@
+import sys
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+project_root_google_login = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_google_login not in sys.path:
+    sys.path.insert(0, project_root_google_login)
 
 try:
     from app import create_app

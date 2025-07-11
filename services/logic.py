@@ -1,4 +1,12 @@
+import sys
+import os
 import logging
+
+# Add project root to sys.path for this service file
+project_root_logic = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_logic not in sys.path:
+    sys.path.insert(0, project_root_logic)
+
 from flask import current_app # Para logging y config
 from models import ArchivoAdjunto, AnalisisArchivo, db # db para la sesión
 from services.interpretacion_service import interpretacion_service
@@ -83,55 +91,8 @@ def generar_respuesta_small_talk(pregunta: str) -> str:
         logger.error(f"[SMALL_TALK] Error generando respuesta: {e}")
         return "¡Hola! ¿En qué puedo ayudarte?"
 
-# Puedes ajustar este prompt según las intenciones que quieras clasificar
-PROMPT_CLASIFICACION_INTENCION = """
-Analiza la siguiente PREGUNTA DEL USUARIO y clasifica su INTENCIÓN.
-Responde ÚNICAMENTE con una de las INTENCIONES POSIBLES de la lista.
-Si la pregunta no encaja claramente en ninguna de las categorías específicas, clasifícala como 'general'.
-
-INTENCIONES POSIBLES:
-- iniciar_reclamo: El usuario expresa deseo de presentar una queja, problema o denuncia.
-    Ejemplos: "quiero reclamar por una luz quemada", "hay mucha basura en la esquina de mi casa", "el servicio de agua no funciona", "tengo un problema con el pavimento"
-- consultar_estado_ticket: El usuario quiere saber el estado o progreso de un ticket, reclamo o trámite ya iniciado.
-    Ejemplos: "cómo va mi reclamo 12345?", "quisiera saber el estado de mi gestión", "alguna novedad sobre el ticket M-5567?"
-- consultar_impuestos: El usuario pregunta sobre impuestos municipales, tasas, facturas, boletas o formas de pago relacionadas.
-    Ejemplos: "quiero pagar mis impuestos", "cómo pago la tasa municipal?", "dónde puedo ver mi boleta de ABL?", "cuánto debo de patentes?"
-- consultar_tramite: El usuario pregunta sobre cómo realizar un trámite, requisitos, horarios o lugares para trámites municipales.
-    Ejemplos: "requisitos para licencia de conducir", "cómo se hace la habilitación comercial?", "dónde saco el certificado de domicilio?", "horario para renovar DNI"
-- hacer_sugerencia: El usuario quiere proponer una idea, mejora o dar una opinión constructiva.
-    Ejemplos: "deberían poner más bancos en la plaza", "sugiero que mejoren la iluminación del parque", "tengo una idea para el tránsito"
-- hablar_con_agente: El usuario solicita explícitamente hablar con una persona, empleado o representante.
-    Ejemplos: "necesito hablar con alguien", "quiero hablar con una persona", "pasame con un humano", "me pasas con un operador?", "quiero un representante"
-- general: Cualquier otra consulta que no encaje en las anteriores, o preguntas generales sobre el municipio.
-    Ejemplos: "cuál es el teléfono del intendente?", "historia de la ciudad", "eventos culturales este fin de semana"
-
-PREGUNTA DEL USUARIO: "{pregunta_usuario}"
-
-INTENCIÓN: """
-
-def _clasificar_intencion_con_llm(pregunta: str) -> str:
-    """
-    Clasifica la intención de la pregunta del usuario utilizando un modelo de lenguaje.
-    """
-    logger.info(f"[CLASIFICADOR INTENCION] Clasificando intención para: '{pregunta}'")
-
-    prompt = PROMPT_CLASIFICACION_INTENCION.format(pregunta_usuario=pregunta)
-
-    try:
-        # Asegúrate de que get_cohere_response esté correctamente configurado
-        # para tu API de Cohere o el LLM que estés usando.
-        # El preamble aquí es opcional, pero ayuda a guiar el LLM.
-        intencion = get_cohere_response(
-            message=prompt, 
-            preamble="Eres un clasificador de intención de usuario. Responde solo con la intención clasificada."
-        )
-        # Limpia cualquier espacio en blanco o caracter especial
-        intencion_limpia = intencion.strip().lower()
-        logger.info(f"[CLASIFICADOR INTENCION] Intención detectada: '{intencion_limpia}'")
-        return intencion_limpia
-    except Exception as e:
-        logger.error(f"[CLASIFICADOR INTENCION] Error al clasificar intención con LLM: {e}")
-        return "general" # Retorna una intención por defecto en caso de error
+# PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
+# La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
 
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
 def responder_chatboc(

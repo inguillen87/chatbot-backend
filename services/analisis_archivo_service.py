@@ -126,6 +126,20 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
                 logger.info(f"Archivo {archivo_adjunto_id} es un PDF. Intentando análisis con Document AI (genérico).")
                 # Esta función también maneja el estado de analisis_archivo internamente.
                 analizar_pdf_con_document_ai_service(session, analisis_archivo.id, project_id, docai_location, docai_processor_id)
+
+                # TODO: Implementar la transformación del resultado de Document AI.
+                # El objeto 'analisis_archivo.texto_extraido' y 'analisis_archivo.datos_estructurados'
+                # (si fueron poblados por analizar_pdf_con_document_ai_service a través de la llamada a llm_utils)
+                # necesitarán ser procesados aquí para convertirlos en:
+                # - Una lista de items de pedido para PYMEs (similar a lo que hace _procesar_interpretacion_pedido_pyme con OCR).
+                # - Un resumen o palabras clave para reclamos municipales.
+                # Este resultado transformado debería luego ser almacenado en analisis_archivo.datos_estructurados
+                # de una forma que los handlers (PedidoHandler, ReclamoHandler) puedan consumir.
+                # Por ejemplo, para pedidos:
+                # if es_contexto_pyme and analisis_archivo.estado_analisis == "completado":
+                #     items_pedido_de_doc = transformar_doc_ai_output_a_lista_pedido(analisis_archivo.datos_estructurados)
+                #     # Actualizar analisis_archivo.datos_estructurados con esta lista estandarizada.
+                #     # session.commit() se hará al final de la tarea Celery.
             else:
                 logger.warning(f"Configuración de Document AI (genérico) incompleta. Saltando PDF para archivo {archivo_adjunto_id}.")
                 analisis_archivo.estado_analisis = "omitido_config"

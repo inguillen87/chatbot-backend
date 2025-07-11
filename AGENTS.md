@@ -20,8 +20,9 @@ The primary goal is to centralize language understanding, conversation flow mana
         ```json
         {
           "respuesta_usuario": "...respuesta profesional y directa para mostrar al usuario...",
-          "accion_backend": "...crear_reclamo | consulta_estado | info_tramite | agregar_item_carrito | finalizar_pedido_pyme | derivar_humano...",
-          "datos_estructura": {
+          "accion_backend": "...crear_reclamo | consulta_estado_ticket | info_tramite | agregar_item_carrito | finalizar_pedido_pyme | ejecutar_herramienta | corregir_datos | derivar_humano...",
+          "datos_estructura": { // This becomes 'datos_accion' in the Python context for handlers
+            "target": "municipio | pyme | ambos", // Crucial for routing/context
             "categoria": "...",
             "descripcion": "...",
             "ubicacion": "...",
@@ -38,35 +39,41 @@ The primary goal is to centralize language understanding, conversation flow mana
         ```
 5.  **Action Execution**:
     *   If `respuesta_llm.accion_backend` is set, `responder_municipio`/`responder_pyme` calls a corresponding Python function (e.g., `accion_crear_reclamo_municipio(datos_llm, context)`).
-    *   These `accion_` functions in `services/municipios.py` or `services/pymes.py` (or dedicated `actions_municipio.py`, `actions_pyme.py` modules) contain the business logic:
-        *   Validate data received in `datos_llm.datos_estructura`.
+    *   Note: `datos_accion` passed to these Python functions is typically the content of `respuesta_llm.datos_estructura`.
+    *   These `accion_` functions (or more structured Action Handlers in `services/actions/`) contain the business logic:
+        *   Validate data received in `datos_accion`. **Python handlers are the ultimate authority on data validity and security before acting on it.**
         *   Interact with the database (create/update tickets, pedidos, etc.).
         *   Call external services (notifications, geocoding APIs).
         *   Return a response object for the user.
-6.  **Dialog Management**:
-    *   If `respuesta_llm.pedir_info` is set, the `respuesta_llm.respuesta_usuario` and `respuesta_llm.botones` are used to ask the user for more information. The conversation history (including the LLM's request for info) is passed back to the LLM in the next turn.
-7.  **Fallback**: If the LLM flow is not triggered (e.g., `USAR_LLM_PARA_RECLAMOS=False`) or if the LLM fails to provide a usable response, the system may fall back to the traditional handler-based logic (which is being progressively refactored).
+6.  **Dialog Management & Corrections**:
+    *   If `respuesta_llm.pedir_info` is set, the `respuesta_llm.respuesta_usuario` and `respuesta_llm.botones` are used to ask the user for more information.
+    *   If the LLM interprets a user message as a correction (e.g., "No, the address is X"), it should use an `accion_backend` like `corregir_datos` and provide `campo_a_corregir` and `nuevo_valor` in `datos_estructura`. The relevant Python handler then updates the stored information and typically re-confirms.
+    *   The conversation history (including LLM's requests and user clarifications) is passed back to the LLM in subsequent turns to maintain context.
+7.  **Fallback & Handler-Based Logic**:
+    *   If the LLM flow is not triggered (e.g., for very simple, hardcoded commands or specific UI actions) or if the LLM's response is too generic (e.g., `accion_backend: "no_accion"`), the system may fall back to keyword-based logic within specific handlers (e.g., `IntentClassifierHandler` in `services/municipios.py`).
+    *   This handler-based logic is being progressively refactored to support, rather than duplicate, the LLM's primary role.
 
 ### Developing New Features / Modifying Behavior
 1.  **Primary Tool: `JULES_SYSTEM_PROMPT` (`services/gemini_bridge.py`)**
     *   To change how the bot understands user requests, extracts information, or decides on next steps, **start by modifying this prompt.**
-    *   Add more examples, clarify rules, or refine descriptions of `accion_backend` and `datos_estructura`.
+    *   Add more examples (including for corrections and disambiguation), clarify rules, or refine descriptions of `accion_backend` and `datos_estructura`.
     *   Ensure the prompt clearly instructs the LLM to *always* return the specified JSON structure.
 2.  **Adding New Backend Actions**:
     *   Define the new `accion_backend` string (e.g., `solicitar_devolucion_producto`).
-    *   Update `JULES_SYSTEM_PROMPT` to include this new action in the list of possibilities and provide examples of when/how the LLM should use it and what `datos_estructura` are expected.
-    *   Create the corresponding Python function: `accion_solicitar_devolucion_producto(datos_llm: dict, context: dict)` in the relevant services module.
-    *   This function will perform the actual business logic (e.g., create a return ticket, update inventory, notify logistics).
-    *   Update the main orchestrator (`responder_pyme` or `responder_municipio`) to call this new action function when the LLM specifies it.
+    *   Update `JULES_SYSTEM_PROMPT` to include this new action, examples of when/how the LLM should use it, and what `datos_estructura` are expected.
+    *   Create the corresponding Python function: `accion_solicitar_devolucion_producto(datos_accion: dict, context: dict)` in the relevant services module or as a dedicated Action Handler in `services/actions/`.
+    *   This function will perform the actual business logic. **It must validate all inputs from `datos_accion` before execution.**
+    *   Update the main orchestrator (`responder_pyme`, `responder_municipio`, or a central dispatcher if refactored) to call this new action function.
 3.  **Data Validation**:
-    *   Critical data validation (e.g., email format, phone number validity, valid address components *after* LLM extraction) should occur in the Python `accion_` functions.
-    *   **Future Enhancement**: If validation fails, the system should ideally inform the LLM (e.g., by adding a "system_feedback" turn to the history) so the LLM can re-ask the user for correct information naturally.
-4.  **Tools / Function Calling (Future)**:
-    *   To allow the LLM to query real-time data (e.g., "status of my ticket #123", "is product X in stock?", "what are the opening hours for Y office today?"), integrate LLM function calling capabilities.
-    *   The LLM would indicate a tool/function to call with specific parameters. The backend executes this tool and returns the result to the LLM, which then formulates the user-facing response.
+    *   The LLM can perform initial data extraction, but **final validation and sanitization MUST occur in the Python `accion_` functions or Action Handlers** before database interaction or calling external services. Do not trust LLM-extracted data without backend validation.
+    *   **Correction Flow**: If validation fails in Python, the system should ideally inform the LLM (e.g., by setting a specific state or providing feedback in the next LLM call context) so the LLM can re-ask the user for correct information naturally, rather than the Python code generating rigid error messages.
+4.  **Tools / Function Calling (LLM-driven)**:
+    *   The `JULES_SYSTEM_PROMPT` already guides the LLM to use `accion_backend: "ejecutar_herramienta"` with `nombre_herramienta` and `parametros_herramienta`.
+    *   The backend (`ToolHandler` in `services/municipios.py` or `services/pymes.py`) executes these.
+    *   Ensure tools are well-defined, and their descriptions in the prompt are clear for the LLM.
 
 ### Running the Flask Application & Tests
-(This section can largely remain as is, but ensure `pip install google-cloud-aiplatform` is included and credential setup for Google Cloud is mentioned.)
+(This section can largely remain as is, but ensure `pip install google-cloud-aiplatform google-cloud-vision google-cloud-documentai qdrant-client` are included and credential setup for Google Cloud is mentioned.)
 
 1.  **Set up a Python virtual environment & Install Dependencies:**
     ```bash

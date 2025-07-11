@@ -1,5 +1,13 @@
 import unittest
 from unittest.mock import patch, MagicMock, PropertyMock
+import sys # Import sys
+import os # Import os
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_ai_sug = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_ai_sug not in sys.path:
+    sys.path.insert(0, project_root_ai_sug)
+
 from flask import Flask, g
 from config import Config
 from models import db, PlantillasRespuesta, User, Rubro # Ensure User and Rubro are imported

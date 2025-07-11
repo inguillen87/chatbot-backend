@@ -43,7 +43,7 @@ class MockTicketComentario:
 
 # Patching at the module level where these are looked up by the action handlers
 @patch('services.actions.municipio_claim_actions.servicio_tickets', mock_servicio_tickets_module)
-@patch('services.actions.municipio_claim_actions.global_db.session', mock_db_session_module)
+@patch('models.db.session', mock_db_session_module) # Patched global_db to models.db
 class TestCrearReclamoAction(unittest.TestCase):
 
     def setUp(self):
@@ -160,7 +160,34 @@ class TestCrearReclamoAction(unittest.TestCase):
             ticket_id=3, tipo_ticket="municipio", ids_archivos=[777]
         )
         # Check if context was modified (archivo_id_para_asociar removed)
-        self.assertNotIn("archivo_id_para_asociar", context_with_attachment)
+        # self.assertNotIn("archivo_id_para_asociar", context_with_attachment) # This checks a copy
+        self.assertIsNone(handler.context.get("archivo_id_para_asociar")) # Check the actual context dict
+
+    # Corrected patch target for archivo_service
+    @patch('services.archivo_service.archivo_service', mock_archivo_service_module)
+    def test_crear_reclamo_with_attachment_id_association(self):
+        mock_archivo_service_module.reset_mock() # Ensure clean mock for this test
+        context_with_attachment = {**self.base_context_registered_user, "archivo_id_para_asociar": 777}
+        action_data = {
+            "categoria": "Arbolado", "descripcion": "Rama peligrosa",
+            "ubicacion_original_reclamo": "Plaza Principal"
+        }
+        mock_ticket_creado = MockTicket(id=3, nro_ticket=555125)
+        mock_servicio_tickets_module.crear_nuevo_ticket.return_value = mock_ticket_creado
+        # Ensure the mock for asociar_archivos_a_ticket is set up on the correct mock object
+        mock_archivo_service_module.asociar_archivos_a_ticket.return_value = True
+
+        handler = CrearReclamoAction(context=context_with_attachment)
+        result = handler.execute(action_data)
+
+        self.assertTrue(result["success"])
+        mock_servicio_tickets_module.crear_nuevo_ticket.assert_called_once()
+        mock_archivo_service_module.asociar_archivos_a_ticket.assert_called_once_with(
+            ticket_id=3, tipo_ticket="municipio", ids_archivos=[777]
+        )
+        # Check if context was modified (archivo_id_para_asociar removed)
+        # self.assertNotIn("archivo_id_para_asociar", context_with_attachment) # This checks a copy
+        self.assertIsNone(handler.context.get("archivo_id_para_asociar")) # Check the actual context dict
 
 
     def test_crear_reclamo_with_foto_url_directa_from_context(self):
@@ -199,8 +226,8 @@ class TestCrearReclamoAction(unittest.TestCase):
 
 # Test ConsultarEstadoReclamoAction
 # We need to patch MunicipioTicket and TicketComentario queries
-@patch('services.actions.municipio_claim_actions.MunicipioTicket')
-@patch('services.actions.municipio_claim_actions.TicketComentario')
+@patch('models.MunicipioTicket') # Patched to 'models.MunicipioTicket'
+@patch('models.TicketComentario') # Patched to 'models.TicketComentario'
 class TestConsultarEstadoReclamoAction(unittest.TestCase):
     def setUp(self):
         self.base_context = {"channel": "web"} # Minimal context for this action

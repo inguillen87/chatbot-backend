@@ -74,9 +74,13 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
             "promocion_texto": producto_dict.get("promocion_texto", ""),
             "talles": producto_dict.get("talles", ""),
             "colores": producto_dict.get("colores", ""),
-            "texto_original_para_embedding": producto_dict.get("texto_para_embedding", "")
+            "texto_original_para_embedding": producto_dict.get("texto_para_embedding", ""),
+            "db_id": producto_dict.get("db_id") # Ensure this is passed in producto_dict
         }
         payload_limpio = {k: v for k, v in payload.items() if v is not None and (not isinstance(v, str) or v.strip() != "")}
+        if not payload_limpio.get("db_id"): # Critical: db_id must be present
+            logger.error(f"[QDRANT_SAVE] Producto '{payload.get('nombre')}' no tiene db_id. Saltando.")
+            continue
 
         if not vector or not isinstance(vector, list) or not all(isinstance(num, (float, int)) for num in vector):
             logger.warning(f"[QDRANT_SAVE] Vector inválido o vacío para producto '{payload.get('nombre')}', user_id={user_id}. Saltando este punto.")

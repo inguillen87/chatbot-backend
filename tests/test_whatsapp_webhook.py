@@ -1,9 +1,19 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import os
+import sys
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_whatsapp = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_whatsapp not in sys.path:
+    sys.path.insert(0, project_root_whatsapp)
+
 from app import create_app, db
 from config import Config
-from models import User, WhatsappNumero # Import User and WhatsappNumero for mocking
+# Moved model imports after app and config to ensure they are found via sys.path
+# and to avoid potential issues if models.py itself tries to import app-context related things early.
+# However, for direct use in tests, they are typically at the top. Let's try keeping them here.
+from models import User, WhatsappNumero
 # JSON import is no longer needed
 # import json
 

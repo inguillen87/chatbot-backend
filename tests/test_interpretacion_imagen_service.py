@@ -1,12 +1,16 @@
+import sys
+import os
+
+# Add project root to sys.path to ensure modules like 'models.py' are findable
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import unittest
 from unittest.mock import patch, MagicMock, ANY
-import os
-import sys
 
-# Asegurar que los módulos del proyecto se puedan importar
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from services.interpretacion_imagen_service import interpretar_imagen_reclamo, _descargar_imagen
+from services.interpretacion_imagen_service import interpretar_imagen_para_chat, _descargar_imagen
 from models import ArchivoAdjunto, AnalisisArchivo, User, db
 
 # --- Configuración de App Flask para Pruebas con BD en Memoria ---
@@ -79,7 +83,8 @@ class TestInterpretacionImagenService(unittest.TestCase):
         db.session.commit() # Guardar para que la función lo encuentre si lo busca por ID
 
         # --- Ejecución ---
-        resultado = interpretar_imagen_reclamo(archivo_adjunto, self.test_user)
+        # Call with tipo_interpretacion="reclamo_municipal" or "reclamo_auto_descripcion_categoria"
+        resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None) # pyme_user is None for municipal claims
 
         # --- Verificaciones ---
         self.assertTrue(resultado.get("es_reclamo"))
@@ -118,7 +123,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         db.session.add(archivo_adjunto)
         db.session.commit()
 
-        resultado = interpretar_imagen_reclamo(archivo_adjunto, self.test_user)
+        resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         self.assertFalse(resultado.get("es_reclamo"))
         self.assertIn("No se detectaron elementos visuales o textuales de reclamo claros", resultado.get("motivo", ""))
@@ -134,7 +139,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         db.session.add(archivo_adjunto)
         db.session.commit()
 
-        resultado = interpretar_imagen_reclamo(archivo_adjunto, self.test_user)
+        resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         self.assertFalse(resultado.get("es_reclamo"))
         self.assertEqual(resultado.get("error"), "Fallo al descargar la imagen.")
@@ -151,7 +156,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         db.session.add(archivo_adjunto)
         db.session.commit()
 
-        resultado = interpretar_imagen_reclamo(archivo_adjunto, self.test_user)
+        resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         self.assertFalse(resultado.get("es_reclamo"))
         self.assertIn("Error de Vision API: Error de Vision simulado", resultado.get("error", ""))
@@ -174,7 +179,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         db.session.add(archivo_adjunto)
         db.session.commit()
 
-        resultado = interpretar_imagen_reclamo(archivo_adjunto, self.test_user)
+        resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         self.assertFalse(resultado.get("es_reclamo"))
         self.assertIn("El análisis por IA no pudo confirmar un reclamo específico", resultado.get("motivo", ""))
@@ -186,17 +191,17 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
     def test_interpretar_imagen_reclamo_archivo_no_valido(self):
         # Caso 1: archivo_adjunto es None
-        resultado_none = interpretar_imagen_reclamo(None, self.test_user)
-        self.assertFalse(resultado_none.get("es_reclamo"))
-        self.assertEqual(resultado_none.get("error"), "Archivo adjunto o URL no válidos.")
+        resultado_none = interpretar_imagen_para_chat(None, tipo_interpretacion="reclamo_municipal", pyme_user=None)
+        self.assertFalse(resultado_none.get("es_reclamo")) # es_reclamo might not be present if error is early
+        self.assertEqual(resultado_none.get("error"), "Tipo de archivo_adjunto no válido.") # Updated error message
 
         # Caso 2: archivo_adjunto no tiene URL
         archivo_sin_url = ArchivoAdjunto(id=6, user_id=self.test_user.id, filename="sin_url.jpg", url=None, mime="image/jpeg")
         db.session.add(archivo_sin_url)
         db.session.commit()
-        resultado_sin_url = interpretar_imagen_reclamo(archivo_sin_url, self.test_user)
-        self.assertFalse(resultado_sin_url.get("es_reclamo"))
-        self.assertEqual(resultado_sin_url.get("error"), "Archivo adjunto o URL no válidos.")
+        resultado_sin_url = interpretar_imagen_para_chat(archivo_sin_url, tipo_interpretacion="reclamo_municipal", pyme_user=None)
+        self.assertFalse(resultado_sin_url.get("es_reclamo")) # es_reclamo might not be present
+        self.assertEqual(resultado_sin_url.get("error"), "URL del archivo no válida.") # Updated error message
         # Verificar que no se creó un AnalisisArchivo innecesariamente
         analisis_para_sin_url = AnalisisArchivo.query.filter_by(archivo_adjunto_id=6).first()
         self.assertIsNone(analisis_para_sin_url)
@@ -237,7 +242,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         id_analisis_previo = analisis_previo.id
 
         # --- Ejecución ---
-        resultado = interpretar_imagen_reclamo(archivo_adjunto, self.test_user)
+        resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         # --- Verificaciones ---
         self.assertTrue(resultado.get("es_reclamo"))

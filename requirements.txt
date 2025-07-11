@@ -15,27 +15,16 @@ vine==5.1.0
 billiard==4.2.1
 qdrant-client==1.9.2
 twilio==9.6.4
-requests==2.31.0 # Añadido para descarga de imágenes
-google-cloud-vision==3.4.0 # Añadido para Google Vision API
-google-cloud-documentai==2.20.0 # Ya se infiere su uso por google_docai.py
-google-auth==2.23.4 # Dependencia común para servicios Google
-cohere==4.37 # Ya se infiere su uso por cohere_ai.py
-pandas==2.0.3 # Usado en google_docai.py
-spacy==3.7.2 # Usado en google_docai.py
+requests==2.32.4 # Pinned for stability
+google-cloud-vision==3.4.0
+google-cloud-documentai==2.20.0
+google-auth==2.40.3 # Pinned for stability
+google-cloud-storage==2.19.0 # Explicitly pinned for stability
+google-cloud-aiplatform>=1.38.0 # Keeps this flexible but sub-dependencies pinned
+cohere==4.37
+pandas==2.0.3
+spacy==3.7.2
 es-core-news-md @ https://github.com/explosion/spacy-models/releases/download/es_core_news_md-3.7.0/es_core_news_md-3.7.0-py3-none-any.whl
-# Considerar añadir un modelo de spacy específico si es necesario, ej: es_core_news_sm
-# numpy es dependencia de pandas y spacy, se instalará automáticamente.
-# werkzeug es dependencia de Flask.
-# itsdangerous es dependencia de Flask.
-# click es dependencia de Flask.
-# Jinja2 es dependencia de Flask.
-# MarkupSafe es dependencia de Jinja2.
-# alembic es dependencia de Flask-Migrate.
-# Mako es dependencia de Alembic.
-# python-editor es dependencia de Alembic.
-# greenlet es dependencia de SQLAlchemy con async.
-# blinker es dependencia de Flask y SQLAlchemy events.
-# PyJWT es dependencia de Flask-Session si se usa JWT.
-# Pillow es usado en el script de prueba de google_vision_service.py, no es core pero útil para dev.
 Pillow==10.1.0
 python-Levenshtein==0.23.0
+# Other sub-dependencies will be resolved by pip based on these.
