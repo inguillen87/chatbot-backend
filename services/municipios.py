@@ -4292,33 +4292,38 @@ def responder_municipio(
         f"[CONTEXTO_MUNICIPIO_LOAD_STATE_RAW] 'estado_conversacion' crudo extraído del contexto_municipio_actual: '{estado_guardado_raw}' (Tipo: {type(estado_guardado_raw)})"
     )
 
-    if estado_guardado_raw and isinstance(estado_guardado_raw, str):
-        # Estado ya es un string (posiblemente de una carga anterior o serialización)
-        # No intentar convertir de nuevo si ya es un string válido de Enum.name
-        # Esta conversión a Enum debe ocurrir UNA VEZ al inicio de la lógica de handlers.
-        # El contexto_municipio_actual["estado_conversacion"] se mantendrá como string hasta que
-        # la lógica de handlers necesite el Enum. Al final, se guardará como string.
-        logger_actual.info(
-            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es string '{estado_guardado_raw}'. Se usará como string por ahora."
-        )
-        # No cambiarlo a Enum aquí. Se hará más adelante si es necesario para la lógica de handlers.
-    elif estado_guardado_raw is None:
+    # --- Corrected State Loading Logic ---
+    if estado_guardado_raw is None:
         logger_actual.info(
             "[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es None. Se mantiene como None."
         )
         contexto_municipio_actual["estado_conversacion"] = None
-    elif isinstance(estado_guardado_raw, ConversationState): # Ya es Enum
-        logger_actual.warning(
-            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' ya es Enum ({estado_guardado_raw}). Se convertirá a string para consistencia interna antes de handlers."
+    elif isinstance(estado_guardado_raw, ConversationState): # If it's an Enum instance
+        logger_actual.info(
+            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es Enum ({estado_guardado_raw}). Convirtiendo a string: '{estado_guardado_raw.name}'."
         )
-        contexto_municipio_actual["estado_conversacion"] = estado_guardado_raw.name # Convertir a string para el flujo general
-    else:
+        contexto_municipio_actual["estado_conversacion"] = estado_guardado_raw.name
+    elif isinstance(estado_guardado_raw, str):
+        # If it's already a string, try to validate if it's a valid Enum name.
+        # This helps catch cases where a non-Enum string might have been saved.
+        try:
+            ConversationState[estado_guardado_raw] # Validate if it's a known state name
+            logger_actual.info(
+                f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es string válido de Enum: '{estado_guardado_raw}'."
+            )
+            # contexto_municipio_actual["estado_conversacion"] is already estado_guardado_raw (string)
+        except KeyError:
+            logger_actual.error(
+                f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es string ('{estado_guardado_raw}') pero no es un nombre válido de ConversationState. Se establece a None."
+            )
+            contexto_municipio_actual["estado_conversacion"] = None
+    else: # Other unexpected types
         logger_actual.error(
             f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Tipo inesperado para 'estado_conversacion' ({type(estado_guardado_raw)}): '{estado_guardado_raw}'. Se establece a None."
         )
         contexto_municipio_actual["estado_conversacion"] = None
 
-    final_loaded_state_str = contexto_municipio_actual.get("estado_conversacion") # Should be string or None now
+    final_loaded_state_str = contexto_municipio_actual.get("estado_conversacion") # Should be string (valid Enum name) or None now
     logger_actual.info(
         f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' para esta petición (string o None): '{final_loaded_state_str}'"
     )

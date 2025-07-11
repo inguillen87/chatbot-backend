@@ -248,5 +248,3 @@ if __name__ == '__main__': # pragma: no cover
     result_crear_pedido = orchestrator_pyme_cart.execute_action(llm_output_crear_pedido)
     print(f"Resultado de Crear Pedido: {json.dumps(result_crear_pedido, indent=2, ensure_ascii=False)}")
     # print(f"Estado del carrito PYME 2 después del pedido: {mock_global_context_pyme['chat_db_context_data']['carritos_pymes'].get(2)}") # Should be empty if cleared
-
-```
