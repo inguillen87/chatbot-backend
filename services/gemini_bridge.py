@@ -229,9 +229,9 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
     try:
         import vertexai
         from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
+        from .google_auth_util import get_google_credentials
 
         # Obtener PROJECT_ID y LOCATION de variables de entorno o configuración
-        # Asumiendo que están configuradas en el entorno de Render
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
         location = os.environ.get("GOOGLE_LOCATION", "us-central1") # Default location
 
@@ -239,7 +239,11 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             logger.error("GOOGLE_PROJECT_ID no está configurado. No se puede inicializar Vertex AI.")
             raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
 
-        vertexai.init(project=project_id, location=location)
+        # Cargar credenciales usando el nuevo utilitario centralizado
+        g_credentials = get_google_credentials()
+
+        # Inicializar Vertex AI explícitamente con las credenciales
+        vertexai.init(project=project_id, location=location, credentials=g_credentials)
 
         # Configuración del modelo y generación
         # Modelos disponibles: "gemini-1.0-pro", "gemini-1.5-pro-preview-0409", "gemini-1.5-flash-preview-0514" etc.
@@ -405,6 +409,7 @@ def llamar_gemini_para_generacion_texto(
     try:
         import vertexai
         from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
+        from .google_auth_util import get_google_credentials
 
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
         location = os.environ.get("GOOGLE_LOCATION", "us-central1")
@@ -413,7 +418,9 @@ def llamar_gemini_para_generacion_texto(
             logger.error("GOOGLE_PROJECT_ID no está configurado para llamar_gemini_para_generacion_texto.")
             return None # Opcional: podría lanzar una excepción
 
-        vertexai.init(project=project_id, location=location)
+        g_credentials = get_google_credentials()
+
+        vertexai.init(project=project_id, location=location, credentials=g_credentials)
 
         model = GenerativeModel(
             model_name,

@@ -9,58 +9,23 @@ from google.oauth2 import service_account
 
 logger = logging.getLogger(__name__)
 
-# --- 1. Carga de Credenciales (Adaptado de google_docai.py) ---
-GOOGLE_CREDENTIALS: Optional[service_account.Credentials] = None
-CREDENTIALS_LOADED_SUCCESSFULLY: bool = False
+# --- 1. Carga de Credenciales (Centralizada) ---
+from .google_auth_util import get_google_credentials
+
 VISION_CLIENT: Optional[vision.ImageAnnotatorClient] = None
+CREDENTIALS_LOADED_SUCCESSFULLY: bool = False
 
 try:
-    # Priorizar la variable de entorno si está disponible (para Render/contenedores)
-    google_creds_json_str = os.getenv("GOOGLE_CREDENTIALS_JSON")
-    ruta_cred_final = None
-
-    if google_creds_json_str:
-        logger.info("✅ [VISION_SVC] Usando credenciales de GOOGLE_CREDENTIALS_JSON.")
-        credentials_info = json.loads(google_creds_json_str)
-    else:
-        # Rutas locales como fallback (para desarrollo)
-        ruta_cred_render = "/etc/secrets/google_service_key.json" # Común en Render
-        ruta_cred_local_instance = os.path.join(os.getcwd(), "instance", "google-credentials.json")
-
-        if os.path.exists(ruta_cred_render):
-            ruta_cred_final = ruta_cred_render
-        elif os.path.exists(ruta_cred_local_instance):
-            ruta_cred_final = ruta_cred_local_instance
-
-        if ruta_cred_final:
-            logger.info(f"✅ [VISION_SVC] Cargando credenciales desde archivo: {ruta_cred_final}")
-            with open(ruta_cred_final, "r", encoding="utf-8") as f:
-                credentials_info = json.load(f)
-        else:
-            credentials_info = None
-            logger.warning("⚠️ [VISION_SVC] No se encontró GOOGLE_CREDENTIALS_JSON ni archivos locales de credenciales (google_service_key.json, instance/google-credentials.json). El servicio podría no funcionar.")
-
-    if credentials_info:
-        GOOGLE_CREDENTIALS = service_account.Credentials.from_service_account_info(credentials_info)
-        VISION_CLIENT = vision.ImageAnnotatorClient(credentials=GOOGLE_CREDENTIALS)
+    g_credentials = get_google_credentials()
+    if g_credentials:
+        VISION_CLIENT = vision.ImageAnnotatorClient(credentials=g_credentials)
         CREDENTIALS_LOADED_SUCCESSFULLY = True
         logger.info("✅ [VISION_SVC] Cliente de Google Cloud Vision inicializado exitosamente.")
     else:
-        # Intentar inicializar sin credenciales explícitas (puede funcionar en entornos GCP con ADC)
-        try:
-            VISION_CLIENT = vision.ImageAnnotatorClient()
-            CREDENTIALS_LOADED_SUCCESSFULLY = True # Asumimos que ADC funciona si no hay error
-            logger.info("✅ [VISION_SVC] Cliente de Google Cloud Vision inicializado con Application Default Credentials (ADC).")
-        except Exception as e_adc:
-            logger.error(f"❌ [VISION_SVC] Falló la inicialización con credenciales explícitas y también con ADC: {e_adc}")
-            CREDENTIALS_LOADED_SUCCESSFULLY = False
-
-
-except json.JSONDecodeError as e_json:
-    logger.error(f"❌ [VISION_SVC] Error de JSON al decodificar GOOGLE_CREDENTIALS_JSON: {e_json}", exc_info=True)
-    CREDENTIALS_LOADED_SUCCESSFULLY = False
+        logger.error("❌ [VISION_SVC] No se pudieron cargar las credenciales de Google. El servicio de Vision no funcionará.")
+        CREDENTIALS_LOADED_SUCCESSFULLY = False
 except Exception as e:
-    logger.error(f"❌ [VISION_SVC] Error crítico cargando credenciales o inicializando cliente de Vision: {e}", exc_info=True)
+    logger.error(f"❌ [VISION_SVC] Error crítico inicializando cliente de Vision: {e}", exc_info=True)
     CREDENTIALS_LOADED_SUCCESSFULLY = False
 
 
