@@ -4242,11 +4242,56 @@ def responder_municipio(
         # O, si la política es analizar siempre, se haría antes y los resultados se pasarían a Gemini.
         # Por ahora, el flujo es: Gemini decide -> Orchestrator -> ActionHandler (que podría usar Vision).
 
-    llm_response_structured = llamar_gemini(
-        mensaje_usuario=mensaje_para_gemini,
-        usuario=usuario_info_for_gemini,
-        historial=historial_chat_para_gemini # Este es el historial de chat_db_context
-    )
+    try:
+    try:
+        llm_response_structured = llamar_gemini(
+            mensaje_usuario=mensaje_para_gemini,
+            usuario=usuario_info_for_gemini,
+            historial=historial_chat_para_gemini
+        )
+    except TypeError as e:
+        if "got an unexpected keyword argument 'mensaje'" in str(e):
+            logger_actual.error(f"[RESPONDER_MUNICIPIO] TypeError por keyword 'mensaje'. Reintentando con 'mensaje_usuario'. Error: {e}")
+            llm_response_structured = llamar_gemini(
+                mensaje_usuario=mensaje_para_gemini,
+                usuario=usuario_info_for_gemini,
+                historial=historial_chat_para_gemini
+            )
+        else:
+            raise e
+    except Exception as e:
+        logger_actual.error(f"[RESPONDER_MUNICIPIO] Error en llamada a Gemini: {e}", exc_info=True)
+        llm_response_structured = {
+            "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
+            "accion_backend": "derivar_humano",
+            "datos_estructura": {"target": "municipio", "error_llm": True, "detalle_error": str(e)},
+            "pedir_info": None,
+            "botones": []
+        }
+    except TypeError as e:
+        # This is a specific catch for the 'mensaje' vs 'mensaje_usuario' error during development.
+        if "'mensaje' is an invalid keyword argument" in str(e) or "got an unexpected keyword argument 'mensaje'" in str(e):
+             logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error de TypeError conocido: {e}. Probablemente el keyword 'mensaje' en lugar de 'mensaje_usuario'. Intentando de nuevo con el keyword corregido.")
+             # Reintentar la llamada con el keyword correcto
+             llm_response_structured = llamar_gemini(
+                mensaje_usuario=mensaje_para_gemini,
+                usuario=usuario_info_for_gemini,
+                historial=historial_chat_para_gemini
+            )
+        else:
+            # Si es otro TypeError, lo relanzamos para que se maneje genéricamente.
+            logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error de TypeError no esperado en la llamada a Gemini: {e}", exc_info=True)
+            raise e # Relanzar otras TypeErrors
+    except Exception as e:
+        logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
+        # Fallback a una respuesta de error segura si la llamada a LLM falla
+        llm_response_structured = {
+            "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
+            "accion_backend": "derivar_humano",
+            "datos_estructura": {"target": "municipio", "error_llm": True, "detalle_error": str(e)},
+            "pedir_info": None,
+            "botones": []
+        }
 
     # Actualizar el historial de chat_db_context con este turno (pregunta y respuesta_usuario del LLM)
     # Esto es para que la próxima llamada a Gemini tenga este contexto.

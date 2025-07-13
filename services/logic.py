@@ -468,7 +468,7 @@ def responder_chatboc(
     elif tipo_chat == "pyme":
         from services.pymes import responder_pyme
         return responder_pyme(
-            pregunta=pregunta,
+            pregunta_original=pregunta,
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=current_user,
