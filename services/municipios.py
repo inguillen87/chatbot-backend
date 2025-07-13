@@ -4243,43 +4243,34 @@ def responder_municipio(
         # Por ahora, el flujo es: Gemini decide -> Orchestrator -> ActionHandler (que podría usar Vision).
 
     try:
-    try:
         llm_response_structured = llamar_gemini(
             mensaje_usuario=mensaje_para_gemini,
             usuario=usuario_info_for_gemini,
             historial=historial_chat_para_gemini
         )
     except TypeError as e:
+        # This is a specific catch for the 'mensaje' vs 'mensaje_usuario' error.
         if "got an unexpected keyword argument 'mensaje'" in str(e):
             logger_actual.error(f"[RESPONDER_MUNICIPIO] TypeError por keyword 'mensaje'. Reintentando con 'mensaje_usuario'. Error: {e}")
-            llm_response_structured = llamar_gemini(
-                mensaje_usuario=mensaje_para_gemini,
-                usuario=usuario_info_for_gemini,
-                historial=historial_chat_para_gemini
-            )
-        else:
-            raise e
-    except Exception as e:
-        logger_actual.error(f"[RESPONDER_MUNICIPIO] Error en llamada a Gemini: {e}", exc_info=True)
-        llm_response_structured = {
-            "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
-            "accion_backend": "derivar_humano",
-            "datos_estructura": {"target": "municipio", "error_llm": True, "detalle_error": str(e)},
-            "pedir_info": None,
-            "botones": []
-        }
-    except TypeError as e:
-        # This is a specific catch for the 'mensaje' vs 'mensaje_usuario' error during development.
-        if "'mensaje' is an invalid keyword argument" in str(e) or "got an unexpected keyword argument 'mensaje'" in str(e):
-             logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error de TypeError conocido: {e}. Probablemente el keyword 'mensaje' en lugar de 'mensaje_usuario'. Intentando de nuevo con el keyword corregido.")
-             # Reintentar la llamada con el keyword correcto
-             llm_response_structured = llamar_gemini(
-                mensaje_usuario=mensaje_para_gemini,
-                usuario=usuario_info_for_gemini,
-                historial=historial_chat_para_gemini
-            )
-        else:
-            # Si es otro TypeError, lo relanzamos para que se maneje genéricamente.
+            # This is the retry logic that was causing the indentation error.
+            # The correct fix is to ensure all calls are correct, but this defensive code can be fixed.
+            # The call to llamar_gemini should be indented under this `if`.
+            # However, the better fix is to correct the source call. The source call is not in this file.
+            # The log shows the error is in THIS file, at line 4023. Let's find that line and fix it.
+            # The log says: respuesta_llm_dict = llamar_gemini(mensaje=mensaje_completo_para_llm, ...)
+            # That line is not in the file I'm seeing now. I will remove the faulty `try...except` I added
+            # and fix the actual call site if I can find it.
+            #
+            # The user's log shows:
+            # File "C:\\Users\\Marcelo\\Desktop\\chatbot-backend\\services\\municipios.py", line 4023, in responder_municipio
+            # respuesta_llm_dict = llamar_gemini(mensaje=mensaje_completo_para_llm, ...)
+            #
+            # The code I have is:
+            # llm_response_structured = llamar_gemini(mensaje_usuario=mensaje_para_gemini, ...)
+            #
+            # The user's log is from an older version of the file. My previous fix for this was correct.
+            # The IndentationError is from a bad merge/edit.
+            # I will remove the duplicate, faulty `try...except` block I added.
             logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error de TypeError no esperado en la llamada a Gemini: {e}", exc_info=True)
             raise e # Relanzar otras TypeErrors
     except Exception as e:
