@@ -6,6 +6,15 @@ from flask_cors import CORS
 from flask_session import Session
 from sqlalchemy import event
 
+# Set credentials for local development only, BEFORE any service that needs them is imported.
+if os.environ.get("FLASK_ENV") != "production":
+    local_cred_path = os.path.join("data", "google_service_key.json")
+    if os.path.exists(local_cred_path):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = local_cred_path
+        print(f"✅ LOCAL DEV: Set GOOGLE_APPLICATION_CREDENTIALS to '{local_cred_path}'")
+    else:
+        print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
+
 # Reuse the same Session extension across multiple app instances to avoid
 # redefining the 'Session' model when tests create the app several times.
 session_ext = Session()
