@@ -266,12 +266,21 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         # Si se necesita un historial de chat más complejo, se usaría model.start_chat(history=...)
 
         # Para una llamada simple con system prompt y el último mensaje:
+
+        mensaje_usuario_obj = {}
+        texto_mensaje = ""
+        try:
+            mensaje_usuario_obj = json.loads(mensaje_usuario)
+            texto_mensaje = mensaje_usuario_obj.get("texto", "")
+        except (json.JSONDecodeError, TypeError):
+            texto_mensaje = mensaje_usuario
+
         contents_for_api = [
             # JULES_SYSTEM_PROMPT ya está como system_instruction
-            f"USUARIO: {json.dumps(usuario, ensure_ascii=False)}\nHISTORIAL PREVIO: {json.dumps(historial, ensure_ascii=False)}\nMENSAJE ACTUAL: \"{mensaje_usuario}\""
+            f"USUARIO: {json.dumps(usuario, ensure_ascii=False)}\nHISTORIAL PREVIO: {json.dumps(historial, ensure_ascii=False)}\nMENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}"
         ]
 
-        logger.info(f"Enviando a Gemini ({model_name}). Mensaje: {mensaje_usuario[:100]}...")
+        logger.info(f"Enviando a Gemini ({model_name}). Mensaje: {texto_mensaje[:100]}...")
         # logger.debug(f"Contenido completo enviado a Gemini API (sin system prompt): {contents_for_api}")
 
         # Configuración para intentar asegurar salida JSON y seguridad
