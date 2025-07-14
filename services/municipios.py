@@ -3170,11 +3170,33 @@ class GeneralHandler(BaseMunicipioHandler):
         # We can prepend the scraped context to the user's question for this specific handler.
         mensaje_a_gemini = f"Contexto del sitio web del municipio:\n{contexto_scraped}\n\nPregunta del usuario: {pregunta_str}"
 
-        gemini_response_structured = llamar_gemini(
-            mensaje_usuario=mensaje_a_gemini,
-            usuario=usuario_info_for_gemini,
-            historial=historial_chat_for_gemini
-        )
+        try:
+            llm_response_structured = llamar_gemini(
+                mensaje_usuario=mensaje_para_gemini,
+                usuario=usuario_info_for_gemini,
+                historial=historial_chat_para_gemini
+            )
+        except TypeError as e:
+            # This is a specific catch for the 'mensaje' vs 'mensaje_usuario' error.
+            if "got an unexpected keyword argument 'mensaje'" in str(e):
+                logger_actual.error(f"[RESPONDER_MUNICIPIO] TypeError por keyword 'mensaje'. Reintentando con 'mensaje_usuario'. Error: {e}")
+                llm_response_structured = llamar_gemini(
+                    mensaje_usuario=mensaje_para_gemini, # Corrected keyword
+                    usuario=usuario_info_for_gemini,
+                    historial=historial_chat_para_gemini
+                )
+            else:
+                logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error de TypeError no esperado en la llamada a Gemini: {e}", exc_info=True)
+                raise e # Relanzar otras TypeErrors
+        except Exception as e:
+            logger_actual.error(f"[RESPOND_PYME_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
+            llm_response_structured = {
+                "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
+                "accion_backend": "derivar_humano",
+                "datos_estructura": {"target": "pyme", "error_llm": True, "detalle_error": str(e)},
+                "pedir_info": None,
+                "botones": []
+            }
 
         respuesta_texto_gemini = gemini_response_structured.get("respuesta_usuario")
         accion_gemini = gemini_response_structured.get("accion_backend")
