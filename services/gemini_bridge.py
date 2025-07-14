@@ -250,7 +250,7 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         # Configuración del modelo y generación
         # Modelos disponibles: "gemini-1.0-pro", "gemini-1.5-pro-preview-0409", "gemini-1.5-flash-preview-0514" etc.
         # Usar un modelo reciente que soporte bien system instructions y JSON.
-        model_name = "gemini-1.5-flash"
+        model_name = "gemini-2.0-pro"
 
         model = GenerativeModel(
             model_name,
