@@ -4042,7 +4042,7 @@ def responder_municipio(
                              resumen_analisis = {k: analisis_previo.get(k) for k in ["categoria_sugerida", "descripcion_sugerida", "texto_ocr"] if analisis_previo.get(k)}
                              if resumen_analisis: mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
                 
-                respuesta_llm_dict = llamar_gemini(mensaje_usuario=mensaje_completo_para_llm, usuario=usuario_info_llm, historial=historial_para_llm)
+                respuesta_llm_dict = llamar_gemini(mensaje_usuario=json.dumps(mensaje_completo_para_llm), usuario=usuario_info_llm, historial=historial_para_llm)
                 logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_RESP] Respuesta LLM: {respuesta_llm_dict}")
 
                 respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
