@@ -7,7 +7,7 @@ project_root_logic = os.path.abspath(os.path.join(os.path.dirname(__file__), '..
 if project_root_logic not in sys.path:
     sys.path.insert(0, project_root_logic)
 
-from flask import current_app # Para logging y config
+from flask import current_app
 from models import ArchivoAdjunto, AnalisisArchivo, db # db para la sesión
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service

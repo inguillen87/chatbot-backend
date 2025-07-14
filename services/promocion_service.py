@@ -13,7 +13,7 @@ if project_root_promo_svc not in sys.path:
 
 from sqlalchemy import func, or_ # Importar func y or_
 from sqlalchemy.orm import aliased # Importar aliased
-from ..models import db, Promocion, PromocionAlcance, CatalogoItem, User # User para pyme_user_id
+import models
 from services.common_utils import parse_precio_flexible # Para obtener precio float del item
 
 logger = logging.getLogger(__name__)
@@ -54,14 +54,14 @@ class PromocionService:
         promociones_aplicables_info = []
 
         # Construir la query base para promociones activas de la PYME
-        query_promociones_base = Promocion.query.filter(
-            Promocion.pyme_user_id == pyme_user_id,
-            Promocion.is_active == True, # noqa E712
-            Promocion.fecha_inicio <= now,
-            (Promocion.fecha_fin == None) | (Promocion.fecha_fin >= now) # noqa E711
+        query_promociones_base = models.Promocion.query.filter(
+            models.Promocion.pyme_user_id == pyme_user_id,
+            models.Promocion.is_active == True, # noqa E712
+            models.Promocion.fecha_inicio <= now,
+            (models.Promocion.fecha_fin == None) | (models.Promocion.fecha_fin >= now) # noqa E711
         )
 
-        Alcance = aliased(PromocionAlcance)
+        Alcance = aliased(models.PromocionAlcance)
 
         condiciones_alcance = []
         condiciones_alcance.append(
@@ -77,7 +77,7 @@ class PromocionService:
             )
 
         query_promociones_con_alcance = query_promociones_base.join(
-            Promocion.alcances.of_type(Alcance)
+            models.Promocion.alcances.of_type(Alcance)
         ).filter(or_(*condiciones_alcance)).distinct()
 
         for promo in query_promociones_con_alcance.all():
@@ -155,7 +155,7 @@ class PromocionService:
         promociones_aplicadas_al_carrito_nombres = set()
 
         for item_carr_info in items_carrito:
-            item_catalogo = db.session.get(CatalogoItem, item_carr_info["catalogo_item_id"])
+            item_catalogo = models.db.session.get(models.CatalogoItem, item_carr_info["catalogo_item_id"])
             if not item_catalogo:
                 logger.warning(f"Item de catálogo ID {item_carr_info['catalogo_item_id']} no encontrado al aplicar promos al carrito.")
                 # Añadir el item sin promo para que el carrito siga siendo consistente
@@ -231,16 +231,16 @@ class PromocionService:
         promo_total_carrito_aplicada_info = None
 
         now = datetime.utcnow()
-        promos_total_carrito_candidatas = Promocion.query.filter(
-            Promocion.pyme_user_id == pyme_user_id,
-            Promocion.is_active == True, # noqa E712
-            Promocion.fecha_inicio <= now,
-            (Promocion.fecha_fin == None) | (Promocion.fecha_fin >= now), # noqa E711
-            Promocion.tipo_promocion.in_([
+        promos_total_carrito_candidatas = models.Promocion.query.filter(
+            models.Promocion.pyme_user_id == pyme_user_id,
+            models.Promocion.is_active == True, # noqa E712
+            models.Promocion.fecha_inicio <= now,
+            (models.Promocion.fecha_fin == None) | (models.Promocion.fecha_fin >= now), # noqa E711
+            models.Promocion.tipo_promocion.in_([
                 "TOTAL_CARRITO_DESCUENTO_PORCENTAJE",
                 "TOTAL_CARRITO_DESCUENTO_FIJO"
             ])
-        ).order_by(Promocion.monto_minimo_carrito.desc().nullslast(), Promocion.valor_descuento.desc()).all() # Priorizar
+        ).order_by(models.Promocion.monto_minimo_carrito.desc().nullslast(), models.Promocion.valor_descuento.desc()).all() # Priorizar
 
         mejor_descuento_carrito_actual = 0 # Para encontrar la mejor promo de carrito
         promo_carrito_seleccionada_obj = None

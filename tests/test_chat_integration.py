@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock, ANY
 
 
 from app import create_app, db, Config
-from models import User, Rubro, ArchivoAdjunto, AnalisisArchivo, Conversacion # Importar modelos necesarios
+import models
 
 # Configuración específica para pruebas
 class TestConfig(Config):

@@ -183,7 +183,7 @@ JSON:
 Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estructura del JSON debe ser exactamente como se define en la sección "SALIDA SIEMPRE".
 """
 
-def llamar_gemini(mensaje_usuario: str, usuario: dict, historial: list) -> dict:
+def llamar_gemini(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
     """
     Simula una llamada a la API de Gemini y devuelve una respuesta JSON estructurada.
     En una implementación real, aquí se haría la llamada a la API de Gemini.
@@ -199,6 +199,8 @@ def llamar_gemini(mensaje_usuario: str, usuario: dict, historial: list) -> dict:
     # print("------------------------------------------")
 
     # --- INICIO: LLAMADA REAL A GEMINI ---
+    if mensaje and not mensaje_usuario:
+        mensaje_usuario = mensaje
     prompt_final_para_api = f"""{JULES_SYSTEM_PROMPT}
 
 MENSAJE DEL USUARIO: "{mensaje_usuario}"
@@ -249,6 +251,7 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         # Modelos disponibles: "gemini-1.0-pro", "gemini-1.5-pro-preview-0409", "gemini-1.5-flash-preview-0514" etc.
         # Usar un modelo reciente que soporte bien system instructions y JSON.
         model_name = "gemini-2.5-pro"
+        model_name = "gemini-1.5-flash"
 
         model = GenerativeModel(
             model_name,
