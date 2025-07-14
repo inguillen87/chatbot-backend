@@ -108,6 +108,7 @@ sys.modules.setdefault('twilio.rest', twilio_rest_stub)
 sys.modules.setdefault('twilio', ModuleType('twilio'))
 
 from services import pymes
+import models
 
 class DummyTicket:
     def __init__(self, id=1, nro_ticket=654321, asunto=None, estado='nuevo'):

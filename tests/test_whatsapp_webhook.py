@@ -13,7 +13,7 @@ from config import Config
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
-from models import User, WhatsappNumero
+import models
 # JSON import is no longer needed
 # import json
 
