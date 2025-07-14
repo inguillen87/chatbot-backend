@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock, ANY
 
 
 from services.interpretacion_imagen_service import interpretar_imagen_para_chat, _descargar_imagen
-from models import ArchivoAdjunto, AnalisisArchivo, User, db
+import models
 
 # --- Configuración de App Flask para Pruebas con BD en Memoria ---
 from flask import Flask

@@ -13,7 +13,7 @@ except Exception:
     request = None # Mock request si no hay contexto Flask
 
 from services.cohere_ai import robust_chat, get_cohere_response
-from models import Conversacion, db, ArchivoAdjunto, PymePedido, User, CatalogoItem, TicketComentario # Añadir TicketComentario
+import models
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
     armar_respuesta_legible,
