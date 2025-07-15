@@ -279,6 +279,7 @@ def _procesar_chat(
         # El objeto `chat_context_obj.context_data` será el que se pase y modifique
         # en lugar de `flask_request_session` para el contexto específico del chat.
 
+        interpretacion_imagen_resultado = None
         # --- Deduplicar mensajes rápidos idénticos ---
         last_msg = chat_context_obj.context_data.get("last_user_message")
         last_time_str = chat_context_obj.context_data.get("last_user_message_time")
