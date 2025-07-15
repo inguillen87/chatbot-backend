@@ -6,6 +6,7 @@ import uuid
 from typing import Optional
 from enum import Enum, auto
 from sqlalchemy.orm.attributes import flag_modified
+from models import db
 try:
     from flask import session as flask_session, current_app, request # Añadir request
 except Exception:
