@@ -168,6 +168,8 @@ def interpretar_imagen_para_chat(
                 return {'error': error_msg_pyme, 'analisis_id': analisis_db_record.id}
             else: return {'error': error_msg_pyme, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}} # Propagar error y raw vision
         resultado_procesamiento = _procesar_interpretacion_pedido_pyme(analisis_db_record, vision_results, extracted_ocr_text, pyme_user)
+    elif tipo_interpretacion == "orden_de_compra":
+        resultado_procesamiento = _procesar_interpretacion_orden_de_compra(analisis_db_record, vision_results, extracted_ocr_text)
     else:
         error_msg_tipo = f"Tipo de interpretación no soportado: {tipo_interpretacion}"
         logger.error(f"❌ {error_msg_tipo}")
@@ -644,6 +646,68 @@ def _procesar_interpretacion_pedido_pyme(
         'items_detectados': items_pedido_detectados,
         'items_no_encontrados_catalogo': items_no_encontrados_catalogo,
         'resumen_ocr': resumen_ocr,
+        'analisis_id': analisis_db_record.id if analisis_db_record else None,
+        'error': None,
+        'analisis_interno': datos_internos_analisis
+    }
+
+def _procesar_interpretacion_orden_de_compra(
+    analisis_db_record: Optional[AnalisisArchivo],
+    vision_results: Dict[str, Any],
+    extracted_ocr_text: str
+) -> Dict[str, Any]:
+    """Lógica específica para interpretar una imagen como una orden de compra."""
+    from services.purchase_order_processor import extraer_datos_orden_de_compra_con_llm
+
+    analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
+    logger.info(f"⚙️ Procesando como ORDEN DE COMPRA para Análisis ID: {analisis_id_for_log}")
+
+    datos_internos_analisis = {'tipo_analisis_sugerido': 'orden_de_compra_vision_llm_v1'}
+    if analisis_db_record:
+        analisis_db_record.tipo_analisis = 'orden_de_compra_vision_llm_v1'
+
+    if not extracted_ocr_text:
+        logger.info(f"ℹ️ [OC] No se detectó texto OCR en la imagen para Análisis ID: {analisis_id_for_log}.")
+        if analisis_db_record:
+            analisis_db_record.estado_analisis = "completado"
+            analisis_db_record.tipo_analisis = 'imagen_general_vision_v1'
+            db.session.commit()
+        return {
+            'es_orden_de_compra': False,
+            'motivo': 'No se detectó texto en la imagen.',
+            'datos_orden': {},
+            'analisis_id': analisis_db_record.id if analisis_db_record else None,
+            'error': None,
+            'analisis_interno': datos_internos_analisis
+        }
+
+    datos_oc = extraer_datos_orden_de_compra_con_llm(extracted_ocr_text)
+
+    if not datos_oc:
+        logger.warning(f"No se pudieron extraer datos de la orden de compra desde el texto OCR para Análisis ID: {analisis_id_for_log}")
+        if analisis_db_record:
+            analisis_db_record.estado_analisis = "completado"
+            analisis_db_record.tipo_analisis = 'orden_de_compra_fallido_llm'
+            db.session.commit()
+        return {
+            'es_orden_de_compra': False,
+            'motivo': 'No se pudieron extraer datos estructurados de la orden de compra.',
+            'datos_orden': {},
+            'analisis_id': analisis_db_record.id if analisis_db_record else None,
+            'error': None,
+            'analisis_interno': datos_internos_analisis
+        }
+
+    if analisis_db_record:
+        current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+        current_datos_db.update(datos_oc)
+        analisis_db_record.datos_estructurados = current_datos_db
+        analisis_db_record.estado_analisis = "completado"
+        db.session.commit()
+
+    return {
+        'es_orden_de_compra': True,
+        'datos_orden': datos_oc,
         'analisis_id': analisis_db_record.id if analisis_db_record else None,
         'error': None,
         'analisis_interno': datos_internos_analisis

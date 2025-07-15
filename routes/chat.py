@@ -209,35 +209,22 @@ def _procesar_chat(
                     "error": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."
                 }), 403
 
-        interpretacion_imagen_resultado = None
+        analisis_archivo_resultado = None
         if uploaded_file_info and archivo_adjunto_id:
             from models import ArchivoAdjunto
-            from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+            from services.analisis_archivo_service import tarea_analizar_contenido_archivo
 
             archivo_obj = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
             if archivo_obj:
-                current_app.logger.info(f"Procesando imagen adjunta ID: {archivo_adjunto_id} para chat tipo: {tipo_chat}")
-
-                tipo_interpretacion_img = None
-                pyme_owner_para_pedido = None
-
-                if tipo_chat == "pyme":
-                    tipo_interpretacion_img = "pedido_pyme"
-                    pyme_owner_para_pedido = owner_del_bot
-                    if not pyme_owner_para_pedido:
-                        current_app.logger.warning(f"No se pudo determinar el owner PYME para interpretar pedido de imagen {archivo_adjunto_id}. Se intentará con el usuario actual si es PYME.")
-                elif tipo_chat == "municipio":
-                    tipo_interpretacion_img = "reclamo_municipal"
-
-                if tipo_interpretacion_img:
-                    interpretacion_imagen_resultado = interpretar_imagen_para_chat(
-                        archivo_obj,
-                        tipo_interpretacion_img,
-                        pyme_user=pyme_owner_para_pedido if tipo_interpretacion_img == "pedido_pyme" else None
-                    )
-                    current_app.logger.info(f"Resultado interpretación imagen: {interpretacion_imagen_resultado}")
-                else:
-                    current_app.logger.warning(f"Tipo de chat '{tipo_chat}' no tiene interpretación de imagen definida.")
+                current_app.logger.info(f"Iniciando análisis de archivo adjunto ID: {archivo_adjunto_id} para chat tipo: {tipo_chat}")
+                # Llamar a la tarea de Celery de forma asíncrona
+                tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)
+                current_app.logger.info(f"Tarea de análisis para archivo {archivo_adjunto_id} encolada.")
+                # Por ahora, la respuesta al usuario será inmediata, indicando que el archivo se está procesando.
+                # La UI deberá luego sondear o recibir una actualización (vía WebSocket, etc.)
+                # para obtener el resultado del análisis.
+                # De momento, no pasamos 'analisis_archivo_resultado' a 'responder_chatboc'
+                # porque la tarea es asíncrona.
             else:
                 current_app.logger.error(f"No se encontró ArchivoAdjunto con ID {archivo_adjunto_id} en la DB.")
 

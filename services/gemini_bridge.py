@@ -408,7 +408,7 @@ if __name__ == '__main__':
 def llamar_gemini_para_generacion_texto(
     system_prompt_especifico: str,
     user_prompt: str,
-    model_name: Optional[str] = "gemini-2.5-pro", # Or another suitable model like gemini-1.0-pro
+    model_name: Optional[str] = "gemini-1.5-pro-preview-0409", # Or another suitable model like gemini-1.0-pro
     temperature: float = 0.7, # Higher temperature for more creative/generative tasks
     max_output_tokens: int = 1024
 ) -> Optional[str]:

@@ -312,6 +312,7 @@ class CatalogoItem(db.Model):
     # 'texto' se usa para almacenar el texto combinado que se usó para el embedding.
     texto = db.Column(db.Text, nullable=True)
     embedding = db.Column(db.PickleType, nullable=True) # Este campo podría eliminarse si los embeddings solo viven en Qdrant
+    imagen_url = db.Column(db.String(512), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
@@ -568,3 +569,15 @@ class ChatSessionContext(db.Model):
         return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
 
 print("✅ models.py fue importado con éxito y contiene modelos.")
+
+class CatalogoCompartido(db.Model):
+    __tablename__ = "catalogo_compartido"
+    id = db.Column(db.Integer, primary_key=True)
+    catalogo_id = db.Column(db.Integer, db.ForeignKey('archivo_adjunto.id'), nullable=False)
+    owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    shared_with_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    fecha_compartido = db.Column(db.DateTime, default=datetime.utcnow)
+
+    catalogo = db.relationship('ArchivoAdjunto', backref='compartidos')
+    owner = db.relationship('User', foreign_keys=[owner_id])
+    shared_with = db.relationship('User', foreign_keys=[shared_with_id])
