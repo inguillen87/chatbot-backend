@@ -15,25 +15,9 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
-   # with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-    #    batch_op.add_column(sa.Column('nombre_vecino', sa.String(length=150), nullable=True))
-    #with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-     #   batch_op.add_column(sa.Column('telefono_vecino', sa.String(length=30), nullable=True))
-    #with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-     #   batch_op.add_column(sa.Column('email_vecino', sa.String(length=120), nullable=True))
-    #with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-     #   batch_op.add_column(sa.Column('foto_url_directa', sa.String(length=255), nullable=True))
-    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-        batch_op.drop_column('archivo_url')
+    # Todas las columnas ya existen. No hacemos nada para evitar errores.
+    pass
 
 def downgrade():
-    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('archivo_url', sa.VARCHAR(length=255), nullable=True))
-    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-        batch_op.drop_column('foto_url_directa')
-    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-        batch_op.drop_column('email_vecino')
-    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-        batch_op.drop_column('telefono_vecino')
-    with op.batch_alter_table('municipio_ticket', schema=None) as batch_op:
-        batch_op.drop_column('nombre_vecino')
+    # NO hagas downgrade. Dejalo vacío para no intentar borrar columnas con datos.
+    pass
