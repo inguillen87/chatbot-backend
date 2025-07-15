@@ -374,6 +374,7 @@ def responder_chatboc(
     # Actualizar kwargs para pasar la información a los handlers específicos
     kwargs["datos_interpretados_archivo"] = datos_interpretados_de_archivo
     kwargs["archivo_id_para_asociar"] = archivo_id_para_asociar_al_ticket
+    kwargs["procesamiento_archivo_en_curso"] = procesamiento_archivo_en_curso
 
     if "uploaded_file_info" in kwargs: # Limpiar para no pasarlo si ya se usó.
         del kwargs["uploaded_file_info"]
