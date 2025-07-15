@@ -328,19 +328,6 @@ def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str, categorias_validas
         if re.fullmatch(r"m?\-?\d{4,}", texto_norm) or (tipo_esperado == "un número de ticket" and texto_norm.isdigit()):
              return False
 
-    prompt = f"""
-    Evalúa la RESPUESTA DEL USUARIO en el contexto de que el chatbot esperaba: '{tipo_esperado}'.
-    RESPUESTA DEL USUARIO: "{texto_usuario}"
-
-    Considera lo siguiente:
-    - Si la RESPUESTA DEL USUARIO es un intento de proveer la información esperada (aunque sea parcial o malformada), es 'RESPUESTA_VALIDA'.
-    - Si la RESPUESTA DEL USUARIO es una pregunta diferente, un saludo (ej: 'hola', 'buenas tardes'), una despedida, una solicitud de cancelación (ej: 'cancelar', 'salir'), o un cambio claro de tema, es 'PREGUNTA_NUEVA'.
-    - Si la RESPUESTA DEL USUARIO es una expresión de frustración o confusión pero aún relacionada al flujo, considérala 'RESPUESTA_VALIDA' (el bot necesitará manejar la frustración).
-    - Frases cortas como 'ok', 'bueno', 'dale' son ambiguas. Si el chatbot esperaba datos complejos (ej. una dirección completa, una descripción detallada) y recibe solo 'ok', es más probable que sea 'PREGUNTA_NUEVA' o un intento de resetear el flujo. Si esperaba una simple confirmación (sí/no), 'ok' puede ser 'RESPUESTA_VALIDA'.
-
-    Basado en esto, ¿la RESPUESTA DEL USUARIO es una continuación del flujo actual o es una PREGUNTA_NUEVA/cambio de tema?
-    Responde únicamente con 'RESPUESTA_VALIDA' o 'PREGUNTA_NUEVA'.
-    """
     # --- LLM Call Removed - Simplified Heuristic ---
     # The main Gemini call should handle intent changes. This function is now a simpler guard.
     # If the input is very short and not a clear expected simple response, assume it might be new.
@@ -441,7 +428,6 @@ class GreetingHandler(BaseMunicipioHandler):
                 return None # Let other handlers try to parse the details
 
             # Standard greeting response for short/simple greetings
-            memoria.clear() 
             greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. Estoy aquí para ayudarte. Podés consultarme sobre trámites, hacer un reclamo, dejar una sugerencia o resolver alguna duda que tengas. ¡Contame en qué te puedo colaborar hoy!"
             options = [
                 {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
@@ -3134,15 +3120,23 @@ class GeneralHandler(BaseMunicipioHandler):
                 if "botones" in respuesta_faq: respuesta["botones"] = respuesta_faq["botones"]
                 return respuesta
             logger.info("[GeneralHandler] En estado ESPERANDO_PREGUNTA_CURSO_LICENCIA, pero FAQ no encontró nada. Dejando a LLM general.")
-        if not user_obj: logger.warning("[GeneralHandler] No hay user_obj (dueño del bot) en contexto. No se puede buscar en SitioWebInfo."); return None
+        if not user_obj:
+            logger.warning("[GeneralHandler] No hay user_obj (dueño del bot) en contexto. No se puede buscar en SitioWebInfo.")
+            return None
         contexto_scraped = ""
         try:
             query_filter = {"user_id": user_obj.id}
             contenidos = SitioWebInfo.query.filter_by(**query_filter).all()
             textos_relevantes = [json.loads(item.datos_json).get("contenido", "") for item in contenidos if json.loads(item.datos_json).get("tipo") == "contenido_general"]
             contexto_scraped = " ".join(filter(None, textos_relevantes))
-            if not contexto_scraped: logger.info(f"[GeneralHandler] No se encontró contenido 'contenido_general' en SitioWebInfo para user_id {user_obj.id}."); contexto_scraped = "No hay información general disponible del municipio en este momento."
-        except Exception as e: logger.error(f"[GeneralHandler] Error al obtener contenido SitioWebInfo: {e}", exc_info=True); contexto_scraped = "Hubo un error al cargar la información general del municipio."
+            if not contexto_scraped:
+                logger.info(f"[GeneralHandler] No se encontró contenido 'contenido_general' en SitioWebInfo para user_id {user_obj.id}.")
+                contexto_scraped = "No hay información general disponible del municipio en este momento."
+        except Exception as e:
+            logger.error(f"[GeneralHandler] Error al obtener contenido SitioWebInfo: {e}", exc_info=True)
+            contexto_scraped = "Hubo un error al cargar la información general del municipio."
+
+        logger.info(f"[GeneralHandler] Contexto de scraping para la pregunta '{pregunta_str[:100]}...':\n{contexto_scraped[:500]}...")
         prompt_final = PROMPT_MUNICIPIO_CON_CONTEXTO.format(contexto_scraped=contexto_scraped, pregunta_usuario=pregunta_str)
         # --- Modified to use llamar_gemini ---
         # The JULES_SYSTEM_PROMPT already defines the persona.
