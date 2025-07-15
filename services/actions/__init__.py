@@ -8,6 +8,7 @@ ACTION_HANDLER_MAP = {
     "iniciar_reclamo": "services.actions.municipio_claim_actions.CrearReclamoAction",
     "crear_reclamo": "services.actions.municipio_claim_actions.CrearReclamoAction", # Assuming existing class name
     "consultar_estado_reclamo": "services.actions.municipio_claim_actions.ConsultarEstadoReclamoAction", # Assuming
+    "consultar_reclamo": "services.actions.municipio_claim_actions.ConsultarEstadoReclamoAction",
     # "consultar_info_tramite_municipio": "services.actions.municipio_actions.ConsultarInfoTramiteActionHandler", # Needs to be created or mapped
     # "hacer_sugerencia_municipio": "services.actions.municipio_actions.HacerSugerenciaActionHandler", # Needs to be created or mapped
     # "ejecutar_herramienta_municipio": "services.actions.municipio_actions.EjecutarHerramientaActionHandler", # Needs to be created or mapped

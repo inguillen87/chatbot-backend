@@ -163,7 +163,7 @@
       "¿Puedo informar un semáforo que no funciona?",
       "¿Dónde reclamo por basurales ilegales?"
     ],
-    "respuesta": "Para reclamos de servicios municipales (luminarias, baches, residuos, arbolado, etc.), podés comunicarte directamente por WhatsApp al [telefono], llamar al municipio o ingresar tu reclamo desde nuestra web [linkWeb]. En muchos casos generamos un número de ticket para seguimiento. ¿Querés que te explique cómo hacer tu reclamo o te gustaría registrar uno ahora?"
+    "respuesta": "Para reclamos de servicios municipales (luminarias, baches, residuos, arbolado, etc.), podés comunicarte directamente por WhatsApp al [telefono], llamar al municipio o ingresar tu reclamo desde nuestra web [linkWeb]. En muchos casos generamos un número de ticket para seguimiento. ¿Te gustaría registrar un reclamo ahora?"
   },
   {
     "categoria": "informacion_pagos_tasas",
@@ -383,6 +383,16 @@
     "Requiero ayuda económica del municipio"
   ],
   "respuesta": "El municipio cuenta con varios programas de asistencia social. Podés acercarte a la Secretaría de Desarrollo Social en [direccionSocial] en el horario [horarioSocial] o llamar al [telefonoSocial] para evaluar tu caso. Más info en [linkWeb]/desarrollosocial. ¿Necesitas la dirección, teléfono u horario?"
+},
+{
+    "categoria": "consultar_reclamo",
+    "ejemplos": [
+        "Quiero saber el estado de mi reclamo",
+        "¿Cómo va mi reclamo?",
+        "Consultar estado de reclamo",
+        "Seguimiento de mi reclamo"
+    ],
+    "respuesta": "Para consultar el estado de tu reclamo, por favor decime el número de ticket."
 }
   
 ],

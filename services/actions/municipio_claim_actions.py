@@ -13,39 +13,89 @@ class CrearReclamoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CrearReclamoAction with data: {action_data}")
 
-        categoria = action_data.get("categoria")
+        # Enhanced field extraction from action_data (LLM output)
+        categoria = action_data.get("categoria", "Reclamo General")
         descripcion = action_data.get("descripcion")
-        ubicacion = action_data.get("ubicacion")
+        ubicacion_texto = action_data.get("ubicacion") # Textual location from LLM
+        coordenadas = action_data.get("coordenadas") # e.g., {"lat": -32.88, "lon": -68.84}
 
-        if not all([categoria, descripcion, ubicacion]):
-            missing_fields = [f for f, v in {"categoría": categoria, "descripción": descripcion, "ubicación": ubicacion}.items() if not v]
+        # User details from LLM or fallback to context
+        nombre_vecino = action_data.get("nombre_usuario_detectado") or self.context.get("nombre_usuario_contexto")
+        telefono_vecino = action_data.get("telefono_detectado") or self.context.get("telefono_usuario_contexto")
+        email_vecino = action_data.get("email_detectado") or self.context.get("email_usuario_contexto")
+
+        # Validate required fields based on what LLM should provide for this action
+        missing_fields = []
+        if not categoria:
+            missing_fields.append("categoría")
+        if not descripcion:
+            missing_fields.append("descripción")
+        if not ubicacion_texto:
+            missing_fields.append("ubicación")
+
+        if missing_fields:
             return {
                 "success": False,
-                "message_to_user": f"Faltan datos para crear el reclamo: {', '.join(missing_fields)}. Por favor, intenta de nuevo.",
-                "pedir_info": missing_fields[0] if missing_fields else "datos_reclamo_faltantes",
-                "error_details": "Missing required fields for CrearReclamoAction."
+                "message_to_user": f"Para crear el reclamo, necesitaría saber la {missing_fields[0]}. ¿Podrías decírmela?",
+                "pedir_info": missing_fields[0],
+                "error_details": f"Missing required fields for CrearReclamoAction: {', '.join(missing_fields)}"
             }
 
+        latitud = coordenadas.get("lat") if isinstance(coordenadas, dict) else None
+        longitud = coordenadas.get("lon") if isinstance(coordenadas, dict) else None
+
+        # Context details from the main application flow
+        user_id_db = self.context.get("cliente_id")
+        anon_id_db = self.context.get("anon_id") if not user_id_db else None
+        owner_user_obj = self.context.get("user_obj") # Municipality User object
+        municipio_db_id_para_ticket = getattr(owner_user_obj, "municipio_id", None)
+
+        archivo_id_para_asociar = self.context.get("archivo_id_para_asociar")
+        foto_url_directa_contexto = self.context.get("foto_url") # e.g., from WhatsApp
+
+        ticket_payload = {
+            "asunto": f"Reclamo ({categoria})", "categoria": categoria, "detalles": descripcion,
+            "direccion": ubicacion_texto, "latitud": latitud, "longitud": longitud,
+            "nombre_vecino": nombre_vecino, "telefono_vecino": telefono_vecino, "email_vecino": email_vecino,
+            "estado": "nuevo", "user_id": user_id_db, "anon_id": anon_id_db,
+            "municipio_id": municipio_db_id_para_ticket,
+            "origen_reclamo": self.context.get("channel", "web")
+        }
+
+        # Handle photo URL: prioritize context (e.g. WhatsApp direct URL) then LLM's data
+        if foto_url_directa_contexto:
+            ticket_payload["foto_url_directa"] = foto_url_directa_contexto
+        elif action_data.get("foto_url_adjunta"): # If LLM was shown an image and extracted its URL (less common)
+            ticket_payload["foto_url_directa"] = action_data.get("foto_url_adjunta")
+
+        ticket_data_cleaned = {k: v for k, v in ticket_payload.items() if v is not None}
+        logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
+
         try:
-            ticket_creado = servicio_tickets.crear_nuevo_ticket(
-                tipo_ticket="municipio",
-                ticket_data={
-                    "asunto": f"Reclamo ({categoria})",
-                    "categoria": categoria,
-                    "detalles": descripcion,
-                    "direccion": ubicacion,
-                    "estado": "nuevo",
-                    "user_id": self.context.get("cliente_id"),
-                    "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
-                    "municipio_id": getattr(self.context.get("user_obj"), "municipio_id", None),
-                    "origen_reclamo": self.context.get("channel", "web")
-                }
-            )
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
             if not ticket_creado:
-                raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
+                logger.error("servicio_tickets.crear_nuevo_ticket returned None.")
+                return {"success": False, "message_to_user": "No se pudo registrar el reclamo en este momento."}
 
             nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
             logger.info(f"Reclamo creado exitosamente: {nro_ticket_str}")
+
+            if archivo_id_para_asociar: # If a file was uploaded via web and its ArchivoAdjunto ID is in context
+                from services.archivo_service import archivo_service
+                asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(
+                    ticket_id=ticket_creado.id, tipo_ticket="municipio", ids_archivos=[archivo_id_para_asociar]
+                )
+                if asociacion_exitosa:
+                    logger.info(f"Archivo ID {archivo_id_para_asociar} asociado a ticket {nro_ticket_str}.")
+                    if "archivo_id_para_asociar" in self.context: del self.context["archivo_id_para_asociar"]
+                else:
+                    logger.warning(f"No se pudo asociar archivo ID {archivo_id_para_asociar} a ticket {nro_ticket_str}.")
+
+            # TODO: Implement robust notifications (this might move to ticket_service or a dedicated notification action)
+            # Example:
+            # if telefono_vecino:
+            #     from services.notification_service import enviar_notificacion_confirmacion_reclamo # Placeholder
+            #     enviar_notificacion_confirmacion_reclamo(telefono_vecino, nro_ticket_str, categoria, self.context.get("channel"))
 
             return {
                 "success": True,
@@ -54,6 +104,7 @@ class CrearReclamoAction(BaseActionHandler):
             }
         except Exception as e:
             logger.error(f"Error en CrearReclamoAction: {e}", exc_info=True)
+            # Consider global_db.session.rollback() if ticket_service doesn't handle it internally
             return {
                 "success": False,
                 "message_to_user": "Hubo un error técnico al registrar tu reclamo. Por favor, intenta más tarde.",
