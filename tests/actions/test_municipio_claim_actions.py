@@ -131,12 +131,12 @@ class TestCrearReclamoAction(unittest.TestCase):
 
 
     def test_crear_reclamo_missing_essential_data(self):
-        action_data = {"categoria": "Agua"} # Missing description and ubicacion_original_reclamo
+        action_data = {"categoria": "Agua"} # Missing description and ubicacion
         handler = CrearReclamoAction(context=self.base_context_registered_user)
         result = handler.execute(action_data)
 
         self.assertFalse(result["success"])
-        self.assertIn("Faltan datos esenciales", result["message_to_user"])
+        self.assertIn("Faltan datos para crear el reclamo: descripción, ubicación", result["message_to_user"])
         mock_servicio_tickets_module.crear_nuevo_ticket.assert_not_called()
 
     @patch('services.actions.municipio_claim_actions.archivo_service', mock_archivo_service_module)
