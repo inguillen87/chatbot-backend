@@ -2,7 +2,6 @@
 import logging
 import importlib
 from typing import Dict, Any
-from services.actions import ACTION_HANDLER_MAP # Import the map
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +14,36 @@ class ChatOrchestrator:
         'anon_id', 'channel', 'chat_db_context_data', etc.
         """
         self.global_context = global_context
+        self.action_handler_map = self._load_action_handlers()
+
+    def _load_action_handlers(self):
+        # This is a simplified dynamic loader. A more robust solution might
+        # scan a directory or use a registration pattern.
+        # For now, we'll hardcode the map here for clarity and control.
+        # This replaces the static ACTION_HANDLER_MAP from services.actions
+        return {
+            "crear_reclamo": "services.municipio_actions.CrearReclamoAction",
+            "consultar_estado_reclamo": "services.municipio_actions.ConsultarEstadoReclamoAction",
+            "derivar_humano": "services.municipio_actions.DerivarHumanoAction",
+            "consultar_tramite": "services.municipio_actions.ConsultarTramiteAction",
+            "ejecutar_herramienta": "services.municipio_actions.EjecutarHerramientaAction",
+            "saludar": "services.pyme_actions.SaludarAction",  # Example, might need specific handler
+            "no_accion": "services.pyme_actions.NoAction",
+            "small_talk": "services.pyme_actions.SmallTalkAction",
+            "consultar_producto_pyme": "services.pyme_actions.ConsultarProductoAction",
+            "agregar_item_carrito": "services.pyme_actions.AgregarItemCarritoAction",
+            "ver_carrito_pyme": "services.pyme_actions.VerCarritoAction",
+            "eliminar_item_carrito": "services.pyme_actions.EliminarItemCarritoAction",
+            "crear_pedido_pyme": "services.pyme_actions.CrearPedidoAction",
+            "consultar_pedido_pyme": "services.pyme_actions.ConsultarPedidoAction",
+            # Add other actions here
+        }
 
     def _get_handler_class(self, action_name: str):
         """
         Dynamically imports and returns the handler class for the given action name.
         """
-        handler_path_str = ACTION_HANDLER_MAP.get(action_name)
+        handler_path_str = self.action_handler_map.get(action_name)
         if not handler_path_str:
             logger.warning(f"No handler found for action: {action_name}")
             return None

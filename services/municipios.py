@@ -3969,107 +3969,107 @@ def responder_municipio(
     # --- End Handle post-login resumption ---
 
     # --- LLM Integration for Reclamos (and potentially other intents later) ---
-    # if USAR_LLM_PARA_RECLAMOS and not respuesta_manejada_por_llm: # Check flag here
-    #     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion") # Enum or None
-    #     invocar_llm = False
-    #     if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM or \
-    #        estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM:
-    #         invocar_llm = True
-    #         logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado LLM activo: {estado_conversacion_para_llm}. Invocando LLM.")
-    #     elif not estado_conversacion_para_llm or contexto_municipio_actual.get("saludo_detectado_en_largo_mensaje"):
-    #         # Heurística para invocar LLM: texto sustantivo o imagen sin texto.
-    #         # El context["es_foto"] se setea en el bloque "EARLY_IMG_PROC" que está más abajo ahora.
-    #         # Para que el LLM use la foto en el primer turno, EARLY_IMG_PROC debe correr ANTES de este bloque LLM.
-    #         # Por ahora, el LLM se basará en `pregunta_str` y `contexto_municipio_actual` que podría tener info de imagen de un turno ANTERIOR.
-    #         # Si es una imagen NUEVA en ESTE turno, el EARLY_IMG_PROC más abajo la procesará para el *siguiente* turno del LLM,
-    #         # o para los handlers tradicionales si el LLM no maneja este turno.
-    #         # Esto es un punto a refinar: idealmente el análisis de imagen de ESTE turno debería estar disponible para el LLM en ESTE turno.
+    if USAR_LLM_PARA_RECLAMOS and not respuesta_manejada_por_llm: # Check flag here
+        estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion") # Enum or None
+        invocar_llm = False
+        if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM or \
+           estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM:
+            invocar_llm = True
+            logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado LLM activo: {estado_conversacion_para_llm}. Invocando LLM.")
+        elif not estado_conversacion_para_llm or contexto_municipio_actual.get("saludo_detectado_en_largo_mensaje"):
+            # Heurística para invocar LLM: texto sustantivo o imagen sin texto.
+            # El context["es_foto"] se setea en el bloque "EARLY_IMG_PROC" que está más abajo ahora.
+            # Para que el LLM use la foto en el primer turno, EARLY_IMG_PROC debe correr ANTES de este bloque LLM.
+            # Por ahora, el LLM se basará en `pregunta_str` y `contexto_municipio_actual` que podría tener info de imagen de un turno ANTERIOR.
+            # Si es una imagen NUEVA en ESTE turno, el EARLY_IMG_PROC más abajo la procesará para el *siguiente* turno del LLM,
+            # o para los handlers tradicionales si el LLM no maneja este turno.
+            # Esto es un punto a refinar: idealmente el análisis de imagen de ESTE turno debería estar disponible para el LLM en ESTE turno.
             
-    #         # Para que el LLM pueda usar la imagen en el *mismo turno* que se envía,
-    #         # la detección de `context["es_foto"]` y `context["foto_url"]` debe ocurrir *antes* de este bloque.
-    #         # El bloque "EARLY_IMG_PROC" (que está más abajo) se encarga de esto.
-    #         # Aquí `context.get("es_foto")` reflejará si una imagen fue detectada en este turno.
-    #         if len(pregunta_str.strip().split()) > 1 or \
-    #            (context.get("es_foto") and not pregunta_str.strip()):
-    #             invocar_llm = True
-    #             logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado inicial/saludo. Pregunta: '{pregunta_str[:50]}...', es_foto: {context.get('es_foto')}. Invocando LLM.")
+            # Para que el LLM pueda usar la imagen en el *mismo turno* que se envía,
+            # la detección de `context["es_foto"]` y `context["foto_url"]` debe ocurrir *antes* de este bloque.
+            # El bloque "EARLY_IMG_PROC" (que está más abajo) se encarga de esto.
+            # Aquí `context.get("es_foto")` reflejará si una imagen fue detectada en este turno.
+            if len(pregunta_str.strip().split()) > 1 or \
+               (context.get("es_foto") and not pregunta_str.strip()):
+                invocar_llm = True
+                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado inicial/saludo. Pregunta: '{pregunta_str[:50]}...', es_foto: {context.get('es_foto')}. Invocando LLM.")
 
-    #     if invocar_llm:
-    #         logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_INVOKE] Invocando LLM. Estado actual para LLM: {estado_conversacion_para_llm}")
-    #         usuario_info_llm = {
-    #             "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
-    #             "tipo_entidad": "municipio",
-    #             "ubicacion": getattr(viewer_user, "direccion", None) if viewer_user else None,
-    #             "contacto": { "telefono": getattr(viewer_user, "telefono", None) if viewer_user else None, "email": getattr(viewer_user, "email", None) if viewer_user else None }
-    #         }
-    #         historial_para_llm = []
-    #         if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM: historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
-    #         elif estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM: historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
+        if invocar_llm:
+            logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_INVOKE] Invocando LLM. Estado actual para LLM: {estado_conversacion_para_llm}")
+            usuario_info_llm = {
+                "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
+                "tipo_entidad": "municipio",
+                "ubicacion": getattr(viewer_user, "direccion", None) if viewer_user else None,
+                "contacto": { "telefono": getattr(viewer_user, "telefono", None) if viewer_user else None, "email": getattr(viewer_user, "email", None) if viewer_user else None }
+            }
+            historial_para_llm = []
+            if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM: historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
+            elif estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM: historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
-    #         try:
-    #             mensaje_completo_para_llm = {"texto": pregunta_str}
-    #             if context.get("es_foto") and context.get("foto_url"):
-    #                 mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
-    #                 if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
-    #                     analisis_previo = contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw")
-    #                     if isinstance(analisis_previo, dict):
-    #                          resumen_analisis = {k: analisis_previo.get(k) for k in ["categoria_sugerida", "descripcion_sugerida", "texto_ocr"] if analisis_previo.get(k)}
-    #                          if resumen_analisis: mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
+            try:
+                mensaje_completo_para_llm = {"texto": pregunta_str}
+                if context.get("es_foto") and context.get("foto_url"):
+                    mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
+                    if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
+                        analisis_previo = contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw")
+                        if isinstance(analisis_previo, dict):
+                             resumen_analisis = {k: analisis_previo.get(k) for k in ["categoria_sugerida", "descripcion_sugerida", "texto_ocr"] if analisis_previo.get(k)}
+                             if resumen_analisis: mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
                 
-    #             respuesta_llm_dict = llamar_gemini(mensaje_usuario=json.dumps(mensaje_completo_para_llm), usuario=usuario_info_llm, historial=historial_para_llm)
-    #             logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_RESP] Respuesta LLM: {respuesta_llm_dict}")
+                respuesta_llm_dict = llamar_gemini(mensaje_usuario=json.dumps(mensaje_completo_para_llm), usuario=usuario_info_llm, historial=historial_para_llm)
+                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_RESP] Respuesta LLM: {respuesta_llm_dict}")
 
-    #             respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
-    #             accion_backend_llm = respuesta_llm_dict.get("accion_backend")
-    #             datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
-    #             pedir_info_llm = respuesta_llm_dict.get("pedir_info")
-    #             botones_llm = respuesta_llm_dict.get("botones", [])
+                respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
+                accion_backend_llm = respuesta_llm_dict.get("accion_backend")
+                datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
+                pedir_info_llm = respuesta_llm_dict.get("pedir_info")
+                botones_llm = respuesta_llm_dict.get("botones", [])
 
-    #             if respuesta_usuario_llm:
-    #                 nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
-    #                 hist_key = None
-    #                 if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
-    #                     hist_key = "historial_llm_reclamo"
-    #                     if not pedir_info_llm: # Acción completa, se creará ticket
-    #                         respuesta_accion = accion_crear_reclamo_municipio(datos_estructura_llm, context)
-    #                         respuesta_final = respuesta_accion
-    #                         for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]: contexto_municipio_actual.pop(k, None)
-    #                         contexto_municipio_actual["estado_conversacion"] = None
-    #                         respuesta_manejada_por_llm = True
-    #                     else: # Pide más info para reclamo
-    #                         contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
-    #                         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM
-    #                         contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-    #                         respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}
-    #                         respuesta_manejada_por_llm = True
-    #                 elif accion_backend_llm == "derivar_humano":
-    #                     context["intencion"] = "hablar_con_agente"
-    #                     contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
-    #                     respuesta_manejada_por_llm = False # Deja a HumanEscalationHandler construir la respuesta
-    #                     logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM] LLM derivó a humano.")
-    #                 elif respuesta_usuario_llm: # Respuesta general
-    #                     hist_key = "historial_conversacion_general_llm"
-    #                     contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM
-    #                     if pedir_info_llm: contexto_municipio_actual["esperando_info_general_llm"] = pedir_info_llm
-    #                     else: contexto_municipio_actual.pop("esperando_info_general_llm", None)
-    #                     respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}
-    #                     respuesta_manejada_por_llm = True
+                if respuesta_usuario_llm:
+                    nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
+                    hist_key = None
+                    if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
+                        hist_key = "historial_llm_reclamo"
+                        if not pedir_info_llm: # Acción completa, se creará ticket
+                            respuesta_accion = accion_crear_reclamo_municipio(datos_estructura_llm, context)
+                            respuesta_final = respuesta_accion
+                            for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]: contexto_municipio_actual.pop(k, None)
+                            contexto_municipio_actual["estado_conversacion"] = None
+                            respuesta_manejada_por_llm = True
+                        else: # Pide más info para reclamo
+                            contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
+                            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM
+                            contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                            respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}
+                            respuesta_manejada_por_llm = True
+                    elif accion_backend_llm == "derivar_humano":
+                        context["intencion"] = "hablar_con_agente"
+                        contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
+                        respuesta_manejada_por_llm = False # Deja a HumanEscalationHandler construir la respuesta
+                        logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM] LLM derivó a humano.")
+                    elif respuesta_usuario_llm: # Respuesta general
+                        hist_key = "historial_conversacion_general_llm"
+                        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM
+                        if pedir_info_llm: contexto_municipio_actual["esperando_info_general_llm"] = pedir_info_llm
+                        else: contexto_municipio_actual.pop("esperando_info_general_llm", None)
+                        respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}
+                        respuesta_manejada_por_llm = True
                     
-    #                 if hist_key and respuesta_manejada_por_llm : # Solo agregar a historial si el LLM efectivamente manejó la respuesta y es un flujo continuo
-    #                     contexto_municipio_actual.setdefault(hist_key, []).append(nuevo_turno_historial)
+                    if hist_key and respuesta_manejada_por_llm : # Solo agregar a historial si el LLM efectivamente manejó la respuesta y es un flujo continuo
+                        contexto_municipio_actual.setdefault(hist_key, []).append(nuevo_turno_historial)
                 
-    #             if not respuesta_usuario_llm and not accion_backend_llm : # LLM no dio nada útil
-    #                 logger_actual.warning("[RESPONDER_MUNICIPIO_LLM] LLM no devolvió respuesta_usuario ni acción_backend.")
-    #                 respuesta_manejada_por_llm = False # Fallback
+                if not respuesta_usuario_llm and not accion_backend_llm : # LLM no dio nada útil
+                    logger_actual.warning("[RESPONDER_MUNICIPIO_LLM] LLM no devolvió respuesta_usuario ni acción_backend.")
+                    respuesta_manejada_por_llm = False # Fallback
 
-    #         except Exception as e_llm:
-    #             logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error: {e_llm}", exc_info=True)
-    #             respuesta_manejada_por_llm = False
-    #             for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
-    #                 if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM, ConversationState.CONVERSACION_GENERAL_LLM]:
-    #                     contexto_municipio_actual[k] = None
-    #                 elif k != "estado_conversacion":
-    #                     contexto_municipio_actual.pop(k, None)
+            except Exception as e_llm:
+                logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error: {e_llm}", exc_info=True)
+                respuesta_manejada_por_llm = False
+                for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
+                    if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM, ConversationState.CONVERSACION_GENERAL_LLM]:
+                        contexto_municipio_actual[k] = None
+                    elif k != "estado_conversacion":
+                        contexto_municipio_actual.pop(k, None)
     
     # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
     # This block runs if LLM didn't handle the response, or to supplement LLM context
