@@ -78,7 +78,7 @@ def run_scraping_orchestrator():
     logger.info("[ORQUESTADOR] Ciclo de scraping finalizado.")
 
 if __name__ == "__main__":
-    # Es VITAL crear un contexto de aplicación para que el script pueda usar la db
+    # Es VITAL crear un contexto de aplicación para que el script pueda usar la dbhoy
     app = create_app()
     with app.app_context():
         run_scraping_orchestrator()
