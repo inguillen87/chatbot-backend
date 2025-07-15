@@ -939,12 +939,12 @@ class IntentClassifierHandler(BaseMunicipioHandler):
         # and LLM intent was generic (like 'small_talk', 'no_accion', 'pregunta_general'),
         # we honor that generic LLM intent. If LLM intent was None, default to 'pregunta_general'.
         if not self.context.get("intencion"): # If keyword fallbacks didn't set anything
-            if llm_intent and llm_intent not in ["ejecutar_herramienta", "activar_panico", "hablar_con_agente"]: # Don't override these critical ones if they somehow reached here
+            if llm_intent and llm_intent not in ["ejecutar_herramienta", "activar_panico", "hablar_con_agente", "no_accion"]: # Don't override these critical ones if they somehow reached here
                 self.context["intencion"] = llm_intent # Honor original generic LLM intent
                 logger.info(f"[IntentClassifierHandler] No keyword match. Usando intención genérica original de LLM: '{llm_intent}'")
             else: # If LLM intent was also None or a critical one we shouldn't default to
                 self.context["intencion"] = "pregunta_general" # Default fallback
-                logger.info(f"[IntentClassifierHandler] No keyword match y sin intención LLM clara. Default a 'pregunta_general'.")
+                logger.info(f"[IntentClassifierHandler] No keyword match y sin intención LLM clara (o era 'no_accion'). Default a 'pregunta_general'.")
 
         return None # Let GeneralHandler or SmallTalkHandler pick up based on the (possibly now generic) intent.
 
