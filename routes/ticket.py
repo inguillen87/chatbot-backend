@@ -281,7 +281,7 @@ def get_mis_tickets(current_user: User):
 # ---------- DETALLE DE TICKET ----------
 @ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @anon_o_token_requerido
-def detalle_ticket(current_user, tipo, ticket_id):
+def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None):
     """
     Devuelve el detalle de un ticket, reforzando la lógica de permisos para admins, empleados y usuarios.
     """

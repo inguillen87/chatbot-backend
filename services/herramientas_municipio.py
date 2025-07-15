@@ -251,8 +251,7 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
 
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
-        # Return a message that allows the flow to continue if this function is called unexpectedly during a reclamo.
-        return "Error de configuración: El servicio de mapas no está disponible en este momento. No se pudo validar la dirección geográficamente, pero puedes continuar con el reclamo si la dirección es correcta."
+        return "Error de configuración: El servicio de geolocalización no está disponible. Por favor, contacta al administrador."
 
     ciudad = CONFIG_MUNICIPIO.get("ciudad", "")
     if ciudad and ciudad.lower() not in direccion.lower():
