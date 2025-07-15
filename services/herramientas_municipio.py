@@ -388,6 +388,41 @@ TOOL_REGISTRY = {
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
+def validar_y_formatear_direccion(direccion: str) -> dict | None:
+    """
+    Valida y formatea una dirección utilizando la API de Google Maps.
+    """
+    if not Maps_API_KEY:
+        logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
+        return None
+
+    geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={requests.utils.quote(direccion)}&key={Maps_API_KEY}&language=es"
+
+    try:
+        response = requests.get(geocode_url)
+        response.raise_for_status()
+        data = response.json()
+
+        if data and data.get('status') == 'OK' and data.get('results'):
+            best_result = data['results'][0]
+            formatted_address = best_result.get('formatted_address')
+            location = best_result['geometry']['location']
+            lat, lng = location['lat'], location['lng']
+
+            return {
+                "formatted_address": formatted_address,
+                "lat": lat,
+                "lng": lng
+            }
+        else:
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error de conexión con Google API para geocoding ({direccion}): {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error inesperado en geocoding para {direccion}: {e}", exc_info=True)
+        return None
+
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     """
     Obtiene una dirección formateada y componentes estructurados a partir de coordenadas lat/lon
