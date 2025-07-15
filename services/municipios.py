@@ -4469,6 +4469,11 @@ def responder_municipio(
         orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
         action_handler_result = orchestrator.execute_action(llm_response_structured)
 
+    # Ensure we always have a dictionary to avoid AttributeError when handlers return None
+    if action_handler_result is None:
+        logger.warning("Action handler returned None; defaulting to empty result dictionary")
+        action_handler_result = {}
+
     # --- PROCESAR RESULTADO DEL ACTION HANDLER ---
     respuesta_final_texto = action_handler_result.get("message_to_user")
     if not respuesta_final_texto: # Si el handler no dio un mensaje, usar el del LLM
