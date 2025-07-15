@@ -8,7 +8,7 @@ from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro, ArchivoAdjunto
-from services.cohere_ai import embed_textos
+from services.gemini_bridge import embed_textos_gemini as embed_textos
 
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
@@ -27,7 +27,7 @@ from typing import List, Dict, Any, Optional
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg"}
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx", ".txt"}
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")  # Esto anda en cualquier entorno
 CATALOGO_FOLDER = os.path.join("data", "catalogos")
 
@@ -111,18 +111,24 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         _, extension_archivo = os.path.splitext(path_archivo)
         extension_archivo = extension_archivo.lower()
 
-        if extension_archivo == ".pdf":
-            logger.info(f"[UPLOAD_PROC] Procesando PDF con Google DocAI: {os.path.basename(path_archivo)}")
-            registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id, pyme_rubro_nombre)
-        elif extension_archivo in [".png", ".jpg", ".jpeg"]:
-            logger.info(f"[UPLOAD_PROC] Procesando imagen con Google DocAI: {os.path.basename(path_archivo)}")
-            registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id, pyme_rubro_nombre)
-        elif extension_archivo in [".xlsx", ".xls", ".csv"]:
-            logger.info(f"[UPLOAD_PROC] Procesando EXCEL/CSV: {os.path.basename(path_archivo)}")
-            registros_estructurados = procesar_catalogo_excel(path_archivo, user_id, pyme_rubro_nombre)
+        from services.generic_file_processor import procesar_archivo_generico
+        from mimetypes import guess_type
+
+        mime_type, _ = guess_type(path_archivo)
+        if mime_type:
+            resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
+            if resultado_generico and resultado_generico.get("analisis_gemini"):
+                # Asumimos que el análisis de Gemini puede devolver una lista de productos
+                # o un objeto que la contiene. Esto necesita un contrato claro con el prompt.
+                registros_estructurados = resultado_generico["analisis_gemini"]
+                if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
+                    registros_estructurados = registros_estructurados["productos"]
+            else:
+                logger.warning(f"El procesamiento genérico no devolvió un análisis de Gemini para {os.path.basename(path_archivo)}")
+                registros_estructurados = []
         else:
-            logger.error(f"[UPLOAD_PROC] Tipo de archivo no soportado: {extension_archivo}")
-            raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
+            logger.error(f"No se pudo determinar el tipo MIME para {os.path.basename(path_archivo)}")
+            raise ValueError(f"Tipo de archivo desconocido para: {os.path.basename(path_archivo)}")
 
         if not isinstance(registros_estructurados, list):
             logger.error(f"[UPLOAD_PROC] El procesador de archivos no devolvió una lista para '{os.path.basename(path_archivo)}'. Devolvió: {type(registros_estructurados)}")

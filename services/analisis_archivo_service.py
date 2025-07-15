@@ -24,6 +24,7 @@ def _get_or_create_analisis_archivo(session, archivo_adjunto_id: int) -> Analisi
 # ... otras importaciones ...
 from services.interpretacion_imagen_service import interpretar_imagen_para_chat
 from services.logic import es_rubro_publico # Para determinar contexto municipal
+from services.generic_file_processor import procesar_archivo_generico
 # ...
 
 # ... _get_or_create_analisis_archivo ...
@@ -145,26 +146,26 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
                 analisis_archivo.estado_analisis = "omitido_config"
                 analisis_archivo.tipo_analisis = "pdf_docai_config_faltante"
         
-        # 5. Archivos de Texto Plano
-        elif mime_type.startswith("text/"):
-            logger.info(f"Archivo {archivo_adjunto_id} es un archivo de texto ({mime_type}). Extrayendo contenido.")
-            file_content_bytes = obtener_contenido_archivo(archivo_adjunto)
-            if file_content_bytes:
-                try:
-                    file_content_text = file_content_bytes.decode('utf-8', errors='replace')
-                    analisis_archivo.texto_extraido = file_content_text
-                    analisis_archivo.tipo_analisis = "texto_directo"
-                except UnicodeDecodeError:
-                    logger.error(f"Error de decodificación para archivo de texto ID: {archivo_adjunto_id}")
-                    analisis_archivo.error_analisis = "Error de decodificación del archivo de texto."
-                    analisis_archivo.estado_analisis = "error"
-            else:
-                analisis_archivo.error_analisis = "No se pudo leer el contenido del archivo de texto."
-                analisis_archivo.estado_analisis = "error"
+        # 5. Archivos de Texto Plano y otros tipos genéricos
         else:
-            logger.warning(f"Tipo de archivo no soportado ({mime_type}) para análisis avanzado del archivo ID: {archivo_adjunto_id}.")
-            analisis_archivo.estado_analisis = "no_aplicable"
-            analisis_archivo.tipo_analisis = "desconocido"
+            logger.info(f"Intentando procesamiento genérico para archivo {archivo_adjunto_id} con MIME type: {mime_type}")
+            ruta_fisica_archivo = obtener_ruta_fisica_archivo(archivo_adjunto)
+            if ruta_fisica_archivo:
+                resultado_generico = procesar_archivo_generico(ruta_fisica_archivo, mime_type)
+                if resultado_generico:
+                    analisis_archivo.texto_extraido = resultado_generico.get("texto_extraido")
+                    analisis_archivo.datos_estructurados = {"analisis_gemini": resultado_generico.get("analisis_gemini")}
+                    analisis_archivo.estado_analisis = "completado"
+                    analisis_archivo.tipo_analisis = "generico_gemini_v1"
+                    logger.info(f"Procesamiento genérico de {archivo_adjunto_id} completado.")
+                else:
+                    logger.warning(f"Procesamiento genérico no arrojó resultados para {archivo_adjunto_id}.")
+                    analisis_archivo.estado_analisis = "no_aplicable"
+                    analisis_archivo.tipo_analisis = "generico_no_soportado"
+            else:
+                analisis_archivo.estado_analisis = "error"
+                analisis_archivo.error_analisis = "No se pudo obtener la ruta física del archivo para procesamiento genérico."
+                logger.error(f"No se pudo obtener ruta física para procesamiento genérico de {archivo_adjunto_id}.")
 
         if analisis_archivo.estado_analisis not in ["error", "procesando", "omitido_config", "completado"]:
              analisis_archivo.estado_analisis = "completado"

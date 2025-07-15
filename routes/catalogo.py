@@ -206,6 +206,7 @@ def listar_catalogo(user, *args, **kwargs):
                 "precio_str": item.precio,
                 "cantidad": item.cantidad,
                 "marca": item.marca,
+                "imagen_url": item.imagen_url,
             }
         )
 
@@ -354,3 +355,63 @@ def descargar_catalogo_publico(pyme_user_id):
         return jsonify({"error": "Archivo de catálogo no encontrado en el servidor."}), 500
 
     return send_from_directory(CATALOGO_FOLDER, adj.filename, as_attachment=True)
+
+@catalogo_bp.route('/compartir', methods=['POST'])
+@token_requerido
+def compartir_catalogo(user):
+    """Comparte un catálogo con otro usuario."""
+    from models import CatalogoCompartido, User, db
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No se proporcionaron datos"}), 400
+
+    catalogo_id = data.get('catalogo_id')
+    shared_with_email = data.get('email')
+
+    if not catalogo_id or not shared_with_email:
+        return jsonify({"error": "Faltan datos requeridos (catalogo_id, email)"}), 400
+
+    catalogo = ArchivoAdjunto.query.filter_by(id=catalogo_id, user_id=user.id, tipo="catalogo").first()
+    if not catalogo:
+        return jsonify({"error": "Catálogo no encontrado o no te pertenece"}), 404
+
+    shared_with_user = User.query.filter_by(email=shared_with_email).first()
+    if not shared_with_user:
+        return jsonify({"error": "Usuario con quien compartir no encontrado"}), 404
+
+    # Verificar si ya está compartido
+    existente = CatalogoCompartido.query.filter_by(
+        catalogo_id=catalogo_id,
+        owner_id=user.id,
+        shared_with_id=shared_with_user.id
+    ).first()
+    if existente:
+        return jsonify({"mensaje": "Este catálogo ya está compartido con este usuario."}), 200
+
+    nuevo_compartido = CatalogoCompartido(
+        catalogo_id=catalogo_id,
+        owner_id=user.id,
+        shared_with_id=shared_with_user.id
+    )
+    db.session.add(nuevo_compartido)
+    db.session.commit()
+
+    return jsonify({"mensaje": "Catálogo compartido exitosamente."}), 201
+
+@catalogo_bp.route('/compartidos', methods=['GET'])
+@token_requerido
+def listar_compartidos(user):
+    """Lista los catálogos que han sido compartidos con el usuario."""
+    from models import CatalogoCompartido
+
+    compartidos = CatalogoCompartido.query.filter_by(shared_with_id=user.id).all()
+    data = []
+    for c in compartidos:
+        data.append({
+            "nombre": c.catalogo.nombre_original or c.catalogo.filename,
+            "url": f"/catalogo/archivo/{c.catalogo.filename}",
+            "compartido_por": c.owner.email,
+            "fecha_compartido": c.fecha_compartido.isoformat()
+        })
+    return jsonify(data)
