@@ -8,7 +8,7 @@ from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro, ArchivoAdjunto
-from services.gemini_bridge import embed_textos_gemini as embed_textos
+from services.embedding_service import embed_textos_gemini as embed_textos
 
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
