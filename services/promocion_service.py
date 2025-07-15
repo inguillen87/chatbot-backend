@@ -13,7 +13,9 @@ if project_root_promo_svc not in sys.path:
 
 from sqlalchemy import func, or_ # Importar func y or_
 from sqlalchemy.orm import aliased # Importar aliased
-import models
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from models import Promocion, CatalogoItem
 from services.common_utils import parse_precio_flexible # Para obtener precio float del item
 
 logger = logging.getLogger(__name__)

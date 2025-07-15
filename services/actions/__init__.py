@@ -5,6 +5,7 @@
 # to the fully qualified path of the handler class.
 ACTION_HANDLER_MAP = {
     # Municipio Actions
+    "iniciar_reclamo": "services.actions.municipio_claim_actions.CrearReclamoAction",
     "crear_reclamo": "services.actions.municipio_claim_actions.CrearReclamoAction", # Assuming existing class name
     "consultar_estado_reclamo": "services.actions.municipio_claim_actions.ConsultarEstadoReclamoAction", # Assuming
     # "consultar_info_tramite_municipio": "services.actions.municipio_actions.ConsultarInfoTramiteActionHandler", # Needs to be created or mapped
