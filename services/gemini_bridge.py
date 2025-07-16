@@ -416,10 +416,14 @@ def llamar_gemini(
     usuario: dict = None,
     historial: list = None,
     mensaje: str = None,
-    timeout_seconds: int = 10,
+    timeout_seconds: Optional[float] = None,
     delay_warning_seconds: int = 8,
 ) -> dict:
-    """Wrapper con timeout y logging para la llamada al LLM."""
+    """Wrapper con timeout opcional y logging para la llamada al LLM.
+
+    Si ``timeout_seconds`` es ``None`` no se aplica ningún límite y la función
+    esperará hasta que el subproceso devuelva una respuesta.
+    """
 
     logger = logging.getLogger(__name__)
     start_time = time.time()
@@ -433,7 +437,10 @@ def llamar_gemini(
                 mensaje,
             )
             try:
-                respuesta = future.result(timeout=timeout_seconds)
+                if timeout_seconds is not None:
+                    respuesta = future.result(timeout=timeout_seconds)
+                else:
+                    respuesta = future.result()
             except TimeoutError:
                 logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
                 return {
