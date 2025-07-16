@@ -3289,9 +3289,11 @@ class GeneralHandler(BaseMunicipioHandler):
 
 class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
+        logger.info(f"[EngancheAnonimoMunicipioHandler] handle called with payload: {payload}")
         if self.context.get("user_id"): return None # Already logged in, not for this handler
 
         intencion = self.context.get("intencion")
+        logger.info(f"[EngancheAnonimoMunicipioHandler] intencion: {intencion}")
         # If the intent is already to start a claim (e.g., set by image analysis),
         # let that flow proceed without suggesting registration at this exact moment.
         if intencion == "iniciar_reclamo":
@@ -4468,6 +4470,7 @@ def responder_municipio(
         "municipio_config_actual": final_municipio_config, # Config específica del municipio
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # El dict vivo de context_data
+        "empresa_token": getattr(owner_user, "token", None),
 
         # Datos del turno actual que pueden ser útiles para los handlers:
         "pregunta_actual_usuario": pregunta_str, # Texto original del usuario para este turno
