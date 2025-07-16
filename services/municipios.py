@@ -3233,8 +3233,9 @@ class GeneralHandler(BaseMunicipioHandler):
                 "botones": []
             }
 
-        respuesta_texto_gemini = gemini_response_structured.get("respuesta_usuario")
-        accion_gemini = gemini_response_structured.get("accion_backend")
+        # Use the LLM response captured above
+        respuesta_texto_gemini = llm_response_structured.get("respuesta_usuario")
+        accion_gemini = llm_response_structured.get("accion_backend")
 
         if not respuesta_texto_gemini or accion_gemini == "error_llm" or \
            (len(respuesta_texto_gemini.split()) < 7 and ("no puedo" in respuesta_texto_gemini.lower() or "no sé" in respuesta_texto_gemini.lower() or "no tengo información" in respuesta_texto_gemini.lower())) or \
