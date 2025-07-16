@@ -1,8 +1,9 @@
 import json
-import logging # Import logging
-# Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
-import os # Ensure os is imported for environment variables
-from typing import Dict, Any, List, Optional # Import Optional
+import logging
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from typing import Dict, Any, List, Optional
 
 # Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
 # from vertexai.preview.generative_models import GenerativeModel
@@ -183,7 +184,7 @@ JSON:
 Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estructura del JSON debe ser exactamente como se define en la sección "SALIDA SIEMPRE".
 """
 
-def llamar_gemini(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
+def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
     """
     Simula una llamada a la API de Gemini y devuelve una respuesta JSON estructurada.
     En una implementación real, aquí se haría la llamada a la API de Gemini.
@@ -381,12 +382,47 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         }
     except Exception as e_parse: # Otros errores durante el parseo o manejo
         logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
+
         return {
             "respuesta_usuario": "Lo siento, hubo un error técnico al procesar la respuesta del asistente IA. Un humano revisará tu caso.",
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": f"Fallo general post-LLM: {str(e_parse)}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
         }
+
+
+def llamar_gemini(
+    mensaje_usuario: str = None,
+    usuario: dict = None,
+    historial: list = None,
+    mensaje: str = None,
+    timeout_seconds: int = 10,
+    delay_warning_seconds: int = 8,
+) -> dict:
+    """Wrapper con timeout y logging para la llamada al LLM."""
+
+    logger = logging.getLogger(__name__)
+    start_time = time.time()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje)
+        try:
+            respuesta = future.result(timeout=timeout_seconds)
+        except TimeoutError:
+            logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
+            return {
+                "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
+                "accion_backend": "no_accion",
+                "datos_estructura": {"error_detalle": "timeout"},
+                "pedir_info": None,
+                "botones": []
+            }
+
+    elapsed = time.time() - start_time
+    logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
+    if elapsed > delay_warning_seconds and isinstance(respuesta, dict) and respuesta.get("respuesta_usuario"):
+        respuesta["respuesta_usuario"] = "Sigo buscando la mejor respuesta, dame unos segundos más… " + respuesta["respuesta_usuario"]
+
+    return respuesta
 
 if __name__ == '__main__':
     # Configurar logging básico para pruebas locales si no está ya configurado
