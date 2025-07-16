@@ -188,6 +188,7 @@ consulta el archivo [`docs/ejemplo-request-demo.md`](docs/ejemplo-request-demo.m
   Nuevo módulo de validaciones que comprueba nombre, correo y teléfono usando librerías open source.
 - Si necesitas instalar dependencias manualmente, consulta el archivo `docs/dependencias.txt` para ver la lista completa de paquetes requeridos.
 - Si tienes problemas para obtener la ubicación del usuario en el widget, revisa `docs/geolocalizacion-troubleshooting.md`.
+- El valor del encabezado `Permissions-Policy` se puede personalizar con la variable de entorno `PERMISSIONS_POLICY_HEADER`.
 - Para lograr una ubicacion fluida tras el registro revisa `docs/ubicacion-fluida-post-registro.md`.
 - Si al cargar `window-provider.js` el navegador muestra "Invalid or unexpected token", consulta `docs/window-provider-syntaxerror.md`.
 - Si al entrar a la pantalla de login la aplicación se rompe con un "Error" genérico, revisa `docs/react-login-troubleshooting.md`.

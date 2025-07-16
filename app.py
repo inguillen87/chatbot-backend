@@ -206,7 +206,8 @@ def create_app(config_class=Config):
 
     @app.after_request
     def add_permissions_policy(resp):
-        resp.headers.setdefault("Permissions-Policy", "geolocation=(self)")
+        policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
+        resp.headers.setdefault("Permissions-Policy", policy)
         return resp
 
     # --- Registro de Blueprints (Rutas) ---

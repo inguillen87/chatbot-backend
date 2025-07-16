@@ -18,11 +18,16 @@ significa que la página no tiene permisos para solicitar la ubicación. Comprue
    En Flask puedes agregarlo con:
 
    ```python
+   import os
+
    @app.after_request
    def add_permissions_policy(resp):
-       resp.headers.setdefault("Permissions-Policy", "geolocation=(self)")
+       policy = os.getenv("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
+       resp.headers.setdefault("Permissions-Policy", policy)
        return resp
    ```
+   Puedes personalizar la política estableciendo la variable de entorno
+   `PERMISSIONS_POLICY_HEADER`.
 3. Si cargas el `window-provider.js` con una etiqueta `<script>`, coloca el atributo `allow="geolocation"` en el contenedor que lo aloja (por ejemplo otro `<iframe>`). Ejemplo:
 
    ```html
