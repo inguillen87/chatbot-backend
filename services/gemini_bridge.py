@@ -423,19 +423,35 @@ def llamar_gemini(
 
     logger = logging.getLogger(__name__)
     start_time = time.time()
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje)
-        try:
-            respuesta = future.result(timeout=timeout_seconds)
-        except TimeoutError:
-            logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
-            return {
-                "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
-                "accion_backend": "no_accion",
-                "datos_estructura": {"error_detalle": "timeout"},
-                "pedir_info": None,
-                "botones": []
-            }
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _llamar_gemini_impl,
+                mensaje_usuario,
+                usuario,
+                historial,
+                mensaje,
+            )
+            try:
+                respuesta = future.result(timeout=timeout_seconds)
+            except TimeoutError:
+                logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
+                return {
+                    "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
+                    "accion_backend": "no_accion",
+                    "datos_estructura": {"error_detalle": "timeout"},
+                    "pedir_info": None,
+                    "botones": [],
+                }
+    except RuntimeError as re:
+        logger.error(f"Error al iniciar llamada a Gemini: {re}")
+        return {
+            "respuesta_usuario": "Hubo un problema técnico al iniciar la consulta. ¿Podrías intentar nuevamente?",
+            "accion_backend": "no_accion",
+            "datos_estructura": {"error_detalle": "runtime_error"},
+            "pedir_info": None,
+            "botones": [],
+        }
 
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
