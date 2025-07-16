@@ -3289,9 +3289,11 @@ class GeneralHandler(BaseMunicipioHandler):
 
 class EngancheAnonimoMunicipioHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
+        logger.info(f"[EngancheAnonimoMunicipioHandler] handle called with payload: {payload}")
         if self.context.get("user_id"): return None # Already logged in, not for this handler
 
         intencion = self.context.get("intencion")
+        logger.info(f"[EngancheAnonimoMunicipioHandler] intencion: {intencion}")
         # If the intent is already to start a claim (e.g., set by image analysis),
         # let that flow proceed without suggesting registration at this exact moment.
         if intencion == "iniciar_reclamo":
