@@ -255,6 +255,27 @@ class ConversationState(Enum):
     CONVERSACION_GENERAL_LLM = auto() # Nuevo estado para cuando el LLM está en una conversación general
     ESPERANDO_CONFIRMACION_INICIAR_RECLAMO = auto()
 
+# --- Mapping pedir_info -> ConversationState ---
+def normalizar_str(s: str) -> str:
+    """Normaliza cadenas a minusculas sin tildes ni espacios extra."""
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii").lower().strip()
+
+PEDIR_INFO_TO_STATE = {
+    "ubicacion": ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+    "direccion": ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+    "categoria": ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
+    "descripcion": ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+    "descripcion_mas_detallada": ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+    "nombre_completo": ConversationState.ESPERANDO_NOMBRE_VECINO,
+    "nombre": ConversationState.ESPERANDO_NOMBRE_VECINO,
+    "telefono": ConversationState.ESPERANDO_TELEFONO_VECINO,
+    "email": ConversationState.ESPERANDO_EMAIL_VECINO,
+    "id_reclamo": ConversationState.ESPERANDO_NUMERO_TICKET,
+    "id_ticket": ConversationState.ESPERANDO_NUMERO_TICKET,
+    "confirmacion": ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+    "adjuntos": ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+}
+
 _PRODUCT_CATALOG_CACHE = None
 def cargar_catalogo_productos():
     global _PRODUCT_CATALOG_CACHE
@@ -4505,21 +4526,27 @@ def responder_municipio(
                 contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_actual
             # No se setea estado_conversacion a None aquí, clear() lo elimina. Se re-evaluará al final.
     elif pedir_info_final:
-        # Mapear pedir_info_final a un ConversationState y guardarlo
-        # Esta es la parte que necesita una lógica de mapeo robusta.
-        # Ejemplo simplificado:
-        estado_objetivo_str = None
-        if pedir_info_final == "ubicacion": estado_objetivo_str = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-        elif pedir_info_final == "categoria": estado_objetivo_str = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-        elif pedir_info_final == "nombre_completo": estado_objetivo_str = ConversationState.ESPERANDO_NOMBRE_VECINO.name
-        # ... más mapeos ...
-
-        if estado_objetivo_str:
-            contexto_municipio_actual["estado_conversacion"] = estado_objetivo_str
-            logger.info(f"Actualizando estado de conversación a: {estado_objetivo_str} debido a pedir_info: '{pedir_info_final}'")
+        logger.info(f"[PEDIR_INFO_MAP] Valor recibido: '{pedir_info_final}'")
+        pedir_info_norm = normalizar_str(pedir_info_final)
+        logger.info(f"[PEDIR_INFO_MAP] Normalizado: '{pedir_info_norm}'")
+        estado_objetivo = PEDIR_INFO_TO_STATE.get(pedir_info_norm)
+        if estado_objetivo:
+            contexto_municipio_actual["estado_conversacion"] = estado_objetivo.name
+            logger.info(
+                f"Actualizando estado de conversación a: {estado_objetivo.name} debido a pedir_info normalizado: '{pedir_info_norm}'"
+            )
         else:
-            logger.warning(f"No se pudo mapear pedir_info '{pedir_info_final}' a un ConversationState. El estado no se actualizará explícitamente aquí.")
-            # El estado actual (si lo había) se mantendrá o se limpiará si la acción fue un éxito sin pedir_info.
+            logger.warning(
+                f"No se pudo mapear pedir_info '{pedir_info_final}' normalizado '{pedir_info_norm}' a un ConversationState. Reiniciando flujo."
+            )
+            respuesta_final_texto = (
+                "Perdón, tuve un problema para continuar con el reclamo. ¿Podés intentar de nuevo desde el inicio?"
+            )
+            interacciones_anon_actual = contexto_municipio_actual.get("interacciones_anon_sesion")
+            contexto_municipio_actual.clear()
+            if interacciones_anon_actual is not None:
+                contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_actual
+            contexto_municipio_actual["estado_conversacion"] = None
 
     # --- Guardar el historial de chat_db_context con la respuesta final del CHATBOT ---
     chat_db_context_live_data["mensajes_previos_gemini_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})

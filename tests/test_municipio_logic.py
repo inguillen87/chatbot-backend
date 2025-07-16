@@ -684,3 +684,19 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
         self.assertEqual(municipio_context_state.get("direccion_reclamo"), "Calle Luz Mala 100")
         self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_NOMBRE_VECINO)
         self.assertIn("nombre completo", response.get("message_body", "").lower())
+
+    def test_invalid_pedir_info_resets_flow(self):
+        municipio_context_state = {}
+        payload = {
+            "pregunta": "quiero hacer un reclamo",
+            "llamar_gemini_mock_return": {
+                "respuesta_usuario": "Necesito un dato extraño",
+                "accion_backend": "iniciar_reclamo",
+                "datos_estructura": {"target": "municipio"},
+                "pedir_info": "dato_inexistente",
+                "botones": []
+            }
+        }
+        response, municipio_context_state, _ = self._call_responder_municipio(payload, municipio_context_state)
+        self.assertIsNone(municipio_context_state.get("estado_conversacion"))
+        self.assertIn("perd\xc3\xb3n, tuve un problema", response.get("message_body", "").lower())
