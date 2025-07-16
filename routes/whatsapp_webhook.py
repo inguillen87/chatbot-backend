@@ -61,18 +61,14 @@ def whatsapp_webhook():
 
     if media_url and media_content_type:
         print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
-        # Por ahora, solo procesaremos imágenes como un ejemplo inicial.
-        # Podría expandirse a otros tipos de media si es necesario.
+        # Procesar imágenes y PDFs básicos.
         if media_content_type.startswith("image/"):
-            uploaded_file_info_whatsapp = {
-                "url": media_url,
-                "mime_type": media_content_type, # Already present, just confirming
-                "name": f"whatsapp_image_{uuid.uuid4().hex[:8]}.jpg", # Nombre genérico
-                "source": "whatsapp"
-                # No tenemos un 'id' de ArchivoAdjunto aquí porque no lo hemos guardado en la DB aún.
-                # El servicio de interpretación de imagen deberá manejarlo por URL.
-            }
-            post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp # Añadir al payload para responder_chatboc
+            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_image_{uuid.uuid4().hex[:8]}.jpg", "source": "whatsapp"}
+            post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
+            print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
+        elif media_content_type == "application/pdf":
+            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_doc_{uuid.uuid4().hex[:8]}.pdf", "source": "whatsapp"}
+            post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
             print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
         else:
             print(f"Media type {media_content_type} from WhatsApp not currently processed for automatic analysis.")
@@ -159,6 +155,8 @@ def whatsapp_webhook():
             # Add any other specific kwargs your responder_chatboc might need from WhatsApp channel
             "source_channel": "whatsapp"
         }
+        if uploaded_file_info_whatsapp:
+            kwargs_for_bot["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
 
         bot_response_dict = responder_chatboc(
             pregunta=message_body,
