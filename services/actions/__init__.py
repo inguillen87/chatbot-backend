@@ -5,14 +5,17 @@
 # to the fully qualified path of the handler class.
 ACTION_HANDLER_MAP = {
     # Municipio Actions
-    "iniciar_reclamo": "services.actions.municipio_claim_actions.CrearReclamoAction",
-    "crear_reclamo": "services.actions.municipio_claim_actions.CrearReclamoAction", # Assuming existing class name
-    "consultar_estado_reclamo": "services.actions.municipio_claim_actions.ConsultarEstadoReclamoAction", # Assuming
-    "consultar_reclamo": "services.actions.municipio_claim_actions.ConsultarEstadoReclamoAction",
-    # "consultar_info_tramite_municipio": "services.actions.municipio_actions.ConsultarInfoTramiteActionHandler", # Needs to be created or mapped
-    # "hacer_sugerencia_municipio": "services.actions.municipio_actions.HacerSugerenciaActionHandler", # Needs to be created or mapped
-    # "ejecutar_herramienta_municipio": "services.actions.municipio_actions.EjecutarHerramientaActionHandler", # Needs to be created or mapped
-    # "activar_panico_municipio": "services.actions.municipio_actions.ActivarPanicoActionHandler", # Needs to be created or mapped
+    "iniciar_reclamo": "services.actions.municipio_actions.CrearReclamoActionHandler",
+    "crear_reclamo": "services.actions.municipio_actions.CrearReclamoActionHandler",
+    "consultar_estado_ticket": "services.actions.municipio_actions.ConsultarEstadoTicketActionHandler",
+    "info_tramite": "services.actions.municipio_actions.ConsultarInfoTramiteActionHandler",
+    "hacer_sugerencia": "services.actions.municipio_actions.HacerSugerenciaActionHandler",
+    "ejecutar_herramienta": "services.actions.municipio_actions.EjecutarHerramientaActionHandler",
+    "activar_panico": "services.actions.municipio_actions.ActivarPanicoActionHandler",
+    "derivar_humano": "services.actions.municipio_actions.DerivarHumanoActionHandler",
+    "procesar_adjunto_reclamo": "services.actions.municipio_actions.ProcesarAdjuntoReclamoActionHandler",
+    "corregir_datos_reclamo": "services.actions.municipio_actions.CorregirDatosReclamoActionHandler",
+
 
     # PYME Actions
     "crear_pedido_pyme": "services.actions.pyme_order_actions.CrearPedidoAction", # Assuming existing
@@ -22,7 +25,6 @@ ACTION_HANDLER_MAP = {
     # "finalizar_compra_pyme": "services.actions.pyme_actions.FinalizarCompraActionHandler", # Needs to be created or mapped
 
     # Common Actions
-    "derivar_humano": "services.actions.common_actions.DerivarHumanoAction", # Assuming existing
     "procesar_adjunto": "services.actions.common_actions.ProcesarAdjuntoAction", # Assuming existing
     "informar_usuario": "services.actions.common_actions.InformarUsuarioAction", # Assuming existing
 

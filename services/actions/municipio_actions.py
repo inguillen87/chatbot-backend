@@ -2,48 +2,105 @@
 import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
-
-# Assuming services like servicio_tickets, and models are accessible
-# This might require adjustments to imports based on actual project structure
-# from services.ticket_service import servicio_tickets
-# from models import MunicipioTicket, TicketComentario, db
-# from services.municipios import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
-# from services.herramientas_municipio import TOOL_REGISTRY
+from services.ticket_service import servicio_tickets
+from services.municipios import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
+from services.herramientas_municipio import parse_direccion_completa, direccion_es_valida
+from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 
 logger = logging.getLogger(__name__)
 
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")
-        # Simplified logic: Acknowledge and simulate ticket creation
-        # In real implementation, this would call servicio_tickets.crear_nuevo_ticket
-        # and interact with the database.
 
-        required_fields = ["categoria", "descripcion", "nombre_vecino", "telefono_vecino"]
-        if not self.validate_data(action_data, required_fields):
+        # 1. Extracción y Validación de Datos
+        categoria = action_data.get("categoria", "Reclamo General")
+        descripcion = action_data.get("descripcion")
+        ubicacion_llm = action_data.get("ubicacion")
+        coordenadas_llm = action_data.get("coordenadas")
+        nombre_vecino_llm = action_data.get("usuario")
+        telefono_llm = action_data.get("telefono")
+        email_llm = action_data.get("email")
+        foto_url_llm = action_data.get("foto_url_adjunta")
+
+        if not descripcion:
             return {
                 "success": False,
-                "message_to_user": "Faltan datos esenciales para crear el reclamo. Por favor, proporciona al menos categoría, descripción, tu nombre y teléfono.",
-                "pedir_info": "datos_reclamo_faltantes" # Generic signal to ask for more
+                "message_to_user": "No pude entender la descripción del reclamo. Por favor, intenta describirlo de nuevo.",
+                "pedir_info": "descripcion",
+            }
+        if not ubicacion_llm and not coordenadas_llm:
+            return {
+                "success": False,
+                "message_to_user": "No pude entender la ubicación del reclamo. Por favor, especifica dónde es el problema.",
+                "pedir_info": "ubicacion",
             }
 
+        # 2. Recopilación de Información del Contexto
+        viewer_user = self.context.get("viewer_user_obj")
+        owner_user = self.context.get("user_obj")
+        user_id_db = getattr(viewer_user, "id", None)
+        anon_id_db = self.context.get("anon_id") if not user_id_db else None
+        municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
+
+        nombre_vecino_final = nombre_vecino_llm or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
+
+        telefono_final_validado_e164 = None
+        temp_phone_str = str(telefono_llm or getattr(viewer_user, "telefono", ""))
+        if temp_phone_str and validar_telefono(temp_phone_str):
+            telefono_final_validado_e164 = formatear_telefono_e164(temp_phone_str)
+
+        email_final_validado = None
+        temp_email_str = str(email_llm or getattr(viewer_user, "email", ""))
+        if temp_email_str and validar_email(temp_email_str):
+            email_final_validado = temp_email_str.lower()
+
+        direccion_final_txt = ubicacion_llm
+        latitud_final = coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None
+        longitud_final = coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None
+
+        ticket_data = {
+            "asunto": f"Reclamo (LLM): {categoria}", "categoria": categoria, "detalles": descripcion,
+            "direccion": direccion_final_txt, "nombre_vecino": nombre_vecino_final,
+            "telefono_vecino": telefono_final_validado_e164, "email_vecino": email_final_validado,
+            "estado": "nuevo", "user_id": user_id_db, "anon_id": anon_id_db,
+            "municipio_id": municipio_db_id_para_ticket, "latitud": latitud_final, "longitud": longitud_final,
+            "origen_reclamo": "LLM_CHATBOT"
+        }
+        if self.context.get("foto_url"):
+            ticket_data["foto_url_directa"] = self.context.get("foto_url")
+        elif foto_url_llm:
+            ticket_data["foto_url_directa"] = foto_url_llm
+
+        ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+        logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
+
         try:
-            # Simulate ticket creation
-            # ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={...})
-            simulated_ticket_nro = "M-SIM" + str(action_data.get("id_simulacion", "12345"))
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
+            if not ticket_creado:
+                raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
 
-            # Simulate notifications
-            # telefono = action_data.get("telefono_vecino")
-            # if telefono:
-            #     enviar_notificacion_whatsapp_con_plantilla(telefono, action_data.get("nombre_vecino"), simulated_ticket_nro, action_data.get("categoria"))
-            #     enviar_notificacion_sms(telefono, f"Reclamo {simulated_ticket_nro} ({action_data.get('categoria')}) generado.")
+            nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
+            logger.info(f"Ticket {nro_ticket_str} creado exitosamente vía LLM.")
 
-            user_message = f"¡Gracias {action_data.get('nombre_vecino', 'vecino/a')}! Tu reclamo sobre '{action_data.get('categoria')}' con descripción '{action_data.get('descripcion', 'N/A')[:30]}...' ha sido registrado con el número {simulated_ticket_nro}. Te mantendremos informado."
+            archivo_id_a_vincular = self.context.get("archivo_id_para_asociar")
+            if archivo_id_a_vincular:
+                from services.archivo_service import archivo_service
+                asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(ticket_id=ticket_creado.id, tipo_ticket="municipio", ids_archivos=[archivo_id_a_vincular])
+                if asociacion_exitosa: logger.info(f"Archivo ID {archivo_id_a_vincular} asociado a ticket {nro_ticket_str}.")
+                else: logger.warning(f"No se pudo asociar archivo ID {archivo_id_a_vincular} a ticket {nro_ticket_str}.")
+
+            if telefono_final_validado_e164:
+                try:
+                    enviar_notificacion_whatsapp_con_plantilla(telefono_final_validado_e164, nombre_vecino_final, str(ticket_creado.nro_ticket), categoria)
+                    enviar_notificacion_sms(telefono_final_validado_e164, f"Hola {nombre_vecino_final}! Tu reclamo M-{ticket_creado.nro_ticket} ({categoria}) fue generado.")
+                except Exception as e_notify:
+                    logger.error(f"Error enviando notificaciones para {nro_ticket_str}: {e_notify}")
 
             return {
                 "success": True,
-                "message_to_user": user_message,
-                "data": {"ticket_nro": simulated_ticket_nro, "status": "creado"}
+                "message_to_user": f"¡Gracias {nombre_vecino_final}! Tu reclamo sobre '{categoria}' ha sido registrado con el número {nro_ticket_str}. Te mantendremos informado.",
+                "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
             }
         except Exception as e:
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
@@ -76,6 +133,7 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
 
 class ConsultarInfoTramiteActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        from services.municipios import get_tramites_info
         logger.info(f"Executing ConsultarInfoTramiteActionHandler with data: {action_data}")
         tramite_nombre = action_data.get("nombre_tramite") or action_data.get("categoria") # Categoria might be used if specific tramite name isn't clear
         if not tramite_nombre:
@@ -84,16 +142,28 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
                 "message_to_user": "¿Sobre qué trámite necesitas información?",
                 "pedir_info": "nombre_tramite"
             }
-        # Simulate fetching tramite info
-        # info = buscar_info_tramite_en_db_o_json(tramite_nombre)
-        simulated_info = f"La información para el trámite '{tramite_nombre}' es la siguiente: ... [detalles y requisitos]..."
-        if "licencia de conducir" in tramite_nombre.lower():
-            simulated_info += " Para licencias, recordá llevar DNI y comprobante de grupo sanguíneo."
-        return {
-            "success": True,
-            "message_to_user": simulated_info,
-            "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "simulada"}
-        }
+
+        tramites_info = get_tramites_info()
+        # Case-insensitive search for the tramite
+        tramite_encontrado = None
+        for key, value in tramites_info.items():
+            if key.lower() == tramite_nombre.lower():
+                tramite_encontrado = value
+                break
+
+        if tramite_encontrado:
+            info_message = tramite_encontrado.get("descripcion", "No hay información disponible para este trámite.")
+            return {
+                "success": True,
+                "message_to_user": info_message,
+                "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "real"}
+            }
+        else:
+            return {
+                "success": False,
+                "message_to_user": f"No encontré información sobre el trámite '{tramite_nombre}'.",
+                "pedir_info": "nombre_tramite"
+            }
 
 class HacerSugerenciaActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:

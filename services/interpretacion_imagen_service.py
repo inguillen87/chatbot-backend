@@ -303,8 +303,8 @@ def _procesar_interpretacion_reclamo(
 
     # Construct description for LLM from image content
     prompt_description_parts = []
-    top_labels_str = ", ".join([f"{l['description']}" for l in vision_results.get("labels", [])[:3]])
-    top_objects_str = ", ".join([f"{o['name']}" for o in vision_results.get("objects", [])[:2]])
+    top_labels_str = ", ".join([f"{l['description']}" for l in vision_results.get("labels", [])[:5]])
+    top_objects_str = ", ".join([f"{o['name']}" for o in vision_results.get("objects", [])[:3]])
 
     if top_objects_str:
         prompt_description_parts.append(f"Objetos principales detectados: {top_objects_str}")
@@ -312,22 +312,15 @@ def _procesar_interpretacion_reclamo(
         prompt_description_parts.append(f"Aspectos generales de la imagen: {top_labels_str}")
 
     ocr_snippet_for_prompt = ""
-    if extracted_ocr_text and len(extracted_ocr_text) < 200: # Include if somewhat concise
+    if extracted_ocr_text:
         ocr_snippet_for_prompt = extracted_ocr_text.strip().replace("\n", " ")
         prompt_description_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'")
-
-    # current_datos_estructurados = analisis_db_record.datos_estructurados if analisis_db_record and isinstance(analisis_db_record.datos_estructurados, dict) else {}
-    # No, datos_internos_analisis es el que se está construyendo para el retorno o para DB.
-    # vision_api_raw ya está en vision_results, no es necesario agregarlo a datos_internos_analisis aquí explícitamente
-    # a menos que queramos sobreescribir la estructura de `raw_analysis` que se arma en la función principal.
 
     if not prompt_description_parts:
          logger.info(f"ℹ️ [RECLAMO_IMG_PROC] No hay suficiente información visual/textual para enviar al LLM (Análisis ID: {analisis_id_for_log}).")
          if analisis_db_record:
              analisis_db_record.estado_analisis = "completado_sin_info_suficiente"
-             # current_datos_estructurados['vision_inferred_category'] = sugerida_categoria_vision # Se guarda en datos_internos_analisis
-             # analisis_db_record.datos_estructurados = current_datos_estructurados # Se actualiza al final
-             db.session.commit() # Commit el estado
+             db.session.commit()
 
          datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
          return {
@@ -336,7 +329,7 @@ def _procesar_interpretacion_reclamo(
              'descripcion_sugerida': "No se pudo generar una descripción automática. Por favor, describí el problema.",
              'texto_ocr': extracted_ocr_text,
              'analisis_id': analisis_db_record.id if analisis_db_record else None, 'error': None,
-             'analisis_interno': datos_internos_analisis # Incluir los datos internos, aunque sea solo tipo_analisis y vision_inferred_category
+             'analisis_interno': datos_internos_analisis
          }
 
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
@@ -345,28 +338,16 @@ def _procesar_interpretacion_reclamo(
     # Use LLM to refine/generate details based on image description
     detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
 
-    # Guardar estos detalles en datos_internos_analisis
     datos_internos_analisis['llm_complaint_extraction_from_image'] = detalles_llm
-    datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision # Store what vision inferred initially
+    datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
 
-    # Si hay un registro de DB, actualizarlo.
-    # if analisis_db_record:
-    #     current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
-    #     current_datos_db.update(datos_internos_analisis) # Agregar los nuevos datos
-    #     # current_datos_db['llm_complaint_extraction_from_image'] = detalles_llm
-    #     # current_datos_db['vision_inferred_category'] = sugerida_categoria_vision
-    #     analisis_db_record.datos_estructurados = current_datos_db
-
-    # Determine final suggested category and description
-    final_categoria_sugerida = sugerida_categoria_vision # Start with Vision's inference
+    final_categoria_sugerida = sugerida_categoria_vision
 
     llm_tipo_problema = detalles_llm.get("tipo_problema","").strip()
     if llm_tipo_problema:
-        # If LLM suggests a category, try to match it to our known categories
         normalized_llm_cat = normalizar_texto_municipios(llm_tipo_problema)
         matched_llm_cat = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto_municipios(cat) == normalized_llm_cat), None)
-        if not matched_llm_cat: # Fuzzy match if direct fails
-             # Import here to avoid circular if this file is imported elsewhere before municipios fully loads
+        if not matched_llm_cat:
             from services.herramientas_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
             from difflib import get_close_matches as get_close_matches_hm
 
@@ -376,21 +357,19 @@ def _procesar_interpretacion_reclamo(
                 matched_llm_cat = CATEGORIAS_RECLAMO[idx]
 
         if matched_llm_cat and matched_llm_cat != "otro motivo":
-            final_categoria_sugerida = matched_llm_cat # LLM's suggestion (if valid) overrides Vision's
+            final_categoria_sugerida = matched_llm_cat
             logger.info(f"[RECLAMO_IMG_PROC] LLM propuso categoría: '{llm_tipo_problema}', mapeada a: '{final_categoria_sugerida}'")
-        elif not final_categoria_sugerida and matched_llm_cat == "otro motivo": # If vision found nothing, and LLM says "otro"
+        elif not final_categoria_sugerida and matched_llm_cat == "otro motivo":
             final_categoria_sugerida = "otro motivo"
 
-
     final_descripcion_sugerida = detalles_llm.get("descripcion_problema", "").strip()
-    if not final_descripcion_sugerida or len(final_descripcion_sugerida) < 15 : # If LLM description is too short or missing
-        # Create a fallback description from image elements if LLM one is poor
+    if not final_descripcion_sugerida or len(final_descripcion_sugerida) < 15:
         desc_parts = []
         if final_categoria_sugerida and final_categoria_sugerida != "otro motivo":
             desc_parts.append(f"Posible problema de '{final_categoria_sugerida}'.")
 
         if top_objects_str: desc_parts.append(f"Se observan: {top_objects_str}.")
-        elif top_labels_str: desc_parts.append(f"Aspectos generales: {top_labels_str}.") # Use labels if no objects
+        elif top_labels_str: desc_parts.append(f"Aspectos generales: {top_labels_str}.")
 
         if ocr_snippet_for_prompt:
             desc_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'.")
@@ -398,23 +377,19 @@ def _procesar_interpretacion_reclamo(
         if desc_parts:
             final_descripcion_sugerida = " ".join(desc_parts)
             logger.info(f"[RECLAMO_IMG_PROC] Descripción generada por fallback: {final_descripcion_sugerida}")
-        else: # True fallback if nothing was found
+        else:
             final_descripcion_sugerida = "Por favor, describe el problema que observaste en la imagen."
-
 
     es_reclamo_valido_sugerido = bool(final_categoria_sugerida and final_categoria_sugerida != "otro motivo") or \
                                  (final_descripcion_sugerida and len(final_descripcion_sugerida) >= 15 and "describe el problema" not in final_descripcion_sugerida.lower())
 
-    # Añadir las conclusiones finales a datos_internos_analisis para que se guarden en DB si aplica
     datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
     datos_internos_analisis['final_descripcion_sugerida'] = final_descripcion_sugerida
     datos_internos_analisis['es_reclamo_sugerido'] = es_reclamo_valido_sugerido
 
     if analisis_db_record:
         analisis_db_record.estado_analisis = "completado"
-        # Actualizar datos_estructurados con los datos_internos_analisis
         current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
-        # Ensure vision_api_raw is preserved if it was already there from the main function
         if 'vision_api_raw' not in datos_internos_analisis and 'vision_api_raw' in current_datos_db:
             datos_internos_analisis['vision_api_raw'] = current_datos_db['vision_api_raw']
 
@@ -427,9 +402,9 @@ def _procesar_interpretacion_reclamo(
         'categoria_sugerida': final_categoria_sugerida if final_categoria_sugerida else None,
         'descripcion_sugerida': final_descripcion_sugerida if len(final_descripcion_sugerida) >=10 else None,
         'texto_ocr': extracted_ocr_text,
-        'analisis_id': analisis_db_record.id if analisis_db_record else None, # Será None si es de WhatsApp
+        'analisis_id': analisis_db_record.id if analisis_db_record else None,
         'error': None,
-        'analisis_interno': datos_internos_analisis # Devolver los datos internos (incluye tipo_analisis_sugerido, llm_extraction, etc.)
+        'analisis_interno': datos_internos_analisis
     }
 
 # --- Lógica para Interpretación de Pedidos PYME ---
