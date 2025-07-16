@@ -88,7 +88,11 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
         name = action_data.get("name")
         email = action_data.get("email")
         password = action_data.get("password")
-        empresa_token = action_data.get("empresa_token")
+        empresa_token = (
+            action_data.get("empresa_token")
+            or self.context.get("empresa_token")
+            or (getattr(self.context.get("user_obj"), "token", None) if self.context else None)
+        )
 
         if not all([name, email, password, empresa_token]):
             return {
