@@ -27,6 +27,7 @@ ACTION_HANDLER_MAP = {
     # Common Actions
     "procesar_adjunto": "services.actions.common_actions.ProcesarAdjuntoAction", # Assuming existing
     "informar_usuario": "services.actions.common_actions.InformarUsuarioAction", # Assuming existing
+    "registrar_usuario": "services.actions.general_actions.RegistrarUsuarioActionHandler",
 
     # Placeholder for actions that might not have a dedicated backend handler beyond LLM response
     "no_accion": None, # Or a generic NoOpHandler if specific logging/tracking is needed
