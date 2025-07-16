@@ -2,6 +2,12 @@
 import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
+from models import User, db
+from sqlalchemy import func
+from services.logic import es_rubro_publico
+from services.common_utils import validar_email
+import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,75 @@ class InformarUsuarioAction(BaseActionHandler):
             "message_to_user": message,
             "data": {}
         }
+
+
+class RegistrarUsuarioActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing RegistrarUsuarioActionHandler with data: {action_data}")
+
+        name = action_data.get("name")
+        email = action_data.get("email")
+        password = action_data.get("password")
+        empresa_token = action_data.get("empresa_token")
+
+        if not all([name, email, password, empresa_token]):
+            return {
+                "success": False,
+                "message_to_user": "Faltan datos para registrarte (nombre, email, contraseña o token).",
+                "pedir_info": "datos_registro"
+            }
+
+        if not validar_email(email):
+            return {
+                "success": False,
+                "message_to_user": "El email proporcionado no parece válido.",
+                "pedir_info": "email"
+            }
+
+        owner_user = User.query.filter_by(token=empresa_token.strip()).first()
+        if not owner_user:
+            return {
+                "success": False,
+                "message_to_user": "Token de entidad inválido o no encontrado.",
+            }
+
+        existing = User.query.filter(func.lower(User.email) == func.lower(email.strip())).first()
+        if existing:
+            return {
+                "success": False,
+                "message_to_user": "El email ya está registrado.",
+                "data": {"email_registrado": True}
+            }
+
+        nuevo = User(
+            name=name.strip(),
+            email=email.strip().lower(),
+            token=str(uuid.uuid4()),
+            rubro_id=owner_user.rubro_id,
+            empresa_id=owner_user.id,
+            plan="gratis",
+            rol="usuario",
+            tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
+            acepto_terminos=True,
+            fecha_aceptacion_terminos=datetime.utcnow(),
+        )
+        nuevo.set_password(password)
+
+        try:
+            db.session.add(nuevo)
+            db.session.commit()
+            return {
+                "success": True,
+                "message_to_user": f"Usuario '{nuevo.email}' registrado exitosamente.",
+                "data": {"user_id": nuevo.id, "token": nuevo.token}
+            }
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error en RegistrarUsuarioActionHandler: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Error interno al registrar el usuario.",
+            }
 
 # More general handlers can be added here if they are truly common across municipio and pyme.
 # Otherwise, they should go into their specific action files.
