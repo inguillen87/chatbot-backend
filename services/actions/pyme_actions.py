@@ -2,6 +2,7 @@
 import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
+from services.ticket_service import servicio_tickets
 
 # from services import cart as cart_service # Example
 # from models import PymePedido, db # Example
@@ -205,17 +206,71 @@ class ConsultarEstadoPedidoActionHandler(BaseActionHandler):
             "data": {"id_pedido": id_pedido, "status_actual": simulated_pedido_status}
         }
 
-class DerivarHumanoActionHandlerPyme(BaseActionHandler): # Renamed to avoid conflict
+class DerivarHumanoActionHandlerPyme(BaseActionHandler):  # Renamed to avoid conflict
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing DerivarHumanoActionHandlerPyme with data: {action_data}")
-        # Simulate creating a live chat ticket or notifying agents for PYME
-        simulated_chat_id_pyme = "PYMECHAT-SIM" + str(action_data.get("id_simulacion", "ABC"))
-        user_message = f"Entendido. Te estoy conectando con un representante de la tienda. Tu número de chat es {simulated_chat_id_pyme}. Por favor, aguardá."
-        return {
-            "success": True,
-            "message_to_user": user_message,
-            "data": {"chat_id_pyme": simulated_chat_id_pyme, "status": "esperando_agente_pyme"}
-        }
+        """Create a real live chat ticket for a PYME user and return its ID."""
+        logger.info(
+            f"Executing DerivarHumanoActionHandlerPyme with data: {action_data}"
+        )
+
+        try:
+            viewer_user = self.context.get("viewer_user_obj")
+            pregunta_original = self.context.get("pregunta_actual_usuario", "")
+
+            nombre = getattr(viewer_user, "name", None) or action_data.get("nombre")
+            telefono = getattr(viewer_user, "telefono", None) or action_data.get("telefono")
+            email = getattr(viewer_user, "email", None) or action_data.get("email")
+
+            ticket_data = {
+                "asunto": f"Chat en Vivo con {nombre or 'Cliente'}",
+                "categoria": "Atención en Vivo",
+                "pregunta": pregunta_original,
+                "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
+                "user_id": self.context.get("user_id"),
+                "anon_id": self.context.get("anon_id")
+                if not self.context.get("cliente_id")
+                else None,
+                "rubro_id": self.context.get("rubro_id"),
+                "estado": "esperando_agente_en_vivo",
+                "telefono": telefono,
+                "email": email,
+            }
+
+            ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+            sala = servicio_tickets.crear_nuevo_ticket("pyme", ticket_data_cleaned)
+            if not sala:
+                raise Exception("crear_nuevo_ticket devolvió None")
+
+            servicio_tickets.crear_comentario(
+                ticket_id=sala.id,
+                tipo_ticket="pyme",
+                comentario_data={
+                    "comentario": pregunta_original,
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id"),
+                    "es_admin": False,
+                },
+            )
+
+            chat_id = f"P-{sala.nro_ticket}"
+            user_message = (
+                f"Hemos recibido tu solicitud para hablar con un agente. Tu número de chat es **{chat_id}**."
+            )
+
+            return {
+                "success": True,
+                "message_to_user": user_message,
+                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+            }
+        except Exception as e:  # pragma: no cover - unexpected paths
+            logger.error(
+                f"Error en DerivarHumanoActionHandlerPyme: {e}", exc_info=True
+            )
+            return {
+                "success": False,
+                "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
+                "error_details": str(e),
+            }
 
 class ProcesarAdjuntoPedidoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
