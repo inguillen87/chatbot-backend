@@ -285,11 +285,11 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
         # Configuración para intentar asegurar salida JSON y seguridad
         generation_config = GenerationConfig(
-            temperature=0.2, # Más bajo para respuestas más deterministas/estructuradas
+            temperature=0.2,  # Más bajo para respuestas más deterministas/estructuradas
             top_p=0.95,
             top_k=40,
-            max_output_tokens=2048, # Ajustar según necesidad
-            # response_mime_type="application/json" # Solicitar JSON directamente
+            max_output_tokens=2048,  # Ajustar según necesidad
+            response_mime_type="application/json"  # Solicitar JSON directamente
         )
 
         # Ajustes de seguridad (bloquear lo mínimo posible para no interferir con JSON)
@@ -440,7 +440,8 @@ def llamar_gemini_para_generacion_texto(
 
         generation_config = GenerationConfig(
             temperature=temperature,
-            max_output_tokens=max_output_tokens
+            max_output_tokens=max_output_tokens,
+            response_mime_type="application/json"
         )
 
         safety_settings = {
