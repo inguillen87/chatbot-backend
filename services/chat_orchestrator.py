@@ -21,6 +21,15 @@ class ChatOrchestrator:
         Dynamically imports and returns the handler class for the given action name.
         """
         handler_path_str = ACTION_HANDLER_MAP.get(action_name)
+
+        # Special-case routing: if the action is "derivar_humano" and the
+        # context indicates a PYME interaction, use the dedicated PYME handler
+        if (
+            action_name == "derivar_humano"
+            and self.global_context.get("target_entity_type") == "pyme"
+        ):
+            handler_path_str = "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme"
+
         if not handler_path_str:
             logger.warning(f"No handler found for action: {action_name}")
             return None

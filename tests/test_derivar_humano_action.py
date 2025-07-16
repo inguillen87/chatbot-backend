@@ -32,6 +32,7 @@ pandas_stub.DataFrame = object
 sys.modules.setdefault('pandas', pandas_stub)
 
 from services.actions.municipio_actions import DerivarHumanoActionHandler
+from services.chat_orchestrator import ChatOrchestrator
 
 class DummyTicket(SimpleNamespace):
     def __init__(self, id=1, nro_ticket=123456):
@@ -78,6 +79,25 @@ class DerivarHumanoActionHandlerTests(unittest.TestCase):
         self.assertEqual(args[0], 'pyme')
         ticket_data = args[1]
         self.assertIn('Chat en Vivo', ticket_data['asunto'])
+        self.assertTrue(result['success'])
+        self.assertIn('P-', result['data']['chat_id'])
+
+    @patch('services.actions.pyme_actions.servicio_tickets')
+    def test_orchestrator_routes_to_pyme_handler(self, mock_service):
+        mock_service.crear_nuevo_ticket.return_value = DummyTicket(nro_ticket=333333)
+        mock_service.crear_comentario.return_value = None
+        context = {
+            'viewer_user_obj': SimpleNamespace(name='Ana', telefono='456', email='x@y.com'),
+            'user_id': 2,
+            'rubro_id': 99,
+            'cliente_id': 9,
+            'anon_id': None,
+            'target_entity_type': 'pyme'
+        }
+        orchestrator = ChatOrchestrator(global_context=context)
+        result = orchestrator.execute_action({'accion_backend': 'derivar_humano', 'datos_estructura': {'motivo_derivacion': 'test'}})
+        mock_service.crear_nuevo_ticket.assert_called_once()
+        self.assertEqual(result['executed_action_handler'], 'DerivarHumanoActionHandlerPyme')
         self.assertTrue(result['success'])
         self.assertIn('P-', result['data']['chat_id'])
 
