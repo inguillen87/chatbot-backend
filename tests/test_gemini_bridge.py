@@ -24,15 +24,17 @@ def create_mock_gemini_response(json_string_payload: str):
 class TestGeminiBridge(unittest.TestCase):
 
     def setUp(self):
-        vertexai_module = types.ModuleType('vertexai')
-        vertexai_module.init = MagicMock()
-        gen_mod = types.ModuleType('vertexai.generative_models')
-        gen_mod.GenerativeModel = MagicMock()
-        gen_mod.GenerationConfig = MagicMock()
-        gen_mod.HarmCategory = MagicMock()
-        gen_mod.HarmBlockThreshold = MagicMock()
-        vertexai_module.generative_models = gen_mod
+        genai_module = types.ModuleType('google.generativeai')
+        genai_module.configure = MagicMock()
+        genai_module.GenerativeModel = MagicMock()
+        genai_types_mod = types.ModuleType('google.generativeai.types')
+        genai_types_mod.GenerationConfig = MagicMock()
+        genai_types_mod.HarmCategory = MagicMock()
+        genai_types_mod.HarmBlockThreshold = MagicMock()
+        genai_module.types = genai_types_mod
+
         google_module = types.ModuleType('google')
+        google_module.generativeai = genai_module
         oauth2_mod = types.ModuleType('google.oauth2')
         service_account_mod = types.ModuleType('google.oauth2.service_account')
         service_account_mod.Credentials = MagicMock()
@@ -45,9 +47,9 @@ class TestGeminiBridge(unittest.TestCase):
         oauth2_mod.service_account = service_account_mod
         google_module.auth = auth_mod
         modules_patch = {
-            'vertexai': vertexai_module,
-            'vertexai.generative_models': gen_mod,
             'google': google_module,
+            'google.generativeai': genai_module,
+            'google.generativeai.types': genai_types_mod,
             'google.oauth2': oauth2_mod,
             'google.oauth2.service_account': service_account_mod,
             'google.auth': auth_mod,
@@ -60,9 +62,9 @@ class TestGeminiBridge(unittest.TestCase):
         self.modules_patcher.stop()
 
     @patch('services.gemini_bridge.os.environ.get')
-    @patch('vertexai.init')
-    @patch('vertexai.generative_models.GenerativeModel') # Patch the class
-    def test_llamar_gemini_prestamo(self, mock_generative_model_class, mock_vertex_init, mock_os_environ_get):
+    @patch('google.generativeai.configure')
+    @patch('google.generativeai.GenerativeModel')
+    def test_llamar_gemini_prestamo(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
         def environ_get_side_effect(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return "test-project-id"
             if key == "GOOGLE_LOCATION": return "us-central1"
@@ -85,7 +87,7 @@ class TestGeminiBridge(unittest.TestCase):
 
         respuesta = llamar_gemini(mensaje_usuario, usuario_info, historial)
 
-        mock_vertex_init.assert_called()
+        mock_configure.assert_called()
         mock_generative_model_class.assert_called_once()
         mock_model_instance.generate_content.assert_called_once()
         self.assertIn("respuesta_usuario", respuesta)
@@ -96,9 +98,9 @@ class TestGeminiBridge(unittest.TestCase):
         self.assertIn("Claro, te ayudaré con tu préstamo (real)", respuesta["respuesta_usuario"])
 
     @patch('services.gemini_bridge.os.environ.get')
-    @patch('vertexai.init')
-    @patch('vertexai.generative_models.GenerativeModel')
-    def test_llamar_gemini_luminaria(self, mock_generative_model_class, mock_vertex_init, mock_os_environ_get):
+    @patch('google.generativeai.configure')
+    @patch('google.generativeai.GenerativeModel')
+    def test_llamar_gemini_luminaria(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
         def environ_get_side_effect(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return "test-project-id"
             if key == "GOOGLE_LOCATION": return "us-central1"
@@ -121,7 +123,7 @@ class TestGeminiBridge(unittest.TestCase):
 
         respuesta = llamar_gemini(mensaje_usuario, usuario_info, historial)
 
-        mock_vertex_init.assert_called()
+        mock_configure.assert_called()
         mock_generative_model_class.assert_called_once()
         mock_model_instance.generate_content.assert_called_once()
         self.assertEqual(respuesta["accion_backend"], "crear_reclamo")
@@ -129,9 +131,9 @@ class TestGeminiBridge(unittest.TestCase):
         self.assertIn("Registré tu reclamo por luminaria (real)", respuesta["respuesta_usuario"])
 
     @patch('services.gemini_bridge.os.environ.get')
-    @patch('vertexai.init')
-    @patch('vertexai.generative_models.GenerativeModel')
-    def test_llamar_gemini_consulta_estado_reclamo(self, mock_generative_model_class, mock_vertex_init, mock_os_environ_get):
+    @patch('google.generativeai.configure')
+    @patch('google.generativeai.GenerativeModel')
+    def test_llamar_gemini_consulta_estado_reclamo(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
         def environ_get_side_effect(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return "test-project-id"
             if key == "GOOGLE_LOCATION": return "us-central1"
@@ -153,7 +155,7 @@ class TestGeminiBridge(unittest.TestCase):
 
         respuesta = llamar_gemini(mensaje_usuario, usuario_info, historial)
 
-        mock_vertex_init.assert_called()
+        mock_configure.assert_called()
         mock_generative_model_class.assert_called_once()
         mock_model_instance.generate_content.assert_called_once()
         self.assertEqual(respuesta["accion_backend"], "consulta_estado_ticket")
@@ -161,9 +163,9 @@ class TestGeminiBridge(unittest.TestCase):
         self.assertIn("Para consultar el estado de tu reclamo (real)", respuesta["respuesta_usuario"])
 
     @patch('services.gemini_bridge.os.environ.get')
-    @patch('vertexai.init')
-    @patch('vertexai.generative_models.GenerativeModel')
-    def test_llamar_gemini_fallback_generico(self, mock_generative_model_class, mock_vertex_init, mock_os_environ_get):
+    @patch('google.generativeai.configure')
+    @patch('google.generativeai.GenerativeModel')
+    def test_llamar_gemini_fallback_generico(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
         # Test 1: GOOGLE_PROJECT_ID is None (should hit EnvironmentError fallback)
         def environ_get_side_effect_no_project(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return None
@@ -183,7 +185,7 @@ class TestGeminiBridge(unittest.TestCase):
 
         # Reset mocks for the next path in the same test
         mock_os_environ_get.reset_mock()
-        mock_vertex_init.reset_mock()
+        mock_configure.reset_mock()
         mock_generative_model_class.reset_mock() # Reset the class mock
         mock_model_instance = mock_generative_model_class.return_value # Get a fresh instance for the next call
         mock_model_instance.generate_content.reset_mock()
@@ -208,7 +210,7 @@ class TestGeminiBridge(unittest.TestCase):
 
         respuesta = llamar_gemini(mensaje_usuario, usuario_info, historial)
 
-        mock_vertex_init.assert_called()
+        mock_configure.assert_called()
         mock_generative_model_class.assert_called()
         mock_model_instance.generate_content.assert_called_once()
         self.assertEqual(respuesta["accion_backend"], "derivar_humano")

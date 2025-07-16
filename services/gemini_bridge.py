@@ -230,32 +230,29 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
     # --- INICIO: LLAMADA REAL A GEMINI ---
     logger = logging.getLogger(__name__)
     try:
-        import vertexai
-        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
+        import google.generativeai as genai
+        from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
         from .google_auth_util import get_google_credentials
 
-        # Obtener PROJECT_ID y LOCATION de variables de entorno o configuración
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
-        location = os.environ.get("GOOGLE_LOCATION", "us-central1") # Default location
+        location = os.environ.get("GOOGLE_LOCATION", "us-central1")
 
         if not project_id:
-            logger.error("GOOGLE_PROJECT_ID no está configurado. No se puede inicializar Vertex AI.")
+            logger.error("GOOGLE_PROJECT_ID no está configurado. No se puede inicializar Gemini GenAI.")
             raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
 
-        # Cargar credenciales usando el nuevo utilitario centralizado
         g_credentials = get_google_credentials()
 
-        # Inicializar Vertex AI explícitamente con las credenciales
-        vertexai.init(project=project_id, location=location, credentials=g_credentials)
+        genai.configure(
+            client_options={"api_endpoint": f"https://{location}-aiplatform.googleapis.com"},
+            credentials=g_credentials,
+        )
 
-        # Configuración del modelo y generación
-        # Modelos disponibles: "gemini-1.0-pro", "gemini-1.5-pro-preview-0409", "gemini-1.5-flash-preview-0514" etc.
-        # Usar un modelo reciente que soporte bien system instructions y JSON.
         model_name = "gemini-2.5-pro"
 
-        model = GenerativeModel(
+        model = genai.GenerativeModel(
             model_name,
-            system_instruction=[JULES_SYSTEM_PROMPT] # System prompt
+            system_instruction=[JULES_SYSTEM_PROMPT]
         )
 
         # Construir el historial para el modelo Gemini
@@ -328,16 +325,16 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         logger.debug(f"Texto crudo de Gemini: {respuesta_texto_crudo[:500]}...")
 
     except ImportError as ie:
-        logger.error(f"Error importando Vertex AI: {ie}. Asegúrate que google-cloud-aiplatform está instalado.")
+        logger.error(f"Error importando librería google.generativeai: {ie}. Asegúrate que google-genai está instalado.")
         # Fallback a un error simple o una acción segura
         return {
             "respuesta_usuario": "Error de configuración del servicio de IA. Por favor, contacta al administrador.",
             "accion_backend": "derivar_humano",
-            "datos_estructura": {"error_detalle": f"Fallo de importación Vertex AI: {str(ie)}", "mensaje_original": mensaje_usuario},
+            "datos_estructura": {"error_detalle": f"Fallo de importación google.generativeai: {str(ie)}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
         }
     except EnvironmentError as ee: # Para el error de GOOGLE_PROJECT_ID
-        logger.error(f"Error de entorno para Vertex AI: {ee}")
+        logger.error(f"Error de entorno para google.generativeai: {ee}")
         return {
             "respuesta_usuario": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
             "accion_backend": "derivar_humano",
@@ -454,8 +451,8 @@ def llamar_gemini_para_generacion_texto(
     """
     logger = logging.getLogger(__name__)
     try:
-        import vertexai
-        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
+        import google.generativeai as genai
+        from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
         from .google_auth_util import get_google_credentials
 
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
@@ -463,13 +460,16 @@ def llamar_gemini_para_generacion_texto(
 
         if not project_id:
             logger.error("GOOGLE_PROJECT_ID no está configurado para llamar_gemini_para_generacion_texto.")
-            return None # Opcional: podría lanzar una excepción
+            return None
 
         g_credentials = get_google_credentials()
 
-        vertexai.init(project=project_id, location=location, credentials=g_credentials)
+        genai.configure(
+            client_options={"api_endpoint": f"https://{location}-aiplatform.googleapis.com"},
+            credentials=g_credentials,
+        )
 
-        model = GenerativeModel(
+        model = genai.GenerativeModel(
             model_name,
             system_instruction=[system_prompt_especifico] if system_prompt_especifico else None
         )
@@ -503,9 +503,9 @@ def llamar_gemini_para_generacion_texto(
         return respuesta_texto
 
     except ImportError as ie:
-        logger.error(f"Error importando Vertex AI en llamar_gemini_para_generacion_texto: {ie}")
+        logger.error(f"Error importando librería google.generativeai en llamar_gemini_para_generacion_texto: {ie}")
     except EnvironmentError as ee:
-        logger.error(f"Error de entorno para Vertex AI en llamar_gemini_para_generacion_texto: {ee}")
+        logger.error(f"Error de entorno para google.generativeai en llamar_gemini_para_generacion_texto: {ee}")
     except Exception as e:
         logger.error(f"Error en llamada a Gemini (generacion_texto): {e}", exc_info=True)
 
