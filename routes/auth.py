@@ -11,6 +11,7 @@ import uuid
 import json
 from datetime import datetime
 from services.google_auth import login_o_crear_usuario
+from services.pymes import get_or_create_pyme_user_by_token
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -485,10 +486,11 @@ def chatuser_register_panel():
         current_app.logger.warning("[chatuser_register_panel] Registration attempt failed: Falta empresa_token")
         return jsonify({"error": "Falta empresa_token"}), 400
 
-    owner_user = User.query.filter_by(token=empresa_token.strip()).first()
+    owner_user = get_or_create_pyme_user_by_token(empresa_token.strip())
     if not owner_user:
-        current_app.logger.warning(f"[chatuser_register_panel] Registration attempt failed: Token de empresa inválido o no encontrado: {empresa_token}")
-        return jsonify({"error": "Token de empresa inválido o no encontrado"}), 400 # Changed from 404 to 400 for clarity
+        # La función get_or_create ya loguea el error, pero podemos añadir un log aquí si es necesario.
+        current_app.logger.warning(f"[chatuser_register_panel] No se pudo obtener o crear un usuario para el token: {empresa_token}")
+        return jsonify({"error": "No se pudo procesar el token de empresa."}), 500
 
     name = data.get('name')
     email = data.get('email')
