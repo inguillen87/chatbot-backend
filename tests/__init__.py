@@ -22,21 +22,9 @@ print(f"✅ tests/__init__.py executed. Project root '{project_root}' added to s
 # You can also add other test-wide initializations here if needed,
 # but avoid overly complex logic that might obscure test discovery or setup.
 
-# Experimental: Attempt to pre-import requests.exceptions and twilio.request_validator
-# to help with "ModuleNotFoundError" issues that can occur in some environments
-# when google cloud libraries or twilio are imported.
-try:
-    import requests.exceptions
-    print("✅ Successfully pre-imported requests.exceptions in tests/__init__.py")
-except ImportError as e_req:
-    print(f"⚠️ Failed to pre-import requests.exceptions in tests/__init__.py: {e_req}")
-except Exception as e_req_gen: # Catch broader exceptions too
-    print(f"⚠️ General error during experimental requests.exceptions import: {e_req_gen}")
-
-try:
-    import twilio.request_validator
-    print("✅ Successfully pre-imported twilio.request_validator in tests/__init__.py")
-except ImportError as e_twilio:
-    print(f"⚠️ Failed to pre-import twilio.request_validator in tests/__init__.py: {e_twilio}")
-except Exception as e_twilio_gen:
-    print(f"⚠️ General error during experimental twilio.request_validator import: {e_twilio_gen}")
+# Older revisions attempted to pre-import optional dependencies like ``requests``
+# or ``twilio`` here to suppress ``ImportError`` warnings during test discovery.
+# This approach caused noisy output and did not resolve missing-package issues.
+# Tests that rely on those libraries should handle the imports themselves or
+# provide mocks as needed.  Keeping this file simple avoids unnecessary
+# side effects when running ``python -m unittest``.
