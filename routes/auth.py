@@ -474,7 +474,7 @@ def chatuser_register_panel():
     if not data:
         data = request.form.to_dict() if request.form else {}
 
-    empresa_token = data.get('empresa_token')
+    empresa_token = data.get('empresa_token') or obtener_token()
     # Log received data for debugging, excluding password
     logged_data = {k: v for k, v in data.items() if k != 'password'}
     current_app.logger.info(f"[chatuser_register_panel] Received data (password excluded): {logged_data}")
@@ -487,8 +487,13 @@ def chatuser_register_panel():
 
     owner_user = User.query.filter_by(token=empresa_token.strip()).first()
     if not owner_user:
-        current_app.logger.warning(f"[chatuser_register_panel] Registration attempt failed: Token de empresa inválido o no encontrado: {empresa_token}")
-        return jsonify({"error": "Token de empresa inválido o no encontrado"}), 400 # Changed from 404 to 400 for clarity
+        current_app.logger.warning(
+            f"[chatuser_register_panel] Registration attempt failed: Token de empresa inválido o no encontrado: {empresa_token}"
+        )
+        return (
+            jsonify({"error": "Token de empresa inválido o no encontrado"}),
+            404,
+        )
 
     name = data.get('name')
     email = data.get('email')
