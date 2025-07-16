@@ -4468,6 +4468,7 @@ def responder_municipio(
         "municipio_config_actual": final_municipio_config, # Config específica del municipio
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # El dict vivo de context_data
+        "empresa_token": getattr(owner_user, "token", None),
 
         # Datos del turno actual que pueden ser útiles para los handlers:
         "pregunta_actual_usuario": pregunta_str, # Texto original del usuario para este turno

@@ -34,12 +34,12 @@ class RegistrarUsuarioActionTests(unittest.TestCase):
             db_mock.session.add = lambda x: None
             db_mock.session.commit = lambda: None
 
-            handler = RegistrarUsuarioActionHandler({})
+            handler = RegistrarUsuarioActionHandler({'empresa_token': 'token', 'user_obj': owner})
             data = {
                 'name': 'Ana',
                 'email': 'ana@example.com',
                 'password': '123',
-                'empresa_token': 'token'
+                # empresa_token intentionally omitted to test context fallback
             }
             result = handler.execute(data)
             self.assertTrue(result['success'])

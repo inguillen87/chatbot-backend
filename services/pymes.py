@@ -1001,6 +1001,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         "chat_db_context_data": chat_db_context.context_data, # El dict vivo
         "channel": channel,
         "target_entity_type": "pyme", # Para DerivarHumanoAction
+        "empresa_token": getattr(owner_user, "token", None),
         # Pasar datos del payload que podrían ser útiles para handlers
         "pregunta_actual_usuario": pregunta_str,
         "action_button_payload": received_payload.get("action"),
