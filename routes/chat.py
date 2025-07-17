@@ -389,6 +389,8 @@ def _procesar_chat(
             message_type=web_message_type,
             original_bot_response=resultado # Pass the full dict from responder_chatboc
         )
+        if isinstance(resultado, dict) and "fuente" in resultado:
+            formatted_web_response["fuente"] = resultado["fuente"]
 
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:
