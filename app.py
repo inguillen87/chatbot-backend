@@ -63,6 +63,7 @@ def my_on_connect_listener(dbapi_connection, connection_record):
 
 def create_app(config_class=Config):
     app = Flask(__name__)
+    print("Creating app...")
 
     # Apply ProxyFix if behind a proxy, BEFORE other configurations if they depend on URL scheme
     # This helps Flask correctly identify the protocol (http/https) and other details
@@ -71,6 +72,9 @@ def create_app(config_class=Config):
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
     app.config.from_object(config_class)
+    print(f"Loaded config: {config_class}")
+    print(f"Database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
+    print(f"DB object: {db}")
 
     # SESSION_COOKIE_DOMAIN is now directly set by Config based on environment variables.
     # The complex inference logic below is removed.
@@ -120,7 +124,7 @@ def create_app(config_class=Config):
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
     # --- Inicialización de Extensiones ---
-
+    db.init_app(app)
     migrate.init_app(app, db)
     init_celery(app) # Inicializar Celery con la app Flask
     login_manager.init_app(app) # Initialize Flask-Login
@@ -133,7 +137,6 @@ def create_app(config_class=Config):
 
     # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
     with app.app_context():
-        db.init_app(app)
         if hasattr(db.engine, 'connect'):
             event.listen(db.engine, "connect", my_on_connect_listener)
         else:

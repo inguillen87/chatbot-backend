@@ -11,75 +11,21 @@ import json
 from unittest.mock import patch, MagicMock, ANY
 
 
-from app import create_app, db, Config
-import models
-
-# Configuración específica para pruebas
-class TestConfig(Config):
-    TESTING = True
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
-    # Celery en modo eager para que las tareas se ejecuten síncronamente en las pruebas
-    CELERY_TASK_ALWAYS_EAGER = True
-    # Desactivar WTF_CSRF_ENABLED si se usa Flask-WTF y da problemas en tests (no parece ser el caso aquí)
-    # WTF_CSRF_ENABLED = False
-    # Desactivar protección de sesión si interfiere con tests de API sin estado o con tokens
-    # SESSION_COOKIE_SECURE = False
-    # LOGIN_DISABLED = True # Si queremos desactivar la autenticación para ciertas pruebas de API
-
-    # Para que los servicios de Google no intenten cargar credenciales reales
-    # Podemos setearlos a None o a valores dummy si los servicios lo chequean
-    GOOGLE_CREDENTIALS_JSON = None
-    # También podemos mockear las funciones de carga de credenciales en los servicios
+from app import create_app, Config, db
+from models import ArchivoAdjunto, AnalisisArchivo, User, Rubro
 
 
-class ChatIntegrationTests(unittest.TestCase):
 
-    def setUp(self):
-        self.app = create_app(TestConfig)
+class TestChatIntegration:
+
+    def setup_method(self, method):
+        self.app = create_app('config.TestConfig')
         self.app_context = self.app.app_context()
         self.app_context.push()
-        db.create_all()
         self.client = self.app.test_client()
+        db.create_all()
 
-        # Crear usuario y rubro de prueba
-        self.test_user = User(name="Municipio Test", email="municipio@test.com", tipo_chat="municipio", rol="admin")
-        self.test_user.set_password("testpass")
-
-        # Crear un rubro municipal de prueba
-        self.municipal_rubro = Rubro(clave="municipio_general", nombre="Municipio General")
-        self.test_user.rubro = self.municipal_rubro
-
-        db.session.add(self.test_user)
-        db.session.add(self.municipal_rubro)
-        db.session.commit()
-
-        # Obtener token para el usuario (si tu auth usa tokens)
-        # Esto dependerá de tu implementación de autenticación.
-        # Por ahora, asumiremos que @token_requerido funciona con un usuario en sesión
-        # o que podemos mockear la autenticación para las pruebas.
-        # Para simplificar, podríamos loguear al usuario si hay un endpoint de login,
-        # o directamente mockear `token_requerido` o `current_user`.
-
-        # Para este ejemplo, vamos a "loguear" al usuario para obtener el token de la BD si existe,
-        # o simplemente operar como si estuviera autenticado si `token_requerido` lo permite en tests.
-        # Si `token_requerido` depende de un header 'Authorization: Bearer <token>',
-        # necesitaríamos generar/obtener ese token.
-        # ----
-        # Simplificación: Asumimos que podemos enviar el user_id o que el token se maneja.
-        # Para pruebas de API, usualmente se envía un token en el header.
-        # Aquí, como `token_requerido` puede usar `current_user` de Flask-Login,
-        # podríamos simular un login.
-        # O, si `LOGIN_DISABLED = True` en TestConfig, `token_requerido` podría devolver el usuario de prueba.
-
-        # Generar un token simple para pruebas (si el modelo User tiene un campo token)
-        self.test_user.token = "test_token_123"
-        db.session.commit()
-        self.auth_headers = {
-            'Authorization': f'Bearer {self.test_user.token}'
-        }
-
-
-    def tearDown(self):
+    def teardown_method(self, method):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
@@ -87,7 +33,18 @@ class ChatIntegrationTests(unittest.TestCase):
     # Mock para la tarea Celery y servicios externos
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
     # boto3_client mock removed as it's not used by archivo_service.py directly in the tested flow.
-    def test_chat_con_imagen_reclamo_exitoso(self, mock_interpretar_imagen_para_chat): # Corrected mock argument name
+    def test_chat_con_imagen_reclamo_exitoso(self, mock_interpretar_imagen_para_chat, test_user): # Corrected mock argument name
+        rubro = Rubro(nombre="municipio", es_publico=True)
+        test_user = User(
+            name="Test User",
+            email="test@example.com",
+            password="password",
+            rubro=rubro,
+            tipo_chat="municipio",
+        )
+        db.session.add(rubro)
+        db.session.add(test_user)
+        db.session.commit()
         # 1. Simular la subida de un archivo (endpoint /archivos/subir)
         # Esto crea ArchivoAdjunto y dispara la tarea Celery (que se ejecutará síncrono)
 
@@ -117,7 +74,7 @@ class ChatIntegrationTests(unittest.TestCase):
         # y luego llamar a la tarea Celery directamente (ya que está en modo eager).
 
         archivo_adj = ArchivoAdjunto(
-            user_id=self.test_user.id,
+            user_id=test_user.id,
             filename="test_luminaria.jpg",
             nombre_original="luminaria.jpg",
             url="/archivos/test_luminaria.jpg", # Simular URL local
@@ -140,14 +97,14 @@ class ChatIntegrationTests(unittest.TestCase):
 
         # Verificar que el AnalisisArchivo fue creado y actualizado por la tarea (vía el mock)
         analisis_obj = AnalisisArchivo.query.filter_by(archivo_adjunto_id=archivo_id).first()
-        self.assertIsNotNone(analisis_obj)
+        assert analisis_obj is not None
         # El estado y tipo deberían ser seteados por `interpretar_imagen_reclamo`
         # Si el mock de `interpretar_imagen_reclamo` no actualiza la BD,
         # necesitamos asegurar que la tarea sí lo haga con el resultado del mock.
         # En la implementación actual de `interpretar_imagen_reclamo`, esta SI actualiza y hace commit.
-        self.assertEqual(analisis_obj.estado_analisis, "completado")
-        self.assertEqual(analisis_obj.tipo_analisis, "reclamo_municipal") # Updated to match mock
-        self.assertTrue(json.loads(analisis_obj.datos_estructurados).get("llm_complaint_extraction_from_image").get("tipo_problema") == "Alumbrado Público")
+        assert analisis_obj.estado_analisis == "completado"
+        assert analisis_obj.tipo_analisis == "reclamo_municipal" # Updated to match mock
+        assert json.loads(analisis_obj.datos_estructurados).get("llm_complaint_extraction_from_image").get("tipo_problema") == "Alumbrado Público"
 
 
         # 2. Enviar mensaje al chat con uploaded_file_info
@@ -162,30 +119,30 @@ class ChatIntegrationTests(unittest.TestCase):
             }
         }
 
-        response = self.client.post('/ask', json=chat_payload, headers=self.auth_headers)
-        self.assertEqual(response.status_code, 200)
+        response = client.post('/ask', json=chat_payload, headers={'Authorization': f'Bearer {test_user.token}'})
+        assert response.status_code == 200
         data = response.get_json()
 
         # Verificar la respuesta del bot (debería pedir confirmación)
-        self.assertIn("He analizado la imagen que subiste.", data["respuesta"])
-        self.assertIn("Parece ser un problema de 'Alumbrado Público'", data["respuesta"])
-        self.assertIn("Parece una luminaria rota en la calle.", data["respuesta"])
-        self.assertIn("¿Es esto correcto?", data["respuesta"])
+        assert "He analizado la imagen que subiste." in data["respuesta"]
+        assert "Parece ser un problema de 'Alumbrado Público'" in data["respuesta"]
+        assert "Parece una luminaria rota en la calle." in data["respuesta"]
+        assert "¿Es esto correcto?" in data["respuesta"]
 
-        self.assertTrue(any(b["texto"] == "Sí, es correcto" for b in data.get("botones", [])))
-        self.assertTrue(any(b["texto"] == "No, quiero describirlo yo" for b in data.get("botones", [])))
+        assert any(b["texto"] == "Sí, es correcto" for b in data.get("botones", []))
+        assert any(b["texto"] == "No, quiero describirlo yo" for b in data.get("botones", []))
 
         # Verificar que el contexto se actualizó para esperar confirmación
         contexto_actualizado = data.get("contexto_actualizado", {}).get("contexto_municipio", {})
-        self.assertEqual(contexto_actualizado.get("estado_conversacion"), "ESPERANDO_CONFIRMACION_RECLAMO_IMAGEN")
-        self.assertEqual(contexto_actualizado.get("tipo_sugerido_imagen"), "Alumbrado Público")
-        self.assertEqual(contexto_actualizado.get("archivo_id_reclamo_actual"), archivo_id)
+        assert contexto_actualizado.get("estado_conversacion") == "ESPERANDO_CONFIRMACION_RECLAMO_IMAGEN"
+        assert contexto_actualizado.get("tipo_sugerido_imagen") == "Alumbrado Público"
+        assert contexto_actualizado.get("archivo_id_reclamo_actual") == archivo_id
 
 
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
-    @patch('services.email_service.enviar_notificacion_whatsapp_con_plantilla') # Corrected mock target
+    @patch('services.email_service.enviar_whatsapp_ticket_novedad') # Corrected mock target
     @patch('services.email_service.enviar_sms_ticket_novedad') # Corrected mock target
-    def test_chat_con_imagen_reclamo_confirmacion_si_y_creacion_ticket(self, mock_sms_novedad, mock_whatsapp_plantilla, mock_interpretar_imagen_para_chat): # Corrected mock argument names
+    def test_chat_con_imagen_reclamo_confirmacion_si_y_creacion_ticket(self, mock_sms_novedad, mock_whatsapp_novedad, mock_interpretar_imagen_para_chat): # Corrected mock argument names
         # --- Parte 1: Subida y primer análisis (similar al test anterior) ---
         archivo_id = 10
 
@@ -313,7 +270,7 @@ class ChatIntegrationTests(unittest.TestCase):
         # mock_sms.assert_called_once()
 
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
-    def test_chat_con_imagen_reclamo_confirmacion_no(self, mock_interpretar_imagen_para_chat): # Corrected mock argument
+    def test_chat_con_imagen_reclamo_confirmacion_no(self, mock_interpretar_imagen_para_chat, client, test_user):
         archivo_id = 20
         mock_interpretar_imagen_para_chat.return_value = { # Corrected mock configuration
             'es_reclamo': True, 'categoria_sugerida': 'Semáforo Roto',
@@ -328,13 +285,13 @@ class ChatIntegrationTests(unittest.TestCase):
                 }
             }
         }
-        archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=self.test_user.id, filename="semaforo_roto.jpg", url="/archivos/semaforo.jpg", mime="image/jpeg")
+        archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=test_user.id, filename="semaforo_roto.jpg", url="/archivos/semaforo.jpg", mime="image/jpeg")
         db.session.add(archivo_adj); db.session.commit()
         from services.analisis_archivo_service import tarea_analizar_contenido_archivo
         tarea_analizar_contenido_archivo.delay(archivo_id)
 
         chat_payload_inicial = {"pregunta": "Foto de semáforo", "tipo_chat": "municipio", "rubro_clave": "municipio_general", "uploaded_file_info": {"id": archivo_id}}
-        response_inicial = self.client.post('/ask', json=chat_payload_inicial, headers=self.auth_headers)
+        response_inicial = client.post('/ask', json=chat_payload_inicial, headers={'Authorization': f'Bearer {test_user.token}'})
         data_inicial = response_inicial.get_json()
 
         # Usuario responde "No, quiero describirlo yo"
@@ -343,15 +300,15 @@ class ChatIntegrationTests(unittest.TestCase):
             "tipo_chat": "municipio", "rubro_clave": "municipio_general",
             "contexto_previo": data_inicial.get("contexto_actualizado")
         }
-        response_no = self.client.post('/ask', json=chat_payload_no, headers=self.auth_headers)
-        self.assertEqual(response_no.status_code, 200)
+        response_no = client.post('/ask', json=chat_payload_no, headers={'Authorization': f'Bearer {test_user.token}'})
+        assert response_no.status_code == 200
         data_no = response_no.get_json()
 
-        self.assertIn("¿Sobre qué categoría es tu reclamo?", data_no["respuesta"])
+        assert "¿Sobre qué categoría es tu reclamo?" in data_no["respuesta"]
         contexto_manual = data_no.get("contexto_actualizado", {}).get("contexto_municipio", {})
-        self.assertEqual(contexto_manual.get("estado_conversacion"), "ESPERANDO_CATEGORIA_RECLAMO")
-        self.assertIsNone(contexto_manual.get("tipo_sugerido_imagen")) # Debe haberse limpiado
-        self.assertIsNone(contexto_manual.get("categoria_sugerida")) # Ensure this is also cleared
+        assert contexto_manual.get("estado_conversacion") == "ESPERANDO_CATEGORIA_RECLAMO"
+        assert contexto_manual.get("tipo_sugerido_imagen") is None # Debe haberse limpiado
+        assert contexto_manual.get("categoria_sugerida") is None # Ensure this is also cleared
 
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
     def test_chat_analisis_imagen_en_progreso(self, mock_interpretar_imagen_para_chat): # Corrected mock argument
@@ -384,7 +341,7 @@ class ChatIntegrationTests(unittest.TestCase):
         self.assertEqual(data.get("tipo_respuesta"), "error_analisis_archivo")
 
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') # Corrected mock target
-    def test_chat_analisis_imagen_no_es_reclamo(self, mock_interpretar_imagen_para_chat): # Corrected mock argument
+    def test_chat_analisis_imagen_no_es_reclamo(self, mock_interpretar_imagen_para_chat, client, test_user): # Corrected mock argument
         archivo_id = 50
         # Configurar el mock para que devuelva que no es un reclamo y un _mensaje_bot
         mock_interpretar_imagen_para_chat.return_value = { # Corrected mock configuration
@@ -399,7 +356,7 @@ class ChatIntegrationTests(unittest.TestCase):
                 'tipo_analisis_sugerido': 'imagen_general_vision_v1'
             }
         }
-        archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=self.test_user.id, filename="no_reclamo.jpg", url="/archivos/no_reclamo.jpg", mime="image/jpeg")
+        archivo_adj = ArchivoAdjunto(id=archivo_id, user_id=test_user.id, filename="no_reclamo.jpg", url="/archivos/no_reclamo.jpg", mime="image/jpeg")
         db.session.add(archivo_adj); db.session.commit()
 
         from services.analisis_archivo_service import tarea_analizar_contenido_archivo
@@ -407,22 +364,20 @@ class ChatIntegrationTests(unittest.TestCase):
 
         # Verificar que el AnalisisArchivo refleje que no es un reclamo claro
         analisis_obj = AnalisisArchivo.query.filter_by(archivo_adjunto_id=archivo_id).first()
-        self.assertIsNotNone(analisis_obj)
+        assert analisis_obj is not None
         # `interpretar_imagen_reclamo` setea el estado a 'completado' y el tipo según el resultado
         # Si es_reclamo es False y hay motivo, el tipo podría ser 'imagen_general_vision_v1'
-        # self.assertEqual(analisis_obj.tipo_analisis, "imagen_general_vision_v1")
+        # assert analisis_obj.tipo_analisis == "imagen_general_vision_v1"
 
 
         chat_payload = {"pregunta": "Esta foto no es un reclamo", "tipo_chat": "municipio", "rubro_clave": "municipio_general", "uploaded_file_info": {"id": archivo_id}}
-        response = self.client.post('/ask', json=chat_payload, headers=self.auth_headers)
-        self.assertEqual(response.status_code, 200)
+        response = client.post('/ask', json=chat_payload, headers={'Authorization': f'Bearer {test_user.token}'})
+        assert response.status_code == 200
         data = response.get_json()
 
         # Esta verificación depende de cómo `responder_municipio` usa el `_mensaje_bot`
         # Asumimos que `responder_municipio` ahora usa `_mensaje_bot` directamente si está presente.
-        self.assertIn("La imagen que subiste no parece ser un reclamo.", data["respuesta"])
-        self.assertIsNone(data.get("contexto_actualizado", {}).get("contexto_municipio", {}).get("estado_conversacion")) # No debería iniciar flujo de reclamo
+        assert "La imagen que subiste no parece ser un reclamo." in data["respuesta"]
+        assert data.get("contexto_actualizado", {}).get("contexto_municipio", {}).get("estado_conversacion") is None # No debería iniciar flujo de reclamo
 
 
-if __name__ == '__main__':
-    unittest.main()
