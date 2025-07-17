@@ -677,26 +677,24 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
 # ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
 @ticket_bp.route('/chat/<int:ticket_id>/mensajes', methods=['GET'])
-@token_requerido
-def get_chat_mensajes(current_user: User, ticket_id: int):
+@anon_o_token_requerido
+def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Devuelve los mensajes del chat en vivo para un ticket.
-    Requiere que el usuario esté autenticado.
+    Requiere que el usuario esté autenticado o que proporcione un anon_id válido.
     """
     try:
         sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-        es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
-        es_dueño_del_ticket = sala_de_chat.user_id == current_user.id
+        es_agente_municipal = current_user and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
+        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
+        es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
 
-        log_ticket_debug("get_chat_mensajes", ticket_id, None, sala_de_chat)
+        log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
-        if sala_de_chat.user_id is None and not es_agente_municipal:
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-        if sala_de_chat.user_id is not None and not (es_agente_municipal or es_dueño_del_ticket):
+        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
         if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
