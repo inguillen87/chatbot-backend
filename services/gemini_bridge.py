@@ -378,8 +378,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         # Limpieza de ```json ... ``` y parseo
         if respuesta_texto_crudo.startswith("```json"):
             respuesta_texto_crudo = respuesta_texto_crudo[len("```json"):].strip()
-            if respuesta_texto_crudo.endswith("```"):
-                respuesta_texto_crudo = respuesta_texto_crudo[:-len("```")].strip()
+        if respuesta_texto_crudo.endswith("```"):
+            respuesta_texto_crudo = respuesta_texto_crudo[:-len("```")].strip()
 
         logger.debug(f"Texto de Gemini para parsear a JSON: {respuesta_texto_crudo[:500]}...")
         parsed_response = json.loads(respuesta_texto_crudo)

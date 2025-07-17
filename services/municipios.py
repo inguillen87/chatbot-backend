@@ -442,6 +442,7 @@ class GreetingHandler(BaseMunicipioHandler):
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; texto = normalizar_texto(pregunta_str.strip("!.,?"))
         saludos = ["hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"]; tokens = re.sub(r"[!.,?]", "", texto).split(); set_saludo = {"hola", "buenos", "dias", "buenas", "tardes", "noches", "hey", "que", "tal"}
         if texto in saludos or (0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)): # Simple greeting matches the whole input
+            texto_normalizado = normalizar_texto(pregunta_str)
             if len(pregunta_str.split()) > 5 and any(kw in texto_normalizado for kw in IntentClassifierHandler.KEYWORDS_RECLAMO + IntentClassifierHandler.KEYWORDS_TRAMITE + IntentClassifierHandler.KEYWORDS_SUGERENCIA):
                  # If the original message was long AND contains keywords for other intents,
                  # despite the simple greeting match, let other handlers try.
@@ -450,20 +451,20 @@ class GreetingHandler(BaseMunicipioHandler):
                 return None # Let other handlers try to parse the details
 
             # Standard greeting response for short/simple greetings
-            greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. Estoy aquí para ayudarte. Podés consultarme sobre trámites, hacer un reclamo, dejar una sugerencia o resolver alguna duda que tengas. ¡Contame en qué te puedo colaborar hoy!"
+            greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. ¿Cómo te puedo ayudar hoy?"
             options = [
                 {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
                 {"id": "hacer_sugerencia", "texto": "Dejar una sugerencia"},
                 {"id": "consultar_tramite", "texto": "Consultar un trámite"},
                 {"id": "consultar_estado_ticket", "texto": "Estado de mi ticket"}
             ]
-            message_type = 'interactive_buttons' if len(options) <= 3 else 'interactive_list'
+            message_type = 'interactive_buttons' if len(options) <= 4 else 'interactive_list'
             if len(options) > 10: 
                 logger.warning("GreetingHandler: Too many options for WhatsApp list.")
 
             return {
                 "message_body": greeting_body, "options_list": options,
-                "message_type": message_type, "fuente": "saludo_municipio_interactivo_v2"
+                "message_type": message_type, "fuente": "saludo_municipio_interactivo_v3"
             }
         
         # For greetings at the start of longer sentences like "hola, quiero hacer un reclamo..."
@@ -1643,7 +1644,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     # Acknowledge GPS action, frontend should send location in next request
                     return {
                         "message_body": "Intentando obtener tu ubicación GPS. Por favor, asegurate de tenerla activada y conceder permisos si tu navegador o app lo solicita.",
-                        "options_list": [], 
+                        "options_list": [],
                         "message_type": "text",
                         "fuente": "reclamo_esperando_coordenadas_gps_v2" # Incremented version
                     }
@@ -1765,7 +1766,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
                     ack_adjunto = memoria.get("mensaje_adjunto_recibido", "") # If an image was processed earlier
 
-                    body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
+                    body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad)."
 
                     options_pedir_direccion = []
                     allow_gps_for_this_user = True

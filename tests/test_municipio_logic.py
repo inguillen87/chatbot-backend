@@ -700,3 +700,64 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
         response, municipio_context_state, _ = self._call_responder_municipio(payload, municipio_context_state)
         self.assertIsNone(municipio_context_state.get("estado_conversacion"))
         self.assertIn("perd\xc3\xb3n, tuve un problema", response.get("message_body", "").lower())
+
+
+    def test_json_parsing_error_from_gemini(self):
+        with patch('services.gemini_bridge._llamar_gemini_impl') as mock_gemini:
+            mock_gemini.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+            with self.app.app_context():
+                resp = municipios.responder_municipio(
+                    'Hola',
+                    self.owner_user, None, viewer_user=self.viewer_user, chat_db_context=SimpleNamespace(context_data={})
+                )
+        self.assertIn("respuesta inesperada", resp['message_body'])
+        self.assertEqual(resp['fuente'], 'llm_respuesta_general')
+
+    def test_gps_location_handling(self):
+        municipio_context_state = {
+            "estado_conversacion": ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+            "categoria_reclamo": "Bacheo"
+        }
+        payload = {
+            "es_ubicacion": True,
+            "ubicacion_usuario": {"lat": -32.89084, "lon": -68.82717}
+        }
+        with patch('services.municipios.obtener_direccion_de_coordenadas') as mock_geocode:
+            mock_geocode.return_value = {"formatted_address": "Av. San Martín 123, Mendoza"}
+            response, municipio_context_state, _ = self._call_responder_municipio(payload, municipio_context_state)
+
+        self.assertIn("Gracias", response['message_body'])
+        self.assertIn("Av. San Martín 123, Mendoza", response['message_body'])
+        self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_NOMBRE_VECINO)
+
+    def test_context_maintained_after_login(self):
+        # 1. Anonymous user starts a claim
+        chat_context = SimpleNamespace(context_data={
+            "user_was_present_before": False
+        })
+        # 2. User logs in
+        chat_context.context_data["just_logged_in_flag"] = True
+        chat_context.context_data[CONTEXTO_MUNICIPIO] = {
+            "estado_conversacion": "ESPERANDO_DIRECCION_RECLAMO",
+            "categoria_reclamo": "Alumbrado Público",
+            "accion_pendiente_post_login": "iniciar_reclamo"
+        }
+
+        with self.app.app_context():
+            resp = municipios.responder_municipio(
+                "listo, ya me loguee",
+                self.owner_user,
+                None,
+                viewer_user=self.viewer_user,
+                chat_db_context=chat_context
+            )
+        self.assertIn("dirección exacta", resp['message_body'])
+
+    def test_initial_greeting_response(self):
+        with self.app.app_context():
+            resp = municipios.responder_municipio(
+                'Hola',
+                self.owner_user, None, viewer_user=self.viewer_user, chat_db_context=SimpleNamespace(context_data={})
+            )
+        self.assertIn("¡Hola! 👋", resp['message_body'])
+        self.assertIn("Hacer un reclamo", [b['texto'] for b in resp['options_list']])
