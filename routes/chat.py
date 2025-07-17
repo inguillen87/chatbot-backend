@@ -259,9 +259,11 @@ def _procesar_chat(
             current_app.logger.info(f"ChatSessionContext cargado para {chat_session_id_header}. User_id: {chat_context_obj.user_id}, Anon_id: {chat_context_obj.anon_id}")
             # Actualizar user_id o anon_id si es necesario (ej. usuario anónimo inicia sesión)
             if actor_principal and chat_context_obj.user_id != actor_principal.id:
-                current_app.logger.info(f"Actualizando user_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.user_id} a {actor_principal.id}")
+                current_app.logger.info(
+                    f"Actualizando user_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.user_id} a {actor_principal.id}"
+                )
                 chat_context_obj.user_id = actor_principal.id
-                chat_context_obj.anon_id = None # Limpiar anon_id si se asocia a un usuario
+                # Mantener anon_id para preservar el contexto del reclamo
             elif not actor_principal and anon_id and chat_context_obj.anon_id != anon_id:
                 current_app.logger.info(f"Actualizando anon_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.anon_id} a {anon_id}")
                 chat_context_obj.anon_id = anon_id
