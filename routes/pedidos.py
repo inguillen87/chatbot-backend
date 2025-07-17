@@ -12,9 +12,7 @@ def _serialize_pedido(pedido: PymePedido):
     return pedido.to_dict()
 
 @pedidos_bp.route('', methods=['GET'])
-@token_requerido
-@admin_o_empleado_requerido
-def listar_pedidos_pyme(current_user: User):
+def listar_pedidos_pyme(current_user: User = None):
     is_pyme_user = False
     if hasattr(current_user, 'tipo_chat') and current_user.tipo_chat == "pyme":
         is_pyme_user = True
