@@ -114,6 +114,8 @@ def create_app(config_class=Config):
     # --- Diagnóstico de Headers ---
     @app.before_request
     def log_headers():
+        if request.method == 'OPTIONS':
+            return jsonify({'status': 'ok'}), 200
         # request and current_app are now imported at the top of the module
         # Loguear las cookies que Flask ve directamente
         current_app.logger.info(f"--- RAW FLASK REQUEST.COOKIES: {request.cookies} ---") 
