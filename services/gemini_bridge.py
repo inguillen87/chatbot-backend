@@ -416,13 +416,13 @@ def llamar_gemini(
     usuario: dict = None,
     historial: list = None,
     mensaje: str = None,
-    timeout_seconds: Optional[float] = None,
+    timeout_seconds: Optional[float] = 10,
     delay_warning_seconds: int = 8,
 ) -> dict:
     """Wrapper con timeout opcional y logging para la llamada al LLM.
 
-    Si ``timeout_seconds`` es ``None`` no se aplica ningún límite y la función
-    esperará hasta que el subproceso devuelva una respuesta.
+    ``timeout_seconds`` define el máximo en segundos a esperar por la respuesta
+    del subproceso. Si se pasa ``None`` la espera es indefinida.
     """
 
     logger = logging.getLogger(__name__)
