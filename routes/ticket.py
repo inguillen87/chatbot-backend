@@ -17,7 +17,7 @@ from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requ
 from utils.permissions import require_role
 from collections import defaultdict
 
-ticket_bp = Blueprint('ticket_bp', __name__)
+ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
 
 # Carpeta para adjuntos de tickets
 TICKET_ATTACHMENT_FOLDER = os.path.join(os.getcwd(), "data", "archivos_tickets")
