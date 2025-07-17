@@ -422,34 +422,54 @@ def llamar_gemini(
     """Wrapper con timeout opcional y logging para la llamada al LLM.
 
     ``timeout_seconds`` define el máximo en segundos a esperar por la respuesta
-    del subproceso. Si se pasa ``None`` la espera es indefinida.
+    del subproceso. Si se pasa ``None`` la espera es indefinida.  Este valor
+    puede sobreescribirse con la variable de entorno ``GEMINI_TIMEOUT_SECONDS``
+    (usar ``None`` para esperar indefinidamente).
     """
 
     logger = logging.getLogger(__name__)
+    if timeout_seconds == 10:
+        env_timeout = os.getenv("GEMINI_TIMEOUT_SECONDS")
+        if env_timeout is not None:
+            if env_timeout.lower() in {"none", "off", "no", "-1"}:
+                timeout_seconds = None
+            else:
+                try:
+                    timeout_seconds = float(env_timeout)
+                except ValueError:
+                    logger.warning(
+                        "Valor inválido para GEMINI_TIMEOUT_SECONDS: '%s'",
+                        env_timeout,
+                    )
     start_time = time.time()
     try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                _llamar_gemini_impl,
-                mensaje_usuario,
-                usuario,
-                historial,
-                mensaje,
+        if timeout_seconds is None:
+            # Sin timeout: llamada directa
+            respuesta = _llamar_gemini_impl(
+                mensaje_usuario, usuario, historial, mensaje
             )
-            try:
-                if timeout_seconds is not None:
+        else:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    _llamar_gemini_impl,
+                    mensaje_usuario,
+                    usuario,
+                    historial,
+                    mensaje,
+                )
+                try:
                     respuesta = future.result(timeout=timeout_seconds)
-                else:
-                    respuesta = future.result()
-            except TimeoutError:
-                logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
-                return {
-                    "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
-                    "accion_backend": "no_accion",
-                    "datos_estructura": {"error_detalle": "timeout"},
-                    "pedir_info": None,
-                    "botones": [],
-                }
+                except TimeoutError:
+                    logger.error(
+                        f"Llamada a Gemini superó {timeout_seconds}s"
+                    )
+                    return {
+                        "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
+                        "accion_backend": "no_accion",
+                        "datos_estructura": {"error_detalle": "timeout"},
+                        "pedir_info": None,
+                        "botones": [],
+                    }
     except RuntimeError as re:
         logger.error(f"Error al iniciar llamada a Gemini: {re}")
         return {
