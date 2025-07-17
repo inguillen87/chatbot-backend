@@ -8,7 +8,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from services.municipios import accion_crear_reclamo_municipio
+from services.actions.municipio_claim_actions import CrearReclamoActionHandler
 from models import User
 from config import Config # Removed TestConfig
 from app import create_app
