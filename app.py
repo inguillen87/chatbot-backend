@@ -161,26 +161,6 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- Configuración de CORS ---
-    allowed_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS")
-    if allowed_origins_env:
-        allowed_origins_env = allowed_origins_env.strip()
-        if allowed_origins_env == "*":
-            allowed_origins = "*"
-        else:
-            allowed_origins = [o.strip() for o in allowed_origins_env.split(',') if o.strip()]
-    else:
-        # Defaulting to specific origins as per user instructions for chatboc.ar
-        allowed_origins = [
-             "https://chatboc.ar",
-            "https://www.chatboc.ar",
-            "http://localhost:8080",
-            "http://127.0.0.1:8080",
-                    # Localhost origins can be added here if needed for local development,
-                    # but for the specific problem, these are the key production origins.
-            # "http://localhost:3000", # Example for local frontend
-        ]
-
-    # --- Configuración de CORS ---
     CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
     # --- Fix universal de headers custom para CORS ---
