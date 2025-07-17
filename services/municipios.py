@@ -1277,6 +1277,21 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         if intencion == "iniciar_reclamo" and estado is None:
             logger.info("[ReclamoHandler] Intención 'iniciar_reclamo' y sin estado previo.")
+            # Si el usuario hace clic en un botón de categoría (ej. "Alumbrado"),
+            # la pregunta_str será esa categoría. La tratamos como una confirmación implícita.
+            texto_normalizado_pregunta_actual = normalizar_texto(pregunta_str)
+            if texto_normalizado_pregunta_actual in categorias_normalizadas:
+                logger.info(f"[ReclamoHandler] Botón de categoría '{pregunta_str}' presionado. Tratando como confirmación para iniciar reclamo.")
+                # Limpiar memoria de reclamo anterior y proceder directamente.
+                memoria.clear()
+                memoria["categoria_reclamo"] = CATEGORIAS_RECLAMO[categorias_normalizadas.index(texto_normalizado_pregunta_actual)]
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                # Llamar a `self.handle` recursivamente para que maneje el nuevo estado.
+                # Pasar un payload modificado sin la pregunta para evitar que se procese de nuevo.
+                payload_modificado = payload.copy()
+                payload_modificado["pregunta"] = ""
+                return self.handle(payload_modificado)
+
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_INICIAR_RECLAMO.name
             return {
                 "message_body": "¿Querés iniciar un reclamo? Te guiaré para que puedas ingresar los datos necesarios.",
@@ -4120,6 +4135,12 @@ def responder_municipio(
                         contexto_municipio_actual[k] = None
                     elif k != "estado_conversacion":
                         contexto_municipio_actual.pop(k, None)
+    if respuesta_manejada_por_llm:
+        contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
+        chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return respuesta_final
     
     # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
     # This block runs if LLM didn't handle the response, or to supplement LLM context
