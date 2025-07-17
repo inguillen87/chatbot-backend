@@ -23,6 +23,8 @@ RUBROS_PUBLICOS = {
     "gobierno",
     "hospital_publico",
     "entidad_publica",
+    "municipal",
+    "publico",
     # Agregá acá los que consideres públicos
 }
 
