@@ -387,11 +387,13 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
     except json.JSONDecodeError as e_json:
         logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
+        # Fallback controlado: avisar al usuario y no romper el flujo
         return {
-            "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
-            "accion_backend": "derivar_humano",
+            "respuesta_usuario": "No pude entender la respuesta del asistente. ¿Podrías repetir tu último mensaje?",
+            "accion_backend": "no_accion",
             "datos_estructura": {"error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}", "respuesta_llm_cruda": respuesta_texto_crudo, "mensaje_original": mensaje_usuario},
-            "pedir_info": None, "botones": []
+            "pedir_info": None,
+            "botones": []
         }
     except Exception as e_parse: # Otros errores durante el parseo o manejo
         logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
