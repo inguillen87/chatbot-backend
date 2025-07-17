@@ -176,7 +176,7 @@ def create_app(config_class=Config):
         ]
 
     # --- Configuración de CORS ---
-    CORS(app, resources={r"/*": {"origins": "*"}})
+    CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
     # --- Fix universal de headers custom para CORS ---
     # Temporarily commented out to test if Flask-CORS handles this sufficiently
