@@ -4,6 +4,7 @@ import "./chat.css";
 export interface ChatButton {
   text: string;
   action?: string;
+  url?: string;
 }
 
 export interface ChatMessageProps {
@@ -12,6 +13,7 @@ export interface ChatMessageProps {
     text: string;
     isBot?: boolean;
     botones?: ChatButton[];
+    imageUrl?: string;
   };
 }
 
@@ -45,6 +47,11 @@ export default function ChatMessage({ message }: ChatMessageProps) {
             dangerouslySetInnerHTML={{ __html: message.text }}
           />
         </div>
+        {message.imageUrl && (
+          <div className="mt-2">
+            <img src={message.imageUrl} alt="Uploaded" className="rounded-lg max-w-full h-auto" />
+          </div>
+        )}
         {Array.isArray(message.botones) && message.botones.length > 0 && (
           <div className="flex flex-wrap gap-2 pt-1">
             {message.botones.map((btn, idx) => {
