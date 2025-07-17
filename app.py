@@ -18,10 +18,7 @@ if os.environ.get("FLASK_ENV") != "production":
     else:
         print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
 
-# Reuse the same Session extension across multiple app instances to avoid
-# redefining the 'Session' model when tests create the app several times.
-session_ext = Session()
-
+from flask_session import Session
 from config import Config
 from extensions import db, migrate, login_manager # Import login_manager
 from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
@@ -91,6 +88,7 @@ def create_app(config_class=Config):
 
     # --- Diagnóstico de Sesión ---
     print("--- DIAGNÓSTICO DE SESIÓN (desde app.py) ---")
+    session_ext = Session()
     print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
     print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
     print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
@@ -120,7 +118,7 @@ def create_app(config_class=Config):
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
     # --- Inicialización de Extensiones ---
-    db.init_app(app)
+
     migrate.init_app(app, db)
     init_celery(app) # Inicializar Celery con la app Flask
     login_manager.init_app(app) # Initialize Flask-Login
@@ -133,6 +131,7 @@ def create_app(config_class=Config):
 
     # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
     with app.app_context():
+        db.init_app(app)
         if hasattr(db.engine, 'connect'):
             event.listen(db.engine, "connect", my_on_connect_listener)
         else:
