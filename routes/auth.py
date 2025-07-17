@@ -4,7 +4,8 @@ from flask import Blueprint, request, jsonify, current_app, g
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario
+from sqlalchemy.orm.attributes import flag_modified
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext
 from extensions import db
 from functools import wraps
 import uuid
@@ -575,6 +576,21 @@ def chatuser_register_panel():
         if anon_id:
             from services.ticket_service import servicio_tickets
             servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+
+        # Update ChatSessionContext
+        chat_session_id = request.headers.get("X-Chat-Session-Id")
+        if chat_session_id:
+            chat_context = ChatSessionContext.query.get(chat_session_id)
+            if chat_context:
+                chat_context.user_id = nuevo.id
+                chat_context.anon_id = None
+                if chat_context.context_data is None:
+                    chat_context.context_data = {}
+                chat_context.context_data['just_logged_in_flag'] = True
+                flag_modified(chat_context, "context_data")
+                db.session.add(chat_context)
+                db.session.commit()
+                current_app.logger.info(f"Updated ChatSessionContext {chat_session_id} for new user {nuevo.id}")
 
         return (
             jsonify({

@@ -276,6 +276,12 @@ def _procesar_chat(
             # This flag should be set to True if an authenticated user is present.
             chat_context_obj.context_data["user_was_present_before"] = bool(actor_principal)
 
+        if chat_context_obj and chat_context_obj.context_data.get('just_logged_in_flag'):
+            current_app.logger.info(f"User {actor_principal.id} just logged in. Clearing flag.")
+            # Welcome back message or other logic can be triggered here.
+            # For now, just clearing the flag.
+            chat_context_obj.context_data.pop('just_logged_in_flag', None)
+            flag_modified(chat_context_obj, "context_data")
 
 
         # El objeto `chat_context_obj.context_data` será el que se pase y modifique
