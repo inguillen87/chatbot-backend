@@ -3,7 +3,7 @@ import uuid
 from unittest.mock import patch, MagicMock
 from app import create_app
 from extensions import db
-from models import User, ChatSessionContext
+from models import User, Rubro, ChatSessionContext
 from config import TestingConfig
 
 class ChatUserPanelTests(unittest.TestCase):
@@ -22,11 +22,16 @@ class ChatUserPanelTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
-        # Create a dummy owner user
+        # Create a dummy rubro and owner user
+        self.rubro = Rubro(nombre='Test Rubro', clave='test_rubro')
+        db.session.add(self.rubro)
+        db.session.commit()
+
         self.owner_user = User(
             email='owner@test.com',
             name='Test Owner',
             token=str(uuid.uuid4()),
+            rubro_id=self.rubro.id,
             nombre_empresa='TestCo',
             rol='admin'
         )
@@ -36,6 +41,7 @@ class ChatUserPanelTests(unittest.TestCase):
 
     def tearDown(self):
         db.session.query(User).delete()
+        db.session.query(Rubro).delete()
         db.session.query(ChatSessionContext).delete()
         db.session.commit()
 
