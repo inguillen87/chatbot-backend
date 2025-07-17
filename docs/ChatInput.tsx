@@ -25,43 +25,18 @@ const ChatInput: React.FC<Props> = ({ onSend }) => {
   const [text, setText] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const { transcript, listening, start, stop, supported } = useSpeechRecognition();
-  const [isRegistered, setIsRegistered] = useState(false);
 
   useEffect(() => {
     if (transcript) {
       setText(transcript);
     }
-    const token = localStorage.getItem("token");
-    setIsRegistered(!!token);
   }, [transcript]);
 
-  const handleFilesSelected = async (files: File[]) => {
-    if (files.length > 0) {
-      const file = files[0];
-      const formData = new FormData();
-      formData.append("archivos", file);
-
-      try {
-        const response = await fetch("/archivos/subir", {
-          method: "POST",
-          body: formData,
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          // Aquí puedes manejar la respuesta, por ejemplo, mostrando una vista previa de la imagen
-          console.log("Image uploaded successfully:", result);
-          // Opcional: podrías querer añadir la URL de la imagen a un estado para mostrarla
-        } else {
-          console.error("Error uploading image");
-        }
-      } catch (error) {
-        console.error("Error uploading image:", error);
-      }
-    }
+  const handleFilesSelected = (files: File[]) => {
+    // Aquí podríamos concatenar con archivos previamente seleccionados si quisiéramos
+    // o simplemente reemplazar. Por ahora, reemplazamos.
+    // También podríamos validar el número total de archivos aquí si AdjuntarArchivo no lo hiciera.
+    setSelectedFiles(files);
   };
 
   const handleRemoveFile = (fileNameToRemove: string) => {
@@ -116,7 +91,7 @@ const ChatInput: React.FC<Props> = ({ onSend }) => {
             {listening ? "🎙️ Detener" : "🎤"}
           </Button>
         )}
-        {isRegistered && <AdjuntarArchivo onFilesSelected={handleFilesSelected} />}
+        <AdjuntarArchivo onFilesSelected={handleFilesSelected} />
         <Button onClick={handleSend} variant="default">Enviar</Button>
       </div>
     </div>
