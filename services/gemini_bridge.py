@@ -264,7 +264,7 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
         vertexai.init(project=project_id, location=location)
 
-        model_name = "gemini-1.5-pro-preview-0409"
+        model_name = "gemini-2.5-pro"
 
         model = GenerativeModel(
             model_name,
