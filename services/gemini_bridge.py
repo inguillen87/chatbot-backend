@@ -6,8 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Dict, Any, List, Optional
 
 # Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
-# from vertexai.preview.generative_models import GenerativeModel
-# Por ahora, como no tenemos credenciales/API real, lo mockearemos.
+from vertexai.preview.generative_models import GenerativeModel
 
 JULES_SYSTEM_PROMPT = """Sos el asistente IA de una plataforma multi-entidad que atiende a Municipios y Pymes. 
 Tu tarea es recibir y entender mensajes de ciudadanos o clientes, interpretar reclamos, consultas o pedidos, y devolver siempre un JSON estructurado y profesional para que el backend ejecute la acción adecuada.
@@ -253,9 +252,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
     # --- INICIO: LLAMADA REAL A GEMINI ---
     logger = logging.getLogger(__name__)
     try:
-        import google.generativeai as genai
-        from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
-        from .google_auth_util import get_google_credentials
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
         location = os.environ.get("GOOGLE_LOCATION", "us-central1")
@@ -264,16 +262,11 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             logger.error("GOOGLE_PROJECT_ID no está configurado. No se puede inicializar Gemini GenAI.")
             raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
 
-        g_credentials = get_google_credentials()
+        vertexai.init(project=project_id, location=location)
 
-        genai.configure(
-            client_options={"api_endpoint": f"https://{location}-aiplatform.googleapis.com"},
-            credentials=g_credentials,
-        )
+        model_name = "gemini-1.5-pro-preview-0409"
 
-        model_name = "gemini-2.5-pro"
-
-        model = genai.GenerativeModel(
+        model = GenerativeModel(
             model_name,
             system_instruction=[JULES_SYSTEM_PROMPT]
         )
@@ -416,49 +409,26 @@ def llamar_gemini(
     usuario: dict = None,
     historial: list = None,
     mensaje: str = None,
-    timeout_seconds: Optional[float] = 10,
+    timeout_seconds: int = 10,
     delay_warning_seconds: int = 8,
 ) -> dict:
-    """Wrapper con timeout opcional y logging para la llamada al LLM.
-
-    ``timeout_seconds`` define el máximo en segundos a esperar por la respuesta
-    del subproceso. Si se pasa ``None`` la espera es indefinida.
-    """
+    """Wrapper con timeout y logging para la llamada al LLM."""
 
     logger = logging.getLogger(__name__)
     start_time = time.time()
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                _llamar_gemini_impl,
-                mensaje_usuario,
-                usuario,
-                historial,
-                mensaje,
-            )
-            try:
-                if timeout_seconds is not None:
-                    respuesta = future.result(timeout=timeout_seconds)
-                else:
-                    respuesta = future.result()
-            except TimeoutError:
-                logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
-                return {
-                    "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
-                    "accion_backend": "no_accion",
-                    "datos_estructura": {"error_detalle": "timeout"},
-                    "pedir_info": None,
-                    "botones": [],
-                }
-    except RuntimeError as re:
-        logger.error(f"Error al iniciar llamada a Gemini: {re}")
-        return {
-            "respuesta_usuario": "Hubo un problema técnico al iniciar la consulta. ¿Podrías intentar nuevamente?",
-            "accion_backend": "no_accion",
-            "datos_estructura": {"error_detalle": "runtime_error"},
-            "pedir_info": None,
-            "botones": [],
-        }
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje)
+        try:
+            respuesta = future.result(timeout=timeout_seconds)
+        except TimeoutError:
+            logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
+            return {
+                "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
+                "accion_backend": "no_accion",
+                "datos_estructura": {"error_detalle": "timeout"},
+                "pedir_info": None,
+                "botones": []
+            }
 
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
@@ -487,7 +457,7 @@ if __name__ == '__main__':
 def llamar_gemini_para_generacion_texto(
     system_prompt_especifico: str,
     user_prompt: str,
-    model_name: Optional[str] = "gemini-2.5-pro", # Or another suitable model like gemini-1.0-pro
+    model_name: Optional[str] = "gemini-1.5-pro-preview-0409", # Or another suitable model like gemini-1.0-pro
     temperature: float = 0.7, # Higher temperature for more creative/generative tasks
     max_output_tokens: int = 1024
 ) -> Optional[str]:
@@ -497,9 +467,8 @@ def llamar_gemini_para_generacion_texto(
     """
     logger = logging.getLogger(__name__)
     try:
-        import google.generativeai as genai
-        from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
-        from .google_auth_util import get_google_credentials
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
         location = os.environ.get("GOOGLE_LOCATION", "us-central1")
@@ -508,14 +477,9 @@ def llamar_gemini_para_generacion_texto(
             logger.error("GOOGLE_PROJECT_ID no está configurado para llamar_gemini_para_generacion_texto.")
             return None
 
-        g_credentials = get_google_credentials()
+        vertexai.init(project=project_id, location=location)
 
-        genai.configure(
-            client_options={"api_endpoint": f"https://{location}-aiplatform.googleapis.com"},
-            credentials=g_credentials,
-        )
-
-        model = genai.GenerativeModel(
+        model = GenerativeModel(
             model_name,
             system_instruction=[system_prompt_especifico] if system_prompt_especifico else None
         )

@@ -3211,31 +3211,18 @@ class GeneralHandler(BaseMunicipioHandler):
                 usuario=usuario_info_for_gemini,
                 historial=historial_chat_para_gemini
             )
-        except TypeError as e:
-            # This is a specific catch for the 'mensaje' vs 'mensaje_usuario' error.
-            if "got an unexpected keyword argument 'mensaje'" in str(e):
-                logger_actual.error(f"[RESPONDER_MUNICIPIO] TypeError por keyword 'mensaje'. Reintentando con 'mensaje_usuario'. Error: {e}")
-                llm_response_structured = llamar_gemini(
-                    mensaje_usuario=mensaje_para_gemini, # Corrected keyword
-                    usuario=usuario_info_for_gemini,
-                    historial=historial_chat_para_gemini
-                )
-            else:
-                logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error de TypeError no esperado en la llamada a Gemini: {e}", exc_info=True)
-                raise e # Relanzar otras TypeErrors
         except Exception as e:
-            logger_actual.error(f"[RESPOND_PYME_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
+            logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
             llm_response_structured = {
                 "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
                 "accion_backend": "derivar_humano",
-                "datos_estructura": {"target": "pyme", "error_llm": True, "detalle_error": str(e)},
+                "datos_estructura": {"target": "municipio", "error_llm": True, "detalle_error": str(e)},
                 "pedir_info": None,
                 "botones": []
             }
 
-        # Use the LLM response captured above
-        respuesta_texto_gemini = llm_response_structured.get("respuesta_usuario")
-        accion_gemini = llm_response_structured.get("accion_backend")
+        respuesta_texto_gemini = gemini_response_structured.get("respuesta_usuario")
+        accion_gemini = gemini_response_structured.get("accion_backend")
 
         if not respuesta_texto_gemini or accion_gemini == "error_llm" or \
            (len(respuesta_texto_gemini.split()) < 7 and ("no puedo" in respuesta_texto_gemini.lower() or "no sé" in respuesta_texto_gemini.lower() or "no tengo información" in respuesta_texto_gemini.lower())) or \
