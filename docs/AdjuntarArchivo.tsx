@@ -1,9 +1,9 @@
 import React, { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
-const MAX_FILES = 1;
+const MAX_FILES = 10;
 const MAX_FILE_SIZE_MB = 10; // Per file
-const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png'];
+const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'pdf', 'xlsx', 'xls', 'csv', 'docx', 'txt', 'json'];
 
 interface AdjuntarArchivoProps {
   onFilesSelected: (files: File[]) => void;
@@ -80,13 +80,13 @@ const AdjuntarArchivo: React.FC<AdjuntarArchivoProps> = ({
         variant="outline"
         disabled={disabled}
       >
-        📎 Subir Imagen
+        📎 Adjuntar archivos
       </Button>
       <input
         ref={inputRef}
         type="file"
         multiple // Permitir selección múltiple
-        accept="image/*"
+        accept={ALLOWED_EXTENSIONS.map(e => '.' + e).join(',')}
         style={{ display: "none" }}
         onChange={handleFileChange}
         disabled={disabled}
