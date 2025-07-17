@@ -220,17 +220,17 @@ def create_app(config_class=Config):
     app.register_blueprint(pedidos_bp, url_prefix='/api')
     app.register_blueprint(carrito_bp, url_prefix='/api')
     # app.register_blueprint(cart_bp) # Corresponds to the removed import
-    app.register_blueprint(estadisticas_bp, url_prefix='/api')
-    app.register_blueprint(empleados_bp, url_prefix='/api')
-    app.register_blueprint(categorias_bp, url_prefix='/api')
-    app.register_blueprint(recordatorios_bp, url_prefix='/api')
-    app.register_blueprint(historial_bp, url_prefix='/api')
-    app.register_blueprint(notifications_bp, url_prefix='/api')
-    app.register_blueprint(municipal_bp, url_prefix='/api')
-    app.register_blueprint(reacciones_bp, url_prefix='/api')
-    app.register_blueprint(ai_templates_bp, url_prefix='/api')
-    app.register_blueprint(promociones_bp, url_prefix='/api') # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
-    app.register_blueprint(whatsapp_webhook_bp, url_prefix='/api') # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
+    app.register_blueprint(estadisticas_bp)
+    app.register_blueprint(empleados_bp)
+    app.register_blueprint(categorias_bp)
+    app.register_blueprint(recordatorios_bp)
+    app.register_blueprint(historial_bp)
+    app.register_blueprint(notifications_bp)
+    app.register_blueprint(municipal_bp)
+    app.register_blueprint(reacciones_bp)
+    app.register_blueprint(ai_templates_bp)
+    app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
+    app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
 
     # --- Registro de comandos CLI ---
     register_commands(app)
