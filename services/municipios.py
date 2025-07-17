@@ -442,6 +442,7 @@ class GreetingHandler(BaseMunicipioHandler):
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; texto = normalizar_texto(pregunta_str.strip("!.,?"))
         saludos = ["hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"]; tokens = re.sub(r"[!.,?]", "", texto).split(); set_saludo = {"hola", "buenos", "dias", "buenas", "tardes", "noches", "hey", "que", "tal"}
         if texto in saludos or (0 < len(tokens) <= 3 and all(t in set_saludo for t in tokens)): # Simple greeting matches the whole input
+            texto_normalizado = normalizar_texto(pregunta_str)
             if len(pregunta_str.split()) > 5 and any(kw in texto_normalizado for kw in IntentClassifierHandler.KEYWORDS_RECLAMO + IntentClassifierHandler.KEYWORDS_TRAMITE + IntentClassifierHandler.KEYWORDS_SUGERENCIA):
                  # If the original message was long AND contains keywords for other intents,
                  # despite the simple greeting match, let other handlers try.
@@ -450,20 +451,20 @@ class GreetingHandler(BaseMunicipioHandler):
                 return None # Let other handlers try to parse the details
 
             # Standard greeting response for short/simple greetings
-            greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. Estoy aquí para ayudarte. Podés consultarme sobre trámites, hacer un reclamo, dejar una sugerencia o resolver alguna duda que tengas. ¡Contame en qué te puedo colaborar hoy!"
+            greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. ¿Cómo te puedo ayudar hoy?"
             options = [
                 {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
                 {"id": "hacer_sugerencia", "texto": "Dejar una sugerencia"},
                 {"id": "consultar_tramite", "texto": "Consultar un trámite"},
                 {"id": "consultar_estado_ticket", "texto": "Estado de mi ticket"}
             ]
-            message_type = 'interactive_buttons' if len(options) <= 3 else 'interactive_list'
+            message_type = 'interactive_buttons' if len(options) <= 4 else 'interactive_list'
             if len(options) > 10: 
                 logger.warning("GreetingHandler: Too many options for WhatsApp list.")
 
             return {
                 "message_body": greeting_body, "options_list": options,
-                "message_type": message_type, "fuente": "saludo_municipio_interactivo_v2"
+                "message_type": message_type, "fuente": "saludo_municipio_interactivo_v3"
             }
         
         # For greetings at the start of longer sentences like "hola, quiero hacer un reclamo..."
@@ -1276,6 +1277,21 @@ class ReclamoHandler(BaseMunicipioHandler):
 
         if intencion == "iniciar_reclamo" and estado is None:
             logger.info("[ReclamoHandler] Intención 'iniciar_reclamo' y sin estado previo.")
+            # Si el usuario hace clic en un botón de categoría (ej. "Alumbrado"),
+            # la pregunta_str será esa categoría. La tratamos como una confirmación implícita.
+            texto_normalizado_pregunta_actual = normalizar_texto(pregunta_str)
+            if texto_normalizado_pregunta_actual in categorias_normalizadas:
+                logger.info(f"[ReclamoHandler] Botón de categoría '{pregunta_str}' presionado. Tratando como confirmación para iniciar reclamo.")
+                # Limpiar memoria de reclamo anterior y proceder directamente.
+                memoria.clear()
+                memoria["categoria_reclamo"] = CATEGORIAS_RECLAMO[categorias_normalizadas.index(texto_normalizado_pregunta_actual)]
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                # Llamar a `self.handle` recursivamente para que maneje el nuevo estado.
+                # Pasar un payload modificado sin la pregunta para evitar que se procese de nuevo.
+                payload_modificado = payload.copy()
+                payload_modificado["pregunta"] = ""
+                return self.handle(payload_modificado)
+
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_INICIAR_RECLAMO.name
             return {
                 "message_body": "¿Querés iniciar un reclamo? Te guiaré para que puedas ingresar los datos necesarios.",
@@ -1643,7 +1659,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     # Acknowledge GPS action, frontend should send location in next request
                     return {
                         "message_body": "Intentando obtener tu ubicación GPS. Por favor, asegurate de tenerla activada y conceder permisos si tu navegador o app lo solicita.",
-                        "options_list": [], 
+                        "options_list": [],
                         "message_type": "text",
                         "fuente": "reclamo_esperando_coordenadas_gps_v2" # Incremented version
                     }
@@ -1765,7 +1781,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
                     ack_adjunto = memoria.get("mensaje_adjunto_recibido", "") # If an image was processed earlier
 
-                    body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
+                    body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad)."
 
                     options_pedir_direccion = []
                     allow_gps_for_this_user = True
@@ -3211,24 +3227,12 @@ class GeneralHandler(BaseMunicipioHandler):
                 usuario=usuario_info_for_gemini,
                 historial=historial_chat_para_gemini
             )
-        except TypeError as e:
-            # This is a specific catch for the 'mensaje' vs 'mensaje_usuario' error.
-            if "got an unexpected keyword argument 'mensaje'" in str(e):
-                logger_actual.error(f"[RESPONDER_MUNICIPIO] TypeError por keyword 'mensaje'. Reintentando con 'mensaje_usuario'. Error: {e}")
-                llm_response_structured = llamar_gemini(
-                    mensaje_usuario=mensaje_para_gemini, # Corrected keyword
-                    usuario=usuario_info_for_gemini,
-                    historial=historial_chat_para_gemini
-                )
-            else:
-                logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error de TypeError no esperado en la llamada a Gemini: {e}", exc_info=True)
-                raise e # Relanzar otras TypeErrors
         except Exception as e:
-            logger_actual.error(f"[RESPOND_PYME_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
+            logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
             llm_response_structured = {
                 "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
                 "accion_backend": "derivar_humano",
-                "datos_estructura": {"target": "pyme", "error_llm": True, "detalle_error": str(e)},
+                "datos_estructura": {"target": "municipio", "error_llm": True, "detalle_error": str(e)},
                 "pedir_info": None,
                 "botones": []
             }
@@ -4131,6 +4135,12 @@ def responder_municipio(
                         contexto_municipio_actual[k] = None
                     elif k != "estado_conversacion":
                         contexto_municipio_actual.pop(k, None)
+    if respuesta_manejada_por_llm:
+        contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
+        chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return respuesta_final
     
     # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
     # This block runs if LLM didn't handle the response, or to supplement LLM context
@@ -4470,6 +4480,7 @@ def responder_municipio(
         "municipio_config_actual": final_municipio_config, # Config específica del municipio
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # El dict vivo de context_data
+        "empresa_token": getattr(owner_user, "token", None),
 
         # Datos del turno actual que pueden ser útiles para los handlers:
         "pregunta_actual_usuario": pregunta_str, # Texto original del usuario para este turno

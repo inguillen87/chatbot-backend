@@ -269,11 +269,19 @@ def _procesar_chat(
 
 
             # Detect if user just logged in with this session
-            if actor_principal and chat_context_obj.user_id == actor_principal.id and not chat_context_obj.context_data.get("user_was_present_before"):
+            if actor_principal and chat_context_obj.user_id == actor_principal.id and not chat_context_obj.context_data.get("user_was_present_before", False):
                 chat_context_obj.context_data["just_logged_in_flag"] = True
                 current_app.logger.info(f"User {actor_principal.id} just logged in with session {chat_session_id_header}. Setting just_logged_in_flag.")
 
+            # This flag should be set to True if an authenticated user is present.
             chat_context_obj.context_data["user_was_present_before"] = bool(actor_principal)
+
+        if chat_context_obj and chat_context_obj.context_data.get('just_logged_in_flag'):
+            current_app.logger.info(f"User {actor_principal.id} just logged in. Clearing flag.")
+            # Welcome back message or other logic can be triggered here.
+            # For now, just clearing the flag.
+            chat_context_obj.context_data.pop('just_logged_in_flag', None)
+            flag_modified(chat_context_obj, "context_data")
 
 
         # El objeto `chat_context_obj.context_data` será el que se pase y modifique
@@ -387,6 +395,8 @@ def _procesar_chat(
             message_type=web_message_type,
             original_bot_response=resultado # Pass the full dict from responder_chatboc
         )
+        if isinstance(resultado, dict) and "fuente" in resultado:
+            formatted_web_response["fuente"] = resultado["fuente"]
 
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:

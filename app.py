@@ -1,7 +1,7 @@
 import os
 import logging
 import sys
-from flask import Flask, request, current_app # Moved request, current_app here
+from flask import Flask, request, current_app, jsonify
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -18,10 +18,7 @@ if os.environ.get("FLASK_ENV") != "production":
     else:
         print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
 
-# Reuse the same Session extension across multiple app instances to avoid
-# redefining the 'Session' model when tests create the app several times.
-session_ext = Session()
-
+from flask_session import Session
 from config import Config
 from extensions import db, migrate, login_manager # Import login_manager
 from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
@@ -91,6 +88,7 @@ def create_app(config_class=Config):
 
     # --- Diagnóstico de Sesión ---
     print("--- DIAGNÓSTICO DE SESIÓN (desde app.py) ---")
+    session_ext = Session()
     print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
     print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
     print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
@@ -114,13 +112,15 @@ def create_app(config_class=Config):
     # --- Diagnóstico de Headers ---
     @app.before_request
     def log_headers():
+        if request.method == 'OPTIONS':
+            return jsonify({'status': 'ok'}), 200
         # request and current_app are now imported at the top of the module
         # Loguear las cookies que Flask ve directamente
         current_app.logger.info(f"--- RAW FLASK REQUEST.COOKIES: {request.cookies} ---") 
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
     # --- Inicialización de Extensiones ---
-    db.init_app(app)
+
     migrate.init_app(app, db)
     init_celery(app) # Inicializar Celery con la app Flask
     login_manager.init_app(app) # Initialize Flask-Login
@@ -133,14 +133,19 @@ def create_app(config_class=Config):
 
     # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
     with app.app_context():
-        if hasattr(db.engine, 'connect'):
-            event.listen(db.engine, "connect", my_on_connect_listener)
-        else:
-            app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
+        db.init_app(app)
+        if not app.config.get("TESTING"):
+            if hasattr(db.engine, 'connect'):
+                event.listen(db.engine, "connect", my_on_connect_listener)
+            else:
+                app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
 
     # Configuración y activación de Sesiones en el Servidor
+    if app.config.get("TESTING"):
+        app.config['SESSION_TYPE'] = 'filesystem'
     app.config['SESSION_SQLALCHEMY'] = db
-    session_ext.init_app(app)
+    if not hasattr(app, 'session_interface'):
+        session_ext.init_app(app)
 
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -175,17 +180,8 @@ def create_app(config_class=Config):
             # "http://localhost:3000", # Example for local frontend
         ]
 
-    CORS(
-    app,
-    origins=allowed_origins,
-    supports_credentials=True,
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Authorization", "Content-Type", "Origin", "Accept",
-        "Anon-Id", "x-entity-token", "X-Entity-Token",
-        "X-Chat-Session-Id", "x-chat-session-id"
-    ],
-)
+    # --- Configuración de CORS ---
+    CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
     # --- Fix universal de headers custom para CORS ---
     # Temporarily commented out to test if Flask-CORS handles this sufficiently
@@ -206,7 +202,8 @@ def create_app(config_class=Config):
 
     @app.after_request
     def add_permissions_policy(resp):
-        resp.headers.setdefault("Permissions-Policy", "geolocation=(self)")
+        policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
+        resp.headers.setdefault("Permissions-Policy", policy)
         return resp
 
     # --- Registro de Blueprints (Rutas) ---
@@ -231,7 +228,7 @@ def create_app(config_class=Config):
     app.register_blueprint(notifications_bp)
     app.register_blueprint(municipal_bp)
     app.register_blueprint(reacciones_bp)
-    app.register_blueprint(ai_templates_bp) 
+    app.register_blueprint(ai_templates_bp)
     app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
     app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
 

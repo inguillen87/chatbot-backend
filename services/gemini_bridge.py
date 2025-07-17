@@ -6,8 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Dict, Any, List, Optional
 
 # Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
-# from vertexai.preview.generative_models import GenerativeModel
-# Por ahora, como no tenemos credenciales/API real, lo mockearemos.
+from vertexai.preview.generative_models import GenerativeModel
 
 JULES_SYSTEM_PROMPT = """Sos el asistente IA de una plataforma multi-entidad que atiende a Municipios y Pymes. 
 Tu tarea es recibir y entender mensajes de ciudadanos o clientes, interpretar reclamos, consultas o pedidos, y devolver siempre un JSON estructurado y profesional para que el backend ejecute la acción adecuada.
@@ -253,9 +252,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
     # --- INICIO: LLAMADA REAL A GEMINI ---
     logger = logging.getLogger(__name__)
     try:
-        import google.generativeai as genai
-        from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
-        from .google_auth_util import get_google_credentials
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
         location = os.environ.get("GOOGLE_LOCATION", "us-central1")
@@ -264,16 +262,11 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             logger.error("GOOGLE_PROJECT_ID no está configurado. No se puede inicializar Gemini GenAI.")
             raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
 
-        g_credentials = get_google_credentials()
-
-        genai.configure(
-            client_options={"api_endpoint": f"https://{location}-aiplatform.googleapis.com"},
-            credentials=g_credentials,
-        )
+        vertexai.init(project=project_id, location=location)
 
         model_name = "gemini-2.5-pro"
 
-        model = genai.GenerativeModel(
+        model = GenerativeModel(
             model_name,
             system_instruction=[JULES_SYSTEM_PROMPT]
         )
@@ -385,8 +378,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         # Limpieza de ```json ... ``` y parseo
         if respuesta_texto_crudo.startswith("```json"):
             respuesta_texto_crudo = respuesta_texto_crudo[len("```json"):].strip()
-            if respuesta_texto_crudo.endswith("```"):
-                respuesta_texto_crudo = respuesta_texto_crudo[:-len("```")].strip()
+        if respuesta_texto_crudo.endswith("```"):
+            respuesta_texto_crudo = respuesta_texto_crudo[:-len("```")].strip()
 
         logger.debug(f"Texto de Gemini para parsear a JSON: {respuesta_texto_crudo[:500]}...")
         parsed_response = json.loads(respuesta_texto_crudo)
@@ -416,7 +409,7 @@ def llamar_gemini(
     usuario: dict = None,
     historial: list = None,
     mensaje: str = None,
-    timeout_seconds: int = 10,
+    timeout_seconds: int = 50,
     delay_warning_seconds: int = 8,
 ) -> dict:
     """Wrapper con timeout y logging para la llamada al LLM."""
@@ -474,9 +467,8 @@ def llamar_gemini_para_generacion_texto(
     """
     logger = logging.getLogger(__name__)
     try:
-        import google.generativeai as genai
-        from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
-        from .google_auth_util import get_google_credentials
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
         location = os.environ.get("GOOGLE_LOCATION", "us-central1")
@@ -485,14 +477,9 @@ def llamar_gemini_para_generacion_texto(
             logger.error("GOOGLE_PROJECT_ID no está configurado para llamar_gemini_para_generacion_texto.")
             return None
 
-        g_credentials = get_google_credentials()
+        vertexai.init(project=project_id, location=location)
 
-        genai.configure(
-            client_options={"api_endpoint": f"https://{location}-aiplatform.googleapis.com"},
-            credentials=g_credentials,
-        )
-
-        model = genai.GenerativeModel(
+        model = GenerativeModel(
             model_name,
             system_instruction=[system_prompt_especifico] if system_prompt_especifico else None
         )

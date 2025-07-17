@@ -4,13 +4,15 @@ from flask import Blueprint, request, jsonify, current_app, g
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario
+from sqlalchemy.orm.attributes import flag_modified
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext
 from extensions import db
 from functools import wraps
 import uuid
 import json
 from datetime import datetime
 from services.google_auth import login_o_crear_usuario
+from services.pymes import get_or_create_pyme_user_by_token
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -120,6 +122,8 @@ def solo_admin_requerido(f):
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
+    if not request.is_json:
+        return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
         return jsonify({"error": "Email y contraseña requeridos."}), 400
@@ -474,7 +478,7 @@ def chatuser_register_panel():
     if not data:
         data = request.form.to_dict() if request.form else {}
 
-    empresa_token = data.get('empresa_token')
+    empresa_token = data.get('empresa_token') or obtener_token()
     # Log received data for debugging, excluding password
     logged_data = {k: v for k, v in data.items() if k != 'password'}
     current_app.logger.info(f"[chatuser_register_panel] Received data (password excluded): {logged_data}")
@@ -485,10 +489,15 @@ def chatuser_register_panel():
         current_app.logger.warning("[chatuser_register_panel] Registration attempt failed: Falta empresa_token")
         return jsonify({"error": "Falta empresa_token"}), 400
 
-    owner_user = User.query.filter_by(token=empresa_token.strip()).first()
+    owner_user = get_or_create_pyme_user_by_token(empresa_token.strip())
     if not owner_user:
-        current_app.logger.warning(f"[chatuser_register_panel] Registration attempt failed: Token de empresa inválido o no encontrado: {empresa_token}")
-        return jsonify({"error": "Token de empresa inválido o no encontrado"}), 400 # Changed from 404 to 400 for clarity
+        current_app.logger.warning(
+            f"[chatuser_register_panel] Registration attempt failed: Token de empresa inválido o no encontrado: {empresa_token}"
+        )
+        return (
+            jsonify({"error": "Token de empresa inválido o no encontrado"}),
+            404,
+        )
 
     name = data.get('name')
     email = data.get('email')
@@ -569,6 +578,21 @@ def chatuser_register_panel():
         if anon_id:
             from services.ticket_service import servicio_tickets
             servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+
+        # Update ChatSessionContext
+        chat_session_id = request.headers.get("X-Chat-Session-Id")
+        if chat_session_id:
+            chat_context = ChatSessionContext.query.get(chat_session_id)
+            if chat_context:
+                chat_context.user_id = nuevo.id
+                chat_context.anon_id = None
+                if chat_context.context_data is None:
+                    chat_context.context_data = {}
+                chat_context.context_data['just_logged_in_flag'] = True
+                flag_modified(chat_context, "context_data")
+                db.session.add(chat_context)
+                db.session.commit()
+                current_app.logger.info(f"Updated ChatSessionContext {chat_session_id} for new user {nuevo.id}")
 
         return (
             jsonify({
