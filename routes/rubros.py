@@ -8,7 +8,7 @@ from models import Rubro
 rubros_bp = Blueprint('rubros', __name__)
 
 # Acepta tanto '/rubros' como '/rubros/' para evitar redirecciones
-@rubros_bp.route('/rubros', methods=['GET'], strict_slashes=False)
+@rubros_bp.route('/rubros/', methods=['GET'])
 def get_all_rubros():
     """
     Endpoint para obtener la lista de todos los rubros.
