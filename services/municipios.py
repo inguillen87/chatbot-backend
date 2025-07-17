@@ -2116,89 +2116,24 @@ class ReclamoHandler(BaseMunicipioHandler):
             # 6. ESPERANDO_DESCRIPCION_RECLAMO
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
                 if memoria.get("descripcion_reclamo"):
-                    logger.debug(f"[ReclamoHandler] Descripción ya en memoria: '{memoria['descripcion_reclamo'][:50]}...'. Avanzando a adjuntos.")
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name; estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-                    # If desc was pre-filled by LLM, and the current input (pregunta_str) is different,
-                    # it means we've advanced state based on pre-fill. We shouldn't ask for adjuntos yet
-                    # if the current input was the one that filled the description.
-                    # So, only 'continue' if the current pregunta_str is NOT what filled the description.
-                    if memoria.get("descripcion_reclamo") != pregunta_str.strip():
-                        pregunta_str = "" # Clear to avoid processing for adjuntos in this turn
-                        continue
-                    # If desc was filled by current input, fall through to ask about adjuntos.
-
-                if pregunta_str and es_pregunta_nueva(pregunta_str, "una descripción del problema", memoria):
-                    logger.info(f"[ReclamoHandler] '{pregunta_str}' detectada como pregunta nueva. Limpiando reclamo."); # ... (clear logic)
-                    for key in list(memoria.keys()):
-                        if key.endswith(('_reclamo', '_vecino')) or key in ['foto_url', 'ubicacion_gps', 'direccion_estructurada_reclamo']: memoria.pop(key, None)
-                    memoria["estado_conversacion"] = None; self.context["intencion"] = None; return None
-
-                descripcion_final = ""
-                # ... (logic for getting description from payload['datos'] or pregunta_str)
-                descripcion_input = ""
-                datos_sub_payload = payload.get("datos", {}); campo_descripcion = "descripcion_reclamo"
-
-                # Prioritize description from payload.datos if available and valid
-                if campo_descripcion in datos_sub_payload and \
-                   isinstance(datos_sub_payload[campo_descripcion], str) and \
-                   len(datos_sub_payload[campo_descripcion].strip()) >= 1: # Allow shorter if confirm intent follows
-                    descripcion_input = datos_sub_payload[campo_descripcion].strip()
-                elif pregunta_str:
-                    descripcion_input = pregunta_str.strip() # Use pregunta_str as potential description
+                    logger.debug(f"Descripción ya en memoria: '{memoria['descripcion_reclamo'][:50]}...'. Avanzando.")
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
+                    estado = ConversationState.ESPERANDO_NOMBRE_VECINO
+                    pregunta_str = ""
+                    continue
                 
-                # Now, process the obtained descripcion_input with the helper function
-                actual_description, is_confirm_intent = extract_description_and_check_confirmation(descripcion_input, PALABRAS_CLAVE_CONFIRMACION)
-                
-                logger.info(f"[ReclamoHandler ESP_DESC] Input: '{descripcion_input}', Extracted Desc: '{actual_description}', Confirm Intent: {is_confirm_intent}")
+                if pregunta_str:
+                    if len(pregunta_str) < 10:
+                        return {"message_body": "Por favor, dame un poco más de detalle en la descripción."}
 
-                if is_confirm_intent:
-                    if actual_description and len(actual_description) >= 1: # Min length for description part
-                        memoria["descripcion_reclamo"] = actual_description
-                        logger.info(f"Descripción (con confirmación) guardada: '{actual_description[:50]}...'.")
-                    elif not actual_description: # Confirmation intent but no real description part (e.g., user just said "confirmar")
-                        # If a description was already in memory from image analysis, keep it. Otherwise, it might be empty.
-                        if not memoria.get("descripcion_reclamo"):
-                             memoria["descripcion_reclamo"] = "(confirmado sin descripción adicional)" # Placeholder
-                        logger.info(f"Confirmación directa detectada. Usando descripción existente o placeholder: '{memoria['descripcion_reclamo'][:50]}...'")
-
-                    # Transition to ESPERANDO_CONFIRMACION_RECLAMO
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
-                    estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
-                    logger.info("[ReclamoHandler] Confirmación detectada en descripción. Saltando a ESPERANDO_CONFIRMACION_RECLAMO.")
-                    pregunta_str = "" # Consume input
-                    break # Exit while loop to trigger confirmation logic
+                    memoria["descripcion_reclamo"] = pregunta_str.strip()
+                    logger.info(f"Descripción guardada: {pregunta_str.strip()}")
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
+                    estado = ConversationState.ESPERANDO_NOMBRE_VECINO
+                    pregunta_str = ""
+                    continue
                 else:
-                    # No confirmation intent, proceed with normal description validation and flow
-                    # actual_description here is the full input if no confirm intent was found
-                    if not actual_description or len(actual_description) < 10: # Min length for a meaningful description
-                        # Check if it was a button-like phrase if it's short
-                        normalized_input_desc_no_confirm = normalizar_texto(actual_description or "")
-                        KNOWN_BUTTON_LIKE_PHRASES_NO_CONFIRM = EDIT_KEYWORDS.union({ # Exclude confirmation keywords here
-                            "adjuntar_foto", "compartir_ubicacion", "sin_adjuntos",
-                            "editarreclamodatos", "arreglodecalle", "iniciarreclamo"
-                        })
-                        is_likely_button_id_or_action_no_confirm = normalized_input_desc_no_confirm in KNOWN_BUTTON_LIKE_PHRASES_NO_CONFIRM or \
-                                                                (any(btn_id_part in normalized_input_desc_no_confirm for btn_id_part in [
-                                                                    "editar", "adjuntar", "seleccionar", "opcion",
-                                                                    "reclamo", "calle", "arbol", "agua", "luz", "limpieza", "iniciar"
-                                                                    ]) and len(normalized_input_desc_no_confirm.split()) <= 3)
-
-                        if is_likely_button_id_or_action_no_confirm and (not actual_description or len(actual_description) < 10) :
-                             logger.warning(f"Input '{actual_description}' for description (no confirm intent) seems like a button ID/action or too generic. Re-prompting.")
-                             return {"respuesta": "Para entender mejor, necesitaría una breve **descripción del problema**. ¿Podrías contarme más?"}
-                        elif not actual_description or len(actual_description) < 10 :
-                             return {"respuesta": "Tu descripción es un poco corta. Para entender mejor, necesitaría un poco más de detalle sobre el problema. ¿Podrías contarme más?"}
-
-
-                    memoria["descripcion_reclamo"] = actual_description # Save the full description
-                    logger.info(f"Descripción guardada: '{actual_description[:50]}...'.")
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
-                    estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
-                    logger.info("[ReclamoHandler] Nuevo estado: ESPERANDO_ADJUNTOS_RECLAMO.")
-
-                    body_adj = "¡Gracias por la descripción! ¿Querés **adjuntar una foto o compartir tu ubicación GPS**? (Opcional)"
-                    options_adj = [{"id": "adjuntar_foto", "texto": "Adjuntar foto"}, {"id": "compartir_ubicacion", "texto": "Compartir ubicación"}, {"id": "sin_adjuntos", "texto": "Continuar sin adjuntos"}]
-                    return {"message_body": body_adj, "options_list": options_adj, "message_type": 'interactive_buttons', "fuente": "reclamo_pedir_adjuntos_v2"}
+                    return {"message_body": "Por favor, describí el problema con un poco más de detalle."}
             
             # 7. If all data is filled, this state will be reached (or if jumped by confirm intent)
             elif current_state_for_logic == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
@@ -2243,131 +2178,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 break
 
 
-        # After the while loop, check the state. It should be ADJUNTOS or CONFIRMACION, or an error occurred.
-        estado_str_after_loop = memoria.get("estado_conversacion")
-        estado_after_loop = None # Initialize to None
-        # Ensure estado_after_loop is an Enum for comparison, or None
-        estado_after_loop = None
-        if isinstance(estado_str_after_loop, str):
-            try:
-                estado_after_loop = ConversationState[estado_str_after_loop]
-            except KeyError:
-                logger.error(
-                    f"[ReclamoHandler] Estado inválido '{estado_str_after_loop}' en memoria tras bucle. Limpiando."
-                )
-                memoria.clear()
-                return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
-        elif isinstance(estado_str_after_loop, ConversationState):
-            estado_after_loop = estado_str_after_loop
-        elif estado_str_after_loop is not None:
-            logger.error(
-                f"[ReclamoHandler] Tipo de estado inesperado '{type(estado_str_after_loop)}' en memoria tras bucle. Limpiando."
-            )
-            memoria.clear()
-            return {"respuesta": "Hubo un error procesando tu reclamo. Por favor, intentá de nuevo."}
-        
-        if estado_after_loop == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
-            accion = payload.get("action", "").lower() or normalizar_texto(pregunta_str)
-            SIN_ADJUNTOS_KEYWORDS = ["sin_adjuntos", "no, continuar", "no", "no gracias", "no, gracias", "completar", "completar reclamo", "completar el reclamo", "terminar", "terminar reclamo", "quiero completar", "quiero terminar"]
-            if any(kw in accion for kw in SIN_ADJUNTOS_KEYWORDS):
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
-                resumen = self.build_detalles_memoria(memoria)
-                body_confirm = f"Perfecto, continuamos sin adjuntos. Por favor, revisá si todos los datos son correctos antes de confirmar:\n\n{resumen}\n\n¿Está todo bien para generar el reclamo?"
-                options_confirm = [
-                    {"id": "confirmar_reclamo_final", "texto": "Sí, confirmar reclamo"},
-                    {"id": "editar_reclamo_datos", "texto": "No, quiero editar algo"}
-                ]
-                return {
-                    "message_body": body_confirm,
-                    "options_list": options_confirm,
-                    "message_type": 'interactive_buttons',
-                    "fuente": "reclamo_confirmar_sin_adjuntos_v2"
-                }
-            if accion == "adjuntar_foto":
-                if self.context.get("anon_id") and not self.context.get("user_id"):
-                    body_anon_foto = "Para adjuntar una foto, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?"
-                    options_anon_foto = [
-                        {"id": "login_anon_adjunto", "texto": "Iniciar Sesión"},
-                        {"id": "register_anon_adjunto", "texto": "Registrarme Gratis"},
-                        {"id": "sin_adjuntos_anon", "texto": "Continuar sin adjuntar"}
-                    ]
-                    return {"message_body": body_anon_foto, "options_list": options_anon_foto, "message_type": 'interactive_buttons', "fuente": "reclamo_adjuntar_foto_anon_v2"}
-                return {"message_body": "¡Entendido! Podés enviarme la foto ahora. Cuando la vea, la adjuntaré al reclamo. Si preferís no adjuntar nada, simplemente decime 'continuar'.", "options_list": [{"id": "sin_adjuntos_post_foto_prompt", "texto": "No adjuntar y continuar"}], "message_type": "interactive_buttons", "fuente": "reclamo_esperando_foto_v2"}
-            if accion == "compartir_ubicacion":
-                allow_anon_gps_for_sharing = False
-                if has_app_context(): allow_anon_gps_for_sharing = current_app.config.get("ALLOW_ANON_GPS", False) # type: ignore
-                if (self.context.get("anon_id") and not self.context.get("user_id") and not (has_app_context() and current_app.config.get("ALLOW_ANON_GPS", False))): # type: ignore
-                    body_anon_gps = "Para compartir tu ubicación GPS de forma precisa para el reclamo, necesitás iniciar sesión o registrarte. ¿Te gustaría hacerlo ahora?"
-                    options_anon_gps = [
-                        {"id": "login_anon_adjunto_gps", "texto": "Iniciar Sesión"},
-                        {"id": "register_anon_adjunto_gps", "texto": "Registrarme Gratis"},
-                        {"id": "sin_adjuntos_anon_gps", "texto": "Continuar sin compartir ubicación"}
-                    ]
-                    return {"message_body": body_anon_gps, "options_list": options_anon_gps, "message_type": 'interactive_buttons', "fuente": "reclamo_compartir_gps_anon_v2"}
-                return {"message_body": "¡Claro! Podés compartir tu ubicación actual usando el botón del clip 📎 en tu WhatsApp o la opción de compartir ubicación de la web. Si preferís no hacerlo, solo decime 'continuar'.", "options_list": [{"id": "sin_adjuntos_post_gps_prompt", "texto": "No compartir y continuar"}], "message_type": "interactive_buttons", "fuente": "reclamo_esperando_gps_v2"}
-            adjunto_recibido_msg = ""
-            if payload.get("es_foto") and payload.get("archivo_url"): memoria["foto_url"] = payload.get("archivo_url"); adjunto_recibido_msg = "¡Foto recibida y adjuntada!"
-            if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"): memoria["ubicacion_gps"] = payload.get("ubicacion_usuario"); adjunto_recibido_msg = "¡Ubicación GPS recibida y adjuntada!" if not adjunto_recibido_msg else "¡Foto y ubicación GPS recibidas y adjuntadas!"
-            if memoria.get("foto_url") or memoria.get("ubicacion_gps"):
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
-                resumen = self.build_detalles_memoria(memoria)
-                body_confirm_adj = f"{adjunto_recibido_msg}\n\nExcelente. Ahora, por favor, revisá si todos los datos son correctos antes de confirmar:\n\n{resumen}\n\n¿Está todo bien para generar el reclamo?"
-                options_confirm_adj = [
-                    {"id": "confirmar_reclamo_final", "texto": "Sí, confirmar reclamo"},
-                    {"id": "editar_reclamo_datos", "texto": "No, quiero editar algo"}
-                ]
-                return {
-                    "message_body": body_confirm_adj,
-                    "options_list": options_confirm_adj,
-                    "message_type": 'interactive_buttons',
-                    "fuente": "reclamo_confirmar_con_adjuntos_v2"
-                }
-            CONFIRMACION_DIRECTA_KEYWORDS_ADJUNTOS = ["confirmar reclamo", "confirmar", "confirmo", "confirmado", "si confirmo", "sí confirmo", "finalizar reclamo", "si", "sí", "confirmarreclamo", "si confirmar reclamo", "sí confirmar reclamo"]
-            if any(kw in accion for kw in CONFIRMACION_DIRECTA_KEYWORDS_ADJUNTOS):
-                logger.info(f"[ReclamoHandler] Detectada confirmación directa ('{accion}') en ESPERANDO_ADJUNTOS_RECLAMO. Transicionando a confirmación final.")
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
-                resumen = self.build_detalles_memoria(memoria)
-                body_skip_adj = f"Entendido, salteamos los adjuntos. Por favor, revisá si todos los datos son correctos antes de confirmar:\n\n{resumen}\n\n¿Está todo bien para generar el reclamo?"
-                options_skip_adj = [
-                    {"id": "confirmar_reclamo_final", "texto": "Sí, confirmar reclamo"},
-                    {"id": "editar_reclamo_datos", "texto": "No, quiero editar algo"}
-                ]
-                return {
-                    "message_body": body_skip_adj,
-                    "options_list": options_skip_adj,
-                    "message_type": 'interactive_buttons',
-                    "fuente": "reclamo_skip_adjuntos_confirm_v2"
-                }
-            try: # type: ignore
-                respuesta_llm = _clasificar_intencion_con_llm(pregunta_str, opciones=["adjuntar foto", "compartir ubicacion", "completar", "ninguno"], tipo="adjunto") # type: ignore
-                if respuesta_llm and "completar" in respuesta_llm.lower():
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
-                    resumen = self.build_detalles_memoria(memoria)
-                    body_llm_skip_adj = f"Entendido, continuamos sin adjuntos. Por favor, revisá si todos los datos son correctos antes de confirmar:\n\n{resumen}\n\n¿Está todo bien para generar el reclamo?"
-                    options_llm_skip_adj = [
-                        {"id": "confirmar_reclamo_final", "texto": "Sí, confirmar reclamo"},
-                        {"id": "editar_reclamo_datos", "texto": "No, quiero editar algo"}
-                    ]
-                    return {
-                        "message_body": body_llm_skip_adj,
-                        "options_list": options_llm_skip_adj,
-                        "message_type": 'interactive_buttons',
-                        "fuente": "reclamo_llm_skip_adjuntos_confirm_v2"
-                    }
-            except Exception: pass
-            body_adj_fallback = "No estoy seguro de haber recibido un adjunto. ¿Querés intentar adjuntar una foto o compartir tu ubicación? También podés elegir continuar sin adjuntos."
-            options_adj_fallback = [
-                {"id": "adjuntar_foto", "texto": "Adjuntar foto"},
-                {"id": "compartir_ubicacion", "texto": "Compartir ubicación"},
-                {"id": "sin_adjuntos", "texto": "Continuar sin adjuntos"}
-            ]
-            return {
-                "message_body": body_adj_fallback, 
-                "options_list": options_adj_fallback, 
-                "message_type": 'interactive_buttons',
-                "fuente": "reclamo_adjuntos_fallback_v2"
-            }
-
+        # After the while loop, the state should be ESPERANDO_CONFIRMACION_RECLAMO
         estado_str_confirm = memoria.get("estado_conversacion")
         estado_confirm = ConversationState[estado_str_confirm] if isinstance(estado_str_confirm, str) else estado_str_confirm
 
@@ -3781,136 +3592,6 @@ from services.gemini_bridge import llamar_gemini # Asegurar import
 # from services.municipios import enviar_notificacion_whatsapp_con_plantilla # Esta función está en este mismo archivo.
 
 # Definición completa de accion_crear_reclamo_municipio
-def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
-    logger_func = current_app.logger if has_app_context() else logging.getLogger(__name__)
-    logger_func.info(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Datos LLM: {datos_llm}")
-
-    # --- 1. Extracción y Validación de Datos ---
-    categoria = datos_llm.get("categoria", "Reclamo General")
-    descripcion = datos_llm.get("descripcion")
-    ubicacion_llm = datos_llm.get("ubicacion")
-    coordenadas_llm = datos_llm.get("coordenadas") 
-    nombre_vecino_llm = datos_llm.get("usuario") 
-    telefono_llm = datos_llm.get("telefono")
-    email_llm = datos_llm.get("email")
-    foto_url_llm = datos_llm.get("foto_url_adjunta") 
-
-    if not descripcion:
-        return {
-            "message_body": "No pude entender la descripción del reclamo. Por favor, intenta describirlo de nuevo.",
-            "options_list": [], "fuente": "accion_crear_reclamo_error_sin_descripcion"
-        }
-    if not ubicacion_llm and not coordenadas_llm:
-        return {
-            "message_body": "No pude entender la ubicación del reclamo. Por favor, especifica dónde es el problema.",
-            "options_list": [], "fuente": "accion_crear_reclamo_error_sin_ubicacion"
-        }
-
-    # --- 2. Recopilación de Información del Contexto ---
-    viewer_user = context.get("viewer_user_obj")
-    owner_user = context.get("user_obj") 
-    
-    user_id_db = getattr(viewer_user, "id", None)
-    anon_id_db = context.get("anon_id") if not user_id_db else None
-    municipio_config_actual = context.get("municipio_config_actual", CONFIG_MUNICIPIO) 
-    municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
-    # chat_session_uuid = context.get("chat_session_uuid") # Descomentar si se usa para idempotencia
-    # chat_db_context_data = context.get("chat_db_context_data", {}) 
-
-    nombre_vecino_final = nombre_vecino_llm or getattr(viewer_user, "nombre", None) or "Ciudadano Anónimo"
-    
-    telefono_final_validado_e164 = None
-    temp_phone_str = str(telefono_llm or getattr(viewer_user, "telefono", ""))
-    if temp_phone_str and validar_telefono(temp_phone_str): # common_utils.validar_telefono
-        telefono_final_validado_e164 = formatear_telefono_e164(temp_phone_str) # common_utils.formatear_telefono_e164
-
-    email_final_validado = None
-    temp_email_str = str(email_llm or getattr(viewer_user, "email", ""))
-    if temp_email_str and validar_email(temp_email_str): # common_utils.validar_email
-        email_final_validado = temp_email_str.lower()
-
-    direccion_final_txt = ubicacion_llm
-    latitud_final = coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None
-    longitud_final = coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None
-
-    if ubicacion_llm and not (latitud_final and longitud_final): # Si tenemos texto de dirección pero no coords del LLM
-        # herramientas_municipio.parse_direccion_completa
-        parsed_address = parse_direccion_completa(ubicacion_llm, municipio_config_actual)
-        if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"):
-            direccion_final_txt = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,", ",").strip()
-            logger_func.info(f"Dirección parseada de LLM: {direccion_final_txt}")
-        elif not direccion_es_valida(ubicacion_llm): # herramientas_municipio.direccion_es_valida
-             return {
-                "message_body": f"La ubicación '{ubicacion_llm}' no parece válida. ¿Podrías verificarla?",
-                "options_list": [], "fuente": "accion_crear_reclamo_direccion_invalida_llm"
-            }
-    
-    ticket_data = {
-        "asunto": f"Reclamo (LLM): {categoria}", "categoria": categoria, "detalles": descripcion,
-        "direccion": direccion_final_txt, "nombre_vecino": nombre_vecino_final,
-        "telefono_vecino": telefono_final_validado_e164, "email_vecino": email_final_validado,
-        "estado": "nuevo", "user_id": user_id_db, "anon_id": anon_id_db,
-        "municipio_id": municipio_db_id_para_ticket, "latitud": latitud_final, "longitud": longitud_final,
-        "origen_reclamo": "LLM_CHATBOT"
-    }
-    if context.get("foto_url"): 
-        ticket_data["foto_url_directa"] = context.get("foto_url")
-    elif foto_url_llm: 
-        ticket_data["foto_url_directa"] = foto_url_llm
-
-    ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
-    logger_func.info(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Datos para ticket: {ticket_data_cleaned}")
-
-    try:
-        ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
-        if not ticket_creado:
-            raise Exception("servicio_tickets.crear_nuevo_ticket retornó None")
-        
-        nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
-        logger_func.info(f"Ticket {nro_ticket_str} creado exitosamente vía LLM.")
-
-        archivo_id_a_vincular = context.get("archivo_id_para_asociar")
-        if archivo_id_a_vincular:
-            from services.archivo_service import archivo_service 
-            asociacion_exitosa = archivo_service.asociar_archivos_a_ticket(ticket_id=ticket_creado.id, tipo_ticket="municipio", ids_archivos=[archivo_id_a_vincular])
-            if asociacion_exitosa: logger_func.info(f"Archivo ID {archivo_id_a_vincular} asociado a ticket {nro_ticket_str}.")
-            else: logger_func.warning(f"No se pudo asociar archivo ID {archivo_id_a_vincular} a ticket {nro_ticket_str}.")
-            
-            # Consumir del contexto. CONTEXTO_MUNICIPIO es el sub-diccionario.
-            if CONTEXTO_MUNICIPIO in context and isinstance(context[CONTEXTO_MUNICIPIO], dict) and "archivo_id_para_asociar" in context[CONTEXTO_MUNICIPIO]:
-                 del context[CONTEXTO_MUNICIPIO]["archivo_id_para_asociar"] 
-            elif "archivo_id_para_asociar" in context: 
-                 context.pop("archivo_id_para_asociar", None)
-
-
-        if telefono_final_validado_e164:
-            try:
-                enviar_notificacion_whatsapp_con_plantilla(telefono_final_validado_e164, nombre_vecino_final, str(ticket_creado.nro_ticket), categoria)
-                logger_func.info(f"Notificación WhatsApp enviada para ticket {nro_ticket_str}")
-            except Exception as e_notify_wp:
-                logger_func.error(f"Error enviando notificación WhatsApp para {nro_ticket_str}: {e_notify_wp}")
-        
-        return {
-            "message_body": f"¡Gracias {nombre_vecino_final}! Tu reclamo sobre '{categoria}' ha sido registrado con el número {nro_ticket_str}. Te mantendremos informado.",
-            "options_list": [
-                {"id": f"consultar_estado_ticket_{ticket_creado.nro_ticket}", "texto": "Consultar estado"},
-                {"id": "iniciar_otro_reclamo_llm", "texto": "Hacer otro reclamo"}
-            ],
-            "fuente": "accion_crear_reclamo_llm_exito",
-            "ticket_id": ticket_creado.id 
-        }
-    except Exception as e:
-        logger_func.error(f"[ACCION_CREAR_RECLAMO_MUNICIPIO] Error al crear ticket: {e}", exc_info=True)
-        # Asegurar que db es accesible (puede ser global_db si se renombró en imports)
-        if hasattr(global_db, 'session') and hasattr(global_db.session, 'rollback'):
-            global_db.session.rollback()
-        elif hasattr(db, 'session') and hasattr(db.session, 'rollback'): # Fallback si db no fue renombrado
-            db.session.rollback()
-        return {
-            "message_body": "Hubo un problema al intentar registrar tu reclamo. Por favor, intenta de nuevo más tarde o contacta al municipio directamente.",
-            "options_list": [],
-            "fuente": "accion_crear_reclamo_llm_error_creacion"
-        }
 
 OWNER_HANDLERS_FOR_STATE = {ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler, ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler, ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler, ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler, ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler, ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler, ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler, ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler, ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler, ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler, ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler}
 
@@ -4034,113 +3715,14 @@ def responder_municipio(
     # --- End Handle post-login resumption ---
 
     # --- LLM Integration for Reclamos (and potentially other intents later) ---
-    if USAR_LLM_PARA_RECLAMOS and not respuesta_manejada_por_llm: # Check flag here
-        estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion") # Enum or None
-        invocar_llm = False
-        if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM or \
-           estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM:
-            invocar_llm = True
-            logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado LLM activo: {estado_conversacion_para_llm}. Invocando LLM.")
-        elif not estado_conversacion_para_llm or contexto_municipio_actual.get("saludo_detectado_en_largo_mensaje"):
-            # Heurística para invocar LLM: texto sustantivo o imagen sin texto.
-            # El context["es_foto"] se setea en el bloque "EARLY_IMG_PROC" que está más abajo ahora.
-            # Para que el LLM use la foto en el primer turno, EARLY_IMG_PROC debe correr ANTES de este bloque LLM.
-            # Por ahora, el LLM se basará en `pregunta_str` y `contexto_municipio_actual` que podría tener info de imagen de un turno ANTERIOR.
-            # Si es una imagen NUEVA en ESTE turno, el EARLY_IMG_PROC más abajo la procesará para el *siguiente* turno del LLM,
-            # o para los handlers tradicionales si el LLM no maneja este turno.
-            # Esto es un punto a refinar: idealmente el análisis de imagen de ESTE turno debería estar disponible para el LLM en ESTE turno.
-            
-            # Para que el LLM pueda usar la imagen en el *mismo turno* que se envía,
-            # la detección de `context["es_foto"]` y `context["foto_url"]` debe ocurrir *antes* de este bloque.
-            # El bloque "EARLY_IMG_PROC" (que está más abajo) se encarga de esto.
-            # Entonces, aquí `context.get("es_foto")` reflejará si una imagen fue detectada en este turno.
-            if len(pregunta_str.strip().split()) > 1 or \
-               (context.get("es_foto") and not pregunta_str.strip()):
-                invocar_llm = True
-                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_CHECK] Estado inicial/saludo. Pregunta: '{pregunta_str[:50]}...', es_foto: {context.get('es_foto')}. Invocando LLM.")
+    llm_response = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context)
 
-        if invocar_llm:
-            logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_INVOKE] Invocando LLM. Estado actual para LLM: {estado_conversacion_para_llm}")
-            usuario_info_llm = {
-                "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
-                "tipo_entidad": "municipio", 
-                "ubicacion": getattr(viewer_user, "direccion", None) if viewer_user else None,
-                "contacto": { "telefono": getattr(viewer_user, "telefono", None) if viewer_user else None, "email": getattr(viewer_user, "email", None) if viewer_user else None }
-            }
-            historial_para_llm = []
-            if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM: historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
-            elif estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM: historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
-
-            try:
-                mensaje_completo_para_llm = {"texto": pregunta_str}
-                if context.get("es_foto") and context.get("foto_url"):
-                    mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
-                    if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"): 
-                        analisis_previo = contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw")
-                        if isinstance(analisis_previo, dict):
-                             resumen_analisis = {k: analisis_previo.get(k) for k in ["categoria_sugerida", "descripcion_sugerida", "texto_ocr"] if analisis_previo.get(k)}
-                             if resumen_analisis: mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
-                
-                respuesta_llm_dict = llamar_gemini(mensaje_usuario=json.dumps(mensaje_completo_para_llm), usuario=usuario_info_llm, historial=historial_para_llm)
-                logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM_RESP] Respuesta LLM: {respuesta_llm_dict}")
-
-                respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
-                accion_backend_llm = respuesta_llm_dict.get("accion_backend")
-                datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
-                pedir_info_llm = respuesta_llm_dict.get("pedir_info")
-                botones_llm = respuesta_llm_dict.get("botones", [])
-
-                if respuesta_usuario_llm:
-                    nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
-                    hist_key = None
-                    if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
-                        hist_key = "historial_llm_reclamo"
-                        if not pedir_info_llm: # Acción completa, se creará ticket
-                            respuesta_accion = accion_crear_reclamo_municipio(datos_estructura_llm, context)
-                            respuesta_final = respuesta_accion
-                            for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]: contexto_municipio_actual.pop(k, None)
-                            contexto_municipio_actual["estado_conversacion"] = None
-                            respuesta_manejada_por_llm = True
-                        else: # Pide más info para reclamo
-                            contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
-                            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM
-                            contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-                            respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}
-                            respuesta_manejada_por_llm = True
-                    elif accion_backend_llm == "derivar_humano":
-                        context["intencion"] = "hablar_con_agente"
-                        contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
-                        respuesta_manejada_por_llm = False # Deja a HumanEscalationHandler construir la respuesta
-                        logger_actual.info(f"[RESPONDER_MUNICIPIO_LLM] LLM derivó a humano.")
-                    elif respuesta_usuario_llm: # Respuesta general
-                        hist_key = "historial_conversacion_general_llm"
-                        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM
-                        if pedir_info_llm: contexto_municipio_actual["esperando_info_general_llm"] = pedir_info_llm
-                        else: contexto_municipio_actual.pop("esperando_info_general_llm", None)
-                        respuesta_final = {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}
-                        respuesta_manejada_por_llm = True
-                    
-                    if hist_key and respuesta_manejada_por_llm : # Solo agregar a historial si el LLM efectivamente manejó la respuesta y es un flujo continuo
-                        contexto_municipio_actual.setdefault(hist_key, []).append(nuevo_turno_historial)
-                
-                if not respuesta_usuario_llm and not accion_backend_llm : # LLM no dio nada útil
-                    logger_actual.warning("[RESPONDER_MUNICIPIO_LLM] LLM no devolvió respuesta_usuario ni acción_backend.")
-                    respuesta_manejada_por_llm = False # Fallback
-
-            except Exception as e_llm:
-                logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error: {e_llm}", exc_info=True)
-                respuesta_manejada_por_llm = False
-                for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
-                    if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM, ConversationState.CONVERSACION_GENERAL_LLM]:
-                        contexto_municipio_actual[k] = None
-                    elif k != "estado_conversacion":
-                        contexto_municipio_actual.pop(k, None)
-    if respuesta_manejada_por_llm:
-        contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
-        chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
-        if chat_db_context:
+    if llm_response:
+        contexto_municipio_serializado_para_db = serializar_enum(context.get(CONTEXTO_MUNICIPIO, {}))
+        if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
+            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
             flag_modified(chat_db_context, "context_data")
-        return respuesta_final
+        return llm_response
     
     # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
     # This block runs if LLM didn't handle the response, or to supplement LLM context
