@@ -213,7 +213,7 @@ def create_app(config_class=Config):
     # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
-    app.register_blueprint(ticket_bp)
+    app.register_blueprint(ticket_bp, url_prefix='/tickets')
     app.register_blueprint(crm_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)
