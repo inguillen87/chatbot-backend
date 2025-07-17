@@ -17,7 +17,7 @@ from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requ
 from utils.permissions import require_role
 from collections import defaultdict
 
-ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
+ticket_bp = Blueprint('ticket_bp', __name__)
 
 # Carpeta para adjuntos de tickets
 TICKET_ATTACHMENT_FOLDER = os.path.join(os.getcwd(), "data", "archivos_tickets")
@@ -95,7 +95,7 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
     current_app.logger.info(log_message)
 
 # ---------- LISTA DE TICKETS (logueado) ----------
-@ticket_bp.route('/', methods=['GET'])
+@ticket_bp.route('/tickets', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
 def get_tickets_del_usuario(current_user: User):
@@ -203,7 +203,7 @@ def get_tickets_del_usuario(current_user: User):
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
 
 # ---------- LISTA DE MIS TICKETS (cliente) ----------
-@ticket_bp.route('/mios', methods=['GET'])
+@ticket_bp.route('/tickets/mios', methods=['GET'])
 @token_requerido
 def get_mis_tickets(current_user: User):
     """Devuelve solo los tickets asociados al usuario autenticado."""
@@ -276,7 +276,7 @@ def get_mis_tickets(current_user: User):
         return jsonify({"error": "Error interno al obtener tus tickets."}), 500
 
 # ---------- DETALLE DE TICKET ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @anon_o_token_requerido
 def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None):
     """
@@ -429,7 +429,7 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
     return jsonify(ticket_data)
 
 # ---------- RESPONDER A TICKET (AGENTE) ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
 def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
@@ -602,7 +602,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     return jsonify(ticket_data_respuesta), 200
 
 # ---------- CAMBIAR ESTADO DE TICKET ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
 @token_requerido
 @admin_o_empleado_requerido
 def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
@@ -676,7 +676,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     return jsonify(ticket_data)
 
 # ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
-@ticket_bp.route('/chat/<int:ticket_id>/mensajes', methods=['GET'])
+@ticket_bp.route('/tickets/chat/<int:ticket_id>/mensajes', methods=['GET'])
 @anon_o_token_requerido
 def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
@@ -730,7 +730,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
 
 
 # ---------- CHAT EN VIVO PYME: MENSAJES ----------
-@ticket_bp.route('/chat/pyme/<int:ticket_id>/mensajes', methods=['GET'])
+@ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/mensajes', methods=['GET'])
 @token_requerido
 def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
     """Devuelve los mensajes del chat en vivo para una pyme."""
@@ -780,7 +780,7 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
-@ticket_bp.route('/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
+@ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
 @token_requerido
 def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     """
@@ -822,7 +822,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
 
 # ---------- CHAT EN VIVO PYME: RESPONDER CLIENTE ----------
-@ticket_bp.route('/chat/pyme/<int:ticket_id>/responder_cliente', methods=['POST'])
+@ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/responder_cliente', methods=['POST'])
 @token_requerido
 def responder_cliente_a_chat(current_user: User, ticket_id: int):
     """Permite al cliente responder en el chat de su pyme."""
@@ -859,7 +859,7 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
 
 # ---------- PANEL POR CATEGORÍA (AGENTES MUNICIPALES) ----------
-@ticket_bp.route('/panel_por_categoria', methods=['GET'])
+@ticket_bp.route('/tickets/panel_por_categoria', methods=['GET'])
 @token_requerido
 @require_role('admin', 'empleado')
 def get_panel_por_categoria(current_user: User):
@@ -977,7 +977,7 @@ def get_panel_por_categoria(current_user: User):
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
 
 # ---------- PANEL PYME (AGENTES PYME) ----------
-@ticket_bp.route('/panel_pyme', methods=['GET'])
+@ticket_bp.route('/tickets/panel_pyme', methods=['GET'])
 @token_requerido
 @require_role('admin', 'empleado')
 def get_panel_pyme(current_user: User):
@@ -1052,7 +1052,7 @@ def get_panel_pyme(current_user: User):
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
 
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido
 def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     """Actualiza la ubicación geográfica asociada a un ticket."""
@@ -1138,7 +1138,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     })
 
 # ---------- ENCUESTA DE SATISFACCION ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/encuesta', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['POST'])
 @token_requerido
 def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
     data = request.get_json(silent=True) or {}
@@ -1167,7 +1167,7 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"success": True, "encuesta_id": encuesta.id})
     return jsonify({"error": "No se pudo guardar"}), 500
 
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
 @token_requerido
 def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     encuesta = TicketSatisfaccion.query.filter_by(ticket_id=ticket_id, tipo=tipo).first()
@@ -1194,7 +1194,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     })
 
 # ---------- MAPA DE TICKETS ABIERTOS ----------
-@ticket_bp.route('/<string:tipo>/mapa', methods=['GET'])
+@ticket_bp.route('/tickets/<string:tipo>/mapa', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
 def mapa_de_tickets(current_user: User, tipo: str):
@@ -1245,7 +1245,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
 # También se necesitará una ruta para servir los archivos.
 from flask_login import login_required, current_user as flask_login_current_user # Importar para Flask-Login
 
-@ticket_bp.route('/archivos/<filename>', methods=['GET'])
+@ticket_bp.route('/tickets/archivos/<filename>', methods=['GET'])
 @login_required # Usar login_required de Flask-Login
 def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_current_user
     current_user = flask_login_current_user # Obtener el usuario de Flask-Login
