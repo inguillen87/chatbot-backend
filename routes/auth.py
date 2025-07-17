@@ -222,6 +222,7 @@ def google_login():
             "categorias": user.ticket_categorias or "",
         })
     except ValueError as e:
+        current_app.logger.error(f"Error de valor en google_login: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 401
     except Exception as e:  # pragma: no cover - unexpected errors
         current_app.logger.error(f"Error en google_login: {e}", exc_info=True)
