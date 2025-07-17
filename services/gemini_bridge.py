@@ -409,7 +409,7 @@ def llamar_gemini(
     usuario: dict = None,
     historial: list = None,
     mensaje: str = None,
-    timeout_seconds: int = 10,
+    timeout_seconds: int = 50,
     delay_warning_seconds: int = 8,
 ) -> dict:
     """Wrapper con timeout y logging para la llamada al LLM."""
