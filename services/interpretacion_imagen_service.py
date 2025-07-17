@@ -35,9 +35,17 @@ PALABRAS_CLAVE_RECLAMO_ETIQUETAS = {
 
 def _descargar_imagen(url: str) -> Optional[bytes]:
     """Descarga el contenido de una imagen desde una URL."""
+    from app import app
     try:
-        response = requests.get(url, timeout=10) # Timeout de 10 segundos
-        response.raise_for_status() # Lanza excepción para códigos de error HTTP
+        response = requests.get(
+            url,
+            auth=(
+                app.config.get("TWILIO_ACCOUNT_SID"),
+                app.config.get("TWILIO_AUTH_TOKEN"),
+            ),
+            timeout=10,
+        )
+        response.raise_for_status()
         return response.content
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Error al descargar imagen desde {url}: {e}", exc_info=True)
