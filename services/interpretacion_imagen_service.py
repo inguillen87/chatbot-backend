@@ -240,7 +240,7 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
 }
 # Also import CATEGORIAS_RECLAMO from municipios to validate against
 try:
-    from services.municipios import CATEGORIAS_RECLAMO, normalizar_texto as normalizar_texto_municipios
+    from services.categorias_municipio import CATEGORIAS_RECLAMO, normalizar_texto as normalizar_texto_municipios
 except ImportError: # Fallback if circular or testing standalone
     CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "incendio", "luminaria", "rotura de semaforo", "limpieza", "falta de agua, rotura de caño", "otro motivo"]
     def normalizar_texto_municipios(s): return s.lower() if s else ""
@@ -356,7 +356,7 @@ def _procesar_interpretacion_reclamo(
         normalized_llm_cat = normalizar_texto_municipios(llm_tipo_problema)
         matched_llm_cat = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto_municipios(cat) == normalized_llm_cat), None)
         if not matched_llm_cat:
-            from services.herramientas_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
+            from services.categorias_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
             from difflib import get_close_matches as get_close_matches_hm
 
             close_matches_llm = get_close_matches_hm(normalized_llm_cat, reclamo_categorias_norm_hm, n=1, cutoff=0.75)

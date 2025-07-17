@@ -38,6 +38,7 @@ from .herramientas_municipio import (
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
+from .categorias_municipio import CATEGORIAS_RECLAMO, categorias_normalizadas
 from .common_utils import (
     validar_email,
     validar_telefono,
@@ -1300,6 +1301,29 @@ class ReclamoHandler(BaseMunicipioHandler):
                 "fuente": "confirmacion_iniciar_reclamo"
             }
 
+        if estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
+            if payload.get("action") == "confirmar_categoria_sugerida":
+                memoria["categoria_reclamo"] = memoria["categoria_reclamo_sugerida"]
+                memoria["descripcion_reclamo"] = memoria.get("descripcion_reclamo_sugerida")
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                body = f"Perfecto. Ahora necesito que me indiques la dirección del problema."
+                return {
+                    "message_body": body,
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "pedir_direccion_post_confirmacion"
+                }
+            elif payload.get("action") == "negar_categoria_sugerida":
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
+                body = "Entendido. ¿Cuál es la categoría correcta para tu reclamo?"
+                options = [{"id": normalizar_texto(c), "texto": c.title()} for c in CATEGORIAS_RECLAMO]
+                return {
+                    "message_body": body,
+                    "options_list": options,
+                    "message_type": "interactive_list",
+                    "fuente": "pedir_categoria_post_negacion"
+                }
+
         if estado == ConversationState.ESPERANDO_CONFIRMACION_INICIAR_RECLAMO:
             if "si" in normalizar_texto(pregunta_str):
                 interacciones_previas = memoria.get("interacciones_anon_sesion")
@@ -1323,6 +1347,18 @@ class ReclamoHandler(BaseMunicipioHandler):
                     memoria["mensaje_adjunto_recibido"] = "Veo que adjuntaste una foto. "
                     logger.info(f"[ReclamoHandler] Foto {memoria['foto_url']} reconocida del contexto global.")
 
+                    # Análisis de la imagen para sugerir categoría y descripción
+                    from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+                    analisis_resultado = interpretar_imagen_para_chat(
+                        archivo_adjunto={"url": self.context.get("foto_url"), "mime_type": "image/jpeg"}, # Asumimos jpeg por ahora
+                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                    )
+                    if analisis_resultado and not analisis_resultado.get("error"):
+                        if analisis_resultado.get("categoria_sugerida"):
+                            memoria["categoria_reclamo_sugerida"] = analisis_resultado["categoria_sugerida"]
+                        if analisis_resultado.get("descripcion_sugerida"):
+                            memoria["descripcion_reclamo_sugerida"] = analisis_resultado["descripcion_sugerida"]
+
                 if pregunta_str and not memoria.get("categoria_reclamo"):
                     texto_norm_pregunta = normalizar_texto(pregunta_str)
                     if texto_norm_pregunta in categorias_normalizadas:
@@ -1339,7 +1375,20 @@ class ReclamoHandler(BaseMunicipioHandler):
                         memoria["descripcion_reclamo"] = analisis_img["descripcion"]
                         logger.info(f"[ReclamoHandler] Descripción pre-llenada por análisis de imagen: {memoria['descripcion_reclamo'][:50]}")
 
-                if memoria.get("categoria_reclamo"):
+                if memoria.get("categoria_reclamo_sugerida"):
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
+                    body = f"He analizado la imagen y parece que tu reclamo es sobre **{memoria['categoria_reclamo_sugerida']}**. ¿Es correcto?"
+                    options = [
+                        {"id": "confirmar_categoria_sugerida", "texto": "Sí, es correcto"},
+                        {"id": "negar_categoria_sugerida", "texto": "No, es otra cosa"}
+                    ]
+                    return {
+                        "message_body": body,
+                        "options_list": options,
+                        "message_type": "interactive_buttons",
+                        "fuente": "confirmar_categoria_sugerida"
+                    }
+                elif memoria.get("categoria_reclamo"):
                     logger.info(f"[ReclamoHandler] Categoría '{memoria['categoria_reclamo']}' en memoria. Avanzando a pedir dirección.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
 
@@ -3609,8 +3658,6 @@ def safe_llm_call(prompt, preamble, fallback=None):
     except ValueError as ve: logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}"); return fallback or "No pude encontrar una respuesta directa a tu consulta. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
     except Exception as e: logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True); return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
 
-CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño", "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle", "rotura de semaforo", "tramites de obras privadas", "incendio", "otro motivo"]
-categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
 RECLAMO_STATES = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]
 
 def serializar_enum(obj):
