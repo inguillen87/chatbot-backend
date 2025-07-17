@@ -310,10 +310,7 @@ def register():
     }
     tipo_chat_normalizado = sinonimos.get(str(tipo_chat_in).strip().lower()) if tipo_chat_in else None
     if tipo_chat_normalizado not in ('pyme', 'municipio'):
-        return jsonify({
-            'error': "tipo_chat inválido",
-            'botones': [{"texto": "Volver al chat"}],
-        }), 400
+        tipo_chat_normalizado = "municipio" if es_rubro_publico(rubro) else "pyme"
 
     empresa_existente = User.query.filter(
         func.lower(User.nombre_empresa) == func.lower(required_campos['nombre_empresa'])
