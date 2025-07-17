@@ -26,6 +26,7 @@ else:
 
 @webhook_bp.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
+    print("Whatsapp webhook called!")
     if not validator:
         print("Error: Twilio RequestValidator not initialized. Ensure TWILIO_AUTH_TOKEN is set.")
         abort(500, "Twilio validator not configured")
