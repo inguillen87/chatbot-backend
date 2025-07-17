@@ -1,7 +1,7 @@
 import os
 import logging
 import sys
-from flask import Flask, request, current_app, jsonify # Moved request, current_app here
+from flask import Flask, request, current_app, jsonify
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
