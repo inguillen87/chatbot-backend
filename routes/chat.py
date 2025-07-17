@@ -270,8 +270,8 @@ def _procesar_chat(
 
             # Detect if user just logged in with this session
         if actor_principal and chat_context_obj.user_id == actor_principal.id and not chat_context_obj.context_data.get("user_was_present_before", False):
-                chat_context_obj.context_data["just_logged_in_flag"] = True
-                current_app.logger.info(f"User {actor_principal.id} just logged in with session {chat_session_id_header}. Setting just_logged_in_flag.")
+            chat_context_obj.context_data["just_logged_in_flag"] = True
+            current_app.logger.info(f"User {actor_principal.id} just logged in with session {chat_session_id_header}. Setting just_logged_in_flag.")
 
         # This flag should be set to True if an authenticated user is present.
         chat_context_obj.context_data["user_was_present_before"] = bool(actor_principal)
