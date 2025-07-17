@@ -122,6 +122,8 @@ def solo_admin_requerido(f):
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
+    if not request.is_json:
+        return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
         return jsonify({"error": "Email y contraseña requeridos."}), 400

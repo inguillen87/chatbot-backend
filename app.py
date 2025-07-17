@@ -134,14 +134,18 @@ def create_app(config_class=Config):
     # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
     with app.app_context():
         db.init_app(app)
-        if hasattr(db.engine, 'connect'):
-            event.listen(db.engine, "connect", my_on_connect_listener)
-        else:
-            app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
+        if not app.config.get("TESTING"):
+            if hasattr(db.engine, 'connect'):
+                event.listen(db.engine, "connect", my_on_connect_listener)
+            else:
+                app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
 
     # Configuración y activación de Sesiones en el Servidor
+    if app.config.get("TESTING"):
+        app.config['SESSION_TYPE'] = 'filesystem'
     app.config['SESSION_SQLALCHEMY'] = db
-    session_ext.init_app(app)
+    if not hasattr(app, 'session_interface'):
+        session_ext.init_app(app)
 
     # --- Configuración de Logging ---
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
