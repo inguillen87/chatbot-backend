@@ -1669,6 +1669,27 @@ class ReclamoHandler(BaseMunicipioHandler):
                         estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
                     pregunta_str = "" # Clear pregunta_str as it's not relevant for the next step if address was pre-filled
                     continue
+                if pregunta_str:
+                    logger.info(f"[ReclamoHandler] Estado: ESPERANDO_DIRECCION_RECLAMO. Input textual: '{pregunta_str}'.")
+                    config_muni_parseo = self.context.get("municipio_config") or CONFIG_MUNICIPIO
+                    parsed_address = parse_direccion_completa(pregunta_str, config_muni_parseo)
+
+                    if parsed_address and parsed_address.get("calle") and parsed_address.get("localidad"):
+                        memoria["direccion_estructurada_reclamo"] = parsed_address
+                        dir_confirm_text = f"{parsed_address['calle']} {parsed_address.get('numero', '')}, {parsed_address['localidad']}".replace(" ,",",").strip()
+                        memoria["direccion_reclamo"] = dir_confirm_text
+                        logger.info(f"[ReclamoHandler] Dirección textual guardada: {dir_confirm_text}.")
+                        memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
+                        estado = ConversationState.ESPERANDO_NOMBRE_VECINO
+                        if all(memoria.get(campo) for campo in ["nombre_vecino", "telefono_vecino", "email_vecino", "descripcion_reclamo"]):
+                                memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
+                                estado = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO
+
+                        if memoria.get("nombre_vecino"): # If name was pre-filled
+                            pregunta_str = ""
+                            continue
+                        else:
+                            return {"message_body": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?", "options_list": [], "message_type": "text", "fuente": "reclamo_direccion_ok_pide_nombre_v2"}
 
                 # Address not known yet. Check for incoming GPS data or actions.
                 action_from_payload = payload.get("action", "").lower()
