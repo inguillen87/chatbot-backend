@@ -30,8 +30,10 @@ ACTION_HANDLER_MAP = {
     "registrar_usuario": "services.actions.general_actions.RegistrarUsuarioActionHandler",
 
     # Placeholder for actions that might not have a dedicated backend handler beyond LLM response
-    "no_accion": None, # Or a generic NoOpHandler if specific logging/tracking is needed
-    "small_talk": None, # Usually handled by LLM response directly
+    "no_accion": "services.actions.general_actions.NoActionHandler",
+    "small_talk": "services.actions.general_actions.SmallTalkActionHandler",
+    "saludar": "services.actions.general_actions.SmallTalkActionHandler",
+    "saludo": "services.actions.general_actions.SmallTalkActionHandler",
 
     # TODO: Add more mappings as handlers are implemented/confirmed
     # Municipio examples to confirm/create:
