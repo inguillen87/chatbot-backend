@@ -277,6 +277,63 @@ def subir_archivo(current_user):
         return jsonify({'error': 'No se pudieron procesar los archivos.'}), 400
 
 
+@archivos_bp.route('/subir_imagen', methods=['POST'])
+@token_requerido
+def subir_imagen(current_user):
+    if 'archivo' not in request.files:
+        return jsonify({'error': 'No se encontró el archivo'}), 400
+
+    file = request.files['archivo']
+
+    if file.filename == '':
+        return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
+
+    if file and allowed_file(file.filename) and allowed_mime(file.mimetype):
+        original = secure_filename(file.filename)
+        unique = f"{uuid.uuid4().hex}_{original}"
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        save_path = os.path.join(UPLOAD_FOLDER, unique)
+
+        try:
+            file.save(save_path)
+            tamano = os.path.getsize(save_path)
+
+            if tamano > MAX_FILE_SIZE:
+                os.remove(save_path)
+                return jsonify({'error': 'Archivo demasiado grande (máx 10MB).'}), 413
+
+            url = f"/archivos/{unique}"
+            nuevo_adjunto = ArchivoAdjunto(
+                user_id=current_user.id,
+                filename=unique,
+                nombre_original=original,
+                mime=file.mimetype,
+                tamano=tamano,
+                tipo='imagen',
+                url=url,
+            )
+            db.session.add(nuevo_adjunto)
+            db.session.commit()
+
+            return jsonify({
+                'mensaje': 'Imagen subida correctamente.',
+                'archivo': {
+                    'filename': unique,
+                    'id': nuevo_adjunto.id,
+                    'name': original,
+                    'mimeType': file.mimetype,
+                    'size': tamano,
+                    'url': url
+                }
+            }), 200
+
+        except Exception as e:
+            current_app.logger.error(f"Error al guardar la imagen {original}: {e}", exc_info=True)
+            return jsonify({'error': 'Error al guardar la imagen.'}), 500
+
+    return jsonify({'error': 'Formato de archivo no permitido'}), 400
+
+
 @archivos_bp.route('/<path:filename>', methods=['GET'])
 @token_requerido
 def obtener_archivo(current_user: User, filename):
