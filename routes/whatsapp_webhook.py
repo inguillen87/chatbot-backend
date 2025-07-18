@@ -62,13 +62,17 @@ def whatsapp_webhook():
 
     if media_url and media_content_type:
         print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
-        # Procesar imágenes y PDFs básicos.
-        if media_content_type.startswith("image/"):
-            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_image_{uuid.uuid4().hex[:8]}.jpg", "source": "whatsapp"}
-            post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
-            print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
-        elif media_content_type == "application/pdf":
-            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_doc_{uuid.uuid4().hex[:8]}.pdf", "source": "whatsapp"}
+        # Procesar imágenes, PDFs y otros documentos.
+        if media_content_type.startswith("image/") or media_content_type == "application/pdf" or media_content_type.startswith("application/vnd.openxmlformats-officedocument"):
+            file_extension = ".jpg"
+            if media_content_type == "application/pdf":
+                file_extension = ".pdf"
+            elif media_content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                file_extension = ".docx"
+            elif media_content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+                file_extension = ".xlsx"
+
+            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}", "source": "whatsapp"}
             post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
             print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
         else:

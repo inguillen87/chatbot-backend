@@ -4,7 +4,7 @@ import json
 import logging
 import pandas as pd
 import re
-from google.cloud import documentai
+from google.cloud import documentai_v1 as documentai
 from google.oauth2 import service_account
 from typing import List, Dict, Any, Optional
 from .spacy_loader import get_spacy_model

@@ -206,5 +206,75 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 body="Ok"
             )
 
+    def test_whatsapp_webhook_docx_attachment(self):
+        self.mock_validator.validate.return_value = True
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SM_docx_test"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot:
+            mock_bot.return_value = {"message_body": "Ok"}
+
+            payload = {
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}",
+                "Body": "Archivo",
+                "MediaUrl0": "http://example.com/test.docx",
+                "MediaContentType0": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            }
+            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data.decode(), "OK")
+
+            mock_bot.assert_called_once()
+            _, kwargs = mock_bot.call_args
+            self.assertIn("uploaded_file_info_whatsapp", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info_whatsapp"]["mime_type"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+            self.mock_twilio_create.assert_called_once_with(
+                from_=f"whatsapp:{self.test_whatsapp_number_str}",
+                to=f"whatsapp:{self.test_user_number_str}",
+                body="Ok"
+            )
+
+    def test_whatsapp_webhook_image_attachment(self):
+        self.mock_validator.validate.return_value = True
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SM_image_test"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot:
+            mock_bot.return_value = {"message_body": "Ok"}
+
+            payload = {
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}",
+                "Body": "Archivo",
+                "MediaUrl0": "http://example.com/test.jpg",
+                "MediaContentType0": "image/jpeg"
+            }
+            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data.decode(), "OK")
+
+            mock_bot.assert_called_once()
+            _, kwargs = mock_bot.call_args
+            self.assertIn("uploaded_file_info_whatsapp", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info_whatsapp"]["mime_type"], "image/jpeg")
+
+            self.mock_twilio_create.assert_called_once_with(
+                from_=f"whatsapp:{self.test_whatsapp_number_str}",
+                to=f"whatsapp:{self.test_user_number_str}",
+                body="Ok"
+            )
+
 if __name__ == "__main__":
     unittest.main()

@@ -625,7 +625,7 @@ def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int =
 
 try:
     from google.cloud import vision
-    from google.cloud import documentai_v1 as documentai # Alias to avoid conflict
+    from google.cloud.documentai_v1 import Document
 except ImportError:
     logger.warning("Google Cloud Vision or DocumentAI libraries not found. Related functionalities will not work.")
     # Define dummy classes or objects if needed for the code to not break entirely
@@ -638,7 +638,7 @@ except ImportError:
                 self.entities = []
                 self.pages = []
         # Add any other types that might be needed from documentai
-    documentai = MockDocumentAI()
+    Document = MockDocumentAI()
     vision = None # Or a similar mock if attributes from it are directly used
 
 
