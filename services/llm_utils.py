@@ -82,23 +82,55 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 def _clean_llm_json_output(llm_output: str) -> str:
-    """
-    Cleans potential markdown code fences and trailing commas from LLM JSON output.
-    """
+    """Clean and attempt to repair JSON returned by an LLM."""
     if not llm_output:
         return ""
 
     # Remove markdown code fences (```json ... ```)
     match = re.match(r"^\s*```json\s*([\s\S]*?)\s*```\s*$", llm_output, re.DOTALL)
-    if match:
-        cleaned_output = match.group(1)
-    else:
-        cleaned_output = llm_output
+    cleaned_output = match.group(1) if match else llm_output
 
     # Remove trailing commas before closing braces or brackets
     cleaned_output = re.sub(r",\s*(?=[}\]])", "", cleaned_output)
 
+    # Attempt to fix truncated JSON by closing quotes/brackets
+    cleaned_output = _close_open_json_structures(cleaned_output)
+
     return cleaned_output.strip()
+
+
+def _close_open_json_structures(json_str: str) -> str:
+    """Try to close quotes and brackets for a possibly truncated JSON string."""
+    if not json_str:
+        return json_str
+
+    in_string = False
+    escape = False
+    stack: List[str] = []
+    for ch in json_str:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+        elif not in_string:
+            if ch == '{':
+                stack.append('}')
+            elif ch == '[':
+                stack.append(']')
+            elif ch in ('}', ']') and stack and stack[-1] == ch:
+                stack.pop()
+
+    if in_string:
+        json_str += '"'
+
+    while stack:
+        json_str += stack.pop()
+
+    return json_str
 
 def extract_multiple_contact_details_llm(text: str, potential_fields: List[str]) -> Dict[str, Any]:
     """
