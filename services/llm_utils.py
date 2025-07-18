@@ -8,6 +8,7 @@ from utils.validators import (
     extract_name,
     extract_address,
 )
+from google.cloud import documentai
 
 # Intenta importar errores específicos de Cohere.
 # El nombre exacto puede variar según la versión de la librería 'cohere'.
