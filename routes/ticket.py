@@ -128,8 +128,12 @@ def _get_tickets_del_usuario_logic(current_user: User):
 
         if current_user.rubro.nombre.lower().strip() == 'municipios':
             TicketModel = MunicipioTicket
-            # Corrección: Join con User para filtrar por municipio_id
-            query_base = TicketModel.query.join(User, TicketModel.user_id == User.id).filter(User.municipio_id == current_user.municipio_id)
+            if current_user.municipio_id is None:
+                current_app.logger.warning(
+                    f"Usuario municipal {current_user.id} sin municipio_id intentando acceder a /tickets"
+                )
+                return jsonify({"error": "Usuario municipal no tiene municipio_id asignado."}), 400
+            base_query_filters.append(MunicipioTicket.municipio_id == current_user.municipio_id)
             tipo_ticket_str = 'municipio'
         else: # PYME
             TicketModel = PymeTicket
@@ -475,11 +479,13 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
+        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
         if not (
             current_user.rubro and
             current_user.rubro.nombre.lower().strip() == 'municipios' and
             hasattr(current_user, "municipio_id") and
-            ticket_obj.municipio_id == current_user.municipio_id
+            ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and
+            ticket_owner_user.municipio_id == current_user.municipio_id
         ):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
     elif tipo == 'pyme':
@@ -623,11 +629,13 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
+        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
         if not (
             current_user.rubro and
             current_user.rubro.nombre.lower().strip() == 'municipios' and
             hasattr(current_user, "municipio_id") and
-            ticket_obj.municipio_id == current_user.municipio_id
+            ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and
+            ticket_owner_user.municipio_id == current_user.municipio_id
         ):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
     elif tipo == 'pyme':
@@ -914,10 +922,10 @@ def get_panel_por_categoria(current_user: User):
                 "resolved_tickets_count": len(resolution_times)
             }
 
-        query = MunicipioTicket.query  # Comments will be loaded lazily
+        query = MunicipioTicket.query.join(User, MunicipioTicket.user_id == User.id)
 
         if getattr(current_user, "municipio_id", None):
-            query = query.filter_by(municipio_id=current_user.municipio_id)
+            query = query.filter(User.municipio_id == current_user.municipio_id)
 
         all_tickets_for_user_municipio = query.order_by(MunicipioTicket.fecha.desc()).all()
 
@@ -1106,8 +1114,12 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
         and ticket_obj.anon_id == anon_id_header
     ):
         pass
-    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
-        pass
+    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id"):
+        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
+    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id"):
+        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
+        if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
+            pass
     elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         pass
     else:
@@ -1159,8 +1171,10 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
 
     es_dueño = ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
-        es_admin = True
+    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id"):
+        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
+        if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
+            es_admin = True
     if tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         es_admin = True
 
@@ -1183,8 +1197,10 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     ticket_obj = db.session.get(TicketModel, ticket_id)
     es_dueño = ticket_obj and ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj and ticket_obj.municipio_id == current_user.municipio_id:
-        es_admin = True
+    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj:
+        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
+        if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
+            es_admin = True
     if tipo == 'pyme' and current_user.rubro_id and ticket_obj and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         es_admin = True
     if not (es_dueño or es_admin):
@@ -1282,8 +1298,10 @@ def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_cu
                     puede_acceder = True
                 elif tipo_ticket_asociado == "municipio" and \
                      current_user.rubro and current_user.rubro.nombre.lower().strip() == "municipios" and \
-                     hasattr(current_user, "municipio_id") and ticket_asociado.municipio_id == current_user.municipio_id: # Admin/empleado del municipio
-                    puede_acceder = True
+                     hasattr(current_user, "municipio_id"):
+                    ticket_owner_user = db.session.get(User, ticket_asociado.user_id) if ticket_asociado.user_id else None
+                    if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
+                        puede_acceder = True
                 elif tipo_ticket_asociado == "pyme" and \
                      current_user.rubro_id and ticket_asociado.rubro_id == current_user.rubro_id: # Admin/empleado de la pyme
                     puede_acceder = True
