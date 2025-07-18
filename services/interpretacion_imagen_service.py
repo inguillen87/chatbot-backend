@@ -376,8 +376,10 @@ def _procesar_interpretacion_reclamo(
         if final_categoria_sugerida and final_categoria_sugerida != "otro motivo":
             desc_parts.append(f"Posible problema de '{final_categoria_sugerida}'.")
 
-        if top_objects_str: desc_parts.append(f"Se observan: {top_objects_str}.")
-        elif top_labels_str: desc_parts.append(f"Aspectos generales: {top_labels_str}.")
+        if top_objects_str:
+            desc_parts.append(f"Se observan: {top_objects_str}.")
+        elif top_labels_str:
+            desc_parts.append(f"Aspectos generales: {top_labels_str}.")
 
         if ocr_snippet_for_prompt:
             desc_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'.")
@@ -386,7 +388,7 @@ def _procesar_interpretacion_reclamo(
             final_descripcion_sugerida = " ".join(desc_parts)
             logger.info(f"[RECLAMO_IMG_PROC] Descripción generada por fallback: {final_descripcion_sugerida}")
         else:
-            final_descripcion_sugerida = "Por favor, describe el problema que observaste en la imagen."
+            final_descripcion_sugerida = "No se pudo generar una descripción automática. Por favor, describe el problema que observaste en la imagen."
 
     es_reclamo_valido_sugerido = bool(final_categoria_sugerida and final_categoria_sugerida != "otro motivo") or \
                                  (final_descripcion_sugerida and len(final_descripcion_sugerida) >= 15 and "describe el problema" not in final_descripcion_sugerida.lower())

@@ -61,10 +61,11 @@ class TestGeminiBridge(unittest.TestCase):
     def tearDown(self):
         self.modules_patcher.stop()
 
+    @patch('google.auth.default', return_value=(None, None))
     @patch('services.gemini_bridge.os.environ.get')
     @patch('google.generativeai.configure')
     @patch('google.generativeai.GenerativeModel')
-    def test_llamar_gemini_prestamo(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
+    def test_llamar_gemini_prestamo(self, mock_generative_model_class, mock_configure, mock_os_environ_get, mock_auth_default):
         def environ_get_side_effect(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return "test-project-id"
             if key == "GOOGLE_LOCATION": return "us-central1"
@@ -97,10 +98,11 @@ class TestGeminiBridge(unittest.TestCase):
         self.assertEqual(respuesta["pedir_info"], "monto")
         self.assertIn("Claro, te ayudaré con tu préstamo (real)", respuesta["respuesta_usuario"])
 
+    @patch('google.auth.default', return_value=(None, None))
     @patch('services.gemini_bridge.os.environ.get')
     @patch('google.generativeai.configure')
     @patch('google.generativeai.GenerativeModel')
-    def test_llamar_gemini_luminaria(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
+    def test_llamar_gemini_luminaria(self, mock_generative_model_class, mock_configure, mock_os_environ_get, mock_auth_default):
         def environ_get_side_effect(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return "test-project-id"
             if key == "GOOGLE_LOCATION": return "us-central1"
@@ -130,10 +132,11 @@ class TestGeminiBridge(unittest.TestCase):
         self.assertEqual(respuesta["datos_estructura"]["categoria"], "Alumbrado Público")
         self.assertIn("Registré tu reclamo por luminaria (real)", respuesta["respuesta_usuario"])
 
+    @patch('google.auth.default', return_value=(None, None))
     @patch('services.gemini_bridge.os.environ.get')
     @patch('google.generativeai.configure')
     @patch('google.generativeai.GenerativeModel')
-    def test_llamar_gemini_consulta_estado_reclamo(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
+    def test_llamar_gemini_consulta_estado_reclamo(self, mock_generative_model_class, mock_configure, mock_os_environ_get, mock_auth_default):
         def environ_get_side_effect(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return "test-project-id"
             if key == "GOOGLE_LOCATION": return "us-central1"
@@ -162,10 +165,11 @@ class TestGeminiBridge(unittest.TestCase):
         self.assertEqual(respuesta["pedir_info"], "id_reclamo")
         self.assertIn("Para consultar el estado de tu reclamo (real)", respuesta["respuesta_usuario"])
 
+    @patch('google.auth.default', return_value=(None, None))
     @patch('services.gemini_bridge.os.environ.get')
     @patch('google.generativeai.configure')
     @patch('google.generativeai.GenerativeModel')
-    def test_llamar_gemini_fallback_generico(self, mock_generative_model_class, mock_configure, mock_os_environ_get):
+    def test_llamar_gemini_fallback_generico(self, mock_generative_model_class, mock_configure, mock_os_environ_get, mock_auth_default):
         # Test 1: GOOGLE_PROJECT_ID is None (should hit EnvironmentError fallback)
         def environ_get_side_effect_no_project(key, default=None):
             if key == "GOOGLE_PROJECT_ID": return None

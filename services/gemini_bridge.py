@@ -203,7 +203,7 @@ JSON:
 - En `respuesta_usuario`, preguntá específicamente por el dato correcto o qué desea cambiar. Ej: "Entendido. ¿Cuál sería la dirección correcta?" o "¿Qué dato te gustaría modificar del reclamo?".
 - Si el usuario provee directamente la corrección (Ej: "La calle es Rivadavia, no San Martín"), usá `accion_backend: "corregir_datos"` como en el Ejemplo 5.
 
-Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estructura del JSON debe ser exactamente como se define en la sección "SALIDA SIEMPRE".
+Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estructura del JSON debe ser exactamente como se define en la sección "SALIDA SIEMPRE". Asegúrate de que todos los strings estén correctamente entre comillas y que no haya comas extras al final de los bloques.
 """
 
 def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
@@ -398,11 +398,17 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             return parsed_response
         except Exception as e_repair:
             logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")
+            # Fallback to a simple dictionary if parsing fails
             return {
                 "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
                 "accion_backend": "derivar_humano",
-                "datos_estructura": {"error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}", "respuesta_llm_cruda": respuesta_texto_crudo, "mensaje_original": mensaje_usuario},
-                "pedir_info": None, "botones": []
+                "datos_estructura": {
+                    "error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}",
+                    "respuesta_llm_cruda": respuesta_texto_crudo,
+                    "mensaje_original": mensaje_usuario
+                },
+                "pedir_info": None,
+                "botones": []
             }
     except Exception as e_parse: # Otros errores durante el parseo o manejo
         logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
