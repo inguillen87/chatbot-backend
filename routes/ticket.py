@@ -107,6 +107,7 @@ def get_tickets_redirect(current_user: User):
         return get_mis_tickets(current_user)
 
 @ticket_bp.route('/tickets', methods=['GET'])
+@token_requerido
 def get_tickets_del_usuario(current_user: User):
     if not current_user or not current_user.rubro:
         return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
