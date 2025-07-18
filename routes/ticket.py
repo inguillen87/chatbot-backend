@@ -97,6 +97,110 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
 # ---------- LISTA DE TICKETS (logueado) ----------
 from flask import redirect, url_for
 
+def _get_tickets_del_usuario_logic(current_user: User):
+    if not current_user or not current_user.rubro:
+        return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
+
+    try:
+        requested_estado_filter = request.args.get("estado")
+        requested_categoria_filter = request.args.get("categoria")
+
+        TicketModel = None
+        base_query_filters = []
+        tipo_ticket_str = '' # Para usar en la serialización
+
+        # Definir función de serialización genérica primero
+        def serialize_ticket_func(t, ticket_type_str):
+            data = {
+                "id": t.id, "tipo": ticket_type_str, "nro_ticket": t.nro_ticket,
+                "asunto": getattr(t, 'asunto', 'N/A'), "estado": t.estado,
+                "fecha": t.fecha.isoformat(), "categoria": getattr(t, 'categoria', None),
+                "direccion": getattr(t, 'direccion', None),
+                "latitud": getattr(t, 'latitud', None), "longitud": getattr(t, 'longitud', None)
+            }
+            if ticket_type_str == 'pyme':
+                data.update({
+                    "telefono": getattr(t, 'telefono', None),
+                    "email": getattr(t, 'email', None),
+                    "dni": getattr(t, 'dni', None),
+                    "estado_cliente": getattr(t, 'estado_cliente', None),
+                })
+            return data
+
+        if current_user.rubro.nombre.lower().strip() == 'municipios':
+            TicketModel = MunicipioTicket
+            base_query_filters.append(MunicipioTicket.municipio_id == current_user.municipio_id)
+            tipo_ticket_str = 'municipio'
+        else: # PYME
+            TicketModel = PymeTicket
+            if current_user.rubro_id:
+                base_query_filters.append(PymeTicket.rubro_id == current_user.rubro_id)
+            else:
+                current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
+                return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
+            tipo_ticket_str = 'pyme'
+
+        # Construir la query base
+        query_base = TicketModel.query.filter(*base_query_filters)
+
+        # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
+        if requested_categoria_filter:
+            query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
+
+        # Aplicar filtro de categorías asignadas al empleado (afecta tanto al summary como a la lista)
+        employee_specific_categories = []
+        if current_user.rol == 'empleado' and current_user.ticket_categorias:
+            employee_specific_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            if employee_specific_categories:
+                 # Usar ilike para búsquedas insensibles a mayúsculas/minúsculas si es necesario,
+                 # o asumir que las categorías se guardan normalizadas.
+                 # Por ahora, se asume que la comparación directa es suficiente si las categorías están normalizadas.
+                 # query_base = query_base.filter(TicketModel.categoria.in_(employee_specific_categories))
+                 # SQLAlchemy no tiene un `ANY` directo como SQL puro para listas de strings de esta forma.
+                 # Se puede usar OR:
+                from sqlalchemy import or_
+                category_conditions = [TicketModel.categoria.ilike(cat_name) for cat_name in employee_specific_categories]
+                query_base = query_base.filter(or_(*category_conditions))
+
+
+        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría de empleado/request) para el resumen
+        all_tickets_for_summary_calculation = query_base.all()
+
+        summary_by_status = defaultdict(int)
+        defined_statuses = ["nuevo", "en_proceso", "cerrado"]
+
+        for t_sum in all_tickets_for_summary_calculation:
+            # El filtro de categoría de empleado ya se aplicó en la query_base
+            if t_sum.estado in defined_statuses:
+                summary_by_status[t_sum.estado] += 1
+            else:
+                summary_by_status["otros"] += 1 # Contar otros estados
+        summary_by_status["total"] = len(all_tickets_for_summary_calculation)
+
+        # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
+        final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
+        if requested_estado_filter:
+            final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
+
+        page = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per_page", current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)))
+
+        tickets_for_list_page = (
+            final_tickets_query
+            .order_by(TicketModel.fecha.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
+
+        serialized_tickets = [serialize_ticket_func(t, tipo_ticket_str) for t in tickets_for_list_page]
+
+        return jsonify(serialized_tickets)
+
+    except Exception as e:
+        current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al obtener los tickets."}), 500
+
 @ticket_bp.route('/tickets/', methods=['GET'])
 @token_requerido
 def get_tickets_redirect(current_user: User):
