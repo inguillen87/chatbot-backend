@@ -46,6 +46,7 @@ class TicketsEndpointTest(unittest.TestCase):
                 municipio_id=10,
                 rubro_id=rubro.id
             )
+            user.tipo_chat = 'municipio'
             db.session.add(user)
             db.session.commit()
 
@@ -58,7 +59,8 @@ class TicketsEndpointTest(unittest.TestCase):
                 estado='nuevo',
                 categoria='Plazas y parques',
                 direccion='Calle Falsa 123',
-                pregunta='test'
+                pregunta='test',
+                municipio_id=10
             )
             db.session.add(ticket)
             db.session.commit()
