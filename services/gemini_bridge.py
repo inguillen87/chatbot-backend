@@ -293,6 +293,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             # JULES_SYSTEM_PROMPT ya está como system_instruction
             f"USUARIO: {json.dumps(usuario, ensure_ascii=False)}\nHISTORIAL PREVIO: {json.dumps(historial, ensure_ascii=False)}\nMENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}"
         ]
+        if usuario and usuario.get("datos_interpretados_archivo"):
+            contents_for_api.append(f"\nDATOS EXTRAIDOS DE ARCHIVO ADJUNTO: {json.dumps(usuario.get('datos_interpretados_archivo'), ensure_ascii=False)}")
 
         logger.info(f"Enviando a Gemini ({model_name}). Mensaje: {texto_mensaje[:100]}...")
         # logger.debug(f"Contenido completo enviado a Gemini API (sin system prompt): {contents_for_api}")
@@ -387,12 +389,21 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
     except json.JSONDecodeError as e_json:
         logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
-        return {
-            "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
-            "accion_backend": "derivar_humano",
-            "datos_estructura": {"error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}", "respuesta_llm_cruda": respuesta_texto_crudo, "mensaje_original": mensaje_usuario},
-            "pedir_info": None, "botones": []
-        }
+        # Intentar reparar el JSON
+        try:
+            from services.llm_utils import _clean_llm_json_output
+            repaired_json_str = _clean_llm_json_output(respuesta_texto_crudo)
+            logger.info(f"Intentando parsear JSON reparado: {repaired_json_str[:500]}...")
+            parsed_response = json.loads(repaired_json_str)
+            return parsed_response
+        except Exception as e_repair:
+            logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")
+            return {
+                "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
+                "accion_backend": "derivar_humano",
+                "datos_estructura": {"error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}", "respuesta_llm_cruda": respuesta_texto_crudo, "mensaje_original": mensaje_usuario},
+                "pedir_info": None, "botones": []
+            }
     except Exception as e_parse: # Otros errores durante el parseo o manejo
         logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
 
