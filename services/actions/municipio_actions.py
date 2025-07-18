@@ -64,7 +64,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "direccion": direccion_final_txt, "nombre_vecino": nombre_vecino_final,
             "telefono_vecino": telefono_final_validado_e164, "email_vecino": email_final_validado,
             "estado": "nuevo", "user_id": user_id_db, "anon_id": anon_id_db,
-            "municipio_id": municipio_db_id_para_ticket, "latitud": latitud_final, "longitud": longitud_final,
+            "latitud": latitud_final, "longitud": longitud_final,
             "origen_reclamo": "LLM_CHATBOT"
         }
         if self.context.get("foto_url"):
@@ -73,6 +73,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ticket_data["foto_url_directa"] = foto_url_llm
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+        if "municipio_id" in ticket_data_cleaned:
+            del ticket_data_cleaned["municipio_id"]
         logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
 
         try:
