@@ -163,7 +163,7 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- Configuración de CORS ---
-    CORS(app, origins=["https://www.chatboc.ar", "http://localhost:5173"], supports_credentials=True)
+    CORS(app, origins=["https://www.chatboc.ar", "http://localhost:5000"], supports_credentials=True)
 
     @app.after_request
     def after_request(response):
