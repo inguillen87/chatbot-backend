@@ -19,7 +19,7 @@ if os.environ.get("FLASK_ENV") != "production":
         print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
 
 from flask_session import Session
-from config import Config
+from src.config import Config
 from extensions import db, migrate, login_manager # Import login_manager
 from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
 from models import User
