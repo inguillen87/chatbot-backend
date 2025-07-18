@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 import sys
 import os
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+from models import db, User, MunicipioTicket, Rubro
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -11,77 +14,66 @@ if project_root not in sys.path:
 
 from routes.ticket import _get_tickets_del_usuario_logic
 
-class DummyQuery(list):
-    def filter_by(self, **kwargs):
-        # This is a simplified mock. A real implementation might need to handle different filters.
-        return self
-
-    def filter(self, *args, **kwargs):
-        # This is a simplified mock. A real implementation might need to handle different filters.
-        return self
-
-    def order_by(self, *args):
-        return self
-
-    def offset(self, *args):
-        return self
-
-    def limit(self, *args):
-        return self
-
-    def all(self):
-        return list(self)
-
-class DummyColumn:
-    def desc(self):
-        return self
-
 class TicketsEndpointTest(unittest.TestCase):
+    def setUp(self):
+        """Set up a temporary database for the tests."""
+        self.app = Flask(__name__)
+        self.app.config['TESTING'] = True
+        self.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+        self.app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+        db.init_app(self.app)
+        with self.app.app_context():
+            db.create_all()
+
+    def tearDown(self):
+        """Tear down the database."""
+        with self.app.app_context():
+            db.session.remove()
+            db.drop_all()
+
     def test_get_tickets_del_usuario_municipio(self):
-        # Mock current_user for a municipality
-        user = SimpleNamespace(
-            id=1,
-            rol='admin',
-            municipio_id=10,
-            rubro=SimpleNamespace(nombre='municipios'),
-            ticket_categorias=None
-        )
+        with self.app.app_context():
+            # Create a mock user and rubro
+            rubro = Rubro(nombre='municipios', clave='municipios')
+            db.session.add(rubro)
+            db.session.commit()
+            user = User(
+                id=1,
+                name='Test User',
+                email='test@example.com',
+                password_hash='test',
+                rol='admin',
+                municipio_id=10,
+                rubro_id=rubro.id
+            )
+            db.session.add(user)
+            db.session.commit()
 
-        # Mock MunicipioTicket
-        t1 = SimpleNamespace(
-            id=1,
-            nro_ticket=101,
-            asunto='Test Ticket 1',
-            estado='nuevo',
-            fecha=MagicMock(),
-            categoria='Plazas y parques',
-            direccion='Calle Falsa 123',
-            latitud=None,
-            longitud=None
-        )
-        t1.fecha.isoformat.return_value = '2023-01-01T12:00:00'
+            # Create a mock ticket
+            ticket = MunicipioTicket(
+                id=1,
+                user_id=user.id,
+                nro_ticket=101,
+                asunto='Test Ticket 1',
+                estado='nuevo',
+                categoria='Plazas y parques',
+                direccion='Calle Falsa 123',
+                pregunta='test'
+            )
+            db.session.add(ticket)
+            db.session.commit()
 
-        # Mock the query object
-        mock_query = DummyQuery([t1])
-
-        # Mock the models
-        muni_model = SimpleNamespace(query=mock_query, fecha=DummyColumn(), categoria=DummyColumn(), municipio_id=10)
-
-        # Mock Flask's request and jsonify
-        with patch('routes.ticket.MunicipioTicket', muni_model), \
-             patch('routes.ticket.jsonify', lambda x: x), \
-             patch('routes.ticket.request', SimpleNamespace(args={})), \
-             patch('routes.ticket.current_app', SimpleNamespace(config=MagicMock(), logger=MagicMock())):
-
-            # Call the logic function directly
-            resp = _get_tickets_del_usuario_logic(user)
-
-            # Assertions
-            self.assertIsInstance(resp, list)
-            self.assertEqual(len(resp), 1)
-            self.assertEqual(resp[0]['id'], 1)
-            self.assertEqual(resp[0]['nro_ticket'], 101)
-            self.assertEqual(resp[0]['asunto'], 'Test Ticket 1')
+            with patch('routes.ticket.request', SimpleNamespace(args={})), \
+                 patch('routes.ticket.current_app', self.app):
+                # Call the logic function directly
+                resp = _get_tickets_del_usuario_logic(user)
+                data = resp.get_json()
+                # Assertions
+                self.assertIsInstance(data, list)
+                self.assertEqual(len(data), 1)
+                self.assertEqual(data[0]['id'], 1)
+                self.assertEqual(data[0]['nro_ticket'], 101)
+                self.assertEqual(data[0]['asunto'], 'Test Ticket 1')
 
 if __name__ == '__main__':
     unittest.main()
