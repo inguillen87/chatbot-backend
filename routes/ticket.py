@@ -106,7 +106,6 @@ def _get_tickets_del_usuario_logic(current_user: User):
         requested_categoria_filter = request.args.get("categoria")
 
         TicketModel = None
-        base_query_filters = []
         tipo_ticket_str = '' # Para usar en la serialización
 
         # Definir función de serialización genérica primero
@@ -129,19 +128,18 @@ def _get_tickets_del_usuario_logic(current_user: User):
 
         if current_user.rubro.nombre.lower().strip() == 'municipios':
             TicketModel = MunicipioTicket
-            base_query_filters.append(MunicipioTicket.municipio_id == current_user.municipio_id)
+            # Corrección: Join con User para filtrar por municipio_id
+            query_base = TicketModel.query.join(User, TicketModel.user_id == User.id).filter(User.municipio_id == current_user.municipio_id)
             tipo_ticket_str = 'municipio'
         else: # PYME
             TicketModel = PymeTicket
             if current_user.rubro_id:
-                base_query_filters.append(PymeTicket.rubro_id == current_user.rubro_id)
+                # Definir query_base para Pyme
+                query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
                 return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
             tipo_ticket_str = 'pyme'
-
-        # Construir la query base
-        query_base = TicketModel.query.filter(*base_query_filters)
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
         if requested_categoria_filter:
