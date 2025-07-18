@@ -149,19 +149,18 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
         return {}
 
     prompt = (
-        "You are an expert data extraction assistant. Extract the following contact details "
-        f"if present in the USER MESSAGE: {', '.join(potential_fields)}. "
-        "Return the information ONLY as a valid JSON object where keys are the field names "
-        f"from the list: {potential_fields}. If a field is not found, omit it from the JSON. "
-        "Do not add any explanations or conversational text. Ensure phone numbers are "
-        "extracted as accurately as possible, including area codes if provided.\n\n"
-        "Example fields:\n"
-        "- nombre_cliente: Full name of the customer.\n"
-        "- telefono_cliente: Phone number.\n"
-        "- direccion_cliente: Full delivery address.\n"
-        "- email_cliente: Email address.\n\n"
-        f"USER MESSAGE: \"{text}\"\n\n"
-        "JSON RESPONSE:"
+        "Eres un asistente amigable y eficiente. Extrae los siguientes datos de contacto del MENSAJE DEL USUARIO: "
+        f"{', '.join(potential_fields)}. "
+        "Devuelve la información SOLAMENTE como un objeto JSON válido con las claves de la lista: "
+        f"{potential_fields}. Si no encuentras un dato, omite la clave en el JSON. "
+        "No añadas explicaciones ni texto conversacional. Asegúrate de extraer los números de teléfono de la forma más precisa posible.\n\n"
+        "Ejemplo de campos:\n"
+        "- nombre_cliente: Nombre completo del cliente.\n"
+        "- telefono_cliente: Número de teléfono.\n"
+        "- direccion_cliente: Dirección de entrega completa.\n"
+        "- email_cliente: Correo electrónico.\n\n"
+        f"MENSAJE DEL USUARIO: \"{text}\"\n\n"
+        "RESPUESTA JSON:"
     )
 
     extracted_data = {}
@@ -236,17 +235,16 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
 
 
     prompt = (
-        "You are an expert complaint analysis assistant. From the USER'S COMPLAINT below, "
-        "extract the following details: "
-        "1. 'tipo_problema': The general category or type of the issue (e.g., 'Alumbrado público', 'Recolección de residuos', 'Fuga de agua', 'Ruidos molestos', 'Problema con vecino'). "
-        "2. 'ubicacion_problema': The specific location of the problem, including street names, numbers, landmarks, or neighborhood if mentioned. "
-        "3. 'descripcion_problema': A concise summary of the complaint itself, capturing the core issue. "
-        f"{location_context_instruction} " # Added location context instruction
-        "Return the information ONLY as a valid JSON object with these exact keys. "
-        "If a detail is not found, omit its key from the JSON or set its value to an empty string. "
-        "Do not add any explanations or conversational text.\n\n"
-        f"USER'S COMPLAINT: \"{text}\"\n\n"
-        "JSON RESPONSE:"
+        "Eres un asistente amable y comprensivo. Analiza el RECLAMO DEL USUARIO y extrae los siguientes detalles: "
+        "1. 'tipo_problema': La categoría general del problema (ej: 'Alumbrado público', 'Recolección de residuos', 'Fuga de agua'). "
+        "2. 'ubicacion_problema': El lugar específico del problema (calle, número, etc.). "
+        "3. 'descripcion_problema': Un resumen claro y conciso del reclamo. "
+        f"{location_context_instruction} "
+        "Devuelve la información SOLAMENTE como un objeto JSON válido con estas claves. "
+        "Si no encuentras un detalle, puedes omitir la clave. "
+        "No añadas explicaciones ni texto conversacional.\n\n"
+        f"RECLAMO DEL USUARIO: \"{text}\"\n\n"
+        "RESPUESTA JSON:"
     )
 
     extracted_details = {}
@@ -435,6 +433,78 @@ if __name__ == '__main__':
     complaint_less_detail = "El agua no sale en mi casa."
     complaint_details_less = extract_complaint_details_llm(complaint_less_detail)
     print(f"Input: \"{complaint_less_detail}\"\nExtracted: {json.dumps(complaint_details_less, indent=2, ensure_ascii=False)}")
+
+
+def clasificar_entidad_con_llm(texto_usuario: str) -> str:
+    """
+    Clasifica el texto del usuario para determinar si se refiere a un municipio/gobierno,
+    una pyme, o un ID/código.
+
+    Args:
+        texto_usuario: El texto a clasificar (puede ser un rubro, una pregunta, etc.).
+
+    Returns:
+        Una cadena que puede ser "municipio", "pyme", "id" o "desconocido".
+    """
+    if not texto_usuario or not texto_usuario.strip():
+        return "desconocido"
+
+    # Heurística simple para detectar posibles IDs
+    # Coincide con secuencias alfanuméricas con guiones/números, o secuencias de solo números de 5+ dígitos.
+    if re.match(r'^[a-zA-Z0-9-_]{6,}$', texto_usuario.strip()) or re.match(r'^\d{5,}$', texto_usuario.strip()):
+        # Podríamos hacer una comprobación más sofisticada, pero esto cubre muchos casos.
+        # Si parece un ID, podemos clasificarlo directamente para ahorrar una llamada al LLM.
+        # Opcional: podríamos pasar esto al LLM para una doble verificación si es necesario.
+        # Por ahora, si parece un ID, lo tratamos como tal.
+        # Sin embargo, para cumplir el requisito de usar el LLM, lo pasaremos al prompt.
+        pass # Dejamos que el LLM decida
+
+    from services.gemini_bridge import llamar_gemini_para_generacion_texto
+
+    system_prompt = (
+        "Eres un clasificador de texto experto. Tu tarea es analizar el TEXTO DE ENTRADA "
+        "y determinar a qué categoría pertenece: 'municipio', 'pyme', o 'id'.\n"
+        "Responde única y exclusivamente con una de esas tres palabras en minúsculas.\n\n"
+        "- 'municipio': Usa esta categoría si el texto se refiere a entidades gubernamentales, "
+        "municipalidades, ayuntamientos, ONGs, servicios públicos (como hospitales públicos, "
+        "policía, bomberos), o trámites y reclamos típicamente asociados a un ciudadano y su gobierno local.\n"
+        "- 'pyme': Usa esta categoría si el texto se refiere a un negocio privado, una pequeña o mediana empresa, "
+        "una tienda, un profesional independiente, o actividades comerciales como ventas, "
+        "pedidos, catálogos de productos, etc.\n"
+        "- 'id': Usa esta categoría si el texto parece ser un identificador único, un código de seguimiento, "
+        "un número de ticket, un CUIT/CUIL, un DNI, o cualquier cadena alfanumérica que no describa "
+        "una entidad sino que la identifique de forma unívoca.\n\n"
+        "Ejemplos:\n"
+        "Texto: 'limpieza de calles' -> municipio\n"
+        "Texto: 'venta de zapatos' -> pyme\n"
+        "Texto: 'consultar estado del ticket 987-ABCD' -> id\n"
+        "Texto: 'Municipalidad de Las Heras' -> municipio\n"
+        "Texto: 'Peluquería de María' -> pyme\n"
+        "Texto: '20-34567890-1' -> id\n"
+        "Texto: 'quiero hacer un reclamo' -> municipio\n"
+        "Texto: 'ver el catálogo de productos' -> pyme\n"
+    )
+
+    user_prompt = f"TEXTO DE ENTRADA: \"{texto_usuario}\"\n\nCATEGORÍA:"
+
+    try:
+        logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Clasificando texto: '{texto_usuario}'")
+        respuesta = llamar_gemini_para_generacion_texto(
+            system_prompt_especifico=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.0 # Máxima precisión
+        ).strip().lower()
+
+        if respuesta in ["municipio", "pyme", "id"]:
+            logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Texto '{texto_usuario}' clasificado como: {respuesta}")
+            return respuesta
+        else:
+            logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] Respuesta inesperada del LLM: '{respuesta}'. Se devuelve 'desconocido'.")
+            return "desconocido"
+
+    except Exception as e:
+        logger.error(f"[LLM_CLASIFICAR_ENTIDAD] Error al clasificar entidad con LLM: {e}", exc_info=True)
+        return "desconocido"
 
     # Test update_summary_with_llm_extraction with more complex existing summary
     summary_complex = "Cliente: Maria Soler\nTicket: #12345\nProblema: Internet lento."

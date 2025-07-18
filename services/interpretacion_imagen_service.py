@@ -76,7 +76,7 @@ def interpretar_imagen_para_chat(
     pyme_user: Optional[User] = None # Requerido si tipo_interpretacion es "pedido_pyme"
 ) -> Dict[str, Any]:
     """
-    Función principal para interpretar una imagen según el tipo de necesidad (reclamo o pedido).
+    Función principal para interpretar un archivo adjunto (imagen, PDF, Excel) según el tipo de necesidad.
     Maneja tanto `ArchivoAdjunto` de la DB como diccionarios con info de URL (ej. de WhatsApp).
     """
     is_db_object = hasattr(archivo_adjunto, 'id') and archivo_adjunto.id is not None
@@ -114,9 +114,9 @@ def interpretar_imagen_para_chat(
         logger.info(f"➡️ Iniciando interpretación '{tipo_interpretacion}' para imagen desde {input_source_id_info} (sin interacción con DB de AnalisisArchivo en esta etapa).")
 
 
-    image_content = _descargar_imagen(input_url)
-    if not image_content:
-        error_message = "Fallo al descargar la imagen."
+    file_content = _descargar_imagen(input_url)
+    if not file_content:
+        error_message = "Fallo al descargar el archivo."
         if is_db_object and analisis_db_record:
             analisis_db_record.estado_analisis = "error"
             analisis_db_record.error_analisis = error_message
@@ -125,8 +125,16 @@ def interpretar_imagen_para_chat(
         else: # WhatsApp dict, no hay analisis_db_record
             return {'error': error_message, 'analisis_id': None, 'raw_analysis': None}
 
-    logger.info(f"🖼️  Enviando imagen (tamaño: {len(image_content)} bytes, mime: {input_mime_type}) a Vision API...")
-    vision_results = analyze_image_from_content(image_content) # Esta función ya loguea sus errores
+    if "image" in input_mime_type:
+        logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a Vision API...")
+        vision_results = analyze_image_from_content(file_content) # Esta función ya loguea sus errores
+    else:
+        from services.document_processing_service import document_processing_service
+        doc_ai_result = document_processing_service.process_document(file_content, input_mime_type)
+        if doc_ai_result:
+            vision_results = {"full_text_annotation": {"description": doc_ai_result.text}}
+        else:
+            vision_results = {"error": "No se pudo procesar el documento."}
 
     # Si es un objeto de DB, guardar resultados parciales de Vision en AnalisisArchivo
     if is_db_object and analisis_db_record:

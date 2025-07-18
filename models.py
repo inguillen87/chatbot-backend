@@ -9,6 +9,8 @@ from flask_login import UserMixin
 import uuid
 import json
 
+print("Importing models.py")
+
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     clave = db.Column(db.String(50), unique=True, nullable=False)

@@ -1,8 +1,14 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-from models import CatalogoItem, User
-from types import SimpleNamespace
+try:
+    from models import CatalogoItem, User
+    from extensions import db
+except ImportError as e:
+    print(f"Error importing models in test_catalogo_endpoints.py: {e}")
+    CatalogoItem = None
+    User = None
+    db = None
 
 class CatalogoEndpointsTests(unittest.TestCase):
     def setUp(self):
