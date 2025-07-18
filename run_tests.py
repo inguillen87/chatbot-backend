@@ -7,7 +7,6 @@ from config import TestConfig
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, project_root)
-sys.path.insert(0, os.path.join(project_root, "tests"))
 
 if __name__ == '__main__':
     print("sys.path:", sys.path)
@@ -18,10 +17,3 @@ if __name__ == '__main__':
         print("✅ Database created for testing.")
 
     # Run pytest
-    exit_code = pytest.main(["--ignore=env", "--ignore=venv"])
-
-    with app.app_context():
-        db.drop_all()
-        print("✅ Database dropped after testing.")
-
-    sys.exit(exit_code)
