@@ -95,18 +95,8 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
     current_app.logger.info(log_message)
 
 # ---------- LISTA DE TICKETS (logueado) ----------
-@ticket_bp.route('/tickets/', methods=['GET'])
-@token_requerido
-def get_tickets_redirect(current_user: User):
-    """
-    Redirects to the correct tickets list based on user role.
-    """
-    if current_user.rol in ['admin', 'empleado']:
-        return get_tickets_del_usuario(current_user)
-    else:
-        return get_mis_tickets(current_user)
-
 @ticket_bp.route('/tickets', methods=['GET'])
+@token_requerido
 def get_tickets_del_usuario(current_user: User):
     if not current_user or not current_user.rubro:
         return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
