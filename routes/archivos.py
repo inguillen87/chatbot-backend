@@ -84,8 +84,9 @@ def _tiene_permiso(user: User, adj: ArchivoAdjunto) -> bool:
             if not ticket or ticket.empresa_id != user.empresa_id:
                 return False
         elif adj.municipio_ticket_id:
+            from models import MunicipioTicket
             ticket = MunicipioTicket.query.filter_by(id=adj.municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != getattr(user, 'municipio_id', None):
+            if not ticket or ticket.municipio_id != user.municipio_id:
                 return False
         elif adj.user_id != user.id:
             owner = UserModel.query.filter_by(id=adj.user_id).first()
@@ -164,8 +165,9 @@ def subir_archivo(current_user):
             if not ticket or ticket.empresa_id != current_user.empresa_id:
                 return jsonify({'error': 'No puede asociar archivos a tickets de otra empresa.'}), 403
         if municipio_ticket_id:
+            from models import MunicipioTicket
             ticket = MunicipioTicket.query.filter_by(id=municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != getattr(current_user, 'municipio_id', None):
+            if not ticket or ticket.municipio_id != current_user.municipio_id:
                 return jsonify({'error': 'No puede asociar archivos a tickets de otro municipio.'}), 403
 
     resultados_subida = []
@@ -361,14 +363,16 @@ def obtener_archivo(current_user: User, filename):
                 return jsonify({'error': 'Acceso denegado'}), 403
         # Si es archivo de ticket municipio
         elif adj.municipio_ticket_id:
+            from models import MunicipioTicket
             ticket = MunicipioTicket.query.filter_by(id=adj.municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != getattr(current_user, 'municipio_id', None):
+            if not ticket or ticket.municipio_id != current_user.municipio_id:
                 return jsonify({'error': 'Acceso denegado'}), 403
         # Si es archivo propio
         elif adj.user_id != current_user.id:
             # Solo puede ver archivos propios o de tickets de su empresa/municipio
+            from models import User as UserModel
             owner = UserModel.query.filter_by(id=adj.user_id).first()
-            if not owner or (owner.empresa_id != current_user.empresa_id and getattr(owner, 'municipio_id', None) != getattr(current_user, 'municipio_id', None)):
+            if not owner or (owner.empresa_id != current_user.empresa_id and owner.municipio_id != current_user.municipio_id):
                 return jsonify({'error': 'Acceso denegado'}), 403
 
     # Usuario común: solo sus propios archivos

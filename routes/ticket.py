@@ -98,8 +98,8 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
 from flask import redirect, url_for
 
 def _get_tickets_del_usuario_logic(current_user: User):
-    if not current_user or not current_user.rubro:
-        return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
+    if not current_user:
+        return jsonify({"error": "Usuario no asociado, no se pueden mostrar tickets."}), 404
 
     try:
         requested_estado_filter = request.args.get("estado")
@@ -126,16 +126,15 @@ def _get_tickets_del_usuario_logic(current_user: User):
                 })
             return data
 
-        if current_user.rubro.nombre.lower().strip() == 'municipios':
+        if current_user.tipo_chat == "municipio":
             TicketModel = MunicipioTicket
-            if current_user.municipio_id is None:
-                current_app.logger.warning(
-                    f"Usuario municipal {current_user.id} sin municipio_id intentando acceder a /tickets"
-                )
-                return jsonify({"error": "Usuario municipal no tiene municipio_id asignado."}), 400
+            logger.info(f"[CHECK] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
+            if not current_user.municipio_id: # Chequea si es None o 0
+                return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
+
             query_base = TicketModel.query.filter(MunicipioTicket.municipio_id == current_user.municipio_id)
             tipo_ticket_str = 'municipio'
-        else: # PYME
+        else: # PYME y otros
             TicketModel = PymeTicket
             if current_user.rubro_id:
                 # Definir query_base para Pyme
@@ -302,10 +301,8 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
     is_admin_muni = (
         current_user
         and tipo == "municipio"
-        and getattr(current_user, "rubro", None)
-        and current_user.rubro.nombre.lower().strip() == "municipios"
-        and hasattr(current_user, "municipio_id")
-        and getattr(ticket, "municipio_id", None) == current_user.municipio_id
+        and current_user.tipo_chat == "municipio"
+        and ticket.municipio_id == current_user.municipio_id
     )
     is_admin_pyme = (
         current_user
@@ -479,13 +476,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
         if not (
-            current_user.rubro and
-            current_user.rubro.nombre.lower().strip() == 'municipios' and
-            hasattr(current_user, "municipio_id") and
-            ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and
-            ticket_owner_user.municipio_id == current_user.municipio_id
+            current_user.tipo_chat == "municipio" and
+            ticket_obj.municipio_id == current_user.municipio_id
         ):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
     elif tipo == 'pyme':
@@ -629,13 +622,9 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
         if not (
-            current_user.rubro and
-            current_user.rubro.nombre.lower().strip() == 'municipios' and
-            hasattr(current_user, "municipio_id") and
-            ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and
-            ticket_owner_user.municipio_id == current_user.municipio_id
+            current_user.tipo_chat == "municipio" and
+            ticket_obj.municipio_id == current_user.municipio_id
         ):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
     elif tipo == 'pyme':
@@ -701,7 +690,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-        es_agente_municipal = current_user and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
+        es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
         es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
         es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
 
@@ -922,10 +911,10 @@ def get_panel_por_categoria(current_user: User):
                 "resolved_tickets_count": len(resolution_times)
             }
 
-        query = MunicipioTicket.query.join(User, MunicipioTicket.user_id == User.id)
+        if current_user.tipo_chat != "municipio":
+            return jsonify({"error": "Acceso denegado."}), 403
 
-        if getattr(current_user, "municipio_id", None):
-            query = query.filter(User.municipio_id == current_user.municipio_id)
+        query = MunicipioTicket.query.filter(MunicipioTicket.municipio_id == current_user.municipio_id)
 
         all_tickets_for_user_municipio = query.order_by(MunicipioTicket.fecha.desc()).all()
 
@@ -1114,12 +1103,8 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
         and ticket_obj.anon_id == anon_id_header
     ):
         pass
-    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id"):
-        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
-    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id"):
-        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
-        if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
-            pass
+    elif tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
+        pass
     elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         pass
     else:
@@ -1171,10 +1156,8 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
 
     es_dueño = ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id"):
-        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
-        if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
-            es_admin = True
+    if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
+        es_admin = True
     if tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         es_admin = True
 
@@ -1197,10 +1180,8 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     ticket_obj = db.session.get(TicketModel, ticket_id)
     es_dueño = ticket_obj and ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj:
-        ticket_owner_user = db.session.get(User, ticket_obj.user_id) if ticket_obj.user_id else None
-        if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
-            es_admin = True
+    if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
+        es_admin = True
     if tipo == 'pyme' and current_user.rubro_id and ticket_obj and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         es_admin = True
     if not (es_dueño or es_admin):
@@ -1230,11 +1211,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
     estado = request.args.get("estado") # Nuevo filtro de estado
 
     if tipo == "municipio":
-        if not (
-            current_user.rubro
-            and current_user.rubro.nombre.lower().strip() == "municipios"
-            and hasattr(current_user, "municipio_id")
-        ):
+        if not (current_user.tipo_chat == "municipio"):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
 
         # Consider renaming 'obtener_tickets_abiertos_con_ubicacion' if it now handles various states
@@ -1296,12 +1273,8 @@ def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_cu
             if ticket_asociado:
                 if ticket_asociado.user_id == current_user.id: # Dueño del ticket
                     puede_acceder = True
-                elif tipo_ticket_asociado == "municipio" and \
-                     current_user.rubro and current_user.rubro.nombre.lower().strip() == "municipios" and \
-                     hasattr(current_user, "municipio_id"):
-                    ticket_owner_user = db.session.get(User, ticket_asociado.user_id) if ticket_asociado.user_id else None
-                    if ticket_owner_user and hasattr(ticket_owner_user, "municipio_id") and ticket_owner_user.municipio_id == current_user.municipio_id:
-                        puede_acceder = True
+                elif tipo_ticket_asociado == "municipio" and current_user.tipo_chat == "municipio" and ticket_asociado.municipio_id == current_user.municipio_id:
+                    puede_acceder = True
                 elif tipo_ticket_asociado == "pyme" and \
                      current_user.rubro_id and ticket_asociado.rubro_id == current_user.rubro_id: # Admin/empleado de la pyme
                     puede_acceder = True
