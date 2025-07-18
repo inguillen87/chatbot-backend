@@ -45,6 +45,9 @@ def es_rubro_publico(rubro) -> bool:
     """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
     return normalizar_rubro(rubro) in RUBROS_PUBLICOS
 
+
+from services.llm_utils import clasificar_entidad_con_llm
+
 try:
     from services.cohere_ai import get_cohere_response
 except Exception:  # pragma: no cover - fallback for tests
@@ -52,18 +55,16 @@ except Exception:  # pragma: no cover - fallback for tests
 
 # --- Utilidades para small talk ---
 PROMPT_DETECT_SMALL_TALK = """
-Analiza la FRASE DEL USUARIO y responde únicamente "SI" o "NO".
-Responde "SI" si la frase es simplemente una charla casual o un saludo sin una
-solicitud específica. Responde "NO" en caso contrario.
+Analiza la siguiente frase y dime si es una charla casual, un saludo o una pregunta que no busca una acción concreta.
+Responde únicamente "SI" o "NO".
 
-FRASE DEL USUARIO: "{pregunta_usuario}"
+Frase: "{pregunta_usuario}"
 """
 
 PROMPT_RESPUESTA_SMALL_TALK = """
-Responde de manera cordial y breve en español a la FRASE DEL USUARIO y luego
-ofrece tu ayuda.
+Eres un asistente virtual amigable. Responde de forma cálida y concisa al siguiente saludo o comentario, y luego pregunta en qué puedes ayudar.
 
-FRASE DEL USUARIO: "{pregunta_usuario}"
+Comentario del usuario: "{pregunta_usuario}"
 """
 
 
@@ -211,29 +212,33 @@ def responder_chatboc(
         f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
     )
 
-    # Si el rubro indica un tipo específico de lógica, lo usamos siempre
+    # Nueva lógica de clasificación usando LLM
+    texto_para_clasificar = pregunta
     if rubro_nombre:
-        # Usar la clave del rubro para es_rubro_publico si rubro_nombre vino de un objeto rubro con clave
-        # Esto es importante porque RUBROS_PUBLICOS se basa en claves normalizadas.
-        clave_para_chequeo_publico = rubro_nombre
-        if rubro_obj and hasattr(rubro_obj, 'clave') and rubro_obj.clave:
-            clave_para_chequeo_publico = rubro_obj.clave.strip().lower()
-        elif owner_user and hasattr(owner_user, 'rubro') and owner_user.rubro and hasattr(owner_user.rubro, 'clave') and owner_user.rubro.clave:
-             clave_para_chequeo_publico = owner_user.rubro.clave.strip().lower()
+        # Si tenemos un rubro, lo usamos como el texto principal para clasificar,
+        # ya que es más específico que la pregunta del usuario.
+        texto_para_clasificar = rubro_nombre
 
+    clasificacion_entidad = clasificar_entidad_con_llm(texto_para_clasificar)
 
-        esperado = "municipio" if es_rubro_publico(clave_para_chequeo_publico) else "pyme"
-        if tipo_chat and tipo_chat != esperado:
-            logger.info( # Este log es importante si hay un ajuste
-                f"Ajustando tipo_chat de '{tipo_chat}' a '{esperado}' basado en rubro '{rubro_nombre}' (clave chequeada: '{clave_para_chequeo_publico}')"
-            )
-        tipo_chat = esperado
-    elif tipo_chat not in ("municipio", "pyme"): # Si no hay rubro, el tipo_chat debe ser válido
-        # Esta condición podría necesitar revisión. Si no hay rubro Y no hay tipo_chat válido,
-        # es un error. Pero si tipo_chat es válido y no hay rubro, podría ser un chat genérico.
-        # Por ahora, mantenemos: si no hay rubro, tipo_chat debe ser explícito y válido.
-        logger.error(f"Tipo de chat inválido ('{tipo_chat}') o no determinable sin un rubro claro.")
-        raise ValueError(f"Tipo de chat inválido o no determinable sin rubro: {tipo_chat}")
+    if clasificacion_entidad == "municipio":
+        tipo_chat = "municipio"
+    elif clasificacion_entidad == "pyme":
+        tipo_chat = "pyme"
+    elif clasificacion_entidad == "id":
+        # TODO: Implementar lógica para manejar IDs.
+        # Por ahora, podemos tratarlo como un caso especial o desviarlo a un handler.
+        # Por simplicidad, lo dejaremos como pyme por ahora.
+        tipo_chat = "pyme"
+    else: # desconocido
+        # Si la clasificación no es clara, usamos el tipo_chat que viene del request,
+        # y si no, por defecto a pyme.
+        if not tipo_chat:
+            tipo_chat = "pyme"
+
+    if not tipo_chat: # Si después de todo no se pudo determinar
+        logger.error("Error crítico: tipo_chat no pudo ser determinado.")
+        raise ValueError("tipo_chat requerido y no pudo ser determinado.")
 
     if not tipo_chat: # Si después de todo no se pudo determinar
         logger.error("Error crítico: tipo_chat no pudo ser determinado.")

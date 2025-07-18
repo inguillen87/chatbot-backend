@@ -23,17 +23,24 @@ class CrearReclamoActionHandler(BaseActionHandler):
         email_llm = action_data.get("email")
         foto_url_llm = action_data.get("foto_url_adjunta")
 
+        campos_faltantes = []
         if not descripcion:
-            return {
-                "success": False,
-                "message_to_user": "No pude entender la descripción del reclamo. Por favor, intenta describirlo de nuevo.",
-                "pedir_info": "descripcion",
-            }
+            campos_faltantes.append("una descripción del problema")
         if not ubicacion_llm and not coordenadas_llm:
+            campos_faltantes.append("la ubicación del problema")
+        if not nombre_vecino_llm:
+            campos_faltantes.append("tu nombre")
+        if not telefono_llm:
+            campos_faltantes.append("tu número de teléfono")
+        if not email_llm:
+            campos_faltantes.append("tu correo electrónico")
+
+        if campos_faltantes:
+            mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
             return {
                 "success": False,
-                "message_to_user": "No pude entender la ubicación del reclamo. Por favor, especifica dónde es el problema.",
-                "pedir_info": "ubicacion",
+                "message_to_user": mensaje,
+                "pedir_info": campos_faltantes,
             }
 
         # 2. Recopilación de Información del Contexto

@@ -111,7 +111,7 @@ def build_interactive_response(options: list,
             "adjuntos": original_bot_response.get("adjuntos", [])
         }
 
-        if message_type in ['interactive_buttons', 'interactive_list'] and options:
+        if message_type in ['interactive_buttons', 'interactive_list', 'quick_replies'] and options:
             formatted_botones = []
             for o in options:
                 # Use action_id for web. If type is 'url', default action_id to 'open_url_action' unless specified otherwise.
@@ -123,6 +123,9 @@ def build_interactive_response(options: list,
 
                 if o.get("type") == "url" and o.get("url"):
                     btn["url"] = o["url"]
+
+                if message_type == 'quick_replies':
+                    btn["type"] = "quick_reply"
 
                 formatted_botones.append(btn)
             web_response["botones"] = formatted_botones
