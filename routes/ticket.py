@@ -128,12 +128,19 @@ def _get_tickets_del_usuario_logic(current_user: User):
 
         if current_user.rubro.nombre.lower().strip() == 'municipios':
             TicketModel = MunicipioTicket
+<<<<<<< HEAD
             if current_user.municipio_id is None:
                 current_app.logger.warning(
                     f"Usuario municipal {current_user.id} sin municipio_id intentando acceder a /tickets"
                 )
                 return jsonify({"error": "Usuario municipal no tiene municipio_id asignado."}), 400
             base_query_filters.append(MunicipioTicket.municipio_id == current_user.municipio_id)
+=======
+            base_query_filters = []
+            if hasattr(current_user, "municipio_id") and current_user.municipio_id:
+                base_query_filters.append(TicketModel.municipio_id == current_user.municipio_id)
+            query_base = TicketModel.query.filter(*base_query_filters)
+>>>>>>> 2d3235ab8c315dc0dcdf3efb5bbd73c1d354a9d5
             tipo_ticket_str = 'municipio'
         else: # PYME
             TicketModel = PymeTicket
