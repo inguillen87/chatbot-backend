@@ -319,11 +319,9 @@ def register():
     if empresa_existente:
         rol_asignado = 'usuario'
         empresa_id = empresa_existente.id
-        municipio_id = empresa_existente.municipio_id
     else:
         rol_asignado = 'admin'
         empresa_id = None
-        municipio_id = None # Se autogenerará después
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -333,7 +331,6 @@ def register():
         plan="gratis",
         rol=rol_asignado,
         empresa_id=empresa_id,
-        municipio_id=municipio_id,
         acepto_terminos=True,
         fecha_aceptacion_terminos=datetime.utcnow(),
         acepta_marketing=acepta_marketing,
@@ -346,9 +343,6 @@ def register():
     try:
         db.session.add(user)
         db.session.commit()
-        if rol_asignado == 'admin':
-            user.municipio_id = user.id
-            db.session.commit()
         current_app.logger.info(f"Usuario registrado: {user.email} con ID {user.id}")
         return jsonify({
             "mensaje": "Usuario registrado exitosamente.",
