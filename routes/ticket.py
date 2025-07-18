@@ -201,20 +201,13 @@ def _get_tickets_del_usuario_logic(current_user: User):
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
 
+@ticket_bp.route('/tickets', methods=['GET'])
 @ticket_bp.route('/tickets/', methods=['GET'])
 @token_requerido
-def get_tickets_redirect(current_user: User):
-    """
-    Redirects to the correct tickets list based on user role.
-    """
-    if current_user.rol in ['admin', 'empleado']:
-        return redirect(url_for('ticket_bp.get_tickets_del_usuario'))
-    else:
+def get_tickets_del_usuario(current_user: User):
+    if current_user.rol not in ['admin', 'empleado']:
         return redirect(url_for('ticket_bp.get_mis_tickets'))
 
-@ticket_bp.route('/tickets', methods=['GET'])
-@token_requerido
-def get_tickets_del_usuario(current_user: User):
     if not current_user or not current_user.rubro:
         return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
 
