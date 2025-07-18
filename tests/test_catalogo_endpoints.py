@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-from models import QA, CatalogoItem, User
+from models import CatalogoItem, User
 from types import SimpleNamespace
 
 class CatalogoEndpointsTests(unittest.TestCase):

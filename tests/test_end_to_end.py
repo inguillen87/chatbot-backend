@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from config import TestConfig
-from models import User, Rubro, WhatsappNumero, Ticket, ArchivoAdjunto
+from models import User, Rubro, WhatsappNumero, ArchivoAdjunto
 
 class TestEndToEnd(unittest.TestCase):
 

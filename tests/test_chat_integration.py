@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock, ANY
 
 from app import create_app, Config, db
 from models import User
-from models import ArchivoAdjunto
+from models import ArchivoAdjunto, ChatSessionContext, User
 from models import AnalisisArchivo
 
 

@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 from app import create_app
 from extensions import db
 from models import User
-from models import ChatSessionContext
+from models import ChatSessionContext, User
 from models import Rubro
 from config import TestingConfig
 
