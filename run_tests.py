@@ -8,4 +8,4 @@ sys.path.insert(0, project_root)
 
 if __name__ == '__main__':
     # Run pytest
-    sys.exit(pytest.main())
+    sys.exit(pytest.main(["--ignore=env", "--ignore=venv"]))
