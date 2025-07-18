@@ -1,20 +1,31 @@
+import sys
+import os
 import pytest
-from app import create_app, db
 
-@pytest.fixture(scope='module')
-def test_app():
-    app = create_app()
-    app.config.from_object('config.TestConfig')
+# Add project root to sys.path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+
+from app import create_app, db as _db
+
+@pytest.fixture(scope='session')
+def app():
+    """Create a new app instance for each test session."""
+    app = create_app('testing')
     with app.app_context():
-        db.create_all()
         yield app
-        db.session.remove()
-        db.drop_all()
 
-@pytest.fixture(scope='module')
-def test_client(test_app):
-    return test_app.test_client()
+@pytest.fixture(scope='function')
+def db(app):
+    """Create a new database for each function."""
+    _db.app = app
+    _db.create_all()
+    yield _db
+    _db.session.remove()
+    _db.drop_all()
 
-
-
-
+@pytest.fixture(scope='function')
+def client(app, db):
+    """Create a new test client for each function."""
+    with app.test_client() as client:
+        yield client

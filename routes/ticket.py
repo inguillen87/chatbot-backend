@@ -133,7 +133,7 @@ def _get_tickets_del_usuario_logic(current_user: User):
                     f"Usuario municipal {current_user.id} sin municipio_id intentando acceder a /tickets"
                 )
                 return jsonify({"error": "Usuario municipal no tiene municipio_id asignado."}), 400
-            base_query_filters.append(MunicipioTicket.municipio_id == current_user.municipio_id)
+            query_base = TicketModel.query.filter(MunicipioTicket.municipio_id == current_user.municipio_id)
             tipo_ticket_str = 'municipio'
         else: # PYME
             TicketModel = PymeTicket
