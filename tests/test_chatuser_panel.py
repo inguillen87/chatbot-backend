@@ -1,11 +1,8 @@
 import unittest
 import uuid
 from unittest.mock import patch, MagicMock
-from app import create_app
-from extensions import db
-from models import User
-from models import ChatSessionContext, User
-from models import Rubro
+from app import create_app, db
+from models import ChatSessionContext, User, Rubro
 from config import TestingConfig
 
 class ChatUserPanelTests(unittest.TestCase):

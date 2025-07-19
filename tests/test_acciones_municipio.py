@@ -8,12 +8,10 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from app import create_app, db
 from services.actions.municipio_actions import CrearReclamoActionHandler
 from models import User
-from config import Config # Removed TestConfig
-from app import create_app
-from extensions import db
-
+from config import Config
 
 class TestConfigAll(Config):
     TESTING = True
@@ -21,7 +19,7 @@ class TestConfigAll(Config):
     WTF_CSRF_ENABLED = False
     SESSION_COOKIE_SECURE = False
     CELERY_TASK_ALWAYS_EAGER = True
-    DEBUG = False # Ensure debug is False for some tests if needed, or True if that's the default
+    DEBUG = False
 
 class TestAccionesMunicipio(unittest.TestCase):
 

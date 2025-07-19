@@ -2,24 +2,22 @@ import sys
 import os
 import unittest
 from unittest.mock import patch
-from app import create_app
-from extensions import db as _db
+from app import create_app, db
 from models import User
 
 class AuthRoutesTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
-        self.app.config['TESTING'] = True
-        self.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
-        self.app.config['SESSION_TYPE'] = 'filesystem'
+        self.app = create_app('testing')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
         self.client = self.app.test_client()
-        with self.app.app_context():
-            _db.create_all()
+
 
     def tearDown(self):
-        with self.app.app_context():
-            _db.session.remove()
-            _db.drop_all()
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
 
     def test_login_no_json(self):
         """
@@ -52,8 +50,8 @@ class AuthRoutesTests(unittest.TestCase):
         with self.app.app_context():
             user = User(email="a@b.com", name="Test User", token="test-token")
             user.set_password("c")
-            _db.session.add(user)
-            _db.session.commit()
+            db.session.add(user)
+            db.session.commit()
 
         response = self.client.post('/login', json={"email": "a@b.com", "password": "c"})
         self.assertEqual(response.status_code, 200)

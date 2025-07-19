@@ -1,70 +1,90 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-
+from app import create_app, db
+from models import User, Rubro
 from routes.estadisticas import estadisticas_reclamos
-
-class DummySession:
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = []
-    def execute(self, query, params=None):
-        self.calls.append(params)
-        return self._results.pop(0)
-
-class DummyResult:
-    def __init__(self, fetch=None, scalar=None):
-        self._fetch = fetch
-        self._scalar = scalar
-    def fetchall(self):
-        return self._fetch
-    def scalar(self):
-        return self._scalar
+from config import TestingConfig
 
 class EstadisticasRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(TestingConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
+
     def test_pyme_filters_by_rubro(self):
         rows = [SimpleNamespace(rubro='bodega', total=2)]
-        session = DummySession([
-            DummyResult(fetch=rows),
-            DummyResult(scalar=5),
-            DummyResult(scalar=120.0),
-        ])
-        user = SimpleNamespace(
-            rubro=SimpleNamespace(nombre='bodega'),
+        session = SimpleNamespace(
+            execute=MagicMock(side_effect=[
+                MagicMock(fetchall=MagicMock(return_value=rows)),
+                MagicMock(scalar=MagicMock(return_value=5)),
+                MagicMock(scalar=MagicMock(return_value=120.0)),
+            ])
+        )
+        user = User(
+            rubro=Rubro(nombre='bodega', clave='bodega'),
             rubro_id=7,
             municipio_id=None,
             empresa_id=None,
             rol='admin',
+            email='test@test.com',
+            name='test'
         )
-        with patch('routes.estadisticas.jsonify', lambda x: x), \
-             patch('routes.estadisticas.db', SimpleNamespace(session=session)):
-            resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
+        user.set_password('test')
+        db.session.add(user.rubro)
+        db.session.add(user)
+        db.session.commit()
+
+        with self.app.test_request_context():
+            with patch('routes.estadisticas.jsonify', lambda x: x), \
+                 patch('routes.estadisticas.db', SimpleNamespace(session=session)):
+                resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
+
         self.assertEqual(resp['por_rubro'][0]['total'], 2)
         self.assertEqual(resp['por_tipo'][0]['total'], 5)
         self.assertEqual(resp['tiempo_respuesta_promedio_segundos']['pyme'], 120.0)
-        for params in session.calls:
+        for call in session.execute.call_args_list:
+            params = call.kwargs.get('params')
             if params:
                 self.assertEqual(params.get('rid'), 7)
 
     def test_municipio_filters_by_id(self):
-        session = DummySession([
-            DummyResult(scalar=4),
-            DummyResult(scalar=60.0),
-        ])
-        user = SimpleNamespace(
-            rubro=SimpleNamespace(nombre='municipios'),
+        session = SimpleNamespace(
+            execute=MagicMock(side_effect=[
+                MagicMock(scalar=MagicMock(return_value=4)),
+                MagicMock(scalar=MagicMock(return_value=60.0)),
+            ])
+        )
+        user = User(
+            rubro=Rubro(nombre='municipios', clave='municipios'),
             rubro_id=1,
             municipio_id=3,
             empresa_id=None,
             rol='admin',
+            email='test@test.com',
+            name='test'
         )
-        with patch('routes.estadisticas.jsonify', lambda x: x), \
-             patch('routes.estadisticas.db', SimpleNamespace(session=session)):
-            resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
+        user.set_password('test')
+        db.session.add(user.rubro)
+        db.session.add(user)
+        db.session.commit()
+
+        with self.app.test_request_context():
+            with patch('routes.estadisticas.jsonify', lambda x: x), \
+                 patch('routes.estadisticas.db', SimpleNamespace(session=session)):
+                resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
         self.assertEqual(resp['por_rubro'], [])
         self.assertEqual(resp['por_tipo'][0]['total'], 4)
         self.assertEqual(resp['tiempo_respuesta_promedio_segundos']['municipio'], 60.0)
-        for params in session.calls:
+        for call in session.execute.call_args_list:
+            params = call.kwargs.get('params')
             if params:
                 self.assertEqual(params.get('mid'), 3)
 
