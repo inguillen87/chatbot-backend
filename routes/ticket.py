@@ -17,6 +17,7 @@ from services.ticket_service import servicio_tickets
 from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
+logger = logging.getLogger("app")
 
 ticket_bp = Blueprint('ticket_bp', __name__)
 
