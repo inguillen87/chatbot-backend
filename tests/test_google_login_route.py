@@ -3,27 +3,29 @@ import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from app import create_app, db
+from models import User, Rubro
+from routes.auth import google_login
+from config import TestingConfig
 
-project_root_google_login = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root_google_login not in sys.path:
-    sys.path.insert(0, project_root_google_login)
-
-try:
-    from app import create_app
-except Exception:
-    create_app = None
-
-@unittest.skipIf(create_app is None, "Flask not available")
 class GoogleLoginRouteTests(unittest.TestCase):
     def setUp(self):
-        app = create_app()
-        app.config['TESTING'] = True
-        self.client = app.test_client()
+        self.app = create_app(TestingConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
 
     def test_status_falta_rubro(self):
-        user = SimpleNamespace(id=1, email='a@b.com', name='A', token='t1', rubro=None, rubro_id=None)
-        with patch('routes.auth.login_o_crear_usuario', return_value=user):
-            resp = self.client.post('/google-login', json={'id_token': 'tok'})
+        user = User(id=1, email='a@b.com', name='A', token='t1', password_hash='test')
+        with self.app.test_request_context(json={'id_token': 'tok'}):
+            with patch('routes.auth.login_o_crear_usuario', return_value=user):
+                resp = google_login()
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json(), {
             'status': 'falta_rubro',
@@ -32,11 +34,12 @@ class GoogleLoginRouteTests(unittest.TestCase):
         })
 
     def test_login_normal(self):
-        rubro = SimpleNamespace(nombre='IT')
-        user = SimpleNamespace(id=2, email='b@c.com', name='B', token='t2', rubro=rubro, rubro_id=5, rol='usuario', empresa_id=None, ticket_categorias='')
-        with patch('routes.auth.login_o_crear_usuario', return_value=user), \
-             patch('routes.auth.es_rubro_publico', lambda r: False):
-            resp = self.client.post('/google-login', json={'id_token': 'tok'})
+        rubro = Rubro(nombre='IT', clave='it')
+        user = User(id=2, email='b@c.com', name='B', token='t2', rubro=rubro, rubro_id=5, rol='usuario', empresa_id=None, ticket_categorias='', password_hash='test')
+        with self.app.test_request_context(json={'id_token': 'tok'}):
+            with patch('routes.auth.login_o_crear_usuario', return_value=user), \
+                 patch('routes.auth.es_rubro_publico', lambda r: False):
+                resp = google_login()
         data = resp.get_json()
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(data['id'], 2)

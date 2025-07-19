@@ -51,6 +51,7 @@ def get_google_credentials() -> Optional[service_account.Credentials]:
     # 3. Check common fallback paths
     if not credentials_info:
         fallback_paths = [
+            "/data/vision_service_key.json",       # Added for Vision API credentials
             "/app/google_service_key.json",        # Local dev (mounted at root)
             "/app/instance/google-credentials.json", # Local dev (in instance folder)
             "/etc/secrets/google_service_key.json"   # Production (Render secrets)

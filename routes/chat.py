@@ -59,6 +59,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         rubro_clave = data.get("rubro_clave")
         uploaded_file_info = data.get("uploaded_file_info")
         archivo_adjunto_id = data.get("archivo_adjunto_id")
+        location = data.get("location")
 
         if uploaded_file_info and not (
             isinstance(uploaded_file_info, dict) and
@@ -70,18 +71,25 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         if archivo_adjunto_id and not isinstance(archivo_adjunto_id, int):
             raise ValueError("El campo 'archivo_adjunto_id' debe ser un entero.")
 
-        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, uploaded_file_info, archivo_adjunto_id, None
+        if location and not (
+            isinstance(location, dict) and
+            "lat" in location and
+            "lon" in location
+        ):
+            raise ValueError("El campo 'location' es inválido.")
+
+        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, uploaded_file_info, archivo_adjunto_id, location, None
 
     except (TypeError, ValueError) as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None,
             jsonify({"error": str(e)}),
         )
     except Exception as e:
         current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None,
             jsonify({"error": "Formato JSON inválido"}),
         )
 
@@ -108,6 +116,7 @@ def _procesar_chat(
             rubro_clave,
             uploaded_file_info,
             archivo_adjunto_id,
+            location,
             error_response,
         ) = _parse_request(tipo_chat_fijo)
         if error_response:
@@ -315,7 +324,8 @@ def _procesar_chat(
             chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
             channel="web", # Set channel to web
             uploaded_file_info=uploaded_file_info,
-            interpretacion_imagen_data=interpretacion_imagen_resultado
+            interpretacion_imagen_data=interpretacion_imagen_resultado,
+            location=location
         )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
@@ -458,3 +468,7 @@ def widget_attention():
             "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
         )
     return jsonify({"mensaje": mensaje})
+
+@chat_bp.route("/config/google-maps-key", methods=["GET"])
+def google_maps_key():
+    return jsonify({"google_maps_key": current_app.config.get("GOOGLE_MAPS_API_KEY")})

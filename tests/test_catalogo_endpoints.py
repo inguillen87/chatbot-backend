@@ -1,31 +1,32 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-try:
-    from models import CatalogoItem, User
-    from extensions import db
-except ImportError as e:
-    print(f"Error importing models in test_catalogo_endpoints.py: {e}")
-    CatalogoItem = None
-    User = None
-    db = None
+from models import CatalogoItem, User, QA, Rubro
+from config import Config
+
+class TestConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    WTF_CSRF_ENABLED = False
 
 class CatalogoEndpointsTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
-        self.app.config.from_object('config.TestConfig')
+        self.app = create_app(TestConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
         self.client = self.app.test_client()
-        with self.app.app_context():
-            db.create_all()
 
     def tearDown(self):
-        with self.app.app_context():
-            db.session.remove()
-            db.drop_all()
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
 
     def test_faq_texto_returns_clean_texts(self):
         with self.app.app_context():
+            rubro = Rubro(id=1, clave="test", nombre="Test")
             user = User(name='testuser', email='test@example.com', password_hash='password', rubro_id=1)
+            db.session.add(rubro)
             db.session.add(user)
             db.session.commit()
             faq1 = QA(question='Q1', answer='A1', rubro_id=1)
