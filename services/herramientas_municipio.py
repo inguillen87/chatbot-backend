@@ -54,7 +54,7 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
     if not texto_usuario: return sugeridas
 
     texto_norm = normalizar_texto(texto_usuario)
-    from services.municipios import CATEGORIAS_RECLAMO # Local import
+    from services.categorias_municipio import CATEGORIAS_RECLAMO
     # Contar ocurrencias de keywords para cada categoría
     conteo_categorias = {cat: 0 for cat in CATEGORIAS_RECLAMO} # Use the defined list
     palabras_usuario = set(texto_norm.split())

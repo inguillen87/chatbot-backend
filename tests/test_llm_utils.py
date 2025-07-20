@@ -37,6 +37,11 @@ class TestLLMUtils(unittest.TestCase):
         self.assertEqual(_clean_llm_json_output(""), "")
         self.assertEqual(_clean_llm_json_output("{\"key\": \"value\"} # comment"), "{\"key\": \"value\"} # comment") # Comments are not removed by this simple cleaner
 
+    def test_clean_llm_json_output_repairs_truncated(self):
+        self.assertEqual(_clean_llm_json_output('{"a":1'), '{"a":1}')
+        self.assertEqual(_clean_llm_json_output('{"a":{"b":[1,2]}'), '{"a":{"b":[1,2]}}')
+        self.assertEqual(_clean_llm_json_output('{"a":"val'), '{"a":"val"}')
+
     @patch('services.llm_utils.robust_chat')
     def test_extract_multiple_contact_details_llm_full_extraction(self, mock_robust_chat):
         mock_response_data = {

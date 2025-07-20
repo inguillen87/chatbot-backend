@@ -81,12 +81,20 @@ def obtener_token():
     current_app.logger.debug("[obtener_token] No token found in any common location.")
     return None
 
+from flask_login import current_user
+
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         # Permitir solicitudes OPTIONS (preflight CORS) sin autenticación
         if request.method == "OPTIONS":
             return "", 200
+
+        # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
+        if current_user.is_authenticated:
+            return f(current_user, *args, **kwargs)
+
+        # Si no, buscar el token como se hacía antes
         token = obtener_token()
 
         if not token:
@@ -122,6 +130,8 @@ def solo_admin_requerido(f):
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
+    if not request.is_json:
+        return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
         return jsonify({"error": "Email y contraseña requeridos."}), 400
@@ -212,6 +222,7 @@ def google_login():
             "categorias": user.ticket_categorias or "",
         })
     except ValueError as e:
+        current_app.logger.error(f"Error de valor en google_login: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 401
     except Exception as e:  # pragma: no cover - unexpected errors
         current_app.logger.error(f"Error en google_login: {e}", exc_info=True)
@@ -300,10 +311,7 @@ def register():
     }
     tipo_chat_normalizado = sinonimos.get(str(tipo_chat_in).strip().lower()) if tipo_chat_in else None
     if tipo_chat_normalizado not in ('pyme', 'municipio'):
-        return jsonify({
-            'error': "tipo_chat inválido",
-            'botones': [{"texto": "Volver al chat"}],
-        }), 400
+        tipo_chat_normalizado = "municipio" if es_rubro_publico(rubro) else "pyme"
 
     empresa_existente = User.query.filter(
         func.lower(User.nombre_empresa) == func.lower(required_campos['nombre_empresa'])

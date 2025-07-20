@@ -1,5 +1,6 @@
 import os
 import uuid
+import logging
 from werkzeug.utils import secure_filename
 from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from models import (
@@ -16,8 +17,9 @@ from services.ticket_service import servicio_tickets
 from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
+logger = logging.getLogger("app")
 
-ticket_bp = Blueprint('ticket_bp', __name__, url_prefix='/tickets')
+ticket_bp = Blueprint('ticket_bp', __name__)
 
 # Carpeta para adjuntos de tickets
 TICKET_ATTACHMENT_FOLDER = os.path.join(os.getcwd(), "data", "archivos_tickets")
@@ -95,19 +97,17 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
     current_app.logger.info(log_message)
 
 # ---------- LISTA DE TICKETS (logueado) ----------
-@ticket_bp.route('/', methods=['GET'])
-@token_requerido
-@admin_o_empleado_requerido
-def get_tickets_del_usuario(current_user: User):
-    if not current_user or not current_user.rubro:
-        return jsonify({"error": "Usuario o rubro no asociado, no se pueden mostrar tickets."}), 404
+from flask import redirect, url_for
+
+def get_tickets_del_usuario_logic(current_user: User):
+    if not current_user:
+        return jsonify({"error": "Usuario no asociado, no se pueden mostrar tickets."}), 404
 
     try:
         requested_estado_filter = request.args.get("estado")
         requested_categoria_filter = request.args.get("categoria")
 
         TicketModel = None
-        base_query_filters = []
         tipo_ticket_str = '' # Para usar en la serialización
 
         # Definir función de serialización genérica primero
@@ -128,21 +128,23 @@ def get_tickets_del_usuario(current_user: User):
                 })
             return data
 
-        if current_user.rubro.nombre.lower().strip() == 'municipios':
+        if current_user.tipo_chat == "municipio":
             TicketModel = MunicipioTicket
-            base_query_filters.append(MunicipioTicket.municipio_id == current_user.municipio_id)
+            current_app.logger.info(f"[CHECK] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
+            if not current_user.municipio_id: # Chequea si es None o 0
+                return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
+
+            query_base = TicketModel.query.filter(TicketModel.municipio_id == current_user.municipio_id)
             tipo_ticket_str = 'municipio'
-        else: # PYME
+        else: # PYME y otros
             TicketModel = PymeTicket
             if current_user.rubro_id:
-                base_query_filters.append(PymeTicket.rubro_id == current_user.rubro_id)
+                # Definir query_base para Pyme
+                query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
                 return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
             tipo_ticket_str = 'pyme'
-
-        # Construir la query base
-        query_base = TicketModel.query.filter(*base_query_filters)
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
         if requested_categoria_filter:
@@ -202,8 +204,16 @@ def get_tickets_del_usuario(current_user: User):
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
 
+@ticket_bp.route('/tickets', methods=['GET'])
+@ticket_bp.route('/tickets/', methods=['GET'])
+@token_requerido
+def get_tickets_del_usuario(current_user: User):
+    if current_user.rol not in ['admin', 'empleado']:
+        return redirect(url_for('ticket_bp.get_mis_tickets'))
+    return get_tickets_del_usuario_logic(current_user)
+
 # ---------- LISTA DE MIS TICKETS (cliente) ----------
-@ticket_bp.route('/mios', methods=['GET'])
+@ticket_bp.route('/tickets/mios', methods=['GET'])
 @token_requerido
 def get_mis_tickets(current_user: User):
     """Devuelve solo los tickets asociados al usuario autenticado."""
@@ -276,7 +286,7 @@ def get_mis_tickets(current_user: User):
         return jsonify({"error": "Error interno al obtener tus tickets."}), 500
 
 # ---------- DETALLE DE TICKET ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>', methods=['GET'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>', methods=['GET'])
 @anon_o_token_requerido
 def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None):
     """
@@ -293,10 +303,8 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
     is_admin_muni = (
         current_user
         and tipo == "municipio"
-        and getattr(current_user, "rubro", None)
-        and current_user.rubro.nombre.lower().strip() == "municipios"
-        and hasattr(current_user, "municipio_id")
-        and getattr(ticket, "municipio_id", None) == current_user.municipio_id
+        and current_user.tipo_chat == "municipio"
+        and ticket.municipio_id == current_user.municipio_id
     )
     is_admin_pyme = (
         current_user
@@ -429,7 +437,7 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
     return jsonify(ticket_data)
 
 # ---------- RESPONDER A TICKET (AGENTE) ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
 def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
@@ -471,9 +479,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     # Refuerzo de permisos:
     if tipo == 'municipio':
         if not (
-            current_user.rubro and
-            current_user.rubro.nombre.lower().strip() == 'municipios' and
-            hasattr(current_user, "municipio_id") and
+            current_user.tipo_chat == "municipio" and
             ticket_obj.municipio_id == current_user.municipio_id
         ):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
@@ -602,7 +608,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     return jsonify(ticket_data_respuesta), 200
 
 # ---------- CAMBIAR ESTADO DE TICKET ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
 @token_requerido
 @admin_o_empleado_requerido
 def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
@@ -619,9 +625,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     # Refuerzo de permisos:
     if tipo == 'municipio':
         if not (
-            current_user.rubro and
-            current_user.rubro.nombre.lower().strip() == 'municipios' and
-            hasattr(current_user, "municipio_id") and
+            current_user.tipo_chat == "municipio" and
             ticket_obj.municipio_id == current_user.municipio_id
         ):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
@@ -676,27 +680,25 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     return jsonify(ticket_data)
 
 # ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
-@ticket_bp.route('/chat/<int:ticket_id>/mensajes', methods=['GET'])
-@token_requerido
-def get_chat_mensajes(current_user: User, ticket_id: int):
+@ticket_bp.route('/tickets/chat/<int:ticket_id>/mensajes', methods=['GET'])
+@anon_o_token_requerido
+def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Devuelve los mensajes del chat en vivo para un ticket.
-    Requiere que el usuario esté autenticado.
+    Requiere que el usuario esté autenticado o que proporcione un anon_id válido.
     """
     try:
         sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-        es_agente_municipal = current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios'
-        es_dueño_del_ticket = sala_de_chat.user_id == current_user.id
+        es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
+        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
+        es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
 
-        log_ticket_debug("get_chat_mensajes", ticket_id, None, sala_de_chat)
+        log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
-        if sala_de_chat.user_id is None and not es_agente_municipal:
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-        if sala_de_chat.user_id is not None and not (es_agente_municipal or es_dueño_del_ticket):
+        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
         if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
@@ -732,7 +734,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int):
 
 
 # ---------- CHAT EN VIVO PYME: MENSAJES ----------
-@ticket_bp.route('/chat/pyme/<int:ticket_id>/mensajes', methods=['GET'])
+@ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/mensajes', methods=['GET'])
 @token_requerido
 def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
     """Devuelve los mensajes del chat en vivo para una pyme."""
@@ -782,7 +784,7 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
-@ticket_bp.route('/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
+@ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
 @token_requerido
 def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     """
@@ -824,7 +826,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
 
 # ---------- CHAT EN VIVO PYME: RESPONDER CLIENTE ----------
-@ticket_bp.route('/chat/pyme/<int:ticket_id>/responder_cliente', methods=['POST'])
+@ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/responder_cliente', methods=['POST'])
 @token_requerido
 def responder_cliente_a_chat(current_user: User, ticket_id: int):
     """Permite al cliente responder en el chat de su pyme."""
@@ -861,7 +863,7 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
 
 # ---------- PANEL POR CATEGORÍA (AGENTES MUNICIPALES) ----------
-@ticket_bp.route('/panel_por_categoria', methods=['GET'])
+@ticket_bp.route('/tickets/panel_por_categoria', methods=['GET'])
 @token_requerido
 @require_role('admin', 'empleado')
 def get_panel_por_categoria(current_user: User):
@@ -911,10 +913,10 @@ def get_panel_por_categoria(current_user: User):
                 "resolved_tickets_count": len(resolution_times)
             }
 
-        query = MunicipioTicket.query  # Comments will be loaded lazily
+        if current_user.tipo_chat != "municipio":
+            return jsonify({"error": "Acceso denegado."}), 403
 
-        if getattr(current_user, "municipio_id", None):
-            query = query.filter_by(municipio_id=current_user.municipio_id)
+        query = MunicipioTicket.query.filter(MunicipioTicket.municipio_id == current_user.municipio_id)
 
         all_tickets_for_user_municipio = query.order_by(MunicipioTicket.fecha.desc()).all()
 
@@ -979,7 +981,7 @@ def get_panel_por_categoria(current_user: User):
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
 
 # ---------- PANEL PYME (AGENTES PYME) ----------
-@ticket_bp.route('/panel_pyme', methods=['GET'])
+@ticket_bp.route('/tickets/panel_pyme', methods=['GET'])
 @token_requerido
 @require_role('admin', 'empleado')
 def get_panel_pyme(current_user: User):
@@ -1054,7 +1056,7 @@ def get_panel_pyme(current_user: User):
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
 
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido
 def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     """Actualiza la ubicación geográfica asociada a un ticket."""
@@ -1103,7 +1105,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
         and ticket_obj.anon_id == anon_id_header
     ):
         pass
-    elif tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
+    elif tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
         pass
     elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         pass
@@ -1140,7 +1142,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     })
 
 # ---------- ENCUESTA DE SATISFACCION ----------
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/encuesta', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['POST'])
 @token_requerido
 def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
     data = request.get_json(silent=True) or {}
@@ -1156,7 +1158,7 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
 
     es_dueño = ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj.municipio_id == current_user.municipio_id:
+    if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
         es_admin = True
     if tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         es_admin = True
@@ -1169,7 +1171,7 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"success": True, "encuesta_id": encuesta.id})
     return jsonify({"error": "No se pudo guardar"}), 500
 
-@ticket_bp.route('/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
 @token_requerido
 def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     encuesta = TicketSatisfaccion.query.filter_by(ticket_id=ticket_id, tipo=tipo).first()
@@ -1180,7 +1182,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     ticket_obj = db.session.get(TicketModel, ticket_id)
     es_dueño = ticket_obj and ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.rubro and current_user.rubro.nombre.lower().strip() == 'municipios' and hasattr(current_user, "municipio_id") and ticket_obj and ticket_obj.municipio_id == current_user.municipio_id:
+    if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
         es_admin = True
     if tipo == 'pyme' and current_user.rubro_id and ticket_obj and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
         es_admin = True
@@ -1196,7 +1198,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     })
 
 # ---------- MAPA DE TICKETS ABIERTOS ----------
-@ticket_bp.route('/<string:tipo>/mapa', methods=['GET'])
+@ticket_bp.route('/tickets/<string:tipo>/mapa', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
 def mapa_de_tickets(current_user: User, tipo: str):
@@ -1211,11 +1213,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
     estado = request.args.get("estado") # Nuevo filtro de estado
 
     if tipo == "municipio":
-        if not (
-            current_user.rubro
-            and current_user.rubro.nombre.lower().strip() == "municipios"
-            and hasattr(current_user, "municipio_id")
-        ):
+        if not (current_user.tipo_chat == "municipio"):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
 
         # Consider renaming 'obtener_tickets_abiertos_con_ubicacion' if it now handles various states
@@ -1247,7 +1245,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
 # También se necesitará una ruta para servir los archivos.
 from flask_login import login_required, current_user as flask_login_current_user # Importar para Flask-Login
 
-@ticket_bp.route('/archivos/<filename>', methods=['GET'])
+@ticket_bp.route('/tickets/archivos/<filename>', methods=['GET'])
 @login_required # Usar login_required de Flask-Login
 def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_current_user
     current_user = flask_login_current_user # Obtener el usuario de Flask-Login
@@ -1277,9 +1275,7 @@ def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_cu
             if ticket_asociado:
                 if ticket_asociado.user_id == current_user.id: # Dueño del ticket
                     puede_acceder = True
-                elif tipo_ticket_asociado == "municipio" and \
-                     current_user.rubro and current_user.rubro.nombre.lower().strip() == "municipios" and \
-                     hasattr(current_user, "municipio_id") and ticket_asociado.municipio_id == current_user.municipio_id: # Admin/empleado del municipio
+                elif tipo_ticket_asociado == "municipio" and current_user.tipo_chat == "municipio" and ticket_asociado.municipio_id == current_user.municipio_id:
                     puede_acceder = True
                 elif tipo_ticket_asociado == "pyme" and \
                      current_user.rubro_id and ticket_asociado.rubro_id == current_user.rubro_id: # Admin/empleado de la pyme

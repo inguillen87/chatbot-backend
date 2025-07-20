@@ -23,17 +23,24 @@ class CrearReclamoActionHandler(BaseActionHandler):
         email_llm = action_data.get("email")
         foto_url_llm = action_data.get("foto_url_adjunta")
 
+        campos_faltantes = []
         if not descripcion:
-            return {
-                "success": False,
-                "message_to_user": "No pude entender la descripción del reclamo. Por favor, intenta describirlo de nuevo.",
-                "pedir_info": "descripcion",
-            }
+            campos_faltantes.append("una descripción del problema")
         if not ubicacion_llm and not coordenadas_llm:
+            campos_faltantes.append("la ubicación del problema")
+        if not nombre_vecino_llm:
+            campos_faltantes.append("tu nombre")
+        if not telefono_llm:
+            campos_faltantes.append("tu número de teléfono")
+        if not email_llm:
+            campos_faltantes.append("tu correo electrónico")
+
+        if campos_faltantes:
+            mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
             return {
                 "success": False,
-                "message_to_user": "No pude entender la ubicación del reclamo. Por favor, especifica dónde es el problema.",
-                "pedir_info": "ubicacion",
+                "message_to_user": mensaje,
+                "pedir_info": campos_faltantes,
             }
 
         # 2. Recopilación de Información del Contexto
@@ -64,7 +71,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "direccion": direccion_final_txt, "nombre_vecino": nombre_vecino_final,
             "telefono_vecino": telefono_final_validado_e164, "email_vecino": email_final_validado,
             "estado": "nuevo", "user_id": user_id_db, "anon_id": anon_id_db,
-            "municipio_id": municipio_db_id_para_ticket, "latitud": latitud_final, "longitud": longitud_final,
+            "latitud": latitud_final, "longitud": longitud_final,
             "origen_reclamo": "LLM_CHATBOT"
         }
         if self.context.get("foto_url"):
@@ -73,6 +80,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ticket_data["foto_url_directa"] = foto_url_llm
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+        if "municipio_id" in ticket_data_cleaned:
+            del ticket_data_cleaned["municipio_id"]
         logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
 
         try:

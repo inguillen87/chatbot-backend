@@ -84,8 +84,9 @@ def _tiene_permiso(user: User, adj: ArchivoAdjunto) -> bool:
             if not ticket or ticket.empresa_id != user.empresa_id:
                 return False
         elif adj.municipio_ticket_id:
+            from models import MunicipioTicket
             ticket = MunicipioTicket.query.filter_by(id=adj.municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != getattr(user, 'municipio_id', None):
+            if not ticket or ticket.municipio_id != user.municipio_id:
                 return False
         elif adj.user_id != user.id:
             owner = UserModel.query.filter_by(id=adj.user_id).first()
@@ -164,8 +165,9 @@ def subir_archivo(current_user):
             if not ticket or ticket.empresa_id != current_user.empresa_id:
                 return jsonify({'error': 'No puede asociar archivos a tickets de otra empresa.'}), 403
         if municipio_ticket_id:
+            from models import MunicipioTicket
             ticket = MunicipioTicket.query.filter_by(id=municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != getattr(current_user, 'municipio_id', None):
+            if not ticket or ticket.municipio_id != current_user.municipio_id:
                 return jsonify({'error': 'No puede asociar archivos a tickets de otro municipio.'}), 403
 
     resultados_subida = []
@@ -277,6 +279,63 @@ def subir_archivo(current_user):
         return jsonify({'error': 'No se pudieron procesar los archivos.'}), 400
 
 
+@archivos_bp.route('/subir_imagen', methods=['POST'])
+@token_requerido
+def subir_imagen(current_user):
+    if 'archivo' not in request.files:
+        return jsonify({'error': 'No se encontró el archivo'}), 400
+
+    file = request.files['archivo']
+
+    if file.filename == '':
+        return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
+
+    if file and allowed_file(file.filename) and allowed_mime(file.mimetype):
+        original = secure_filename(file.filename)
+        unique = f"{uuid.uuid4().hex}_{original}"
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        save_path = os.path.join(UPLOAD_FOLDER, unique)
+
+        try:
+            file.save(save_path)
+            tamano = os.path.getsize(save_path)
+
+            if tamano > MAX_FILE_SIZE:
+                os.remove(save_path)
+                return jsonify({'error': 'Archivo demasiado grande (máx 10MB).'}), 413
+
+            url = f"/archivos/{unique}"
+            nuevo_adjunto = ArchivoAdjunto(
+                user_id=current_user.id,
+                filename=unique,
+                nombre_original=original,
+                mime=file.mimetype,
+                tamano=tamano,
+                tipo='imagen',
+                url=url,
+            )
+            db.session.add(nuevo_adjunto)
+            db.session.commit()
+
+            return jsonify({
+                'mensaje': 'Imagen subida correctamente.',
+                'archivo': {
+                    'filename': unique,
+                    'id': nuevo_adjunto.id,
+                    'name': original,
+                    'mimeType': file.mimetype,
+                    'size': tamano,
+                    'url': url
+                }
+            }), 200
+
+        except Exception as e:
+            current_app.logger.error(f"Error al guardar la imagen {original}: {e}", exc_info=True)
+            return jsonify({'error': 'Error al guardar la imagen.'}), 500
+
+    return jsonify({'error': 'Formato de archivo no permitido'}), 400
+
+
 @archivos_bp.route('/<path:filename>', methods=['GET'])
 @token_requerido
 def obtener_archivo(current_user: User, filename):
@@ -304,14 +363,16 @@ def obtener_archivo(current_user: User, filename):
                 return jsonify({'error': 'Acceso denegado'}), 403
         # Si es archivo de ticket municipio
         elif adj.municipio_ticket_id:
+            from models import MunicipioTicket
             ticket = MunicipioTicket.query.filter_by(id=adj.municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != getattr(current_user, 'municipio_id', None):
+            if not ticket or ticket.municipio_id != current_user.municipio_id:
                 return jsonify({'error': 'Acceso denegado'}), 403
         # Si es archivo propio
         elif adj.user_id != current_user.id:
             # Solo puede ver archivos propios o de tickets de su empresa/municipio
+            from models import User as UserModel
             owner = UserModel.query.filter_by(id=adj.user_id).first()
-            if not owner or (owner.empresa_id != current_user.empresa_id and getattr(owner, 'municipio_id', None) != getattr(current_user, 'municipio_id', None)):
+            if not owner or (owner.empresa_id != current_user.empresa_id and owner.municipio_id != current_user.municipio_id):
                 return jsonify({'error': 'Acceso denegado'}), 403
 
     # Usuario común: solo sus propios archivos

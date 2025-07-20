@@ -69,5 +69,12 @@ class TicketFiltersTests(unittest.TestCase):
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]['id'], 1)
 
+    def test_municipio_user_without_id_returns_error(self):
+        user = SimpleNamespace(id=9, rol='admin', municipio_id=None, rubro=SimpleNamespace(nombre='municipios'), ticket_categorias='')
+        with patch('routes.ticket.request', SimpleNamespace(args={})), \
+             patch('routes.ticket.jsonify', lambda x: x):
+            res, status = get_tickets_del_usuario.__wrapped__.__wrapped__(user)
+        self.assertEqual(status, 400)
+
 if __name__ == '__main__':
     unittest.main()

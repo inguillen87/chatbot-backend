@@ -26,6 +26,7 @@ else:
 
 @webhook_bp.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
+    print("Whatsapp webhook called!")
     if not validator:
         print("Error: Twilio RequestValidator not initialized. Ensure TWILIO_AUTH_TOKEN is set.")
         abort(500, "Twilio validator not configured")
@@ -61,13 +62,17 @@ def whatsapp_webhook():
 
     if media_url and media_content_type:
         print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
-        # Procesar imágenes y PDFs básicos.
-        if media_content_type.startswith("image/"):
-            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_image_{uuid.uuid4().hex[:8]}.jpg", "source": "whatsapp"}
-            post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
-            print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
-        elif media_content_type == "application/pdf":
-            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_doc_{uuid.uuid4().hex[:8]}.pdf", "source": "whatsapp"}
+        # Procesar imágenes, PDFs y otros documentos.
+        if media_content_type.startswith("image/") or media_content_type == "application/pdf" or media_content_type.startswith("application/vnd.openxmlformats-officedocument"):
+            file_extension = ".jpg"
+            if media_content_type == "application/pdf":
+                file_extension = ".pdf"
+            elif media_content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                file_extension = ".docx"
+            elif media_content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+                file_extension = ".xlsx"
+
+            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}", "source": "whatsapp"}
             post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
             print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
         else:
@@ -255,67 +260,41 @@ def whatsapp_webhook():
             # Ensure respuesta_del_bot_text (used for logging) is also from the new key if available
             respuesta_del_bot_text = body_for_formatter
 
+            # The formatter now returns the direct payload for the WhatsApp API.
+            # No need to look for 'main_body' or 'interactive_object'.
             formatted_whatsapp_payload = build_interactive_response(
                 options=options_for_formatter,
                 body_text=body_for_formatter,
                 channel='whatsapp',
                 message_type=message_type_for_formatter,
-                original_bot_response=bot_response_dict, # Pass the whole original dict
+                original_bot_response=bot_response_dict,
                 header_text=header_for_formatter,
                 footer_text=footer_for_formatter
             )
 
+            # The `body` is the main text, used as fallback by Twilio if the rich message can't be delivered.
             message_params = {
                 'from_': to_number_raw,
                 'to': from_number_raw,
-                'body': formatted_whatsapp_payload.get("main_body", "Error: Cuerpo del mensaje no disponible.")
+                'body': body_for_formatter,  # Fallback text
             }
 
-            interactive_obj = formatted_whatsapp_payload.get("interactive_object")
-            if interactive_obj:
-                # PersistentAction expects a list of strings.
-                # The string should be 'whatsapp:' followed by the JSON of the interactive object.
-                # Note: The entire message object (type, interactive, etc.) is sometimes passed as a single JSON string.
-                # Meta's API itself takes the full JSON. How Twilio translates this via 'PersistentAction'
-                # or other params needs to be exact.
-                # If PersistentAction is 'whatsapp:<FULL_MESSAGE_JSON_OBJECT_AS_STRING>',
-                # then response_formatter should provide that full object.
-                # The current formatter provides the 'interactive' part separately.
-                # Let's assume PersistentAction takes the 'interactive' part directly for now.
-                # This is a common way for aggregators to handle it.
-
-                # Based on https://www.twilio.com/docs/whatsapp/api/buttons-lists (which is for templates)
-                # and general interactive message structure.
-                # For non-template messages sent via API, often the 'interactive' components are part of the main API call.
-                # Twilio's Python library might have a specific parameter for this.
-                # If `PersistentAction` is not correct, this will need adjustment.
-                # A common alternative is `content_variables` if using a generic template,
-                # or a direct `interactive` parameter if the lib supports it.
-                # For now, trying with PersistentAction for dynamic interactive part.
-
-                # Let's try a more direct approach if the library supports it by providing 'RichMessage' like params
-                # The `body` is the fallback or main text.
-                # `persistent_action` is one way, but sometimes there are direct params.
-                # Given the user's example `jsonify({"type": "interactive", ...})` for webhooks *responding* to Twilio,
-                # it implies Twilio can *receive* this structure.
-                # For *sending*, if not using templates, the mechanism is via the `messages.create` parameters.
-                # The most direct way to send the interactive object is often via a parameter named 'content' or similar
-                # or by structuring the 'body' itself if the API expects a JSON string there for certain message types.
-
-                # Re-checking common Twilio practices:
-                # For sending interactive messages without templates, you typically provide the 'Body'
-                # and then an 'Actions' or 'InteractiveMessage' parameter if the helper lib supports it.
-                # If not, `PersistentAction` is the fallback for more complex channel-specific features.
-                # The format for PersistentAction is `ChannelSpecificAddressOrKeyword:<Payload>`
-                # So, `whatsapp:<JSON_STRING_OF_INTERACTIVE_OBJECT>`
-
-                # The `response_formatter` currently returns:
-                # {"main_body": "...", "interactive_object": { "type": "button", ... } }
-                # So, `interactive_obj` is the dict for the "interactive" part.
-
-                persistent_action_payload = f"whatsapp:{json.dumps(interactive_obj)}"
+            # For interactive messages, the actual content is sent via 'PersistentAction'
+            # The payload for PersistentAction should be a JSON string of the interactive object.
+            # The formatter now returns the full object including the "type": "interactive" wrapper.
+            if formatted_whatsapp_payload.get("type") == "interactive":
+                # The `PersistentAction` expects a list of strings, where each string is
+                # 'channel:JSON_payload'.
+                persistent_action_payload = f"whatsapp:{json.dumps(formatted_whatsapp_payload)}"
                 message_params['persistent_action'] = [persistent_action_payload]
-                print(f"Preparing to send interactive message with PersistentAction: {persistent_action_payload[:200]}...")
+                print(f"Preparing to send WhatsApp interactive message with PersistentAction: {persistent_action_payload[:250]}...")
+            elif formatted_whatsapp_payload.get("type") == "text":
+                # For plain text, the body is already set and no PersistentAction is needed.
+                # We just update the body to be sure it's from the formatted payload.
+                message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", body_for_formatter)
+            else:
+                # Fallback for any other message type, just send the plain text body.
+                print(f"Formatted payload type is not 'interactive' or 'text', sending as plain text. Type: {formatted_whatsapp_payload.get('type')}")
 
 
             message = twilio_client.messages.create(**message_params)

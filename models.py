@@ -9,6 +9,8 @@ from flask_login import UserMixin
 import uuid
 import json
 
+print("Importing models.py")
+
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     clave = db.Column(db.String(50), unique=True, nullable=False)
@@ -90,6 +92,7 @@ class User(db.Model, UserMixin):
     rubro = db.relationship("Rubro", backref="usuarios")
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
+    municipio_tickets = db.relationship('MunicipioTicket', backref='municipio', lazy=True)
     fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow) # Nuevo campo
 
     def set_password(self, password):
@@ -131,9 +134,8 @@ class MunicipioTicket(db.Model):
     pregunta = db.Column(db.Text, nullable=False)
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
-    municipio_id = db.Column(db.Integer, nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
-    municipio_id = db.Column(db.Integer, nullable=True)
+    municipio_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

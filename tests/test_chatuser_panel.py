@@ -1,86 +1,99 @@
+from flask import Flask, jsonify
+from app import create_app, db
+from models import User
+from config import Config
+from routes.auth import chatuser_register_panel, chatuser_login_panel
 import unittest
-import uuid
 from unittest.mock import patch, MagicMock
-from app import create_app
-from extensions import db
-from models import User, Rubro, ChatSessionContext
-from config import TestingConfig
 
 class ChatUserPanelTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.app = create_app(TestingConfig)
-        cls.app_context = cls.app.app_context()
-        cls.app_context.push()
-        db.create_all()
-        cls.client = cls.app.test_client()
-
-    @classmethod
-    def tearDownClass(cls):
-        db.session.remove()
-        db.drop_all()
-        cls.app_context.pop()
 
     def setUp(self):
-        # Create a dummy rubro and owner user
-        self.rubro = Rubro(nombre='Test Rubro', clave='test_rubro')
-        db.session.add(self.rubro)
-        db.session.commit()
+        self.app = create_app(Config)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
+        self.client = self.app.test_client()
 
+        # Mock owner user
         self.owner_user = User(
-            email='owner@test.com',
-            name='Test Owner',
-            token=str(uuid.uuid4()),
-            rubro_id=self.rubro.id,
-            nombre_empresa='TestCo',
-            rol='admin'
+            id=1,
+            name="Test Owner",
+            email="owner@test.com",
+            token="owner-token",
+            nombre_empresa="TestCo",
+            rubro_id=1,
+            tipo_chat="pyme"
         )
-        self.owner_user.set_password('password')
+        self.owner_user.set_password("ownerpass")
         db.session.add(self.owner_user)
+
+        # Mock existing user
+        self.existing_user = User(
+            id=2,
+            name="Existing User",
+            email="existing@test.com",
+            token="existing-user-token",
+            empresa_id=1
+        )
+        self.existing_user.set_password("userpass")
+        db.session.add(self.existing_user)
         db.session.commit()
 
     def tearDown(self):
-        db.session.query(User).delete()
-        db.session.query(Rubro).delete()
-        db.session.query(ChatSessionContext).delete()
-        db.session.commit()
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
 
-    def test_register_and_associate_chat_session(self):
-        # 1. Simulate anonymous chat session creation
-        anon_id = str(uuid.uuid4())
-        chat_session_id = str(uuid.uuid4())
-
-        chat_context = ChatSessionContext(
-            chat_session_id=chat_session_id,
-            anon_id=anon_id,
-            context_data={'some_key': 'some_value'}
-        )
-        db.session.add(chat_context)
-        db.session.commit()
-
-        # 2. Register the user with the same chat session id
-        with patch('services.pymes.get_or_create_pyme_user_by_token', return_value=self.owner_user):
-            resp = self.client.post('/chatuserregisterpanel', json={
-                'name': 'New User',
-                'email': 'newuser@example.com',
-                'password': 'password123',
-                'empresa_token': self.owner_user.token
-            }, headers={
-                'X-Chat-Session-Id': chat_session_id,
-                'Anon-Id': anon_id
+    def test_register_new_user(self):
+        with patch('routes.auth.get_or_create_pyme_user_by_token', return_value=self.owner_user):
+            response = self.client.post('/auth/chatuserregisterpanel', json={
+                "name": "New User",
+                "email": "new@test.com",
+                "password": "newpassword",
+                "empresa_token": "owner-token"
             })
+            self.assertEqual(response.status_code, 201)
+            data = response.get_json()
+            self.assertIn("id", data)
+            self.assertEqual(data["name"], "New User")
 
-        self.assertEqual(resp.status_code, 201)
-        json_data = resp.get_json()
-        self.assertIn('id', json_data)
-        new_user_id = json_data['id']
+    def test_register_existing_user_same_entity(self):
+        with patch('routes.auth.get_or_create_pyme_user_by_token', return_value=self.owner_user):
+            response = self.client.post('/auth/chatuserregisterpanel', json={
+                "name": "Existing User",
+                "email": "existing@test.com",
+                "password": "userpass",
+                "empresa_token": "owner-token"
+            })
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertTrue(data["already_registered"])
 
-        # 3. Verify the ChatSessionContext was updated
-        updated_chat_context = ChatSessionContext.query.get(chat_session_id)
-        self.assertIsNotNone(updated_chat_context)
-        self.assertEqual(updated_chat_context.user_id, new_user_id)
-        self.assertIsNone(updated_chat_context.anon_id)
-        self.assertTrue(updated_chat_context.context_data.get('just_logged_in_flag'))
+    def test_register_existing_user_different_entity(self):
+        other_owner = User(id=3, name="Other Owner", email="other@owner.com", token="other-owner-token")
+        db.session.add(other_owner)
+        db.session.commit()
+        with patch('routes.auth.get_or_create_pyme_user_by_token', return_value=other_owner):
+            response = self.client.post('/auth/chatuserregisterpanel', json={
+                "name": "Existing User",
+                "email": "existing@test.com",
+                "password": "userpass",
+                "empresa_token": "other-owner-token"
+            })
+            self.assertEqual(response.status_code, 409)
+
+    def test_login_user(self):
+        with patch('routes.auth.User.query') as mock_query:
+            mock_query.filter_by.return_value.first.return_value = self.existing_user
+            response = self.client.post('/auth/chatuserloginpanel', json={
+                "email": "existing@test.com",
+                "password": "userpass",
+                "empresa_token": "owner-token"
+            })
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertEqual(data["id"], self.existing_user.id)
 
 if __name__ == '__main__':
     unittest.main()

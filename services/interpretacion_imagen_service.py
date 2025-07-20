@@ -35,9 +35,17 @@ PALABRAS_CLAVE_RECLAMO_ETIQUETAS = {
 
 def _descargar_imagen(url: str) -> Optional[bytes]:
     """Descarga el contenido de una imagen desde una URL."""
+    from app import app
     try:
-        response = requests.get(url, timeout=10) # Timeout de 10 segundos
-        response.raise_for_status() # Lanza excepción para códigos de error HTTP
+        response = requests.get(
+            url,
+            auth=(
+                app.config.get("TWILIO_ACCOUNT_SID"),
+                app.config.get("TWILIO_AUTH_TOKEN"),
+            ),
+            timeout=10,
+        )
+        response.raise_for_status()
         return response.content
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Error al descargar imagen desde {url}: {e}", exc_info=True)
@@ -68,7 +76,7 @@ def interpretar_imagen_para_chat(
     pyme_user: Optional[User] = None # Requerido si tipo_interpretacion es "pedido_pyme"
 ) -> Dict[str, Any]:
     """
-    Función principal para interpretar una imagen según el tipo de necesidad (reclamo o pedido).
+    Función principal para interpretar un archivo adjunto (imagen, PDF, Excel) según el tipo de necesidad.
     Maneja tanto `ArchivoAdjunto` de la DB como diccionarios con info de URL (ej. de WhatsApp).
     """
     is_db_object = hasattr(archivo_adjunto, 'id') and archivo_adjunto.id is not None
@@ -106,9 +114,9 @@ def interpretar_imagen_para_chat(
         logger.info(f"➡️ Iniciando interpretación '{tipo_interpretacion}' para imagen desde {input_source_id_info} (sin interacción con DB de AnalisisArchivo en esta etapa).")
 
 
-    image_content = _descargar_imagen(input_url)
-    if not image_content:
-        error_message = "Fallo al descargar la imagen."
+    file_content = _descargar_imagen(input_url)
+    if not file_content:
+        error_message = "Fallo al descargar el archivo."
         if is_db_object and analisis_db_record:
             analisis_db_record.estado_analisis = "error"
             analisis_db_record.error_analisis = error_message
@@ -117,8 +125,16 @@ def interpretar_imagen_para_chat(
         else: # WhatsApp dict, no hay analisis_db_record
             return {'error': error_message, 'analisis_id': None, 'raw_analysis': None}
 
-    logger.info(f"🖼️  Enviando imagen (tamaño: {len(image_content)} bytes, mime: {input_mime_type}) a Vision API...")
-    vision_results = analyze_image_from_content(image_content) # Esta función ya loguea sus errores
+    if "image" in input_mime_type:
+        logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a Vision API...")
+        vision_results = analyze_image_from_content(file_content) # Esta función ya loguea sus errores
+    else:
+        from services.document_processing_service import document_processing_service
+        doc_ai_result = document_processing_service.process_document(file_content, input_mime_type)
+        if doc_ai_result:
+            vision_results = {"full_text_annotation": {"description": doc_ai_result.text}}
+        else:
+            vision_results = {"error": "No se pudo procesar el documento."}
 
     # Si es un objeto de DB, guardar resultados parciales de Vision en AnalisisArchivo
     if is_db_object and analisis_db_record:
@@ -232,7 +248,7 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
 }
 # Also import CATEGORIAS_RECLAMO from municipios to validate against
 try:
-    from services.municipios import CATEGORIAS_RECLAMO, normalizar_texto as normalizar_texto_municipios
+    from services.categorias_municipio import CATEGORIAS_RECLAMO, normalizar_texto as normalizar_texto_municipios
 except ImportError: # Fallback if circular or testing standalone
     CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "incendio", "luminaria", "rotura de semaforo", "limpieza", "falta de agua, rotura de caño", "otro motivo"]
     def normalizar_texto_municipios(s): return s.lower() if s else ""
@@ -348,7 +364,7 @@ def _procesar_interpretacion_reclamo(
         normalized_llm_cat = normalizar_texto_municipios(llm_tipo_problema)
         matched_llm_cat = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto_municipios(cat) == normalized_llm_cat), None)
         if not matched_llm_cat:
-            from services.herramientas_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
+            from services.categorias_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
             from difflib import get_close_matches as get_close_matches_hm
 
             close_matches_llm = get_close_matches_hm(normalized_llm_cat, reclamo_categorias_norm_hm, n=1, cutoff=0.75)
@@ -368,8 +384,10 @@ def _procesar_interpretacion_reclamo(
         if final_categoria_sugerida and final_categoria_sugerida != "otro motivo":
             desc_parts.append(f"Posible problema de '{final_categoria_sugerida}'.")
 
-        if top_objects_str: desc_parts.append(f"Se observan: {top_objects_str}.")
-        elif top_labels_str: desc_parts.append(f"Aspectos generales: {top_labels_str}.")
+        if top_objects_str:
+            desc_parts.append(f"Se observan: {top_objects_str}.")
+        elif top_labels_str:
+            desc_parts.append(f"Aspectos generales: {top_labels_str}.")
 
         if ocr_snippet_for_prompt:
             desc_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'.")
@@ -378,7 +396,7 @@ def _procesar_interpretacion_reclamo(
             final_descripcion_sugerida = " ".join(desc_parts)
             logger.info(f"[RECLAMO_IMG_PROC] Descripción generada por fallback: {final_descripcion_sugerida}")
         else:
-            final_descripcion_sugerida = "Por favor, describe el problema que observaste en la imagen."
+            final_descripcion_sugerida = "No se pudo generar una descripción automática. Por favor, describe el problema que observaste en la imagen."
 
     es_reclamo_valido_sugerido = bool(final_categoria_sugerida and final_categoria_sugerida != "otro motivo") or \
                                  (final_descripcion_sugerida and len(final_descripcion_sugerida) >= 15 and "describe el problema" not in final_descripcion_sugerida.lower())

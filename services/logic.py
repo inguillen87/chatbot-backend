@@ -23,6 +23,8 @@ RUBROS_PUBLICOS = {
     "gobierno",
     "hospital_publico",
     "entidad_publica",
+    "municipal",
+    "publico",
     # Agregá acá los que consideres públicos
 }
 
@@ -43,6 +45,9 @@ def es_rubro_publico(rubro) -> bool:
     """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
     return normalizar_rubro(rubro) in RUBROS_PUBLICOS
 
+
+from services.llm_utils import clasificar_entidad_con_llm
+
 try:
     from services.cohere_ai import get_cohere_response
 except Exception:  # pragma: no cover - fallback for tests
@@ -50,18 +55,16 @@ except Exception:  # pragma: no cover - fallback for tests
 
 # --- Utilidades para small talk ---
 PROMPT_DETECT_SMALL_TALK = """
-Analiza la FRASE DEL USUARIO y responde únicamente "SI" o "NO".
-Responde "SI" si la frase es simplemente una charla casual o un saludo sin una
-solicitud específica. Responde "NO" en caso contrario.
+Analiza la siguiente frase y dime si es una charla casual, un saludo o una pregunta que no busca una acción concreta.
+Responde únicamente "SI" o "NO".
 
-FRASE DEL USUARIO: "{pregunta_usuario}"
+Frase: "{pregunta_usuario}"
 """
 
 PROMPT_RESPUESTA_SMALL_TALK = """
-Responde de manera cordial y breve en español a la FRASE DEL USUARIO y luego
-ofrece tu ayuda.
+Eres un asistente virtual amigable. Responde de forma cálida y concisa al siguiente saludo o comentario, y luego pregunta en qué puedes ayudar.
 
-FRASE DEL USUARIO: "{pregunta_usuario}"
+Comentario del usuario: "{pregunta_usuario}"
 """
 
 
@@ -209,29 +212,33 @@ def responder_chatboc(
         f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
     )
 
-    # Si el rubro indica un tipo específico de lógica, lo usamos siempre
+    # Nueva lógica de clasificación usando LLM
+    texto_para_clasificar = pregunta
     if rubro_nombre:
-        # Usar la clave del rubro para es_rubro_publico si rubro_nombre vino de un objeto rubro con clave
-        # Esto es importante porque RUBROS_PUBLICOS se basa en claves normalizadas.
-        clave_para_chequeo_publico = rubro_nombre
-        if rubro_obj and hasattr(rubro_obj, 'clave') and rubro_obj.clave:
-            clave_para_chequeo_publico = rubro_obj.clave.strip().lower()
-        elif owner_user and hasattr(owner_user, 'rubro') and owner_user.rubro and hasattr(owner_user.rubro, 'clave') and owner_user.rubro.clave:
-             clave_para_chequeo_publico = owner_user.rubro.clave.strip().lower()
+        # Si tenemos un rubro, lo usamos como el texto principal para clasificar,
+        # ya que es más específico que la pregunta del usuario.
+        texto_para_clasificar = rubro_nombre
 
+    clasificacion_entidad = clasificar_entidad_con_llm(texto_para_clasificar)
 
-        esperado = "municipio" if es_rubro_publico(clave_para_chequeo_publico) else "pyme"
-        if tipo_chat and tipo_chat != esperado:
-            logger.info( # Este log es importante si hay un ajuste
-                f"Ajustando tipo_chat de '{tipo_chat}' a '{esperado}' basado en rubro '{rubro_nombre}' (clave chequeada: '{clave_para_chequeo_publico}')"
-            )
-        tipo_chat = esperado
-    elif tipo_chat not in ("municipio", "pyme"): # Si no hay rubro, el tipo_chat debe ser válido
-        # Esta condición podría necesitar revisión. Si no hay rubro Y no hay tipo_chat válido,
-        # es un error. Pero si tipo_chat es válido y no hay rubro, podría ser un chat genérico.
-        # Por ahora, mantenemos: si no hay rubro, tipo_chat debe ser explícito y válido.
-        logger.error(f"Tipo de chat inválido ('{tipo_chat}') o no determinable sin un rubro claro.")
-        raise ValueError(f"Tipo de chat inválido o no determinable sin rubro: {tipo_chat}")
+    if clasificacion_entidad == "municipio":
+        tipo_chat = "municipio"
+    elif clasificacion_entidad == "pyme":
+        tipo_chat = "pyme"
+    elif clasificacion_entidad == "id":
+        # TODO: Implementar lógica para manejar IDs.
+        # Por ahora, podemos tratarlo como un caso especial o desviarlo a un handler.
+        # Por simplicidad, lo dejaremos como pyme por ahora.
+        tipo_chat = "pyme"
+    else: # desconocido
+        # Si la clasificación no es clara, usamos el tipo_chat que viene del request,
+        # y si no, por defecto a pyme.
+        if not tipo_chat:
+            tipo_chat = "pyme"
+
+    if not tipo_chat: # Si después de todo no se pudo determinar
+        logger.error("Error crítico: tipo_chat no pudo ser determinado.")
+        raise ValueError("tipo_chat requerido y no pudo ser determinado.")
 
     if not tipo_chat: # Si después de todo no se pudo determinar
         logger.error("Error crítico: tipo_chat no pudo ser determinado.")
@@ -254,122 +261,37 @@ def responder_chatboc(
     archivo_id_para_asociar_al_ticket = None
     procesamiento_archivo_en_curso = False # Nueva bandera
 
-    if uploaded_file_info and isinstance(uploaded_file_info, dict) and uploaded_file_info.get("id"):
-        archivo_id = uploaded_file_info.get("id")
-        current_app.logger.info(f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}")
+    if uploaded_file_info and isinstance(uploaded_file_info, dict):
+        if uploaded_file_info.get("id"):
+            archivo_id = uploaded_file_info.get("id")
+            current_app.logger.info(f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}")
+            # El resto de la lógica para archivos subidos desde el frontend va aquí
+        elif uploaded_file_info.get("source") == "whatsapp":
+            from services.document_processing_service import document_processing_service
+            import requests
 
-        # Usar db.session del contexto de la aplicación actual
-        archivo_obj = db.session.query(ArchivoAdjunto).get(archivo_id)
+            media_url = uploaded_file_info.get("url")
+            media_content_type = uploaded_file_info.get("mime_type")
 
-        if archivo_obj:
-            archivo_id_para_asociar_al_ticket = archivo_id # Guardar para asociar incluso si el análisis está pendiente
+            try:
+                response = requests.get(media_url, auth=(current_app.config.get("TWILIO_ACCOUNT_SID"), current_app.config.get("TWILIO_AUTH_TOKEN")))
+                response.raise_for_status()
+                file_content = response.content
 
-            if archivo_obj.analisis: # Si existe un registro de análisis
-                estado_analisis_actual = archivo_obj.analisis.estado_analisis
-                current_app.logger.info(f"[LOGIC] ArchivoAdjunto ID: {archivo_id} tiene análisis con estado: {estado_analisis_actual}")
-
-                if estado_analisis_actual == "completado":
-                    user_id_actual = owner_user.id if owner_user else None
-                    datos_interpretados_de_archivo = interpretacion_service.interpretar_analisis_para_datos_ticket(
-                        analisis_archivo=archivo_obj.analisis,
-                        tipo_contexto=tipo_chat, # tipo_chat ya está corregido según el rubro
-                        user_id=user_id_actual
-                    )
-                    if datos_interpretados_de_archivo:
-                        current_app.logger.info(f"[LOGIC] Datos interpretados del archivo: {datos_interpretados_de_archivo}")
-                    else:
-                        current_app.logger.info(f"[LOGIC] Análisis completado pero sin datos interpretables para el contexto {tipo_chat}.")
-                        # Podríamos querer enviar un mensaje genérico si el análisis no produjo nada útil aquí.
-                        # Por ejemplo, si es una imagen que no es un reclamo.
-                        if archivo_obj.analisis.tipo_analisis == 'imagen_general_vision_v1':
-                             datos_interpretados_de_archivo = {
-                                 "_mensaje_bot": "He procesado la imagen, pero no parece ser un reclamo o pedido claro. ¿Podrías describirme qué necesitas o qué ves en la imagen?",
-                                 "es_reclamo": False # Asegurar que se marque como no reclamo
-                             }
-
-
-                elif estado_analisis_actual in ["pendiente", "procesando"]:
-                    current_app.logger.info(f"[LOGIC] Análisis para ArchivoAdjunto ID: {archivo_id} aún está '{estado_analisis_actual}'.")
-                    procesamiento_archivo_en_curso = True
-                    # Guardar en contexto de sesión que hay un archivo procesándose
-                    if chat_db_context: # Usar el nuevo chat_db_context
-                        if chat_db_context.context_data is None: chat_db_context.context_data = {}
-                        chat_db_context.context_data[f'archivo_procesando_{chat_session_uuid}'] = archivo_id
-                        # La persistencia de chat_db_context.context_data se hará en routes/chat.py
-                    else: # Log si chat_db_context no está disponible (no debería pasar)
-                        current_app.logger.error(f"[responder_chatboc] chat_db_context no disponible para guardar 'archivo_procesando_{chat_session_uuid}'.")
-                    # Devolver respuesta indicando que se está procesando
-                    return {
-                        "respuesta": "Estoy analizando el archivo que subiste. Te avisaré en cuanto termine. Mientras tanto, ¿puedo ayudarte con otra cosa o prefieres esperar?",
-                        "contexto_pyme": kwargs.get("contexto_previo"), # Devolver contexto sin cambios
-                        "contexto_municipio": kwargs.get("contexto_previo"),
-                        "botones": [{"texto": "Esperar resultado", "payload": f"consultar_analisis:{archivo_id}"}],
-                        # Otros campos que devuelve normalmente tu API
-                        "fuente": "sistema",
-                        "tipo_respuesta": "espera_analisis_archivo"
-                    }
-                elif estado_analisis_actual == "error":
-                    current_app.logger.error(f"[LOGIC] Análisis para ArchivoAdjunto ID: {archivo_id} resultó en error: {archivo_obj.analisis.error_analisis}")
-                    # Informar al usuario del error
-                    return {
-                        "respuesta": f"Hubo un problema al analizar el archivo: {archivo_obj.analisis.error_analisis}. Por favor, intenta subirlo de nuevo o describe tu consulta.",
-                        "contexto_pyme": kwargs.get("contexto_previo"),
-                        "contexto_municipio": kwargs.get("contexto_previo"),
-                        "fuente": "sistema_error",
-                        "tipo_respuesta": "error_analisis_archivo"
-                    }
-                else: # Otros estados o si no hay datos interpretados
-                    current_app.logger.info(f"[LOGIC] Análisis para ArchivoAdjunto ID: {archivo_id} en estado '{estado_analisis_actual}' no produjo datos directamente utilizables en este flujo.")
-
-            else: # No hay registro de AnalisisArchivo (esto no debería ocurrir si se crea en /subir)
-                current_app.logger.warning(f"[LOGIC] No existe registro AnalisisArchivo para ArchivoAdjunto ID: {archivo_id}. Esto es inesperado si el análisis se inicia al subir.")
-                # Podríamos forzar una respuesta de "procesando" si esto ocurre, asumiendo que la tarea se está ejecutando.
-                # O considerarlo un error si siempre debería existir.
-                # Por ahora, trataremos como si estuviera pendiente.
-                procesamiento_archivo_en_curso = True
-                if chat_db_context: # Usar el nuevo chat_db_context
-                    if chat_db_context.context_data is None: chat_db_context.context_data = {}
-                    chat_db_context.context_data[f'archivo_procesando_{chat_session_uuid}'] = archivo_id
+                if media_content_type.startswith("image/"):
+                    from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+                    datos_interpretados_de_archivo = interpretar_imagen_para_chat(archivo_adjunto={"url": media_url, "mime_type": media_content_type}, tipo_interpretacion="reclamo_auto_descripcion_categoria")
                 else:
-                    current_app.logger.error(f"[responder_chatboc] chat_db_context no disponible para guardar 'archivo_procesando_{chat_session_uuid}' (no análisis previo).")
-                return {
-                    "respuesta": "Estoy preparando tu archivo para el análisis. Te avisaré en breve. Mientras tanto, ¿puedo ayudarte con otra cosa?",
-                    "contexto_pyme": kwargs.get("contexto_previo"),
-                    "contexto_municipio": kwargs.get("contexto_previo"),
-                    "botones": [{"texto": "Esperar resultado", "payload": f"consultar_analisis:{archivo_id}"}],
-                    "fuente": "sistema",
-                    "tipo_respuesta": "espera_analisis_archivo"
-                }
-        else:
-            current_app.logger.warning(f"[LOGIC] No se encontró ArchivoAdjunto con ID: {archivo_id} desde uploaded_file_info.")
-            # No podemos asociar si no encontramos el archivo, y no hay nada que procesar.
-            # Esto podría ser un error en el ID enviado por el frontend.
-
-    # Si el usuario envía un payload "consultar_analisis:ID_ARCHIVO"
-    if pregunta.startswith("consultar_analisis:"):
-        id_archivo_a_consultar = pregunta.split(":")[1]
-        current_app.logger.info(f"[LOGIC] Usuario consulta estado de análisis para archivo ID: {id_archivo_a_consultar}")
-        # Aquí se re-ejecutaría la lógica de verificación de estado de arriba.
-        # Esto requiere que el frontend envíe este payload como una "pregunta".
-        # Este es un re-entry point.
-        # Para evitar duplicar código, podríamos refactorizar la lógica de chequeo de estado.
-        # Por ahora, si llega aquí, se volverá a chequear el estado del archivo_id_a_consultar
-        # si el frontend lo reenvía en uploaded_file_info (o si lo pasamos de otra forma).
-        # Mejor: si el payload es `consultar_analisis:ID`, forzamos uploaded_file_info.
-        if not uploaded_file_info: # Si no vino en el request original, lo simulamos para el chequeo
-             kwargs["uploaded_file_info"] = {"id": id_archivo_a_consultar}
-             # Y volvemos a llamar a responder_chatboc recursivamente (cuidado con bucles infinitos)
-             # O, mejor, refactorizar la lógica de chequeo.
-             # Por ahora, si se llega aquí con ese payload, el flujo de arriba lo manejará si
-             # el ID se vuelve a poner en uploaded_file_info.
-             # Esto es un poco enrevesado. Una mejor solución sería tener un endpoint específico para consultar estado.
-             # O que el handler de municipio/pyme maneje este payload.
-             # ----
-             # Simplificación: El chequeo de `uploaded_file_info` ya está arriba. Si el frontend envía
-             # `pregunta = "consultar_analisis:ID"` Y `uploaded_file_info = {"id": ID}`, la lógica de arriba
-             # se activará y chequeará el estado. El `pregunta` en sí mismo no se usará para el LLM en ese caso.
-             pass
-
+                    doc_ai_result = document_processing_service.process_document(file_content, media_content_type)
+                    if doc_ai_result:
+                        # Aquí puedes procesar el resultado de Document AI
+                        # Por ahora, solo extraemos el texto
+                        datos_interpretados_de_archivo = {"texto_extraido": doc_ai_result.text}
+                    else:
+                        datos_interpretados_de_archivo = {"error": "No se pudo procesar el documento."}
+            except requests.exceptions.RequestException as e:
+                current_app.logger.error(f"Error descargando archivo de WhatsApp: {e}")
+                datos_interpretados_de_archivo = {"error": "No se pudo descargar el archivo."}
 
     # Actualizar kwargs para pasar la información a los handlers específicos
     kwargs["datos_interpretados_archivo"] = datos_interpretados_de_archivo
@@ -455,6 +377,13 @@ def responder_chatboc(
 
     if tipo_chat == "municipio":
         from services.municipios import responder_municipio
+
+        # Añadir datos interpretados al contexto del usuario para el LLM
+        if datos_interpretados_de_archivo:
+            if not owner_user.datos_interpretados_archivo:
+                owner_user.datos_interpretados_archivo = {}
+            owner_user.datos_interpretados_archivo.update(datos_interpretados_de_archivo)
+
         return responder_municipio(
             pregunta_original=pregunta, # La pregunta original del usuario
             owner_user=owner_user,
@@ -468,6 +397,13 @@ def responder_chatboc(
         )
     elif tipo_chat == "pyme":
         from services.pymes import responder_pyme
+
+        # Añadir datos interpretados al contexto del usuario para el LLM
+        if datos_interpretados_de_archivo:
+            if not owner_user.datos_interpretados_archivo:
+                owner_user.datos_interpretados_archivo = {}
+            owner_user.datos_interpretados_archivo.update(datos_interpretados_de_archivo)
+
         return responder_pyme(
             pregunta_original=pregunta,
             owner_user=owner_user,

@@ -41,6 +41,17 @@ Tu tarea es recibir y entender mensajes de ciudadanos o clientes, interpretar re
 - Respondés de forma personalizada según `target` (municipio/pyme).
 - Sugerís adjuntos (foto, audio, GPS) si es relevante para la acción (ej. reclamo de bache), usualmente después de obtener la descripción.
 
+### Análisis de Imágenes:
+- Si el usuario sube una imagen, el backend la procesará con Google Cloud Vision.
+- Los resultados del análisis de la imagen (texto extraído, etiquetas de objetos) se te proporcionarán en el `contexto`.
+- Utilizá esta información para enriquecer la conversación y asistir al usuario. Por ejemplo, si se detecta texto en una imagen, podés usarlo para autocompletar un formulario.
+
+### Detección de Ubicación:
+- El sistema puede solicitar al usuario que comparta su ubicación.
+- Si el usuario comparte su ubicación, las coordenadas se te proporcionarán en el `contexto`.
+- Utilizá esta información para ayudar al usuario con solicitudes basadas en la ubicación, como encontrar lugares cercanos o proporcionar direcciones.
+- Podés solicitar la ubicación del usuario si es relevante para la conversación, estableciendo `pedir_info` en `"ubicacion"`.
+
 ### Uso de Herramientas Internas (`accion_backend: "ejecutar_herramienta"`):
 - Si la consulta del usuario puede resolverse directamente con una herramienta interna (ej: consultar horario de recolección, buscar eventos), esta es la acción prioritaria.
 - En `datos_estructura`, incluye `nombre_herramienta` y `parametros_herramienta` (con valores extraídos).
@@ -61,7 +72,7 @@ Tu tarea es recibir y entender mensajes de ciudadanos o clientes, interpretar re
 
 {
   "respuesta_usuario": "...respuesta conversacional, profesional y directa...",
-  "accion_backend": "crear_reclamo | consulta_estado_ticket | info_tramite | info_producto | consulta_credito | agregar_al_carrito | ver_carrito | finalizar_pedido | ejecutar_herramienta | registrar_usuario | derivar_humano | no_accion | small_talk | etc.",
+  "accion_backend": "crear_reclamo | consulta_estado_ticket | info_tramite | info_producto | consulta_credito | agregar_al_carrito | ver_carrito | finalizar_pedido | ejecutar_herramienta | registrar_usuario | derivar_humano | no_accion | small_talk | analizar_imagen | solicitar_ubicacion | etc.",
   "datos_estructura": {
     "target": "municipio | pyme | ambos",
     "categoria": "... (ej: Alumbrado Público, Crédito Personal, Venta de Zapatillas)...",
@@ -197,13 +208,46 @@ JSON:
   "botones": []
 }
 
+**Ejemplo 8: Análisis de Imagen**
+Usuario: (sube una foto de un bache)
+JSON:
+{
+  "respuesta_usuario": "Gracias por la foto. Veo que es un problema de un bache. Para poder registrar tu reclamo, ¿podrías compartir tu ubicación o la dirección exacta del problema?",
+  "accion_backend": "analizar_imagen",
+  "datos_estructura": {
+    "target": "municipio",
+    "categoria": "Bacheo",
+    "descripcion": "El usuario envió una foto de un bache."
+  },
+  "pedir_info": "ubicacion",
+  "botones": [
+    {"texto": "Compartir ubicación", "id_accion": "compartir_ubicacion"},
+    {"texto": "Ingresar dirección manualmente", "id_accion": "ingresar_direccion"}
+  ]
+}
+
+**Ejemplo 9: Solicitar Ubicación**
+Usuario: "¿Dónde está la farmacia más cercana?"
+JSON:
+{
+  "respuesta_usuario": "Para encontrar la farmacia más cercana, necesito tu ubicación. ¿Podrías compartirla?",
+  "accion_backend": "solicitar_ubicacion",
+  "datos_estructura": {
+    "target": "pyme"
+  },
+  "pedir_info": "ubicacion",
+  "botones": [
+    {"texto": "Compartir ubicación", "id_accion": "compartir_ubicacion"}
+  ]
+}
+
 ### Manejo de Ambigüedad y Correcciones
 - Si el usuario indica que algo está mal (ej: "no, eso no es", "me equivoqué en el teléfono"), tu `accion_backend` debería ser "solicitar_correccion" o "editar_campo_especifico".
 - En `datos_estructura`, intentá identificar qué campo necesita corrección.
 - En `respuesta_usuario`, preguntá específicamente por el dato correcto o qué desea cambiar. Ej: "Entendido. ¿Cuál sería la dirección correcta?" o "¿Qué dato te gustaría modificar del reclamo?".
 - Si el usuario provee directamente la corrección (Ej: "La calle es Rivadavia, no San Martín"), usá `accion_backend: "corregir_datos"` como en el Ejemplo 5.
 
-Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estructura del JSON debe ser exactamente como se define en la sección "SALIDA SIEMPRE".
+Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estructura del JSON debe ser exactamente como se define en la sección "SALIDA SIEMPRE". Asegúrate de que todos los strings estén correctamente entre comillas y que no haya comas extras al final de los bloques.
 """
 
 def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
@@ -293,6 +337,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             # JULES_SYSTEM_PROMPT ya está como system_instruction
             f"USUARIO: {json.dumps(usuario, ensure_ascii=False)}\nHISTORIAL PREVIO: {json.dumps(historial, ensure_ascii=False)}\nMENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}"
         ]
+        if usuario and usuario.get("datos_interpretados_archivo"):
+            contents_for_api.append(f"\nDATOS EXTRAIDOS DE ARCHIVO ADJUNTO: {json.dumps(usuario.get('datos_interpretados_archivo'), ensure_ascii=False)}")
 
         logger.info(f"Enviando a Gemini ({model_name}). Mensaje: {texto_mensaje[:100]}...")
         # logger.debug(f"Contenido completo enviado a Gemini API (sin system prompt): {contents_for_api}")
@@ -387,12 +433,27 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
     except json.JSONDecodeError as e_json:
         logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
-        return {
-            "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
-            "accion_backend": "derivar_humano",
-            "datos_estructura": {"error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}", "respuesta_llm_cruda": respuesta_texto_crudo, "mensaje_original": mensaje_usuario},
-            "pedir_info": None, "botones": []
-        }
+        # Intentar reparar el JSON
+        try:
+            from services.llm_utils import _clean_llm_json_output
+            repaired_json_str = _clean_llm_json_output(respuesta_texto_crudo)
+            logger.info(f"Intentando parsear JSON reparado: {repaired_json_str[:500]}...")
+            parsed_response = json.loads(repaired_json_str)
+            return parsed_response
+        except Exception as e_repair:
+            logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")
+            # Fallback to a simple dictionary if parsing fails
+            return {
+                "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
+                "accion_backend": "derivar_humano",
+                "datos_estructura": {
+                    "error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}",
+                    "respuesta_llm_cruda": respuesta_texto_crudo,
+                    "mensaje_original": mensaje_usuario
+                },
+                "pedir_info": None,
+                "botones": []
+            }
     except Exception as e_parse: # Otros errores durante el parseo o manejo
         logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
 
@@ -504,8 +565,8 @@ def llamar_gemini_para_generacion_texto(
             safety_settings=safety_settings
         )
 
-        if not response.candidates:
-            logger.error("Gemini (generacion_texto) no devolvió candidatos.")
+        if not response.candidates or not response.candidates[0].content.parts:
+            logger.error("Gemini (generacion_texto) no devolvió candidatos o partes de contenido.")
             return None
 
         respuesta_texto = response.candidates[0].content.parts[0].text.strip()

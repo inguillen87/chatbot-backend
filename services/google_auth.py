@@ -37,16 +37,21 @@ def login_o_crear_usuario(token_id: str, *, rol: str | None = None, tipo_chat: s
     ``GOOGLE_OAUTH_CLIENT_ID``. Se pueden separar múltiples IDs con coma.
     ``rol`` y ``tipo_chat`` se aplican sólo cuando se crea un usuario nuevo.
     """
+    logger.info(f"Attempting Google login with token_id: {token_id[:15]}...")
+    logger.info(f"Allowed client IDs: {ALLOWED_CLIENT_IDS}")
     try:
         info = id_token.verify_oauth2_token(token_id, google_requests.Request())
+        logger.info(f"Token verified. Info: {info}")
         if ALLOWED_CLIENT_IDS and info.get('aud') not in ALLOWED_CLIENT_IDS:
+            logger.error(f"Unauthorized audience. aud: {info.get('aud')}")
             raise ValueError('audiencia no autorizada')
         email = info.get('email')
         name = info.get('name') or (email.split('@')[0] if email else 'Usuario')
-    except ValueError:
+    except ValueError as e:
+        logger.error(f"ValueError while verifying token: {e}", exc_info=True)
         raise
     except Exception as e:  # pragma: no cover - requiere internet
-        logger.error(f"Error verificando token de Google: {e}")
+        logger.error(f"Error verificando token de Google: {e}", exc_info=True)
         raise ValueError("Token de Google inválido")
 
     if not email:
