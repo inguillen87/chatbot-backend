@@ -495,17 +495,16 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
             temperature=0.0 # Máxima precisión
         )
 
-        if not respuesta_raw:
-            logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] LLM no devolvió texto para clasificar: '{texto_usuario}'")
-            return "desconocido"
-
-        respuesta = respuesta_raw.strip().lower()
-
-        if respuesta in ["municipio", "pyme", "id"]:
-            logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Texto '{texto_usuario}' clasificado como: {respuesta}")
-            return respuesta
+        if respuesta_raw:
+            respuesta = respuesta_raw.strip().lower()
+            if respuesta in ["municipio", "pyme", "id"]:
+                logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Texto '{texto_usuario}' clasificado como: {respuesta}")
+                return respuesta
+            else:
+                logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] Respuesta inesperada del LLM: '{respuesta}'. Se devuelve 'desconocido'.")
+                return "desconocido"
         else:
-            logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] Respuesta inesperada del LLM: '{respuesta}'. Se devuelve 'desconocido'.")
+            logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] LLM no devolvió respuesta para '{texto_usuario}'. Se devuelve 'desconocido'.")
             return "desconocido"
 
     except Exception as e:
