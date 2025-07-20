@@ -14,9 +14,13 @@ except Exception:
 @unittest.skipIf(create_app is None, "Flask not available")
 class CorsOptionsTests(unittest.TestCase):
     def setUp(self):
-        app = create_app()
-        app.config['TESTING'] = True
-        self.client = app.test_client()
+        self.app = create_app('config.TestConfig')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        self.client = self.app.test_client()
+        with self.app.app_context():
+            from extensions import db
+            db.create_all()
 
     def test_historial_options(self):
         resp = self.client.options('/historial', headers={

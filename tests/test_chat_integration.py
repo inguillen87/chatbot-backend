@@ -13,8 +13,8 @@ from unittest.mock import patch, MagicMock, ANY
 
 from app import create_app, Config, db
 from models import User
-from models import ArchivoAdjunto, ChatSessionContext, User
-from models import AnalisisArchivo
+from src.models import ArchivoAdjunto, ChatSessionContext, User
+from src.models import AnalisisArchivo
 
 
 
@@ -25,11 +25,13 @@ class TestChatIntegration:
         self.app_context = self.app.app_context()
         self.app_context.push()
         self.client = self.app.test_client()
-        db.create_all()
+        with self.app.app_context():
+            db.create_all()
 
     def teardown_method(self, method):
-        db.session.remove()
-        db.drop_all()
+        with self.app.app_context():
+            db.session.remove()
+            db.drop_all()
         self.app_context.pop()
 
     # Mock para la tarea Celery y servicios externos

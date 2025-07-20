@@ -12,6 +12,7 @@ import json
 print("Importing models.py")
 
 class Rubro(db.Model):
+    __tablename__ = "rubro"
     id = db.Column(db.Integer, primary_key=True)
     clave = db.Column(db.String(50), unique=True, nullable=False)
     nombre = db.Column(db.String(100), nullable=True)
@@ -25,6 +26,7 @@ class Rubro(db.Model):
         return f"<Rubro {self.nombre}>"
 
 class QA(db.Model):
+    __tablename__ = "qa"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=True)
     question = db.Column(db.String(255), nullable=False)
@@ -35,6 +37,7 @@ class QA(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Sugerencia(db.Model):
+    __tablename__ = "sugerencia"
     id = db.Column(db.Integer, primary_key=True)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=False)
     texto = db.Column(db.String(255), nullable=False)
@@ -42,7 +45,7 @@ class Sugerencia(db.Model):
     def __repr__(self):
         return f"<Sugerencia {self.id}>"
 
-class User(db.Model, UserMixin):
+class User(db.Model):
     __tablename__ = "user"
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -124,6 +127,18 @@ class User(db.Model, UserMixin):
             self.ticket_categorias = value
         else:
             self.ticket_categorias = None
+
+    def is_authenticated(self):
+        return True
+
+    def is_active(self):
+        return True
+
+    def is_anonymous(self):
+        return False
+
+    def get_id(self):
+        return str(self.id)
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -297,6 +312,7 @@ class AnalisisArchivo(db.Model):
         return f"<AnalisisArchivo id={self.id} para archivo_id={self.archivo_adjunto_id} estado='{self.estado_analisis}'>"
 
 class CatalogoItem(db.Model):
+    __tablename__ = "catalogo_item"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     nombre = db.Column(db.String(255), nullable=False)
@@ -331,6 +347,7 @@ class CatalogoEmbedding(db.Model):
     embedding_vector = db.Column(JSON)
 
 class Conversacion(db.Model):
+    __tablename__ = "conversacion"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     pregunta = db.Column(db.Text, nullable=False)

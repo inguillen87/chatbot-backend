@@ -26,6 +26,7 @@ def create_test_app():
     # Usar SQLite en memoria para pruebas rápidas y aisladas
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    from extensions import db
     db.init_app(app)
     return app
 
@@ -38,10 +39,11 @@ class TestInterpretacionImagenService(unittest.TestCase):
         self.app = create_test_app()
         self.app_context = self.app.app_context()
         self.app_context.push() # Activa el contexto de la aplicación
+        from extensions import db
         db.create_all() # Crea todas las tablas en la BD en memoria
 
         # Crear un usuario de prueba si es necesario para las funciones
-        self.test_user = User(name="Test User", email="test@example.com", password_hash="test")
+        self.test_user = models.User(name="Test User", email="test@example.com", password_hash="test")
         db.session.add(self.test_user)
         db.session.commit()
 

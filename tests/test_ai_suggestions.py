@@ -22,20 +22,13 @@ class TestConfig(Config):
     COHERE_API_KEY = "test_cohere_key" # Mock key, not actually used if functions are patched
 
 class TestAISuggestions(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        """Set up the Flask application for all tests in this class."""
-        cls.app = Flask(__name__) # Create a new Flask app instance
-        cls.app.config.from_object(TestConfig)
-        db.init_app(cls.app)
-        cls.app.register_blueprint(ai_bp, url_prefix='/ai') # Register the blueprint
-
     def setUp(self):
         """Set up for each test method."""
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
-        self.app_context.push() # Push an application context
-        db.create_all() # Create database tables
-        self.client = self.app.test_client() # Create a test client
+        self.app_context.push()
+        self.client = self.app.test_client()
+        db.create_all()
 
         # Mock user and rubro for authentication context
         self.mock_rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")

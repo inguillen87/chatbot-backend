@@ -4,14 +4,13 @@ import unittest
 from unittest.mock import patch
 from app import create_app
 from extensions import db
-from models import User, MunicipioTicket, TicketComentario
+from src.models import User, MunicipioTicket, TicketComentario
 
 class TicketRoutesTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
-        self.app.config['TESTING'] = True
-        self.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
-        self.app.config['SESSION_TYPE'] = 'filesystem'
+        self.app = create_app('config.TestConfig')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
         self.client = self.app.test_client()
         with self.app.app_context():
             db.create_all()

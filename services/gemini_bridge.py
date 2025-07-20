@@ -339,6 +339,9 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
         # Asumimos que el primer candidato tiene la respuesta.
         # El prompt pide explícitamente un JSON, así que response.text debería serlo.
+        if not response.candidates[0].content.parts:
+            logger.error("La respuesta de Gemini no contiene 'parts'.")
+            raise ValueError("Respuesta de Gemini sin contenido.")
         respuesta_texto_crudo = response.candidates[0].content.parts[0].text.strip()
         logger.debug(f"Texto crudo de Gemini: {respuesta_texto_crudo[:500]}...")
 
@@ -521,8 +524,8 @@ def llamar_gemini_para_generacion_texto(
             safety_settings=safety_settings
         )
 
-        if not response.candidates:
-            logger.error("Gemini (generacion_texto) no devolvió candidatos.")
+        if not response.candidates or not response.candidates[0].content.parts:
+            logger.error("Gemini (generacion_texto) no devolvió candidatos o contenido.")
             return None
 
         respuesta_texto = response.candidates[0].content.parts[0].text.strip()

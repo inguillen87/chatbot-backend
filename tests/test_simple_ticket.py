@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-from models import User, MunicipioTicket, Rubro
+from src.models import User, MunicipioTicket, Rubro
 from services.ticket_service import servicio_tickets
 
 class SimpleTicketTest(unittest.TestCase):
@@ -10,7 +10,8 @@ class SimpleTicketTest(unittest.TestCase):
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
-        db.create_all()
+        with self.app.app_context():
+            db.create_all()
         self.client = self.app.test_client()
 
     def tearDown(self):

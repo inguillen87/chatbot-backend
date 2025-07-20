@@ -12,9 +12,12 @@ from routes.auth import obtener_token
 
 class TokenExtractionTests(unittest.TestCase):
     def setUp(self):
-        app = create_app()
-        app.config['TESTING'] = True
-        self.app = app
+        self.app = create_app('config.TestConfig')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        with self.app.app_context():
+            from extensions import db
+            db.create_all()
 
     def test_authorization_without_bearer(self):
         with self.app.test_request_context('/', headers={'Authorization': 'abc123'}):

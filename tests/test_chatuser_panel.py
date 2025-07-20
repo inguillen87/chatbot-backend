@@ -4,14 +4,14 @@ from unittest.mock import patch, MagicMock
 from app import create_app
 from extensions import db
 from models import User
-from models import ChatSessionContext, User
-from models import Rubro
-from config import TestingConfig
+from src.models import ChatSessionContext
+from src.models import Rubro
+from src.config import TestConfig
 
 class ChatUserPanelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = create_app(TestingConfig)
+        cls.app = create_app(TestConfig)
         cls.app_context = cls.app.app_context()
         cls.app_context.push()
         db.create_all()

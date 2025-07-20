@@ -31,7 +31,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
-        db.create_all() # Create all tables, including whatsapp_numero
+        with self.app.app_context():
+            db.create_all() # Create all tables, including whatsapp_numero
         self.client = self.app.test_client()
 
         # Test data

@@ -19,37 +19,37 @@ if os.environ.get("FLASK_ENV") != "production":
         print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
 
 from flask_session import Session
-from src.config import Config
-from extensions import db, migrate, login_manager # Import login_manager
+from config import Config
+from extensions import db, migrate, login_manager
 from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
 from models import User
 
 # Importación de todas tus rutas (Blueprints)
-from routes.auth import auth_bp
-from routes.chat import chat_bp
-from routes.ticket import ticket_bp
-from routes.crm import crm_bp
-from routes.rubros import rubros_bp
-from routes.metricas import metricas_bp
-from services.upload_processor import upload_bp
-from routes.archivos import archivos_bp
-from cli_commands import register_commands
-from routes.pedidos import pedidos_bp
-from routes.catalogo import catalogo_bp
-from routes.estadisticas import estadisticas_bp
-from routes.empleados import empleados_bp
-from routes.categorias import categorias_bp
-from routes.recordatorios import recordatorios_bp
-from routes.historial import historial_bp
-from routes.notifications import notifications_bp
-from routes.municipal_legacy import municipal_bp
-from routes.reacciones import reacciones_bp
-from routes.carrito import carrito_bp
-# from routes.cart import cart_bp # This line caused an ImportError
-from routes.productos import productos_bp
-from routes.ai_templates import ai_templates_bp 
-from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
-from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
+from src.routes.auth import auth_bp
+from src.routes.chat import chat_bp
+from src.routes.ticket import ticket_bp
+from src.routes.crm import crm_bp
+from src.routes.rubros import rubros_bp
+from src.routes.metricas import metricas_bp
+from src.services.upload_processor import upload_bp
+from src.routes.archivos import archivos_bp
+from src.cli_commands import register_commands
+from src.routes.pedidos import pedidos_bp
+from src.routes.catalogo import catalogo_bp
+from src.routes.estadisticas import estadisticas_bp
+from src.routes.empleados import empleados_bp
+from src.routes.categorias import categorias_bp
+from src.routes.recordatorios import recordatorios_bp
+from src.routes.historial import historial_bp
+from src.routes.notifications import notifications_bp
+from src.routes.municipal_legacy import municipal_bp
+from src.routes.reacciones import reacciones_bp
+from src.routes.carrito import carrito_bp
+# from src.routes.cart import cart_bp # This line caused an ImportError
+from src.routes.productos import productos_bp
+from src.routes.ai_templates import ai_templates_bp
+from src.routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
+from src.routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
 def my_on_connect_listener(dbapi_connection, connection_record):
@@ -73,8 +73,16 @@ def create_app(config_class=Config):
 
     app.config.from_object(config_class)
     print(f"Loaded config: {config_class}")
-    print(f"Database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
+
+    # --- Inicialización de Extensiones ---
     print(f"DB object: {db}")
+    db.init_app(app)
+    migrate.init_app(app, db)
+    init_celery(app) # Inicializar Celery con la app Flask
+
+    login_manager.init_app(app) # Initialize Flask-Login
+    login_manager.session_protection = "strong" # Configure session protection
+    login_manager.login_view = "auth.login" # Set the login view
 
     # SESSION_COOKIE_DOMAIN is now directly set by Config based on environment variables.
     # The complex inference logic below is removed.
@@ -123,24 +131,16 @@ def create_app(config_class=Config):
         current_app.logger.info(f"--- RAW FLASK REQUEST.COOKIES: {request.cookies} ---") 
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
-    # --- Inicialización de Extensiones ---
-    db.init_app(app)
-    migrate.init_app(app, db)
-    init_celery(app) # Inicializar Celery con la app Flask
-    login_manager.init_app(app) # Initialize Flask-Login
-    login_manager.session_protection = "strong" # Configure session protection
-    login_manager.login_view = "auth.login" # Set the login view
 
     @login_manager.user_loader
     def load_user(user_id):
         return User.query.get(int(user_id))
 
     # --- Registrar SQLAlchemy event listener SOLO dentro de app_context ---
-    with app.app_context():
-        if hasattr(db.engine, 'connect'):
-            event.listen(db.engine, "connect", my_on_connect_listener)
-        else:
-            app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
+    if hasattr(db.engine, 'connect'):
+        event.listen(db.engine, "connect", my_on_connect_listener)
+    else:
+        app.logger.warning("Database engine not available for event listener registration. This might be an issue if an on-connect event was expected.")
 
     # Configuración y activación de Sesiones en el Servidor
     if app.config.get("TESTING"):
@@ -210,7 +210,6 @@ def create_app(config_class=Config):
     return app
 
 # --- Creación de la instancia de la aplicación ---
-app = create_app()
-
 if __name__ == '__main__':
+    app = create_app()
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))

@@ -493,7 +493,9 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.0 # Máxima precisión
-        ).strip().lower()
+        )
+        if respuesta:
+            respuesta = respuesta.strip().lower()
 
         if respuesta in ["municipio", "pyme", "id"]:
             logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Texto '{texto_usuario}' clasificado como: {respuesta}")

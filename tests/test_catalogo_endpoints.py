@@ -12,8 +12,9 @@ except ImportError as e:
 
 class CatalogoEndpointsTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
-        self.app.config.from_object('config.TestConfig')
+        self.app = create_app('config.TestConfig')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
         self.client = self.app.test_client()
         with self.app.app_context():
             db.create_all()

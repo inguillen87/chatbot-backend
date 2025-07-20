@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from config import TestConfig
-from models import User, Rubro, WhatsappNumero, ArchivoAdjunto
+from src.models import User, Rubro, WhatsappNumero, ArchivoAdjunto
 
 class TestEndToEnd(unittest.TestCase):
 
@@ -10,7 +10,8 @@ class TestEndToEnd(unittest.TestCase):
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
-        db.create_all()
+        with self.app.app_context():
+            db.create_all()
         self.client = self.app.test_client()
 
         # Create a user and other necessary data

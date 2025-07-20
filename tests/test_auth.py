@@ -8,10 +8,7 @@ from models import User
 
 class AuthRoutesTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
-        self.app.config['TESTING'] = True
-        self.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
-        self.app.config['SESSION_TYPE'] = 'filesystem'
+        self.app = create_app('config.TestConfig')
         self.client = self.app.test_client()
         with self.app.app_context():
             _db.create_all()

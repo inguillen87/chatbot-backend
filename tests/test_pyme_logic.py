@@ -1,14 +1,15 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-from models import User, PymeTicket, TicketComentario, Rubro
+from src.models import User, PymeTicket, TicketComentario, Rubro
 from types import SimpleNamespace
 from services import pymes
 
 class PymeLogicTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
-        self.app.config.from_object('config.TestConfig')
+        self.app = create_app('config.TestConfig')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
         self.client = self.app.test_client()
         with self.app.app_context():
             db.create_all()

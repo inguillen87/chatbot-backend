@@ -33,6 +33,7 @@ sys.modules['extensions'] = MagicMock() # extensions.db también es usado
 
 # Ahora se puede importar el blueprint y sus funciones
 from routes.ai_templates import ai_templates_bp, get_all_templates, create_template, update_template, delete_template, generate_template_text_from_prompt, improve_template_text
+from app import create_app
 
 # Simular current_app y request que Flask normalmente proporcionaría
 mock_current_app_object = MagicMock()
@@ -67,6 +68,13 @@ mock_request_object = MagicMock()
 class TestAITemplatesEndpoints(unittest.TestCase):
 
     def setUp(self):
+        """Set up for each test method."""
+        self.app = create_app(TestConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        self.client = self.app.test_client()
+        db.create_all()
+
         # Resetear mocks antes de cada prueba
         mock_db_session_instance.reset_mock()
         models_stub.PlantillasRespuesta.reset_mock()
@@ -102,6 +110,9 @@ class TestAITemplatesEndpoints(unittest.TestCase):
 
 
     def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
         self.patch_current_app.stop()
         self.patch_request.stop()
         # self.patch_jsonify.stop() # No longer needed

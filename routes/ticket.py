@@ -128,7 +128,7 @@ def _get_tickets_del_usuario_logic(current_user: User):
 
         if current_user.tipo_chat == "municipio":
             TicketModel = MunicipioTicket
-            logger.info(f"[CHECK] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
+            current_app.logger.info(f"[CHECK] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
             if not current_user.municipio_id: # Chequea si es None o 0
                 return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
 
