@@ -565,8 +565,8 @@ def llamar_gemini_para_generacion_texto(
             safety_settings=safety_settings
         )
 
-        if not response.candidates:
-            logger.error("Gemini (generacion_texto) no devolvió candidatos.")
+        if not response.candidates or not response.candidates[0].content.parts:
+            logger.error("Gemini (generacion_texto) no devolvió candidatos o partes de contenido.")
             return None
 
         respuesta_texto = response.candidates[0].content.parts[0].text.strip()

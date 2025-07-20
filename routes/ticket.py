@@ -99,7 +99,7 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
 # ---------- LISTA DE TICKETS (logueado) ----------
 from flask import redirect, url_for
 
-def _get_tickets_del_usuario_logic(current_user: User):
+def get_tickets_del_usuario_logic(current_user: User):
     if not current_user:
         return jsonify({"error": "Usuario no asociado, no se pueden mostrar tickets."}), 404
 
@@ -210,7 +210,7 @@ def _get_tickets_del_usuario_logic(current_user: User):
 def get_tickets_del_usuario(current_user: User):
     if current_user.rol not in ['admin', 'empleado']:
         return redirect(url_for('ticket_bp.get_mis_tickets'))
-    return _get_tickets_del_usuario_logic(current_user)
+    return get_tickets_del_usuario_logic(current_user)
 
 # ---------- LISTA DE MIS TICKETS (cliente) ----------
 @ticket_bp.route('/tickets/mios', methods=['GET'])
