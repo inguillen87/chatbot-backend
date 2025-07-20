@@ -618,7 +618,7 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
                 ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket=tipo_ticket_para_sugerencia, ticket_data=ticket_data)
                 if ticket:
                     nro_ticket_str = f"M-{ticket.nro_ticket}" # Asumiendo que siempre es municipio para sugerencia
-                    logger.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear() # CORREGIDO: logger_actual -> logger
+                    logger.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear()
                     body_exito = f"¡Muchas gracias por tu sugerencia! La hemos registrado y será revisada por nuestro equipo. Tu número de registro es {nro_ticket_str}. Valoramos mucho tu aporte."
                     options_exito = [
                         {"id": "hacer_otra_consulta_sug", "texto": "Hacer otra consulta"},
@@ -3130,7 +3130,7 @@ class GeneralHandler(BaseMunicipioHandler):
                 historial=historial_chat_para_gemini
             )
         except Exception as e:
-            logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
+            logger.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
             llm_response_structured = {
                 "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
                 "accion_backend": "derivar_humano",
@@ -3139,8 +3139,8 @@ class GeneralHandler(BaseMunicipioHandler):
                 "botones": []
             }
 
-        respuesta_texto_gemini = gemini_response_structured.get("respuesta_usuario")
-        accion_gemini = gemini_response_structured.get("accion_backend")
+        respuesta_texto_gemini = llm_response_structured.get("respuesta_usuario")
+        accion_gemini = llm_response_structured.get("accion_backend")
 
         if not respuesta_texto_gemini or accion_gemini == "error_llm" or \
            (len(respuesta_texto_gemini.split()) < 7 and ("no puedo" in respuesta_texto_gemini.lower() or "no sé" in respuesta_texto_gemini.lower() or "no tengo información" in respuesta_texto_gemini.lower())) or \
@@ -3730,7 +3730,7 @@ from services.gemini_bridge import llamar_gemini # Asegurar import
 OWNER_HANDLERS_FOR_STATE = {ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler, ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler, ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler, ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler, ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler, ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler, ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler, ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler, ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler, ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler, ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler}
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context):
-    logger_actual = current_app.logger if has_app_context() else logger
+    logger = current_app.logger if has_app_context() else logger
     contexto_municipio_actual = context.get(CONTEXTO_MUNICIPIO, {})
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
