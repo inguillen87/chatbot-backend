@@ -9,38 +9,32 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from app import create_app, db
+from models import User
 from routes.empleados import crear_empleado
-
-class DummyQuery:
-    def __init__(self, result=None):
-        self._result = result
-    def filter_by(self, **kwargs):
-        return self
-    def first(self):
-        return self._result
-
-class DummySession:
-    def __init__(self):
-        self.added = []
-    def add(self, obj):
-        self.added.append(obj)
-    def commit(self):
-        pass
-    def rollback(self):
-        pass
-
-class DummyUser(SimpleNamespace):
-    def set_password(self, p):
-        self.password = p
+from config import TestingConfig
 
 class EmpleadosRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(TestingConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
+
     def test_crear_empleado_email_existente(self):
+        user = User(name='test', email='emp@e.com', password_hash='test')
+        db.session.add(user)
+        db.session.commit()
         data = {"name": "Emp", "email": "emp@e.com", "password": "123"}
-        with patch('routes.empleados.request', SimpleNamespace(get_json=lambda silent=True: data)), \
-             patch('routes.empleados.User', SimpleNamespace(query=DummyQuery(DummyUser()))), \
-             patch('routes.empleados.db', SimpleNamespace(session=DummySession())):
+        with self.app.test_request_context(json=data):
             resp = crear_empleado(SimpleNamespace(id=1))
-            self.assertEqual(resp[1], 400)
+            self.assertEqual(resp.status_code, 400)
 
     def test_crear_empleado_con_categorias(self):
         data = {
@@ -50,17 +44,12 @@ class EmpleadosRouteTests(unittest.TestCase):
             "categorias": ["A", "B"],
         }
 
-        class NewDummyUser(DummyUser):
-            query = DummyQuery(None)
-
-        session = DummySession()
-        with patch('routes.empleados.request', SimpleNamespace(get_json=lambda silent=True: data)), \
-             patch('routes.empleados.User', NewDummyUser), \
-             patch('routes.empleados.db', SimpleNamespace(session=session)):
+        with self.app.test_request_context(json=data):
             resp = crear_empleado(SimpleNamespace(id=1))
-            self.assertEqual(resp[1], 201)
-            created = session.added[0]
-            self.assertEqual(created.ticket_categorias, 'A,B')
+            self.assertEqual(resp.status_code, 201)
+            created_user = User.query.filter_by(email="nuevo@e.com").first()
+            self.assertIsNotNone(created_user)
+            self.assertEqual(created_user.ticket_categorias, 'A,B')
 
 if __name__ == '__main__':
     unittest.main()

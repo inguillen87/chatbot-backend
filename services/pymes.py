@@ -935,6 +935,51 @@ class ToolHandlerPyme(BaseHandler):
             else: return {"message_body": f"No pude obtener información web para {dominio}.", "fuente": "pyme_tool_webinfo_no_data_v2"}
         return None
 
+class AnalizarImagenHandler(BaseHandler):
+    def handle(self, payload: dict) -> dict | None:
+        if self.context.get("intencion") != "analizar_imagen":
+            return None
+
+        from services.google_vision_service import GoogleVisionService
+        import requests
+
+        memoria = self.context[CONTEXTO_PYME]
+        foto_url = memoria.get("foto_url")
+
+        if not foto_url:
+            return {"respuesta": "No se encontró una imagen para analizar."}
+
+        try:
+            response = requests.get(foto_url)
+            response.raise_for_status()
+            image_content = response.content
+
+            vision_service = GoogleVisionService()
+            analysis_result = vision_service.analyze_image(image_content)
+
+            memoria["analisis_imagen"] = analysis_result
+            memoria["estado_conversacion"] = PymeConversationState.ESPERANDO_PRODUCTO.name
+
+            return {
+                "respuesta": f"He analizado la imagen y detecté lo siguiente: {', '.join(analysis_result['labels'])}. Para continuar, ¿qué producto te gustaría pedir?",
+            }
+        except Exception as e:
+            logger.error(f"Error al analizar la imagen: {e}")
+            return {"respuesta": "Hubo un error al analizar la imagen. Por favor, intentá de nuevo."}
+
+class SolicitarUbicacionHandler(BaseHandler):
+    def handle(self, payload: dict) -> dict | None:
+        if self.context.get("intencion") != "solicitar_ubicacion":
+            return None
+
+        return {
+            "respuesta": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
+            "botones": [
+                {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                {"texto": "No, gracias", "action": "cancelar"},
+            ],
+        }
+
 def coleccion_catalogo_para_rubro(rubro_nombre: str) -> str:
     return CATALOGO_PYME
 
@@ -1059,6 +1104,28 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     }
 
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---
+    # Add the new handlers to the list of handlers
+    handlers = [
+        AnalizarImagenHandler(global_context_for_orchestrator),
+        SolicitarUbicacionHandler(global_context_for_orchestrator),
+        SaludoHandler(global_context_for_orchestrator),
+        CatalogoHandler(global_context_for_orchestrator),
+        OfertasHandler(global_context_for_orchestrator),
+        PedidoHandler(global_context_for_orchestrator),
+        FaqHandler(global_context_for_orchestrator),
+        HumanHandler(global_context_for_orchestrator),
+        SmallTalkHandler(global_context_for_orchestrator),
+        ToolHandlerPyme(global_context_for_orchestrator),
+        TicketStatusHandler(global_context_for_orchestrator),
+        FallbackHandler(global_context_for_orchestrator)
+    ]
+
+    for handler in handlers:
+        respuesta = handler.handle(pregunta_str)
+        if respuesta:
+            # ... (the rest of the function)
+            return respuesta
+
     orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
     action_handler_result = orchestrator.execute_action(llm_response_structured)
 

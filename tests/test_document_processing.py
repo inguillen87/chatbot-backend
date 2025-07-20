@@ -1,14 +1,26 @@
 import unittest
 from unittest.mock import patch, MagicMock
+from app import create_app
 from services.document_processing_service import DocumentProcessingService
 from config import Config
 
+class TestConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    WTF_CSRF_ENABLED = False
+
 class TestDocumentProcessingService(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(TestConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+
+    def tearDown(self):
+        self.app_context.pop()
 
     @patch('services.document_processing_service.documentai')
     @patch('services.document_processing_service.get_google_credentials')
-    @patch('services.document_processing_service.Config')
-    def test_process_document_pdf(self, mock_config, mock_get_google_credentials, mock_docai):
+    def test_process_document_pdf(self, mock_get_google_credentials, mock_docai):
         # Mocking credentials and client
         mock_get_google_credentials.return_value = 'fake-credentials'
         mock_docai.DocumentProcessorServiceClient.return_value = MagicMock()
@@ -17,10 +29,6 @@ class TestDocumentProcessingService(unittest.TestCase):
         mock_process_request_instance.name = 'fake-processor-id'
         mock_docai.ProcessRequest.return_value = mock_process_request_instance
         mock_docai.RawDocument.return_value = MagicMock()
-
-        mock_config.GOOGLE_DOCAI_PROCESSOR_ID = 'fake-processor-id'
-        mock_config.GOOGLE_PROJECT_ID = 'fake-project-id'
-        mock_config.GOOGLE_DOCAI_LOCATION = 'fake-location'
 
         # Service instance
         service = DocumentProcessingService()
@@ -36,7 +44,7 @@ class TestDocumentProcessingService(unittest.TestCase):
         args, kwargs = mock_docai.DocumentProcessorServiceClient.return_value.process_document.call_args
         request = kwargs['request']
         self.assertEqual(request.raw_document.mime_type, 'application/pdf')
-        self.assertIn(mock_config.GOOGLE_DOCAI_PROCESSOR_ID, request.name)
+        self.assertIn(self.app.config['GOOGLE_DOCAI_PROCESSOR_ID'], request.name)
 
 if __name__ == '__main__':
     unittest.main()

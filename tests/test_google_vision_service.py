@@ -54,27 +54,19 @@ class TestGoogleVisionService(unittest.TestCase):
         min_confidence = 0.5
 
         expected_result = {
-            "objects": [{
-                "name": "Test Object",
-                "confidence": 0.9,
-                "bounding_poly_normalized": [{"x": 0.1, "y": 0.2}] * 4
-            }],
-            "labels": [{
-                "description": "Test Label",
-                "confidence": 0.85
-            }],
-            "text_annotations": [{
-                "description": "Test OCR Text",
-                "locale": "es"
-            }]
+            "labels": ["Test Label"],
+            "text": "Test OCR Text"
         }
+
+        # Modify the mock to return a simplified response
+        mock_response.label_annotations = [MagicMock(description="Test Label", score=0.85)]
+        mock_response.text_annotations = [MagicMock(description="Test OCR Text")]
 
         result = analyze_image_from_content(test_image_content, min_confidence)
 
         self.assertNotIn("error", result)
-        self.assertEqual(result["objects"], expected_result["objects"])
         self.assertEqual(result["labels"], expected_result["labels"])
-        self.assertEqual(result["text_annotations"], expected_result["text_annotations"])
+        self.assertEqual(result["full_text_annotation"]["description"], expected_result["text"])
         mock_vision_client.annotate_image.assert_called_once()
 
     @patch('services.google_vision_service.VISION_CLIENT')

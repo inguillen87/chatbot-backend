@@ -6,17 +6,13 @@ project_root_cors = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'
 if project_root_cors not in sys.path:
     sys.path.insert(0, project_root_cors)
 
-try:
-    from app import create_app
-except Exception:
-    create_app = None
+from app import create_app
+from config import TestingConfig
 
-@unittest.skipIf(create_app is None, "Flask not available")
 class CorsOptionsTests(unittest.TestCase):
     def setUp(self):
-        app = create_app()
-        app.config['TESTING'] = True
-        self.client = app.test_client()
+        self.app = create_app(TestingConfig)
+        self.client = self.app.test_client()
 
     def test_historial_options(self):
         resp = self.client.options('/historial', headers={

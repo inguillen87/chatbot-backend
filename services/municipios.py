@@ -1755,8 +1755,8 @@ class ReclamoHandler(BaseMunicipioHandler):
                         "fuente": "reclamo_esperando_coordenadas_gps_v2" # Incremented version
                     }
 
-                if payload.get("es_ubicacion"): # GPS coordinates received from frontend
-                    ubicacion_data = payload.get("ubicacion_usuario")
+                if payload.get("es_ubicacion") or self.context.get("ubicacion_usuario"): # GPS coordinates received from frontend
+                    ubicacion_data = self.context.get("ubicacion_usuario") or payload.get("ubicacion_usuario")
                     if ubicacion_data and isinstance(ubicacion_data, dict) and "lat" in ubicacion_data and "lon" in ubicacion_data:
                         memoria["ubicacion_gps"] = ubicacion_data
                         logger.info(f"[ReclamoHandler] Coordenadas GPS recibidas: {ubicacion_data}")
@@ -3644,6 +3644,51 @@ class ReclamoGeoHandler(BaseMunicipioHandler):
         if estado != ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: return None
         return ReclamoHandler(self.context).handle(payload)
 
+class AnalizarImagenHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        if self.context.get("intencion") != "analizar_imagen":
+            return None
+
+        from services.google_vision_service import GoogleVisionService
+        import requests
+
+        memoria = self.context[CONTEXTO_MUNICIPIO]
+        foto_url = memoria.get("foto_url")
+
+        if not foto_url:
+            return {"respuesta": "No se encontró una imagen para analizar."}
+
+        try:
+            response = requests.get(foto_url)
+            response.raise_for_status()
+            image_content = response.content
+
+            vision_service = GoogleVisionService()
+            analysis_result = vision_service.analyze_image(image_content)
+
+            memoria["analisis_imagen"] = analysis_result
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+
+            return {
+                "respuesta": f"He analizado la imagen y detecté lo siguiente: {', '.join(analysis_result['labels'])}. Para continuar, por favor, decime la dirección del problema.",
+            }
+        except Exception as e:
+            logger.error(f"Error al analizar la imagen: {e}")
+            return {"respuesta": "Hubo un error al analizar la imagen. Por favor, intentá de nuevo."}
+
+class SolicitarUbicacionHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        if self.context.get("intencion") != "solicitar_ubicacion":
+            return None
+
+        return {
+            "respuesta": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
+            "botones": [
+                {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                {"texto": "No, gracias", "action": "cancelar"},
+            ],
+        }
+
 def safe_llm_call(prompt, preamble, fallback=None):
     logger.debug(f"[LLM_CALL_PROMPT] Enviando prompt a LLM. Preamble: '{preamble}'. Prompt: '{prompt[:500]}...'")
     try:
@@ -3789,6 +3834,7 @@ def responder_municipio(
     chat_db_context=None,
     anon_id=None,
     channel: str = "web",
+    location=None,
     **kwargs
 ):
     logger_actual = current_app.logger if has_app_context() else logger
@@ -3854,7 +3900,7 @@ def responder_municipio(
         "chat_db_context_data": chat_db_context_live_data, # Use the safely accessed live data dict
         # Fields to be populated by payload/kwargs or later logic:
         "intencion": kwargs.get("intencion"), # Initial intent from Orchestrator/kwargs
-        "ubicacion_usuario": received_payload.get("ubicacion_usuario"),
+        "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
         "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
         "es_ubicacion": received_payload.get("es_ubicacion", False),
         "es_archivo": received_payload.get("es_archivo", False),
@@ -3909,6 +3955,37 @@ def responder_municipio(
             flag_modified(chat_db_context, "context_data")
         return respuesta_manejada_por_llm
     
+    # Add the new handlers to the list of handlers
+    handlers = [
+        AnalizarImagenHandler(context),
+        SolicitarUbicacionHandler(context),
+        GreetingHandler(context),
+        CancelHandler(context),
+        PoliteHandler(context),
+        SmallTalkHandler(context),
+        RecoleccionHandler(context),
+        TicketStatusHandler(context),
+        ReclamoHandler(context),
+        TramitesHandler(context),
+        SugerenciasVecinoHandler(context),
+        ProductCatalogHandler(context),
+        ProductInquiryHandler(context),
+        CartHandler(context),
+        CheckoutHandler(context),
+        StoreLocationHandler(context),
+        PanicButtonHandler(context),
+        ImpuestosHandler(context),
+        ReclamoGeoHandler(context),
+        IntentClassifierHandler(context),
+        GeneralHandler(context)
+    ]
+
+    for handler in handlers:
+        respuesta = handler.handle(received_payload)
+        if respuesta:
+            # ... (the rest of the function)
+            return respuesta
+
     # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
     # This block runs if LLM didn't handle the response, or to supplement LLM context
     # by performing image analysis if new media is present and not yet analyzed by LLM.
@@ -4147,46 +4224,37 @@ def responder_municipio(
     
     # --- End of Image Analysis & Web Analysis Check ---
 
-    estado_guardado_raw = contexto_municipio_actual.get("estado_conversacion")
-    logger_actual.info(
-        f"[CONTEXTO_MUNICIPIO_LOAD_STATE_RAW] 'estado_conversacion' crudo extraído del contexto_municipio_actual: '{estado_guardado_raw}' (Tipo: {type(estado_guardado_raw)})"
-    )
-
-    # --- Corrected State Loading Logic ---
-    if estado_guardado_raw is None:
-        logger_actual.info(
-            "[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es None. Se mantiene como None."
-        )
-        contexto_municipio_actual["estado_conversacion"] = None
-    elif isinstance(estado_guardado_raw, ConversationState): # If it's an Enum instance
-        logger_actual.info(
-            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es Enum ({estado_guardado_raw}). Convirtiendo a string: '{estado_guardado_raw.name}'."
-        )
-        contexto_municipio_actual["estado_conversacion"] = estado_guardado_raw.name
-    elif isinstance(estado_guardado_raw, str):
-        # If it's already a string, try to validate if it's a valid Enum name.
-        # This helps catch cases where a non-Enum string might have been saved.
-        try:
-            ConversationState[estado_guardado_raw] # Validate if it's a known state name
-            logger_actual.info(
-                f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es string válido de Enum: '{estado_guardado_raw}'."
-            )
-            # contexto_municipio_actual["estado_conversacion"] is already estado_guardado_raw (string)
-        except KeyError:
-            logger_actual.error(
-                f"[CONTEXTO_MUNICIPIO_LOAD_STATE] 'estado_conversacion' es string ('{estado_guardado_raw}') pero no es un nombre válido de ConversationState. Se establece a None."
-            )
-            contexto_municipio_actual["estado_conversacion"] = None
-    else: # Other unexpected types
-        logger_actual.error(
-            f"[CONTEXTO_MUNICIPIO_LOAD_STATE] Tipo inesperado para 'estado_conversacion' ({type(estado_guardado_raw)}): '{estado_guardado_raw}'. Se establece a None."
-        )
-        contexto_municipio_actual["estado_conversacion"] = None
-
-    final_loaded_state_str = contexto_municipio_actual.get("estado_conversacion") # Should be string (valid Enum name) or None now
-    logger_actual.info(
-        f"[CONTEXTO_MUNICIPIO_LOAD_FINAL] 'estado_conversacion' para esta petición (string o None): '{final_loaded_state_str}'"
-    )
+    for handler_class in [
+        GreetingHandler,
+        CancelHandler,
+        PoliteHandler,
+        SmallTalkHandler,
+        RecoleccionHandler,
+        TicketStatusHandler,
+        AnalizarImagenHandler,
+        SolicitarUbicacionHandler,
+        ReclamoHandler,
+        TramitesHandler,
+        SugerenciasVecinoHandler,
+        ProductCatalogHandler,
+        ProductInquiryHandler,
+        CartHandler,
+        CheckoutHandler,
+        StoreLocationHandler,
+        PanicButtonHandler,
+        ImpuestosHandler,
+        ReclamoGeoHandler,
+        IntentClassifierHandler,
+        GeneralHandler,
+    ]:
+        handler = handler_class(context)
+        respuesta = handler.handle(received_payload)
+        if respuesta:
+            contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
+            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return respuesta
 
     # --- Construcción del Contexto Global para Orchestrator y Handlers ---
     # Este es el 'global_context' que recibirá el ChatOrchestrator

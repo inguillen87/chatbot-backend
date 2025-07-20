@@ -1,28 +1,30 @@
 import unittest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
-from config import TestConfig
-from models import User, Rubro, WhatsappNumero, ArchivoAdjunto
+from config import TestingConfig
+from models import User, Rubro, WhatsappNumero, ArchivoAdjunto, MunicipioTicket
 
 class TestEndToEnd(unittest.TestCase):
 
     def setUp(self):
-        self.app = create_app(TestConfig)
+        self.app = create_app(TestingConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
         self.client = self.app.test_client()
 
         # Create a user and other necessary data
-        rubro = Rubro(nombre='municipio')
+        rubro = Rubro(nombre='municipio', clave='municipio')
         db.session.add(rubro)
         db.session.commit()
-        user = User(email='test@example.com', password='password', rubro_id=rubro.id, tipo_chat='municipio')
+        user = User(email='test@example.com', name='test', password_hash='password', rubro_id=rubro.id, tipo_chat='municipio')
         db.session.add(user)
         db.session.commit()
         whatsapp_numero = WhatsappNumero(numero_whatsapp='+1234567890', user_id=user.id)
         db.session.add(whatsapp_numero)
         db.session.commit()
+        self.auth_headers = {'Authorization': f'Bearer {user.token}'}
+
 
     def tearDown(self):
         db.session.remove()
@@ -40,7 +42,8 @@ class TestEndToEnd(unittest.TestCase):
                 "categoria": "Alumbrado Público",
                 "descripcion": "Luz quemada",
                 "ubicacion": "Mitre y Belgrano"
-            }
+            },
+            "ticket_id": 1
         }
 
         response = self.client.post('/webhook/whatsapp', data={
@@ -53,13 +56,13 @@ class TestEndToEnd(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
 
-        ticket = Ticket.query.first()
+        ticket = MunicipioTicket.query.first()
         self.assertIsNotNone(ticket)
         self.assertEqual(ticket.categoria, 'Alumbrado Público')
 
         archivo = ArchivoAdjunto.query.first()
         self.assertIsNotNone(archivo)
-        self.assertEqual(archivo.ticket_id, ticket.id)
+        self.assertEqual(archivo.municipio_ticket_id, ticket.id)
         self.assertEqual(archivo.url, 'http://example.com/image.jpg')
 
     @patch('routes.chat.responder_chatboc')
@@ -71,22 +74,37 @@ class TestEndToEnd(unittest.TestCase):
                 "categoria": "Recolección de Residuos",
                 "descripcion": "Basura acumulada",
                 "ubicacion": "Calle Falsa 123"
-            }
+            },
+            "ticket_id": 2
         }
 
         with open('tests/test_files/dummy.pdf', 'rb') as pdf:
-            response = self.client.post('/chat/upload', data={'file': (pdf, 'dummy.pdf')}, content_type='multipart/form-data')
+            response = self.client.post('/archivos/subir', data={'file': (pdf, 'dummy.pdf')}, content_type='multipart/form-data', headers=self.auth_headers)
 
         self.assertEqual(response.status_code, 200)
 
-        ticket = Ticket.query.first()
+        # Now we need to simulate the chat message that would use this file
+        chat_payload = {
+            "pregunta": "Adjunto el PDF con el reclamo",
+            "tipo_chat": "municipio",
+            "uploaded_file_info": {
+                "id": response.get_json()["id"],
+                "name": "dummy.pdf",
+                "url": response.get_json()["url"]
+            }
+        }
+
+        response = self.client.post('/ask/municipio', json=chat_payload, headers=self.auth_headers)
+        self.assertEqual(response.status_code, 200)
+
+        ticket = MunicipioTicket.query.get(2)
         self.assertIsNotNone(ticket)
         self.assertEqual(ticket.categoria, 'Recolección de Residuos')
 
         archivo = ArchivoAdjunto.query.first()
         self.assertIsNotNone(archivo)
-        self.assertEqual(archivo.ticket_id, ticket.id)
-        self.assertTrue(archivo.url.endswith('dummy.pdf'))
+        self.assertEqual(archivo.municipio_ticket_id, ticket.id)
+        self.assertTrue(archivo.filename.endswith('dummy.pdf'))
 
 if __name__ == '__main__':
     unittest.main()
