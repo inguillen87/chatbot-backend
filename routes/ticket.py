@@ -130,16 +130,18 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         if current_user.tipo_chat == "municipio":
             TicketModel = MunicipioTicket
-            current_app.logger.info(f"[CHECK] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
-            if not current_user.municipio_id: # Chequea si es None o 0
+            current_app.logger.info(f"[DEBUG] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
+            if not current_user.municipio_id:
+                current_app.logger.error(f"[DEBUG] Usuario {current_user.id} no tiene municipio_id.")
                 return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
 
             query_base = TicketModel.query.filter(TicketModel.municipio_id == current_user.municipio_id)
+            current_app.logger.info(f"[DEBUG] Querying for municipio_id: {current_user.municipio_id}")
             tipo_ticket_str = 'municipio'
-        else: # PYME y otros
+        else:
             TicketModel = PymeTicket
+            current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
             if current_user.rubro_id:
-                # Definir query_base para Pyme
                 query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")

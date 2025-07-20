@@ -131,7 +131,7 @@ class User(db.Model, UserMixin):
 class MunicipioTicket(db.Model):
     __tablename__ = "municipio_ticket"
     id = db.Column(db.Integer, primary_key=True)
-    pregunta = db.Column(db.Text, nullable=False)
+    pregunta = db.Column(db.Text, nullable=False, default='')
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
@@ -139,8 +139,8 @@ class MunicipioTicket(db.Model):
     estado = db.Column(db.String(30), default="nuevo")
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
-    detalles = db.Column(db.Text)  # <-- Esto es lo que falta
+    nro_ticket = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    detalles = db.Column(db.Text, nullable=True)
     direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
