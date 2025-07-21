@@ -618,7 +618,7 @@ class SugerenciasVecinoHandler(BaseMunicipioHandler):
                 ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket=tipo_ticket_para_sugerencia, ticket_data=ticket_data)
                 if ticket:
                     nro_ticket_str = f"M-{ticket.nro_ticket}" # Asumiendo que siempre es municipio para sugerencia
-                    logger.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear() # CORREGIDO: logger_actual -> logger
+                    logger.info(f"Sugerencia registrada como ticket {nro_ticket_str}."); memoria.clear()
                     body_exito = f"¡Muchas gracias por tu sugerencia! La hemos registrado y será revisada por nuestro equipo. Tu número de registro es {nro_ticket_str}. Valoramos mucho tu aporte."
                     options_exito = [
                         {"id": "hacer_otra_consulta_sug", "texto": "Hacer otra consulta"},
@@ -1348,16 +1348,24 @@ class ReclamoHandler(BaseMunicipioHandler):
                     logger.info(f"[ReclamoHandler] Foto {memoria['foto_url']} reconocida del contexto global.")
 
                     # Análisis de la imagen para sugerir categoría y descripción
-                    from services.interpretacion_imagen_service import interpretar_imagen_para_chat
-                    analisis_resultado = interpretar_imagen_para_chat(
-                        archivo_adjunto={"url": self.context.get("foto_url"), "mime_type": "image/jpeg"}, # Asumimos jpeg por ahora
-                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
-                    )
-                    if analisis_resultado and not analisis_resultado.get("error"):
-                        if analisis_resultado.get("categoria_sugerida"):
-                            memoria["categoria_reclamo_sugerida"] = analisis_resultado["categoria_sugerida"]
-                        if analisis_resultado.get("descripcion_sugerida"):
-                            memoria["descripcion_reclamo_sugerida"] = analisis_resultado["descripcion_sugerida"]
+                    if self.context.get("analisis_imagen"):
+                        analisis_resultado = self.context.get("analisis_imagen")
+                        if analisis_resultado and not analisis_resultado.get("error"):
+                            if analisis_resultado.get("categoria_sugerida"):
+                                memoria["categoria_reclamo_sugerida"] = analisis_resultado["categoria_sugerida"]
+                            if analisis_resultado.get("descripcion_sugerida"):
+                                memoria["descripcion_reclamo_sugerida"] = analisis_resultado["descripcion_sugerida"]
+                    else:
+                        from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+                        analisis_resultado = interpretar_imagen_para_chat(
+                            archivo_adjunto={"url": self.context.get("foto_url"), "mime_type": "image/jpeg"}, # Asumimos jpeg por ahora
+                            tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                        )
+                        if analisis_resultado and not analisis_resultado.get("error"):
+                            if analisis_resultado.get("categoria_sugerida"):
+                                memoria["categoria_reclamo_sugerida"] = analisis_resultado["categoria_sugerida"]
+                            if analisis_resultado.get("descripcion_sugerida"):
+                                memoria["descripcion_reclamo_sugerida"] = analisis_resultado["descripcion_sugerida"]
 
                 if pregunta_str and not memoria.get("categoria_reclamo"):
                     texto_norm_pregunta = normalizar_texto(pregunta_str)
@@ -3121,7 +3129,7 @@ class GeneralHandler(BaseMunicipioHandler):
         # Augment the user's question with the scraped context for GeneralHandler
         # The JULES_SYSTEM_PROMPT instructs Gemini to use context if provided.
         # We can prepend the scraped context to the user's question for this specific handler.
-        mensaje_a_gemini = f"Contexto del sitio web del municipio:\n{contexto_scraped}\n\nPregunta del usuario: {pregunta_str}"
+        mensaje_para_gemini = f"Contexto del sitio web del municipio:\n{contexto_scraped}\n\nPregunta del usuario: {pregunta_str}"
 
         try:
             llm_response_structured = llamar_gemini(
@@ -3130,7 +3138,7 @@ class GeneralHandler(BaseMunicipioHandler):
                 historial=historial_chat_para_gemini
             )
         except Exception as e:
-            logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
+            logger.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
             llm_response_structured = {
                 "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
                 "accion_backend": "derivar_humano",
@@ -3139,8 +3147,8 @@ class GeneralHandler(BaseMunicipioHandler):
                 "botones": []
             }
 
-        respuesta_texto_gemini = gemini_response_structured.get("respuesta_usuario")
-        accion_gemini = gemini_response_structured.get("accion_backend")
+        respuesta_texto_gemini = llm_response_structured.get("respuesta_usuario")
+        accion_gemini = llm_response_structured.get("accion_backend")
 
         if not respuesta_texto_gemini or accion_gemini == "error_llm" or \
            (len(respuesta_texto_gemini.split()) < 7 and ("no puedo" in respuesta_texto_gemini.lower() or "no sé" in respuesta_texto_gemini.lower() or "no tengo información" in respuesta_texto_gemini.lower())) or \
@@ -3658,6 +3666,8 @@ class AnalizarImagenHandler(BaseMunicipioHandler):
         if not foto_url:
             return {"respuesta": "No se encontró una imagen para analizar."}
 
+        logger.info(f"Analizando imagen desde URL: {foto_url}")
+
         try:
             response = requests.get(foto_url)
             response.raise_for_status()
@@ -3730,7 +3740,7 @@ from services.gemini_bridge import llamar_gemini # Asegurar import
 OWNER_HANDLERS_FOR_STATE = {ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler, ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler, ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler, ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler, ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler, ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler, ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler, ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler, ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler, ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler, ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler}
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context):
-    logger_actual = current_app.logger if has_app_context() else logger
+    logger = current_app.logger if has_app_context() else logger
     contexto_municipio_actual = context.get(CONTEXTO_MUNICIPIO, {})
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
@@ -3745,7 +3755,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
     if not invocar_llm:
         return None
 
-    logger_actual.info(f"[HANDLE_LLM] Invocando LLM. Estado: {estado_conversacion_para_llm}")
+    logger.info(f"[HANDLE_LLM] Invocando LLM. Estado: {estado_conversacion_para_llm}")
 
     usuario_info_llm = {
         "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
@@ -3775,7 +3785,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
         respuesta_llm_dict = llamar_gemini(mensaje_usuario=json.dumps(mensaje_completo_para_llm), usuario=usuario_info_llm, historial=historial_para_llm)
-        logger_actual.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
+        logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
 
         respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
@@ -3805,7 +3815,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         elif accion_backend_llm == "derivar_humano":
             context["intencion"] = "hablar_con_agente"
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
-            logger_actual.info("[HANDLE_LLM] LLM derivó a humano.")
+            logger.info("[HANDLE_LLM] LLM derivó a humano.")
             return None
 
         else: # Respuesta general
@@ -3818,7 +3828,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}
 
     except Exception as e_llm:
-        logger_actual.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
+        logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
         for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
             if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
                 contexto_municipio_actual[k] = None
@@ -4302,6 +4312,7 @@ def responder_municipio(
         # Por ahora, el flujo es: Gemini decide -> Orchestrator -> ActionHandler (que podría usar Vision).
 
     try:
+        mensaje_para_gemini = pregunta_str
         llm_response_structured = llamar_gemini(
             mensaje_usuario=mensaje_para_gemini,
             usuario=usuario_info_for_gemini,

@@ -547,8 +547,7 @@ def llamar_gemini_para_generacion_texto(
 
         generation_config = GenerationConfig(
             temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            response_mime_type="application/json"
+            max_output_tokens=max_output_tokens
         )
 
         safety_settings = {

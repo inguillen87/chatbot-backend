@@ -489,22 +489,22 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
 
     try:
         logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Clasificando texto: '{texto_usuario}'")
-        respuesta = llamar_gemini_para_generacion_texto(
+        respuesta_raw = llamar_gemini_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.0 # Máxima precisión
         )
-        if respuesta is None:
-            logger.error(f"[LLM_CLASIFICAR_ENTIDAD] La llamada a Gemini no devolvió respuesta para el texto: '{texto_usuario}'")
-            return "desconocido"
 
-        respuesta = respuesta.strip().lower()
-
-        if respuesta in ["municipio", "pyme", "id"]:
-            logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Texto '{texto_usuario}' clasificado como: {respuesta}")
-            return respuesta
+        if respuesta_raw:
+            respuesta = respuesta_raw.strip().lower()
+            if respuesta in ["municipio", "pyme", "id"]:
+                logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Texto '{texto_usuario}' clasificado como: {respuesta}")
+                return respuesta
+            else:
+                logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] Respuesta inesperada del LLM: '{respuesta}'. Se devuelve 'desconocido'.")
+                return "desconocido"
         else:
-            logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] Respuesta inesperada del LLM: '{respuesta}'. Se devuelve 'desconocido'.")
+            logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] LLM no devolvió respuesta para '{texto_usuario}'. Se devuelve 'desconocido'.")
             return "desconocido"
 
     except Exception as e:

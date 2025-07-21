@@ -12,8 +12,8 @@ from app import create_app, db
 from models import PlantillasRespuesta, User, Rubro
 from routes.ai import ai_bp
 import json
-
 from config import Config
+
 # Configuración de prueba
 class TestConfig(Config):
     TESTING = True
