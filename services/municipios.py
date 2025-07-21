@@ -1277,6 +1277,14 @@ class ReclamoHandler(BaseMunicipioHandler):
         logger.info(f"[ReclamoHandler.handle ENTRY] Pregunta: '{pregunta_str[:100]}...', Estado Memoria: {estado.name if estado else 'None'}, Intención: {intencion}")
 
         if intencion == "iniciar_reclamo" and estado is None:
+            if self.context.get("es_foto"):
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                return {
+                    "message_body": "He recibido tu foto. Para continuar con el reclamo, por favor, decime la dirección del problema.",
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "reclamo_foto_recibida_pide_direccion_v1"
+                }
             logger.info("[ReclamoHandler] Intención 'iniciar_reclamo' y sin estado previo.")
             # Si el usuario hace clic en un botón de categoría (ej. "Alumbrado"),
             # la pregunta_str será esa categoría. La tratamos como una confirmación implícita.
