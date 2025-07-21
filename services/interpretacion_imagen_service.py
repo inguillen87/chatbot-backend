@@ -303,12 +303,10 @@ def _procesar_interpretacion_reclamo(
     analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
     logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL (auto_mode: {auto_mode}) para Análisis ID: {analisis_id_for_log}")
 
-    sugerida_categoria_vision = None
-    # Datos que se guardarán en AnalisisArchivo (si existe) o se retornarán en 'analisis_interno'
+    sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
     datos_internos_analisis = {}
 
     if auto_mode:
-        sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
         if analisis_db_record:
             analisis_db_record.tipo_analisis = 'reclamo_auto_vision_v1'
         datos_internos_analisis['tipo_analisis_sugerido'] = 'reclamo_auto_vision_v1'
@@ -317,7 +315,6 @@ def _procesar_interpretacion_reclamo(
             analisis_db_record.tipo_analisis = 'reclamo_vision_llm_v1'
         datos_internos_analisis['tipo_analisis_sugerido'] = 'reclamo_vision_llm_v1'
 
-    # Construct description for LLM from image content
     prompt_description_parts = []
     top_labels_str = ", ".join([f"{l['description']}" for l in vision_results.get("labels", [])[:5]])
     top_objects_str = ", ".join([f"{o['name']}" for o in vision_results.get("objects", [])[:3]])
@@ -351,8 +348,7 @@ def _procesar_interpretacion_reclamo(
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
     logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis_id_for_log})")
 
-    # Use LLM to refine/generate details based on image description
-    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
+    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm, model="gemini-1.5-pro-preview-0409")
 
     datos_internos_analisis['llm_complaint_extraction_from_image'] = detalles_llm
     datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
