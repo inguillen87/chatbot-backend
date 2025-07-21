@@ -25,7 +25,12 @@ class TestEndToEnd(unittest.TestCase):
         self.chat_db_context = MagicMock()
         self.chat_db_context.context_data = {}
 
+        self.google_auth_patch = patch('google.auth.default')
+        self.mock_google_auth_default = self.google_auth_patch.start()
+        self.mock_google_auth_default.return_value = (MagicMock(), "test-project")
+
     def tearDown(self):
+        self.google_auth_patch.stop()
         self.app_context.pop()
 
     @patch('services.gemini_bridge._llamar_gemini_impl')
@@ -35,7 +40,7 @@ class TestEndToEnd(unittest.TestCase):
     @patch('services.municipios.servicio_tickets.crear_nuevo_ticket')
     def test_end_to_end_pothole_complaint(self, mock_crear_ticket, mock_extract_complaint_details_llm, mock_analyze_image_from_content, mock_descargar_imagen, mock_llamar_gemini_impl):
         mock_llamar_gemini_impl.return_value = {
-            "respuesta_usuario": "He recibido tu foto. Para continuar con el reclamo, por favor, decime la dirección del problema.",
+            "respuesta_usuario": "He recibido tu foto y parece que es un reclamo sobre **Arreglo de calle**. Para continuar, por favor, decime la dirección del problema.",
             "accion_backend": "crear_reclamo",
             "datos_estructura": {
                 "target": "municipio",
@@ -67,35 +72,34 @@ class TestEndToEnd(unittest.TestCase):
                 "mime_type": "image/jpeg",
                 "source": "whatsapp",
             },
-            "intencion": "iniciar_reclamo",
         }
-        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp")
+        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp", intencion="iniciar_reclamo")
         self.assertIn("He recibido tu foto", response["message_body"])
         self.assertIn("Arreglo de calle", response["message_body"])
 
         # 2. User sends address
         pregunta_original = {"pregunta": "Calle Falsa 123"}
-        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp")
+        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp", intencion="iniciar_reclamo")
         self.assertIn("registrada", response["message_body"])
 
         # 3. User sends name
         pregunta_original = {"pregunta": "Juan Perez"}
-        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp")
+        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp", intencion="iniciar_reclamo")
         self.assertIn("Gracias, Juan", response["message_body"])
 
         # 4. User sends phone
         pregunta_original = {"pregunta": "1122334455"}
-        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp")
+        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp", intencion="iniciar_reclamo")
         self.assertIn("Ya casi terminamos", response["message_body"])
 
         # 5. User sends email
         pregunta_original = {"pregunta": "juan.perez@example.com"}
-        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp")
+        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp", intencion="iniciar_reclamo")
         self.assertIn("Por favor, revisá los datos", response["message_body"])
 
         # 6. User confirms
         pregunta_original = {"pregunta": "si"}
-        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp")
+        response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp", intencion="iniciar_reclamo")
         self.assertIn("Tu reclamo ha sido registrado con el número de ticket: **M-12345**", response["message_body"])
 
 if __name__ == '__main__':
