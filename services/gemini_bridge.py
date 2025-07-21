@@ -4,6 +4,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Dict, Any, List, Optional
+import google.generativeai as genai
 
 # Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
 from vertexai.preview.generative_models import GenerativeModel
