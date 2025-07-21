@@ -1,5 +1,6 @@
 import pytest
 from app import create_app, db
+from config import TestConfig
 
 @pytest.fixture(scope='module')
 def test_app():

@@ -1,7 +1,7 @@
 import unittest
 import os
 from app import create_app
-from config import TestingConfig
+from config import TestConfig
 
 class GoogleMapsKeyEndpointTest(unittest.TestCase):
     def setUp(self):
