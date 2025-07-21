@@ -1067,10 +1067,10 @@ class TicketStatusHandler(BaseMunicipioHandler):
             if ultimo_comentario: respuesta += f"\nÚltima actualización: *{ultimo_comentario.comentario}*"
             if ticket.estado == "en_proceso":
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_CIERRE.name; memoria["ticket_id_activo"] = ticket.id
-                body = respuesta + "\n¿Se resolvió tu problema?"
+                body = respuesta + "\n¿Tu problema fue solucionado?"
                 options = [
-                    {"id": "ticket_solucionado", "texto": "Sí, solucionado"},
-                    {"id": "ticket_no_solucionado", "texto": "No, aún no"}
+                    {"id": "ticket_solucionado", "texto": "Sí, mi problema fue solucionado"},
+                    {"id": "ticket_no_solucionado", "texto": "No, mi problema aún no fue solucionado"}
                 ]
                 return {
                     "message_body": body,
@@ -1080,13 +1080,13 @@ class TicketStatusHandler(BaseMunicipioHandler):
                 }
             return {"message_body": respuesta, "options_list": [], "message_type": "text", "fuente": "ticket_status_info_v2"}
         if self.context.get("intencion") == "consultar_estado_ticket":
-            match = re.search(r"\d{5,}", pregunta_str)
+            match = re.search(r"\b(\d{5,})\b", pregunta_str)
             if not match: 
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_NUMERO_TICKET.name
                 return {"message_body": "Por supuesto. Para consultar el estado de tu ticket, por favor, decime el número de seguimiento.", "options_list": [], "message_type": "text", "fuente": "ticket_status_pedir_numero_v2"}
-            numero = int(match.group(0)); ticket = MunicipioTicket.query.filter_by(nro_ticket=numero).first()
+            numero = int(match.group(1)); ticket = MunicipioTicket.query.filter_by(nro_ticket=numero).first()
             if not ticket: 
-                return {"message_body": f"No encontré ningún ticket con el número M-{match.group(0)}. Por favor, verificá si el número es correcto.", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_encontrado_v2"}
+                return {"message_body": f"No encontré ningún ticket con el número M-{match.group(1)}. Por favor, verificá si el número es correcto.", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_encontrado_v2"}
             respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado.replace('_', ' ').title()}**."
             ultimo_comentario = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first()
             if ultimo_comentario: respuesta += f"\nÚltima actualización: *{ultimo_comentario.comentario}*"
@@ -1412,15 +1412,14 @@ class ReclamoHandler(BaseMunicipioHandler):
                             if has_app_context() and not current_app.config.get("ALLOW_ANON_GPS", False):
                                 allow_gps = False
                                 body_pedir_direccion += "\n(Para compartir GPS necesitarás estar registrado)."
-                        # Simplified GPS option for testing the return path
-                        options_pedir_direccion.append({"id": "accion_compartir_ubicacion_test", "texto": "📍 GPS Test"})
+                        options_pedir_direccion.append({"id": "accion_compartir_ubicacion", "texto": "📍 Enviar mi ubicación actual"})
 
-                        logger.info(f"[ReclamoHandler] TEST: Retornando solicitud de dirección para categoría '{cat_title}'.")
+                        logger.info(f"[ReclamoHandler] Retornando solicitud de dirección para categoría '{cat_title}'.")
                         return {
                             "message_body": body_pedir_direccion,
                             "options_list": options_pedir_direccion,
-                            "message_type": 'interactive_buttons',  # Assuming options_pedir_direccion will have at least one item
-                            "fuente": "reclamo_pedir_direccion_test_v1"
+                            "message_type": 'interactive_buttons',
+                            "fuente": "reclamo_pedir_direccion_con_gps_v1"
                         }
                 else:
                     # Categoria NO en memoria (ni de pregunta_str, ni de imagen) -> pedir categoria
@@ -1437,11 +1436,9 @@ class ReclamoHandler(BaseMunicipioHandler):
                     if not any(opt['id'] == "otro motivo" for opt in options_cat) and "otro motivo" in CATEGORIAS_RECLAMO:
                         options_cat.append({"id": "otro motivo", "texto": "Otro Motivo"})
 
-                    respuesta_texto_cat = f"{mensaje_adjunto}Para poder gestionar tu reclamo de la mejor manera, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
-                    if sugeridas_data:
-                        respuesta_texto_cat = f"{mensaje_adjunto}Para poder ayudarte mejor, ¿podrías indicarme en qué categoría encaja tu reclamo? Detecté que podría ser sobre alguno de estos temas:"
+                    respuesta_texto_cat = f"{mensaje_adjunto}Para poder gestionar tu reclamo de la mejor manera, por favor, seleccioná una de las siguientes categorías:"
 
-                    message_type_cat = 'interactive_list' if len(options_cat) > 3 else 'interactive_buttons'
+                    message_type_cat = 'interactive_list' if len(options_cat) > 4 else 'interactive_buttons'
                     if len(options_cat) > 10:
                         logger.warning(f"ReclamoHandler (inicio): Too many options for WhatsApp list.")
 
@@ -2208,8 +2205,8 @@ class ReclamoHandler(BaseMunicipioHandler):
             elif current_state_for_logic == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
                 if memoria.get("descripcion_reclamo"):
                     logger.debug(f"Descripción ya en memoria: '{memoria['descripcion_reclamo'][:50]}...'. Avanzando.")
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
-                    estado = ConversationState.ESPERANDO_NOMBRE_VECINO
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
+                    estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
                     pregunta_str = ""
                     continue
                 
@@ -2219,13 +2216,26 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                     memoria["descripcion_reclamo"] = pregunta_str.strip()
                     logger.info(f"Descripción guardada: {pregunta_str.strip()}")
-                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name
-                    estado = ConversationState.ESPERANDO_NOMBRE_VECINO
+                    memoria["estado_conversacion"] = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO.name
+                    estado = ConversationState.ESPERANDO_ADJUNTOS_RECLAMO
                     pregunta_str = ""
                     continue
                 else:
                     return {"message_body": "Por favor, describí el problema con un poco más de detalle."}
             
+            # Add this new state to handle attachments
+            elif current_state_for_logic == ConversationState.ESPERANDO_ADJUNTOS_RECLAMO:
+                return {
+                    "message_body": "Si tenés una foto del problema o querés compartir tu ubicación, podés hacerlo ahora. Si no, podemos continuar.",
+                    "options_list": [
+                        {"id": "adjuntar_foto", "texto": "📷 Adjuntar foto"},
+                        {"id": "compartir_ubicacion", "texto": "📍 Compartir ubicación"},
+                        {"id": "sin_adjuntos", "texto": "Continuar sin adjuntos"}
+                    ],
+                    "message_type": "interactive_buttons",
+                    "fuente": "reclamo_pedir_adjuntos_v1"
+                }
+
             # 7. If all data is filled, this state will be reached (or if jumped by confirm intent)
             elif current_state_for_logic == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
                 logger.info("[ReclamoHandler] Todos los datos necesarios están en memoria. Procediendo a la confirmación final del reclamo.")

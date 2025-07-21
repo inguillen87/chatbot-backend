@@ -383,8 +383,12 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
         # Asumimos que el primer candidato tiene la respuesta.
         # El prompt pide explícitamente un JSON, así que response.text debería serlo.
-        respuesta_texto_crudo = response.candidates[0].content.parts[0].text.strip()
-        logger.debug(f"Texto crudo de Gemini: {respuesta_texto_crudo[:500]}...")
+        if response.candidates:
+            respuesta_texto_crudo = response.candidates[0].content.parts[0].text.strip()
+            logger.info(f"Respuesta de Gemini (crudo): {respuesta_texto_crudo}")
+        else:
+            logger.warning("La respuesta de Gemini no contiene candidatos.")
+            respuesta_texto_crudo = '{"respuesta_usuario": "No pude procesar tu solicitud en este momento. Por favor, intenta de nuevo más tarde.", "accion_backend": "error"}'
 
     except ImportError as ie:
         logger.error(f"Error importando librería google.generativeai: {ie}. Asegúrate que google-genai está instalado.")
