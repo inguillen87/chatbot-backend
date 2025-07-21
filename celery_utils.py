@@ -12,7 +12,14 @@ def init_celery(app: Flask):
     # Actualizar la configuración de Celery desde la configuración de Flask
     # Celery usará prefijo 'CELERY_' para sus variables de configuración en Flask.
     # Ej: app.config['CELERY_BROKER_URL'], app.config['CELERY_RESULT_BACKEND']
-    celery_app.conf.update(app.config.get('CELERY_CONFIG', {})) # Permitir pasar un dict CELERY_CONFIG
+    celery_config = app.config.get('CELERY_CONFIG', {})
+    if 'imports' not in celery_config:
+        celery_config['imports'] = ('services.tasks',)
+    else:
+        if 'services.tasks' not in celery_config['imports']:
+            celery_config['imports'] = celery_config['imports'] + ('services.tasks',)
+
+    celery_app.conf.update(celery_config)
     
     # Si CELERY_BROKER_URL y CELERY_RESULT_BACKEND están directamente en app.config
     if 'CELERY_BROKER_URL' in app.config:

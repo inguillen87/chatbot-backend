@@ -47,6 +47,7 @@ from .common_utils import (
 )
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
+from services.tasks import process_image_for_chat_task
 
 try:
     from flask import current_app, session as flask_session, has_app_context
@@ -4131,27 +4132,19 @@ def responder_municipio(
        uploaded_file_info_for_analysis and \
        uploaded_file_info_for_analysis.get("source") == "whatsapp" and \
        context.get("es_foto"): # es_foto should be set by now if it's an image
-        logger_actual.info("[MEDIA_ANALYSIS] Procesando imagen WhatsApp directamente (no 'analisis_imagen_reclamo_auto_raw' previo).")
-        if not received_payload.get("intencion"):
-            context["intencion"] = "iniciar_reclamo"
-            received_payload["intencion"] = "iniciar_reclamo"
-        try:
-            from services.interpretacion_imagen_service import interpretar_imagen_para_chat
-            analisis_resultado_whatsapp = interpretar_imagen_para_chat(
-                archivo_adjunto=uploaded_file_info_for_analysis, 
-                tipo_interpretacion="reclamo_auto_descripcion_categoria"
-            )
-            logger_actual.info(f"Resultado análisis directo WhatsApp: {analisis_resultado_whatsapp}")
-            if analisis_resultado_whatsapp and not analisis_resultado_whatsapp.get("error"):
-                contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado_whatsapp
-                cat_sug_wp = analisis_resultado_whatsapp.get("categoria_sugerida")
-                desc_sug_wp = analisis_resultado_whatsapp.get("descripcion_sugerida")
-                if cat_sug_wp and (not contexto_municipio_actual.get("categoria_reclamo") or contexto_municipio_actual.get("categoria_reclamo") == "otro motivo"):
-                    contexto_municipio_actual["categoria_reclamo"] = cat_sug_wp
-                if desc_sug_wp and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
-                    contexto_municipio_actual["descripcion_reclamo"] = desc_sug_wp
-        except Exception as e_img_direct_wp:
-            logger_actual.error(f"Error en análisis directo de imagen WhatsApp: {e_img_direct_wp}", exc_info=True)
+        from services.tasks import process_image_for_chat_task
+        process_image_for_chat_task.delay(
+            user_phone_number=anon_id,
+            client_user_id=owner_user.id,
+            uploaded_file_info_whatsapp=uploaded_file_info_for_analysis,
+            chat_session_id=kwargs.get("chat_session_uuid")
+        )
+        return {
+            "message_body": "He recibido tu imagen y la estoy analizando. Te enviaré un mensaje cuando termine.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "analisis_imagen_async"
+        }
     if not contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw") and \
         uploaded_file_info_for_analysis and \
         uploaded_file_info_for_analysis.get("source") == "whatsapp" and \
