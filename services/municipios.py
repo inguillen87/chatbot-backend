@@ -452,7 +452,7 @@ class GreetingHandler(BaseMunicipioHandler):
                 return None # Let other handlers try to parse the details
 
             # Standard greeting response for short/simple greetings
-            greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. ¿Cómo te puedo ayudar hoy?"
+            greeting_body = "¡Hola! 👋 Soy tu asistente digital del Municipio. Estoy aquí para ayudarte con tus trámites y reclamos."
             options = [
                 {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
                 {"id": "hacer_sugerencia", "texto": "Dejar una sugerencia"},
@@ -1058,11 +1058,11 @@ class TicketStatusHandler(BaseMunicipioHandler):
             if es_pregunta_nueva(pregunta_str, "un número de ticket"): memoria.clear(); return None
             match = re.search(r"\d{5,}", pregunta_str)
             if not match: 
-                return {"message_body": "No entendí el número de ticket. ¿Podés repetirlo? Debe ser un número de al menos 5 dígitos.", "options_list": [], "message_type": "text", "fuente": "ticket_status_numero_invalido_v2"}
+                return {"message_body": "No reconocí ese número de ticket. Por favor, ¿podrías ingresarlo de nuevo? Debe ser un número de al menos 5 dígitos.", "options_list": [], "message_type": "text", "fuente": "ticket_status_numero_invalido_v2"}
             numero = int(match.group(0)); ticket = MunicipioTicket.query.filter_by(nro_ticket=numero).first(); memoria.pop("estado_conversacion", None)
             if not ticket: 
-                return {"message_body": f"No encontré ticket M-{match.group(0)}. Por favor, verificá el número.", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_encontrado_num_v2"}
-            respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' está en estado: **{ticket.estado.replace('_', ' ').title()}**."
+                return {"message_body": f"No encontré ningún ticket con el número M-{match.group(0)}. Por favor, verificá si el número es correcto.", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_encontrado_num_v2"}
+            respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado.replace('_', ' ').title()}**."
             ultimo_comentario = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first()
             if ultimo_comentario: respuesta += f"\nÚltima actualización: *{ultimo_comentario.comentario}*"
             if ticket.estado == "en_proceso":
@@ -1083,11 +1083,11 @@ class TicketStatusHandler(BaseMunicipioHandler):
             match = re.search(r"\d{5,}", pregunta_str)
             if not match: 
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_NUMERO_TICKET.name
-                return {"message_body": "Para consultar el estado de un ticket, decime el número de ticket por favor.", "options_list": [], "message_type": "text", "fuente": "ticket_status_pedir_numero_v2"}
+                return {"message_body": "Por supuesto. Para consultar el estado de tu ticket, por favor, decime el número de seguimiento.", "options_list": [], "message_type": "text", "fuente": "ticket_status_pedir_numero_v2"}
             numero = int(match.group(0)); ticket = MunicipioTicket.query.filter_by(nro_ticket=numero).first()
             if not ticket: 
-                return {"message_body": f"No encontré ticket M-{match.group(0)}. Por favor, verificá el número.", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_encontrado_v2"}
-            respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' está en estado: **{ticket.estado.replace('_', ' ').title()}**."
+                return {"message_body": f"No encontré ningún ticket con el número M-{match.group(0)}. Por favor, verificá si el número es correcto.", "options_list": [], "message_type": "text", "fuente": "ticket_status_no_encontrado_v2"}
+            respuesta = f"El ticket **M-{ticket.nro_ticket}** sobre '{ticket.asunto}' se encuentra en estado: **{ticket.estado.replace('_', ' ').title()}**."
             ultimo_comentario = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id, es_admin=True).order_by(TicketComentario.fecha.desc()).first()
             if ultimo_comentario: respuesta += f"\nÚltima actualización: *{ultimo_comentario.comentario}*"
             if ticket.estado == "en_proceso":
@@ -1295,7 +1295,7 @@ class ReclamoHandler(BaseMunicipioHandler):
 
             memoria["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_INICIAR_RECLAMO.name
             return {
-                "message_body": "¿Querés iniciar un reclamo? Te guiaré para que puedas ingresar los datos necesarios.",
+                "message_body": "Lamento que estés teniendo un problema. Por supuesto, te ayudaré a registrar tu reclamo. ¿Querés continuar?",
                 "options_list": [{"id": "si_iniciar_reclamo", "texto": "Sí, iniciar reclamo"}, {"id": "no_iniciar_reclamo", "texto": "No, gracias"}],
                 "message_type": "interactive_buttons",
                 "fuente": "confirmacion_iniciar_reclamo"
@@ -1404,7 +1404,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                         categoria_mem = memoria.get('categoria_reclamo', '')
                         cat_title = categoria_mem.title() if categoria_mem and isinstance(categoria_mem, str) else "el reclamo"
                         ack_adjunto = memoria.get("mensaje_adjunto_recibido", "")
-                        body_pedir_direccion = f"{ack_adjunto}Entendido, categoría: **{cat_title}**. Ahora, ¿la **dirección exacta** del problema, por favor?\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
+                        body_pedir_direccion = f"{ack_adjunto}Entendido, gracias por confirmar la categoría: **{cat_title}**. Ahora, para poder enviar ayuda, necesito que me indiques la **dirección exacta** del problema, por favor.\n(Ej: {EJEMPLO_DIRECCION}, Localidad). También podés compartir tu ubicación GPS."
 
                         options_pedir_direccion = []
                         allow_gps = True
@@ -1437,9 +1437,9 @@ class ReclamoHandler(BaseMunicipioHandler):
                     if not any(opt['id'] == "otro motivo" for opt in options_cat) and "otro motivo" in CATEGORIAS_RECLAMO:
                         options_cat.append({"id": "otro motivo", "texto": "Otro Motivo"})
 
-                    respuesta_texto_cat = f"{mensaje_adjunto}Para continuar con tu reclamo, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
+                    respuesta_texto_cat = f"{mensaje_adjunto}Para poder gestionar tu reclamo de la mejor manera, ¿podrías seleccionar una categoría o describir brevemente de qué se trata?"
                     if sugeridas_data:
-                        respuesta_texto_cat = f"{mensaje_adjunto}Detecté que podría ser sobre algunos de estos temas. Para tu reclamo, ¿cuál sería la categoría?"
+                        respuesta_texto_cat = f"{mensaje_adjunto}Para poder ayudarte mejor, ¿podrías indicarme en qué categoría encaja tu reclamo? Detecté que podría ser sobre alguno de estos temas:"
 
                     message_type_cat = 'interactive_list' if len(options_cat) > 3 else 'interactive_buttons'
                     if len(options_cat) > 10:
@@ -1708,7 +1708,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                             pregunta_str = ""
                             continue
                         else:
-                            return {"message_body": f"¡Perfecto! Dirección registrada como: **{memoria['direccion_reclamo']}**. Ahora, ¿podrías decirme tu **nombre completo**?", "options_list": [], "message_type": "text", "fuente": "reclamo_direccion_ok_pide_nombre_v2"}
+                            return {"message_body": f"¡Perfecto! Ya registré la dirección como: **{memoria['direccion_reclamo']}**. Ahora, para poder identificarte, ¿podrías decirme tu **nombre completo**?", "options_list": [], "message_type": "text", "fuente": "reclamo_direccion_ok_pide_nombre_v2"}
                 if memoria.get("direccion_reclamo"): # Address already known from a previous turn or LLM extraction
                     logger.debug(f"[ReclamoHandler] Dirección ya en memoria: '{memoria['direccion_reclamo']}'. Avanzando.")
                     memoria["estado_conversacion"] = ConversationState.ESPERANDO_NOMBRE_VECINO.name; estado = ConversationState.ESPERANDO_NOMBRE_VECINO
@@ -2043,7 +2043,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                         continue
                     else:
                         # Use the cleaned first name for the greeting
-                        return {"respuesta": f"¡Gracias, {greeting_name.title()}! Ahora, ¿me pasarías tu **número de teléfono con código de área**?"}
+                        return {"respuesta": f"¡Gracias, {greeting_name.title()}! Para poder contactarte si es necesario, ¿me pasarías tu **número de teléfono con código de área**?"}
                 pregunta_str = "" 
                 continue
             
@@ -2107,7 +2107,7 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                         # Ask for the next piece of information or break to confirm
                         if estado == ConversationState.ESPERANDO_EMAIL_VECINO:
-                             return {"respuesta": "¡Excelente! Casi terminamos. ¿Cuál es tu **dirección de correo electrónico**?"}
+                             return {"respuesta": "¡Excelente! Ya casi terminamos. Para enviarte una copia del reclamo y mantenerte informado, ¿cuál es tu **dirección de correo electrónico**?"}
                         elif estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO:
                              return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Luego podrás adjuntar foto/ubicación si querés."}
                         elif estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO:
@@ -2182,7 +2182,7 @@ class ReclamoHandler(BaseMunicipioHandler):
 
                         # Ask for the next piece of information or break to confirm
                         if estado == ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: # This means description is missing
-                             return {"respuesta": "¡Bárbaro! Ahora, por favor, contame con un poco más de detalle **cuál es el problema**. Luego podrás adjuntar foto/ubicación si querés."}
+                             return {"respuesta": "¡Perfecto! Ahora, por favor, contame con tus palabras **cuál es el problema**. Tratá de ser lo más detallado posible. Luego podrás adjuntar una foto o tu ubicación si es necesario."}
                         elif estado == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: # All data filled
                             break # Exit while loop to proceed to confirmation logic below
                         else: # Should not happen if logic is correct, but safeguard
@@ -2570,7 +2570,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 except Exception: pass
                 resumen = self.build_detalles_memoria(memoria)
                 # Original: return {"respuesta": f"No estoy seguro de qué quisiste decir...\n\n{resumen}\n\n¿Confirmamos o editamos?", "botones": [...]}
-                body_fallback_confirm = f"No estoy seguro de qué quisiste decir. Por favor, confirmá si los datos son correctos o si querés editar algo:\n\n{resumen}\n\n¿Confirmamos o editamos?"
+                body_fallback_confirm = f"Por favor, revisá los datos de tu reclamo. Si todo es correcto, confirmá para que podamos registrarlo. Si necesitás cambiar algo, podés editarlo.\n\n{resumen}\n\n¿Confirmamos o editamos?"
                 options_fallback_confirm = [
                     {"id": "confirmar_reclamo_final", "texto": "Sí, confirmar reclamo"},
                     {"id": "editar_reclamo_datos", "texto": "No, quiero editar algo"}
@@ -3131,7 +3131,7 @@ class GeneralHandler(BaseMunicipioHandler):
             llm_response_structured = llamar_gemini(
                 mensaje_usuario=mensaje_para_gemini,
                 usuario=usuario_info_for_gemini,
-                historial=historial_chat_para_gemini
+                historial=historial_chat_for_gemini
             )
         except Exception as e:
             logger.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
@@ -3733,8 +3733,16 @@ from services.gemini_bridge import llamar_gemini # Asegurar import
 
 OWNER_HANDLERS_FOR_STATE = {ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler, ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler, ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler, ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler, ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler, ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler, ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler, ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler, ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler, ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler, ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler}
 
+def accion_crear_reclamo_municipio(datos_reclamo, context):
+    """
+    Crea un ticket de reclamo en el sistema.
+    """
+    # Lógica para crear el reclamo...
+    # ... (esta función contendrá la lógica de creación de ticket)
+    pass
+
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context):
-    logger = current_app.logger if has_app_context() else logger
+    logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
     contexto_municipio_actual = context.get(CONTEXTO_MUNICIPIO, {})
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
@@ -3778,10 +3786,13 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     if resumen_analisis:
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
-        mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-        mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-        respuesta_llm_dict = llamar_gemini(mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm)
-        logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
+        try:
+            mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
+            respuesta_llm_dict = llamar_gemini(mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm)
+            logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
+        except Exception as e:
+            logger.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
+            return None
 
         respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
