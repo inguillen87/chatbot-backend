@@ -1255,6 +1255,40 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
 class ReclamoHandler(BaseMunicipioHandler):
     EDIT_KEYWORDS = ["editar", "cambiar", "corregir", "modificar", "no era asi", "me equivoque", "error"]
 
+    def _handle_image_complaint(self, memoria, payload):
+        from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+
+        analisis_resultado = interpretar_imagen_para_chat(
+            archivo_adjunto={"url": self.context.get("foto_url"), "mime_type": "image/jpeg"},
+            tipo_interpretacion="reclamo_auto_descripcion_categoria"
+        )
+
+        if analisis_resultado and not analisis_resultado.get("error"):
+            if analisis_resultado.get("es_reclamo"):
+                memoria["categoria_reclamo"] = analisis_resultado.get("categoria_sugerida", "Otro Motivo")
+                memoria["descripcion_reclamo"] = analisis_resultado.get("descripcion_sugerida", "Descripción basada en imagen adjunta.")
+                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                return {
+                    "message_body": f"He recibido tu foto y parece que es un reclamo sobre **{memoria['categoria_reclamo']}**. Para continuar, por favor, decime la dirección del problema.",
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "reclamo_foto_analizada_pide_direccion_v1"
+                }
+            else:
+                return {
+                    "message_body": "He recibido tu foto. Para continuar con el reclamo, por favor, decime la dirección del problema.",
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "reclamo_foto_recibida_pide_direccion_v1"
+                }
+
+        return {
+            "message_body": "No pude analizar la imagen correctamente. Por favor, ¿podrías describir el problema y la dirección?",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "reclamo_foto_error_analisis_v1"
+        }
+
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") or ""
         memoria = self.context[CONTEXTO_MUNICIPIO]
@@ -1276,15 +1310,10 @@ class ReclamoHandler(BaseMunicipioHandler):
         # Log entry point
         logger.info(f"[ReclamoHandler.handle ENTRY] Pregunta: '{pregunta_str[:100]}...', Estado Memoria: {estado.name if estado else 'None'}, Intención: {intencion}")
 
+        if self.context.get("es_foto") and intencion == "iniciar_reclamo" and estado is None:
+            return self._handle_image_complaint(memoria, payload)
+
         if intencion == "iniciar_reclamo" and estado is None:
-            if self.context.get("es_foto"):
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-                return {
-                    "message_body": "He recibido tu foto. Para continuar con el reclamo, por favor, decime la dirección del problema.",
-                    "options_list": [],
-                    "message_type": "text",
-                    "fuente": "reclamo_foto_recibida_pide_direccion_v1"
-                }
             logger.info("[ReclamoHandler] Intención 'iniciar_reclamo' y sin estado previo.")
             # Si el usuario hace clic en un botón de categoría (ej. "Alumbrado"),
             # la pregunta_str será esa categoría. La tratamos como una confirmación implícita.
@@ -4103,6 +4132,9 @@ def responder_municipio(
        uploaded_file_info_for_analysis.get("source") == "whatsapp" and \
        context.get("es_foto"): # es_foto should be set by now if it's an image
         logger_actual.info("[MEDIA_ANALYSIS] Procesando imagen WhatsApp directamente (no 'analisis_imagen_reclamo_auto_raw' previo).")
+        if not received_payload.get("intencion"):
+            context["intencion"] = "iniciar_reclamo"
+            received_payload["intencion"] = "iniciar_reclamo"
         try:
             from services.interpretacion_imagen_service import interpretar_imagen_para_chat
             analisis_resultado_whatsapp = interpretar_imagen_para_chat(
@@ -4118,10 +4150,6 @@ def responder_municipio(
                     contexto_municipio_actual["categoria_reclamo"] = cat_sug_wp
                 if desc_sug_wp and (not contexto_municipio_actual.get("descripcion_reclamo") or len(contexto_municipio_actual.get("descripcion_reclamo", "")) < 20):
                     contexto_municipio_actual["descripcion_reclamo"] = desc_sug_wp
-                
-                if not respuesta_manejada_por_llm and not pregunta_str.strip() and not context.get("intencion") and analisis_resultado_whatsapp.get('es_reclamo'):
-                    context["intencion"] = "iniciar_reclamo"
-                    logger_actual.info(f"Intención fijada a 'iniciar_reclamo' por análisis WhatsApp (sin texto/intención previa y LLM no manejó).")
         except Exception as e_img_direct_wp:
             logger_actual.error(f"Error en análisis directo de imagen WhatsApp: {e_img_direct_wp}", exc_info=True)
     if not contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw") and \
