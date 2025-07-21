@@ -9,7 +9,7 @@ from models import (
     User,
     TicketComentario,
     TicketSatisfaccion,
-    ArchivoAdjunto, # Asegurarse que ArchivoAdjunto esté importado
+    ArchivoAdjunto,
     db,
 )
 from datetime import datetime, timedelta
