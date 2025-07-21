@@ -5,7 +5,7 @@ from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext, db
 from extensions import db
 from functools import wraps
 import uuid

@@ -8,7 +8,7 @@ if project_root_logic not in sys.path:
     sys.path.insert(0, project_root_logic)
 
 from flask import current_app
-from models import ArchivoAdjunto, AnalisisArchivo, db # db para la sesión
+from models import db
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)

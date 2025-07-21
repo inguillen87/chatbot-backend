@@ -1285,7 +1285,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                 logger.info(f"[ReclamoHandler] Botón de categoría '{pregunta_str}' presionado. Tratando como confirmación para iniciar reclamo.")
                 # Limpiar memoria de reclamo anterior y proceder directamente.
                 memoria.clear()
-                memoria["categoria_reclamo"] = CATEGORIAS_RECLAMO[categorias_normalizadas.index(texto_normalizado_pregunta_actual)]
+                memoria["categoria_reclamo"] = CATEGORIAS_RECLAMO[categorias_normalizadas.index(texto_normalizado_pregunta_actual)] if texto_normalizado_pregunta_actual in categorias_normalizadas else "Otro Motivo"
                 memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
                 # Llamar a `self.handle` recursivamente para que maneje el nuevo estado.
                 # Pasar un payload modificado sin la pregunta para evitar que se procese de nuevo.
@@ -2482,11 +2482,11 @@ class ReclamoHandler(BaseMunicipioHandler):
                     if telefono_e164:
                         logger.info(f"[ReclamoHandler] Intentando enviar notificaciones para Ticket M-{ticket.nro_ticket} a {telefono_e164}. Nombre: {nombre}, Categoria: {categoria}")
                         try:
-                            enviar_notificacion_whatsapp_con_plantilla(telefono_e164, nombre, str(ticket.nro_ticket), categoria)
+                            enviar_notificacion_whatsapp_con_plantilla(telefono_e164, str(nombre), str(ticket.nro_ticket), str(categoria))
                         except Exception as e_whatsapp:
                             logger.error(f"[ReclamoHandler] Error al intentar enviar notificación WhatsApp para Ticket M-{ticket.nro_ticket}: {e_whatsapp}", exc_info=True)
                         try:
-                            enviar_notificacion_sms(telefono_e164, f"Hola {nombre}! Tu reclamo M-{ticket.nro_ticket} ({categoria}) fue generado.")
+                            enviar_notificacion_sms(telefono_e164, f"Hola {str(nombre)}! Tu reclamo M-{ticket.nro_ticket} ({str(categoria)}) fue generado.")
                         except Exception as e_sms:
                             logger.error(f"[ReclamoHandler] Error al intentar enviar notificación SMS para Ticket M-{ticket.nro_ticket}: {e_sms}", exc_info=True)
                     else:
@@ -2562,6 +2562,7 @@ class ReclamoHandler(BaseMunicipioHandler):
                     "fuente": "reclamo_editar_iniciar_desde_categoria_v2"
                 }
             else: # Fallback for ESPERANDO_CONFIRMACION_RECLAMO
+                respuesta_llm = None
                 try:
                     respuesta_llm = _clasificar_intencion_con_llm(pregunta_str, opciones=["confirmar", "editar"], tipo="confirmacion")
                     if respuesta_llm and "confirm" in respuesta_llm.lower(): payload2 = payload.copy(); payload2["action"] = "confirmar_reclamo_final"; return self.handle(payload2) # Use specific action ID
@@ -3066,6 +3067,8 @@ class ImpuestosHandler(BaseMunicipioHandler):
             }
         return None
 
+from services.gemini_bridge import llamar_gemini
+
 class GeneralHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", ""); memoria = self.context[CONTEXTO_MUNICIPIO]; estado = memoria.get("estado_conversacion")
@@ -3124,6 +3127,7 @@ class GeneralHandler(BaseMunicipioHandler):
         mensaje_a_gemini = f"Contexto del sitio web del municipio:\n{contexto_scraped}\n\nPregunta del usuario: {pregunta_str}"
 
         try:
+            mensaje_para_gemini = f"Contexto del sitio web del municipio:\n{contexto_scraped}\n\nPregunta del usuario: {pregunta_str}"
             llm_response_structured = llamar_gemini(
                 mensaje_usuario=mensaje_para_gemini,
                 usuario=usuario_info_for_gemini,
@@ -3774,7 +3778,9 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     if resumen_analisis:
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
-        respuesta_llm_dict = llamar_gemini(mensaje_usuario=json.dumps(mensaje_completo_para_llm), usuario=usuario_info_llm, historial=historial_para_llm)
+        mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
+        mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
+        respuesta_llm_dict = llamar_gemini(mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm)
         logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
 
         respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
