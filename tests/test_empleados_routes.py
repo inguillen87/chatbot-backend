@@ -12,7 +12,7 @@ if project_root not in sys.path:
 from app import create_app, db
 from models import User
 from routes.empleados import crear_empleado
-from config import TestingConfig
+from config import TestConfig as TestingConfig
 
 class EmpleadosRouteTests(unittest.TestCase):
     def setUp(self):

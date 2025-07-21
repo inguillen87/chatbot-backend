@@ -14,7 +14,7 @@ from models import User, Rubro
 from services.actions.municipio_actions import DerivarHumanoActionHandler as DerivarHumanoActionHandlerMunicipio
 from services.actions.pyme_actions import DerivarHumanoActionHandler as DerivarHumanoActionHandlerPyme
 from services.chat_orchestrator import ChatOrchestrator
-from config import TestingConfig
+from config import TestConfig as TestingConfig
 
 class DerivarHumanoActionHandlerTests(unittest.TestCase):
     def setUp(self):

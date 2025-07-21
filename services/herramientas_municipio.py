@@ -168,44 +168,48 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     # Este es un intento muy básico y puede necesitar mejoras significativas o una librería dedicada.
 
     # Extraer CP al final (ej: ..., 5500 o (5500))
-    cp_match = re.search(r"(\b\d{4}\b|\(\d{4}\))$", direccion_limpia)
-    if cp_match:
-        parsed_data["codigo_postal"] = cp_match.group(1).replace("(", "").replace(")", "")
-        direccion_limpia = direccion_limpia[:cp_match.start()].strip().rstrip(',')
-        logger.debug(f"CP extraído: {parsed_data['codigo_postal']}, resto: '{direccion_limpia}'")
+    try:
+        cp_match = re.search(r"(\b\d{4}\b|\(\d{4}\))$", direccion_limpia, re.TIMEOUT)
+        if cp_match:
+            parsed_data["codigo_postal"] = cp_match.group(1).replace("(", "").replace(")", "")
+            direccion_limpia = direccion_limpia[:cp_match.start()].strip().rstrip(',')
+            logger.debug(f"CP extraído: {parsed_data['codigo_postal']}, resto: '{direccion_limpia}'")
 
-    match_calle_numero_final = re.match(r"^(.*?)\s+(\d+[a-zA-Z]?(?:\s*(?:bis|altos|piso\s*\w+|dpto\s*\w+))?)\s*(?:,\s*(.*))?$", direccion_limpia, re.IGNORECASE)
+        match_calle_numero_final = re.match(r"^(.*?)\s+(\d+[a-zA-Z]?(?:\s*(?:bis|altos|piso\s*\w+|dpto\s*\w+))?)\s*(?:,\s*(.*))?$", direccion_limpia, re.IGNORECASE | re.TIMEOUT)
 
-    calle_original = direccion_limpia
+        calle_original = direccion_limpia
 
-    if match_calle_numero_final:
-        parsed_data["calle"] = match_calle_numero_final.group(1).strip().rstrip(',')
-        parsed_data["numero"] = match_calle_numero_final.group(2).strip()
-        resto_direccion_post_numero = (match_calle_numero_final.group(3) or "").strip()
-        calle_original = parsed_data["calle"]
-        logger.debug(f"Calle: {parsed_data['calle']}, Numero: {parsed_data['numero']}, Resto post-numero: '{resto_direccion_post_numero}'")
+        if match_calle_numero_final:
+            parsed_data["calle"] = match_calle_numero_final.group(1).strip().rstrip(',')
+            parsed_data["numero"] = match_calle_numero_final.group(2).strip()
+            resto_direccion_post_numero = (match_calle_numero_final.group(3) or "").strip()
+            calle_original = parsed_data["calle"]
+            logger.debug(f"Calle: {parsed_data['calle']}, Numero: {parsed_data['numero']}, Resto post-numero: '{resto_direccion_post_numero}'")
 
-        num_lower = parsed_data["numero"].lower()
-        piso_depto_match_en_num = re.search(r"(?:piso|p)\s*(\w+)(?:\s*(?:dpto|d)\s*(\w+))?", num_lower)
-        if piso_depto_match_en_num:
-            parsed_data["piso"] = piso_depto_match_en_num.group(1)
-            if piso_depto_match_en_num.group(2): parsed_data["departamento"] = piso_depto_match_en_num.group(2)
-            parsed_data["numero"] = num_lower[:piso_depto_match_en_num.start()].strip()
+            num_lower = parsed_data["numero"].lower()
+            piso_depto_match_en_num = re.search(r"(?:piso|p)\s*(\w+)(?:\s*(?:dpto|d)\s*(\w+))?", num_lower, re.TIMEOUT)
+            if piso_depto_match_en_num:
+                parsed_data["piso"] = piso_depto_match_en_num.group(1)
+                if piso_depto_match_en_num.group(2): parsed_data["departamento"] = piso_depto_match_en_num.group(2)
+                parsed_data["numero"] = num_lower[:piso_depto_match_en_num.start()].strip()
 
-        if not parsed_data.get("piso") and resto_direccion_post_numero:
-            piso_depto_match_resto = re.search(r"(?:Piso|P)\s*(\w+)(?:\s*(?:Dpto|D|Depto\.?)\s*(\w+))?", resto_direccion_post_numero, re.IGNORECASE)
-            if piso_depto_match_resto:
-                parsed_data["piso"] = piso_depto_match_resto.group(1)
-                if piso_depto_match_resto.group(2): parsed_data["departamento"] = piso_depto_match_resto.group(2)
-                resto_direccion_post_numero = resto_direccion_post_numero.replace(piso_depto_match_resto.group(0), "").strip().rstrip(',').strip()
+            if not parsed_data.get("piso") and resto_direccion_post_numero:
+                piso_depto_match_resto = re.search(r"(?:Piso|P)\s*(\w+)(?:\s*(?:Dpto|D|Depto\.?)\s*(\w+))?", resto_direccion_post_numero, re.IGNORECASE | re.TIMEOUT)
+                if piso_depto_match_resto:
+                    parsed_data["piso"] = piso_depto_match_resto.group(1)
+                    if piso_depto_match_resto.group(2): parsed_data["departamento"] = piso_depto_match_resto.group(2)
+                    resto_direccion_post_numero = resto_direccion_post_numero.replace(piso_depto_match_resto.group(0), "").strip().rstrip(',').strip()
 
-        direccion_limpia = resto_direccion_post_numero
-    else:
-        parts_sin_numero = direccion_limpia.split(',', 1)
-        parsed_data["calle"] = parts_sin_numero[0].strip()
-        calle_original = parsed_data["calle"]
-        direccion_limpia = parts_sin_numero[1].strip() if len(parts_sin_numero) > 1 else ""
-        logger.debug(f"Calle (sin num claro en regex): {parsed_data['calle']}, Resto: '{direccion_limpia}'")
+            direccion_limpia = resto_direccion_post_numero
+        else:
+            parts_sin_numero = direccion_limpia.split(',', 1)
+            parsed_data["calle"] = parts_sin_numero[0].strip()
+            calle_original = parsed_data["calle"]
+            direccion_limpia = parts_sin_numero[1].strip() if len(parts_sin_numero) > 1 else ""
+            logger.debug(f"Calle (sin num claro en regex): {parsed_data['calle']}, Resto: '{direccion_limpia}'")
+    except re.error as e:
+        logger.error(f"Error de regex en parse_direccion_completa: {e}")
+        return None
 
     partes_restantes = [p.strip() for p in direccion_limpia.split(',') if p.strip()]
 
