@@ -166,9 +166,29 @@ def create_app(config_class=Config):
 
     @app.after_request
     def after_request(response):
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-chat-session-id,Anon-Id')
+        # Asegurarse de que el origen de la solicitud esté permitido
+        # Nota: Idealmente, esto debería ser más restrictivo y basarse en una lista de orígenes permitidos.
+        # El '*' es conveniente para el desarrollo pero puede ser un riesgo de seguridad en producción.
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers.add('Access-Control-Allow-Origin', origin)
+
+        # Headers permitidos, incluyendo el crucial 'x-entity-token'
+        allowed_headers = [
+            'Content-Type',
+            'Authorization',
+            'x-chat-session-id',
+            'Anon-Id',
+            'x-entity-token'  # <-- AÑADIDO
+        ]
+        response.headers.add('Access-Control-Allow-Headers', ','.join(allowed_headers))
+
+        # Métodos permitidos
         response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+
+        # Permitir que las credenciales (como cookies o tokens de autorización) se envíen
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+
         return response
 
     @app.after_request
