@@ -12,7 +12,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from routes.ticket import _get_tickets_del_usuario_logic
+from routes.ticket import get_tickets_del_usuario_logic
 
 class TicketsEndpointTest(unittest.TestCase):
     def setUp(self):

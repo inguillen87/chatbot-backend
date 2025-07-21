@@ -6,7 +6,7 @@ from unittest.mock import patch
 from app import create_app, db
 from models import User, Rubro
 from routes.auth import google_login
-from config import TestingConfig
+from config import TestConfig
 
 class GoogleLoginRouteTests(unittest.TestCase):
     def setUp(self):

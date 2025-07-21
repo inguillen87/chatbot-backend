@@ -200,7 +200,11 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         serialized_tickets = [serialize_ticket_func(t, tipo_ticket_str) for t in tickets_for_list_page]
 
-        return jsonify(serialized_tickets)
+        # Devolver tanto la lista de tickets para la página actual como el resumen
+        return jsonify({
+            "tickets": serialized_tickets,
+            "summary": summary_by_status
+        })
 
     except Exception as e:
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)

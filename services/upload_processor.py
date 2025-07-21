@@ -111,24 +111,27 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         _, extension_archivo = os.path.splitext(path_archivo)
         extension_archivo = extension_archivo.lower()
 
-        from services.generic_file_processor import procesar_archivo_generico
-        from mimetypes import guess_type
-
-        mime_type, _ = guess_type(path_archivo)
-        if mime_type:
-            resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
-            if resultado_generico and resultado_generico.get("analisis_gemini"):
-                # Asumimos que el análisis de Gemini puede devolver una lista de productos
-                # o un objeto que la contiene. Esto necesita un contrato claro con el prompt.
-                registros_estructurados = resultado_generico["analisis_gemini"]
-                if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
-                    registros_estructurados = registros_estructurados["productos"]
-            else:
-                logger.warning(f"El procesamiento genérico no devolvió un análisis de Gemini para {os.path.basename(path_archivo)}")
-                registros_estructurados = []
+        if extension_archivo in [".xlsx", ".xls", ".csv"]:
+            registros_estructurados = procesar_catalogo_excel(path_archivo)
+        elif extension_archivo == ".pdf":
+            registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id)
+        elif extension_archivo in [".png", ".jpg", ".jpeg"]:
+            registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id)
         else:
-            logger.error(f"No se pudo determinar el tipo MIME para {os.path.basename(path_archivo)}")
-            raise ValueError(f"Tipo de archivo desconocido para: {os.path.basename(path_archivo)}")
+            # Fallback a genérico para .doc, .docx, .txt
+            from services.generic_file_processor import procesar_archivo_generico
+            from mimetypes import guess_type
+            mime_type, _ = guess_type(path_archivo)
+            if mime_type:
+                resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
+                if resultado_generico and resultado_generico.get("analisis_gemini"):
+                    registros_estructurados = resultado_generico["analisis_gemini"]
+                    if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
+                        registros_estructurados = registros_estructurados["productos"]
+                else:
+                    registros_estructurados = []
+            else:
+                 raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
 
         if not isinstance(registros_estructurados, list):
             logger.error(f"[UPLOAD_PROC] El procesador de archivos no devolvió una lista para '{os.path.basename(path_archivo)}'. Devolvió: {type(registros_estructurados)}")
