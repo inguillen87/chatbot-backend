@@ -61,24 +61,13 @@ class TestMunicipios(unittest.TestCase):
         self.assertIn("Lamento que estés teniendo un problema.", response["message_body"])
         self.assertEqual(self.context["contexto_municipio_v2"]["estado_conversacion"], "ESPERANDO_CONFIRMACION_INICIAR_RECLAMO")
 
-    @patch('services.municipios.llamar_gemini')
-    def test_responder_municipio_imagen(self, mock_llamar_gemini):
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "He recibido tu imagen. ¿Podrías decirme la dirección del problema?",
-            "accion_backend": "crear_reclamo",
-            "datos_estructura": {
-                "target": "municipio",
-                "categoria": "Alumbrado",
-                "descripcion": "Poste de luz roto",
-            },
-            "pedir_info": "direccion",
-            "botones": [],
-        }
+    @patch('services.tasks.interpretar_imagen_para_chat')
+    @patch('services.municipios.process_image_for_chat_task.delay')
+    def test_responder_municipio_imagen(self, mock_process_image_task, mock_interpretar_imagen):
+        pregunta_original = ""
 
-        pregunta_original = {
-            "pregunta": "",
-            "es_foto": True,
-            "foto_url": "http://example.com/imagen.jpg",
+        kwargs = {
+            "chat_session_uuid": "test_session_uuid",
             "uploaded_file_info_whatsapp": {
                 "url": "http://example.com/imagen.jpg",
                 "mime_type": "image/jpeg",
@@ -86,21 +75,24 @@ class TestMunicipios(unittest.TestCase):
             },
         }
 
-        with patch('services.municipios.db.session.get', return_value=None), \
-             patch('services.municipios.db.session.add', return_value=None), \
-             patch('services.municipios.db.session.commit', return_value=None), \
-             patch('services.municipios.flag_modified', return_value=None):
+        response = responder_municipio(
+            pregunta_original,
+            self.owner_user,
+            self.rubro_obj,
+            self.viewer_user,
+            self.chat_db_context,
+            "test_anon_id",
+            **kwargs,
+        )
 
-            response = responder_municipio(
-                pregunta_original,
-                self.owner_user,
-                self.rubro_obj,
-                self.viewer_user,
-                self.chat_db_context,
-                "test_anon_id",
-            )
-            self.assertIsNotNone(response)
-            self.assertIn("He recibido tu imagen.", response["message_body"])
+        self.assertIsNotNone(response)
+        self.assertIn("He recibido tu imagen y la estoy analizando.", response["message_body"])
+        mock_process_image_task.assert_called_once_with(
+            user_phone_number="test_anon_id",
+            client_user_id=self.owner_user.id,
+            uploaded_file_info_whatsapp=kwargs["uploaded_file_info_whatsapp"],
+            chat_session_id="test_session_uuid",
+        )
 
 if __name__ == '__main__':
     unittest.main()
