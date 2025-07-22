@@ -3,7 +3,7 @@ from utils.time_utils import get_local_now
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
 from sqlalchemy import Index
 from sqlalchemy.dialects.sqlite import JSON
-from database import db
+from extensions import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 import uuid
