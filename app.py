@@ -230,6 +230,8 @@ def create_app(config_class=Config):
 
     return app
 
+# Esto crea el objeto 'app' global para Gunicorn:
+app = create_app()
+
 if __name__ == '__main__':
-    app = create_app()
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
