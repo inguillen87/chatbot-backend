@@ -203,3 +203,6 @@ consulta el archivo [`docs/ejemplo-request-demo.md`](docs/ejemplo-request-demo.m
 - El analizador de sentimiento ahora responde de forma positiva o negativa para mejorar la interacción con pymes.
 - Cuando el usuario solicita el PDF, el bot devuelve un enlace directo al endpoint `/catalogo/descargar` para facilitar la descarga del catálogo.
 - Si el widget no aparece o surgen conflictos de integraci\u00f3n, revisa `docs/widget-troubleshooting.md` o escribe a [info@chatboc.ar](mailto:info@chatboc.ar).
+
+## SaaS Deployment
+This project can be deployed as a multi-tenant SaaS solution. Each company has its own token and context. See `docs/ARCHITECTURE.md` for how the LLM-driven flow integrates with the CRM modules.

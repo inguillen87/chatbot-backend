@@ -3750,13 +3750,31 @@ from services.gemini_bridge import llamar_gemini # Asegurar import
 
 OWNER_HANDLERS_FOR_STATE = {ConversationState.ESPERANDO_CATEGORIA_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_DIRECCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NOMBRE_VECINO: ReclamoHandler, ConversationState.ESPERANDO_TELEFONO_VECINO: ReclamoHandler, ConversationState.ESPERANDO_EMAIL_VECINO: ReclamoHandler, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO: ReclamoHandler, ConversationState.ESPERANDO_NUMERO_TICKET: TicketStatusHandler, ConversationState.ESPERANDO_CONFIRMACION_CIERRE: TicketStatusHandler, ConversationState.ESPERANDO_CALIFICACION: TicketStatusHandler, ConversationState.ESPERANDO_PARAM_RECOLECCION: RecoleccionHandler, ConversationState.ESPERANDO_SELECCION_TRAMITE: TramitesHandler, ConversationState.ESPERANDO_PREGUNTA_CURSO_LICENCIA: TramitesHandler, ConversationState.ESPERANDO_TEXTO_SUGERENCIA: SugerenciasVecinoHandler, ConversationState.ESPERANDO_PRODUCTO_PARA_CONSULTA: ProductInquiryHandler, ConversationState.MOSTRANDO_PRODUCTOS: ProductInquiryHandler, ConversationState.ESPERANDO_CONFIRMACION_AGREGAR_CARRITO: ProductInquiryHandler, ConversationState.ESPERANDO_OPCION_CARRITO: CartHandler, ConversationState.ESPERANDO_DETALLES_CHECKOUT: CheckoutHandler, ConversationState.ESPERANDO_CONFIRMACION_PEDIDO: CheckoutHandler, ConversationState.ESPERANDO_UBICACION_PANICO: PanicButtonHandler}
 
+from services.actions.municipio_actions import CrearReclamoActionHandler
+
+
 def accion_crear_reclamo_municipio(datos_reclamo, context):
-    """
-    Crea un ticket de reclamo en el sistema.
-    """
-    # Lógica para crear el reclamo...
-    # ... (esta función contendrá la lógica de creación de ticket)
-    pass
+    """Wrapper que delega la creación de reclamos al ActionHandler dedicado."""
+
+    handler = CrearReclamoActionHandler(context=context)
+    resultado = handler.execute(datos_reclamo)
+
+    if resultado.get("success"):
+        return {
+            "message_body": resultado.get("message_to_user", "Reclamo generado."),
+            "options_list": resultado.get("botones", []),
+            "fuente": "accion_crear_reclamo_llm_exito",
+            "ticket_id": resultado.get("data", {}).get("ticket_id"),
+        }
+
+    return {
+        "message_body": resultado.get(
+            "message_to_user",
+            "Hubo un problema al intentar registrar tu reclamo. Por favor, intenta de nuevo.",
+        ),
+        "options_list": [],
+        "fuente": "accion_crear_reclamo_llm_error",
+    }
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context):
     logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
