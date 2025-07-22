@@ -3789,10 +3789,8 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         if len(pregunta_str.strip().split()) > 1 or (context.get("es_foto") and not pregunta_str.strip()):
             invocar_llm = True
 
-    if not invocar_llm:
-        return None
-
-    logger.info(f"[HANDLE_LLM] Invocando LLM. Estado: {estado_conversacion_para_llm}")
+    if invocar_llm:
+        logger.info(f"[HANDLE_LLM] Invocando LLM. Estado: {estado_conversacion_para_llm}")
 
     usuario_info_llm = {
         "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
