@@ -244,7 +244,22 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
     "leakage": "Falta de agua, rotura de caño",
     "road": "Arreglo de calle", # Generic, might need more context
     "signage": "Rotura de semaforo", # If context implies damage/issue, could be other types of signs
-    "power line": "Luminaria" # Or a generic public service issue
+    "power line": "Luminaria", # Or a generic public service issue
+    "sidewalk": "Arreglo de calle",
+    "driveway": "Arreglo de calle",
+    "tar": "Arreglo de calle",
+    "asphalt": "Arreglo de calle",
+    "roadway": "Arreglo de calle",
+    "public utility": "Otro Motivo",
+    "infrastructure": "Otro Motivo",
+    "hazard": "Otro Motivo",
+    "danger": "Otro Motivo",
+    "damage": "Otro Motivo",
+    "broken": "Otro Motivo",
+    "fallen": "Otro Motivo",
+    "overflowing": "Limpieza",
+    "vandalism": "Otro Motivo",
+    "neglect": "Otro Motivo"
 }
 # Also import CATEGORIAS_RECLAMO from municipios to validate against
 try:

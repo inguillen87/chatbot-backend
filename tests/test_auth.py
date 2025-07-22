@@ -3,6 +3,7 @@ import os
 from app import db
 from models import User
 
+
 def test_login_no_json(test_client):
     """
     Tests that the login route returns a 400 error if the request is not JSON.

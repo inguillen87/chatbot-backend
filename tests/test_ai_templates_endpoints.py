@@ -15,6 +15,8 @@ from models import PlantillasRespuesta, User, Rubro
 from routes.ai_templates import ai_templates_bp
 import json
 
+from config import Config
+
 # Configuración de prueba
 from config import Config
 

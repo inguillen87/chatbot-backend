@@ -16,7 +16,7 @@ from services.actions.pyme_actions import (
     DerivarHumanoActionHandlerPyme as DerivarHumanoActionHandler,
 )
 from services.chat_orchestrator import ChatOrchestrator
-from config import TestConfig
+
 
 class DerivarHumanoActionHandlerTests(unittest.TestCase):
     def setUp(self):
