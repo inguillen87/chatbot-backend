@@ -4,7 +4,7 @@ from unittest.mock import patch
 from app import create_app, db
 from models import User, Rubro
 from routes.auth import dashboard_info
-from config import TestConfig as TestingConfig
+
 
 class DashboardRouteTests(unittest.TestCase):
     def setUp(self):

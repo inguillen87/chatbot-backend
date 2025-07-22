@@ -4,7 +4,7 @@ from unittest.mock import patch
 from app import create_app, db
 from models import User, Rubro
 from routes.estadisticas import estadisticas_reclamos
-from config import TestingConfig
+from config import TestConfig
 
 class EstadisticasRouteTests(unittest.TestCase):
     def setUp(self):

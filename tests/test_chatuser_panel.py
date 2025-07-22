@@ -3,7 +3,7 @@ import uuid
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from models import ChatSessionContext, User, Rubro
-from config import TestConfig as TestingConfig
+
 
 class ChatUserPanelTests(unittest.TestCase):
     @classmethod
