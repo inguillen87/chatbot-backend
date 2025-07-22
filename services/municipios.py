@@ -3767,45 +3767,16 @@ def responder_municipio(
 
     # --- End Handle post-login resumption ---
 
-    respuesta_manejada_por_llm = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context)
-
-    if respuesta_manejada_por_llm:
-        contexto_municipio_serializado_para_db = serializar_enum(context.get(CONTEXTO_MUNICIPIO, {}))
-        if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
-            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
-            flag_modified(chat_db_context, "context_data")
-        return respuesta_manejada_por_llm
-    
-    # Add the new handlers to the list of handlers
-    handlers = [
-        AnalizarImagenHandler(context),
-        SolicitarUbicacionHandler(context),
-        GreetingHandler(context),
-        CancelHandler(context),
-        PoliteHandler(context),
-        SmallTalkHandler(context),
-        RecoleccionHandler(context),
-        TicketStatusHandler(context),
-        ReclamoHandler(context),
-        TramitesHandler(context),
-        SugerenciasVecinoHandler(context),
-        ProductCatalogHandler(context),
-        ProductInquiryHandler(context),
-        CartHandler(context),
-        CheckoutHandler(context),
-        StoreLocationHandler(context),
-        PanicButtonHandler(context),
-        ImpuestosHandler(context),
-        ReclamoGeoHandler(context),
-        IntentClassifierHandler(context),
-        GeneralHandler(context)
-    ]
-
-    for handler in handlers:
-        respuesta = handler.handle(received_payload)
-        if respuesta:
-            # ... (the rest of the function)
-            return respuesta
+    # LLM-first approach. The main Gemini call will now be the primary driver.
+    # The old handlers will be retired.
+    # respuesta_manejada_por_llm = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context)
+    #
+    # if respuesta_manejada_por_llm:
+    #     contexto_municipio_serializado_para_db = serializar_enum(context.get(CONTEXTO_MUNICIPIO, {}))
+    #     if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
+    #         chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
+    #         flag_modified(chat_db_context, "context_data")
+    #     return respuesta_manejada_por_llm
 
     # --- Image Analysis & Web Analysis Check (POST-LLM or if LLM not used) ---
     # This block runs if LLM didn't handle the response, or to supplement LLM context
@@ -4035,38 +4006,6 @@ def responder_municipio(
             logger_actual.error(f"Error en análisis directo de imagen WhatsApp: {e_img_direct_wp}", exc_info=True)
     
     # --- End of Image Analysis & Web Analysis Check ---
-
-    for handler_class in [
-        GreetingHandler,
-        CancelHandler,
-        PoliteHandler,
-        SmallTalkHandler,
-        RecoleccionHandler,
-        TicketStatusHandler,
-        AnalizarImagenHandler,
-        SolicitarUbicacionHandler,
-        ReclamoHandler,
-        TramitesHandler,
-        SugerenciasVecinoHandler,
-        ProductCatalogHandler,
-        ProductInquiryHandler,
-        CartHandler,
-        CheckoutHandler,
-        StoreLocationHandler,
-        PanicButtonHandler,
-        ImpuestosHandler,
-        ReclamoGeoHandler,
-        IntentClassifierHandler,
-        GeneralHandler,
-    ]:
-        handler = handler_class(context)
-        respuesta = handler.handle(received_payload)
-        if respuesta:
-            contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
-            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return respuesta
 
     # --- Construcción del Contexto Global para Orchestrator y Handlers ---
     # Este es el 'global_context' que recibirá el ChatOrchestrator
