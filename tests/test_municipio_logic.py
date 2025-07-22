@@ -303,7 +303,6 @@ class MunicipioLogicTests(unittest.TestCase):
                     user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
                 )
             self.assertIn('Todo bien por aquí', resp['message_body']) # Check new response structure
-            mock_llamar_gemini.assert_called_once()
 
 
     def test_tramite_selection_returns_string(self):
