@@ -1171,11 +1171,11 @@ class ReclamoInteligenteMunicipioHandler(BaseMunicipioHandler):
 
         # La limpieza de memoria se hace DESPUÉS de la verificación de frase genérica,
         # solo si la frase NO es genérica y se va a proceder con la extracción inteligente.
-        if not (current_state_obj and current_state_obj in RECLAMO_STATES):
-            memoria.clear()
-            logger.info("[ReclamoInteligenteHandler] Memoria limpiada para nuevo intento de reclamo inteligente (pregunta no genérica).")
-        else:
-            logger.info("[ReclamoInteligenteHandler] Reclamo ya en curso, no se limpiará la memoria globalmente aquí.")
+        # if not (current_state_obj and current_state_obj in RECLAMO_STATES):
+        #     memoria.clear()
+        #     logger.info("[ReclamoInteligenteHandler] Memoria limpiada para nuevo intento de reclamo inteligente (pregunta no genérica).")
+        # else:
+        #     logger.info("[ReclamoInteligenteHandler] Reclamo ya en curso, no se limpiará la memoria globalmente aquí.")
 
         # LLM call removed. This handler now assumes that if it's called with a "iniciar_reclamo" intent
         # and no pre-existing reclamo state, the main Gemini call (Orchestrator) should have already
