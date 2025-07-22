@@ -340,17 +340,6 @@ class CatalogoEmbedding(db.Model):
     precio = db.Column(db.String(50))
     embedding_vector = db.Column(JSON)
 
-class Conversacion(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
-    pregunta = db.Column(db.Text, nullable=False)
-    respuesta = db.Column(db.Text, nullable=False)
-    fuente = db.Column(db.String(50), nullable=False)
-    rubro = db.Column(db.String(100), nullable=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    session_id = db.Column(db.String(36), default=lambda: str(uuid.uuid4()), nullable=False)
-    __table_args__ = (Index('ix_conversacion_session_id', 'session_id'),)
-
 class SitioWebInfo(db.Model):
     __tablename__ = 'sitio_web_info'
     id = db.Column(db.Integer, primary_key=True)
