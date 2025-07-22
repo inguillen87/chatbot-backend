@@ -23,30 +23,18 @@ class TestConfigAll(Config):
 
 class TestAccionesMunicipio(unittest.TestCase):
 
-    @classmethod
-    def setUpClass(cls):
-        """Set up once for all tests in this class."""
-        cls.app = create_app(config_class=TestConfigAll)
-        with cls.app.app_context():
-            db.create_all()
-
-    @classmethod
-    def tearDownClass(cls):
-        """Tear down once after all tests in this class."""
-        with cls.app.app_context():
-            db.drop_all()
-
     def setUp(self):
         """Set up for each test."""
+        self.app = create_app(config_class=TestConfigAll)
         self.app_context = self.app.app_context()
         self.app_context.push()
+        db.create_all()
         self.session = db.session
-        self.session.begin_nested()
 
     def tearDown(self):
         """Tear down after each test."""
-        self.session.rollback()
-        self.session.remove()
+        db.session.remove()
+        db.drop_all()
         self.app_context.pop()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')

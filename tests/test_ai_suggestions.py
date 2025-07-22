@@ -22,14 +22,10 @@ class TestConfig(Config):
     COHERE_API_KEY = "test_cohere_key"
 
 class TestAISuggestions(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        """Set up the Flask application for all tests in this class."""
-        cls.app = create_app(TestConfig)
-        cls.app.register_blueprint(ai_bp, url_prefix='/ai')
-
     def setUp(self):
         """Set up for each test method."""
+        self.app = create_app(TestConfig)
+        self.app.register_blueprint(ai_bp, url_prefix='/ai')
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

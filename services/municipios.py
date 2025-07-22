@@ -725,222 +725,6 @@ class RecoleccionHandler(BaseMunicipioHandler):
                 return {"message_body": f"¿La dirección para consultar el horario de recolección?\nPor ejemplo: {EJEMPLO_DIRECCION}", "options_list": [], "message_type": "text", "fuente": "recoleccion_pedir_direccion_v2"}
         return None
 
-class IntentClassifierHandler(BaseMunicipioHandler):
-    KEYWORDS_AGENTE = ["agente", "humano", "persona", "representante", "operador", "empleado", "atención", "real", "chat real", "soporte", "ayuda humana", "hablar con alguien", "asesor", "consultor", "soporte técnico", "atender", "personal", "comunicarme", "llamar", "contacto", "quiero hablar", "hablame con"]
-    KEYWORDS_RECLAMO = ["reclamo", "reclamos", "queja", "quejas", "problema", "problemas", "denuncia", "denuncias", "reportar", "arbol caido", "árbol caído", "arbol", "caido"]
-    KEYWORDS_TRAMITE = ["trámite", "tramite", "trámites", "tramites", "gestión", "gestiones", "consulta de trámite", "turno", "certificado", "licencia", "renovar", "sacar"]
-    KEYWORDS_TICKET_STATUS = ["ticket", "estado", "seguimiento", "número de ticket"]
-    KEYWORDS_SUGERENCIA = ["sugerencia", "sugerencias", "idea", "propuesta", "proponer", "mejorar"]
-    KEYWORDS_INICIAR_COMPRA = ["comprar", "compra", "pedido", "productos", "catálogo", "catalogo", "tienda", "venden"]
-    KEYWORDS_VER_CARRITO = ["carrito", "bolsa", "mi compra", "mi pedido"]
-    KEYWORDS_PAGAR = ["pagar", "checkout", "finalizar compra", "cobrar"]
-    KEYWORDS_UBICACION_TIENDA = ["ubicación", "dirección", "local", "tienda física", "sucursal", "mapa"]
-    KEYWORDS_RECLAMO_PEDIDO = ["pedido mal", "problema compra", "producto roto", "pedido incorrecto"]
-    KEYWORDS_PANICO = ["ayuda urgente", "emergencia", "sos", "necesito ayuda inmediata", "panico", "pánico", "boton de panico", "botón de pánico", "peligro"]
-    def handle(self, payload: dict) -> dict | None:
-        pregunta_str = payload.get("pregunta", "").strip()
-        memoria = self.context[CONTEXTO_MUNICIPIO]
-        texto_normalizado = normalizar_texto(pregunta_str)
-
-        logger.info(f"[IntentClassifierHandler ENTRY] Pregunta: '{pregunta_str[:100]}...', Intención en Contexto: {self.context.get('intencion')}, Estado Memoria: {memoria.get('estado_conversacion')}")
-
-        # --- Helper function for clearing context while preserving image analysis ---
-        # (Moved here for clarity as it's used multiple times in this handler)
-        def clear_memoria_preserving_image_analysis(m):
-            image_analysis_data = m.get("analisis_imagen_reclamo_auto_raw")
-            categoria_prefill = m.get("categoria_reclamo")
-            descripcion_prefill = m.get("descripcion_reclamo")
-            is_prefill_from_image = image_analysis_data is not None
-            m.clear()
-            if image_analysis_data:
-                m["analisis_imagen_reclamo_auto_raw"] = image_analysis_data
-                if is_prefill_from_image:
-                    if categoria_prefill: m["categoria_reclamo"] = categoria_prefill
-                    if descripcion_prefill: m["descripcion_reclamo"] = descripcion_prefill
-                logger.info("[IntentClassifier] Memoria limpiada, datos de análisis de imagen preservados.")
-        # --- End Helper ---
-
-        # 1. Prioritize LLM-derived intent if specific and actionable
-        llm_intent = self.context.get("intencion")
-        llm_datos_accion = self.context.get("datos_accion") # From main Gemini call
-
-        # If LLM intent is to execute a tool, ensure it's passed to ToolHandler
-        if llm_intent == "ejecutar_herramienta" and isinstance(llm_datos_accion, dict) and llm_datos_accion.get("nombre_herramienta"):
-            logger.info(f"[IntentClassifierHandler] Intención LLM es '{llm_intent}' para herramienta '{llm_datos_accion.get('nombre_herramienta')}'. Cediendo a ToolHandler.")
-            # No need to change context["intencion"] here, it's already set. ToolHandler will use it.
-            return None # ToolHandler will be called later in the chain
-
-        # Handle critical overrides (panic, agent) based on keywords, even if LLM intent exists,
-        # unless an active state already handles them (e.g. ReclamoHandler in specific state).
-        # This check is important for safety and immediate user needs.
-        if any(kw in texto_normalizado for kw in self.KEYWORDS_PANICO):
-            self.context["intencion"] = "activar_panico"
-            clear_memoria_preserving_image_analysis(memoria)
-            logger.info(f"[IntentClassifierHandler] PANICO detectado por keyword. Intención forzada a 'activar_panico'.")
-            return None # PanicButtonHandler should take over
-
-        if any(kw in texto_normalizado for kw in self.KEYWORDS_AGENTE):
-            # Check if already in a flow that might have its own agent escalation
-            current_state_val_for_agent = memoria.get("estado_conversacion")
-            current_state_enum_for_agent = None
-            if isinstance(current_state_val_for_agent, ConversationState): current_state_enum_for_agent = current_state_val_for_agent
-            elif isinstance(current_state_val_for_agent, str):
-                try: current_state_enum_for_agent = ConversationState[current_state_val_for_agent]
-                except KeyError: pass
-
-            if not (current_state_enum_for_agent and current_state_enum_for_agent in RECLAMO_STATES): # Avoid double handling if ReclamoHandler handles agent in-flow
-                self.context["intencion"] = "hablar_con_agente"
-                clear_memoria_preserving_image_analysis(memoria)
-                logger.info(f"[IntentClassifierHandler] AGENTE detectado por keyword. Intención forzada a 'hablar_con_agente'.")
-                return None # HumanEscalationHandler should take over
-
-        # 2. Handle image-related intent priority
-        # If intent is 'iniciar_reclamo' (possibly from image analysis in responder_municipio) AND it's an image
-        if llm_intent == "iniciar_reclamo" and self.context.get("es_foto"):
-            if not pregunta_str: # Image sent alone
-                logger.info(f"[IntentClassifierHandler] Intención 'iniciar_reclamo' (por imagen sin texto) es prioritaria. Manteniendo.")
-                return None # Let ReclamoHandler proceed
-            else: # Image sent with text
-                # Keywords for AGENTE or PANICO in the accompanying text can override 'iniciar_reclamo'
-                # This is already handled by the critical override checks above.
-                # If not overridden, 'iniciar_reclamo' from image + text remains.
-                logger.info(f"[IntentClassifierHandler] Intención 'iniciar_reclamo' (por imagen CON texto) es prioritaria. Texto: '{pregunta_str}'. Manteniendo.")
-                return None # Let ReclamoHandler proceed
-
-        # 3. Respect active conversation states (especially multi-step flows like reclamo)
-        current_context_state_val = memoria.get("estado_conversacion")
-        current_state_enum = None
-
-        if isinstance(current_context_state_val, ConversationState):
-            current_state_enum = current_context_state_val
-        elif isinstance(current_context_state_val, str):
-            try:
-                current_state_enum = ConversationState[current_context_state_val]
-            except KeyError:
-                pass # current_state_enum remains None
-
-        current_context_state_val = memoria.get("estado_conversacion")
-        current_state_enum = None
-        if isinstance(current_context_state_val, ConversationState): current_state_enum = current_context_state_val
-        elif isinstance(current_context_state_val, str):
-            try: current_state_enum = ConversationState[current_context_state_val]
-            except KeyError: pass
-
-        # If there's an active state (e.g., multi-step reclamo), let its handler manage the flow.
-        # Critical overrides (panic, agent) are checked before this.
-        # This IntentClassifier should not override an ongoing, specific flow unless it's a critical interrupt.
-        if current_state_enum:
-            logger.info(f"[IntentClassifierHandler] Estado activo '{current_state_enum.name}'. Cediendo control al handler del estado.")
-            # Set a generic 'continuar_flujo' if LLM didn't provide a more specific one,
-            # to ensure the state's handler gets a chance.
-            if not llm_intent or llm_intent in ["no_accion", "small_talk", "pregunta_general"]:
-                self.context["intencion"] = "continuar_flujo" # Ensure the state handler runs
-            return None # Let the state's owner handler proceed
-
-        # 4. Use LLM-derived intent if it's specific and no active state is overriding.
-        # Actionable intents that don't need further keyword processing here.
-        actionable_llm_intents = [
-            "iniciar_reclamo", "consultar_estado_ticket", "consultar_tramite",
-            "hacer_sugerencia", "iniciar_compra", "ver_carrito", "proceder_al_pago",
-            "solicitar_ubicacion_tienda", "reclamo_pedido"
-            # "ejecutar_herramienta", "activar_panico", "hablar_con_agente" are handled earlier or by specific handlers.
-        ]
-        if llm_intent in actionable_llm_intents:
-            logger.info(f"[IntentClassifierHandler] Usando intención LLM directa: '{llm_intent}'.")
-            # The intent is already in self.context["intencion"].
-            # Ensure memoria is clear if this is a new primary intent and not a continuation.
-            # This is tricky; if LLM initiated a new flow, memoria should be clear.
-            # If it's clarifying a previous generic query, memoria might have useful context.
-            # For now, assume if LLM gives a strong new intent, prior generic context in memoria is less relevant.
-            # However, clear_memoria_preserving_image_analysis might be too broad if not an image flow.
-            # Let's be conservative: if LLM gives a new primary actionable intent, we assume it's a fresh start for that flow.
-            # The specific handlers (ReclamoHandler, etc.) are responsible for their own memory initialization.
-            # This handler's job is just to ensure the correct intent is set.
-            return None # Let the corresponding handler (Reclamo, TicketStatus, etc.) pick it up.
-
-        # 5. Fallback to keyword-based classification if LLM intent is generic or absent
-        #    AND no active state is present.
-        #    (Critical keyword overrides for panic/agent are already done above).
-        
-        logger.info(f"[IntentClassifierHandler] Intención LLM ('{llm_intent}') no es directamente accionable o está ausente. Procediendo con fallback a keywords.")
-
-        # --- Keyword-based classification (as fallback) ---
-        # Explicit RECLAMO phrases
-        reclamo_phrases = [
-            "quiero hacer un reclamo", "necesito hacer un reclamo", "vengo a reclamar", 
-            "hacer un reclamo", "presentar una queja", "reportar un problema"
-        ]
-        for phrase in reclamo_phrases:
-            if normalizar_texto(phrase) in texto_normalizado:
-                self.context["intencion"] = "iniciar_reclamo"
-                logger.info(f"[IntentClassifierHandler KW_FB] Intención: iniciar_reclamo (frase explícita '{phrase}')")
-                return None
-
-        # General RECLAMO keywords
-        for kw in self.KEYWORDS_RECLAMO:
-            if kw in texto_normalizado: 
-                self.context["intencion"] = "iniciar_reclamo"
-                logger.info(f"[IntentClassifierHandler KW_FB] Intención: iniciar_reclamo (keyword general '{kw}')")
-                return None
-        
-        # TICKET STATUS
-        for kw in self.KEYWORDS_TICKET_STATUS:
-            if kw in texto_normalizado:
-                self.context["intencion"] = "consultar_estado_ticket"
-                logger.info(f"[IntentClassifierHandler KW_FB] Intención: consultar_estado_ticket (keyword '{kw}')")
-                return None
-        
-        # TRAMITE
-        for kw in self.KEYWORDS_TRAMITE:
-            if kw in texto_normalizado:
-                self.context["intencion"] = "consultar_tramite"
-                logger.info(f"[IntentClassifierHandler KW_FB] Intención: consultar_tramite (keyword '{kw}')")
-                return None
-        
-        # SUGERENCIA
-        for kw in self.KEYWORDS_SUGERENCIA:
-            if kw in texto_normalizado:
-                self.context["intencion"] = "hacer_sugerencia"
-                logger.info(f"[IntentClassifierHandler KW_FB] Intención: hacer_sugerencia (keyword '{kw}')")
-                return None
-
-        # PYME specific keywords (if target is pyme or ambiguous and these appear)
-        # This part might need refinement based on how `target` from LLM is used.
-        # For now, if LLM didn't set a strong municipal intent, check PYME keywords.
-        if llm_datos_accion and llm_datos_accion.get("target") in ["pyme", "ambos", None]: # Or if target is not strictly municipio
-            for kw_pyme, intent_pyme in [
-                (self.KEYWORDS_INICIAR_COMPRA, "iniciar_compra"),
-                (self.KEYWORDS_VER_CARRITO, "ver_carrito"),
-                (self.KEYWORDS_PAGAR, "proceder_al_pago"),
-                (self.KEYWORDS_UBICACION_TIENDA, "solicitar_ubicacion_tienda"),
-                (self.KEYWORDS_RECLAMO_PEDIDO, "reclamo_pedido")
-            ]:
-                for kw in kw_pyme:
-                    if kw in texto_normalizado:
-                        self.context["intencion"] = intent_pyme
-                        # memoria.clear() # PYME handlers usually manage their own context
-                        logger.info(f"[IntentClassifierHandler KW_FB] Intención PYME: {intent_pyme} (keyword '{kw}')")
-                        return None
-
-        # Direct category match for RECLAMO (final keyword check)
-        if not self.context.get("intencion") and len(texto_normalizado.split()) <= 3:
-            if texto_normalizado in categorias_normalizadas:
-                self.context["intencion"] = "iniciar_reclamo"
-                logger.info(f"[IntentClassifierHandler KW_FB] Intención: iniciar_reclamo (match directo de categoría corta '{texto_normalizado}')")
-                return None
-
-        # If after all this, no specific intent is set by keywords,
-        # and LLM intent was generic (like 'small_talk', 'no_accion', 'pregunta_general'),
-        # we honor that generic LLM intent. If LLM intent was None, default to 'pregunta_general'.
-        if not self.context.get("intencion"): # If keyword fallbacks didn't set anything
-            if llm_intent and llm_intent not in ["ejecutar_herramienta", "activar_panico", "hablar_con_agente", "no_accion"]: # Don't override these critical ones if they somehow reached here
-                self.context["intencion"] = llm_intent # Honor original generic LLM intent
-                logger.info(f"[IntentClassifierHandler] No keyword match. Usando intención genérica original de LLM: '{llm_intent}'")
-            else: # If LLM intent was also None or a critical one we shouldn't default to
-                self.context["intencion"] = "pregunta_general" # Default fallback
-                logger.info(f"[IntentClassifierHandler] No keyword match y sin intención LLM clara (o era 'no_accion'). Default a 'pregunta_general'.")
-
-        return None # Let GeneralHandler or SmallTalkHandler pick up based on the (possibly now generic) intent.
 
 
 class TicketStatusHandler(BaseMunicipioHandler):
@@ -1226,38 +1010,25 @@ class ReclamoHandler(BaseMunicipioHandler):
     EDIT_KEYWORDS = ["editar", "cambiar", "corregir", "modificar", "no era asi", "me equivoque", "error"]
 
     def _handle_image_complaint(self, memoria, payload):
-        from services.interpretacion_imagen_service import interpretar_imagen_para_chat
-
-        analisis_resultado = interpretar_imagen_para_chat(
-            archivo_adjunto={"url": self.context.get("foto_url"), "mime_type": "image/jpeg"},
-            tipo_interpretacion="reclamo_auto_descripcion_categoria"
-        )
+        analisis_resultado = self.context.get("datos_interpretados_archivo")
 
         if analisis_resultado and not analisis_resultado.get("error"):
-            if analisis_resultado.get("es_reclamo"):
-                memoria["categoria_reclamo"] = analisis_resultado.get("categoria_sugerida", "Otro Motivo")
-                memoria["descripcion_reclamo"] = analisis_resultado.get("descripcion_sugerida", "Descripción basada en imagen adjunta.")
-                memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-                return {
-                    "message_body": f"He recibido tu foto y parece que es un reclamo sobre **{memoria['categoria_reclamo']}**. Para continuar, por favor, decime la dirección del problema.",
-                    "options_list": [],
-                    "message_type": "text",
-                    "fuente": "reclamo_foto_analizada_pide_direccion_v1"
-                }
-            else:
-                return {
-                    "message_body": "He recibido tu foto. Para continuar con el reclamo, por favor, decime la dirección del problema.",
-                    "options_list": [],
-                    "message_type": "text",
-                    "fuente": "reclamo_foto_recibida_pide_direccion_v1"
-                }
-
-        return {
-            "message_body": "No pude analizar la imagen correctamente. Por favor, ¿podrías describir el problema y la dirección?",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "reclamo_foto_error_analisis_v1"
-        }
+            memoria["categoria_reclamo"] = ", ".join(analisis_resultado.get("labels", ["Otro Motivo"]))
+            memoria["descripcion_reclamo"] = ". ".join(analisis_resultado.get("texts", ["Descripción basada en imagen adjunta."]))
+            memoria["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+            return {
+                "message_body": f"He recibido tu foto y parece que es un reclamo sobre **{memoria['categoria_reclamo']}**. Para continuar, por favor, decime la dirección del problema.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "reclamo_foto_analizada_pide_direccion_v1"
+            }
+        else:
+            return {
+                "message_body": "No pude analizar la imagen correctamente. Por favor, ¿podrías describir el problema y la dirección?",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "reclamo_foto_error_analisis_v1"
+            }
 
     def handle(self, payload: dict) -> dict | None:
         pregunta_str = payload.get("pregunta", "") or ""

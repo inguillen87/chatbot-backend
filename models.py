@@ -3,7 +3,7 @@ from utils.time_utils import get_local_now
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
 from sqlalchemy import Index
 from sqlalchemy.dialects.sqlite import JSON
-from extensions import db
+from database import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 import uuid
@@ -246,20 +246,6 @@ class PymePedido(db.Model):
     def __repr__(self):
         return f"<PymePedido {self.nro_pedido} - {self.asunto}>"
 
-class TicketComentario(db.Model):
-    __tablename__ = "ticket_comentario"
-    id = db.Column(db.Integer, primary_key=True)
-    pyme_ticket_id = db.Column(db.Integer, db.ForeignKey('pyme_ticket.id'), nullable=True)
-    municipio_ticket_id = db.Column(db.Integer, db.ForeignKey('municipio_ticket.id'), nullable=True)
-    comentario = db.Column(db.Text, nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.Integer, nullable=True)
-    anon_id = db.Column(db.String(80), nullable=True, index=True)
-    es_admin = db.Column(db.Boolean, default=False)
-    pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
-    municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
-
-
 class ArchivoAdjunto(db.Model):
     __tablename__ = "archivo_adjunto"
     id = db.Column(db.Integer, primary_key=True)
@@ -295,6 +281,30 @@ class AnalisisArchivo(db.Model):
 
     def __repr__(self):
         return f"<AnalisisArchivo id={self.id} para archivo_id={self.archivo_adjunto_id} estado='{self.estado_analisis}'>"
+
+class Conversacion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    pregunta = db.Column(db.Text, nullable=False)
+    respuesta = db.Column(db.Text, nullable=False)
+    fuente = db.Column(db.String(50), nullable=False)
+    rubro = db.Column(db.String(100), nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    session_id = db.Column(db.String(36), default=lambda: str(uuid.uuid4()), nullable=False)
+    __table_args__ = (Index('ix_conversacion_session_id', 'session_id'),)
+
+class TicketComentario(db.Model):
+    __tablename__ = "ticket_comentario"
+    id = db.Column(db.Integer, primary_key=True)
+    pyme_ticket_id = db.Column(db.Integer, db.ForeignKey('pyme_ticket.id'), nullable=True)
+    municipio_ticket_id = db.Column(db.Integer, db.ForeignKey('municipio_ticket.id'), nullable=True)
+    comentario = db.Column(db.Text, nullable=False)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    user_id = db.Column(db.Integer, nullable=True)
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
+    es_admin = db.Column(db.Boolean, default=False)
+    pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
+    municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
 
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
