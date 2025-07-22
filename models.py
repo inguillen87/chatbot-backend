@@ -306,6 +306,18 @@ class TicketComentario(db.Model):
     pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
     municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
 
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "pyme_ticket_id": self.pyme_ticket_id,
+            "municipio_ticket_id": self.municipio_ticket_id,
+            "comentario": self.comentario,
+            "fecha": self.fecha.isoformat(),
+            "user_id": self.user_id,
+            "anon_id": self.anon_id,
+            "es_admin": self.es_admin
+        }
+
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
