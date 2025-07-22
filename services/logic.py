@@ -257,7 +257,7 @@ def responder_chatboc(
 
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")
-    datos_interpretados_de_archivo = None
+    datos_interpretados_de_archivo = kwargs.get("interpretacion_imagen_data")
     archivo_id_para_asociar_al_ticket = None
     procesamiento_archivo_en_curso = False # Nueva bandera
 

@@ -230,8 +230,6 @@ def create_app(config_class=Config):
 
     return app
 
-# --- Creación de la instancia de la aplicación ---
-app = create_app()
-
 if __name__ == '__main__':
+    app = create_app()
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))

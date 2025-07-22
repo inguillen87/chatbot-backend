@@ -27,6 +27,35 @@ from services.common_utils import (
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
 
+from werkzeug.utils import secure_filename
+from services.catalog_upload_service import catalog_upload_service
+
+@catalogo_bp.route('/upload', methods=['POST'])
+@token_requerido
+def upload_catalog(user):
+    """
+    Endpoint para subir un archivo de catálogo.
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No se encontró el archivo"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No se seleccionó ningún archivo"}), 400
+
+    if file:
+        filename = secure_filename(file.filename)
+        # Guardar el archivo temporalmente para procesarlo
+        filepath = os.path.join('/tmp', filename)
+        file.save(filepath)
+
+        try:
+            # Llamar al servicio para procesar el catálogo
+            catalog_upload_service.process_catalog(filepath, user.id)
+            return jsonify({"mensaje": "Catálogo subido y procesándose."}), 202
+        except Exception as e:
+            return jsonify({"error": f"Error al procesar el catálogo: {e}"}), 500
+
 @catalogo_bp.route('/cargar', methods=['POST'])
 def cargar_catalogo():
     """Alias que reutiliza la lógica de ``subir_catalogo``."""

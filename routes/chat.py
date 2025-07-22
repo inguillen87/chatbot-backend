@@ -222,18 +222,25 @@ def _procesar_chat(
         if uploaded_file_info and archivo_adjunto_id:
             from models import ArchivoAdjunto
             from services.analisis_archivo_service import tarea_analizar_contenido_archivo
+            from services.image_processing_service import image_processing_service
+            import requests
 
             archivo_obj = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
             if archivo_obj:
                 current_app.logger.info(f"Iniciando análisis de archivo adjunto ID: {archivo_adjunto_id} para chat tipo: {tipo_chat}")
-                # Llamar a la tarea de Celery de forma asíncrona
-                tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)
-                current_app.logger.info(f"Tarea de análisis para archivo {archivo_adjunto_id} encolada.")
-                # Por ahora, la respuesta al usuario será inmediata, indicando que el archivo se está procesando.
-                # La UI deberá luego sondear o recibir una actualización (vía WebSocket, etc.)
-                # para obtener el resultado del análisis.
-                # De momento, no pasamos 'analisis_archivo_resultado' a 'responder_chatboc'
-                # porque la tarea es asíncrona.
+
+                if uploaded_file_info.get("mime_type", "").startswith("image/"):
+                    try:
+                        response = requests.get(uploaded_file_info["url"])
+                        response.raise_for_status()
+                        image_content = response.content
+                        analisis_archivo_resultado = image_processing_service.analyze_image(image_content)
+                    except Exception as e:
+                        current_app.logger.error(f"Error al procesar la imagen: {e}", exc_info=True)
+                else:
+                    # Llamar a la tarea de Celery de forma asíncrona para otros tipos de archivo
+                    tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)
+                    current_app.logger.info(f"Tarea de análisis para archivo {archivo_adjunto_id} encolada.")
             else:
                 current_app.logger.error(f"No se encontró ArchivoAdjunto con ID {archivo_adjunto_id} en la DB.")
 
@@ -324,7 +331,7 @@ def _procesar_chat(
             chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
             channel="web", # Set channel to web
             uploaded_file_info=uploaded_file_info,
-            interpretacion_imagen_data=interpretacion_imagen_resultado,
+            interpretacion_imagen_data=analisis_archivo_resultado,
             location=location
         )
 
