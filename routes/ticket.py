@@ -330,61 +330,46 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     # --- SERIALIZACIÓN ---
-    nombre_final_usuario = "No especificado"
-    telefono_final_usuario = "No especificado"
-    email_final_usuario = "No especificado"
-    
-    ticket_owner_user = None
-    if ticket.user_id:
-        ticket_owner_user = db.session.get(User, ticket.user_id)
+    def _get_user_info(ticket, user_model):
+        """Helper to consolidate user info extraction."""
+        user_info = {
+            "nombre": "No especificado",
+            "telefono": "No especificado",
+            "email": "No especificado",
+            "direccion": "No especificada",
+            "descripcion": ""
+        }
+
+        # 1. Get data from User model if available
+        ticket_owner_user = db.session.get(user_model, ticket.user_id) if ticket.user_id else None
         if ticket_owner_user:
-            nombre_final_usuario = ticket_owner_user.name or nombre_final_usuario
-            # Usar el teléfono del perfil del usuario si está disponible
-            if ticket_owner_user.telefono:
-                 telefono_final_usuario = ticket_owner_user.telefono
-            # Usar el email del perfil del usuario si está disponible
-            if ticket_owner_user.email:
-                email_final_usuario = ticket_owner_user.email
+            user_info["nombre"] = ticket_owner_user.name or user_info["nombre"]
+            user_info["telefono"] = ticket_owner_user.telefono or user_info["telefono"]
+            user_info["email"] = ticket_owner_user.email or user_info["email"]
+            user_info["direccion"] = ticket_owner_user.direccion or user_info["direccion"]
 
-    # Si después de chequear ticket_owner_user, los datos siguen "No especificado" o estaban vacíos en el perfil,
-    # intentar con los campos directos del ticket (nombre_vecino, etc.)
-    # Esto es especialmente útil para tickets anónimos (ticket.user_id es None)
-    # o si el User objeto no tiene los datos de contacto, o para priorizar datos del ticket.
+        # 2. Fallback to ticket fields (for anonymous or overriding)
+        user_info["nombre"] = getattr(ticket, 'nombre_vecino', user_info["nombre"]) or user_info["nombre"]
+        user_info["telefono"] = getattr(ticket, 'telefono_vecino', getattr(ticket, 'telefono', user_info["telefono"])) or user_info["telefono"]
+        user_info["email"] = getattr(ticket, 'email_vecino', getattr(ticket, 'email', user_info["email"])) or user_info["email"]
+        user_info["direccion"] = getattr(ticket, 'direccion', user_info["direccion"]) or user_info["direccion"]
 
-    if nombre_final_usuario == "No especificado" or not nombre_final_usuario.strip():
-        if hasattr(ticket, 'nombre_vecino') and ticket.nombre_vecino and ticket.nombre_vecino.strip():
-            nombre_final_usuario = ticket.nombre_vecino
-    
-    if telefono_final_usuario == "No especificado" or not telefono_final_usuario.strip():
-        if hasattr(ticket, 'telefono_vecino') and ticket.telefono_vecino and ticket.telefono_vecino.strip(): # Para MunicipioTicket
-            telefono_final_usuario = ticket.telefono_vecino
-        elif hasattr(ticket, 'telefono') and ticket.telefono and ticket.telefono.strip(): # Para PymeTicket
-            telefono_final_usuario = ticket.telefono
+        # 3. Fallback to 'detalles' field
+        detalles_texto = getattr(ticket, 'detalles', '') or ''
+        user_info["descripcion"] = detalles_texto
+        if "Nombre:" in detalles_texto and user_info["nombre"] == "No especificado":
+            user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
+        if "Teléfono:" in detalles_texto and user_info["telefono"] == "No especificado":
+            user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
+        if "Email:" in detalles_texto and user_info["email"] == "No especificado":
+            user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
+        if "Dirección:" in detalles_texto and user_info["direccion"] == "No especificada":
+            user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
 
-    if email_final_usuario == "No especificado" or not email_final_usuario.strip():
-        if hasattr(ticket, 'email_vecino') and ticket.email_vecino and ticket.email_vecino.strip(): # Para MunicipioTicket
-            email_final_usuario = ticket.email_vecino
-        elif hasattr(ticket, 'email') and ticket.email and ticket.email.strip(): # Para PymeTicket
-            email_final_usuario = ticket.email
+        return user_info
 
-    # Fallback final a la extracción desde el campo 'detalles' si todavía no se encontraron y son "No especificado".
+    user_data = _get_user_info(ticket, User)
     detalles_texto = getattr(ticket, 'detalles', '') or ''
-    if (nombre_final_usuario == "No especificado" or not nombre_final_usuario.strip()) and "Nombre:" in detalles_texto:
-        nombre_final_usuario = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
-    if (telefono_final_usuario == "No especificado" or not telefono_final_usuario.strip()) and "Teléfono:" in detalles_texto:
-        telefono_final_usuario = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
-    if (email_final_usuario == "No especificado" or not email_final_usuario.strip()) and "Email:" in detalles_texto:
-        email_final_usuario = detalles_texto.split("Email:")[1].split("\n")[0].strip()
-
-    # Asegurarse de que si después de todo siguen siendo "No especificado", se envíe eso o None/null.
-    # El frontend espera string, así que "No especificado" está bien si no hay dato.
-    # O podrías cambiarlo a None aquí si el frontend lo maneja mejor. Por ahora, se mantiene "No especificado".
-
-    direccion = getattr(ticket, 'direccion', None) or "No especificada"
-    if (direccion == "No especificada" or not direccion.strip()) and "Dirección:" in detalles_texto:
-        direccion = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
-    elif ticket_owner_user and (direccion == "No especificada" or not direccion.strip()) and ticket_owner_user.direccion:
-        direccion = ticket_owner_user.direccion
 
 
     comentarios = [
@@ -430,12 +415,13 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
         "estado": ticket.estado,
         "fecha": ticket.fecha.isoformat(),
         "pregunta": getattr(ticket, 'pregunta', ''),
-        "detalles": detalles_texto, # Se sigue enviando el campo 'detalles' original por si se usa en otro lado
+        "detalles": detalles_texto,
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "nombre_usuario": nombre_final_usuario, # CORREGIDO
-        "telefono": telefono_final_usuario,     # CORREGIDO (clave 'telefono' como espera el frontend)
-        "email_usuario": email_final_usuario,   # CORREGIDO (clave 'email_usuario' como espera el frontend)
-        "direccion": direccion,           # Dato obtenido de ticket.direccion, User.direccion o fallback
+        "nombre_usuario": user_data["nombre"],
+        "telefono": user_data["telefono"],
+        "email_usuario": user_data["email"],
+        "direccion": user_data["direccion"],
+        "descripcion": user_data["descripcion"],
         "archivos_adjuntos": archivos_adjuntos_data,
         "latitud": getattr(ticket, 'latitud', None),
         "longitud": getattr(ticket, 'longitud', None)
