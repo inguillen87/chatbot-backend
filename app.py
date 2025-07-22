@@ -158,6 +158,8 @@ def create_app(config_class=Config):
     app.logger.handlers.clear()
     app.logger.addHandler(handler)
     app.logger.setLevel(log_level)
+    # Prevent duplicate log lines by stopping propagation to the root logger
+    app.logger.propagate = False
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
