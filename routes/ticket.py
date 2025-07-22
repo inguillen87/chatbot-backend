@@ -555,6 +555,19 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
         current_app.logger.info(f"Notificaciones para respuesta de ticket {ticket_id} (tipo {tipo}) procesadas.")
 
+        # Notificación por Pusher
+        channel = f"ticket-{tipo}-{ticket_id}"
+        event = "nueva-respuesta"
+        data = {
+            "message": mensaje_notificacion_base,
+            "ticket_id": ticket_id,
+            "tipo": tipo,
+            "comentario": nuevo_comentario_obj.to_dict() if nuevo_comentario_obj else None,
+            "archivos": [a.to_dict() for a in archivos_adjuntados_db]
+        }
+        trigger_notification(channel, event, data)
+
+
     except Exception as e_notif:
         current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de ticket {ticket_id}: {e_notif}", exc_info=True)
         # No devolver error al cliente por fallo en notificaciones, ya que el ticket/comentario se guardó.
@@ -652,6 +665,17 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
+
+    # Notificación por Pusher
+    channel = f"ticket-{tipo}-{ticket_id}"
+    event = "cambio-estado"
+    data = {
+        "message": f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'.",
+        "ticket_id": ticket_id,
+        "tipo": tipo,
+        "nuevo_estado": nuevo_estado
+    }
+    trigger_notification(channel, event, data)
 
     comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
     ticket_data = {
@@ -813,6 +837,11 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         }
     )
     if nuevo_comentario:
+        # Notificación por Pusher
+        channel = f"ticket-municipio-{ticket_id}"
+        event = "nuevo-mensaje"
+        data = nuevo_comentario.to_dict()
+        trigger_notification(channel, event, data)
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
@@ -850,6 +879,11 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
         },
     )
     if nuevo_comentario:
+        # Notificación por Pusher
+        channel = f"ticket-pyme-{ticket_id}"
+        event = "nuevo-mensaje"
+        data = nuevo_comentario.to_dict()
+        trigger_notification(channel, event, data)
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
