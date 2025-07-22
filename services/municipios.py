@@ -322,80 +322,49 @@ def enviar_notificacion_whatsapp_con_plantilla(numero_destino: str, nombre: str,
         logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
     except Exception as e: logger.error(f"[NOTIFICACION WHATSAPP] Error al enviar plantilla: {e}", exc_info=True)
 
-def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str, categorias_validas=None) -> bool:
-    texto = texto_usuario.strip().lower()
-    if texto in {"ok", "gracias"}: return True
-    texto_norm = normalizar_texto(texto_usuario) # Normalize once
+def es_pregunta_nueva(texto_usuario: str, tipo_esperado: str, memoria: dict = None) -> bool:
+    """
+    Determina si la entrada del usuario parece ser una nueva pregunta/intención en lugar de una respuesta al flujo actual.
+    Esta función es un "guardián" simplificado. La detección de intención principal recae en el LLM.
+    """
+    if not texto_usuario:
+        return False # An empty input is not a new question, it's a prompt to repeat.
 
-    UNIVERSAL_INTERRUPTS = {"cancelar", "salir", "menu", "menú", "ayuda", "inicio"}
-    COMMON_GREETINGS = {"hola", "buen día", "buen dia", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"}
+    texto_norm = normalizar_texto(texto_usuario)
 
+    # Palabras clave universales que casi siempre indican un cambio de intención o reseteo.
+    UNIVERSAL_INTERRUPTS = {"cancelar", "salir", "menu", "menú", "ayuda", "inicio", "volver"}
     if texto_norm in UNIVERSAL_INTERRUPTS:
         logger.info(f"[Guardián de Flujo] Universal interrupt detected: '{texto_norm}'")
         return True
 
+    # Saludos simples, que usualmente reinician una conversación si se dicen solos.
+    COMMON_GREETINGS = {"hola", "buen día", "buen dia", "buenas tardes", "buenas noches", "hey", "que tal", "buenas"}
     if texto_norm in COMMON_GREETINGS and len(texto_norm.split()) <= 2:
         logger.info(f"[Guardián de Flujo] Common greeting detected: '{texto_norm}'")
         return True
         
+    # Agradecimientos simples que usualmente terminan un flujo.
     if texto_norm == "gracias" or "muchas gracias" in texto_norm:
         logger.info(f"[Guardián de Flujo] Thanks detected: '{texto_norm}'")
         return True
 
-    # Specific rules to pass through valid-looking inputs to the handler
-    if tipo_esperado == "una confirmación (sí o no)":
-        if texto_norm in {"si", "sí", "no", "afirmativo", "negativo"}: return False
-    if tipo_esperado == "una calificación del 1 al 5":
-        if re.fullmatch(r"[1-5]", texto_norm): return False
-    if tipo_esperado == "un número de ticket":
-        # Allow M-12345, 12345, or even just a number if context is strong
-        if re.fullmatch(r"m?\-?\d{4,}", texto_norm) or (tipo_esperado == "un número de ticket" and texto_norm.isdigit()):
-             return False
-
-    # --- LLM Call Removed - Simplified Heuristic ---
-    # The main Gemini call should handle intent changes. This function is now a simpler guard.
-    # If the input is very short and not a clear expected simple response, assume it might be new.
-    # For more complex cases, the main LLM (Gemini) should detect a change of topic/intent.
-
-    palabras_clave_continuacion_simple = {"si", "sí", "no", "ok", "dale", "listo", "bueno", "afirmativo", "negativo"}
-    palabras_clave_cancelacion = {"cancelar", "salir", "menu", "menú", "ayuda", "inicio"}
-    palabras_clave_saludo = {"hola", "buen día", "buen dia", "buenas tardes", "buenas noches"}
-
-
-    if texto_norm in palabras_clave_cancelacion:
-        logger.info(f"[Guardián de Flujo Simplificado] Cancelación/Interrupción detectada: '{texto_norm}' -> PREGUNTA_NUEVA")
-        return True
-
-    if texto_norm in palabras_clave_saludo and len(texto_norm.split()) <= 2:
-        logger.info(f"[Guardián de Flujo Simplificado] Saludo detectado: '{texto_norm}' -> PREGUNTA_NUEVA")
-        return True
-
-    # If expecting a simple confirmation and got one, it's NOT a new question.
-    if tipo_esperado == "una confirmación (sí o no)" and texto_norm in palabras_clave_continuacion_simple:
-        logger.info(f"[Guardián de Flujo Simplificado] Confirmación simple esperada y recibida: '{texto_norm}' -> NO ES PREGUNTA_NUEVA")
+    # Si el flujo actual espera una respuesta simple (sí/no, número), y el usuario la provee,
+    # NO es una pregunta nueva.
+    simple_yes_no = {"si", "sí", "no", "afirmativo", "negativo", "ok", "dale", "bueno"}
+    if tipo_esperado == "una confirmación (sí o no)" and texto_norm in simple_yes_no:
         return False
-
-    # If expecting a rating and got a number 1-5, it's NOT a new question.
     if tipo_esperado == "una calificación del 1 al 5" and re.fullmatch(r"[1-5]", texto_norm):
-        logger.info(f"[Guardián de Flujo Simplificado] Calificación esperada y recibida: '{texto_norm}' -> NO ES PREGUNTA_NUEVA")
         return False
-
-    # If expecting a ticket number and got something that looks like one.
     if tipo_esperado == "un número de ticket" and (re.fullmatch(r"m?\-?\d{4,}", texto_norm) or texto_norm.isdigit()):
-        logger.info(f"[Guardián de Flujo Simplificado] Número de ticket esperado y recibido: '{texto_norm}' -> NO ES PREGUNTA_NUEVA")
         return False
 
-    # If the input is very short (1-2 words) and NOT one of the simple continuation keywords,
-    # it's more likely a new question or an attempt to break flow, especially if complex data was expected.
-    if len(texto_norm.split()) <= 2 and texto_norm not in palabras_clave_continuacion_simple:
-        # Further check: if complex data like an address was expected, even "ok" could be a sign of breaking flow.
-        # This heuristic is tricky. For now, a short, non-keyword response is considered new.
-        logger.info(f"[Guardián de Flujo Simplificado] Input corto ('{texto_norm}') no es palabra clave de continuación -> PREGUNTA_NUEVA")
-        return True
-
-    # If the input is longer, assume it's an attempt to provide the expected data or continue.
-    # The main LLM (Gemini) will be responsible for identifying if this longer input is off-topic.
-    logger.info(f"[Guardián de Flujo Simplificado] Input ('{texto_norm}') no es una interrupción obvia. Asumiendo continuación -> NO ES PREGUNTA_NUEVA")
+    # A este punto, si el input es más complejo (ej. una dirección, una descripción),
+    # esta función asume que es una continuación del flujo. La responsabilidad de detectar
+    # un cambio de tema en una frase compleja (ej. "en vez de la dirección te digo que quiero un turno")
+    # recae en el LLM principal que se llama en `responder_municipio`.
+    # Esta función solo previene que interrupciones CLARAS Y SIMPLES sean malinterpretadas como datos.
+    logger.info(f"[Guardián de Flujo] Input '{texto_norm}' no es una interrupción simple/obvia. Asumiendo continuación del flujo actual. Se delega al LLM principal la detección de cambio de intención.")
     return False
 
 
