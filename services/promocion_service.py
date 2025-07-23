@@ -11,10 +11,13 @@ project_root_promo_svc = os.path.abspath(os.path.join(os.path.dirname(__file__),
 if project_root_promo_svc not in sys.path:
     sys.path.insert(0, project_root_promo_svc)
 
-from sqlalchemy import func, or_
-from sqlalchemy.orm import aliased
-from models import db, Promocion, CatalogoItem, PromocionAlcance
-from services.common_utils import parse_precio_flexible
+from sqlalchemy import func, or_ # Importar func y or_
+from sqlalchemy.orm import aliased # Importar aliased
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import models
+from models import Promocion, CatalogoItem, db
+from services.common_utils import parse_precio_flexible # Para obtener precio float del item
 
 logger = logging.getLogger(__name__)
 
