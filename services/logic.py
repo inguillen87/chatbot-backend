@@ -212,29 +212,11 @@ def responder_chatboc(
         f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
     )
 
-    # Nueva lógica de clasificación usando LLM
-    texto_para_clasificar = pregunta
+    # Si el rubro indica un tipo específico de lógica, lo usamos siempre
     if rubro_nombre:
-        # Si tenemos un rubro, lo usamos como el texto principal para clasificar,
-        # ya que es más específico que la pregunta del usuario.
-        texto_para_clasificar = rubro_nombre
-
-    clasificacion_entidad = clasificar_entidad_con_llm(texto_para_clasificar)
-
-    if clasificacion_entidad == "municipio":
-        tipo_chat = "municipio"
-    elif clasificacion_entidad == "pyme":
-        tipo_chat = "pyme"
-    elif clasificacion_entidad == "id":
-        # TODO: Implementar lógica para manejar IDs.
-        # Por ahora, podemos tratarlo como un caso especial o desviarlo a un handler.
-        # Por simplicidad, lo dejaremos como pyme por ahora.
-        tipo_chat = "pyme"
-    else: # desconocido
-        # Si la clasificación no es clara, usamos el tipo_chat que viene del request,
-        # y si no, por defecto a pyme.
-        if not tipo_chat:
-            tipo_chat = "pyme"
+        tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
+    elif tipo_chat not in ("municipio", "pyme"):
+        raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
 
     logger.info(
