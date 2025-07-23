@@ -2,6 +2,7 @@ import unittest
 from types import ModuleType, SimpleNamespace
 import sys
 import os
+import importlib
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
