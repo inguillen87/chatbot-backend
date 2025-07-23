@@ -9,7 +9,7 @@ class PreferencesTests(unittest.TestCase):
         self.app.secret_key = 'test'
         self.ctx = self.app.test_request_context()
         self.ctx.push()
-        clear_preferences()
+        clear_preferences({})
 
     def tearDown(self):
         self.ctx.pop()

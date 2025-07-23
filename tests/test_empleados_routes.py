@@ -16,7 +16,7 @@ from routes.empleados import crear_empleado
 
 class EmpleadosRouteTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

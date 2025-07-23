@@ -51,7 +51,7 @@ class ChatOrchestrator:
         action_data = llm_output.get("datos_estructura", {})
 
         # Si el usuario está autenticado, no solicitar datos personales
-        if self.global_context.get("user_obj") and action_name in ["solicitar_datos_personales", "solicitar_ubicacion"]:
+        if self.global_context.get("viewer_user_obj") and action_name in ["solicitar_datos_personales", "solicitar_ubicacion"]:
             return {
                 "success": True,
                 "message_to_user": "Ya tengo tus datos, podemos continuar.",
@@ -68,13 +68,13 @@ class ChatOrchestrator:
                 action_result = handler_instance.execute(action_data)
                 action_result["executed_action_handler"] = handler_class.__name__
                 return action_result
-            else:
-                return {
-                    "success": True,
-                    "message_to_user": llm_output.get("respuesta_usuario", "Entendido."),
-                    "data": {"action_performed": action_name or "none"},
-                    "executed_action_handler": None
-                }
+
+            return {
+                "success": True,
+                "message_to_user": llm_output.get("respuesta_usuario", "Entendido."),
+                "data": {"action_performed": action_name or "none"},
+                "executed_action_handler": None
+            }
 
         handler_class = self._get_handler_class(action_name)
         if not handler_class:

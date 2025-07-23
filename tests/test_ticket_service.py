@@ -75,6 +75,8 @@ class TicketServiceTests(unittest.TestCase):
 
         class DummyModel:
             query = DummyQuery([t1, t2, t3, t4])
+            latitud = None
+            longitud = None
 
         with patch.object(ts, 'MunicipioTicket', DummyModel): # Patch where MunicipioTicket is used in the service
             service = ServicioTickets()
@@ -115,6 +117,8 @@ class TicketServiceTests(unittest.TestCase):
 
         class DummyModel:
             query = DummyQuery([t1, t2, t3])
+            latitud = None
+            longitud = None
 
         with patch.object(ts, 'PymeTicket', DummyModel): # Patch where PymeTicket is used
             service = ServicioTickets()

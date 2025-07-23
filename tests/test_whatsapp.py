@@ -18,8 +18,9 @@ from services.municipios import (
 class TestWhatsApp(unittest.TestCase):
 
     def setUp(self):
-        from app import create_app
+        from app import create_app, db
         self.app = create_app()
+        db.init_app(self.app)
         self.app_context = self.app.app_context()
         self.app_context.push()
 

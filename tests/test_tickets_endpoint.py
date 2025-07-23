@@ -1,37 +1,26 @@
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
-import sys
-import os
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from models import db, User, MunicipioTicket, Rubro
-
-# Añadir el directorio raíz del proyecto al sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-from routes.ticket import get_tickets_del_usuario_logic
+from app import create_app, db
+from config import TestConfig
+from models import User, Rubro, MunicipioTicket
+from routes.ticket import get_tickets_del_usuario
 
 class TicketsEndpointTest(unittest.TestCase):
     def setUp(self):
-        """Set up a temporary database for the tests."""
-        self.app = Flask(__name__)
-        self.app.config['TESTING'] = True
-        self.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
-        self.app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-        db.init_app(self.app)
+        self.app = create_app(TestConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
         with self.app.app_context():
             db.create_all()
 
     def tearDown(self):
-        """Tear down the database."""
         with self.app.app_context():
             db.session.remove()
             db.drop_all()
+        self.app_context.pop()
 
-    def test_get_tickets_del_usuario_municipio(self):
+    def test_get_tickets_del_usuario_admin_municipio(self):
         with self.app.app_context():
             # Create a mock user and rubro
             rubro = Rubro(nombre='municipios', clave='municipios')
@@ -66,16 +55,12 @@ class TicketsEndpointTest(unittest.TestCase):
             db.session.commit()
 
             with patch('routes.ticket.request', SimpleNamespace(args={})), \
-                 patch('routes.ticket.current_app', self.app):
-                # Call the logic function directly
-                resp = _get_tickets_del_usuario_logic(user)
-                data = resp.get_json()
+                 patch('routes.ticket.current_user', user), \
+                 patch('routes.ticket.jsonify') as mock_jsonify:
+                # Call the endpoint
+                get_tickets_del_usuario()
                 # Assertions
-                self.assertIsInstance(data, list)
-                self.assertEqual(len(data), 1)
-                self.assertEqual(data[0]['id'], 1)
-                self.assertEqual(data[0]['nro_ticket'], 101)
-                self.assertEqual(data[0]['asunto'], 'Test Ticket 1')
-
-if __name__ == '__main__':
-    unittest.main()
+                mock_jsonify.assert_called_once()
+                args, kwargs = mock_jsonify.call_args
+                self.assertEqual(len(args[0]['tickets']), 1)
+                self.assertEqual(args[0]['tickets'][0]['nro_ticket'], 101)

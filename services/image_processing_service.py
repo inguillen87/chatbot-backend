@@ -42,4 +42,3 @@ class ImageProcessingService:
             logger.error(f"Error inesperado al analizar la imagen: {e}", exc_info=True)
             return {"error": "Error inesperado al procesar la imagen."}
 
-image_processing_service = ImageProcessingService()

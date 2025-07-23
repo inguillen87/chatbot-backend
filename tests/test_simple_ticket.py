@@ -1,12 +1,12 @@
 import unittest
-from unittest.mock import patch
 from app import create_app, db
-from models import User, MunicipioTicket, Rubro
-from services.ticket_service import servicio_tickets
+from config import TestConfig
+from models import User, Rubro, MunicipioTicket, PymeTicket
+from services.ticket_service import ServicioTickets
+import datetime
 
 class SimpleTicketTest(unittest.TestCase):
     def setUp(self):
-        from src.config import TestConfig
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()

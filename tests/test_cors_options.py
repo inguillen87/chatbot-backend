@@ -10,7 +10,7 @@ from app import create_app
 
 class CorsOptionsTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.client = self.app.test_client()
 
     def test_historial_options(self):

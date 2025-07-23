@@ -220,9 +220,10 @@ def _procesar_chat(
         if uploaded_file_info and archivo_adjunto_id:
             from models import ArchivoAdjunto
             from services.analisis_archivo_service import tarea_analizar_contenido_archivo
-            from services.image_processing_service import image_processing_service
+            from services.image_processing_service import ImageProcessingService
             import requests
 
+            image_processing_service = ImageProcessingService()
             archivo_obj = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
             if archivo_obj:
                 current_app.logger.info(f"Iniciando análisis de archivo adjunto ID: {archivo_adjunto_id} para chat tipo: {tipo_chat}")

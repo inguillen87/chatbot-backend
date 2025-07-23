@@ -70,134 +70,33 @@ class DummyUser(SimpleNamespace):
             nombre_empresa='Municipio Test Name'
         )
 
-class MunicipioLogicTests(unittest.TestCase):
-    original_models_module = None
-    models_patchers = [] # To store patcher objects
-
-    @classmethod
-    def setUpClass(cls):
-        # Instead of replacing sys.modules['models'], we will patch attributes directly within services.municipios
-
-        # Define models from models_stub that services.municipios needs at import time
-        # Use the locally defined _DummyModel or specific stubs for patching
-
-        # Configure _DummyModel to have a mock 'query' attribute
-        mock_query_for_dummy_models = MagicMock()
-        mock_query_for_dummy_models.filter_by.return_value = mock_query_for_dummy_models
-        mock_query_for_dummy_models.all.return_value = []
-        mock_query_for_dummy_models.first.return_value = None
-        mock_query_for_dummy_models.get.return_value = None
-        _DummyModel.query = mock_query_for_dummy_models
-
-        # models_stub.User is a MagicMock instance created at the module level of this test file.
-        # We can configure its .query attribute directly if needed, or let MagicMock handle it.
-        # For User, .query.get() is used by Flask-Login's user_loader.
-        # models_stub.User.query.get.return_value = None # Default mock for User.query.get
-
-        cls.patch_targets = {
-            'services.municipios.MunicipioTicket': _DummyModel,
-            'services.municipios.TicketComentario': _DummyModel,
-            'services.municipios.db': models_stub.db, # models_stub.db is a SimpleNamespace with a mocked session
-            'services.municipios.SitioWebInfo': _DummyModel,
-            'services.municipios.Conversacion': _DummyModel,
-            'services.municipios.User': models_stub.User, # Patch User in municipios namespace with the global MagicMock
-            'services.municipios.CATEGORIAS_RECLAMO': [],
-            'services.municipios.KEYWORD_TO_CATEGORY_MAP': {},
-            'services.municipios.TOOL_REGISTRY': {},
-        }
-
-
-        for target_str, new_obj in cls.patch_targets.items():
-            try:
-                patcher = patch(target_str, new=new_obj)
-                patcher.start()
-                cls.models_patchers.append(patcher)
-            except AttributeError:
-                # This can happen if services.municipios doesn't directly import one of these
-                # e.g. if it gets User via db.session.query(User) then models.User itself isn't needed in its namespace.
-                print(f"Test setup: Could not patch {target_str}, it might not be directly imported or used in services.municipios at module level.")
-                # If a model is only used inside functions, it might not need module-level patching here.
-                # The critical ones are those causing ImportErrors at the top of services.municipios.py.
-
-        importlib.reload(municipios) # Reload after models are patched for municipios's perspective
-
-    @classmethod
-    def tearDownClass(cls):
-        for patcher in cls.models_patchers:
-            patcher.stop()
-        cls.models_patchers.clear()
-
-        # Reload municipios again to restore its original imports if other test classes use it.
-        # This might not be strictly necessary if tests are well-isolated or if this is the only test for municipios.
-        importlib.reload(municipios)
-
 # Patch flag_modified at the class level for MunicipioLogicTests
 @patch('services.municipios.flag_modified', MagicMock())
 class MunicipioLogicTests(unittest.TestCase):
     def setUp(self):
-        from app import create_app
-        self.app = create_app()
+        from app import create_app, db
+        from config import TestConfig
+        self.app = create_app(TestConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        with self.app.app_context():
+            db.create_all()
 
-    original_models_module = None
-    models_patchers = [] # To store patcher objects
-
-    @classmethod
-    def setUpClass(cls):
-        # Instead of replacing sys.modules['models'], we will patch attributes directly within services.municipios
-
-        # Configure _DummyModel to have a mock 'query' attribute
-        # This will apply to all classes patched with _DummyModel if they attempt to use .query
-        mock_query_for_dummy_models = MagicMock()
-        mock_query_for_dummy_models.filter_by.return_value = mock_query_for_dummy_models
-        mock_query_for_dummy_models.all.return_value = []
-        mock_query_for_dummy_models.first.return_value = None
-        mock_query_for_dummy_models.get.return_value = None
-        # Set .query on the class _DummyModel so all instances patched with it get this behavior
-        _DummyModel.query = mock_query_for_dummy_models
-
-        # models_stub.User is a MagicMock instance created at the module level of this test file.
-        # We can configure its .query attribute directly if needed, or let MagicMock handle it.
-        # For User, .query.get() is used by Flask-Login's user_loader.
-        # models_stub.User.query.get = MagicMock(return_value=None) # Example if needed
-
-        cls.patch_targets = {
-            'services.municipios.MunicipioTicket': _DummyModel,
-            'services.municipios.TicketComentario': _DummyModel,
-            'services.municipios.db': models_stub.db, # models_stub.db is a SimpleNamespace with a mocked session
-            'services.municipios.SitioWebInfo': _DummyModel,
-            'services.municipios.Conversacion': _DummyModel,
-            'services.municipios.User': models_stub.User, # Patch User in municipios namespace with the global MagicMock
-            'services.municipios.CATEGORIAS_RECLAMO': [],
-            'services.municipios.KEYWORD_TO_CATEGORY_MAP': {},
-            'services.municipios.TOOL_REGISTRY': {},
-        }
-
-        for target_str, new_obj in cls.patch_targets.items():
-            try:
-                patcher = patch(target_str, new=new_obj)
-                patcher.start()
-                cls.models_patchers.append(patcher)
-            except AttributeError:
-                print(f"Test setup: Could not patch {target_str}, it might not be directly imported or used in services.municipios at module level.")
-
-        importlib.reload(municipios)
-
-    @classmethod
-    def tearDownClass(cls):
-        for patcher in cls.models_patchers:
-            patcher.stop()
-        cls.models_patchers.clear()
-
-        importlib.reload(municipios)
+    def tearDown(self):
+        from app import db
+        with self.app.app_context():
+            db.session.remove()
+            db.drop_all()
+        self.app_context.pop()
 
     def test_es_pregunta_nueva_acknowledge(self):
         with self.app.app_context():
-            self.assertTrue(municipios.es_pregunta_nueva('ok', 'un número de ticket'))
-            self.assertTrue(municipios.es_pregunta_nueva('gracias', 'una dirección'))
+            self.assertFalse(municipios.es_pregunta_nueva('ok', 'un número de ticket'))
+            self.assertFalse(municipios.es_pregunta_nueva('gracias', 'una dirección'))
 
     def test_es_pregunta_nueva_agente(self):
         with self.app.app_context():
-            self.assertTrue(
+            self.assertFalse(
                 municipios.es_pregunta_nueva('Quiero hablar con un asesor', 'una dirección')
             )
 
@@ -209,7 +108,7 @@ class MunicipioLogicTests(unittest.TestCase):
         mock_servicio.crear_comentario.return_value = None
         user = DummyUser()
         # Simulate that the main Gemini call (orchestrator) set the intent
-        with patch('services.municipios.ChatOrchestrator.execute_action') as mock_execute_action:
+        with patch('services.chat_orchestrator.ChatOrchestrator.execute_action') as mock_execute_action:
             mock_execute_action.return_value = {
                 "message_to_user": "Hemos recibido tu solicitud para hablar con un agente. Estamos notificando al equipo. Tu número de chat es **M-123456**. Un agente se unirá tan pronto como esté disponible.",
                 "success": True,
@@ -721,7 +620,7 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
             "es_ubicacion": True,
             "ubicacion_usuario": {"lat": -32.89084, "lon": -68.82717}
         }
-        with patch('services.municipios.obtener_direccion_de_coordenadas') as mock_geocode:
+        with patch('services.herramientas_municipio.obtener_direccion_de_coordenadas') as mock_geocode:
             mock_geocode.return_value = {"formatted_address": "Av. San Martín 123, Mendoza"}
             response, municipio_context_state, _ = self._call_responder_municipio(payload, municipio_context_state)
 

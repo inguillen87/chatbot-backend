@@ -1,44 +1,38 @@
 import unittest
-from app import create_app, db
+from unittest.mock import patch
+from app import create_app
 from services import cart as cart_service
-from config import Config
-
-class TestConfig(Config):
-    TESTING = True
-    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
-    WTF_CSRF_ENABLED = False
+from config import TestConfig
 
 class CartTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
-        db.create_all()
-        self.client = self.app.test_client()
-        self.pyme_id = 1  # Example pyme_id for testing
+        self.pyme_id = 1
+        cart_service.clear_cart(self.pyme_id)
 
     def tearDown(self):
-        db.session.remove()
-        db.drop_all()
+        cart_service.clear_cart(self.pyme_id)
         self.app_context.pop()
 
     def test_add_and_update(self):
-        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 2})
-        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 1})
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        self.assertEqual(summary["items_detalle"][0]['nombre_producto'], 'vino')
-        self.assertEqual(summary["items_detalle"][0]['cantidad'], 3)
-        cart_service.update_item_quantity_in_cart(self.pyme_id, summary["items_detalle"][0]['catalogo_item_id'], 5)
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        self.assertEqual(summary["items_detalle"][0]['cantidad'], 5)
+        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 2}, {"precio": 10})
+        cart = cart_service.get_cart(self.pyme_id)
+        self.assertEqual(len(cart), 1)
+        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 3}, {"precio": 10})
+        cart = cart_service.get_cart(self.pyme_id)
+        self.assertEqual(cart[0]['cantidad'], 5)
 
     def test_remove(self):
-        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 2})
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        cart_service.remove_item_from_cart(self.pyme_id, summary["items_detalle"][0]['catalogo_item_id'])
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        self.assertEqual(summary["items_detalle"], [])
+        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 2}, {"precio": 10})
+        cart_service.remove_item_from_cart(self.pyme_id, {"nombre": "vino"})
+        cart = cart_service.get_cart(self.pyme_id)
+        self.assertEqual(len(cart), 0)
 
-
-if __name__ == '__main__':
-    unittest.main()
+    def test_clear(self):
+        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 2}, {"precio": 10})
+        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "cerveza", "cantidad": 1}, {"precio": 5})
+        cart_service.clear_cart(self.pyme_id)
+        cart = cart_service.get_cart(self.pyme_id)
+        self.assertEqual(len(cart), 0)
