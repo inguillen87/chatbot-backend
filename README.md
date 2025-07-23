@@ -42,6 +42,8 @@ This project exposes several endpoints to process questions for different sector
 - `GET /tickets` – for admins or employees, list all tickets for the company or
   municipality. Supports optional `?estado=` and `?categoria=` filters.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
+- Municipal accounts hitting `/pedidos` receive the same JSON structure as
+  `/tickets` to ease frontend integration.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering and now `?q=` search by name or email plus `?marketing=true|false`. The same data is available at `/municipal/usuarios`.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
 - `GET /crm/clientes/<id>/interacciones` – history of chats and tickets for a client.

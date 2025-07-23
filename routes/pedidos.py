@@ -21,6 +21,10 @@ def listar_pedidos_pyme(current_user: User):
         is_pyme_user = True
 
     if not is_pyme_user:
+        # Si es un usuario municipal, delegamos al listado de tickets
+        if current_user.tipo_chat == "municipio":
+            from routes.ticket import get_tickets_del_usuario_logic
+            return get_tickets_del_usuario_logic(current_user)
         return jsonify({"error": "Acceso denegado. Esta sección es solo para PYMEs."}), 403
 
     if not current_user.rubro or not current_user.rubro.nombre:
