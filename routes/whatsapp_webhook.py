@@ -147,7 +147,14 @@ def whatsapp_webhook():
         print(f"New session DB entry prepared for {chat_session_id_internal}.")
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
-    respuesta_del_bot_text = "Lo siento, no pude procesar tu solicitud en este momento." # Default error response
+    # Initialize with a default error response
+    bot_response_dict = {
+        'message_body': "Lo siento, no pude procesar tu solicitud en este momento.",
+        'options_list': [],
+        'message_type': 'text',
+        'fuente': 'error_handler_whatsapp'
+    }
+    respuesta_del_bot_text = bot_response_dict['message_body']
 
     # The context_data from session_context_db_entry will be passed to responder_chatboc
     # and it's expected that responder_chatboc might modify it directly or return a new context.
@@ -155,87 +162,55 @@ def whatsapp_webhook():
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
-        # Parameters for responder_chatboc:
-        # pregunta, owner_user=None, current_user=None, rubro_obj=None,
-        # chat_db_context=None, rubro_nombre_frontend=None, tipo_chat=None,
-        # anon_id=None, chat_session_uuid=None, **kwargs
-
         kwargs_for_bot = {
-            # Add any other specific kwargs your responder_chatboc might need from WhatsApp channel
             "source_channel": "whatsapp"
         }
         if uploaded_file_info_whatsapp:
             kwargs_for_bot["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
 
+        # The actual call that might raise an exception
         bot_response_dict = responder_chatboc(
             pregunta=message_body,
             owner_user=client_user,
-            current_user=end_user, # Pass the user object to the chatbot logic
+            current_user=end_user,
             rubro_obj=rubro_object,
-            chat_db_context=session_context_db_entry, # Pass the whole ChatSessionContext object
-            rubro_nombre_frontend=None, # Typically from web UI, not WhatsApp
+            chat_db_context=session_context_db_entry,
+            rubro_nombre_frontend=None,
             tipo_chat=client_type,
             anon_id=from_number_cleaned,
             chat_session_uuid=chat_session_id_internal,
-            channel="whatsapp", # Set channel to whatsapp
+            channel="whatsapp",
             **kwargs_for_bot
         )
 
         print(f"Raw response from responder_chatboc: {bot_response_dict}")
 
-        if isinstance(bot_response_dict, dict):
-            respuesta_del_bot_text = bot_response_dict.get("respuesta", respuesta_del_bot_text)
-
-            # Update session_context_db_entry.context_data based on what responder_chatboc returns
-            # If responder_chatboc directly modifies chat_db_context.context_data, this might not be strictly needed
-            # but it's safer to explicitly set it if a specific context key is returned.
-
-            # COMENTADO: responder_municipio (alias de responder_chatboc) ya modifica
-            # session_context_db_entry.context_data directamente y lo serializa.
-            # Esta reasignación aquí es redundante y potencialmente podría introducir errores
-            # si la estructura de bot_response_dict o las claves de contexto cambian.
-            # El contexto ya está correctamente serializado y actualizado en session_context_db_entry.context_data
-            # por la llamada a responder_municipio.
-
-            # if "contexto_chat" in bot_response_dict:
-            #     session_context_db_entry.context_data = bot_response_dict["contexto_chat"]
-            # elif client_type == "pyme" and "contexto_pyme" in bot_response_dict:
-            #     session_context_db_entry.context_data = bot_response_dict["contexto_pyme"]
-            # elif client_type == "municipio" and "contexto_municipio" in bot_response_dict:
-            #     session_context_db_entry.context_data = bot_response_dict["contexto_municipio"]
-
-            # If no specific context key is returned, we assume chat_db_context.context_data was modified in place.
-            # Ensure it's a dict for saving. (This check is still valid)
-            if not isinstance(session_context_db_entry.context_data, dict):
-                print(f"Warning: context_data in session_context_db_entry is not a dict after responder_chatboc. Resetting to minimal error state. Data: {session_context_db_entry.context_data}")
-                session_context_db_entry.context_data = {
-                    "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format from bot logic."}],
-                    "estado_conversacion": "error_context"
-                }
-
-        else: # Should not happen if responder_chatboc always returns a dict
+        # Validate the response from the bot logic
+        if not isinstance(bot_response_dict, dict):
             print(f"Warning: responder_chatboc did not return a dictionary. Response: {bot_response_dict}")
-            # respuesta_del_bot_text remains the default error message.
-            # session_context_db_entry.context_data might be stale or un-updated, ensure it's at least a dict
-            if not isinstance(session_context_db_entry.context_data, dict):
-                 session_context_db_entry.context_data = {
-                    "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format from bot logic (non-dict response)."}],
-                    "estado_conversacion": "error_context_non_dict"
-                }
+            # Keep the default error response initialized earlier
+            bot_response_dict = {
+                'message_body': "Lo siento, hubo un error interno al procesar tu mensaje.",
+                'options_list': [], 'message_type': 'text', 'fuente': 'error_handler_non_dict_response'
+            }
 
-
-        # Actualizar respuesta_del_bot_text para el logging DESPUÉS de obtenerla de bot_response_dict
-        if isinstance(bot_response_dict, dict) and "message_body" in bot_response_dict:
-            respuesta_del_bot_text = bot_response_dict["message_body"]
-        elif isinstance(bot_response_dict, dict) and "respuesta" in bot_response_dict: # Fallback por si acaso
-            respuesta_del_bot_text = bot_response_dict["respuesta"]
-
-        print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
+        # Ensure context_data is a dict for saving
+        if not isinstance(session_context_db_entry.context_data, dict):
+            print(f"Warning: context_data in session_context_db_entry is not a dict. Resetting. Data: {session_context_db_entry.context_data}")
+            session_context_db_entry.context_data = {
+                "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format."}],
+                "estado_conversacion": "error_context"
+            }
 
     except Exception as e:
         print(f"Error calling real chatbot logic (responder_chatboc): {e}")
         import traceback
         traceback.print_exc() # Log full traceback for debugging
+        # bot_response_dict is already set to a default error message, so we just log and continue
+
+    # Update respuesta_del_bot_text for logging from the final bot_response_dict
+    respuesta_del_bot_text = bot_response_dict.get('message_body', "Error: message_body no encontrado en la respuesta del bot.")
+    print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 
     # --- Save Updated Session ---
     try:
