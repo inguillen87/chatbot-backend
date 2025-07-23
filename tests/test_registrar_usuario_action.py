@@ -20,7 +20,7 @@ class RegistrarUsuarioActionTests(unittest.TestCase):
 
     def test_success(self):
         owner = SimpleNamespace(id=1, rubro='municipio', rubro_id=2, tipo_chat='municipio')
-        created_user = SimpleNamespace(id=5, email='ana@example.com', token='tnew')
+        created_user = SimpleNamespace(id=5, email='ana@example.com', token='tnew', set_password=lambda x: None)
 
         query_by_token = SimpleNamespace(first=lambda: owner)
         query_filter = SimpleNamespace(first=lambda: None)
@@ -39,7 +39,6 @@ class RegistrarUsuarioActionTests(unittest.TestCase):
                 'name': 'Ana',
                 'email': 'ana@example.com',
                 'password': '123',
-                # empresa_token intentionally omitted to test context fallback
             }
             result = handler.execute(data)
             self.assertTrue(result['success'])

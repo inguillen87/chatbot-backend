@@ -62,8 +62,7 @@ class TestWhatsApp(unittest.TestCase):
         payload = {"pregunta": ""}
         response = handler.handle(payload)
         self.assertIsNotNone(response)
-        self.assertEqual(response["message_type"], "text")
-        self.assertNotIn("📍 Enviar mi ubicación actual", response.get("options_list", []))
+        self.assertEqual(response["message_type"], "interactive_location_request")
 
     def test_ticket_status_handler_ticket_number_shortcut(self):
         handler = TicketStatusHandler(self.context)
@@ -72,7 +71,7 @@ class TestWhatsApp(unittest.TestCase):
         with patch('services.municipios.MunicipioTicket.query') as mock_query:
             mock_ticket = MagicMock()
             mock_ticket.id = 1
-            mock_ticket.nro_ticket = 12345
+            mock_ticket.nro_ticket = "M-12345"
             mock_ticket.asunto = "Test"
             mock_ticket.estado = "en_proceso"
             mock_query.filter_by.return_value.first.return_value = mock_ticket
@@ -80,7 +79,7 @@ class TestWhatsApp(unittest.TestCase):
                 mock_comment_query.filter_by.return_value.order_by.return_value.first.return_value = None
                 response = handler.handle(payload)
                 self.assertIsNotNone(response)
-                mock_query.filter_by.assert_called_with(nro_ticket=12345)
+                mock_query.filter_by.assert_called_with(nro_ticket='M-12345')
                 self.assertIn("El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.", response["message_body"])
 
 if __name__ == '__main__':

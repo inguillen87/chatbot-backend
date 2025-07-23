@@ -11,6 +11,7 @@ if project_root not in sys.path:
 
 from app import create_app, db
 from models import User, Rubro
+from config import TestConfig
 from services.actions.municipio_actions import DerivarHumanoActionHandler as DerivarHumanoActionHandlerMunicipio
 from services.actions.pyme_actions import (
     DerivarHumanoActionHandlerPyme as DerivarHumanoActionHandler,
@@ -20,7 +21,7 @@ from services.chat_orchestrator import ChatOrchestrator
 
 class DerivarHumanoActionHandlerTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

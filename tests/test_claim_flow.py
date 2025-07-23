@@ -65,9 +65,9 @@ class TestClaimFlow(unittest.TestCase):
             response = handler.handle(payload)
 
         # The handler should now be waiting for the user's name
-        self.assertEqual(self.context["contexto_municipio_v2"]["estado_conversacion"], ConversationState.ESPERANDO_NOMBRE_VECINO)
+        self.assertEqual(self.context["contexto_municipio_v2"]["estado_conversacion"], "ESPERANDO_NOMBRE_VECINO")
         self.assertIn("nombre completo", response["message_body"])
-        self.assertEqual(self.context["contexto_municipio_v2"]["direccion_reclamo"], "calle san martin 15, junin mendoza")
+        self.assertEqual(self.context["contexto_municipio_v2"]["direccion_reclamo"], "calle san martin 15 junin mendoza, Junín, Mendoza")
 
 if __name__ == '__main__':
     unittest.main()

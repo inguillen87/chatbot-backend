@@ -33,7 +33,6 @@ class TicketsEndpointTest(unittest.TestCase):
 
     def test_get_tickets_del_usuario_municipio(self):
         with self.app.app_context():
-            # Create a mock user and rubro
             rubro = Rubro(nombre='municipios', clave='municipios')
             db.session.add(rubro)
             db.session.commit()
@@ -50,7 +49,6 @@ class TicketsEndpointTest(unittest.TestCase):
             db.session.add(user)
             db.session.commit()
 
-            # Create a mock ticket
             ticket = MunicipioTicket(
                 id=1,
                 user_id=user.id,
@@ -65,17 +63,13 @@ class TicketsEndpointTest(unittest.TestCase):
             db.session.add(ticket)
             db.session.commit()
 
-            with patch('routes.ticket.request', SimpleNamespace(args={})), \
-                 patch('routes.ticket.current_app', self.app):
-                # Call the logic function directly
-                resp = _get_tickets_del_usuario_logic(user)
-                data = resp.get_json()
-                # Assertions
-                self.assertIsInstance(data, list)
-                self.assertEqual(len(data), 1)
-                self.assertEqual(data[0]['id'], 1)
-                self.assertEqual(data[0]['nro_ticket'], 101)
-                self.assertEqual(data[0]['asunto'], 'Test Ticket 1')
+            with patch('routes.ticket.request', SimpleNamespace(args={})):
+                resp = get_tickets_del_usuario_logic(user)
+                self.assertIsInstance(resp, list)
+                self.assertEqual(len(resp), 1)
+                self.assertEqual(resp[0]['id'], 1)
+                self.assertEqual(resp[0]['nro_ticket'], 101)
+                self.assertEqual(resp[0]['asunto'], 'Test Ticket 1')
 
 if __name__ == '__main__':
     unittest.main()

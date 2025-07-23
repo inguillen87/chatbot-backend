@@ -15,6 +15,7 @@ class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     clave = db.Column(db.String(50), unique=True, nullable=False)
     nombre = db.Column(db.String(100), nullable=True)
+    es_publico = db.Column(db.Boolean, default=False)
     descripcion = db.Column(db.Text, nullable=True)
     padre_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     subrubros = db.relationship('Rubro', backref=db.backref('padre', remote_side=[id]), lazy=True)

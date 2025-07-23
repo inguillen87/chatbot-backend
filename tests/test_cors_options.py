@@ -7,10 +7,11 @@ if project_root_cors not in sys.path:
     sys.path.insert(0, project_root_cors)
 
 from app import create_app
+from config import TestConfig
 
 class CorsOptionsTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.client = self.app.test_client()
 
     def test_historial_options(self):

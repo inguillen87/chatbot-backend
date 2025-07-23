@@ -169,13 +169,13 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
 
     # Extraer CP al final (ej: ..., 5500 o (5500))
     try:
-        cp_match = re.search(r"(\b\d{4}\b|\(\d{4}\))$", direccion_limpia, re.TIMEOUT)
+        cp_match = re.search(r"(\b\d{4}\b|\(\d{4}\))$", direccion_limpia)
         if cp_match:
             parsed_data["codigo_postal"] = cp_match.group(1).replace("(", "").replace(")", "")
             direccion_limpia = direccion_limpia[:cp_match.start()].strip().rstrip(',')
             logger.debug(f"CP extraído: {parsed_data['codigo_postal']}, resto: '{direccion_limpia}'")
 
-        match_calle_numero_final = re.match(r"^(.*?)\s+(\d+[a-zA-Z]?(?:\s*(?:bis|altos|piso\s*\w+|dpto\s*\w+))?)\s*(?:,\s*(.*))?$", direccion_limpia, re.IGNORECASE | re.TIMEOUT)
+        match_calle_numero_final = re.match(r"^(.*?)\s+(\d+[a-zA-Z]?(?:\s*(?:bis|altos|piso\s*\w+|dpto\s*\w+))?)\s*(?:,\s*(.*))?$", direccion_limpia, re.IGNORECASE)
 
         calle_original = direccion_limpia
 
@@ -187,14 +187,14 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
             logger.debug(f"Calle: {parsed_data['calle']}, Numero: {parsed_data['numero']}, Resto post-numero: '{resto_direccion_post_numero}'")
 
             num_lower = parsed_data["numero"].lower()
-            piso_depto_match_en_num = re.search(r"(?:piso|p)\s*(\w+)(?:\s*(?:dpto|d)\s*(\w+))?", num_lower, re.TIMEOUT)
+            piso_depto_match_en_num = re.search(r"(?:piso|p)\s*(\w+)(?:\s*(?:dpto|d)\s*(\w+))?", num_lower)
             if piso_depto_match_en_num:
                 parsed_data["piso"] = piso_depto_match_en_num.group(1)
                 if piso_depto_match_en_num.group(2): parsed_data["departamento"] = piso_depto_match_en_num.group(2)
                 parsed_data["numero"] = num_lower[:piso_depto_match_en_num.start()].strip()
 
             if not parsed_data.get("piso") and resto_direccion_post_numero:
-                piso_depto_match_resto = re.search(r"(?:Piso|P)\s*(\w+)(?:\s*(?:Dpto|D|Depto\.?)\s*(\w+))?", resto_direccion_post_numero, re.IGNORECASE | re.TIMEOUT)
+                piso_depto_match_resto = re.search(r"(?:Piso|P)\s*(\w+)(?:\s*(?:Dpto|D|Depto\.?)\s*(\w+))?", resto_direccion_post_numero, re.IGNORECASE)
                 if piso_depto_match_resto:
                     parsed_data["piso"] = piso_depto_match_resto.group(1)
                     if piso_depto_match_resto.group(2): parsed_data["departamento"] = piso_depto_match_resto.group(2)

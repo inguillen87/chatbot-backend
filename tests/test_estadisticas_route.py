@@ -1,14 +1,15 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from app import create_app, db
 from models import User, Rubro
-from routes.estadisticas import estadisticas_reclamos
 from config import TestConfig
+from routes.estadisticas import estadisticas_reclamos
 
 class EstadisticasRouteTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -20,7 +21,7 @@ class EstadisticasRouteTests(unittest.TestCase):
         self.app_context.pop()
 
     def test_pyme_filters_by_rubro(self):
-        rows = [SimpleNamespace(rubro='bodega', total=2)]
+        rows = [SimpleNamespace(categoria='bodega', total=2)]
         session = SimpleNamespace(
             execute=MagicMock(side_effect=[
                 MagicMock(fetchall=MagicMock(return_value=rows)),
@@ -47,7 +48,7 @@ class EstadisticasRouteTests(unittest.TestCase):
                  patch('routes.estadisticas.db', SimpleNamespace(session=session)):
                 resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
 
-        self.assertEqual(resp['por_rubro'][0]['total'], 2)
+        self.assertEqual(resp['por_categoria_pyme'][0]['total'], 2)
         self.assertEqual(resp['por_tipo'][0]['total'], 5)
         self.assertEqual(resp['tiempo_respuesta_promedio_segundos']['pyme'], 120.0)
         for call in session.execute.call_args_list:
@@ -56,8 +57,11 @@ class EstadisticasRouteTests(unittest.TestCase):
                 self.assertEqual(params.get('rid'), 7)
 
     def test_municipio_filters_by_id(self):
+        rows = [SimpleNamespace(categoria='categoria', total=2)]
+
         session = SimpleNamespace(
             execute=MagicMock(side_effect=[
+                MagicMock(fetchall=MagicMock(return_value=rows)),
                 MagicMock(scalar=MagicMock(return_value=4)),
                 MagicMock(scalar=MagicMock(return_value=60.0)),
             ])
@@ -80,7 +84,7 @@ class EstadisticasRouteTests(unittest.TestCase):
             with patch('routes.estadisticas.jsonify', lambda x: x), \
                  patch('routes.estadisticas.db', SimpleNamespace(session=session)):
                 resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
-        self.assertEqual(resp['por_rubro'], [])
+        self.assertEqual(resp['por_categoria_municipio'][0]['total'], 2)
         self.assertEqual(resp['por_tipo'][0]['total'], 4)
         self.assertEqual(resp['tiempo_respuesta_promedio_segundos']['municipio'], 60.0)
         for call in session.execute.call_args_list:

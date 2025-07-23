@@ -3,12 +3,13 @@ import uuid
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from models import ChatSessionContext, User, Rubro
+from config import TestConfig
 
 
 class ChatUserPanelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = create_app(TestingConfig)
+        cls.app = create_app(TestConfig)
         cls.app_context = cls.app.app_context()
         cls.app_context.push()
         db.create_all()

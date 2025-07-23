@@ -6,7 +6,7 @@ import json
 
 class TicketEndpointsTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestConfig)
+        self.app = create_app()
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -68,17 +68,15 @@ class TicketEndpointsTest(unittest.TestCase):
         self.app_context.pop()
 
     def test_get_tickets_del_usuario_admin_municipio(self):
-        # Iniciar sesión para obtener el token
         login_resp = self.client.post('/auth/login', json={
             'email': 'admin@junin.com',
             'password': 'adminpass'
         })
         self.assertEqual(login_resp.status_code, 200)
-        token = json.loads(login_resp.data)['access_token']
+        token = json.loads(login_resp.data)['token']
 
-        # Hacer la petición al endpoint /tickets
         headers = {'Authorization': f'Bearer {token}'}
-        tickets_resp = self.client.get('/tickets', headers=headers)
+        tickets_resp = self.client.get('/tickets/usuarios', headers=headers)
         self.assertEqual(tickets_resp.status_code, 200)
 
         # Verificar que la respuesta contiene los tickets correctos
