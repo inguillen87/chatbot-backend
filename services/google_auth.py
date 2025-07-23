@@ -59,6 +59,7 @@ def login_o_crear_usuario(token_id: str, *, rol: str | None = None, tipo_chat: s
 
     user = User.query.filter_by(email=email.lower()).first()
     if not user:
+        logger.info(f"Creating new user with Google info: {info}")
         tipo_normalizado = _normalizar_tipo(tipo_chat) or "pyme"
         rol_final = rol if rol in {"admin", "usuario"} else "usuario"
         user = User(
