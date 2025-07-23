@@ -3490,52 +3490,51 @@ def responder_municipio(
     # Si la acción fue exitosa y no hay pedir_info, generalmente se limpia el estado.
 
     if action_handler_result.get("success") and not pedir_info_final:
-        # Si la acción fue exitosa y no se pide más info, limpiar estado específico del flujo.
-        # Esto es una simplificación. Algunos flujos podrían querer mantenerse en un estado de "resumen" o similar.
-        # El `action_handler_result` podría devolver un `nuevo_estado_conversacion` si quisiera ser explícito.
-        if contexto_municipio_actual.get("estado_conversacion") not in [None, ConversationState.IDLE.name if hasattr(ConversationState, 'IDLE') else None]: # Evitar limpiar si ya estaba idle/None
+        if contexto_municipio_actual.get("estado_conversacion") not in [None, ConversationState.IDLE.name if hasattr(ConversationState, 'IDLE') else None]:
             logger.info(f"Acción '{llm_response_structured.get('accion_backend')}' exitosa y sin pedir_info. Limpiando estado de conversación municipal.")
-            # Guardar interacciones anon si existen antes de limpiar
-            interacciones_anon_actual = contexto_municipio_actual.get("interacciones_anon_sesion")
-            contexto_municipio_actual.clear() # Limpia el sub-diccionario
-            if interacciones_anon_actual is not None:
-                contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_actual
-            # No se setea estado_conversacion a None aquí, clear() lo elimina. Se re-evaluará al final.
-    elif pedir_info_final:
-        # Convertir a string si es una lista
-        if isinstance(pedir_info_final, list):
-            pedir_info_str = ", ".join(pedir_info_final)
-        else:
-            pedir_info_str = str(pedir_info_final)
-
-        logger.info(f"[PEDIR_INFO_MAP] Valor recibido: '{pedir_info_str}'")
-        pedir_info_norm = normalizar_str(pedir_info_str)
-        logger.info(f"[PEDIR_INFO_MAP] Normalizado: '{pedir_info_norm}'")
-
-        # Lógica para encontrar el estado objetivo, buscando cualquier coincidencia
-        estado_objetivo = None
-        for key, state in PEDIR_INFO_TO_STATE.items():
-            if key in pedir_info_norm:
-                estado_objetivo = state
-                break
-
-        if estado_objetivo:
-            contexto_municipio_actual["estado_conversacion"] = estado_objetivo.name
-            logger.info(
-                f"Actualizando estado de conversación a: {estado_objetivo.name} debido a pedir_info normalizado: '{pedir_info_norm}'"
-            )
-        else:
-            logger.warning(
-                f"No se pudo mapear pedir_info '{pedir_info_final}' normalizado '{pedir_info_norm}' a un ConversationState. Reiniciando flujo."
-            )
-            respuesta_final_texto = (
-                "Perdón, tuve un problema para continuar con el reclamo. ¿Podés intentar de nuevo desde el inicio?"
-            )
             interacciones_anon_actual = contexto_municipio_actual.get("interacciones_anon_sesion")
             contexto_municipio_actual.clear()
             if interacciones_anon_actual is not None:
                 contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_actual
-            contexto_municipio_actual["estado_conversacion"] = None
+    elif pedir_info_final:
+        # FIX: No actualizar estado si la acción fue `crear_reclamo` y tuvo éxito aparente (sin pedir_info).
+        # El estado se debe determinar por el resultado del ActionHandler, no por el `pedir_info` del LLM inicial.
+        accion_llm = llm_response_structured.get('accion_backend')
+        if accion_llm == 'crear_reclamo' and not pedir_info_final:
+            logger.info(f"Acción es '{accion_llm}' y no hay 'pedir_info_final'. Se omite la actualización de estado basada en el 'pedir_info' del LLM.")
+        else:
+            if isinstance(pedir_info_final, list):
+                pedir_info_str = ", ".join(pedir_info_final)
+            else:
+                pedir_info_str = str(pedir_info_final)
+
+            logger.info(f"[PEDIR_INFO_MAP] Valor recibido: '{pedir_info_str}'")
+            pedir_info_norm = normalizar_str(pedir_info_str)
+            logger.info(f"[PEDIR_INFO_MAP] Normalizado: '{pedir_info_norm}'")
+
+            estado_objetivo = None
+            for key, state in PEDIR_INFO_TO_STATE.items():
+                if key in pedir_info_norm:
+                    estado_objetivo = state
+                    break
+
+            if estado_objetivo:
+                contexto_municipio_actual["estado_conversacion"] = estado_objetivo.name
+                logger.info(
+                    f"Actualizando estado de conversación a: {estado_objetivo.name} debido a pedir_info normalizado: '{pedir_info_norm}'"
+                )
+            else:
+                logger.warning(
+                    f"No se pudo mapear pedir_info '{pedir_info_final}' normalizado '{pedir_info_norm}' a un ConversationState. Reiniciando flujo."
+                )
+                respuesta_final_texto = (
+                    "Perdón, tuve un problema para continuar con el reclamo. ¿Podés intentar de nuevo desde el inicio?"
+                )
+                interacciones_anon_actual = contexto_municipio_actual.get("interacciones_anon_sesion")
+                contexto_municipio_actual.clear()
+                if interacciones_anon_actual is not None:
+                    contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_actual
+                contexto_municipio_actual["estado_conversacion"] = None
 
     # --- Guardar el historial de chat_db_context con la respuesta final del CHATBOT ---
     chat_db_context_live_data["mensajes_previos_gemini_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import sys
+import json
 
 # Add project root to system path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -50,24 +51,31 @@ class TestClaimFlow(unittest.TestCase):
         """
         # Simulate the state where the bot is waiting for an address
         memoria = {"estado_conversacion": "ESPERANDO_DIRECCION_RECLAMO"}
-        self.assertFalse(es_pregunta_nueva("calle san martin 15 junin mendoza", "una dirección", memoria))
+        self.assertFalse(es_pregunta_nueva("Don Bosco 55, Junín, Mendoza", "una dirección", memoria))
 
-    def test_reclamo_handler_address_input(self):
+    @patch('services.herramientas_municipio.get_cohere_response')
+    def test_reclamo_handler_address_input(self, mock_get_cohere_response):
         """
         Simulates the user providing an address after being prompted.
         """
+        mock_get_cohere_response.return_value = json.dumps({
+            "calle": "Don Bosco",
+            "numero": "55",
+            "localidad": "Junín",
+            "provincia": "Mendoza"
+        })
         handler = ReclamoHandler(self.context)
         self.context["contexto_municipio_v2"]["estado_conversacion"] = "ESPERANDO_DIRECCION_RECLAMO"
-        self.context["contexto_municipio_v2"]["categoria_reclamo"] = "Alumbrado"
+        self.context["contexto_municipio_v2"]["categoria_reclamo"] = "Bacheo"
 
-        payload = {"pregunta": "calle san martin 15 junin mendoza"}
+        payload = {"pregunta": "Don Bosco 55, Junín, Mendoza"}
         with self.app.app_context():
             response = handler.handle(payload)
 
         # The handler should now be waiting for the user's name
         self.assertEqual(self.context["contexto_municipio_v2"]["estado_conversacion"], "ESPERANDO_NOMBRE_VECINO")
         self.assertIn("nombre completo", response["message_body"])
-        self.assertEqual(self.context["contexto_municipio_v2"]["direccion_reclamo"], "calle san martin 15 junin mendoza, Junín, Mendoza")
+        self.assertEqual(self.context["contexto_municipio_v2"]["direccion_reclamo"], "Don Bosco 55, Junín")
 
 if __name__ == '__main__':
     unittest.main()

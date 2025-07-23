@@ -153,96 +153,42 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     default_localidad = municipio_config.get('ciudad_default', municipio_config.get('ciudad', 'Localidad Desconocida'))
     default_provincia = municipio_config.get('provincia_default', municipio_config.get('provincia', 'Provincia Desconocida'))
 
-    # LLM call removed. This function now performs basic regex/keyword parsing.
-    # The main Gemini call (JULES_SYSTEM_PROMPT) is expected to provide structured address if possible.
+    prompt = f"""
+    Tu tarea es extraer de forma precisa los componentes de una dirección argentina en un objeto JSON.
 
-    logger.info(f"[ParseDireccion NON-LLM] Parseando: '{texto_direccion}' con defaults: Loc='{default_localidad}', Prov='{default_provincia}'")
-    parsed_data = {}
-    if not texto_direccion or not isinstance(texto_direccion, str):
-        return parsed_data # Devuelve dict vacío si no hay texto
+    Dirección de entrada: "{texto_direccion}"
 
-    # Limpiar y normalizar texto de entrada
-    direccion_limpia = texto_direccion.strip()
+    Considera estos valores por defecto si no están presentes en la dirección:
+    - Localidad: {default_localidad}
+    - Provincia: {default_provincia}
 
-    # Patrones para extraer número, piso, depto, etc.
-    # Este es un intento muy básico y puede necesitar mejoras significativas o una librería dedicada.
+    Extrae los siguientes campos:
+    - "calle"
+    - "numero"
+    - "piso" (opcional)
+    - "departamento" (opcional)
+    - "barrio" (opcional)
+    - "localidad"
+    - "provincia"
+    - "codigo_postal" (opcional)
+    - "otros_detalles" (cualquier información adicional relevante que no encaje en los otros campos)
 
-    # Extraer CP al final (ej: ..., 5500 o (5500))
+    Responde únicamente con el objeto JSON. Si no puedes extraer una calle o una localidad, devuelve un JSON vacío.
+    """
     try:
-        cp_match = re.search(r"(\b\d{4}\b|\(\d{4}\))$", direccion_limpia)
-        if cp_match:
-            parsed_data["codigo_postal"] = cp_match.group(1).replace("(", "").replace(")", "")
-            direccion_limpia = direccion_limpia[:cp_match.start()].strip().rstrip(',')
-            logger.debug(f"CP extraído: {parsed_data['codigo_postal']}, resto: '{direccion_limpia}'")
-
-        match_calle_numero_final = re.match(r"^(.*?)\s+(\d+[a-zA-Z]?(?:\s*(?:bis|altos|piso\s*\w+|dpto\s*\w+))?)\s*(?:,\s*(.*))?$", direccion_limpia, re.IGNORECASE)
-
-        calle_original = direccion_limpia
-
-        if match_calle_numero_final:
-            parsed_data["calle"] = match_calle_numero_final.group(1).strip().rstrip(',')
-            parsed_data["numero"] = match_calle_numero_final.group(2).strip()
-            resto_direccion_post_numero = (match_calle_numero_final.group(3) or "").strip()
-            calle_original = parsed_data["calle"]
-            logger.debug(f"Calle: {parsed_data['calle']}, Numero: {parsed_data['numero']}, Resto post-numero: '{resto_direccion_post_numero}'")
-
-            num_lower = parsed_data["numero"].lower()
-            piso_depto_match_en_num = re.search(r"(?:piso|p)\s*(\w+)(?:\s*(?:dpto|d)\s*(\w+))?", num_lower)
-            if piso_depto_match_en_num:
-                parsed_data["piso"] = piso_depto_match_en_num.group(1)
-                if piso_depto_match_en_num.group(2): parsed_data["departamento"] = piso_depto_match_en_num.group(2)
-                parsed_data["numero"] = num_lower[:piso_depto_match_en_num.start()].strip()
-
-            if not parsed_data.get("piso") and resto_direccion_post_numero:
-                piso_depto_match_resto = re.search(r"(?:Piso|P)\s*(\w+)(?:\s*(?:Dpto|D|Depto\.?)\s*(\w+))?", resto_direccion_post_numero, re.IGNORECASE)
-                if piso_depto_match_resto:
-                    parsed_data["piso"] = piso_depto_match_resto.group(1)
-                    if piso_depto_match_resto.group(2): parsed_data["departamento"] = piso_depto_match_resto.group(2)
-                    resto_direccion_post_numero = resto_direccion_post_numero.replace(piso_depto_match_resto.group(0), "").strip().rstrip(',').strip()
-
-            direccion_limpia = resto_direccion_post_numero
-        else:
-            parts_sin_numero = direccion_limpia.split(',', 1)
-            parsed_data["calle"] = parts_sin_numero[0].strip()
-            calle_original = parsed_data["calle"]
-            direccion_limpia = parts_sin_numero[1].strip() if len(parts_sin_numero) > 1 else ""
-            logger.debug(f"Calle (sin num claro en regex): {parsed_data['calle']}, Resto: '{direccion_limpia}'")
-    except re.error as e:
-        logger.error(f"Error de regex en parse_direccion_completa: {e}")
+        respuesta_llm = get_cohere_response(
+            message=prompt,
+            preamble="Sos un experto en normalización de direcciones argentinas. Tu única función es devolver un objeto JSON con los datos de la dirección."
+        )
+        parsed_data = json.loads(respuesta_llm)
+        if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
+             logger.warning(f"LLM no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}")
+             return None
+        logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
+        return parsed_data
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error(f"Error al parsear dirección con LLM: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'")
         return None
-
-    partes_restantes = [p.strip() for p in direccion_limpia.split(',') if p.strip()]
-
-    if default_localidad != "Localidad Desconocida": parsed_data["localidad"] = default_localidad
-    if default_provincia != "Provincia Desconocida": parsed_data["provincia"] = default_provincia
-
-    if len(partes_restantes) == 1:
-        if parsed_data.get("localidad") == "Localidad Desconocida" and not any(char.isdigit() for char in partes_restantes[0]):
-            parsed_data["localidad"] = partes_restantes[0]
-        else:
-            parsed_data["barrio"] = partes_restantes[0]
-
-    elif len(partes_restantes) >= 2:
-        if (parsed_data.get("localidad") == "Localidad Desconocida" or partes_restantes[0].lower() != default_localidad.lower()) and \
-           not any(char.isdigit() for char in partes_restantes[0]):
-            parsed_data["localidad"] = partes_restantes[0]
-            if not any(char.isdigit() for char in partes_restantes[1]):
-                 parsed_data["provincia"] = partes_restantes[1]
-                 if len(partes_restantes) > 2 and not any(char.isdigit() for char in partes_restantes[2]):
-                     parsed_data["barrio"] = partes_restantes[0]
-                     parsed_data["localidad"] = partes_restantes[1]
-                     parsed_data["provincia"] = partes_restantes[2]
-        elif not any(char.isdigit() for char in partes_restantes[0]):
-            parsed_data["barrio"] = partes_restantes[0] if len(partes_restantes[0]) > 2 else None
-            if len(partes_restantes) > 1 and not any(char.isdigit() for char in partes_restantes[1]):
-                 pass
-
-    if not parsed_data.get("calle"):
-        logger.warning(f"No se pudo parsear la calle de la dirección (NON-LLM): '{texto_direccion}'")
-        return {}
-
-    logger.info(f"Dirección parseada (NON-LLM) para '{texto_direccion}': {parsed_data}")
-    return parsed_data
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:

@@ -1,4 +1,5 @@
 import logging
+from types import SimpleNamespace
 import os
 import re
 from typing import List, Optional, Dict, Any, Tuple

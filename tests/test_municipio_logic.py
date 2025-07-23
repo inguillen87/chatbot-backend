@@ -271,11 +271,11 @@ class MunicipioLogicTests(unittest.TestCase):
                 ]
             }
             with self.app.app_context():
-            with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
-                resp = municipios.responder_municipio(
-                    'hola buenos noches',
-                    user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
-                )
+                with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
+                    resp = municipios.responder_municipio(
+                        'hola buenos noches',
+                        user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
+                    )
         self.assertIn('tu asistente digital del Municipio', resp['message_body'])
 
     def test_small_talk_municipio(self):
