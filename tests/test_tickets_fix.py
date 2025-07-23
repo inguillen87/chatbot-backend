@@ -1,7 +1,7 @@
 import pytest
 from app import create_app
 from extensions import db
-from models import User
+from models import User, Rubro
 
 @pytest.fixture
 def client():
@@ -20,24 +20,35 @@ def client():
             print("Database dropped.")
     print("Client setup complete.")
 
-def test_get_tickets_unauthenticated(client):
-    print("Starting test_get_tickets_unauthenticated...")
+def test_get_tickets_requires_authentication(client):
+    print("Starting test_get_tickets_requires_authentication...")
     try:
-        # Ensure the test user exists
+        # Create a test user with a valid rubro
         with client.application.app_context():
-            print("Checking for test user...")
-            test_user = User.query.filter_by(email="test@example.com").first()
-            if not test_user:
-                print("Test user not found, creating...")
-                test_user = User(email="test@example.com", nombre_empresa="Test", rubro_id=1, tipo_chat="pyme", rol="admin")
-                db.session.add(test_user)
-                db.session.commit()
-                print("Test user created.")
-            else:
-                print("Test user found.")
+            rubro = Rubro(nombre="pymes", clave="pymes")
+            db.session.add(rubro)
+            db.session.commit()
 
-        print("Sending GET request to /tickets...")
+            test_user = User(email="test@example.com", name="Test", nombre_empresa="Test", rubro_id=rubro.id, tipo_chat="pyme", rol="admin")
+            test_user.set_password("testpass")
+            db.session.add(test_user)
+            db.session.commit()
+
+        print("Sending unauthenticated GET request to /tickets...")
         response = client.get('/tickets')
+        print(f"Response status code: {response.status_code}")
+        assert response.status_code == 401
+
+        print("Logging in to obtain token...")
+        login_resp = client.post('/auth/login', json={
+            "email": "test@example.com",
+            "password": "testpass"
+        })
+        token = login_resp.get_json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        print("Sending authenticated GET request to /tickets...")
+        response = client.get('/tickets', headers=headers)
         print(f"Response status code: {response.status_code}")
         print(f"Response data: {response.data}")
         assert response.status_code == 200
