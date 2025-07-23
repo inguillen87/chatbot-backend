@@ -128,6 +128,25 @@ class ServicioTickets:
                     # La integración externa no debe impedir el funcionamiento primario.
                     logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
 
+            # Notificar panel en tiempo real
+            try:
+                from services.pusher_service import trigger_notification
+                channel_id = ticket.municipio_id if tipo_ticket == "municipio" else ticket.rubro_id
+                channel = f"panel-{tipo_ticket}-{channel_id}"
+                event = "nuevo-ticket"
+                data = {
+                    "id": ticket.id,
+                    "tipo": tipo_ticket,
+                    "nro_ticket": ticket.nro_ticket,
+                    "asunto": getattr(ticket, "asunto", ""),
+                    "categoria": getattr(ticket, "categoria", None),
+                    "estado": ticket.estado,
+                    "fecha": ticket.fecha.isoformat() if ticket.fecha else None
+                }
+                trigger_notification(channel, event, data)
+            except Exception as e_notify:
+                logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
+
             return ticket
         except SQLAlchemyError as e:
             db.session.rollback()

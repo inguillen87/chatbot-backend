@@ -1082,6 +1082,17 @@ def get_panel_pyme(current_user: User):
         current_app.logger.error(f"Error en get_panel_pyme: {e}", exc_info=True)
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
 
+# ---------- PANEL UNIFICADO ----------
+@ticket_bp.route('/tickets/panel', methods=['GET'])
+@token_requerido
+@require_role('admin', 'empleado')
+def get_ticket_panel(current_user: User):
+    """Retorna el panel de tickets según el tipo de chat del usuario."""
+    if current_user.tipo_chat == "municipio":
+        return get_panel_por_categoria(current_user)
+    else:
+        return get_panel_pyme(current_user)
+
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido
