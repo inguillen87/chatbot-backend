@@ -42,12 +42,12 @@ def analyze_image_from_content(image_content: bytes, min_confidence: float = 0.5
     Returns:
         Un diccionario con 'objects' y 'labels' detectados, o mensajes de error.
     """
-    if not VISION_CLIENT:
-        logger.error("❌ [VISION_SVC] Cliente de Vision no inicializado. No se puede analizar la imagen.")
-        return {"error": "Cliente de Vision no inicializado."}
     if not image_content:
         logger.error("❌ [VISION_SVC] Contenido de imagen vacío.")
         return {"error": "Contenido de imagen vacío."}
+    if not VISION_CLIENT:
+        logger.error("❌ [VISION_SVC] Cliente de Vision no inicializado. No se puede analizar la imagen.")
+        return {"error": "Cliente de Vision no inicializado."}
 
     image = vision.Image(content=image_content)
 

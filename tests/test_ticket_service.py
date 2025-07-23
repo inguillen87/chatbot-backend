@@ -74,11 +74,21 @@ class TicketServiceTests(unittest.TestCase):
         t4 = DummyTicket(id=4, estado='abierto', latitud=12.0, longitud=22.0, municipio_id=6, fecha=datetime.utcnow(), categoria=None, asunto=None) # Different municipio
 
         class DummyModel:
-            query = DummyQuery([t1, t2, t3, t4])
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
 
-        with patch.object(ts, 'MunicipioTicket', DummyModel): # Patch where MunicipioTicket is used in the service
+            @classmethod
+            def query(cls):
+                return DummyQuery([
+                    cls(id=1, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+                    cls(id=2, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+                    cls(id=3, estado='abierto', latitud=11.0, longitud=21.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+                    cls(id=4, estado='abierto', latitud=12.0, longitud=22.0, municipio_id=6, fecha=datetime.utcnow(), categoria=None, asunto=None)
+                ])
+
+        with patch.object(ts, 'MunicipioTicket', DummyModel):
             service = ServicioTickets()
-            # Call the CORRECTED method name
             res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='municipio', municipio_id=5)
 
         # The method now returns a list of dicts with "location" and "weight"
@@ -114,11 +124,20 @@ class TicketServiceTests(unittest.TestCase):
         t3 = DummyTicket(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None) # Different rubro
 
         class DummyModel:
-            query = DummyQuery([t1, t2, t3])
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
 
-        with patch.object(ts, 'PymeTicket', DummyModel): # Patch where PymeTicket is used
+            @classmethod
+            def query(cls):
+                return DummyQuery([
+                    cls(id=1, estado='abierto', latitud=10.0, longitud=20.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+                    cls(id=2, estado='abierto', latitud=11.0, longitud=21.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+                    cls(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None)
+                ])
+
+        with patch.object(ts, 'PymeTicket', DummyModel):
             service = ServicioTickets()
-            # Call the CORRECTED method name
             res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='pyme', rubro_id=5)
 
         # Expecting two items for rubro_id=5, each with weight 1 as they are distinct locations

@@ -27,15 +27,25 @@ class TestConfig(Config):
     COHERE_API_KEY = "test_cohere_key"
 
 class TestAITemplatesEndpoints(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        """Set up for all tests in this class."""
+        cls.app = create_app(TestConfig)
+        cls.app.register_blueprint(ai_templates_bp, url_prefix='/ai')
+        cls.app_context = cls.app.app_context()
+        cls.app_context.push()
+        db.create_all()
+        cls.client = cls.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        """Tear down after all tests in this class."""
+        db.session.remove()
+        db.drop_all()
+        cls.app_context.pop()
+
     def setUp(self):
         """Set up for each test method."""
-        self.app = create_app(TestConfig)
-        self.app.register_blueprint(ai_templates_bp, url_prefix='/ai')
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.create_all()
-        self.client = self.app.test_client()
-
         self.mock_rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")
         db.session.add(self.mock_rubro)
         db.session.commit()
@@ -60,10 +70,7 @@ class TestAITemplatesEndpoints(unittest.TestCase):
 
     def tearDown(self):
         """Tear down after each test method."""
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
-
+        db.session.rollback()
         self.g_patcher.stop()
         self.embed_patcher.stop()
         self.chat_patcher.stop()

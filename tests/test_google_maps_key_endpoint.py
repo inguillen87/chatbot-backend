@@ -2,11 +2,12 @@ import unittest
 import os
 from app import create_app
 from config import TestConfig
+from config import TestConfig
 
 class GoogleMapsKeyEndpointTest(unittest.TestCase):
     def setUp(self):
         os.environ['GOOGLE_MAPS_API_KEY'] = 'abc123'
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.client = self.app.test_client()
 
     def test_key_returned(self):

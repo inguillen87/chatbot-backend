@@ -38,11 +38,10 @@ class UtilsTestCase(unittest.TestCase):
     def setUp(self):
         self.original_models_module = sys.modules.get('models')
         sys.modules['models'] = models_stub
-        # Reload hp if it imports models at module level and needs the stub
         import services.herramientas_pyme as hp
+        import importlib
         importlib.reload(hp)
         self.hp = hp
-        self.verificar_stock_producto = hp.verificar_stock_producto
 
 
     def tearDown(self):

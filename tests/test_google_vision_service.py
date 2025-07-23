@@ -54,7 +54,7 @@ class TestGoogleVisionService(unittest.TestCase):
         min_confidence = 0.5
 
         expected_result = {
-            "labels": ["Test Label"],
+            "labels": [{"description": "Test Label", "confidence": 0.85}],
             "text": "Test OCR Text"
         }
 
@@ -87,7 +87,7 @@ class TestGoogleVisionService(unittest.TestCase):
 
     @patch('services.google_vision_service.VISION_CLIENT', None) # Simular que el cliente no se inicializó
     @patch('services.google_vision_service.logger') # Mockear el logger para verificar mensajes
-    def test_analyze_image_no_client(self, mock_logger, mock_vision_client_none):
+    def test_analyze_image_no_client(self, mock_logger):
         # Esta prueba es un poco más compleja porque VISION_CLIENT es global.
         # La forma más simple de probar esto es si la función verifica explícitamente
         # la disponibilidad del cliente al inicio.

@@ -9,7 +9,7 @@ project_root_ticket_filters = os.path.abspath(os.path.join(os.path.dirname(__fil
 if project_root_ticket_filters not in sys.path:
     sys.path.insert(0, project_root_ticket_filters)
 
-from routes.ticket import get_tickets_del_usuario
+from routes.ticket import get_tickets_del_usuario_logic
 
 class DummyQuery:
     def __init__(self, items):
@@ -49,7 +49,7 @@ class TicketFiltersTests(unittest.TestCase):
         user = SimpleNamespace(id=1, rol='admin', municipio_id=5, rubro=SimpleNamespace(nombre='municipios'), ticket_categorias='')
         with patch('routes.ticket.request', SimpleNamespace(args={'estado': 'abierto'})):
             with patch('routes.ticket.MunicipioTicket', MunicipioMock), patch('routes.ticket.jsonify', lambda x: x):
-                res = get_tickets_del_usuario.__wrapped__.__wrapped__(user)
+                res = get_tickets_del_usuario_logic(user)
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]['id'], 1)
 
@@ -65,7 +65,7 @@ class TicketFiltersTests(unittest.TestCase):
         user = SimpleNamespace(id=1, rol='admin', rubro_id=7, rubro=SimpleNamespace(nombre='pyme'), ticket_categorias='')
         with patch('routes.ticket.request', SimpleNamespace(args={'categoria': 'X'})):
             with patch('routes.ticket.PymeTicket', PymeMock), patch('routes.ticket.jsonify', lambda x: x):
-                res = get_tickets_del_usuario.__wrapped__.__wrapped__(user)
+                res = get_tickets_del_usuario_logic(user)
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]['id'], 1)
 
@@ -73,7 +73,7 @@ class TicketFiltersTests(unittest.TestCase):
         user = SimpleNamespace(id=9, rol='admin', municipio_id=None, rubro=SimpleNamespace(nombre='municipios'), ticket_categorias='')
         with patch('routes.ticket.request', SimpleNamespace(args={})), \
              patch('routes.ticket.jsonify', lambda x: x):
-            res, status = get_tickets_del_usuario.__wrapped__.__wrapped__(user)
+            res, status = get_tickets_del_usuario_logic(user)
         self.assertEqual(status, 400)
 
 if __name__ == '__main__':

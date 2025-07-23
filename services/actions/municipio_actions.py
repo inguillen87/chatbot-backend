@@ -53,14 +53,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
         nombre_vecino_final = nombre_vecino_llm or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
         telefono_final_validado_e164 = None
-        temp_phone_str = str(telefono_llm or getattr(viewer_user, "telefono", ""))
-        if temp_phone_str and validar_telefono(temp_phone_str):
-            telefono_final_validado_e164 = formatear_telefono_e164(temp_phone_str)
+        if telefono_llm and validar_telefono(telefono_llm):
+            telefono_final_validado_e164 = formatear_telefono_e164(telefono_llm)
+        elif viewer_user and getattr(viewer_user, "telefono", "") and validar_telefono(getattr(viewer_user, "telefono", "")):
+            telefono_final_validado_e164 = formatear_telefono_e164(getattr(viewer_user, "telefono", ""))
 
         email_final_validado = None
-        temp_email_str = str(email_llm or getattr(viewer_user, "email", ""))
-        if temp_email_str and validar_email(temp_email_str):
-            email_final_validado = temp_email_str.lower()
+        if email_llm and validar_email(email_llm):
+            email_final_validado = email_llm.lower()
+        elif viewer_user and getattr(viewer_user, "email", "") and validar_email(getattr(viewer_user, "email", "")):
+            email_final_validado = getattr(viewer_user, "email", "").lower()
 
         direccion_final_txt = ubicacion_llm
         latitud_final = coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None

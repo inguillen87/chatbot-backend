@@ -3,12 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from app import create_app, db
 from models import User, Rubro
+from config import TestConfig
 from routes.auth import dashboard_info
 
 
 class DashboardRouteTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -39,10 +40,10 @@ class DashboardRouteTests(unittest.TestCase):
             with patch('routes.auth.es_rubro_publico', lambda r: True), \
                  patch('routes.auth.jsonify', lambda x: x):
                 resp = dashboard_info.__wrapped__(user)
-        self.assertIn('municipio', resp['panels'])
-        self.assertIn('crm', resp['panels'])
+        self.assertIn('mapa_tickets', resp['panels'])
+        self.assertIn('usuarios_crm', resp['panels'])
         self.assertIn('empleados', resp['panels'])
-        self.assertIn('pedidos', resp['panels'])
+        self.assertIn('tickets', resp['panels'])
         self.assertEqual(resp['tipo_chat'], 'municipio')
 
 if __name__ == '__main__':

@@ -305,33 +305,21 @@ class CatalogoHandler(BaseHandler):
 
         if resultados_qdrant:
             productos_formateados = []
+            productos_formateados.append("| Producto | Precio | Cantidad |")
+            productos_formateados.append("|---|---|---|")
             for idx, hit in enumerate(resultados_qdrant):
                 payload = getattr(hit, "payload", {}); item_db_id = payload.get("db_id")
-                item_obj = db.session.get(CatalogoItem, item_db_id) if item_db_id else None
-                nombre = payload.get("nombre", "Producto"); desc = resumir_descripcion_producto_llm(payload.get("descripcion_corta") or payload.get("descripcion",""), 80, 20)
+                item_obj = db.session.get(models.CatalogoItem, item_db_id) if item_db_id else None
+                nombre = payload.get("nombre", "Producto")
                 precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", ""))
-                linea = f"**{idx+1}. {nombre}**"
-                if desc: linea += f"\n   _{desc}_"
-                precio_final, promo_txt = precio_f, ""
-                if item_obj:
-                    promos = promocion_service.obtener_promociones_aplicables_a_item(self.pyme_id_actual, item_obj, 1)
-                    if promos:
-                        mejor_promo = promos[0]; precio_final = mejor_promo.get('precio_con_descuento_unitario', precio_f)
-                        promo_txt = f"🔥 ¡Oferta! {mejor_promo['nombre_promocion']}"
-                        if mejor_promo.get('descripcion_publica') != mejor_promo['nombre_promocion']: promo_txt += f": {mejor_promo['descripcion_publica']}"
-
-                linea += f"\n   Precio: ${precio_final if precio_final is not None else precio_f:,.2f} {moneda or 'ARS'}"
-                if promo_txt and precio_f != precio_final : linea += f" (Antes: <s style='color:grey;'>${precio_f:,.2f}</s>)"
-
-                promo_qdrant_txt = payload.get("promocion_texto")
-                if promo_qdrant_txt and not promo_txt: linea += f"\n   ✨ *Promo: {promo_qdrant_txt}*"
-                elif promo_txt: linea += f"\n   *{promo_txt}*"
+                cantidad = payload.get("cantidad", "")
+                linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
                 productos_formateados.append(linea)
                 identificador_accion = payload.get("sku") or item_db_id or nombre
                 botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
 
             if productos_formateados:
-                respuesta_texto = "Algunos productos que podrían interesarte:\n\n" + "\n\n".join(productos_formateados)
+                respuesta_texto = "Algunos productos que podrían interesarte:\n\n" + "\n".join(productos_formateados)
                 respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
         

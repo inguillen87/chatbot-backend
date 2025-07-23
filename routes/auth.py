@@ -737,20 +737,20 @@ def dashboard_info(user: User):
     # Paneles para roles admin y empleado
     if user.rol in ["admin", "empleado"]:
         panels.extend([
-            "tickets", # Gestión de tickets
-            "usuarios_crm", # Gestión de clientes/ciudadanos
-            "estadisticas", # Estadísticas generales de tickets/reclamos
-            "analiticas_crm", # Analíticas específicas de CRM
-            "mapa_tickets" # Mapa de tickets
+            "tickets",
+            "usuarios_crm",
+            "estadisticas",
+            "analiticas_crm",
+            "mapa_tickets"
         ])
         if tipo_chat == "pyme":
-            panels.append("pedidos_pyme") # Gestión de pedidos para PYMEs
+            panels.append("pedidos")
         elif tipo_chat == "municipio":
-            panels.append("sugerencias_ciudadano") # Gestión de sugerencias para Municipios
+            panels.append("sugerencias_ciudadano")
 
     # Paneles exclusivos para admin
     if user.rol == "admin":
-        panels.extend(["empleados"]) # Gestión de empleados
+        panels.append("empleados")
 
     # Eliminar duplicados por si acaso y ordenar alfabéticamente para consistencia
     final_panels = sorted(list(set(panels)))

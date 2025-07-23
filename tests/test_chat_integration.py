@@ -19,7 +19,8 @@ class TestChatIntegration(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
-        rubro = Rubro(nombre="municipio", es_publico=True, clave="municipio")
+        rubro = Rubro(nombre="municipio", clave="municipio")
+        rubro.es_publico = True
         self.test_user = User(
             name="Test User",
             email="test@example.com",

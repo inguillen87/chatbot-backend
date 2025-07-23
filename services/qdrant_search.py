@@ -185,128 +185,126 @@ def armar_respuesta_legible(
     order_by: str | None = None,
     consulta_usuario: str = "",
 ) -> str:
+    """
+    Formatea los resultados de Qdrant en una lista legible para el usuario,
+    deduplicando y combinando información de productos idénticos.
+    """
     if not resultados_qdrant:
-        return (
-            "No hay productos en el catálogo que coincidan con tu búsqueda. "
-            "¿Querés ver el catálogo completo?"
-        )
+        return "No se encontraron productos que coincidan con tu búsqueda."
 
-    # Ordená por score Qdrant, luego por destacado, luego por precio.
-    def _key(p):
-        payload = getattr(p, "payload", p) or {}
-        score = getattr(p, "score", 0)
+    # Usar OrderedDict para mantener el orden de aparición del mejor hit
+    productos_combinados = OrderedDict()
+
+    for hit in resultados_qdrant:
+        payload = getattr(hit, "payload", {}) or {}
+        # Usar 'id' como clave principal para la deduplicación
+        prod_id = payload.get("id") or payload.get("sku") or payload.get("nombre")
+        if not prod_id:
+            continue
+
+        if prod_id not in productos_combinados:
+            # Guardar el payload completo y el score del primer (mejor) hit
+            productos_combinados[prod_id] = {
+                "payload": payload,
+                "score": getattr(hit, "score", 0.0),
+            }
+        else:
+            # Combinar campos de hits duplicados
+            # El payload existente se actualiza con campos faltantes del nuevo hit
+            _combinar_payload(productos_combinados[prod_id]["payload"], payload)
+
+    # Convertir de nuevo a una lista de objetos similares a ScoredPoint para ordenar
+    lista_productos_final = [
+        SimpleNamespace(
+            id=prod_id, payload=data["payload"], score=data["score"]
+        )
+        for prod_id, data in productos_combinados.items()
+    ]
+
+    # Re-ordenar la lista final deduplicada si es necesario
+    def _sort_key(p):
+        payload = p.payload
+        score = p.score
         destacado = 0 if payload.get("destacado") else 1
-        precio = float(payload.get("precio_float") or 0)
+        precio = float(payload.get("precio_float", 0) or 0)
         nombre = (payload.get("nombre") or "").lower()
         return (-score, destacado, precio, nombre)
 
-    productos_ordenados = sorted(resultados_qdrant, key=_key)
+    productos_ordenados = sorted(lista_productos_final, key=_sort_key)
+
+
     lineas = []
-    vistos = set()
-
-    for prod in productos_ordenados:
-        payload = getattr(prod, "payload", prod) or {}
+    for prod in productos_ordenados[:max_items]:
+        payload = prod.payload
         nombre = str(payload.get("nombre", "")).strip()
-        if not nombre:
-            continue
-        clave = nombre.lower()
-        if clave in vistos:
-            continue
-        vistos.add(clave)
+        precio_str = str(payload.get("precio_str", "")).strip()
+        desc = str(payload.get("descripcion", "")).strip()
 
-        precio_val = payload.get("precio_float")
-        precio_str_display = payload.get("precio_str", "")
+        linea = f"* **{nombre}**"
+        if precio_str:
+            linea += f" - ${precio_str}"
+        if desc:
+            linea += f": {desc}"
+        lineas.append(linea)
 
-        if precio_val is not None:
-            try:
-                precio_formateado = f"${float(precio_val):,.2f}"
-            except (ValueError, TypeError):
-                precio_formateado = precio_str_display or "Consultar"
-        elif precio_str_display:
-            # Ensure that price_str_display doesn't accidentally contain non-price numbers if parse_precio_flexible was too aggressive
-            # For now, we trust precio_val if it exists, otherwise precio_str_display
-            precio_formateado = precio_str_display
-        else:
-            precio_formateado = "Consultar" # Default if no price info
-
-        # New unit fields from Qdrant payload
-        unidad_original_str = payload.get("unidad_original", "")     # e.g., "Caja x 6 botellas"
-        unidad_desc_parsed = payload.get("unidad_descripcion", "")    # e.g., "Caja botellas" or "Caja"
-        cantidad_empaque_val = payload.get("cantidad_empaque")      # e.g., 6 (int) or None
-
-        # Usar descripcion_corta si existe, sino la descripcion normal
-        desc_corta = payload.get("descripcion_corta", "")
-        desc_completa = payload.get("descripcion", "")
-        desc_display = desc_corta if desc_corta else desc_completa
-
-        promocion = payload.get("promocion_info", "")
-
-        res = f"- <b>{nombre}</b>"
-        
-        # Construct unit display string
-        display_unidad_info = ""
-        if unidad_desc_parsed and cantidad_empaque_val and cantidad_empaque_val > 1:
-            # e.g., "Caja (empaque de 6)" or "Caja botellas (empaque de 6)"
-            display_unidad_info = f"{unidad_desc_parsed} (empaque de {cantidad_empaque_val})"
-        elif unidad_desc_parsed: # e.g., "Botella", "Unidad" (cantidad_empaque_val is 1 or None)
-            display_unidad_info = unidad_desc_parsed
-        elif unidad_original_str: # Fallback to original string if parsing was incomplete
-            display_unidad_info = unidad_original_str
-        
-        if display_unidad_info:
-            res += f" ({display_unidad_info})"
-
-        res += f" — <b>{precio_formateado}</b>"
-
-        # Display per-item price if the main price is for a pack
-        # This assumes `precio_val` is the price for the pack of `cantidad_empaque_val` items.
-        if precio_val is not None and isinstance(cantidad_empaque_val, int) and cantidad_empaque_val > 1:
-            try:
-                precio_por_item_individual = float(precio_val) / cantidad_empaque_val
-                # Only show if significantly different from pack price and makes sense
-                if abs(precio_por_item_individual - float(precio_val)) > 0.01 : 
-                     res += f" <i style='font-size:smaller;'>(equivale a ${precio_por_item_individual:,.2f} c/u individual)</i>"
-            except (ValueError, TypeError, ZeroDivisionError):
-                pass # Couldn't calculate individual price
-
-        if promocion:
-            res += f" <b style='color:green;'>({promocion})</b>"
-
-        if desc_display:
-            res += f" | {desc_display[:70]}{'...' if len(desc_display) > 70 else ''}"
-
-        lineas.append(res)
-        if len(lineas) >= max_items:
-            break
     if len(productos_ordenados) > max_items:
-        lineas.append(f"…y {len(productos_ordenados) - max_items} productos más.")
+        lineas.append(f"... y {len(productos_ordenados) - max_items} más.")
+
     return "\n".join(lineas)
 
 
 def formatear_tabla_catalogo(
     resultados_qdrant: List[qdrant_models.ScoredPoint],
-    columnas: list[tuple[str, str]] | None = None,
+    columnas: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
-    """Devuelve una representación en tabla Markdown de los resultados."""
+    """
+    Devuelve una representación en tabla Markdown de los resultados,
+    deduplicando y combinando información de productos idénticos.
+    """
     if not resultados_qdrant:
-        return (
-            "No hay productos en el catálogo que coincidan con tu búsqueda. "
-            "¿Querés ver el catálogo completo?"
-        )
+        return "No se encontraron productos para mostrar en la tabla."
 
-    columnas = columnas or DEFAULT_TABLE_COLUMNS
-    encabezado = "| " + " | ".join(col for col, _ in columnas) + " |"
-    separador = "|" + "|".join("---" for _ in columnas) + "|"
-    filas: list[str] = [encabezado, separador]
-
+    # Deduplicar y combinar payloads
+    productos_combinados = OrderedDict()
     for hit in resultados_qdrant:
         payload = getattr(hit, "payload", {}) or {}
+        prod_id = payload.get("id") or payload.get("sku") or payload.get("nombre")
+        if not prod_id:
+            continue
+        if prod_id not in productos_combinados:
+            productos_combinados[prod_id] = payload
+        else:
+            _combinar_payload(productos_combinados[prod_id], payload)
+
+    # Determinar columnas a mostrar
+    # Si no se especifican columnas, se generan dinámicamente
+    if not columnas:
+        all_keys = set()
+        for payload in productos_combinados.values():
+            all_keys.update(payload.keys())
+
+        # Ordenar columnas con algunas claves comunes primero
+        key_order = ['id', 'sku', 'nombre', 'descripcion', 'marca', 'precio_str', 'categoria_qdrant']
+        ordered_keys = [key for key in key_order if key in all_keys]
+        remaining_keys = sorted([key for key in all_keys if key not in key_order])
+        final_keys = ordered_keys + remaining_keys
+
+        # Crear tuplas (Header, key) para las columnas
+        columnas = [(key.replace('_', ' ').capitalize(), key) for key in final_keys]
+
+    # Construir tabla
+    encabezado = "| " + " | ".join(col for col, _ in columnas) + " |"
+    separador = "|" + "|".join(["---"] * len(columnas)) + "|"
+    filas = [encabezado, separador]
+
+    for payload in productos_combinados.values():
         celdas = []
         for _, key in columnas:
             val = payload.get(key)
+            # Normalizar valores vacíos para una mejor visualización
             if val is None or str(val).strip() == "":
                 val = "-"
-            celdas.append(str(val))
+            celdas.append(str(val).replace("\n", " ").strip())
         filas.append("| " + " | ".join(celdas) + " |")
 
     return "\n".join(filas)

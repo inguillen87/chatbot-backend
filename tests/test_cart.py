@@ -23,21 +23,23 @@ class CartTests(unittest.TestCase):
         self.app_context.pop()
 
     def test_add_and_update(self):
-        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 2})
-        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 1})
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        self.assertEqual(summary["items_detalle"][0]['nombre_producto'], 'vino')
-        self.assertEqual(summary["items_detalle"][0]['cantidad'], 3)
-        cart_service.update_item_quantity_in_cart(self.pyme_id, summary["items_detalle"][0]['catalogo_item_id'], 5)
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        self.assertEqual(summary["items_detalle"][0]['cantidad'], 5)
+        pyme_carts_data = {}
+        cart_service.add_item_to_cart(pyme_carts_data, self.pyme_id, {"catalogo_item_id": 1, "nombre": "vino"}, 2)
+        cart_service.add_item_to_cart(pyme_carts_data, self.pyme_id, {"catalogo_item_id": 1, "nombre": "vino"}, 1)
+        summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
+        self.assertEqual(summary["items"][0]['nombre_producto'], 'vino')
+        self.assertEqual(summary["items"][0]['cantidad'], 3)
+        cart_service.update_item_quantity_in_cart(pyme_carts_data, self.pyme_id, 1, 5)
+        summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
+        self.assertEqual(summary["items"][0]['cantidad'], 5)
 
     def test_remove(self):
-        cart_service.add_item_to_cart(self.pyme_id, {"nombre": "vino", "cantidad": 2})
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        cart_service.remove_item_from_cart(self.pyme_id, summary["items_detalle"][0]['catalogo_item_id'])
-        summary = cart_service.get_cart_summary(self.pyme_id)
-        self.assertEqual(summary["items_detalle"], [])
+        pyme_carts_data = {}
+        cart_service.add_item_to_cart(pyme_carts_data, self.pyme_id, {"catalogo_item_id": 1, "nombre": "vino"}, 2)
+        summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
+        cart_service.remove_item_from_cart(pyme_carts_data, self.pyme_id, 1)
+        summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
+        self.assertEqual(summary["items"], [])
 
 
 if __name__ == '__main__':

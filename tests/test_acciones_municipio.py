@@ -121,7 +121,7 @@ class TestAccionesMunicipio(unittest.TestCase):
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
-    @patch('services.actions.municipio_actions.validar_email', return_value=True) # Email del LLM es inválido, pero el del perfil es válido
+    @patch('services.actions.municipio_actions.validar_email')
     @patch('services.actions.municipio_actions.parse_direccion_completa')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
@@ -135,6 +135,7 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         # Teléfono del LLM inválido, teléfono del perfil válido
         mock_validar_telefono_func.side_effect = [False, True]
+        mock_validar_email_func.side_effect = [False, True]
         mock_formatear_tel.return_value = "+549876543210" # Formato del teléfono del perfil
 
         datos_llm = {

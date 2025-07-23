@@ -6,7 +6,7 @@ from services.ticket_service import servicio_tickets
 
 class SimpleTicketTest(unittest.TestCase):
     def setUp(self):
-        from src.config import TestConfig
+        from config import TestConfig
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
