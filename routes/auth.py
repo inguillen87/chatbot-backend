@@ -322,6 +322,7 @@ def register():
     else:
         rol_asignado = 'admin'
         empresa_id = None
+    current_app.logger.info(f"[register] Attempting to register user with data: {data}")
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -371,7 +372,7 @@ def register_from_widget(user):
     data = request.get_json(silent=True)
     if not data:
         data = request.form.to_dict() if request.form else {}
-    name = data.get('name')
+    name = data.get('name') or "Sin nombre"
     email = data.get('email')
     password = data.get('password')
     anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
@@ -395,6 +396,7 @@ def register_from_widget(user):
         tags_value = tags
     else:
         tags_value = ''
+    current_app.logger.info(f"[register_from_widget] Attempting to register user with data: {data}")
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
@@ -516,7 +518,7 @@ def chatuser_register_panel():
 
     if not name or not email:
         return (
-            jsonify({"error": "Faltan datos obligatorios.", "botones": [{"texto": "Volver al chat"}]}),
+            jsonify({"error": "Faltan datos obligatorios: nombre y email son requeridos.", "botones": [{"texto": "Volver al chat"}]}),
             400,
         )
 
@@ -554,7 +556,7 @@ def chatuser_register_panel():
             }), 409
 
     # If user does not exist, proceed with creation
-    current_app.logger.info(f"[chatuser_register_panel] Email '{email}' no existe. Creando nuevo usuario para Owner ID: {owner_user.id}")
+    current_app.logger.info(f"[chatuser_register_panel] Email '{email}' no existe. Creando nuevo usuario para Owner ID: {owner_user.id} with data: {data}")
     acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
     if isinstance(tags, list):
