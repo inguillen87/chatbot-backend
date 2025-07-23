@@ -214,8 +214,6 @@ def get_tickets_del_usuario_logic(current_user: User):
 @ticket_bp.route('/tickets/', methods=['GET'])
 @token_requerido
 def get_tickets_del_usuario(current_user: User):
-    """Lista los tickets asociados al usuario autenticado si es admin o empleado."""
-
     if current_user.rol not in ['admin', 'empleado']:
         return redirect(url_for('ticket_bp.get_mis_tickets'))
 
