@@ -122,22 +122,16 @@ def _procesar_chat(
         if error_response:
             return error_response, 400
 
-        received_cookies = request.cookies
-        current_app.logger.info(f"Received cookies: {received_cookies}")
-        flask_session_cookie_name = current_app.config.get("SESSION_COOKIE_NAME", "session")
-        if flask_session_cookie_name in received_cookies:
-            current_app.logger.info(f"Flask session cookie '{flask_session_cookie_name}' received.")
-        else:
-            current_app.logger.warning(f"Flask session cookie '{flask_session_cookie_name}' NOT received.")
+        # Determinar el actor principal y el tipo de usuario
+        actor_principal = owner_user or current_user
+        is_anonymous = not actor_principal
+        viewer_obj = current_user # El que mira
 
-        owner_obj = owner_user or current_user
-        viewer_obj = current_user
-        actor_principal = owner_obj or viewer_obj
-
-        if not actor_principal and not anon_id:
+        if is_anonymous and not anon_id:
             return jsonify({"error": "No autenticado o identificado."}), 401
 
-        if anon_id and not actor_principal:
+        if is_anonymous:
+            # Lógica para usuarios anónimos
             max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
             session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
 
@@ -168,6 +162,10 @@ def _procesar_chat(
                             {"texto": "Registrarme Gratis", "action": "register"}
                         ]
                     }), 403
+        else:
+            # Lógica para usuarios autenticados
+            current_app.logger.info(f"Usuario autenticado: {actor_principal.email} (ID: {actor_principal.id})")
+            # No se aplican límites de mensajes para usuarios autenticados
 
         rubro_obj_global = None
         owner_del_bot = None

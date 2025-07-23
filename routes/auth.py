@@ -365,7 +365,7 @@ def register():
 
 @auth_bp.route('/widget/register', methods=['POST'])
 @token_requerido
-def register_from_widget(owner_user):
+def register_from_widget(user):
     """Registro rápido desde el widget asociado al token."""
     # Aceptar tanto JSON como formularios tradicionales
     data = request.get_json(silent=True)
@@ -399,11 +399,11 @@ def register_from_widget(owner_user):
         name=name.strip(),
         email=email.strip().lower(),
         token=str(uuid.uuid4()),
-        rubro_id=owner_user.rubro_id,
-        empresa_id=owner_user.id,
+        rubro_id=user.rubro_id,
+        empresa_id=user.id,
         plan="gratis",
         rol="usuario",
-        tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
+        tipo_chat=getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme"),
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -827,57 +827,23 @@ def actualizar_me(user):
 def anon_o_token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Permitir solicitudes OPTIONS (preflight CORS) sin autenticación
         if request.method == "OPTIONS":
             return "", 200
+
         token = obtener_token()
-        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
-        current_app.logger.debug(
-            f"Verificando autenticación | token_proporcionado={'sí' if token else 'no'} | anon_id={anon_id or 'no'}"
-        )
+        anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
 
-        user = User.query.filter_by(token=token).first() if token else None
-        if token and not user:
-            current_app.logger.warning(
-                f"Token proporcionado ('{token[:10]}...') pero inválido o usuario no encontrado. "
-                "Consulta docs/token-invalid-troubleshooting.md para verificarlo."
-            )
+        user = None
+        if token:
+            user = User.query.filter_by(token=token).first()
 
-        if user and not anon_id: # Usuario autenticado por token, sin Anon-Id explícito en cabecera
-            g.current_user = user
-            current_app.logger.debug(f"Autenticado como user_id={user.id} (sin Anon-Id en cabecera). Token: '{token[:10]}...'")
-            return f(current_user=user, *args, **kwargs)
-
-        if anon_id: # Hay un Anon-Id, puede o no haber un owner_user (token de entidad)
-            g.anon_id = anon_id
-            if user: # Hay un owner_user (token de entidad) Y un Anon-Id (usuario final anónimo)
-                g.owner_user = user # user aquí es el owner_user (entidad)
-                current_app.logger.debug(
-                    f"Acceso anónimo con Anon-Id: {anon_id} bajo entidad/owner_user id: {user.id}. Token entidad: '{token[:10]}...'"
-                )
-            else: # Hay Anon-Id pero no hay token de entidad (ej. chat público genérico sin token de entidad)
-                current_app.logger.debug(
-                    f"Acceso anónimo con Anon-Id: {anon_id} (sin entidad/owner_user específica por token)."
-                )
-
-            # Llamar a la función decorada, pasando owner_user (que es 'user' de la query por token, puede ser None)
-            # y current_user=None porque el usuario final es anónimo (identificado por anon_id)
-            response = f(current_user=None, anon_id=anon_id, owner_user=user, *args, **kwargs)
-
-            # Intentar añadir Anon-Id a la respuesta si es un objeto Response
-            resp_obj = response[0] if isinstance(response, tuple) else response
-            if hasattr(resp_obj, 'headers'):
-                try:
-                    # Asegurarse de que no estamos intentando modificar un objeto inmutable si no es una instancia de Response
-                    from flask import Response
-                    if isinstance(resp_obj, Response):
-                        resp_obj.headers["Anon-Id"] = anon_id
-                    # Si no es un Response de Flask, no intentar añadir la cabecera (ej. si es un dict de error)
-                except Exception as e_header: # pragma: no cover
-                    current_app.logger.warning(f"No se pudo establecer header Anon-Id en respuesta: {e_header}")
-            return response
-
-        current_app.logger.warning(f"Token o Anon-Id requerido pero no proporcionado o inválido. Token recibido: {'presente' if token else 'ausente'}, Anon-Id recibido: {'presente' if anon_id else 'ausente'}")
-        return jsonify({"error": "Token o anon_id requerido"}), 401
+        if user:
+            # Usuario autenticado (puede ser un 'owner' o un 'viewer')
+            return f(current_user=user, owner_user=user, anon_id=anon_id, *args, **kwargs)
+        elif anon_id:
+            # Usuario anónimo
+            return f(current_user=None, owner_user=None, anon_id=anon_id, *args, **kwargs)
+        else:
+            return jsonify({"error": "Se requiere un token de autenticación o un ID de anónimo."}), 401
     return decorated
 
