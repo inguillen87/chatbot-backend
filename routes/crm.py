@@ -16,6 +16,19 @@ from datetime import datetime, timedelta # Añadido timedelta
 
 crm_bp = Blueprint('crm', __name__, url_prefix='/crm')
 
+@crm_bp.route('/')
+@token_requerido
+@admin_o_empleado_requerido
+def index(current_user: User):
+    return """
+    <html>
+        <head><title>CRM</title></head>
+        <body>
+            <h1>CRM Dashboard</h1>
+            <p><a href="/tickets/panel">Ver Panel de Tickets</a></p>
+        </body>
+    </html>
+    """
 
 def _obtener_clientes(
     current_user: User,
