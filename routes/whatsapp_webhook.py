@@ -112,6 +112,10 @@ def whatsapp_webhook():
 
     print(f"Mensaje para cliente: {client_name} (ID: {empresa_id}, Tipo: {client_type}, Rubro: {rubro_object.nombre if rubro_object else 'N/A'})")
 
+    # --- User Management ---
+    from services.pymes import get_or_create_user_by_phone
+    end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
+
     # --- Real Session Management using ChatSessionContext ---
     chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
     session_context_db_entry = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_internal).first()
@@ -166,7 +170,7 @@ def whatsapp_webhook():
         bot_response_dict = responder_chatboc(
             pregunta=message_body,
             owner_user=client_user,
-            current_user=None, # For WhatsApp, end-user is typically not a full "User" record initially
+            current_user=end_user, # Pass the user object to the chatbot logic
             rubro_obj=rubro_object,
             chat_db_context=session_context_db_entry, # Pass the whole ChatSessionContext object
             rubro_nombre_frontend=None, # Typically from web UI, not WhatsApp

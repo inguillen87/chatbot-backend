@@ -166,6 +166,9 @@ def _procesar_chat(
             # Lógica para usuarios autenticados
             current_app.logger.info(f"Usuario autenticado: {actor_principal.email} (ID: {actor_principal.id})")
             # No se aplican límites de mensajes para usuarios autenticados
+            # Si el usuario está logueado, usar su ubicación guardada si no se proporciona una nueva
+            if not location and actor_principal.latitud and actor_principal.longitud:
+                location = {"lat": actor_principal.latitud, "lon": actor_principal.longitud}
 
         rubro_obj_global = None
         owner_del_bot = None
@@ -330,7 +333,12 @@ def _procesar_chat(
             channel="web", # Set channel to web
             uploaded_file_info=uploaded_file_info,
             interpretacion_imagen_data=analisis_archivo_resultado,
-            location=location
+            location=location,
+            user_data={
+                "name": actor_principal.name,
+                "email": actor_principal.email,
+                "telefono": actor_principal.telefono
+            } if actor_principal else None
         )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,

@@ -5,6 +5,7 @@ import json
 import uuid
 from typing import Optional
 from enum import Enum, auto
+from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
 from models import Conversacion, db
 try:
@@ -979,6 +980,48 @@ class SolicitarUbicacionHandler(BaseHandler):
 def coleccion_catalogo_para_rubro(rubro_nombre: str) -> str:
     return CATALOGO_PYME
 
+def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> Optional[models.User]:
+    """
+    Busca un usuario por su número de teléfono. Si no existe, crea uno nuevo
+    asociado al `owner_user` (la pyme o municipio).
+    """
+    if not phone_number or not owner_user:
+        return None
+
+    # Intentar encontrar el usuario existente por teléfono
+    user = models.User.query.filter_by(telefono=phone_number, empresa_id=owner_user.id).first()
+    if user:
+        return user
+
+    # Si no existe, crear uno nuevo
+    logger.info(f"No se encontró un usuario para el teléfono '{phone_number}'. Creando uno nuevo.")
+
+    nuevo_usuario = models.User(
+        telefono=phone_number,
+        email=f"{phone_number}@whatsapp.chatboc.com", # Email de marcador de posición
+        name=f"Usuario de WhatsApp {phone_number[-4:]}",
+        rubro_id=owner_user.rubro_id,
+        empresa_id=owner_user.id,
+        rol='usuario',
+        tipo_chat=owner_user.tipo_chat,
+        plan='gratis',
+        acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
+        fecha_aceptacion_terminos=datetime.utcnow()
+    )
+    nuevo_usuario.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
+
+    try:
+        db.session.add(nuevo_usuario)
+        db.session.commit()
+        logger.info(f"Nuevo usuario de WhatsApp creado con ID {nuevo_usuario.id} para el teléfono '{phone_number}'")
+        return nuevo_usuario
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error al crear el usuario de WhatsApp para el teléfono '{phone_number}': {e}", exc_info=True)
+        return None
+
+from datetime import datetime
+
 def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
     """
     Busca un usuario PYME por su token. Si no existe, crea uno nuevo
@@ -999,13 +1042,14 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
     rubro_general = models.Rubro.query.filter(func.lower(models.Rubro.nombre) == "general").first()
     if not rubro_general:
         logger.info("No se encontró el rubro 'General', creándolo...")
-        rubro_general = models.Rubro(nombre="General", es_publico=False)
+        rubro_general = models.Rubro(nombre="General", clave="general", es_publico=False)
         db.session.add(rubro_general)
         db.session.commit()
         logger.info(f"Rubro 'General' creado con ID: {rubro_general.id}")
 
     # Crear el nuevo usuario (Pyme)
     nuevo_pyme_user = models.User(
+        name=f"Empresa {token[:8]}",
         token=token,
         email=f"pyme_{token[:8]}@chatboc.com", # Email de marcador de posición
         nombre_empresa=f"Empresa {token[:8]}",
