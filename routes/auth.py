@@ -301,17 +301,34 @@ def register():
     else:
         tags_value = ''
 
-    tipo_chat_in = required_campos['tipo_chat']
-    sinonimos = {
-        'muni': 'municipio',
-        'municipios': 'municipio',
-        'municipio': 'municipio',
-        'pymes': 'pyme',
-        'pyme': 'pyme',
-    }
-    tipo_chat_normalizado = sinonimos.get(str(tipo_chat_in).strip().lower()) if tipo_chat_in else None
-    if tipo_chat_normalizado not in ('pyme', 'municipio'):
-        tipo_chat_normalizado = "municipio" if es_rubro_publico(rubro) else "pyme"
+    # BEGIN: MODIFIED LOGIC FOR tipo_chat
+    rubro_nombre_normalizado = normalizar_rubro(rubro.nombre)
+    
+    # Determinar tipo_chat basado en el rubro, ignorando el input del usuario si el rubro es público.
+    if es_rubro_publico(rubro):
+        tipo_chat_final = "municipio"
+        current_app.logger.info(f"Rubro '{rubro.nombre}' es público. Forzando tipo_chat a 'municipio'.")
+    else:
+        # Si no es un rubro público, respetar el `tipo_chat` del formulario, con 'pyme' como default.
+        tipo_chat_in = required_campos.get('tipo_chat')
+        sinonimos = {
+            'muni': 'municipio',
+            'municipios': 'municipio',
+            'municipio': 'municipio',
+            'pymes': 'pyme',
+            'pyme': 'pyme',
+        }
+        tipo_chat_normalizado = sinonimos.get(str(tipo_chat_in).strip().lower()) if tipo_chat_in else 'pyme'
+        
+        # Asegurarse de que el tipo de chat sea válido, si no, usar 'pyme'.
+        if tipo_chat_normalizado not in ('pyme', 'municipio'):
+            tipo_chat_final = 'pyme'
+            current_app.logger.warning(f"Valor de tipo_chat inválido: '{tipo_chat_in}'. Usando 'pyme' por defecto.")
+        else:
+            tipo_chat_final = tipo_chat_normalizado
+    
+    current_app.logger.info(f"Tipo de chat final determinado: '{tipo_chat_final}'")
+    # END: MODIFIED LOGIC FOR tipo_chat
 
     empresa_existente = User.query.filter(
         func.lower(User.nombre_empresa) == func.lower(required_campos['nombre_empresa'])
@@ -337,7 +354,7 @@ def register():
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
-        tipo_chat=tipo_chat_normalizado,
+        tipo_chat=tipo_chat_final,  # Usar la variable final determinada
     )
     user.set_password(data['password'])
 
