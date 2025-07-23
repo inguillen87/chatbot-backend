@@ -999,7 +999,6 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     nuevo_usuario = models.User(
         telefono=phone_number,
         email=f"{phone_number}@whatsapp.chatboc.com", # Email de marcador de posición
-        name=f"Usuario de WhatsApp {phone_number[-4:]}",
         rubro_id=owner_user.rubro_id,
         empresa_id=owner_user.id,
         rol='usuario',
@@ -1008,10 +1007,11 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
         acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
         fecha_aceptacion_terminos=datetime.utcnow()
     )
+    nuevo_usuario.name = f"Usuario de WhatsApp {phone_number[-4:]}"
     nuevo_usuario.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
 
     try:
-        db.session.add(nuevo_usuario)
+        db.session.add(nuevo_pyme_user)
         db.session.commit()
         logger.info(f"Nuevo usuario de WhatsApp creado con ID {nuevo_usuario.id} para el teléfono '{phone_number}'")
         return nuevo_usuario
@@ -1049,7 +1049,6 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
 
     # Crear el nuevo usuario (Pyme)
     nuevo_pyme_user = models.User(
-        name=f"Empresa {token[:8]}",
         token=token,
         email=f"pyme_{token[:8]}@chatboc.com", # Email de marcador de posición
         nombre_empresa=f"Empresa {token[:8]}",
@@ -1060,6 +1059,7 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
         acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
         fecha_aceptacion_terminos=datetime.utcnow()
     )
+    nuevo_pyme_user.name = f"Empresa {token[:8]}"
     nuevo_pyme_user.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
 
     try:
