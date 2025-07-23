@@ -294,42 +294,30 @@ def get_mis_tickets(current_user: User):
         return jsonify({"error": "Error interno al obtener tus tickets."}), 500
 
 # ---------- DETALLE DE TICKET ----------
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>', methods=['GET'])
-@anon_o_token_requerido
-def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None):
+@ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
+@token_requerido
+def get_ticket_details(current_user: User, ticket_id: int):
     """
-    Devuelve el detalle de un ticket, reforzando la lógica de permisos para admins, empleados y usuarios.
+    Devuelve el detalle de un ticket municipal, verificando que el usuario
+    (admin o empleado) pertenezca al municipio correcto.
     """
-    anon_id = anon_id or request.headers.get("Anon-Id")
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket = db.session.get(TicketModel, ticket_id)
+    # 1. Validar que el usuario es de tipo municipio
+    if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
+        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    # 2. Obtener el ticket
+    ticket = db.session.get(MunicipioTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    # --- PERMISOS ---
-    is_dueño = current_user and ticket.user_id == current_user.id
-    is_admin_muni = (
-        current_user
-        and tipo == "municipio"
-        and current_user.tipo_chat == "municipio"
-        and ticket.municipio_id == current_user.municipio_id
-    )
-    is_admin_pyme = (
-        current_user
-        and tipo == "pyme"
-        and getattr(current_user, "rubro_id", None)
-        and getattr(ticket, "rubro_id", None) == current_user.rubro_id
-    )
-    is_anon = anon_id and getattr(ticket, "anon_id", None) == anon_id
-
-    if not (is_dueño or is_admin_muni or is_admin_pyme or is_anon):
+    # 3. Verificar Permiso: El municipio_id del ticket debe coincidir con el del usuario
+    if ticket.municipio_id != current_user.municipio_id:
         current_app.logger.warning(
-            f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={ticket_id} | anon_id_recibido={anon_id} | anon_id_ticket={getattr(ticket,'anon_id', None)} | user_id={getattr(current_user,'id', None)} | ticket_user_id={getattr(ticket,'user_id', None)} | estado={getattr(ticket,'estado', None)}"
+            f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={ticket_id} | "
+            f"user_id={current_user.id} (municipio_id={current_user.municipio_id}) intentó acceder a "
+            f"ticket de municipio_id={ticket.municipio_id}."
         )
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
-
-    if ticket.estado == "cerrado" and not (is_admin_muni or is_admin_pyme):
-        return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     # --- SERIALIZACIÓN ---
     def _get_user_info(ticket, user_model):
@@ -410,7 +398,7 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
 
     ticket_data = {
         "id": ticket.id,
-        "tipo": tipo,
+        "tipo": "municipio",
         "nro_ticket": ticket.nro_ticket,
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria": getattr(ticket, 'categoria', ''),
