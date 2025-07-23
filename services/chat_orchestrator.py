@@ -52,14 +52,31 @@ class ChatOrchestrator:
 
         # Si el usuario está autenticado, no solicitar datos personales
         if self.global_context.get("user_obj") and action_name in ["solicitar_datos_personales", "solicitar_ubicacion"]:
-            return {
-                "success": True,
-                "message_to_user": "Ya tengo tus datos, podemos continuar.",
-                "executed_action_handler": "SkipInfoRequest"
-            }
+            # Check if we have the specific data, not just if the user exists
+            user_obj = self.global_context.get("user_obj")
+            if action_name == "solicitar_datos_personales" and user_obj.get("name") and user_obj.get("email"):
+                return {
+                    "success": True,
+                    "message_to_user": "Ya tengo tus datos, podemos continuar.",
+                    "executed_action_handler": "SkipInfoRequest"
+                }
+            if action_name == "solicitar_ubicacion" and self.global_context.get("location"):
+                 return {
+                    "success": True,
+                    "message_to_user": "Ya tengo tu ubicación, podemos continuar.",
+                    "executed_action_handler": "SkipInfoRequest"
+                }
 
         if "respuesta_usuario" in llm_output:
             action_data["respuesta_usuario_original_llm"] = llm_output["respuesta_usuario"]
+
+        if action_name == "solicitar_ubicacion":
+            return {
+                "success": True,
+                "message_to_user": "Para continuar, necesito tu ubicación.",
+                "solicitar_ubicacion": True,
+                "executed_action_handler": "SolicitarUbicacionHandler"
+            }
 
         if not action_name or action_name in ["no_accion", "small_talk"]:
             handler_class = self._get_handler_class(action_name or "no_accion")

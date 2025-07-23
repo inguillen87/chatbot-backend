@@ -510,7 +510,11 @@ def chatuser_register_panel():
     password = data.get('password')
     anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
 
-    if not name or not email or not password:
+    # If the user is anonymous, we can assign a default password
+    if not password:
+        password = str(uuid.uuid4())
+
+    if not name or not email:
         return (
             jsonify({"error": "Faltan datos obligatorios.", "botones": [{"texto": "Volver al chat"}]}),
             400,
@@ -567,7 +571,7 @@ def chatuser_register_panel():
         rubro_id=owner_user.rubro_id,
         empresa_id=owner_user.id,
         plan="gratis",
-        rol="usuario",
+        rol="lead" if not data.get('password') else "usuario",
         tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
