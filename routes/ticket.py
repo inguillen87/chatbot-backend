@@ -218,7 +218,7 @@ def get_tickets_del_usuario():
     current_user = User.query.filter_by(email="test@example.com").first()
     if not current_user:
         # If the test user doesn't exist, create it
-        current_user = User(name="Test", email="test@example.com", nombre_empresa="Test", rubro_id=1, tipo_chat="pyme", rol="admin")
+        current_user = User(name="Test User", email="test@example.com", nombre_empresa="Test", rubro_id=1, tipo_chat="pyme", rol="admin")
         db.session.add(current_user)
         db.session.commit()
 
