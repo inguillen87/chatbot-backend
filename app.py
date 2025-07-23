@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from flask_cors import CORS
 from flask_session import Session
 from sqlalchemy import event
+from socket_service import socketio
 
 # Set credentials for local development only, BEFORE any service that needs them is imported.
 if os.environ.get("FLASK_ENV") != "production":
@@ -230,10 +231,12 @@ def create_app(config_class=Config):
     # --- Registro de comandos CLI ---
     register_commands(app)
 
+    socketio.init_app(app, cors_allowed_origins="*")
+
     return app
 
 # Esto crea el objeto 'app' global para Gunicorn:
 app = create_app()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    socketio.run(app, debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))

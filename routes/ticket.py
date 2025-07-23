@@ -2,7 +2,8 @@ import os
 import uuid
 import logging
 from werkzeug.utils import secure_filename
-from flask import Blueprint, request, jsonify, current_app, send_from_directory
+from flask import Blueprint, request, jsonify, current_app, send_from_directory, render_template
+from socket_service import emit_ticket_update
 from models import (
     MunicipioTicket,
     PymeTicket,
@@ -566,7 +567,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             "comentario": nuevo_comentario_obj.to_dict() if nuevo_comentario_obj else None,
             "archivos": [a.to_dict() for a in archivos_adjuntados_db]
         }
-        trigger_notification(channel, event, data)
+        emit_ticket_update(data)
 
 
     except Exception as e_notif:
@@ -667,16 +668,14 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
 
-    # Notificación por Pusher
-    channel = f"ticket-{tipo}-{ticket_id}"
-    event = "cambio-estado"
+    # Notificación por Websocket
     data = {
         "message": f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'.",
         "ticket_id": ticket_id,
         "tipo": tipo,
         "nuevo_estado": nuevo_estado
     }
-    trigger_notification(channel, event, data)
+    emit_ticket_update(data)
 
     comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
     ticket_data = {
@@ -1328,3 +1327,10 @@ def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_cu
         return jsonify({"error": "Archivo no encontrado en el servidor."}), 404
     
     return send_from_directory(TICKET_ATTACHMENT_FOLDER, safe_filename, as_attachment=False) # as_attachment=True para forzar descarga
+
+@ticket_bp.route('/tickets/panel', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def ticket_panel(current_user: User):
+    """Renderiza el panel de tickets."""
+    return send_from_directory('static', 'ticket_panel.html')
