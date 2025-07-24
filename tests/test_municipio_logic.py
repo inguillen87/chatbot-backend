@@ -291,11 +291,11 @@ class MunicipioLogicTests(unittest.TestCase):
                 "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Ayuda"}]
             }
             with self.app.app_context():
-            with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
-                resp = municipios.responder_municipio(
-                    '¿Cómo te va?',
-                    user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
-                )
+                with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
+                    resp = municipios.responder_municipio(
+                        '¿Cómo te va?',
+                        user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
+                    )
         self.assertIn('Todo bien por aquí', resp['message_body'])
 
 
@@ -312,7 +312,7 @@ class MunicipioLogicTests(unittest.TestCase):
                     "pedir_info": "nombre_tramite",
                 "botones": [{"texto": "Licencia de Conducir"}, {"texto": "Rentas"}]
             }
-                with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
+            with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
                 resp1 = municipios.responder_municipio(
                     'Quiero hacer un tramite', user, None, viewer_user=user, chat_db_context=chat_context_sim
                 )
@@ -756,3 +756,5 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
                 )
         self.assertIn("¡Hola! 👋", resp['message_body'])
         self.assertIn("Hacer un reclamo", [b['texto'] for b in resp['options_list']])
+
+[end of tests/test_municipio_logic.py]

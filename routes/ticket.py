@@ -826,10 +826,13 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     )
     if nuevo_comentario:
         # Notificación por Pusher
-        channel = f"ticket-municipio-{ticket_id}"
-        event = "nuevo-mensaje"
-        data = nuevo_comentario.to_dict()
-        trigger_notification(channel, event, data)
+        data = {
+            "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
+            "ticket_id": ticket_id,
+            "tipo": "municipio",
+            "nuevo_estado": sala_de_chat.estado
+        }
+        emit_ticket_update(data)
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
@@ -867,11 +870,13 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
         },
     )
     if nuevo_comentario:
-        # Notificación por Pusher
-        channel = f"ticket-pyme-{ticket_id}"
-        event = "nuevo-mensaje"
-        data = nuevo_comentario.to_dict()
-        trigger_notification(channel, event, data)
+        data = {
+            "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
+            "ticket_id": ticket_id,
+            "tipo": "pyme",
+            "nuevo_estado": sala_de_chat.estado
+        }
+        emit_ticket_update(data)
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
