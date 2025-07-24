@@ -21,6 +21,7 @@ from flask import Flask
 # Como `interpretar_imagen_reclamo` lo hace.
 
 def create_test_app():
+    from models import db
     app = Flask(__name__)
     app.config['TESTING'] = True
     # Usar SQLite en memoria para pruebas rápidas y aisladas

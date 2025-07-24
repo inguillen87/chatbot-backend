@@ -53,47 +53,6 @@ try:
 except Exception:  # pragma: no cover - fallback for tests
     from services.cohere_ai import robust_chat as get_cohere_response
 
-# --- Utilidades para small talk ---
-PROMPT_DETECT_SMALL_TALK = """
-Analiza la siguiente frase y dime si es una charla casual, un saludo o una pregunta que no busca una acción concreta.
-Responde únicamente "SI" o "NO".
-
-Frase: "{pregunta_usuario}"
-"""
-
-PROMPT_RESPUESTA_SMALL_TALK = """
-Eres un asistente virtual amigable. Responde de forma cálida y concisa al siguiente saludo o comentario, y luego pregunta en qué puedes ayudar.
-
-Comentario del usuario: "{pregunta_usuario}"
-"""
-
-
-def detectar_small_talk_con_llm(pregunta: str) -> bool:
-    """Devuelve ``True`` si la pregunta parece small talk según el LLM."""
-    prompt = PROMPT_DETECT_SMALL_TALK.format(pregunta_usuario=pregunta)
-    try:
-        decision = get_cohere_response(
-            message=prompt,
-            preamble="Eres un clasificador de small talk. Responde solo SI o NO.",
-        )
-        return decision.strip().upper().startswith("SI")
-    except Exception as e:
-        logger.error(f"[SMALL_TALK] Error detectando small talk: {e}")
-        return False
-
-
-def generar_respuesta_small_talk(pregunta: str) -> str:
-    """Genera una respuesta cordial para una frase de small talk."""
-    prompt = PROMPT_RESPUESTA_SMALL_TALK.format(pregunta_usuario=pregunta)
-    try:
-        return get_cohere_response(
-            message=prompt,
-            preamble="Eres un asistente amigable que mantiene charlas casuales.",
-        ).strip()
-    except Exception as e:
-        logger.error(f"[SMALL_TALK] Error generando respuesta: {e}")
-        return "¡Hola! ¿En qué puedo ayudarte?"
-
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
 
@@ -164,71 +123,9 @@ def responder_chatboc(
 
     # Si el rubro indica un tipo específico de lógica, lo usamos siempre
     if rubro_nombre:
-        esperado = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
-        if tipo_chat and tipo_chat != esperado:
-            logger.info(
-                "Ajustando tipo_chat de '%s' a '%s' por rubro público '%s'",
-                tipo_chat,
-                esperado,
-                rubro_nombre,
-            )
-        tipo_chat = esperado
-    elif tipo_chat not in ("municipio", "pyme"):
-        raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
-
-    if not tipo_chat:
-        raise ValueError("tipo_chat requerido")
-
-    # ... (lógica existente para determinar rubro_nombre y tipo_chat) ...
-    # Esta parte permanece igual.
-    rubro_nombre = ""
-    fuente = ""
-    if rubro_obj:
-        if getattr(rubro_obj, "nombre", None):
-            rubro_nombre = str(rubro_obj.nombre).strip().lower()
-            fuente = "rubro_obj.nombre"
-        elif getattr(rubro_obj, "clave", None):
-            rubro_nombre = str(rubro_obj.clave).strip().lower()
-            fuente = "rubro_obj.clave"
-    elif owner_user and getattr(owner_user, "rubro", None):
-        rubro_value = owner_user.rubro
-        # Asegurarse de acceder a .clave si rubro_value es un objeto Rubro
-        rubro_clave_o_nombre = getattr(rubro_value, 'clave', None) or getattr(rubro_value, 'nombre', None)
-        if rubro_clave_o_nombre:
-            rubro_nombre = str(rubro_clave_o_nombre).strip().lower()
-            fuente = f"owner_user.rubro.{'clave' if getattr(rubro_value, 'clave', None) else 'nombre'}"
-        else: # Si no tiene clave ni nombre, convertir a string (caso raro)
-            rubro_nombre = str(rubro_value).strip().lower()
-            fuente = "owner_user.rubro (str)"
-
-    elif rubro_nombre_frontend:
-        rubro_nombre = str(rubro_nombre_frontend).strip().lower()
-        fuente = "rubro_nombre_frontend"
-    else:
-        rubro_nombre = ""
-        fuente = "no_encontrado"
-
-    logger.info(
-        f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
-    )
-
-    # Si el rubro indica un tipo específico de lógica, lo usamos siempre
-    if rubro_nombre:
         tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
     elif tipo_chat not in ("municipio", "pyme"):
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
-
-
-    logger.info(
-        f"[LOGIC_DELEGATION_PREP] Preparando para delegar. "
-        f"OwnerUserID: {getattr(owner_user, 'id', 'N/A')}, "
-        f"ViewerUserID: {getattr(current_user, 'id', 'N/A')}, "
-        f"AnonID: {anon_id if anon_id else 'N/A'}, "
-        f"ChatSessionUUID: {chat_session_uuid if chat_session_uuid else 'N/A'}, "
-        f"RubroEfectivo: '{rubro_nombre}' (detectado de: {fuente}), "
-        f"RubroObjectID: {getattr(rubro_obj, 'id', 'N/A')}, "
-        f"TipoChatFinal: {tipo_chat}."
-    )
 
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")

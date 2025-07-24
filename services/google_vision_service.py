@@ -136,8 +136,8 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     logger.info("Ejecutando pruebas locales de google_vision_service.py...")
 
-    if not CREDENTIALS_LOADED_SUCCESSFULLY or not VISION_CLIENT:
-        logger.error("Las credenciales no se cargaron o el cliente no se inicializó. Abortando prueba.")
+    if not CREDENTIALS_LOADED_SUCCESSFULLY:
+        logger.warning("Las credenciales de Google Cloud no están disponibles. Omitiendo prueba de análisis de imagen.")
     else:
         # Debes tener una imagen de prueba, por ejemplo 'test_image.jpg' en la raíz del proyecto.
         # O proporciona una ruta absoluta.

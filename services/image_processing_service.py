@@ -5,12 +5,16 @@ logger = logging.getLogger(__name__)
 
 class ImageProcessingService:
     def __init__(self):
-        self.client = vision.ImageAnnotatorClient()
+        self.client = None
 
     def analyze_image(self, image_content: bytes) -> dict:
         """
         Analiza una imagen utilizando la API de Google Cloud Vision.
         """
+        if self.client is None:
+            self.client = vision.ImageAnnotatorClient()
+        if self.client is None:
+            self.client = vision.ImageAnnotatorClient()
         logger.info("Analizando imagen con Google Cloud Vision...")
         image = vision.Image(content=image_content)
 
@@ -42,4 +46,10 @@ class ImageProcessingService:
             logger.error(f"Error inesperado al analizar la imagen: {e}", exc_info=True)
             return {"error": "Error inesperado al procesar la imagen."}
 
-image_processing_service = ImageProcessingService()
+image_processing_service = None
+
+def get_image_processing_service():
+    global image_processing_service
+    if image_processing_service is None:
+        image_processing_service = ImageProcessingService()
+    return image_processing_service
