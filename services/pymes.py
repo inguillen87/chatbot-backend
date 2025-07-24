@@ -748,6 +748,19 @@ class PedidoHandler(BaseHandler):
             "fuente": "pyme_error_pedido_estado_desconocido_v2"
         }
 
+class IntentHandler(BaseHandler):
+    def handle(self, pregunta):
+        from .intent import buscar_en_intents
+        rubro_nombre = self.context.get("rubro_nombre", "general")
+        respuestas = buscar_en_intents(pregunta, rubro_nombre)
+        if respuestas:
+            respuesta = random.choice(respuestas)
+            # Reemplazar placeholders en la respuesta
+            respuesta = respuesta.replace("[nombreEmpresa]", self.context.get("nombre_pyme", "la empresa"))
+            # Aquí podrías añadir más reemplazos si es necesario (ej. [telefono], [direccion])
+            return {"message_body": respuesta, "fuente": "pyme_intent_match_v1"}
+        return None
+
 class FaqHandler(BaseHandler):
     def handle(self, pregunta):
         if not self.pyme_id_actual:
@@ -1153,6 +1166,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         OfertasHandler(global_context_for_orchestrator),
         PedidoHandler(global_context_for_orchestrator),
         FaqHandler(global_context_for_orchestrator),
+        IntentHandler(global_context_for_orchestrator),
         HumanHandler(global_context_for_orchestrator),
         SmallTalkHandler(global_context_for_orchestrator),
         ToolHandlerPyme(global_context_for_orchestrator),

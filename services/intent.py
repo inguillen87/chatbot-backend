@@ -20,7 +20,10 @@ except Exception as e:
     logging.error(f"❌ No se pudo cargar intents.json: {e}")
     INTENTS = {}
 
-def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.70):
+import random
+from typing import Optional, List
+
+def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.70) -> Optional[List[str]]:
     if not pregunta_usuario or not rubro_nombre:
         return None
 
@@ -32,20 +35,21 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
     if not rubro_data:
         return None
 
-    mejor_intent = None
-    mejor_score = 0.0
-
+    posibles_respuestas = []
     for intent in rubro_data:
         for ejemplo in intent.get("ejemplos", []):
             doc_ejemplo = nlp(ejemplo.lower())
             if not doc_ejemplo.vector_norm:
                 continue
             score = doc_user.similarity(doc_ejemplo)
-            if score > mejor_score:
-                mejor_score = score
-                mejor_intent = intent
+            if score >= threshold:
+                raw_respuesta = intent["respuesta"]
+                if isinstance(raw_respuesta, list):
+                    posibles_respuestas.extend(raw_respuesta)
+                elif isinstance(raw_respuesta, str):
+                    posibles_respuestas.append(raw_respuesta)
 
-    if mejor_intent and mejor_score >= threshold:
-        return mejor_intent["respuesta"]
+    if posibles_respuestas:
+        return list(set(posibles_respuestas))
 
     return None
