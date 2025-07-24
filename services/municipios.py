@@ -366,6 +366,27 @@ PREGUNTA: "{pregunta_usuario}"
     return prompt
 
 
+class BaseMunicipioHandler:
+    def __init__(self, context):
+        self.context = context
+
+    def handle(self, payload: dict) -> dict | None:
+        raise NotImplementedError
+
+class GreetingHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        # This is a simplified greeting handler.
+        # It could be expanded to include the user's name, etc.
+        return {
+            "message_body": "¡Hola! ¿En qué puedo ayudarte?",
+            "options_list": [
+                {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
+                {"id": "consultar_estado_ticket", "texto": "Consultar estado de un trámite"},
+            ],
+            "message_type": "interactive_buttons",
+            "fuente": "greeting_handler_v2"
+        }
+
 def safe_llm_call(prompt, preamble, fallback=None):
     logger.debug(f"[LLM_CALL_PROMPT] Enviando prompt a LLM. Preamble: '{preamble}'. Prompt: '{prompt[:500]}...'")
     try:
@@ -991,13 +1012,8 @@ def responder_municipio(
     # --- EJECUTAR ACCIÓN VIA ChatOrchestrator ---
     from .chat_orchestrator import ChatOrchestrator # Importar aquí para evitar problemas de importación circular a nivel de módulo
 
-    # Quick fix for "saludar" action
-    if llm_response_structured.get("accion_backend") == "saludar":
-        handler = GreetingHandler(global_context_for_orchestrator)
-        action_handler_result = handler.handle(received_payload)
-    else:
-        orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
-        action_handler_result = orchestrator.execute_action(llm_response_structured)
+    orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
+    action_handler_result = orchestrator.execute_action(llm_response_structured)
 
     # Ensure we always have a dictionary to avoid AttributeError when handlers return None
     if action_handler_result is None:
