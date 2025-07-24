@@ -825,12 +825,12 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         }
     )
     if nuevo_comentario:
-        # Notificación por Pusher
+        # Notificación por Websocket
         data = {
-            "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
+            "message": f"Nuevo mensaje en tu ticket #{sala_de_chat.nro_ticket}",
             "ticket_id": ticket_id,
             "tipo": "municipio",
-            "nuevo_estado": sala_de_chat.estado
+            "comentario": nuevo_comentario.to_dict()
         }
         emit_ticket_update(data)
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
