@@ -130,20 +130,18 @@ class ServicioTickets:
 
             # Notificar panel en tiempo real
             try:
-                from services.pusher_service import trigger_notification
-                channel_id = ticket.municipio_id if tipo_ticket == "municipio" else ticket.rubro_id
-                channel = f"panel-{tipo_ticket}-{channel_id}"
-                event = "nuevo-ticket"
+                from socket_service import emit_ticket_update
                 data = {
-                    "id": ticket.id,
+                    "message": f"Nuevo ticket creado: #{ticket.nro_ticket}",
+                    "ticket_id": ticket.id,
                     "tipo": tipo_ticket,
-                    "nro_ticket": ticket.nro_ticket,
+                    "nuevo_estado": ticket.estado,
                     "asunto": getattr(ticket, "asunto", ""),
                     "categoria": getattr(ticket, "categoria", None),
-                    "estado": ticket.estado,
-                    "fecha": ticket.fecha.isoformat() if ticket.fecha else None
+                    "fecha": ticket.fecha.isoformat() if ticket.fecha else None,
+                    "nro_ticket": ticket.nro_ticket
                 }
-                trigger_notification(channel, event, data)
+                emit_ticket_update(data)
             except Exception as e_notify:
                 logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
 
