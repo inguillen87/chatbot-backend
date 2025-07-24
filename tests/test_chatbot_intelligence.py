@@ -176,7 +176,7 @@ def test_document_processing_pedido_pyme(mock_orchestrator, mock_db_session, moc
 
 @patch('services.chat_orchestrator.ChatOrchestrator')
 def test_information_gathering_reclamo_municipio(mock_orchestrator, mock_db_session, mock_llamar_gemini_municipios_session):
-    # Mock de la respuesta de Gemini para una intención de Municipio
+    # 1. Initial request to create a reclamo
     mock_llamar_gemini_municipios_session.return_value = {
         "respuesta_usuario": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
         "accion_backend": "crear_reclamo",
@@ -184,8 +184,6 @@ def test_information_gathering_reclamo_municipio(mock_orchestrator, mock_db_sess
         "pedir_info": "ubicacion",
         "botones": []
     }
-
-    # Mock de la respuesta del orchestrator
     mock_orchestrator.return_value.execute_action.return_value = {
         "success": False,
         "message_to_user": "Para poder registrar tu reclamo, necesitaría que me indiques la ubicación del problema.",
@@ -199,7 +197,7 @@ def test_information_gathering_reclamo_municipio(mock_orchestrator, mock_db_sess
     owner_user.rubro = rubro
     chat_context = ChatSessionContext(context_data={})
 
-    response = responder_municipio(
+    response1 = responder_municipio(
         pregunta_original="Hay un bache en mi calle",
         owner_user=owner_user,
         viewer_user=viewer_user,
@@ -207,5 +205,33 @@ def test_information_gathering_reclamo_municipio(mock_orchestrator, mock_db_sess
         chat_db_context=chat_context
     )
 
-    assert response is not None
-    assert "ubicación" in response.get("message_body", "")
+    assert response1 is not None
+    assert "ubicación" in response1.get("message_body", "")
+    assert chat_context.context_data['contexto_municipio_v2']['estado_conversacion'] == 'ESPERANDO_DIRECCION_RECLAMO'
+
+    # 2. User provides the location
+    mock_llamar_gemini_municipios_session.return_value = {
+        "respuesta_usuario": "Gracias. Ahora necesito tu nombre completo.",
+        "accion_backend": "crear_reclamo",
+        "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
+        "pedir_info": "nombre_completo",
+        "botones": []
+    }
+    mock_orchestrator.return_value.execute_action.return_value = {
+        "success": False,
+        "message_to_user": "Gracias. Ahora necesito tu nombre completo.",
+        "pedir_info": ["nombre_completo"],
+        "fuente": "municipio_crear_reclamo_v2"
+    }
+
+    response2 = responder_municipio(
+        pregunta_original="Calle Falsa 123",
+        owner_user=owner_user,
+        viewer_user=viewer_user,
+        rubro_obj=rubro,
+        chat_db_context=chat_context
+    )
+
+    assert response2 is not None
+    assert "nombre completo" in response2.get("message_body", "")
+    assert chat_context.context_data['contexto_municipio_v2']['estado_conversacion'] == 'ESPERANDO_NOMBRE_VECINO'
