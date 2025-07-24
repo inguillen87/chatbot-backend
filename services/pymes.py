@@ -24,7 +24,7 @@ from services.qdrant_search import (
 )
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import sugerencias_por_rubro
-from services.logic import detectar_small_talk_con_llm, generar_respuesta_small_talk, es_rubro_publico
+from services.logic import es_rubro_publico
 from services.ticket_service import servicio_tickets
 from services.webinfo import obtener_info_web
 from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
@@ -748,19 +748,6 @@ class PedidoHandler(BaseHandler):
             "fuente": "pyme_error_pedido_estado_desconocido_v2"
         }
 
-class IntentHandler(BaseHandler):
-    def handle(self, pregunta):
-        from .intent import buscar_en_intents
-        rubro_nombre = self.context.get("rubro_nombre", "general")
-        respuestas = buscar_en_intents(pregunta, rubro_nombre)
-        if respuestas:
-            respuesta = random.choice(respuestas)
-            # Reemplazar placeholders en la respuesta
-            respuesta = respuesta.replace("[nombreEmpresa]", self.context.get("nombre_pyme", "la empresa"))
-            # Aquí podrías añadir más reemplazos si es necesario (ej. [telefono], [direccion])
-            return {"message_body": respuesta, "fuente": "pyme_intent_match_v1"}
-        return None
-
 class FaqHandler(BaseHandler):
     def handle(self, pregunta):
         if not self.pyme_id_actual:
@@ -928,12 +915,6 @@ class FallbackHandler(BaseHandler):
         logger.warning(f"[PYME_FALLBACK_HANDLER] Pregunta no manejada: '{pregunta}', Intención: {self.context.get('intencion')}, Estado: {self.pyme_ctx.get('estado_conversacion')}")
         return UnclearHandler(self.context).handle(pregunta)
 
-class SmallTalkHandler(BaseHandler):
-    def handle(self, pregunta: str):
-        respuesta_small_talk = generar_respuesta_small_talk(pregunta, self.context.get("nombre_pyme", "la empresa"))
-        if respuesta_small_talk:
-            return {"message_body": respuesta_small_talk, "options_list": [], "message_type": "text", "fuente": "pyme_small_talk_handler_v2"}
-        return None
 
 class ToolHandlerPyme(BaseHandler):
     def handle(self, pregunta: str):
@@ -1157,28 +1138,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     }
 
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---
-    # Add the new handlers to the list of handlers
-    handlers = [
-        AnalizarImagenHandler(global_context_for_orchestrator),
-        SolicitarUbicacionHandler(global_context_for_orchestrator),
-        SaludoHandler(global_context_for_orchestrator),
-        CatalogoHandler(global_context_for_orchestrator),
-        OfertasHandler(global_context_for_orchestrator),
-        PedidoHandler(global_context_for_orchestrator),
-        FaqHandler(global_context_for_orchestrator),
-        IntentHandler(global_context_for_orchestrator),
-        HumanHandler(global_context_for_orchestrator),
-        SmallTalkHandler(global_context_for_orchestrator),
-        ToolHandlerPyme(global_context_for_orchestrator),
-        TicketStatusHandler(global_context_for_orchestrator),
-        FallbackHandler(global_context_for_orchestrator)
-    ]
-
-    for handler in handlers:
-        respuesta = handler.handle(pregunta_str)
-        if respuesta:
-            # ... (the rest of the function)
-            return respuesta
 
     orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
     action_handler_result = orchestrator.execute_action(llm_response_structured)

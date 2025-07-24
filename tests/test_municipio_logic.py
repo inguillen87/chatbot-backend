@@ -756,5 +756,3 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
                 )
         self.assertIn("¡Hola! 👋", resp['message_body'])
         self.assertIn("Hacer un reclamo", [b['texto'] for b in resp['options_list']])
-
-[end of tests/test_municipio_logic.py]

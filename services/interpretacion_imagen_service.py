@@ -128,13 +128,15 @@ def interpretar_imagen_para_chat(
     if "image" in input_mime_type:
         logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a Vision API...")
         vision_results = analyze_image_from_content(file_content) # Esta función ya loguea sus errores
-    else:
+    elif "pdf" in input_mime_type or "spreadsheet" in input_mime_type or "excel" in input_mime_type:
         from services.document_processing_service import document_processing_service
         doc_ai_result = document_processing_service.process_document(file_content, input_mime_type)
         if doc_ai_result:
             vision_results = {"full_text_annotation": {"description": doc_ai_result.text}}
         else:
             vision_results = {"error": "No se pudo procesar el documento."}
+    else:
+        vision_results = {"error": f"Tipo de archivo no soportado: {input_mime_type}"}
 
     # Si es un objeto de DB, guardar resultados parciales de Vision en AnalisisArchivo
     if is_db_object and analisis_db_record:

@@ -223,7 +223,7 @@ def _procesar_chat(
         if uploaded_file_info and archivo_adjunto_id:
             from models import ArchivoAdjunto
             from services.analisis_archivo_service import tarea_analizar_contenido_archivo
-            from services.image_processing_service import image_processing_service
+            from services.image_processing_service import get_image_processing_service
             import requests
 
             archivo_obj = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
@@ -235,6 +235,7 @@ def _procesar_chat(
                         response = requests.get(uploaded_file_info["url"])
                         response.raise_for_status()
                         image_content = response.content
+                        image_processing_service = get_image_processing_service()
                         analisis_archivo_resultado = image_processing_service.analyze_image(image_content)
                     except Exception as e:
                         current_app.logger.error(f"Error al procesar la imagen: {e}", exc_info=True)
