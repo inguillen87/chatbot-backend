@@ -18,6 +18,7 @@ ACTION_HANDLER_MAP = {
 
 
     # PYME Actions
+    "iniciar_pedido": "services.pymes.PedidoHandler",
     "crear_pedido_pyme": "services.actions.pyme_order_actions.CrearPedidoAction", # Assuming existing
     "agregar_item_carrito": "services.actions.pyme_order_actions.AgregarItemCarritoAction", # Assuming existing
     "consultar_producto_pyme": "services.actions.pyme_order_actions.ConsultarProductoAction", # Assuming existing

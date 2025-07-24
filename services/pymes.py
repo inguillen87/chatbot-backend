@@ -221,9 +221,11 @@ def analizar_sentimiento_llm(texto: str) -> str:
         return sentimiento if sentimiento in {"positivo", "negativo"} else "neutral"
     except: return "neutral"
 
-class BaseHandler:
+from services.actions.base_action_handler import BaseActionHandler
+
+class BaseHandler(BaseActionHandler):
     def __init__(self, context):
-        self.context = context
+        super().__init__(context)
         self.pyme_ctx = self.context.get(CONTEXTO_PYME, {})
         self.pyme_id_actual = self.context.get("user_id")
         self.cliente_id_actual = self.context.get("cliente_id")
@@ -262,11 +264,11 @@ class BaseHandler:
 
         return {k: v for k, v in summary.items() if v is not None}
 
-    def handle(self, pregunta):
+    def execute(self, action_data):
         raise NotImplementedError
 
 class SaludoHandler(BaseHandler):
-    def handle(self, pregunta):
+    def execute(self, action_data):
         nombre = self.context.get("nombre_pyme", "la empresa")
         body = f"¡Hola! Soy tu asistente para {nombre}. ¿En qué puedo ayudarte hoy?"
         options = [
@@ -294,7 +296,8 @@ class SaludoHandler(BaseHandler):
         }
 
 class CatalogoHandler(BaseHandler):
-    def handle(self, pregunta):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "catalogo_sin_pyme_id_v2"}
         query_qdrant = pregunta
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
@@ -381,7 +384,7 @@ class CatalogoHandler(BaseHandler):
         }
 
 class OfertasHandler(BaseHandler):
-    def handle(self, pregunta):
+    def execute(self, action_data):
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "ofertas_sin_pyme_id_v2"}
         promos = promocion_service.get_promociones_for_pyme(self.pyme_id_actual, activas_unicamente=True)
 
@@ -437,7 +440,8 @@ class PedidoHandler(BaseHandler):
             if sim > max_sim: max_sim = sim; mejor_match_item = item_c
         return mejor_match_item
 
-    def handle(self, pregunta):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         estado_actual = deserialize_state(self.pyme_ctx.get("estado_conversacion")) or PymeConversationState.IDLE
         texto_usuario_lower = pregunta.lower()
         accion_payload = self.context.get("action_payload", texto_usuario_lower)
@@ -512,66 +516,20 @@ class PedidoHandler(BaseHandler):
 
 
         # Flujo principal de estados
-        if estado_actual == PymeConversationState.IDLE and (intencion_actual == "iniciar_pedido" or accion_payload == "iniciar_pedido" or accion_payload == "limpiar_y_nuevo_pedido_saludo"):
-            if accion_payload == "limpiar_y_nuevo_pedido_saludo": cart_service.clear_pyme_cart(self.pyme_carts_data, self.pyme_id_actual)
+        if action_data.get("accion_backend") == "iniciar_pedido" or estado_actual == PymeConversationState.IDLE:
             self._actualizar_estado(PymeConversationState.ESPERANDO_PRODUCTO)
-
-            # --- BEGIN: Consume datos_accion from main Gemini call ---
-            datos_accion_llm = self.context.get("datos_accion")
-            items_pre_extraidos_llm = []
-            if datos_accion_llm and isinstance(datos_accion_llm, dict):
-                # Assuming datos_accion_llm might have a "productos_pedido" list
-                # or individual fields like "nombre_producto_mencionado", "cantidad_producto_mencionado"
-                if datos_accion_llm.get("productos_pedido") and isinstance(datos_accion_llm["productos_pedido"], list):
-                    items_pre_extraidos_llm = datos_accion_llm["productos_pedido"]
-                    logger.info(f"[PedidoHandler] Productos pre-extraídos por LLM principal: {items_pre_extraidos_llm}")
-                elif datos_accion_llm.get("nombre_producto_mencionado"):
-                    items_pre_extraidos_llm.append({
-                        "nombre": datos_accion_llm["nombre_producto_mencionado"],
-                        "cantidad": datos_accion_llm.get("cantidad_producto_mencionado", 1)
-                        # Unidad podría también venir de datos_accion_llm si el prompt de Gemini lo soporta
-                    })
-                    logger.info(f"[PedidoHandler] Producto individual pre-extraído por LLM principal: {items_pre_extraidos_llm}")
-
-                # Pre-fill contact details from LLM if available
-                if datos_accion_llm.get("nombre_usuario_detectado"): self.pyme_ctx["nombre_cliente"] = datos_accion_llm["nombre_usuario_detectado"]
-                if datos_accion_llm.get("telefono_detectado") and validar_telefono(datos_accion_llm["telefono_detectado"]):
-                    self.pyme_ctx["telefono_cliente"] = datos_accion_llm["telefono_detectado"] # Formateo se hará después si es necesario
-                if datos_accion_llm.get("email_detectado") and validar_email(datos_accion_llm["email_detectado"]):
-                    self.pyme_ctx["email_cliente"] = datos_accion_llm["email_detectado"]
-                # Dirección podría ser más compleja, la dejamos para el flujo normal por ahora o si viene muy clara del LLM.
-                if datos_accion_llm.get("ubicacion"): self.pyme_ctx["direccion_cliente"] = datos_accion_llm.get("ubicacion")
-                self._guardar_contexto_pyme() # Guardar datos pre-llenados
-            # --- END: Consume datos_accion ---
-
-            if items_pre_extraidos_llm:
-                # If LLM provided items, process them immediately (similar to ESPERANDO_PRODUCTO logic)
-                # Pass 'items_extraidos' to avoid re-running extraction on the original 'pregunta' for these items.
-                logger.info(f"[PedidoHandler] Procesando items pre-extraídos por LLM: {items_pre_extraidos_llm}")
-                # Temporarily set pregunta to empty to signal that items are coming from pre-extraction
-                return self._procesar_items_y_responder(items_pre_extraidos_llm, "productos_pre_extraidos_llm")
-
-            # If no items from LLM, or if `pregunta` still contains more after LLM (e.g. "quiero pedir X y Z" where LLM got X but Z is still in `pregunta`)
-            # The original `pregunta` might still be relevant.
-            # If `pregunta` is a generic "iniciar pedido" and LLM found no items, then ask.
-            if pregunta.strip() and pregunta not in ["iniciar_pedido", "limpiar_y_nuevo_pedido_saludo"] and intencion_actual == "iniciar_pedido":
-                # Process current question as if it's an addition to the order (will hit ESPERANDO_PRODUCTO)
-                # This could re-extract if LLM didn't clear pregunta or provide items.
-                logger.info(f"[PedidoHandler] LLM no extrajo items, o pregunta '{pregunta}' es para procesamiento adicional. Llamando a _procesar_items_y_responder.")
-                return self._procesar_items_y_responder(None, pregunta) # Let _procesar_items_y_responder call extraer_productos_pedido
-
             msg_ini = "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel."
             options_ini = [{"id": "ver_catalogo_pyme_pedido_inicio", "texto": "Ver catálogo"}]
             return {
-                "message_body": msg_ini,
+                "success": True,
+                "message_to_user": msg_ini,
                 "options_list": options_ini,
                 "message_type": 'interactive_buttons',
-                "fuente": "pyme_iniciar_pedido_v2_sin_preextraccion"
+                "fuente": "pyme_iniciar_pedido_v2"
             }
 
-        elif estado_actual == PymeConversationState.ESPERANDO_PRODUCTO:
+        if estado_actual == PymeConversationState.ESPERANDO_PRODUCTO:
             return self._procesar_items_y_responder(None, pregunta)
-
         elif estado_actual == PymeConversationState.CONFIRMANDO_PEDIDO:
             if any(k in accion_payload for k in CANCEL_KEYWORDS):
                 cart_service.clear_pyme_cart(self.pyme_carts_data, self.pyme_id_actual)
@@ -749,7 +707,8 @@ class PedidoHandler(BaseHandler):
         }
 
 class FaqHandler(BaseHandler):
-    def handle(self, pregunta):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         if not self.pyme_id_actual:
             return {"message_body": "No puedo buscar en las preguntas frecuentes sin identificar la tienda.", "fuente": "faq_sin_pyme_id_v2"}
 
@@ -787,7 +746,8 @@ class FaqHandler(BaseHandler):
             }
 
 class HumanHandler(BaseHandler):
-    def handle(self, pregunta):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         # Lógica para transferir a un humano o proveer info de contacto.
         # Por ahora, un placeholder.
         self._actualizar_estado(PymeConversationState.IDLE) # Resetear estado
@@ -837,7 +797,8 @@ class HumanHandler(BaseHandler):
         }
 
 class UnclearHandler(BaseHandler): # Aunque no está en handler_map, es bueno tenerlo
-    def handle(self, pregunta):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         self.pyme_ctx["reintentos_ambigua"] = self.pyme_ctx.get("reintentos_ambigua", 0) + 1
         self._guardar_contexto_pyme()
 
@@ -865,7 +826,8 @@ class UnclearHandler(BaseHandler): # Aunque no está en handler_map, es bueno te
         }
 
 class TicketStatusHandler(BaseHandler):
-    def handle(self, pregunta):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         estado_actual = deserialize_state(self.pyme_ctx.get("estado_conversacion"))
 
         if estado_actual == PymeConversationState.ESPERANDO_NUMERO_TICKET:
@@ -910,14 +872,16 @@ class TicketStatusHandler(BaseHandler):
             }
 
 class FallbackHandler(BaseHandler):
-    def handle(self, pregunta):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         # Este es el último recurso. Intenta dar una respuesta genérica o escalar.
         logger.warning(f"[PYME_FALLBACK_HANDLER] Pregunta no manejada: '{pregunta}', Intención: {self.context.get('intencion')}, Estado: {self.pyme_ctx.get('estado_conversacion')}")
         return UnclearHandler(self.context).handle(pregunta)
 
 
 class ToolHandlerPyme(BaseHandler):
-    def handle(self, pregunta: str):
+    def execute(self, action_data):
+        pregunta = action_data.get("pregunta", "")
         match_webinfo = re.search(r"informaci[oó]n web de\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", pregunta, re.IGNORECASE)
         if match_webinfo:
             dominio = match_webinfo.group(1)
@@ -927,7 +891,7 @@ class ToolHandlerPyme(BaseHandler):
         return None
 
 class AnalizarImagenHandler(BaseHandler):
-    def handle(self, payload: dict) -> dict | None:
+    def execute(self, action_data):
         if self.context.get("intencion") != "analizar_imagen":
             return None
 
@@ -959,7 +923,7 @@ class AnalizarImagenHandler(BaseHandler):
             return {"respuesta": "Hubo un error al analizar la imagen. Por favor, intentá de nuevo."}
 
 class SolicitarUbicacionHandler(BaseHandler):
-    def handle(self, payload: dict) -> dict | None:
+    def execute(self, action_data):
         if self.context.get("intencion") != "solicitar_ubicacion":
             return None
 
@@ -1138,9 +1102,12 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     }
 
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---
-
-    orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
-    action_handler_result = orchestrator.execute_action(llm_response_structured)
+    if llm_response_structured.get("accion_backend") == "saludar":
+        handler = SaludoHandler(global_context_for_orchestrator)
+        action_handler_result = handler.handle(pregunta_str)
+    else:
+        orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
+        action_handler_result = orchestrator.execute_action(llm_response_structured)
 
     # --- 6. Procesar Resultado del Action Handler y Formatear Respuesta ---
     respuesta_final_texto = action_handler_result.get("message_to_user")

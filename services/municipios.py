@@ -1012,8 +1012,12 @@ def responder_municipio(
     # --- EJECUTAR ACCIÓN VIA ChatOrchestrator ---
     from .chat_orchestrator import ChatOrchestrator # Importar aquí para evitar problemas de importación circular a nivel de módulo
 
-    orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
-    action_handler_result = orchestrator.execute_action(llm_response_structured)
+    if llm_response_structured.get("accion_backend") == "saludar":
+        handler = GreetingHandler(global_context_for_orchestrator)
+        action_handler_result = handler.handle(received_payload)
+    else:
+        orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
+        action_handler_result = orchestrator.execute_action(llm_response_structured)
 
     # Ensure we always have a dictionary to avoid AttributeError when handlers return None
     if action_handler_result is None:

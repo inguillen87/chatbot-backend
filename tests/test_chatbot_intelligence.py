@@ -21,7 +21,7 @@ def mock_document_ai():
     with patch('services.document_processing_service.document_processing_service.process_document') as mock_docai:
         yield mock_docai
 
-@patch('services.pymes.ChatOrchestrator')
+@patch('services.chat_orchestrator.ChatOrchestrator')
 def test_responder_chatboc_pyme_flow(mock_orchestrator, mock_db_session, mock_llamar_gemini_pymes_session):
     # Mock de la respuesta de Gemini para una intención de PYME
     mock_llamar_gemini_pymes_session.return_value = {
@@ -55,9 +55,9 @@ def test_responder_chatboc_pyme_flow(mock_orchestrator, mock_db_session, mock_ll
 
     assert response is not None
     assert "pyme_iniciar_pedido_v2" in response.get("fuente", "")
-    assert "Claro, ¿qué te gustaría pedir?" in response.get("message_body", "")
+    assert "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel." in response.get("message_body", "")
 
-@patch('services.municipios.ChatOrchestrator')
+@patch('services.chat_orchestrator.ChatOrchestrator')
 def test_responder_chatboc_municipio_flow(mock_orchestrator, mock_db_session, mock_llamar_gemini_municipios_session):
     # Mock de la respuesta de Gemini para una intención de Municipio
     mock_llamar_gemini_municipios_session.return_value = {
@@ -93,7 +93,7 @@ def test_responder_chatboc_municipio_flow(mock_orchestrator, mock_db_session, mo
     assert "municipio_crear_reclamo_v2" in response.get("fuente", "")
     assert "¿Cuál es la dirección del problema?" in response.get("message_body", "")
 
-@patch('services.municipios.ChatOrchestrator')
+@patch('services.chat_orchestrator.ChatOrchestrator')
 def test_image_analysis_reclamo_municipio(mock_orchestrator, mock_db_session, mock_google_vision, mock_llamar_gemini_municipios_session):
     # Mock de la respuesta de Google Vision
     mock_google_vision.return_value = {
@@ -136,7 +136,7 @@ def test_image_analysis_reclamo_municipio(mock_orchestrator, mock_db_session, mo
     assert "Arreglo de calle" in response.get("message_body", "")
     assert "dirección" in response.get("message_body", "")
 
-@patch('services.pymes.ChatOrchestrator')
+@patch('services.chat_orchestrator.ChatOrchestrator')
 def test_document_processing_pedido_pyme(mock_orchestrator, mock_db_session, mock_document_ai, mock_llamar_gemini_pymes_session):
     # Mock de la respuesta de Document AI
     mock_document_ai.return_value = MagicMock(text="2 Coca Cola\n1 Papas Fritas")
@@ -172,4 +172,40 @@ def test_document_processing_pedido_pyme(mock_orchestrator, mock_db_session, moc
     )
 
     assert response is not None
-    assert "confirmar" in response.get("message_body", "").lower()
+    assert "¿qué productos y cantidades te gustaría pedir? también puedes subir un archivo excel." in response.get("message_body", "").lower()
+
+@patch('services.chat_orchestrator.ChatOrchestrator')
+def test_information_gathering_reclamo_municipio(mock_orchestrator, mock_db_session, mock_llamar_gemini_municipios_session):
+    # Mock de la respuesta de Gemini para una intención de Municipio
+    mock_llamar_gemini_municipios_session.return_value = {
+        "respuesta_usuario": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
+        "accion_backend": "crear_reclamo",
+        "datos_estructura": {"target": "municipio"},
+        "pedir_info": "ubicacion",
+        "botones": []
+    }
+
+    # Mock de la respuesta del orchestrator
+    mock_orchestrator.return_value.execute_action.return_value = {
+        "success": False,
+        "message_to_user": "Para poder registrar tu reclamo, necesitaría que me indiques la ubicación del problema.",
+        "pedir_info": ["ubicacion"],
+        "fuente": "municipio_crear_reclamo_v2"
+    }
+
+    owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
+    viewer_user = User(id=4, name="Vecino Test")
+    rubro = Rubro(id=2, nombre="municipio", es_publico=True)
+    owner_user.rubro = rubro
+    chat_context = ChatSessionContext(context_data={})
+
+    response = responder_municipio(
+        pregunta_original="Hay un bache en mi calle",
+        owner_user=owner_user,
+        viewer_user=viewer_user,
+        rubro_obj=rubro,
+        chat_db_context=chat_context
+    )
+
+    assert response is not None
+    assert "ubicación" in response.get("message_body", "")
