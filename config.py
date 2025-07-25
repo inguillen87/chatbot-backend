@@ -88,8 +88,17 @@ class Config:
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
 
+    # 5. PUSHER CONFIGURATION
+    PUSHER_APP_ID = os.getenv("PUSHER_APP_ID")
+    PUSHER_KEY = os.getenv("PUSHER_KEY")
+    PUSHER_SECRET = os.getenv("PUSHER_SECRET")
+    PUSHER_CLUSTER = os.getenv("PUSHER_CLUSTER")
+
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     CELERY_TASK_ALWAYS_EAGER = True
     SESSION_COOKIE_SECURE = False
+
+class TestingConfig(TestConfig):
+    pass

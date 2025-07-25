@@ -5,7 +5,7 @@ from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext, db
 from extensions import db
 from functools import wraps
 import uuid
@@ -91,7 +91,7 @@ def token_requerido(f):
             return "", 200
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
-        if current_user.is_authenticated:
+        if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
             return f(current_user, *args, **kwargs)
 
         # Si no, buscar el token como se hacía antes
@@ -301,17 +301,34 @@ def register():
     else:
         tags_value = ''
 
-    tipo_chat_in = required_campos['tipo_chat']
-    sinonimos = {
-        'muni': 'municipio',
-        'municipios': 'municipio',
-        'municipio': 'municipio',
-        'pymes': 'pyme',
-        'pyme': 'pyme',
-    }
-    tipo_chat_normalizado = sinonimos.get(str(tipo_chat_in).strip().lower()) if tipo_chat_in else None
-    if tipo_chat_normalizado not in ('pyme', 'municipio'):
-        tipo_chat_normalizado = "municipio" if es_rubro_publico(rubro) else "pyme"
+    # BEGIN: MODIFIED LOGIC FOR tipo_chat
+    rubro_nombre_normalizado = normalizar_rubro(rubro.nombre)
+
+    # Determinar tipo_chat basado en el rubro, ignorando el input del usuario si el rubro es público.
+    if es_rubro_publico(rubro):
+        tipo_chat_final = "municipio"
+        current_app.logger.info(f"Rubro '{rubro.nombre}' es público. Forzando tipo_chat a 'municipio'.")
+    else:
+        # Si no es un rubro público, respetar el `tipo_chat` del formulario, con 'pyme' como default.
+        tipo_chat_in = required_campos.get('tipo_chat')
+        sinonimos = {
+            'muni': 'municipio',
+            'municipios': 'municipio',
+            'municipio': 'municipio',
+            'pymes': 'pyme',
+            'pyme': 'pyme',
+        }
+        tipo_chat_normalizado = sinonimos.get(str(tipo_chat_in).strip().lower()) if tipo_chat_in else 'pyme'
+
+        # Asegurarse de que el tipo de chat sea válido, si no, usar 'pyme'.
+        if tipo_chat_normalizado not in ('pyme', 'municipio'):
+            tipo_chat_final = 'pyme'
+            current_app.logger.warning(f"Valor de tipo_chat inválido: '{tipo_chat_in}'. Usando 'pyme' por defecto.")
+        else:
+            tipo_chat_final = tipo_chat_normalizado
+
+    current_app.logger.info(f"Tipo de chat final determinado: '{tipo_chat_final}'")
+    # END: MODIFIED LOGIC FOR tipo_chat
 
     empresa_existente = User.query.filter(
         func.lower(User.nombre_empresa) == func.lower(required_campos['nombre_empresa'])
@@ -322,6 +339,7 @@ def register():
     else:
         rol_asignado = 'admin'
         empresa_id = None
+    current_app.logger.info(f"[register] Attempting to register user with data: {data}")
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -336,7 +354,7 @@ def register():
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
-        tipo_chat=tipo_chat_normalizado,
+        tipo_chat=tipo_chat_final,  # Usar la variable final determinada
     )
     user.set_password(data['password'])
 
@@ -365,13 +383,13 @@ def register():
 
 @auth_bp.route('/widget/register', methods=['POST'])
 @token_requerido
-def register_from_widget(owner_user):
+def register_from_widget(user):
     """Registro rápido desde el widget asociado al token."""
     # Aceptar tanto JSON como formularios tradicionales
     data = request.get_json(silent=True)
     if not data:
         data = request.form.to_dict() if request.form else {}
-    name = data.get('name')
+    name = data.get('name') or "Sin nombre"
     email = data.get('email')
     password = data.get('password')
     anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
@@ -395,15 +413,16 @@ def register_from_widget(owner_user):
         tags_value = tags
     else:
         tags_value = ''
+    current_app.logger.info(f"[register_from_widget] Attempting to register user with data: {data}")
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
         token=str(uuid.uuid4()),
-        rubro_id=owner_user.rubro_id,
-        empresa_id=owner_user.id,
+        rubro_id=user.rubro_id,
+        empresa_id=user.id,
         plan="gratis",
         rol="usuario",
-        tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
+        tipo_chat=getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme"),
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -510,9 +529,13 @@ def chatuser_register_panel():
     password = data.get('password')
     anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
 
-    if not name or not email or not password:
+    # If the user is anonymous, we can assign a default password
+    if not password:
+        password = str(uuid.uuid4())
+
+    if not name or not email:
         return (
-            jsonify({"error": "Faltan datos obligatorios.", "botones": [{"texto": "Volver al chat"}]}),
+            jsonify({"error": "Faltan datos obligatorios: nombre y email son requeridos.", "botones": [{"texto": "Volver al chat"}]}),
             400,
         )
 
@@ -550,7 +573,7 @@ def chatuser_register_panel():
             }), 409
 
     # If user does not exist, proceed with creation
-    current_app.logger.info(f"[chatuser_register_panel] Email '{email}' no existe. Creando nuevo usuario para Owner ID: {owner_user.id}")
+    current_app.logger.info(f"[chatuser_register_panel] Email '{email}' no existe. Creando nuevo usuario para Owner ID: {owner_user.id} with data: {data}")
     acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
     if isinstance(tags, list):
@@ -567,7 +590,7 @@ def chatuser_register_panel():
         rubro_id=owner_user.rubro_id,
         empresa_id=owner_user.id,
         plan="gratis",
-        rol="usuario",
+        rol="lead" if not data.get('password') else "usuario",
         tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
@@ -737,20 +760,20 @@ def dashboard_info(user: User):
     # Paneles para roles admin y empleado
     if user.rol in ["admin", "empleado"]:
         panels.extend([
-            "tickets", # Gestión de tickets
-            "usuarios_crm", # Gestión de clientes/ciudadanos
-            "estadisticas", # Estadísticas generales de tickets/reclamos
-            "analiticas_crm", # Analíticas específicas de CRM
-            "mapa_tickets" # Mapa de tickets
+            "tickets",
+            "usuarios_crm",
+            "estadisticas",
+            "analiticas_crm",
+            "mapa_tickets"
         ])
         if tipo_chat == "pyme":
-            panels.append("pedidos_pyme") # Gestión de pedidos para PYMEs
+            panels.append("pedidos")
         elif tipo_chat == "municipio":
-            panels.append("sugerencias_ciudadano") # Gestión de sugerencias para Municipios
+            panels.append("sugerencias_ciudadano")
 
     # Paneles exclusivos para admin
     if user.rol == "admin":
-        panels.extend(["empleados"]) # Gestión de empleados
+        panels.append("empleados")
 
     # Eliminar duplicados por si acaso y ordenar alfabéticamente para consistencia
     final_panels = sorted(list(set(panels)))
@@ -827,57 +850,23 @@ def actualizar_me(user):
 def anon_o_token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Permitir solicitudes OPTIONS (preflight CORS) sin autenticación
         if request.method == "OPTIONS":
             return "", 200
+
         token = obtener_token()
-        anon_id = request.headers.get("Anon-Id") or request.args.get("anon_id")
-        current_app.logger.debug(
-            f"Verificando autenticación | token_proporcionado={'sí' if token else 'no'} | anon_id={anon_id or 'no'}"
-        )
+        anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
 
-        user = User.query.filter_by(token=token).first() if token else None
-        if token and not user:
-            current_app.logger.warning(
-                f"Token proporcionado ('{token[:10]}...') pero inválido o usuario no encontrado. "
-                "Consulta docs/token-invalid-troubleshooting.md para verificarlo."
-            )
+        user = None
+        if token:
+            user = User.query.filter_by(token=token).first()
 
-        if user and not anon_id: # Usuario autenticado por token, sin Anon-Id explícito en cabecera
-            g.current_user = user
-            current_app.logger.debug(f"Autenticado como user_id={user.id} (sin Anon-Id en cabecera). Token: '{token[:10]}...'")
-            return f(current_user=user, *args, **kwargs)
-
-        if anon_id: # Hay un Anon-Id, puede o no haber un owner_user (token de entidad)
-            g.anon_id = anon_id
-            if user: # Hay un owner_user (token de entidad) Y un Anon-Id (usuario final anónimo)
-                g.owner_user = user # user aquí es el owner_user (entidad)
-                current_app.logger.debug(
-                    f"Acceso anónimo con Anon-Id: {anon_id} bajo entidad/owner_user id: {user.id}. Token entidad: '{token[:10]}...'"
-                )
-            else: # Hay Anon-Id pero no hay token de entidad (ej. chat público genérico sin token de entidad)
-                current_app.logger.debug(
-                    f"Acceso anónimo con Anon-Id: {anon_id} (sin entidad/owner_user específica por token)."
-                )
-
-            # Llamar a la función decorada, pasando owner_user (que es 'user' de la query por token, puede ser None)
-            # y current_user=None porque el usuario final es anónimo (identificado por anon_id)
-            response = f(current_user=None, anon_id=anon_id, owner_user=user, *args, **kwargs)
-
-            # Intentar añadir Anon-Id a la respuesta si es un objeto Response
-            resp_obj = response[0] if isinstance(response, tuple) else response
-            if hasattr(resp_obj, 'headers'):
-                try:
-                    # Asegurarse de que no estamos intentando modificar un objeto inmutable si no es una instancia de Response
-                    from flask import Response
-                    if isinstance(resp_obj, Response):
-                        resp_obj.headers["Anon-Id"] = anon_id
-                    # Si no es un Response de Flask, no intentar añadir la cabecera (ej. si es un dict de error)
-                except Exception as e_header: # pragma: no cover
-                    current_app.logger.warning(f"No se pudo establecer header Anon-Id en respuesta: {e_header}")
-            return response
-
-        current_app.logger.warning(f"Token o Anon-Id requerido pero no proporcionado o inválido. Token recibido: {'presente' if token else 'ausente'}, Anon-Id recibido: {'presente' if anon_id else 'ausente'}")
-        return jsonify({"error": "Token o anon_id requerido"}), 401
+        if user:
+            # Usuario autenticado (puede ser un 'owner' o un 'viewer')
+            return f(current_user=user, owner_user=user, anon_id=anon_id, *args, **kwargs)
+        elif anon_id:
+            # Usuario anónimo
+            return f(current_user=None, owner_user=None, anon_id=anon_id, *args, **kwargs)
+        else:
+            return jsonify({"error": "Se requiere un token de autenticación o un ID de anónimo."}), 401
     return decorated
 

@@ -19,7 +19,8 @@ class TestChatIntegration(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
-        rubro = Rubro(nombre="municipio", es_publico=True, clave="municipio")
+        rubro = Rubro(nombre="municipio", clave="municipio")
+        rubro.es_publico = True
         self.test_user = User(
             name="Test User",
             email="test@example.com",
@@ -70,7 +71,9 @@ class TestChatIntegration(unittest.TestCase):
         archivo_id = archivo_adj.id
 
         from services.analisis_archivo_service import tarea_analizar_contenido_archivo
-        tarea_analizar_contenido_archivo.delay(archivo_id)
+        with patch('services.analisis_archivo_service.tarea_analizar_contenido_archivo.delay') as mock_delay:
+            mock_delay.return_value = None
+            tarea_analizar_contenido_archivo.delay(archivo_id)
 
         analisis_obj = AnalisisArchivo.query.filter_by(archivo_adjunto_id=archivo_id).first()
         self.assertIsNotNone(analisis_obj)

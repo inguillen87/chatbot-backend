@@ -128,6 +128,23 @@ class ServicioTickets:
                     # La integración externa no debe impedir el funcionamiento primario.
                     logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
 
+            # Notificar panel en tiempo real
+            try:
+                from socket_service import emit_ticket_update
+                data = {
+                    "message": f"Nuevo ticket creado: #{ticket.nro_ticket}",
+                    "ticket_id": ticket.id,
+                    "tipo": tipo_ticket,
+                    "nuevo_estado": ticket.estado,
+                    "asunto": getattr(ticket, "asunto", ""),
+                    "categoria": getattr(ticket, "categoria", None),
+                    "fecha": ticket.fecha.isoformat() if ticket.fecha else None,
+                    "nro_ticket": ticket.nro_ticket
+                }
+                emit_ticket_update(data)
+            except Exception as e_notify:
+                logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
+
             return ticket
         except SQLAlchemyError as e:
             db.session.rollback()
@@ -217,7 +234,7 @@ class ServicioTickets:
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
-            query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            query = Model.query().filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
 
             # Filtrar por estado si se proporciona
             if estado:

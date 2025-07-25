@@ -9,6 +9,10 @@ from utils.validators import (
     extract_address,
 )
 from google.cloud import documentai
+try:
+    from services.google_vision_service import VISION_CLIENT
+except Exception:  # pragma: no cover - optional dependency
+    VISION_CLIENT = None
 
 # Intenta importar errores específicos de Cohere.
 # El nombre exacto puede variar según la versión de la librería 'cohere'.
@@ -87,11 +91,18 @@ def _clean_llm_json_output(llm_output: str) -> str:
         return ""
 
     # Remove markdown code fences (```json ... ```)
-    match = re.match(r"^\s*```json\s*([\s\S]*?)\s*```\s*$", llm_output, re.DOTALL)
-    cleaned_output = match.group(1) if match else llm_output
+    match = re.search(r"{\s*\"respuesta_usuario\":", llm_output)
+    if match:
+        # If the pattern is found, start the string from there
+        llm_output = llm_output[match.start():]
+    else:
+        # Fallback for cases where the specific pattern isn't found but JSON is embedded
+        match = re.search(r"```json\s*([\s\S]*?)\s*```", llm_output, re.DOTALL)
+        if match:
+            llm_output = match.group(1)
 
     # Remove trailing commas before closing braces or brackets
-    cleaned_output = re.sub(r",\s*(?=[}\]])", "", cleaned_output)
+    cleaned_output = re.sub(r",\s*(?=[}\]])", "", llm_output)
 
     # Attempt to fix truncated JSON by closing quotes/brackets
     cleaned_output = _close_open_json_structures(cleaned_output)
@@ -751,33 +762,30 @@ except ImportError:
 
 
 def analyze_image_with_google_vision_ocr(image_content: bytes) -> str:
-    """
-    Analyzes an image using Google Cloud Vision API's OCR capabilities.
-
-    Args:
-        image_content: Bytes of the image file.
-
-    Returns:
-        The extracted text as a string, or an empty string if an error occurs or no text is found.
-    """
+    """Extracts text from an image using Google Cloud Vision's OCR capabilities."""
     if not vision:
         logger.error("Google Cloud Vision library not available. Cannot analyze image.")
         return ""
-    logger.info("Placeholder: Analyzing image with Google Vision OCR.")
-    # In a real implementation:
-    # try:
-    #     client = vision.ImageAnnotatorClient()
-    #     image = vision.Image(content=image_content)
-    #     response = client.text_detection(image=image)
-    #     if response.error.message:
-    #        logger.error(f"Vision API error: {response.error.message}")
-    #        return ""
-    #     if response.text_annotations:
-    #         return response.text_annotations[0].description
-    # except Exception as e:
-    #     logger.error(f"Error in analyze_image_with_google_vision_ocr: {e}", exc_info=True)
-    # return ""
-    return "Placeholder OCR text from image."
+
+    client = VISION_CLIENT
+    if not client:
+        try:
+            client = vision.ImageAnnotatorClient()
+        except Exception as e:
+            logger.error(f"Failed to initialise Vision client: {e}")
+            return ""
+
+    try:
+        image = vision.Image(content=image_content)
+        response = client.text_detection(image=image)
+        if response.error.message:
+            logger.error(f"Vision API error: {response.error.message}")
+            return ""
+        if response.text_annotations:
+            return response.text_annotations[0].description or ""
+    except Exception as e:
+        logger.error(f"Error in analyze_image_with_google_vision_ocr: {e}", exc_info=True)
+    return ""
 
 def analyze_document_with_google_document_ai(
     project_id: str,

@@ -27,6 +27,35 @@ from services.common_utils import (
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
 
+from werkzeug.utils import secure_filename
+from services.catalog_upload_service import catalog_upload_service
+
+@catalogo_bp.route('/upload', methods=['POST'])
+@token_requerido
+def upload_catalog(user):
+    """
+    Endpoint para subir un archivo de catálogo.
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No se encontró el archivo"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No se seleccionó ningún archivo"}), 400
+
+    if file:
+        filename = secure_filename(file.filename)
+        # Guardar el archivo temporalmente para procesarlo
+        filepath = os.path.join('/tmp', filename)
+        file.save(filepath)
+
+        try:
+            # Llamar al servicio para procesar el catálogo
+            catalog_upload_service.process_catalog(filepath, user.id)
+            return jsonify({"mensaje": "Catálogo subido y procesándose."}), 202
+        except Exception as e:
+            return jsonify({"error": f"Error al procesar el catálogo: {e}"}), 500
+
 @catalogo_bp.route('/cargar', methods=['POST'])
 def cargar_catalogo():
     """Alias que reutiliza la lógica de ``subir_catalogo``."""
@@ -264,31 +293,9 @@ def buscar_en_catalogo(user):
     return jsonify(productos)
 
 
-@catalogo_bp.route('/faq_texto', methods=['GET'])
-@token_requerido
-def faq_texto(user):
-    """Devuelve las preguntas y respuestas de las FAQs en texto limpio."""
-    if not getattr(user, 'rubro_id', None):
-        return jsonify([])
-    faqs = QA.query.filter_by(rubro_id=user.rubro_id).all()
-    textos = []
-    for faq in faqs:
-        if faq.question and faq.answer:
-            texto = f"{faq.question} {faq.answer}"
-            textos.append(limpiar_texto_base(texto))
-    return jsonify(textos)
 
 
-@catalogo_bp.route('/textos_perfil', methods=['GET'])
-@token_requerido
-def textos_perfil(user):
-    """Devuelve los textos de catálogo preparados para el ranker."""
-    items = CatalogoItem.query.filter_by(user_id=user.id).all()
-    textos = [limpiar_texto_base(it.texto) for it in items if getattr(it, 'texto', None)]
-    return jsonify(textos)
-
-
-@catalogo_bp.route('/resumen', methods=['GET'])
+@catalogo_bp.route('/resumen_catalogo', methods=['GET'])
 @token_requerido
 def resumen_catalogo(user):
     """Devuelve un resumen del catálogo agrupado por categoría."""

@@ -44,7 +44,7 @@ def estadisticas_reclamos(current_user):
             ),
             {"mid": mid}
         ).fetchall()
-        datos["por_categoria"] = [
+        datos["por_categoria_municipio"] = [
             {"categoria": row.categoria, "total": row.total} for row in categorias_muni_rows
         ]
 
@@ -97,7 +97,7 @@ def estadisticas_reclamos(current_user):
             ),
             {"rid": rid}
         ).fetchall()
-        datos["por_categoria"] = [
+        datos["por_categoria_pyme"] = [
             {"categoria": row.categoria, "total": row.total} for row in categorias_pyme_rows
         ]
 

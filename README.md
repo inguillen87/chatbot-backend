@@ -42,6 +42,8 @@ This project exposes several endpoints to process questions for different sector
 - `GET /tickets` – for admins or employees, list all tickets for the company or
   municipality. Supports optional `?estado=` and `?categoria=` filters.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
+- Municipal accounts hitting `/pedidos` receive the same JSON structure as
+  `/tickets` to ease frontend integration.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering and now `?q=` search by name or email plus `?marketing=true|false`. The same data is available at `/municipal/usuarios`.
 - `PUT /crm/clientes/<id>/tags` – update the segmentation tags of a client.
 - `GET /crm/clientes/<id>/interacciones` – history of chats and tickets for a client.
@@ -203,3 +205,6 @@ consulta el archivo [`docs/ejemplo-request-demo.md`](docs/ejemplo-request-demo.m
 - El analizador de sentimiento ahora responde de forma positiva o negativa para mejorar la interacción con pymes.
 - Cuando el usuario solicita el PDF, el bot devuelve un enlace directo al endpoint `/catalogo/descargar` para facilitar la descarga del catálogo.
 - Si el widget no aparece o surgen conflictos de integraci\u00f3n, revisa `docs/widget-troubleshooting.md` o escribe a [info@chatboc.ar](mailto:info@chatboc.ar).
+
+## SaaS Deployment
+This project can be deployed as a multi-tenant SaaS solution. Each company has its own token and context. See `docs/ARCHITECTURE.md` for how the LLM-driven flow integrates with the CRM modules.

@@ -139,3 +139,64 @@ def tarea_enviar_campana_email(
 
     logger.info(f"[CELERY_CAMPAIGN_TASK] Tarea de envío de campaña para empresa ID {empresa_id_solicitante} completada. Enviados: {emails_enviados_ok}, Errores: {emails_con_error}.")
     return {"status": "completado", "enviados_ok": emails_enviados_ok, "errores": emails_con_error}
+
+from services.interpretacion_imagen_service import interpretar_imagen_para_chat
+from models import ChatSessionContext
+from twilio.rest import Client
+import os
+from sqlalchemy.orm.attributes import flag_modified
+
+@celery_app.task
+def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file_info_whatsapp, chat_session_id):
+    from services.municipios import CONTEXTO_MUNICIPIO, ConversationState
+    """
+    Celery task to process an image for a chat session.
+    """
+    from app import app
+    with app.app_context():
+        # Get the Twilio client
+        twilio_client = Client(os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
+        from_number = f"whatsapp:{os.environ.get('TWILIO_WHATSAPP_NUMBER_JUNIN')}"
+        to_number = f"whatsapp:{user_phone_number}"
+
+        # Call the image interpretation service
+        analisis_resultado = interpretar_imagen_para_chat(
+            archivo_adjunto=uploaded_file_info_whatsapp,
+            tipo_interpretacion="reclamo_auto_descripcion_categoria"
+        )
+
+        # Get the chat session
+        session_context_db_entry = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
+        if not session_context_db_entry:
+            return
+
+        contexto_municipio_actual = session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO, {})
+
+        if analisis_resultado and not analisis_resultado.get("error"):
+            contexto_municipio_actual["analisis_imagen_reclamo_auto_raw"] = analisis_resultado
+            cat_sug_wp = analisis_resultado.get("categoria_sugerida")
+            desc_sug_wp = analisis_resultado.get("descripcion_sugerida")
+
+            if cat_sug_wp:
+                contexto_municipio_actual["categoria_reclamo"] = cat_sug_wp
+            if desc_sug_wp:
+                contexto_municipio_actual["descripcion_reclamo"] = desc_sug_wp
+
+            if analisis_resultado.get('es_reclamo'):
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                message_body = f"He analizado la imagen y parece que es un reclamo sobre *{cat_sug_wp}*. Para continuar, por favor, decime la dirección del problema."
+            else:
+                message_body = "He recibido tu foto. Para continuar con el reclamo, por favor, decime la dirección del problema."
+        else:
+            message_body = "No pude analizar la imagen correctamente. Por favor, ¿podrías describir el problema y la dirección?"
+
+        session_context_db_entry.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+        flag_modified(session_context_db_entry, "context_data")
+        db.session.commit()
+
+        # Send the message
+        twilio_client.messages.create(
+            from_=from_number,
+            body=message_body,
+            to=to_number
+        )

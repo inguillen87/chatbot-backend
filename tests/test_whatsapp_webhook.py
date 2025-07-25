@@ -10,6 +10,7 @@ if project_root_whatsapp not in sys.path:
 
 from app import create_app, db
 from config import Config
+from models import User, Rubro, WhatsappNumero
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -44,6 +45,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             email="testempresa@example.com",
             rol="empresa", # or 'municipio'
             tipo_chat="pyme", # or 'municipio'
+            pyme_id=1,
             nombre_empresa="TestEmpresaName"
         )
         self.mock_client_user.set_password("testpassword")
@@ -67,9 +69,10 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.validator_patch = patch('routes.whatsapp_webhook.validator', MagicMock())
         self.mock_validator = self.validator_patch.start()
 
-        # Patch the twilio_client.messages.create
-        self.twilio_client_patch = patch('routes.whatsapp_webhook.twilio_client.messages.create', MagicMock())
-        self.mock_twilio_create = self.twilio_client_patch.start()
+        # Patch the twilio_client
+        self.twilio_client_patch = patch('routes.whatsapp_webhook.twilio_client', MagicMock())
+        self.mock_twilio_client = self.twilio_client_patch.start()
+        self.mock_twilio_create = self.mock_twilio_client.messages.create
 
     def tearDown(self):
         db.session.remove()

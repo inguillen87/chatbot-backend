@@ -2,14 +2,15 @@ import os
 import uuid
 import logging
 from werkzeug.utils import secure_filename
-from flask import Blueprint, request, jsonify, current_app, send_from_directory
+from flask import Blueprint, request, jsonify, current_app, send_from_directory, render_template
+from socket_service import emit_ticket_update
 from models import (
     MunicipioTicket,
     PymeTicket,
     User,
     TicketComentario,
     TicketSatisfaccion,
-    ArchivoAdjunto, # Asegurarse que ArchivoAdjunto esté importado
+    ArchivoAdjunto,
     db,
 )
 from datetime import datetime, timedelta
@@ -200,7 +201,11 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         serialized_tickets = [serialize_ticket_func(t, tipo_ticket_str) for t in tickets_for_list_page]
 
-        return jsonify(serialized_tickets)
+        # Devolver tanto la lista de tickets para la página actual como el resumen
+        return jsonify({
+            "tickets": serialized_tickets,
+            "summary": summary_by_status
+        })
 
     except Exception as e:
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
@@ -212,6 +217,7 @@ def get_tickets_del_usuario_logic(current_user: User):
 def get_tickets_del_usuario(current_user: User):
     if current_user.rol not in ['admin', 'empleado']:
         return redirect(url_for('ticket_bp.get_mis_tickets'))
+
     return get_tickets_del_usuario_logic(current_user)
 
 # ---------- LISTA DE MIS TICKETS (cliente) ----------
@@ -288,99 +294,72 @@ def get_mis_tickets(current_user: User):
         return jsonify({"error": "Error interno al obtener tus tickets."}), 500
 
 # ---------- DETALLE DE TICKET ----------
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>', methods=['GET'])
-@anon_o_token_requerido
-def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None):
+@ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
+@token_requerido
+def get_ticket_details(current_user: User, ticket_id: int):
     """
-    Devuelve el detalle de un ticket, reforzando la lógica de permisos para admins, empleados y usuarios.
+    Devuelve el detalle de un ticket municipal, verificando que el usuario
+    (admin o empleado) pertenezca al municipio correcto.
     """
-    anon_id = anon_id or request.headers.get("Anon-Id")
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket = db.session.get(TicketModel, ticket_id)
+    # 1. Validar que el usuario es de tipo municipio
+    if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
+        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    # 2. Obtener el ticket
+    ticket = db.session.get(MunicipioTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    # --- PERMISOS ---
-    is_dueño = current_user and ticket.user_id == current_user.id
-    is_admin_muni = (
-        current_user
-        and tipo == "municipio"
-        and current_user.tipo_chat == "municipio"
-        and ticket.municipio_id == current_user.municipio_id
-    )
-    is_admin_pyme = (
-        current_user
-        and tipo == "pyme"
-        and getattr(current_user, "rubro_id", None)
-        and getattr(ticket, "rubro_id", None) == current_user.rubro_id
-    )
-    is_anon = anon_id and getattr(ticket, "anon_id", None) == anon_id
-
-    if not (is_dueño or is_admin_muni or is_admin_pyme or is_anon):
+    # 3. Verificar Permiso: El municipio_id del ticket debe coincidir con el del usuario
+    if ticket.municipio_id != current_user.municipio_id:
         current_app.logger.warning(
-            f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={ticket_id} | anon_id_recibido={anon_id} | anon_id_ticket={getattr(ticket,'anon_id', None)} | user_id={getattr(current_user,'id', None)} | ticket_user_id={getattr(ticket,'user_id', None)} | estado={getattr(ticket,'estado', None)}"
+            f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={ticket_id} | "
+            f"user_id={current_user.id} (municipio_id={current_user.municipio_id}) intentó acceder a "
+            f"ticket de municipio_id={ticket.municipio_id}."
         )
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
-    if ticket.estado == "cerrado" and not (is_admin_muni or is_admin_pyme):
-        return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-
     # --- SERIALIZACIÓN ---
-    nombre_final_usuario = "No especificado"
-    telefono_final_usuario = "No especificado"
-    email_final_usuario = "No especificado"
-    
-    ticket_owner_user = None
-    if ticket.user_id:
-        ticket_owner_user = db.session.get(User, ticket.user_id)
+    def _get_user_info(ticket, user_model):
+        """Helper to consolidate user info extraction."""
+        user_info = {
+            "nombre": "No especificado",
+            "telefono": "No especificado",
+            "email": "No especificado",
+            "direccion": "No especificada",
+            "descripcion": ""
+        }
+
+        # 1. Get data from User model if available
+        ticket_owner_user = db.session.get(user_model, ticket.user_id) if ticket.user_id else None
         if ticket_owner_user:
-            nombre_final_usuario = ticket_owner_user.name or nombre_final_usuario
-            # Usar el teléfono del perfil del usuario si está disponible
-            if ticket_owner_user.telefono:
-                 telefono_final_usuario = ticket_owner_user.telefono
-            # Usar el email del perfil del usuario si está disponible
-            if ticket_owner_user.email:
-                email_final_usuario = ticket_owner_user.email
+            user_info["nombre"] = ticket_owner_user.name or user_info["nombre"]
+            user_info["telefono"] = ticket_owner_user.telefono or user_info["telefono"]
+            user_info["email"] = ticket_owner_user.email or user_info["email"]
+            user_info["direccion"] = ticket_owner_user.direccion or user_info["direccion"]
 
-    # Si después de chequear ticket_owner_user, los datos siguen "No especificado" o estaban vacíos en el perfil,
-    # intentar con los campos directos del ticket (nombre_vecino, etc.)
-    # Esto es especialmente útil para tickets anónimos (ticket.user_id es None)
-    # o si el User objeto no tiene los datos de contacto, o para priorizar datos del ticket.
+        # 2. Fallback to ticket fields (for anonymous or overriding)
+        user_info["nombre"] = getattr(ticket, 'nombre_vecino', user_info["nombre"]) or user_info["nombre"]
+        user_info["telefono"] = getattr(ticket, 'telefono_vecino', getattr(ticket, 'telefono', user_info["telefono"])) or user_info["telefono"]
+        user_info["email"] = getattr(ticket, 'email_vecino', getattr(ticket, 'email', user_info["email"])) or user_info["email"]
+        user_info["direccion"] = getattr(ticket, 'direccion', user_info["direccion"]) or user_info["direccion"]
 
-    if nombre_final_usuario == "No especificado" or not nombre_final_usuario.strip():
-        if hasattr(ticket, 'nombre_vecino') and ticket.nombre_vecino and ticket.nombre_vecino.strip():
-            nombre_final_usuario = ticket.nombre_vecino
-    
-    if telefono_final_usuario == "No especificado" or not telefono_final_usuario.strip():
-        if hasattr(ticket, 'telefono_vecino') and ticket.telefono_vecino and ticket.telefono_vecino.strip(): # Para MunicipioTicket
-            telefono_final_usuario = ticket.telefono_vecino
-        elif hasattr(ticket, 'telefono') and ticket.telefono and ticket.telefono.strip(): # Para PymeTicket
-            telefono_final_usuario = ticket.telefono
+        # 3. Fallback to 'detalles' field
+        detalles_texto = getattr(ticket, 'detalles', '') or ''
+        user_info["descripcion"] = detalles_texto
+        if "Nombre:" in detalles_texto and user_info["nombre"] == "No especificado":
+            user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
+        if "Teléfono:" in detalles_texto and user_info["telefono"] == "No especificado":
+            user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
+        if "Email:" in detalles_texto and user_info["email"] == "No especificado":
+            user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
+        if "Dirección:" in detalles_texto and user_info["direccion"] == "No especificada":
+            user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
 
-    if email_final_usuario == "No especificado" or not email_final_usuario.strip():
-        if hasattr(ticket, 'email_vecino') and ticket.email_vecino and ticket.email_vecino.strip(): # Para MunicipioTicket
-            email_final_usuario = ticket.email_vecino
-        elif hasattr(ticket, 'email') and ticket.email and ticket.email.strip(): # Para PymeTicket
-            email_final_usuario = ticket.email
+        return user_info
 
-    # Fallback final a la extracción desde el campo 'detalles' si todavía no se encontraron y son "No especificado".
+    user_data = _get_user_info(ticket, User)
     detalles_texto = getattr(ticket, 'detalles', '') or ''
-    if (nombre_final_usuario == "No especificado" or not nombre_final_usuario.strip()) and "Nombre:" in detalles_texto:
-        nombre_final_usuario = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
-    if (telefono_final_usuario == "No especificado" or not telefono_final_usuario.strip()) and "Teléfono:" in detalles_texto:
-        telefono_final_usuario = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
-    if (email_final_usuario == "No especificado" or not email_final_usuario.strip()) and "Email:" in detalles_texto:
-        email_final_usuario = detalles_texto.split("Email:")[1].split("\n")[0].strip()
-
-    # Asegurarse de que si después de todo siguen siendo "No especificado", se envíe eso o None/null.
-    # El frontend espera string, así que "No especificado" está bien si no hay dato.
-    # O podrías cambiarlo a None aquí si el frontend lo maneja mejor. Por ahora, se mantiene "No especificado".
-
-    direccion = getattr(ticket, 'direccion', None) or "No especificada"
-    if (direccion == "No especificada" or not direccion.strip()) and "Dirección:" in detalles_texto:
-        direccion = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
-    elif ticket_owner_user and (direccion == "No especificada" or not direccion.strip()) and ticket_owner_user.direccion:
-        direccion = ticket_owner_user.direccion
 
 
     comentarios = [
@@ -419,19 +398,20 @@ def detalle_ticket(current_user, tipo, ticket_id, anon_id=None, owner_user=None)
 
     ticket_data = {
         "id": ticket.id,
-        "tipo": tipo,
+        "tipo": "municipio",
         "nro_ticket": ticket.nro_ticket,
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria": getattr(ticket, 'categoria', ''),
         "estado": ticket.estado,
         "fecha": ticket.fecha.isoformat(),
         "pregunta": getattr(ticket, 'pregunta', ''),
-        "detalles": detalles_texto, # Se sigue enviando el campo 'detalles' original por si se usa en otro lado
+        "detalles": detalles_texto,
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "nombre_usuario": nombre_final_usuario, # CORREGIDO
-        "telefono": telefono_final_usuario,     # CORREGIDO (clave 'telefono' como espera el frontend)
-        "email_usuario": email_final_usuario,   # CORREGIDO (clave 'email_usuario' como espera el frontend)
-        "direccion": direccion,           # Dato obtenido de ticket.direccion, User.direccion o fallback
+        "nombre_usuario": user_data["nombre"],
+        "telefono": user_data["telefono"],
+        "email_usuario": user_data["email"],
+        "direccion": user_data["direccion"],
+        "descripcion": user_data["descripcion"],
         "archivos_adjuntos": archivos_adjuntos_data,
         "latitud": getattr(ticket, 'latitud', None),
         "longitud": getattr(ticket, 'longitud', None)
@@ -565,6 +545,19 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
         current_app.logger.info(f"Notificaciones para respuesta de ticket {ticket_id} (tipo {tipo}) procesadas.")
 
+        # Notificación por Pusher
+        channel = f"ticket-{tipo}-{ticket_id}"
+        event = "nueva-respuesta"
+        data = {
+            "message": mensaje_notificacion_base,
+            "ticket_id": ticket_id,
+            "tipo": tipo,
+            "comentario": nuevo_comentario_obj.to_dict() if nuevo_comentario_obj else None,
+            "archivos": [a.to_dict() for a in archivos_adjuntados_db]
+        }
+        emit_ticket_update(data)
+
+
     except Exception as e_notif:
         current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de ticket {ticket_id}: {e_notif}", exc_info=True)
         # No devolver error al cliente por fallo en notificaciones, ya que el ticket/comentario se guardó.
@@ -662,6 +655,15 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
+
+    # Notificación por Websocket
+    data = {
+        "message": f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'.",
+        "ticket_id": ticket_id,
+        "tipo": tipo,
+        "nuevo_estado": nuevo_estado
+    }
+    emit_ticket_update(data)
 
     comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
     ticket_data = {
@@ -823,6 +825,14 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         }
     )
     if nuevo_comentario:
+        # Notificación por Websocket
+        data = {
+            "message": f"Nuevo mensaje en tu ticket #{sala_de_chat.nro_ticket}",
+            "ticket_id": ticket_id,
+            "tipo": "municipio",
+            "comentario": nuevo_comentario.to_dict()
+        }
+        emit_ticket_update(data)
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
@@ -860,6 +870,13 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
         },
     )
     if nuevo_comentario:
+        data = {
+            "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
+            "ticket_id": ticket_id,
+            "tipo": "pyme",
+            "nuevo_estado": sala_de_chat.estado
+        }
+        emit_ticket_update(data)
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
@@ -1056,6 +1073,17 @@ def get_panel_pyme(current_user: User):
     except Exception as e:
         current_app.logger.error(f"Error en get_panel_pyme: {e}", exc_info=True)
         return jsonify({"error": "Error interno al generar el panel de tickets."}), 500
+
+# ---------- PANEL UNIFICADO ----------
+@ticket_bp.route('/tickets/panel', methods=['GET'])
+@token_requerido
+@require_role('admin', 'empleado')
+def get_ticket_panel(current_user: User):
+    """Retorna el panel de tickets según el tipo de chat del usuario."""
+    if current_user.tipo_chat == "municipio":
+        return get_panel_por_categoria(current_user)
+    else:
+        return get_panel_pyme(current_user)
 
 # ---------- ACTUALIZAR UBICACIÓN DE TICKET ----------
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
@@ -1292,3 +1320,10 @@ def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_cu
         return jsonify({"error": "Archivo no encontrado en el servidor."}), 404
     
     return send_from_directory(TICKET_ATTACHMENT_FOLDER, safe_filename, as_attachment=False) # as_attachment=True para forzar descarga
+
+@ticket_bp.route('/tickets/panel', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def ticket_panel(current_user: User):
+    """Renderiza el panel de tickets."""
+    return send_from_directory('static', 'ticket_panel.html')

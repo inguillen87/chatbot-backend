@@ -6,7 +6,7 @@ from services.ticket_service import servicio_tickets
 
 class SimpleTicketTest(unittest.TestCase):
     def setUp(self):
-        from src.config import TestConfig
+        from config import TestConfig
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
@@ -40,8 +40,7 @@ class SimpleTicketTest(unittest.TestCase):
             "estado": "nuevo",
             "user_id": user.id,
             "latitud": 1.0,
-            "longitud": 1.0,
-            "origen_reclamo": "TEST"
+            "longitud": 1.0
         }
 
         # Create the ticket

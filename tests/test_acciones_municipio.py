@@ -23,41 +23,29 @@ class TestConfigAll(Config):
 
 class TestAccionesMunicipio(unittest.TestCase):
 
-    @classmethod
-    def setUpClass(cls):
-        """Set up once for all tests in this class."""
-        cls.app = create_app(config_class=TestConfigAll)
-        with cls.app.app_context():
-            db.create_all()
-
-    @classmethod
-    def tearDownClass(cls):
-        """Tear down once after all tests in this class."""
-        with cls.app.app_context():
-            db.drop_all()
-
     def setUp(self):
         """Set up for each test."""
+        self.app = create_app(config_class=TestConfigAll)
         self.app_context = self.app.app_context()
         self.app_context.push()
+        db.create_all()
         self.session = db.session
-        self.session.begin_nested()
 
     def tearDown(self):
         """Tear down after each test."""
-        self.session.rollback()
-        self.session.remove()
+        db.session.remove()
+        db.drop_all()
         self.app_context.pop()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.formatear_telefono_e164')
     @patch('services.actions.municipio_actions.validar_telefono')
     @patch('services.actions.municipio_actions.validar_email')
     @patch('services.actions.municipio_actions.parse_direccion_completa')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.actions.municipio_actions.formatear_telefono_e164')
     def test_accion_crear_reclamo_exito_completo_llm(
-        self, mock_enviar_whatsapp, mock_parse_direccion, mock_validar_email,
-        mock_validar_telefono, mock_formatear_telefono, mock_crear_ticket
+        self, mock_formatear_tel, mock_enviar_whatsapp, mock_parse_direccion,
+        mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
         mock_ticket_simulado = MagicMock()
         mock_ticket_simulado.nro_ticket = "12345"
@@ -65,7 +53,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_crear_ticket.return_value = mock_ticket_simulado
 
         mock_validar_telefono.return_value = True
-        mock_formatear_telefono.return_value = "+5491122334455"
+        mock_formatear_tel.return_value = "+5491122334455"
         mock_validar_email.return_value = True
 
         mock_parse_direccion.return_value = {
@@ -101,10 +89,10 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertIn(mock_ticket_simulado.nro_ticket, respuesta["message_to_user"])
         self.assertEqual(respuesta["data"]["ticket_id"], mock_ticket_simulado.id)
         mock_crear_ticket.assert_called_once()
-        datos_ticket_enviados = mock_crear_ticket.call_args[1]['ticket_data']
-        self.assertEqual(datos_ticket_enviados["nombre_vecino"], "Homero Simpson")
-        self.assertEqual(datos_ticket_enviados["telefono_vecino"], "+5491122334455")
-        self.assertEqual(datos_ticket_enviados["email_vecino"], "homero@example.com")
+        _, kwargs = mock_crear_ticket.call_args
+        self.assertEqual(kwargs['nombre_completo'], "Homero Simpson")
+        self.assertEqual(kwargs['telefono'], "+5491122334455")
+        self.assertEqual(kwargs['email'], "homero@example.com")
         mock_enviar_whatsapp.assert_called_once_with("+5491122334455", "Homero Simpson", "12345", "Alumbrado")
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -118,7 +106,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("No pude entender la descripción", respuesta["message_to_user"])
+        self.assertIn("Para poder registrar tu reclamo, necesitaría que me indiques una descripción del problema", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -128,12 +116,12 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("No pude entender la ubicación", respuesta["message_to_user"])
+        self.assertIn("Para poder registrar tu reclamo, necesitaría que me indiques la ubicación del problema", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
-    @patch('services.actions.municipio_actions.validar_email', return_value=True) # Email del LLM es inválido, pero el del perfil es válido
+    @patch('services.actions.municipio_actions.validar_email')
     @patch('services.actions.municipio_actions.parse_direccion_completa')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
@@ -147,6 +135,7 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         # Teléfono del LLM inválido, teléfono del perfil válido
         mock_validar_telefono_func.side_effect = [False, True]
+        mock_validar_email_func.side_effect = [False, True]
         mock_formatear_tel.return_value = "+549876543210" # Formato del teléfono del perfil
 
         datos_llm = {
@@ -160,18 +149,19 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         context = {
             "viewer_user_obj": mock_viewer_user, "user_obj": MagicMock(id=1, municipio_id="testmuni"),
-            "anon_id": None, "municipio_config_actual": {}
+            "anon_id": None, "municipio_config_actual": {},
+            "current_user": mock_viewer_user
         }
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
 
         self.assertTrue(respuesta["success"])
         mock_crear_ticket.assert_called_once()
-        datos_ticket_enviados = mock_crear_ticket.call_args[1]['ticket_data']
+        _, kwargs = mock_crear_ticket.call_args
 
-        self.assertEqual(datos_ticket_enviados["nombre_vecino"], "Usuario LLM")
-        self.assertEqual(datos_ticket_enviados["telefono_vecino"], "+549876543210") # Tomado y formateado del perfil
-        self.assertEqual(datos_ticket_enviados["email_vecino"], "perfil_valido@example.com") # Tomado del perfil (mock_validar_email siempre True)
+        self.assertEqual(kwargs['nombre_completo'], "Usuario LLM")
+        self.assertEqual(kwargs['telefono'], "+549876543210") # Tomado y formateado del perfil
+        self.assertEqual(kwargs['email'], "perfil_valido@example.com") # Tomado del perfil (mock_validar_email siempre True)
 
         mock_enviar_whatsapp.assert_called_once_with(
             "+549876543210", "Usuario LLM", "67890", "Varios"

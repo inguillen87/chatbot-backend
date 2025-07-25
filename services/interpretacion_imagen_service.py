@@ -128,13 +128,15 @@ def interpretar_imagen_para_chat(
     if "image" in input_mime_type:
         logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a Vision API...")
         vision_results = analyze_image_from_content(file_content) # Esta función ya loguea sus errores
-    else:
+    elif "pdf" in input_mime_type or "spreadsheet" in input_mime_type or "excel" in input_mime_type:
         from services.document_processing_service import document_processing_service
         doc_ai_result = document_processing_service.process_document(file_content, input_mime_type)
         if doc_ai_result:
             vision_results = {"full_text_annotation": {"description": doc_ai_result.text}}
         else:
             vision_results = {"error": "No se pudo procesar el documento."}
+    else:
+        vision_results = {"error": f"Tipo de archivo no soportado: {input_mime_type}"}
 
     # Si es un objeto de DB, guardar resultados parciales de Vision en AnalisisArchivo
     if is_db_object and analisis_db_record:
@@ -244,7 +246,22 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
     "leakage": "Falta de agua, rotura de caño",
     "road": "Arreglo de calle", # Generic, might need more context
     "signage": "Rotura de semaforo", # If context implies damage/issue, could be other types of signs
-    "power line": "Luminaria" # Or a generic public service issue
+    "power line": "Luminaria", # Or a generic public service issue
+    "sidewalk": "Arreglo de calle",
+    "driveway": "Arreglo de calle",
+    "tar": "Arreglo de calle",
+    "asphalt": "Arreglo de calle",
+    "roadway": "Arreglo de calle",
+    "public utility": "Otro Motivo",
+    "infrastructure": "Otro Motivo",
+    "hazard": "Otro Motivo",
+    "danger": "Otro Motivo",
+    "damage": "Otro Motivo",
+    "broken": "Otro Motivo",
+    "fallen": "Otro Motivo",
+    "overflowing": "Limpieza",
+    "vandalism": "Otro Motivo",
+    "neglect": "Otro Motivo"
 }
 # Also import CATEGORIAS_RECLAMO from municipios to validate against
 try:
@@ -303,12 +320,10 @@ def _procesar_interpretacion_reclamo(
     analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
     logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL (auto_mode: {auto_mode}) para Análisis ID: {analisis_id_for_log}")
 
-    sugerida_categoria_vision = None
-    # Datos que se guardarán en AnalisisArchivo (si existe) o se retornarán en 'analisis_interno'
+    sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
     datos_internos_analisis = {}
 
     if auto_mode:
-        sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
         if analisis_db_record:
             analisis_db_record.tipo_analisis = 'reclamo_auto_vision_v1'
         datos_internos_analisis['tipo_analisis_sugerido'] = 'reclamo_auto_vision_v1'
@@ -317,7 +332,6 @@ def _procesar_interpretacion_reclamo(
             analisis_db_record.tipo_analisis = 'reclamo_vision_llm_v1'
         datos_internos_analisis['tipo_analisis_sugerido'] = 'reclamo_vision_llm_v1'
 
-    # Construct description for LLM from image content
     prompt_description_parts = []
     top_labels_str = ", ".join([f"{l['description']}" for l in vision_results.get("labels", [])[:5]])
     top_objects_str = ", ".join([f"{o['name']}" for o in vision_results.get("objects", [])[:3]])
@@ -351,8 +365,7 @@ def _procesar_interpretacion_reclamo(
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
     logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis_id_for_log})")
 
-    # Use LLM to refine/generate details based on image description
-    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
+    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm, model="gemini-1.5-pro-preview-0409")
 
     datos_internos_analisis['llm_complaint_extraction_from_image'] = detalles_llm
     datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision

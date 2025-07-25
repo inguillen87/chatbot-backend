@@ -42,12 +42,12 @@ def analyze_image_from_content(image_content: bytes, min_confidence: float = 0.5
     Returns:
         Un diccionario con 'objects' y 'labels' detectados, o mensajes de error.
     """
-    if not VISION_CLIENT:
-        logger.error("❌ [VISION_SVC] Cliente de Vision no inicializado. No se puede analizar la imagen.")
-        return {"error": "Cliente de Vision no inicializado."}
     if not image_content:
         logger.error("❌ [VISION_SVC] Contenido de imagen vacío.")
         return {"error": "Contenido de imagen vacío."}
+    if not VISION_CLIENT:
+        logger.error("❌ [VISION_SVC] Cliente de Vision no inicializado. No se puede analizar la imagen.")
+        return {"error": "Cliente de Vision no inicializado."}
 
     image = vision.Image(content=image_content)
 
@@ -136,8 +136,8 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     logger.info("Ejecutando pruebas locales de google_vision_service.py...")
 
-    if not CREDENTIALS_LOADED_SUCCESSFULLY or not VISION_CLIENT:
-        logger.error("Las credenciales no se cargaron o el cliente no se inicializó. Abortando prueba.")
+    if not CREDENTIALS_LOADED_SUCCESSFULLY:
+        logger.warning("Las credenciales de Google Cloud no están disponibles. Omitiendo prueba de análisis de imagen.")
     else:
         # Debes tener una imagen de prueba, por ejemplo 'test_image.jpg' en la raíz del proyecto.
         # O proporciona una ruta absoluta.

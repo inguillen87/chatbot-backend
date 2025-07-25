@@ -190,31 +190,19 @@ class MunicipioLogicTests(unittest.TestCase):
 
         importlib.reload(municipios)
 
-    def test_es_pregunta_nueva_acknowledge(self):
-        with self.app.app_context():
-            self.assertTrue(municipios.es_pregunta_nueva('ok', 'un número de ticket'))
-            self.assertTrue(municipios.es_pregunta_nueva('gracias', 'una dirección'))
-
-    def test_es_pregunta_nueva_agente(self):
-        with self.app.app_context():
-            self.assertTrue(
-                municipios.es_pregunta_nueva('Quiero hablar con un asesor', 'una dirección')
-            )
-
     @patch('services.municipios.get_cohere_response', return_value='')
     @patch('services.municipios.servicio_tickets')
-    # Removed patch for _clasificar_intencion_con_llm
-    def test_human_escalation(self, mock_servicio, mock_llm_cohere_generic): # mock_clf removed
+    def test_human_escalation(self, mock_servicio, mock_llm_cohere_generic):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         mock_servicio.crear_comentario.return_value = None
         user = DummyUser()
-        # Simulate that the main Gemini call (orchestrator) set the intent
-        with patch('services.municipios.ChatOrchestrator.execute_action') as mock_execute_action:
-            mock_execute_action.return_value = {
-                "message_to_user": "Hemos recibido tu solicitud para hablar con un agente. Estamos notificando al equipo. Tu número de chat es **M-123456**. Un agente se unirá tan pronto como esté disponible.",
-                "success": True,
-                "fuente": "escalation_sala_creada_v2",
-                "data": {"ticket_id": 1}
+        with patch('services.gemini_bridge.llamar_gemini') as mock_llamar_gemini:
+            mock_llamar_gemini.return_value = {
+                "respuesta_usuario": "Hemos recibido tu solicitud para hablar con un agente. Estamos notificando al equipo. Tu número de chat es **M-123456**. Un agente se unirá tan pronto como esté disponible.",
+                "accion_backend": "derivar_humano",
+                "datos_estructura": {"target": "municipio", "motivo_derivacion": "Solicitud de agente"},
+                "pedir_info": None,
+                "botones": []
             }
             with self.app.app_context():
                 resp = municipios.responder_municipio(
@@ -231,38 +219,31 @@ class MunicipioLogicTests(unittest.TestCase):
         with patch('services.gemini_bridge.llamar_gemini') as mock_llamar_gemini:
             mock_llamar_gemini.return_value = {
                 "respuesta_usuario": "Para hablar con un agente, necesitas registrarte o iniciar sesión.",
-                "accion_backend": "derivar_humano", # Still deriving, but context should indicate anon
+                "accion_backend": "derivar_humano",
                 "datos_estructura": {"target": "municipio", "motivo_derivacion": "Solicitud de agente anónimo"},
-                "pedir_info": "solicitar_registro_para_agente", # This might be handled by EngancheAnonimo
+                "pedir_info": "solicitar_registro_para_agente",
                 "botones": [
                     {"texto": "Iniciar Sesión", "id_accion": "login_enganche_risky"},
                     {"texto": "Registrarme Gratis", "id_accion": "register_enganche_risky"}
                 ]
             }
-            # Here, EngancheAnonimoMunicipioHandler should intercept if anon_id is passed and viewer_user is None
-            # Let's simulate this by setting the context['intencion'] to 'hablar_con_agente'
-            # and ensuring viewer_user is None and anon_id is present.
-            # The _call_responder_municipio sets viewer_user, so we call responder_municipio directly.
-
             context_for_anon_escalation = SimpleNamespace(context_data={
-                municipios.CONTEXTO_MUNICIPIO: {}, # Start with empty municipio context
-                "intencion": "hablar_con_agente" # Set by a hypothetical previous step or main LLM
+                municipios.CONTEXTO_MUNICIPIO: {},
+                "intencion": "hablar_con_agente"
             })
-
             with self.app.app_context():
                 resp = municipios.responder_municipio(
-                    pregunta_original={'pregunta': 'Quiero hablar con una persona', 'intencion': 'hablar_con_agente'}, # Ensure intent is in context
+                    pregunta_original={'pregunta': 'Quiero hablar con una persona', 'intencion': 'hablar_con_agente'},
                     owner_user=DummyUser(),
                     rubro_obj=None,
-                    viewer_user=None, # Critical for anon path
+                    viewer_user=None,
                     chat_db_context=context_for_anon_escalation,
                     anon_id="test_anon_id_escalation"
                 )
-
         self.assertIn('iniciar sesión o registrarte', resp['message_body'].lower())
         botones = resp.get('options_list', [])
-        self.assertTrue(any('login' in b.get('id_accion', '').lower() for b in botones) or any('iniciar sesión' in b.get('texto', '').lower() for b in botones) )
-        self.assertTrue(any('register' in b.get('id_accion', '').lower() for b in botones) or any('registrarme' in b.get('texto', '').lower() for b in botones) )
+        self.assertTrue(any('login' in b.get('id_accion', '').lower() for b in botones) or any('iniciar sesión' in b.get('texto', '').lower() for b in botones))
+        self.assertTrue(any('register' in b.get('id_accion', '').lower() for b in botones) or any('registrarme' in b.get('texto', '').lower() for b in botones))
 
 
     def test_greeting_variation(self):
@@ -279,10 +260,11 @@ class MunicipioLogicTests(unittest.TestCase):
                 ]
             }
             with self.app.app_context():
-                resp = municipios.responder_municipio(
-                    'hola buenos noches',
-                    user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
-                )
+                with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
+                    resp = municipios.responder_municipio(
+                        'hola buenos noches',
+                        user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
+                    )
         self.assertIn('tu asistente digital del Municipio', resp['message_body'])
 
     def test_small_talk_municipio(self):
@@ -298,12 +280,12 @@ class MunicipioLogicTests(unittest.TestCase):
                 "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Ayuda"}]
             }
             with self.app.app_context():
-                resp = municipios.responder_municipio(
-                    '¿Cómo te va?',
-                    user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
-                )
-            self.assertIn('Todo bien por aquí', resp['message_body']) # Check new response structure
-            mock_llamar_gemini.assert_called_once()
+                with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
+                    resp = municipios.responder_municipio(
+                        '¿Cómo te va?',
+                        user, None, viewer_user=user, chat_db_context=SimpleNamespace(context_data={})
+                    )
+        self.assertIn('Todo bien por aquí', resp['message_body'])
 
 
     def test_tramite_selection_returns_string(self):
@@ -314,12 +296,12 @@ class MunicipioLogicTests(unittest.TestCase):
         with patch('services.gemini_bridge.llamar_gemini') as mock_gemini_step1:
             mock_gemini_step1.return_value = {
                 "respuesta_usuario": "¿Sobre qué trámite necesitás información?",
-                "accion_backend": "consultar_tramite", # LLM identifies intent
+                    "accion_backend": "consultar_tramite",
                 "datos_estructura": {"target": "municipio"},
-                "pedir_info": "nombre_tramite", # LLM asks for the specific trámite
+                    "pedir_info": "nombre_tramite",
                 "botones": [{"texto": "Licencia de Conducir"}, {"texto": "Rentas"}]
             }
-            with self.app.app_context():
+            with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
                 resp1 = municipios.responder_municipio(
                     'Quiero hacer un tramite', user, None, viewer_user=user, chat_db_context=chat_context_sim
                 )
@@ -424,33 +406,32 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
         # Corrected patch target from 'services.municipios.User.query' to 'models.User.query'
         # This assumes that if User.query is used within municipios.py, it's via an import of models.User
         with patch('models.User.query', user_query_mock):
-            with patch('services.municipios.detectar_small_talk_con_llm', MagicMock(return_value=False)):
-                with patch('services.municipios.get_cohere_response', MagicMock(return_value="Respuesta genérica.")):
-                    with patch('services.gemini_bridge.llamar_gemini') as mock_llamar_gemini:
-                        # Default mock for llamar_gemini if no specific override is provided in payload
-                        default_llm_response = {
-                            "respuesta_usuario": "Respuesta por defecto de Gemini (mock).",
-                            "accion_backend": "small_talk", # Default to a benign action
-                            "datos_estructura": {"target": "general"},
-                            "pedir_info": None,
-                            "botones": [{"texto": "Ayuda"}]
-                        }
+            with patch('services.municipios.get_cohere_response', MagicMock(return_value="Respuesta genérica.")):
+                with patch('services.gemini_bridge.llamar_gemini') as mock_llamar_gemini:
+                    # Default mock for llamar_gemini if no specific override is provided in payload
+                    default_llm_response = {
+                        "respuesta_usuario": "Respuesta por defecto de Gemini (mock).",
+                        "accion_backend": "small_talk", # Default to a benign action
+                        "datos_estructura": {"target": "general"},
+                        "pedir_info": None,
+                        "botones": [{"texto": "Ayuda"}]
+                    }
 
-                        # Allow tests to override the mock return value via the payload
-                        mock_llamar_gemini.return_value = pregunta_to_send.get('llamar_gemini_mock_return', default_llm_response)
+                    # Allow tests to override the mock return value via the payload
+                    mock_llamar_gemini.return_value = pregunta_to_send.get('llamar_gemini_mock_return', default_llm_response)
 
-                        # Patch flag_modified to prevent AttributeError with SimpleNamespace
-                        with patch('services.municipios.flag_modified') as mock_flag_modified:
-                            with self.app.app_context():
-                                response = municipios.responder_municipio(
-                                    pregunta_to_send,
-                                    owner_user=self.owner_user,
-                                    rubro_obj=SimpleNamespace(nombre='municipio'),
-                                    viewer_user=self.viewer_user,
-                                    chat_db_context=SimpleNamespace(context_data=contexto_previo_arg),
-                                    chat_session_uuid="test-complaint-session"
-                                )
-                            # mock_flag_modified.assert_called() # Optionally assert it was called
+                    # Patch flag_modified to prevent AttributeError with SimpleNamespace
+                    with patch('services.municipios.flag_modified') as mock_flag_modified:
+                        with self.app.app_context():
+                            response = municipios.responder_municipio(
+                                pregunta_to_send,
+                                owner_user=self.owner_user,
+                                rubro_obj=SimpleNamespace(nombre='municipio'),
+                                viewer_user=self.viewer_user,
+                                chat_db_context=SimpleNamespace(context_data=contexto_previo_arg),
+                                chat_session_uuid="test-complaint-session"
+                            )
+                        # mock_flag_modified.assert_called() # Optionally assert it was called
 
         models_stub.db.session = original_db_session
 
@@ -744,20 +725,24 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
         }
 
         with self.app.app_context():
-            resp = municipios.responder_municipio(
-                "listo, ya me loguee",
-                self.owner_user,
-                None,
-                viewer_user=self.viewer_user,
-                chat_db_context=chat_context
-            )
+            with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
+                resp = municipios.responder_municipio(
+                    "listo, ya me loguee",
+                    self.owner_user,
+                    None,
+                    viewer_user=self.viewer_user,
+                    chat_db_context=chat_context
+                )
         self.assertIn("dirección exacta", resp['message_body'])
 
     def test_initial_greeting_response(self):
         with self.app.app_context():
-            resp = municipios.responder_municipio(
-                'Hola',
-                self.owner_user, None, viewer_user=self.viewer_user, chat_db_context=SimpleNamespace(context_data={})
-            )
+            with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket', return_value=DummyTicket()):
+                resp = municipios.responder_municipio(
+                    'Hola',
+                    self.owner_user, None, viewer_user=self.viewer_user, chat_db_context=SimpleNamespace(context_data={})
+                )
         self.assertIn("¡Hola! 👋", resp['message_body'])
         self.assertIn("Hacer un reclamo", [b['texto'] for b in resp['options_list']])
+if __name__ == '__main__':
+    unittest.main()

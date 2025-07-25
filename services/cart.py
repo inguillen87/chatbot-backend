@@ -16,6 +16,10 @@ def _get_pyme_cart(pyme_carts_data: Dict[int, List[Dict[str, Any]]], pyme_id: in
     El carrito es una lista de diccionarios (ítems).
     pyme_carts_data es el diccionario que antes estaba en session[SESSION_CARTS_KEY].
     """
+    if not isinstance(pyme_carts_data, dict):
+        logger.warning(f"pyme_carts_data no es un diccionario. Recibido: {type(pyme_carts_data)}. Se reiniciará a {{}}.")
+        pyme_carts_data = {}
+
     if pyme_id not in pyme_carts_data:
         pyme_carts_data[pyme_id] = []
     return pyme_carts_data[pyme_id]

@@ -109,22 +109,17 @@ class TestInputProcessor(unittest.TestCase):
     def test_process_whatsapp_input_location(self):
         mock_whatsapp_payload = {
             "From": "whatsapp:+549113", "To": "whatsapp:+14155238886", "Body": "",
-            # WhatsApp location data is typically in these fields in the Twilio payload
             "Latitude": "-34.567", "Longitude": "-58.789",
-            # "Address" field from WhatsApp is usually the venue name/address if it's a Venue message, not raw geocoding.
-            # For raw location, it's just Lat/Lon.
         }
-        # Simulate payload structure that process_input expects for location
-        transformed_payload = {"ubicacion_usuario": {"lat": mock_whatsapp_payload["Latitude"], "lon": mock_whatsapp_payload["Longitude"]}, **mock_whatsapp_payload}
+        transformed_payload = {"pregunta": "", "ubicacion_usuario": {"lat": -34.567, "lon": -58.789}, **mock_whatsapp_payload}
 
         text_input, media_info, location_info = self.processor.process_input(transformed_payload, "whatsapp")
 
         self.assertEqual(text_input, "") # Body was empty
         self.assertEqual(media_info, {})
         self.assertIsNotNone(location_info)
-        self.assertEqual(location_info["lat"], -34.567)
-        self.assertEqual(location_info["lon"], -58.789)
-        # self.assertEqual(location_info["address_text"], "Calle Falsa 123, CABA") # Not provided this way
+        self.assertEqual(location_info.get("lat"), -34.567)
+        self.assertEqual(location_info.get("lon"), -58.789)
 
     def test_process_whatsapp_input_button_payload(self):
         # WhatsApp button clicks often send 'Body' as the button text and 'ButtonPayload'

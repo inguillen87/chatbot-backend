@@ -3,11 +3,14 @@ import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 from services.ticket_service import servicio_tickets
-from services.municipios import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
+from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import parse_direccion_completa, direccion_es_valida
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
+from services.gemini_bridge import llamar_gemini
 
 logger = logging.getLogger(__name__)
+
+CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -24,23 +27,60 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta")
 
         campos_faltantes = []
-        if not descripcion:
-            campos_faltantes.append("una descripción del problema")
-        if not ubicacion_llm and not coordenadas_llm:
-            campos_faltantes.append("la ubicación del problema")
-        if not nombre_vecino_llm:
-            campos_faltantes.append("tu nombre")
-        if not telefono_llm:
-            campos_faltantes.append("tu número de teléfono")
-        if not email_llm:
-            campos_faltantes.append("tu correo electrónico")
+        # 1. Extracción y Validación de Datos (mejorado con contexto)
+        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
+
+        # Priorizar datos de action_data, luego de contexto, y finalmente None
+        categoria = action_data.get("categoria") or contexto_reclamo.get("categoria_reclamo") or "Reclamo General"
+        descripcion = action_data.get("descripcion") or contexto_reclamo.get("descripcion_reclamo")
+        ubicacion_llm = action_data.get("ubicacion") or contexto_reclamo.get("direccion_reclamo")
+        coordenadas_llm = action_data.get("coordenadas") or contexto_reclamo.get("coordenadas_reclamo")
+        nombre_vecino_llm = action_data.get("usuario") or contexto_reclamo.get("nombre_vecino")
+        telefono_llm = action_data.get("telefono") or contexto_reclamo.get("telefono_vecino")
+        email_llm = action_data.get("email") or contexto_reclamo.get("email_vecino")
+        foto_url_llm = action_data.get("foto_url_adjunta") or contexto_reclamo.get("foto_url")
+
+        # Guardar datos en el contexto para persistencia entre turnos
+        if categoria: contexto_reclamo["categoria_reclamo"] = categoria
+        if descripcion: contexto_reclamo["descripcion_reclamo"] = descripcion
+        if ubicacion_llm: contexto_reclamo["direccion_reclamo"] = ubicacion_llm
+        if coordenadas_llm: contexto_reclamo["coordenadas_reclamo"] = coordenadas_llm
+        if nombre_vecino_llm: contexto_reclamo["nombre_vecino"] = nombre_vecino_llm
+        if telefono_llm: contexto_reclamo["telefono_vecino"] = telefono_llm
+        if email_llm: contexto_reclamo["email_vecino"] = email_llm
+        if foto_url_llm: contexto_reclamo["foto_url"] = foto_url_llm
+
+        campos_faltantes = []
+        if not descripcion: campos_faltantes.append("una descripción del problema")
+        if not ubicacion_llm and not coordenadas_llm: campos_faltantes.append("la ubicación del problema")
+        if not nombre_vecino_llm: campos_faltantes.append("tu nombre")
+        if not telefono_llm: campos_faltantes.append("tu número de teléfono")
+        if not email_llm: campos_faltantes.append("tu correo electrónico")
 
         if campos_faltantes:
             mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
+            return { "success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes }
+
+        # Confirmation step
+        if not action_data.get("confirmed"):
+            confirmation_message = f"""He recibido la siguiente información:
+- Categoría: {categoria}
+- Descripción: {descripcion}
+- Ubicación: {ubicacion_llm}
+- Nombre: {nombre_vecino_llm}
+- Teléfono: {telefono_llm}
+- Email: {email_llm}
+
+¿Es correcta esta información?
+"""
             return {
                 "success": False,
-                "message_to_user": mensaje,
-                "pedir_info": campos_faltantes,
+                "message_to_user": confirmation_message,
+                "pedir_info": "confirmation",
+                "botones": [
+                    {"texto": "Sí, es correcto", "id_accion": "confirmar_reclamo"},
+                    {"texto": "No, quiero corregir", "id_accion": "corregir_reclamo"}
+                ]
             }
 
         # 2. Recopilación de Información del Contexto
@@ -53,14 +93,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
         nombre_vecino_final = nombre_vecino_llm or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
         telefono_final_validado_e164 = None
-        temp_phone_str = str(telefono_llm or getattr(viewer_user, "telefono", ""))
-        if temp_phone_str and validar_telefono(temp_phone_str):
-            telefono_final_validado_e164 = formatear_telefono_e164(temp_phone_str)
+        if telefono_llm and validar_telefono(telefono_llm):
+            telefono_final_validado_e164 = formatear_telefono_e164(telefono_llm)
+        elif viewer_user and getattr(viewer_user, "telefono", "") and validar_telefono(getattr(viewer_user, "telefono", "")):
+            telefono_final_validado_e164 = formatear_telefono_e164(getattr(viewer_user, "telefono", ""))
 
         email_final_validado = None
-        temp_email_str = str(email_llm or getattr(viewer_user, "email", ""))
-        if temp_email_str and validar_email(temp_email_str):
-            email_final_validado = temp_email_str.lower()
+        if email_llm and validar_email(email_llm):
+            email_final_validado = email_llm.lower()
+        elif viewer_user and getattr(viewer_user, "email", "") and validar_email(getattr(viewer_user, "email", "")):
+            email_final_validado = getattr(viewer_user, "email", "").lower()
 
         direccion_final_txt = ubicacion_llm
         latitud_final = coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None
@@ -245,37 +287,20 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
             email = (getattr(viewer_user, "email", None) or action_data.get("email"))
 
-            target = self.context.get("target_entity_type", "municipio")
-
-            if target == "pyme":
-                ticket_data = {
-                    "asunto": f"Chat en Vivo con {nombre or 'Cliente'}",
-                    "categoria": "Atención en Vivo",
-                    "pregunta": pregunta_original,
-                    "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
-                    "user_id": self.context.get("user_id"),
-                    "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
-                    "rubro_id": self.context.get("rubro_id"),
-                    "estado": "esperando_agente_en_vivo",
-                    "telefono": telefono,
-                    "email": email,
-                }
-                ticket_type = "pyme"
-            else:
-                ticket_data = {
-                    "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Vecino'}",
-                    "categoria": "Atención en Vivo",
-                    "pregunta": pregunta_original,
-                    "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
-                    "user_id": self.context.get("cliente_id"),
-                    "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
-                    "municipio_id": getattr(owner_user, "municipio_id", None),
-                    "estado": "esperando_agente_en_vivo",
-                    "nombre_vecino": nombre,
-                    "telefono_vecino": telefono,
-                    "email_vecino": email,
-                }
-                ticket_type = "municipio"
+            ticket_data = {
+                "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Vecino'}",
+                "categoria": "Atención en Vivo",
+                "pregunta": pregunta_original,
+                "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
+                "user_id": self.context.get("cliente_id"),
+                "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                "municipio_id": getattr(owner_user, "municipio_id", None),
+                "estado": "esperando_agente_en_vivo",
+                "nombre_vecino": nombre,
+                "telefono_vecino": telefono,
+                "email_vecino": email,
+            }
+            ticket_type = "municipio"
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
             sala = servicio_tickets.crear_nuevo_ticket(ticket_type, ticket_data_cleaned)
@@ -293,10 +318,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 },
             )
 
-            if ticket_type == "pyme":
-                chat_id = f"P-{sala.nro_ticket}"
-            else:
-                chat_id = f"M-{sala.nro_ticket}"
+            chat_id = f"M-{sala.nro_ticket}"
 
             user_message = (
                 f"Hemos recibido tu solicitud para hablar con un agente. Tu número de chat es **{chat_id}**."
@@ -347,26 +369,38 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CorregirDatosReclamoActionHandler with data: {action_data}")
 
-        campo_a_corregir = action_data.get("campo_a_corregir") # e.g., "ubicacion", "descripcion"
+        campo_a_corregir = action_data.get("campo_a_corregir")
         nuevo_valor = action_data.get("nuevo_valor")
-        # contexto_original = action_data.get("contexto_original_del_reclamo") # To identify which claim if multiple are possible in context
 
-        if not campo_a_corregir or nuevo_valor is None: # nuevo_valor can be empty string
+        if not campo_a_corregir or nuevo_valor is None:
             return {
                 "success": False,
                 "message_to_user": "No especificaste qué dato corregir o cuál es el nuevo valor.",
                 "pedir_info": "detalle_correccion"
             }
 
-        # Here, you would update the claim data in the session/context or database.
-        # For now, just acknowledge.
+        # Update the context with the new value
+        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
+        if campo_a_corregir == "ubicacion":
+            contexto_reclamo["direccion_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "descripcion":
+            contexto_reclamo["descripcion_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "categoria":
+            contexto_reclamo["categoria_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "nombre":
+            contexto_reclamo["nombre_vecino"] = nuevo_valor
+        elif campo_a_corregir == "telefono":
+            contexto_reclamo["telefono_vecino"] = nuevo_valor
+        elif campo_a_corregir == "email":
+            contexto_reclamo["email_vecino"] = nuevo_valor
+
         user_message = f"Entendido. He actualizado '{campo_a_corregir}' a '{nuevo_valor}'. ¿Algo más que desees cambiar o confirmamos el reclamo?"
 
         return {
             "success": True,
             "message_to_user": user_message,
             "data": {"campo_corregido": campo_a_corregir, "valor_actualizado": nuevo_valor},
-            "pedir_info": "confirmacion_tras_correccion" # Suggests asking for confirmation
+            "pedir_info": "confirmacion_tras_correccion"
         }
 
 # Add other handlers as needed

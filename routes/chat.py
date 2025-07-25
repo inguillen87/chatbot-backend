@@ -122,22 +122,16 @@ def _procesar_chat(
         if error_response:
             return error_response, 400
 
-        received_cookies = request.cookies
-        current_app.logger.info(f"Received cookies: {received_cookies}")
-        flask_session_cookie_name = current_app.config.get("SESSION_COOKIE_NAME", "session")
-        if flask_session_cookie_name in received_cookies:
-            current_app.logger.info(f"Flask session cookie '{flask_session_cookie_name}' received.")
-        else:
-            current_app.logger.warning(f"Flask session cookie '{flask_session_cookie_name}' NOT received.")
+        # Determinar el actor principal y el tipo de usuario
+        actor_principal = owner_user or current_user
+        is_anonymous = not actor_principal
+        viewer_obj = current_user # El que mira
 
-        owner_obj = owner_user or current_user
-        viewer_obj = current_user
-        actor_principal = owner_obj or viewer_obj
-
-        if not actor_principal and not anon_id:
+        if is_anonymous and not anon_id:
             return jsonify({"error": "No autenticado o identificado."}), 401
 
-        if anon_id and not actor_principal:
+        if is_anonymous:
+            # Lógica para usuarios anónimos
             max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
             session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
 
@@ -168,6 +162,13 @@ def _procesar_chat(
                             {"texto": "Registrarme Gratis", "action": "register"}
                         ]
                     }), 403
+        else:
+            # Lógica para usuarios autenticados
+            current_app.logger.info(f"Usuario autenticado: {actor_principal.email} (ID: {actor_principal.id})")
+            # No se aplican límites de mensajes para usuarios autenticados
+            # Si el usuario está logueado, usar su ubicación guardada si no se proporciona una nueva
+            if not location and actor_principal.latitud and actor_principal.longitud:
+                location = {"lat": actor_principal.latitud, "lon": actor_principal.longitud}
 
         rubro_obj_global = None
         owner_del_bot = None
@@ -222,18 +223,26 @@ def _procesar_chat(
         if uploaded_file_info and archivo_adjunto_id:
             from models import ArchivoAdjunto
             from services.analisis_archivo_service import tarea_analizar_contenido_archivo
+            from services.image_processing_service import get_image_processing_service
+            import requests
 
             archivo_obj = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
             if archivo_obj:
                 current_app.logger.info(f"Iniciando análisis de archivo adjunto ID: {archivo_adjunto_id} para chat tipo: {tipo_chat}")
-                # Llamar a la tarea de Celery de forma asíncrona
-                tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)
-                current_app.logger.info(f"Tarea de análisis para archivo {archivo_adjunto_id} encolada.")
-                # Por ahora, la respuesta al usuario será inmediata, indicando que el archivo se está procesando.
-                # La UI deberá luego sondear o recibir una actualización (vía WebSocket, etc.)
-                # para obtener el resultado del análisis.
-                # De momento, no pasamos 'analisis_archivo_resultado' a 'responder_chatboc'
-                # porque la tarea es asíncrona.
+
+                if uploaded_file_info.get("mime_type", "").startswith("image/"):
+                    try:
+                        response = requests.get(uploaded_file_info["url"])
+                        response.raise_for_status()
+                        image_content = response.content
+                        image_processing_service = get_image_processing_service()
+                        analisis_archivo_resultado = image_processing_service.analyze_image(image_content)
+                    except Exception as e:
+                        current_app.logger.error(f"Error al procesar la imagen: {e}", exc_info=True)
+                else:
+                    # Llamar a la tarea de Celery de forma asíncrona para otros tipos de archivo
+                    tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)
+                    current_app.logger.info(f"Tarea de análisis para archivo {archivo_adjunto_id} encolada.")
             else:
                 current_app.logger.error(f"No se encontró ArchivoAdjunto con ID {archivo_adjunto_id} en la DB.")
 
@@ -324,8 +333,13 @@ def _procesar_chat(
             chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
             channel="web", # Set channel to web
             uploaded_file_info=uploaded_file_info,
-            interpretacion_imagen_data=interpretacion_imagen_resultado,
-            location=location
+            interpretacion_imagen_data=analisis_archivo_resultado,
+            location=location,
+            user_data={
+                "name": actor_principal.name,
+                "email": actor_principal.email,
+                "telefono": actor_principal.telefono
+            } if actor_principal else None
         )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
@@ -407,6 +421,13 @@ def _procesar_chat(
         )
         if isinstance(resultado, dict) and "fuente" in resultado:
             formatted_web_response["fuente"] = resultado["fuente"]
+
+        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
+        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
+            return jsonify({
+                "respuesta": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
+                "pedir_info": ["nombre", "telefono", "email"]
+            }), 200
 
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:

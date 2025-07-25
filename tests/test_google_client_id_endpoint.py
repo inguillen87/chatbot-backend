@@ -1,12 +1,13 @@
 import unittest
 import os
 from app import create_app
-from config import TestingConfig
+from config import TestConfig
+from config import TestConfig
 
 class GoogleClientIdEndpointTest(unittest.TestCase):
     def setUp(self):
         os.environ['GOOGLE_OAUTH_CLIENT_ID'] = 'id1,id2'
-        self.app = create_app(TestingConfig)
+        self.app = create_app(TestConfig)
         self.client = self.app.test_client()
 
     def test_first_client_id_returned(self):

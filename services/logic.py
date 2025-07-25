@@ -8,7 +8,7 @@ if project_root_logic not in sys.path:
     sys.path.insert(0, project_root_logic)
 
 from flask import current_app
-from models import ArchivoAdjunto, AnalisisArchivo, db # db para la sesión
+from models import db
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
@@ -52,47 +52,6 @@ try:
     from services.cohere_ai import get_cohere_response
 except Exception:  # pragma: no cover - fallback for tests
     from services.cohere_ai import robust_chat as get_cohere_response
-
-# --- Utilidades para small talk ---
-PROMPT_DETECT_SMALL_TALK = """
-Analiza la siguiente frase y dime si es una charla casual, un saludo o una pregunta que no busca una acción concreta.
-Responde únicamente "SI" o "NO".
-
-Frase: "{pregunta_usuario}"
-"""
-
-PROMPT_RESPUESTA_SMALL_TALK = """
-Eres un asistente virtual amigable. Responde de forma cálida y concisa al siguiente saludo o comentario, y luego pregunta en qué puedes ayudar.
-
-Comentario del usuario: "{pregunta_usuario}"
-"""
-
-
-def detectar_small_talk_con_llm(pregunta: str) -> bool:
-    """Devuelve ``True`` si la pregunta parece small talk según el LLM."""
-    prompt = PROMPT_DETECT_SMALL_TALK.format(pregunta_usuario=pregunta)
-    try:
-        decision = get_cohere_response(
-            message=prompt,
-            preamble="Eres un clasificador de small talk. Responde solo SI o NO.",
-        )
-        return decision.strip().upper().startswith("SI")
-    except Exception as e:
-        logger.error(f"[SMALL_TALK] Error detectando small talk: {e}")
-        return False
-
-
-def generar_respuesta_small_talk(pregunta: str) -> str:
-    """Genera una respuesta cordial para una frase de small talk."""
-    prompt = PROMPT_RESPUESTA_SMALL_TALK.format(pregunta_usuario=pregunta)
-    try:
-        return get_cohere_response(
-            message=prompt,
-            preamble="Eres un asistente amigable que mantiene charlas casuales.",
-        ).strip()
-    except Exception as e:
-        logger.error(f"[SMALL_TALK] Error generando respuesta: {e}")
-        return "¡Hola! ¿En qué puedo ayudarte?"
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
@@ -164,100 +123,13 @@ def responder_chatboc(
 
     # Si el rubro indica un tipo específico de lógica, lo usamos siempre
     if rubro_nombre:
-        esperado = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
-        if tipo_chat and tipo_chat != esperado:
-            logger.info(
-                "Ajustando tipo_chat de '%s' a '%s' por rubro público '%s'",
-                tipo_chat,
-                esperado,
-                rubro_nombre,
-            )
-        tipo_chat = esperado
+        tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
     elif tipo_chat not in ("municipio", "pyme"):
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
-    if not tipo_chat:
-        raise ValueError("tipo_chat requerido")
-
-    # ... (lógica existente para determinar rubro_nombre y tipo_chat) ...
-    # Esta parte permanece igual.
-    rubro_nombre = ""
-    fuente = ""
-    if rubro_obj:
-        if getattr(rubro_obj, "nombre", None):
-            rubro_nombre = str(rubro_obj.nombre).strip().lower()
-            fuente = "rubro_obj.nombre"
-        elif getattr(rubro_obj, "clave", None):
-            rubro_nombre = str(rubro_obj.clave).strip().lower()
-            fuente = "rubro_obj.clave"
-    elif owner_user and getattr(owner_user, "rubro", None):
-        rubro_value = owner_user.rubro
-        # Asegurarse de acceder a .clave si rubro_value es un objeto Rubro
-        rubro_clave_o_nombre = getattr(rubro_value, 'clave', None) or getattr(rubro_value, 'nombre', None)
-        if rubro_clave_o_nombre:
-            rubro_nombre = str(rubro_clave_o_nombre).strip().lower()
-            fuente = f"owner_user.rubro.{'clave' if getattr(rubro_value, 'clave', None) else 'nombre'}"
-        else: # Si no tiene clave ni nombre, convertir a string (caso raro)
-            rubro_nombre = str(rubro_value).strip().lower()
-            fuente = "owner_user.rubro (str)"
-
-    elif rubro_nombre_frontend:
-        rubro_nombre = str(rubro_nombre_frontend).strip().lower()
-        fuente = "rubro_nombre_frontend"
-    else:
-        rubro_nombre = ""
-        fuente = "no_encontrado"
-
-    logger.info(
-        f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
-    )
-
-    # Nueva lógica de clasificación usando LLM
-    texto_para_clasificar = pregunta
-    if rubro_nombre:
-        # Si tenemos un rubro, lo usamos como el texto principal para clasificar,
-        # ya que es más específico que la pregunta del usuario.
-        texto_para_clasificar = rubro_nombre
-
-    clasificacion_entidad = clasificar_entidad_con_llm(texto_para_clasificar)
-
-    if clasificacion_entidad == "municipio":
-        tipo_chat = "municipio"
-    elif clasificacion_entidad == "pyme":
-        tipo_chat = "pyme"
-    elif clasificacion_entidad == "id":
-        # TODO: Implementar lógica para manejar IDs.
-        # Por ahora, podemos tratarlo como un caso especial o desviarlo a un handler.
-        # Por simplicidad, lo dejaremos como pyme por ahora.
-        tipo_chat = "pyme"
-    else: # desconocido
-        # Si la clasificación no es clara, usamos el tipo_chat que viene del request,
-        # y si no, por defecto a pyme.
-        if not tipo_chat:
-            tipo_chat = "pyme"
-
-    if not tipo_chat: # Si después de todo no se pudo determinar
-        logger.error("Error crítico: tipo_chat no pudo ser determinado.")
-        raise ValueError("tipo_chat requerido y no pudo ser determinado.")
-
-    if not tipo_chat: # Si después de todo no se pudo determinar
-        logger.error("Error crítico: tipo_chat no pudo ser determinado.")
-        raise ValueError("tipo_chat requerido y no pudo ser determinado.")
-
-    logger.info(
-        f"[LOGIC_DELEGATION_PREP] Preparando para delegar. "
-        f"OwnerUserID: {getattr(owner_user, 'id', 'N/A')}, "
-        f"ViewerUserID: {getattr(current_user, 'id', 'N/A')}, "
-        f"AnonID: {anon_id if anon_id else 'N/A'}, "
-        f"ChatSessionUUID: {chat_session_uuid if chat_session_uuid else 'N/A'}, "
-        f"RubroEfectivo: '{rubro_nombre}' (detectado de: {fuente}), "
-        f"RubroObjectID: {getattr(rubro_obj, 'id', 'N/A')}, "
-        f"TipoChatFinal: {tipo_chat}."
-    )
-
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")
-    datos_interpretados_de_archivo = None
+    datos_interpretados_de_archivo = kwargs.get("interpretacion_imagen_data")
     archivo_id_para_asociar_al_ticket = None
     procesamiento_archivo_en_curso = False # Nueva bandera
 
@@ -307,62 +179,6 @@ def responder_chatboc(
     # No, esto no es correcto. Si el archivo se está procesando, ya retornamos.
     # Si llegamos aquí, o no hubo archivo, o el análisis se completó (y datos_interpretados_archivo está poblado o es None).
 
-    # --- Inicio: Intento de búsqueda y uso de Plantillas de Respuesta ---
-    # respuesta_con_plantilla = None
-    # if not procesamiento_archivo_en_curso: # No buscar plantillas si estamos esperando análisis de archivo
-    #     try:
-    #         from services.template_service import buscar_plantillas_relevantes, formatear_plantilla
-    #
-    #         # Construir un contexto básico para formatear plantillas
-    #         # Este contexto se puede enriquecer mucho más en los handlers específicos (pyme/municipio)
-    #         # si deciden usar una plantilla.
-    #         contexto_para_plantilla = {
-    #             "usuario": owner_user, # El objeto User completo
-    #             "pregunta_usuario": pregunta,
-    #             "datos_archivo": datos_interpretados_de_archivo, # Si los hay
-    #             # Se podrían añadir más datos generales aquí si son útiles para plantillas genéricas
-    #         }
-    #
-    #         plantillas_encontradas = buscar_plantillas_relevantes(texto_consulta=pregunta, top_n=1)
-    #
-    #         if plantillas_encontradas:
-    #             plantilla_seleccionada = plantillas_encontradas[0]
-    #             logger.info(f"Plantilla relevante encontrada: '{plantilla_seleccionada.name}' (ID: {plantilla_seleccionada.id})")
-    #
-    #             # Aquí es donde la lógica se puede complicar:
-    #             # 1. ¿La plantilla es suficiente por sí misma?
-    #             # 2. ¿Necesita datos adicionales que solo el handler pyme/municipio puede proveer?
-    #             # 3. ¿Debería el handler pyme/municipio ser responsable de llamar a formatear_plantilla?
-    #
-    #             # Opción A: Si la plantilla es muy genérica y se puede formatear con contexto_para_plantilla:
-    #             # texto_respuesta_plantilla = formatear_plantilla(plantilla_seleccionada.text, contexto_para_plantilla)
-    #             # respuesta_con_plantilla = {
-    #             #     "respuesta": texto_respuesta_plantilla,
-    #             #     "fuente": f"plantilla:{plantilla_seleccionada.id}",
-    #             #     "tipo_respuesta": "plantilla_directa",
-    #             #     # ... otros campos necesarios como contexto_pyme/municipio ...
-    #             # }
-    #             # logger.info(f"Respondiendo directamente con plantilla formateada ID {plantilla_seleccionada.id}")
-    #
-    #             # Opción B: Pasar la plantilla seleccionada al handler (pyme/municipio) para que decida.
-    #             # El handler puede entonces enriquecer el contexto y llamar a formatear_plantilla.
-    #             # Esto parece más flexible.
-    #             kwargs["plantilla_sugerida"] = plantilla_seleccionada
-    #             logger.info(f"Pasando plantilla sugerida '{plantilla_seleccionada.name}' al handler {tipo_chat}.")
-    #
-    #     except ImportError:
-    #         logger.warning("Modulo template_service no encontrado. Búsqueda de plantillas desactivada.") # This will no longer be hit
-    #     except Exception as e_template:
-    #         logger.error(f"Error durante la búsqueda o formateo inicial de plantillas: {e_template}", exc_info=True)
-    #         # Continuar sin plantilla si hay error aquí.
-    #
-    # # Si ya tenemos una respuesta de plantilla directa (Opción A), podríamos retornarla aquí.
-    # # if respuesta_con_plantilla:
-    # #    # Asegurarse de que el contexto de sesión (contexto_pyme/municipio) se actualice y devuelva correctamente.
-    # #    # Esto es complejo si la plantilla es genérica y no actualiza el contexto específico.
-    # #    # Por ahora, preferimos Opción B (pasar al handler).
-    # #    pass
-    # --- Fin: Intento de búsqueda y uso de Plantillas de Respuesta ---
 
 
     # Pasar el contexto_previo correcto al handler

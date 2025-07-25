@@ -46,35 +46,48 @@ class ChatOrchestrator:
     def execute_action(self, llm_output: Dict[str, Any]) -> Dict[str, Any]:
         """
         Executes the appropriate action based on the LLM output.
-
-        :param llm_output: The structured JSON output from the main Gemini LLM call.
-                           Expected to have "accion_backend" and "datos_estructura".
-        :return: A dictionary containing the result from the executed action handler.
-                 If no action is taken or an error occurs, it returns a failure indication.
         """
         action_name = llm_output.get("accion_backend")
-        action_data = llm_output.get("datos_estructura", {}) # This is 'datos_accion' for the handler
+        action_data = llm_output.get("datos_estructura", {})
 
-        # Pass the original LLM's respuesta_usuario to action_data for handlers like NoAction or SmallTalk
+        # Si el usuario está autenticado, no solicitar datos personales
+        if self.global_context.get("user_obj") and action_name in ["solicitar_datos_personales", "solicitar_ubicacion"]:
+            # Check if we have the specific data, not just if the user exists
+            user_obj = self.global_context.get("user_obj")
+            if action_name == "solicitar_datos_personales" and user_obj.get("name") and user_obj.get("email"):
+                return {
+                    "success": True,
+                    "message_to_user": "Ya tengo tus datos, podemos continuar.",
+                    "executed_action_handler": "SkipInfoRequest"
+                }
+            if action_name == "solicitar_ubicacion" and self.global_context.get("location"):
+                 return {
+                    "success": True,
+                    "message_to_user": "Ya tengo tu ubicación, podemos continuar.",
+                    "executed_action_handler": "SkipInfoRequest"
+                }
+
         if "respuesta_usuario" in llm_output:
             action_data["respuesta_usuario_original_llm"] = llm_output["respuesta_usuario"]
 
+        if action_name == "solicitar_ubicacion":
+            return {
+                "success": True,
+                "message_to_user": "Para continuar, necesito tu ubicación.",
+                "solicitar_ubicacion": True,
+                "executed_action_handler": "SolicitarUbicacionHandler"
+            }
 
         if not action_name or action_name in ["no_accion", "small_talk"]:
-            # For "no_accion" or "small_talk", the LLM's "respuesta_usuario" is usually sufficient.
-            # We can optionally call a specific handler if we need to log these or do minor backend tasks.
-            handler_class = self._get_handler_class(action_name or "no_accion") # Default to no_accion if name is None
+            handler_class = self._get_handler_class(action_name or "no_accion")
             if handler_class:
-                # Pass the global_context to the handler instance
                 handler_instance = handler_class(self.global_context)
-                # The action_data for these might be minimal or just the LLM's original response for context
                 action_result = handler_instance.execute(action_data)
                 action_result["executed_action_handler"] = handler_class.__name__
                 return action_result
             else:
-                # If no specific handler for no_accion/small_talk, just return LLM's response
                 return {
-                    "success": True, # Considered success as LLM handled it
+                    "success": True,
                     "message_to_user": llm_output.get("respuesta_usuario", "Entendido."),
                     "data": {"action_performed": action_name or "none"},
                     "executed_action_handler": None

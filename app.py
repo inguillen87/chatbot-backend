@@ -2,12 +2,12 @@ import os
 import logging
 import sys
 from flask import Flask, request, current_app, jsonify
-
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from flask_cors import CORS
 from flask_session import Session
 from sqlalchemy import event
+from socket_service import socketio
 
 # Set credentials for local development only, BEFORE any service that needs them is imported.
 if os.environ.get("FLASK_ENV") != "production":
@@ -49,6 +49,7 @@ from routes.carrito import carrito_bp
 from routes.productos import productos_bp
 from routes.ai_templates import ai_templates_bp 
 from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
+from routes.pyme_catalog_mappings import pyme_catalog_mappings_bp
 from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
@@ -124,12 +125,13 @@ def create_app(config_class=Config):
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
     # --- Inicialización de Extensiones ---
-    db.init_app(app)
-    migrate.init_app(app, db)
     init_celery(app) # Inicializar Celery con la app Flask
     login_manager.init_app(app) # Initialize Flask-Login
     login_manager.session_protection = "strong" # Configure session protection
     login_manager.login_view = "auth.login" # Set the login view
+    with app.app_context():
+        db.init_app(app)
+        migrate.init_app(app, db)
 
     @login_manager.user_loader
     def load_user(user_id):
@@ -159,6 +161,8 @@ def create_app(config_class=Config):
     app.logger.handlers.clear()
     app.logger.addHandler(handler)
     app.logger.setLevel(log_level)
+    # Prevent duplicate log lines by stopping propagation to the root logger
+    app.logger.propagate = False
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
@@ -167,9 +171,29 @@ def create_app(config_class=Config):
 
     @app.after_request
     def after_request(response):
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-chat-session-id,Anon-Id')
+        # Asegurarse de que el origen de la solicitud esté permitido
+        # Nota: Idealmente, esto debería ser más restrictivo y basarse en una lista de orígenes permitidos.
+        # El '*' es conveniente para el desarrollo pero puede ser un riesgo de seguridad en producción.
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers.add('Access-Control-Allow-Origin', origin)
+
+        # Headers permitidos, incluyendo el crucial 'x-entity-token'
+        allowed_headers = [
+            'Content-Type',
+            'Authorization',
+            'x-chat-session-id',
+            'Anon-Id',
+            'x-entity-token'  # <-- AÑADIDO
+        ]
+        response.headers.add('Access-Control-Allow-Headers', ','.join(allowed_headers))
+
+        # Métodos permitidos
         response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+
+        # Permitir que las credenciales (como cookies o tokens de autorización) se envíen
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+
         return response
 
     @app.after_request
@@ -202,15 +226,18 @@ def create_app(config_class=Config):
     app.register_blueprint(reacciones_bp)
     app.register_blueprint(ai_templates_bp)
     app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
+    app.register_blueprint(pyme_catalog_mappings_bp)
     app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
 
     # --- Registro de comandos CLI ---
     register_commands(app)
 
+    socketio.init_app(app, cors_allowed_origins="*")
+
     return app
 
-# --- Creación de la instancia de la aplicación ---
-app = create_app()
+# Esto crea el objeto 'app' global para Gunicorn:
+app = create_app(Config)
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    socketio.run(app, debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))

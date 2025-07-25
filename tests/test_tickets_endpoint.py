@@ -12,7 +12,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from routes.ticket import _get_tickets_del_usuario_logic
+from routes.ticket import get_tickets_del_usuario_logic
 
 class TicketsEndpointTest(unittest.TestCase):
     def setUp(self):
@@ -33,7 +33,6 @@ class TicketsEndpointTest(unittest.TestCase):
 
     def test_get_tickets_del_usuario_municipio(self):
         with self.app.app_context():
-            # Create a mock user and rubro
             rubro = Rubro(nombre='municipios', clave='municipios')
             db.session.add(rubro)
             db.session.commit()
@@ -50,7 +49,6 @@ class TicketsEndpointTest(unittest.TestCase):
             db.session.add(user)
             db.session.commit()
 
-            # Create a mock ticket
             ticket = MunicipioTicket(
                 id=1,
                 user_id=user.id,
@@ -65,12 +63,10 @@ class TicketsEndpointTest(unittest.TestCase):
             db.session.add(ticket)
             db.session.commit()
 
-            with patch('routes.ticket.request', SimpleNamespace(args={})), \
-                 patch('routes.ticket.current_app', self.app):
-                # Call the logic function directly
-                resp = _get_tickets_del_usuario_logic(user)
+            with patch('routes.ticket.request', SimpleNamespace(args={})):
+                resp = get_tickets_del_usuario_logic(user)
+                self.assertEqual(resp.status_code, 200)
                 data = resp.get_json()
-                # Assertions
                 self.assertIsInstance(data, list)
                 self.assertEqual(len(data), 1)
                 self.assertEqual(data[0]['id'], 1)
