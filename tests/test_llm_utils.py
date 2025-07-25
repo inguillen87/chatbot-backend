@@ -36,6 +36,8 @@ class TestLLMUtils(unittest.TestCase):
         self.assertEqual(_clean_llm_json_output("Not json"), "Not json")
         self.assertEqual(_clean_llm_json_output(""), "")
         self.assertEqual(_clean_llm_json_output("{\"key\": \"value\"} # comment"), "{\"key\": \"value\"} # comment") # Comments are not removed by this simple cleaner
+        self.assertEqual(_clean_llm_json_output("{\"k\":1} extraneous"), "{\"k\":1}")
+        self.assertEqual(_clean_llm_json_output("prefix {\"x\":2}"), "{\"x\":2}")
 
     def test_clean_llm_json_output_repairs_truncated(self):
         self.assertEqual(_clean_llm_json_output('{"a":1'), '{"a":1}')
