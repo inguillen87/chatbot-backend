@@ -40,8 +40,7 @@ class SimpleTicketTest(unittest.TestCase):
             "estado": "nuevo",
             "user_id": user.id,
             "latitud": 1.0,
-            "longitud": 1.0,
-            "origen_reclamo": "TEST"
+            "longitud": 1.0
         }
 
         # Create the ticket

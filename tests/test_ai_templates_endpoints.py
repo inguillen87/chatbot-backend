@@ -55,15 +55,15 @@ def test_suggest_templates_success(test_app):
         _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
         _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
-        with patch('services.cohere_ai.embed_textos') as mock_embed_textos:
-            mock_embed_textos.return_value = [[0.11]*1024]
+        with patch('services.cohere_ai.robust_embed') as mock_robust_embed:
+            mock_robust_embed.return_value = {"embeddings": [[0.11]*1024]}
             client = test_app.test_client()
             response = client.post('/ai/suggest-templates',
                                         headers={'Authorization': f'Bearer {mock_user.token}'},
                                         json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
 
             assert response.status_code == 200
-            data = json.loads(response.data)
+            data = response.get_json()
             assert 'sugerencias' in data
             sugerencias = data['sugerencias']
             assert len(sugerencias) == 1

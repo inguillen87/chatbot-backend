@@ -41,7 +41,7 @@ class ProfileUpdateSecurityTests(unittest.TestCase):
             'empresa_id': 123,
             'name': 'Nuevo'
         }
-        with patch('routes.auth.request', SimpleNamespace(get_json=lambda silent=True: data)), \
+        with patch('routes.auth.request', SimpleNamespace(get_json=lambda silent=True: data, method='POST', path='/me')), \
              patch('routes.auth.db', SimpleNamespace(session=DummySession())):
             resp = actualizar_me(user)
         self.assertEqual(resp.get_json()["mensaje"], "Perfil actualizado correctamente.")

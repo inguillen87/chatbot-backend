@@ -36,6 +36,16 @@ from .common_utils import validar_email, validar_telefono
 
 logger = logging.getLogger(__name__)
 
+class PymeConversationState(Enum):
+    IDLE = auto()
+    ESPERANDO_PRODUCTO = auto()
+    ESPERANDO_DATOS_CLIENTE_NOMBRE = auto()
+    ESPERANDO_DATOS_CLIENTE_TELEFONO = auto()
+    ESPERANDO_DATOS_CLIENTE_DIRECCION = auto()
+    ESPERANDO_DATOS_CLIENTE_EMAIL = auto()
+    CONFIRMANDO_PEDIDO = auto()
+    ESPERANDO_CONFIRMACION_FINAL_CON_DATOS = auto()
+
 CONTEXTO_PYME = "contexto_pyme_v2"
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme_v2"
 MAX_HISTORIAL_CHAT = 30
@@ -636,7 +646,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     nuevo_usuario.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
 
     try:
-        db.session.add(nuevo_pyme_user)
+        db.session.add(nuevo_usuario)
         db.session.commit()
         logger.info(f"Nuevo usuario de WhatsApp creado con ID {nuevo_usuario.id} para el teléfono '{phone_number}'")
         return nuevo_usuario

@@ -23,7 +23,7 @@ class TestImageProcessingService(unittest.TestCase):
         self.assertIn('objects', result)
         self.assertEqual(result['labels'], ['test label'])
         self.assertEqual(result['texts'], ['test text'])
-        self.assertEqual(result['objects'], ['test object'])
+        self.assertEqual(result['objects'][0].name, 'test object')
 
     @patch('services.image_processing_service.vision.ImageAnnotatorClient')
     def test_analyze_image_api_error(self, mock_vision_client):

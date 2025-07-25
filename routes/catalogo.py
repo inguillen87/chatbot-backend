@@ -293,31 +293,9 @@ def buscar_en_catalogo(user):
     return jsonify(productos)
 
 
-@catalogo_bp.route('/faq_texto', methods=['GET'])
-@token_requerido
-def faq_texto(user):
-    """Devuelve las preguntas y respuestas de las FAQs en texto limpio."""
-    if not getattr(user, 'rubro_id', None):
-        return jsonify([])
-    faqs = QA.query.filter_by(rubro_id=user.rubro_id).all()
-    textos = []
-    for faq in faqs:
-        if faq.question and faq.answer:
-            texto = f"{faq.question} {faq.answer}"
-            textos.append(limpiar_texto_base(texto))
-    return jsonify(textos)
 
 
-@catalogo_bp.route('/textos_perfil', methods=['GET'])
-@token_requerido
-def textos_perfil(user):
-    """Devuelve los textos de catálogo preparados para el ranker."""
-    items = CatalogoItem.query.filter_by(user_id=user.id).all()
-    textos = [limpiar_texto_base(it.texto) for it in items if getattr(it, 'texto', None)]
-    return jsonify(textos)
-
-
-@catalogo_bp.route('/resumen', methods=['GET'])
+@catalogo_bp.route('/resumen_catalogo', methods=['GET'])
 @token_requerido
 def resumen_catalogo(user):
     """Devuelve un resumen del catálogo agrupado por categoría."""

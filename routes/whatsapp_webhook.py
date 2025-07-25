@@ -136,6 +136,14 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.setdefault("historial_chat", [])
         session_context_db_entry.context_data.setdefault("estado_conversacion", "continuando")
         print(f"Session found for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
+
+        # Check if a human chat is in progress
+        if session_context_db_entry.context_data.get("human_chat_in_progress"):
+            room = session_context_db_entry.context_data.get("room")
+            if room:
+                from socket_service import socketio
+                socketio.emit('message', {'msg': message_body}, room=room)
+                return "OK", 200
     else:
         session_context_db_entry = ChatSessionContext(
             chat_session_id=chat_session_id_internal,
@@ -184,11 +192,33 @@ def whatsapp_webhook():
         )
 
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
-        if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (bot_response_dict.get("datos_estructura", {}).get("nombre_usuario_detectado") and bot_response_dict.get("datos_estructura", {}).get("telefono_detectado") and bot_response_dict.get("datos_estructura", {}).get("email_detectado")):
-            bot_response_dict = {
-                "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
-                "pedir_info": ["nombre", "telefono", "email"]
-            }
+        if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
+            contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})
+            datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
+
+            # Extraer info del mensaje actual del usuario
+            from services.llm_utils import extract_multiple_contact_details_llm
+            extracted_data = extract_multiple_contact_details_llm(message_body)
+
+            # Actualizar datos del reclamo con la info extraída
+            if extracted_data.get("nombre"):
+                datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre"]
+            if extracted_data.get("telefono"):
+                datos_reclamo["telefono_detectado"] = extracted_data["telefono"]
+            if extracted_data.get("email"):
+                datos_reclamo["email_detectado"] = extracted_data["email"]
+
+            # Guardar datos actualizados en el contexto
+            contexto_actual["datos_parciales_llm_reclamo"] = datos_reclamo
+            session_context_db_entry.context_data["contexto_municipio"] = contexto_actual
+
+            # Verificar si ya tenemos toda la info
+            if not (datos_reclamo.get("nombre_usuario_detectado") and datos_reclamo.get("telefono_detectado") and datos_reclamo.get("email_detectado")):
+                # Si falta info, volver a pedirla
+                bot_response_dict = {
+                    "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
+                    "pedir_info": ["nombre", "telefono", "email"]
+                }
 
         print(f"Raw response from responder_chatboc: {bot_response_dict}")
 

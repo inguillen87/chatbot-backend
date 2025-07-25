@@ -234,7 +234,7 @@ class ServicioTickets:
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
-            query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            query = Model.query().filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
 
             # Filtrar por estado si se proporciona
             if estado:

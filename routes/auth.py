@@ -91,7 +91,7 @@ def token_requerido(f):
             return "", 200
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
-        if current_user.is_authenticated:
+        if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
             return f(current_user, *args, **kwargs)
 
         # Si no, buscar el token como se hacía antes

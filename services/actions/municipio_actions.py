@@ -6,6 +6,7 @@ from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import parse_direccion_completa, direccion_es_valida
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
+from services.gemini_bridge import llamar_gemini
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +273,7 @@ class ActivarPanicoActionHandler(BaseActionHandler):
             "data": {"alerta_status": "enviada"}
         }
 
-class DerivarHumanoActionHandler(BaseActionHandler):
+class DerivarHumanoActionHandlerMunicipio(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Crea un ticket real de chat en vivo y devuelve su identificador."""
         logger.info(f"Executing DerivarHumanoActionHandler with data: {action_data}")
@@ -286,37 +287,20 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
             email = (getattr(viewer_user, "email", None) or action_data.get("email"))
 
-            target = self.context.get("target_entity_type", "municipio")
-
-            if target == "pyme":
-                ticket_data = {
-                    "asunto": f"Chat en Vivo con {nombre or 'Cliente'}",
-                    "categoria": "Atención en Vivo",
-                    "pregunta": pregunta_original,
-                    "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
-                    "user_id": self.context.get("user_id"),
-                    "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
-                    "rubro_id": self.context.get("rubro_id"),
-                    "estado": "esperando_agente_en_vivo",
-                    "telefono": telefono,
-                    "email": email,
-                }
-                ticket_type = "pyme"
-            else:
-                ticket_data = {
-                    "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Vecino'}",
-                    "categoria": "Atención en Vivo",
-                    "pregunta": pregunta_original,
-                    "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
-                    "user_id": self.context.get("cliente_id"),
-                    "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
-                    "municipio_id": getattr(owner_user, "municipio_id", None),
-                    "estado": "esperando_agente_en_vivo",
-                    "nombre_vecino": nombre,
-                    "telefono_vecino": telefono,
-                    "email_vecino": email,
-                }
-                ticket_type = "municipio"
+            ticket_data = {
+                "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Vecino'}",
+                "categoria": "Atención en Vivo",
+                "pregunta": pregunta_original,
+                "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
+                "user_id": self.context.get("cliente_id"),
+                "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                "municipio_id": getattr(owner_user, "municipio_id", None),
+                "estado": "esperando_agente_en_vivo",
+                "nombre_vecino": nombre,
+                "telefono_vecino": telefono,
+                "email_vecino": email,
+            }
+            ticket_type = "municipio"
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
             sala = servicio_tickets.crear_nuevo_ticket(ticket_type, ticket_data_cleaned)
@@ -334,10 +318,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 },
             )
 
-            if ticket_type == "pyme":
-                chat_id = f"P-{sala.nro_ticket}"
-            else:
-                chat_id = f"M-{sala.nro_ticket}"
+            chat_id = f"M-{sala.nro_ticket}"
 
             user_message = (
                 f"Hemos recibido tu solicitud para hablar con un agente. Tu número de chat es **{chat_id}**."
