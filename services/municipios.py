@@ -732,6 +732,13 @@ def responder_municipio(
             "pedir_info": None,
             "botones": []
         }
+    if llm_response_structured.get("accion_backend") == "error":
+        return {
+                "message_body": "Hubo un problema al procesar tu solicitud (acción desconocida).",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "error"
+            }
 
     # Actualizar el historial de chat_db_context con este turno (pregunta y respuesta_usuario del LLM)
     # Esto es para que la próxima llamada a Gemini tenga este contexto.
