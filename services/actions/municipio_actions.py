@@ -3,11 +3,13 @@ import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 from services.ticket_service import servicio_tickets
-from services.municipios import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
+from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import parse_direccion_completa, direccion_es_valida
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 
 logger = logging.getLogger(__name__)
+
+CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -24,24 +26,53 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta")
 
         campos_faltantes = []
-        if not descripcion:
-            campos_faltantes.append("una descripción del problema")
-        if not ubicacion_llm and not coordenadas_llm:
-            campos_faltantes.append("la ubicación del problema")
-        if not nombre_vecino_llm:
-            campos_faltantes.append("tu nombre")
-        if not telefono_llm:
-            campos_faltantes.append("tu número de teléfono")
-        if not email_llm:
-            campos_faltantes.append("tu correo electrónico")
+        # 1. Extracción y Validación de Datos (mejorado con contexto)
+        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
+
+        # Priorizar datos de action_data, luego de contexto, y finalmente None
+        categoria = action_data.get("categoria") or contexto_reclamo.get("categoria_reclamo") or "Reclamo General"
+        descripcion = action_data.get("descripcion") or contexto_reclamo.get("descripcion_reclamo")
+        ubicacion_llm = action_data.get("ubicacion") or contexto_reclamo.get("direccion_reclamo")
+        coordenadas_llm = action_data.get("coordenadas") or contexto_reclamo.get("coordenadas_reclamo")
+        nombre_vecino_llm = action_data.get("usuario") or contexto_reclamo.get("nombre_vecino")
+        telefono_llm = action_data.get("telefono") or contexto_reclamo.get("telefono_vecino")
+        email_llm = action_data.get("email") or contexto_reclamo.get("email_vecino")
+        foto_url_llm = action_data.get("foto_url_adjunta") or contexto_reclamo.get("foto_url")
+
+        # Guardar datos en el contexto para persistencia entre turnos
+        if categoria: contexto_reclamo["categoria_reclamo"] = categoria
+        if descripcion: contexto_reclamo["descripcion_reclamo"] = descripcion
+        if ubicacion_llm: contexto_reclamo["direccion_reclamo"] = ubicacion_llm
+        if coordenadas_llm: contexto_reclamo["coordenadas_reclamo"] = coordenadas_llm
+        if nombre_vecino_llm: contexto_reclamo["nombre_vecino"] = nombre_vecino_llm
+        if telefono_llm: contexto_reclamo["telefono_vecino"] = telefono_llm
+        if email_llm: contexto_reclamo["email_vecino"] = email_llm
+        if foto_url_llm: contexto_reclamo["foto_url"] = foto_url_llm
+
+        campos_faltantes = []
+        if not descripcion: campos_faltantes.append("una descripción del problema")
+        if not ubicacion_llm and not coordenadas_llm: campos_faltantes.append("la ubicación del problema")
+        if not nombre_vecino_llm: campos_faltantes.append("tu nombre")
+        if not telefono_llm: campos_faltantes.append("tu número de teléfono")
+        if not email_llm: campos_faltantes.append("tu correo electrónico")
 
         if campos_faltantes:
             mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
-            return {
-                "success": False,
-                "message_to_user": mensaje,
-                "pedir_info": campos_faltantes,
-            }
+            # Lógica para enviar botones en WhatsApp
+            if self.context.get("channel") == "whatsapp" and len(campos_faltantes) == 1:
+                # Si solo falta un dato, podemos ofrecer botones para acelerar
+                botones_whatsapp = []
+                if "ubicacion" in campos_faltantes[0]:
+                    botones_whatsapp = ["Compartir mi ubicación actual", "Ingresar dirección manualmente"]
+                # Podríamos añadir más lógica para otros campos si aplica
+
+                if botones_whatsapp:
+                    from utils.whatsapp import enviar_mensaje_whatsapp_con_botones
+                    enviar_mensaje_whatsapp_con_botones(self.context.get("anon_id"), mensaje, botones_whatsapp)
+                    # Devolvemos un mensaje de éxito para que el flujo principal no envíe otro texto
+                    return {"success": True, "message_to_user": "", "pedir_info": campos_faltantes}
+
+            return { "success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes }
 
         # 2. Recopilación de Información del Contexto
         viewer_user = self.context.get("viewer_user_obj")
