@@ -251,10 +251,10 @@ class TestLLMUtils(unittest.TestCase):
 
         # Check that the prompt to the LLM was constructed correctly
         args, kwargs = mock_robust_chat.call_args
-        self.assertIn("CURRENT SUMMARY: '''El cliente Juan Pérez reportó un problema.'''", kwargs['prompt'])
-        self.assertIn("NEW DATA (in JSON format): '''{", kwargs['prompt'])
-        self.assertIn("\"tipo_problema\": \"Fuga de agua\"", kwargs['prompt'])
-        self.assertIn("\"ubicacion_problema\": \"Baño principal\"", kwargs['prompt'])
+        self.assertIn("CURRENT SUMMARY: '''El cliente Juan Pérez reportó un problema.'''", args[0])
+        self.assertIn("NEW DATA (in JSON format): '''{", args[0])
+        self.assertIn("\"tipo_problema\": \"Fuga de agua\"", args[0])
+        self.assertIn("\"ubicacion_problema\": \"Baño principal\"", args[0])
 
     @patch('services.llm_utils.robust_chat')
     def test_extract_complaint_details_llm_with_markdown(self, mock_robust_chat):

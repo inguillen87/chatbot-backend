@@ -20,6 +20,10 @@ class DummyQuery(list):
         return self
     def all(self):
         return list(self)
+    def offset(self, *args):
+        return self
+    def limit(self, *args):
+        return self
 
 class DummyColumn:
     def desc(self):

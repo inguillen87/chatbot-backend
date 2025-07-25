@@ -22,6 +22,7 @@ from flask import Flask
 
 def create_test_app():
     from models import db
+    from models import User, ArchivoAdjunto, AnalisisArchivo
     app = Flask(__name__)
     app.config['TESTING'] = True
     # Usar SQLite en memoria para pruebas rápidas y aisladas

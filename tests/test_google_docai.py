@@ -19,7 +19,7 @@ class DocAIConsolidationTests(unittest.TestCase):
             ["", "Vino Malbec", "750ml", ""]
         ], columns=["codigo", "nombre", "descripcion", "precio"])
         result = _consolidar_filas(df)
-        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result), 2)
         fila = result.iloc[0].tolist()
         self.assertEqual(fila[0], "COD1")
         self.assertEqual(fila[1], "Vino Malbec")

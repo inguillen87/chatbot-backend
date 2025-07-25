@@ -681,12 +681,17 @@ def responder_municipio(
     # (contexto_municipio_actual ya está definido y es el que se usa para el sub-contexto)
 
     # Construir 'usuario_info_for_gemini' para la llamada a Gemini
+    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
     usuario_info_for_gemini = {
-        "nombre": getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None) or contexto_municipio_actual.get("nombre_vecino") or "Vecino/a",
+        "nombre": getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None) or datos_reclamo.get("nombre_usuario_detectado") or "Vecino/a",
         "tipo_entidad": "municipio",
         "municipio_config": { # Pasar datos relevantes de la config del municipio al LLM
             "nombre_municipio": final_municipio_config.get("nombre_display", MUNICIPIO_ID.title()),
             "servicios_principales": final_municipio_config.get("servicios_principales_chatbot", ["reclamos", "trámites", "consultas generales"])
+        },
+        "contacto": {
+            "telefono": datos_reclamo.get("telefono_detectado"),
+            "email": datos_reclamo.get("email_detectado")
         }
     }
     # Añadir ubicación si se conoce (del perfil del usuario o del contexto del reclamo)
@@ -838,39 +843,6 @@ def responder_municipio(
 
     respuesta_principal_ya_generada = True # Asumimos que respuesta_final_texto ya tiene algo
 
-    if not viewer_user and anon_id and has_app_context() and respuesta_principal_ya_generada and \
-       action_handler_result.get("fuente","") != "sugerencia_registro_municipio_v2": # No sugerir si ya se está sugiriendo
-
-        estado_actual_enum_sug = None
-        estado_actual_str_sug = contexto_municipio_actual.get("estado_conversacion") # string o None
-        if estado_actual_str_sug:
-            try: estado_actual_enum_sug = ConversationState[estado_actual_str_sug]
-            except KeyError: pass
-
-        estados_a_evitar_sugerencia_para_anon = [
-            ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO,
-            ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO,
-            ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
-            ConversationState.ESPERANDO_CONFIRMACION_RECLAMO, ConversationState.ESPERANDO_UBICACION_PANICO,
-        ]
-        if not estado_actual_enum_sug or estado_actual_enum_sug not in estados_a_evitar_sugerencia_para_anon:
-            interacciones_anon_sesion = contexto_municipio_actual.get("interacciones_anon_sesion", 0)
-            if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok", "dale", "bueno"]:
-                interacciones_anon_sesion += 1
-            contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_sesion
-
-            umbral_sugerencia = current_app.config.get("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", 3)
-            if umbral_sugerencia > 0 and interacciones_anon_sesion >= umbral_sugerencia and \
-               not contexto_municipio_actual.get("sugerencia_registro_emitida_ronda", False):
-
-                logger_actual.info(f"Anon {anon_id} alcanzó umbral. Añadiendo sugerencia de registro a la respuesta principal.")
-                contexto_municipio_actual["sugerencia_registro_emitida_ronda"] = True
-
-                sug_obj = construir_respuesta_sugerir_registro("Para una mejor experiencia y seguimiento.", "municipio", channel)
-                # Anexar la sugerencia a la respuesta principal o modificarla
-                respuesta_final_texto += f"\n\n{sug_obj['respuesta']}" # Añadir al cuerpo
-                opciones_finales.extend(sug_obj.get('botones',[])) # Añadir botones de login/registro
-                # Podríamos también cambiar la 'fuente' si la sugerencia domina la respuesta.
     # ---- FIN: Lógica de sugerencia de registro PROACTIVA ----
 
 

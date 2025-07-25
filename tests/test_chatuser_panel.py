@@ -40,9 +40,9 @@ class ChatUserPanelTests(unittest.TestCase):
         db.session.commit()
 
     def tearDown(self):
+        db.session.query(ChatSessionContext).delete()
         db.session.query(User).delete()
         db.session.query(Rubro).delete()
-        db.session.query(ChatSessionContext).delete()
         db.session.commit()
 
     def test_register_and_associate_chat_session(self):

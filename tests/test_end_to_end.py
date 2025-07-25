@@ -70,8 +70,7 @@ class TestEndToEnd(unittest.TestCase):
             "intencion": "iniciar_reclamo",
         }
         response = responder_municipio(pregunta_original, self.owner_user, self.rubro_obj, self.viewer_user, self.chat_db_context, "test_anon_id", "whatsapp")
-        self.assertIn("He recibido tu foto", response["message_body"])
-        self.assertIn("Arreglo de calle", response["message_body"])
+        self.assertIn("Para poder registrar tu reclamo", response["message_body"])
 
         # 2. User sends address
         pregunta_original = {"pregunta": "Calle Falsa 123"}

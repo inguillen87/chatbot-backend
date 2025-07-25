@@ -27,11 +27,11 @@ class CartTests(unittest.TestCase):
         cart_service.add_item_to_cart(pyme_carts_data, self.pyme_id, {"catalogo_item_id": 1, "nombre": "vino"}, 2)
         cart_service.add_item_to_cart(pyme_carts_data, self.pyme_id, {"catalogo_item_id": 1, "nombre": "vino"}, 1)
         summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
-        self.assertEqual(summary["items"][0]['nombre_producto'], 'vino')
-        self.assertEqual(summary["items"][0]['cantidad'], 3)
+        self.assertEqual(summary["items_detalle"][0]['nombre_producto'], 'vino')
+        self.assertEqual(summary["items_detalle"][0]['cantidad'], 3)
         cart_service.update_item_quantity_in_cart(pyme_carts_data, self.pyme_id, 1, 5)
         summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
-        self.assertEqual(summary["items"][0]['cantidad'], 5)
+        self.assertEqual(summary["items_detalle"][0]['cantidad'], 5)
 
     def test_remove(self):
         pyme_carts_data = {}
@@ -39,7 +39,7 @@ class CartTests(unittest.TestCase):
         summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
         cart_service.remove_item_from_cart(pyme_carts_data, self.pyme_id, 1)
         summary = cart_service.get_cart_summary(pyme_carts_data, self.pyme_id)
-        self.assertEqual(summary["items"], [])
+        self.assertEqual(summary["items_detalle"], [])
 
 
 if __name__ == '__main__':

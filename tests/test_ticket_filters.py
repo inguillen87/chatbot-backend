@@ -17,21 +17,26 @@ class DummyQuery:
     def filter_by(self, **kwargs):
         self.items = [i for i in self.items if all(getattr(i, k) == v for k, v in kwargs.items())]
         return self
-    def filter(self, criterion):
-        try:
-            if isinstance(criterion, tuple):
-                key, val = criterion
-            else:
-                key = criterion.left.name
-                val = criterion.right.value
-            self.items = [i for i in self.items if getattr(i, key) == val]
-        except Exception:
-            pass
+    def filter(self, *criterion):
+        for c in criterion:
+            try:
+                if isinstance(c, tuple):
+                    key, val = c
+                else:
+                    key = c.left.name
+                    val = c.right.value
+                self.items = [i for i in self.items if getattr(i, key) == val]
+            except Exception:
+                pass
         return self
     def order_by(self, *args):
         return self
     def all(self):
         return self.items
+    def offset(self, *args):
+        return self
+    def limit(self, *args):
+        return self
 
 class TicketFiltersTests(unittest.TestCase):
     def setUp(self):

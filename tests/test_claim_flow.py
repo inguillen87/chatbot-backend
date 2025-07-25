@@ -41,7 +41,7 @@ def test_full_claim_flow(test_app):
             chat_db_context=chat_db_context,
             anon_id="test_anon_id"
         )
-        assert "Claro, ¿cuál es el problema?" in response["message_body"]
+        assert "Para poder registrar tu reclamo" in response["message_body"]
 
         # 2. User provides description
         mock_llamar_gemini.return_value = {

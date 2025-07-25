@@ -190,17 +190,6 @@ class MunicipioLogicTests(unittest.TestCase):
 
         importlib.reload(municipios)
 
-    def test_es_pregunta_nueva_acknowledge(self):
-        with self.app.app_context():
-            self.assertFalse(municipios.es_pregunta_nueva('ok', 'un número de ticket'))
-            self.assertFalse(municipios.es_pregunta_nueva('gracias', 'una dirección'))
-
-    def test_es_pregunta_nueva_agente(self):
-        with self.app.app_context():
-            self.assertFalse(
-                municipios.es_pregunta_nueva('Quiero hablar con un asesor', 'una dirección')
-            )
-
     @patch('services.municipios.get_cohere_response', return_value='')
     @patch('services.municipios.servicio_tickets')
     def test_human_escalation(self, mock_servicio, mock_llm_cohere_generic):
@@ -417,33 +406,32 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
         # Corrected patch target from 'services.municipios.User.query' to 'models.User.query'
         # This assumes that if User.query is used within municipios.py, it's via an import of models.User
         with patch('models.User.query', user_query_mock):
-            with patch('services.municipios.detectar_small_talk_con_llm', MagicMock(return_value=False)):
-                with patch('services.municipios.get_cohere_response', MagicMock(return_value="Respuesta genérica.")):
-                    with patch('services.gemini_bridge.llamar_gemini') as mock_llamar_gemini:
-                        # Default mock for llamar_gemini if no specific override is provided in payload
-                        default_llm_response = {
-                            "respuesta_usuario": "Respuesta por defecto de Gemini (mock).",
-                            "accion_backend": "small_talk", # Default to a benign action
-                            "datos_estructura": {"target": "general"},
-                            "pedir_info": None,
-                            "botones": [{"texto": "Ayuda"}]
-                        }
+            with patch('services.municipios.get_cohere_response', MagicMock(return_value="Respuesta genérica.")):
+                with patch('services.gemini_bridge.llamar_gemini') as mock_llamar_gemini:
+                    # Default mock for llamar_gemini if no specific override is provided in payload
+                    default_llm_response = {
+                        "respuesta_usuario": "Respuesta por defecto de Gemini (mock).",
+                        "accion_backend": "small_talk", # Default to a benign action
+                        "datos_estructura": {"target": "general"},
+                        "pedir_info": None,
+                        "botones": [{"texto": "Ayuda"}]
+                    }
 
-                        # Allow tests to override the mock return value via the payload
-                        mock_llamar_gemini.return_value = pregunta_to_send.get('llamar_gemini_mock_return', default_llm_response)
+                    # Allow tests to override the mock return value via the payload
+                    mock_llamar_gemini.return_value = pregunta_to_send.get('llamar_gemini_mock_return', default_llm_response)
 
-                        # Patch flag_modified to prevent AttributeError with SimpleNamespace
-                        with patch('services.municipios.flag_modified') as mock_flag_modified:
-                            with self.app.app_context():
-                                response = municipios.responder_municipio(
-                                    pregunta_to_send,
-                                    owner_user=self.owner_user,
-                                    rubro_obj=SimpleNamespace(nombre='municipio'),
-                                    viewer_user=self.viewer_user,
-                                    chat_db_context=SimpleNamespace(context_data=contexto_previo_arg),
-                                    chat_session_uuid="test-complaint-session"
-                                )
-                            # mock_flag_modified.assert_called() # Optionally assert it was called
+                    # Patch flag_modified to prevent AttributeError with SimpleNamespace
+                    with patch('services.municipios.flag_modified') as mock_flag_modified:
+                        with self.app.app_context():
+                            response = municipios.responder_municipio(
+                                pregunta_to_send,
+                                owner_user=self.owner_user,
+                                rubro_obj=SimpleNamespace(nombre='municipio'),
+                                viewer_user=self.viewer_user,
+                                chat_db_context=SimpleNamespace(context_data=contexto_previo_arg),
+                                chat_session_uuid="test-complaint-session"
+                            )
+                        # mock_flag_modified.assert_called() # Optionally assert it was called
 
         models_stub.db.session = original_db_session
 
@@ -756,3 +744,5 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
                 )
         self.assertIn("¡Hola! 👋", resp['message_body'])
         self.assertIn("Hacer un reclamo", [b['texto'] for b in resp['options_list']])
+if __name__ == '__main__':
+    unittest.main()

@@ -76,24 +76,25 @@ class TestAISuggestions(unittest.TestCase):
         db.session.commit()
         return plantilla
 
-    def test_suggest_templates_success(self):
+    @patch('services.cohere_ai.robust_embed')
+    def test_suggest_templates_success(self, mock_robust_embed):
         self._crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
         self._crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
-        self.mock_embed_textos.return_value = [[0.11]*1024]
+        mock_robust_embed.return_value = {"embeddings": [[0.11]*1024]}
 
         response = self.client.post('/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
                                     json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
 
         self.assertEqual(response.status_code, 200)
-        data = json.loads(response.data)
+        data = response.get_json()
         self.assertIn('sugerencias', data)
         sugerencias = data['sugerencias']
         self.assertEqual(len(sugerencias), 1)
-        self.assertEqual(sugerencias[0]['name'], 'Saludo')
-        self.assertIn("Hola, ¿cómo estás {{nombre_cliente}}?", sugerencias[0]['text'])
-        self.mock_embed_textos.assert_called_once_with(textos=['Quiero saludar'], input_type='search_query')
+        self.assertEqual(sugerencias[0]['nombre_plantilla'], 'Saludo')
+        self.assertIn("Hola, ¿cómo estás {{nombre_cliente}}?", sugerencias[0]['texto_plantilla'])
+        mock_robust_embed.assert_called_once()
 
     def test_suggest_templates_missing_asunto(self):
         response = self.client.post('/ai/suggest-templates',
@@ -131,7 +132,7 @@ class TestAISuggestions(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         data = json.loads(response.data)
         self.assertIn('error', data)
-        self.assertIn("Error al generar el embedding para la consulta del ticket", data['error'])
+        self.assertIn("Error al generar el embedding para la consulta.", data['error'])
 
 if __name__ == '__main__':
     unittest.main()
