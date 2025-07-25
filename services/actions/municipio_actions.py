@@ -273,7 +273,7 @@ class ActivarPanicoActionHandler(BaseActionHandler):
             "data": {"alerta_status": "enviada"}
         }
 
-class DerivarHumanoActionHandlerMunicipio(BaseActionHandler):
+class DerivarHumanoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Crea un ticket real de chat en vivo y devuelve su identificador."""
         logger.info(f"Executing DerivarHumanoActionHandler with data: {action_data}")
