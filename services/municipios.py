@@ -299,23 +299,6 @@ def cargar_ubicaciones_comercios():
     return _COMMERCE_LOCATIONS_CACHE
 COMMERCE_LOCATIONS = cargar_ubicaciones_comercios()
 
-def enviar_notificacion_sms(numero_destino: str, mensaje: str):
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]): print("[NOTIFICACION SMS] Faltan credenciales de Twilio SMS."); return
-    try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        message = client.messages.create(body=mensaje, from_=TWILIO_PHONE_NUMBER, to=numero_destino)
-        print(f"[NOTIFICACION SMS] SMS enviado SID: {message.sid}")
-    except Exception as e: print(f"[NOTIFICACION SMS] Error al enviar SMS: {e}")
-
-def enviar_notificacion_whatsapp_con_plantilla(numero_destino: str, nombre: str, nro_ticket: str, categoria: str):
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER, TWILIO_WHATSAPP_CONTENT_SID]): logger.error("[NOTIFICACION WHATSAPP] Faltan credenciales de Twilio WhatsApp (SID/Token/Number/Content_SID)."); return
-    destinatario_whatsapp = f"whatsapp:{numero_destino}"
-    try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        variables_plantilla = {"1": nombre, "2": f"M-{nro_ticket}", "3": categoria}
-        message = client.messages.create(from_=TWILIO_WHATSAPP_NUMBER, to=destinatario_whatsapp, content_sid=TWILIO_WHATSAPP_CONTENT_SID, content_variables=json.dumps(variables_plantilla))
-        logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
-    except Exception as e: logger.error(f"[NOTIFICACION WHATSAPP] Error al enviar plantilla: {e}", exc_info=True)
 
 
 
@@ -426,7 +409,6 @@ from services.gemini_bridge import llamar_gemini # Asegurar import
 # Definición completa de accion_crear_reclamo_municipio
 
 
-from services.actions.municipio_actions import CrearReclamoActionHandler
 
 
 def accion_crear_reclamo_municipio(datos_reclamo, context):
@@ -1036,46 +1018,35 @@ def responder_municipio(
     pedir_info_final = action_handler_result.get("pedir_info") or llm_response_structured.get("pedir_info")
 
     # --- Actualizar estado de conversación en contexto_municipio_actual ---
+    # (Esta sección se ha movido y mejorado)
+    estado_conversacion_actual_str = contexto_municipio_actual.get("estado_conversacion")
+
+    # Si el LLM pide info, la guardamos para el siguiente turno.
     if pedir_info_final:
-        if isinstance(pedir_info_final, list):
-            pedir_info_str = ", ".join(pedir_info_final)
-        else:
-            pedir_info_str = str(pedir_info_final)
-
-        logger.info(f"[PEDIR_INFO_MAP] Valor recibido: '{pedir_info_str}'")
-        pedir_info_norm = normalizar_str(pedir_info_str)
-        logger.info(f"[PEDIR_INFO_MAP] Normalizado: '{pedir_info_norm}'")
-
+        contexto_municipio_actual["esperando_info_llm"] = pedir_info_final
+        # Mapear 'pedir_info' a un estado de conversación más granular si es posible
+        pedir_info_norm = normalizar_str(str(pedir_info_final))
         estado_objetivo = None
         for key, state in PEDIR_INFO_TO_STATE.items():
             if key in pedir_info_norm:
                 estado_objetivo = state
                 break
-
         if estado_objetivo:
             contexto_municipio_actual["estado_conversacion"] = estado_objetivo.name
-            logger.info(
-                f"Actualizando estado de conversación a: {estado_objetivo.name} debido a pedir_info normalizado: '{pedir_info_norm}'"
-            )
+            logger_actual.info(f"Estado de conversación actualizado a: {estado_objetivo.name} por 'pedir_info'")
         else:
-            logger.warning(
-                f"No se pudo mapear pedir_info '{pedir_info_final}' normalizado '{pedir_info_norm}' a un ConversationState. Reiniciando flujo."
-            )
-            respuesta_final_texto = (
-                "Perdón, tuve un problema para continuar con el reclamo. ¿Podés intentar de nuevo desde el inicio?"
-            )
-            interacciones_anon_actual = contexto_municipio_actual.get("interacciones_anon_sesion")
-            contexto_municipio_actual.clear()
-            if interacciones_anon_actual is not None:
-                contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_actual
-            contexto_municipio_actual["estado_conversacion"] = None
-    elif action_handler_result.get("success"):
-        if contexto_municipio_actual.get("estado_conversacion") not in [None, ConversationState.IDLE.name if hasattr(ConversationState, 'IDLE') else None]:
-            logger.info(f"Acción '{llm_response_structured.get('accion_backend')}' exitosa y sin pedir_info. Limpiando estado de conversación municipal.")
-            interacciones_anon_actual = contexto_municipio_actual.get("interacciones_anon_sesion")
-            contexto_municipio_actual.clear()
-            if interacciones_anon_actual is not None:
-                contexto_municipio_actual["interacciones_anon_sesion"] = interacciones_anon_actual
+            # Si no hay un estado específico, pero se pide info, nos ponemos en un estado de espera genérico.
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+            logger_actual.info(f"Estado de conversación actualizado a ESPERANDO_INFO_RECLAMO_LLM por 'pedir_info' no mapeado.")
+
+    # Si el estado actual es de espera de datos, y el LLM no está pidiendo más,
+    # significa que los datos se proporcionaron. Limpiamos el estado de espera.
+    elif estado_conversacion_actual_str and estado_conversacion_actual_str.startswith("ESPERANDO_") and not pedir_info_final:
+         # Si la acción fue exitosa, limpiamos el estado.
+        if action_handler_result.get("success"):
+            logger_actual.info(f"Acción exitosa sin 'pedir_info' adicional. Limpiando estado de conversación '{estado_conversacion_actual_str}'.")
+            contexto_municipio_actual.pop("estado_conversacion", None)
+            contexto_municipio_actual.pop("esperando_info_llm", None)
 
     # --- Guardar el historial de chat_db_context con la respuesta final del CHATBOT ---
     chat_db_context_live_data["mensajes_previos_gemini_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})
