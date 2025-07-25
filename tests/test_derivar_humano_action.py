@@ -12,10 +12,7 @@ if project_root not in sys.path:
 from app import create_app, db
 from models import User, Rubro
 from config import TestConfig
-from services.actions.municipio_actions import DerivarHumanoActionHandler as DerivarHumanoActionHandlerMunicipio
-from services.actions.pyme_actions import (
-    DerivarHumanoActionHandlerPyme as DerivarHumanoActionHandler,
-)
+from services.actions.common_actions import DerivarHumanoAction
 from services.chat_orchestrator import ChatOrchestrator
 
 

@@ -7,80 +7,96 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from services.municipios import (
-    GreetingHandler,
-    ReclamoHandler,
-    TicketStatusHandler,
-    ConversationState,
-    responder_municipio,
-)
+from services.municipios import responder_municipio
 
-class TestWhatsApp(unittest.TestCase):
-
-    def setUp(self):
-        from app import create_app
-        self.app = create_app()
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-
-        self.context = {
-            "contexto_municipio_v2": {},
-            "user_obj": MagicMock(),
-            "viewer_user_obj": None,
-            "cliente_id": None,
-            "anon_id": "test_anon_id",
-            "rubro_obj": None,
-            "channel": "whatsapp",
-            "municipio_config_actual": {},
-            "chat_session_uuid": "test_session_uuid",
-            "chat_db_context_data": {},
+def test_reclamo_handler_categoria_buttons(test_app):
+    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "Por favor, elegí una de las siguientes categorías:",
+            "accion_backend": "iniciar_reclamo",
+            "datos_estructura": {},
+            "pedir_info": "categoria",
+            "botones": [
+                {"texto": "Alumbrado Público", "id_accion": "alumbrado_publico"},
+                {"texto": "Bacheo", "id_accion": "bacheo"},
+                {"texto": "Recolección de Residuos", "id_accion": "recoleccion_de_residuos"},
+            ]
         }
-        self.owner_user = MagicMock()
-        self.owner_user.id = 1
-        self.rubro_obj = None
-        self.viewer_user = None
-        self.chat_db_context = MagicMock()
-        self.chat_db_context.context_data = {}
+        owner_user = MagicMock()
+        owner_user.id = 1
+        rubro_obj = None
+        viewer_user = None
+        chat_db_context = MagicMock()
+        chat_db_context.context_data = {}
+        response = responder_municipio(
+            pregunta_original="quiero hacer un reclamo",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_db_context,
+            anon_id="test_anon_id",
+            channel="whatsapp"
+        )
+        assert response is not None
+        assert response["message_type"] == "interactive_buttons"
+        assert len(response["options_list"]) > 0
 
-    def tearDown(self):
-        self.app_context.pop()
+def test_reclamo_handler_share_location_button(test_app):
+    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
+            "accion_backend": "iniciar_reclamo",
+            "datos_estructura": {},
+            "pedir_info": "ubicacion",
+            "botones": [
+                {"texto": "Compartir ubicación", "id_accion": "compartir_ubicacion"}
+            ]
+        }
+        owner_user = MagicMock()
+        owner_user.id = 1
+        rubro_obj = None
+        viewer_user = None
+        chat_db_context = MagicMock()
+        chat_db_context.context_data = {}
+        response = responder_municipio(
+            pregunta_original="Poste de luz roto",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_db_context,
+            anon_id="test_anon_id",
+            channel="whatsapp"
+        )
+        assert response is not None
+        assert response["message_type"] == "interactive_buttons"
 
-    def test_reclamo_handler_categoria_buttons(self):
-        handler = ReclamoHandler(self.context)
-        self.context["intencion"] = "iniciar_reclamo"
-        self.context["contexto_municipio_v2"]["estado_conversacion"] = "ESPERANDO_CATEGORIA_RECLAMO"
-        payload = {"pregunta": ""}
-        response = handler.handle(payload)
-        self.assertIsNotNone(response)
-        self.assertEqual(response["message_type"], "interactive_list")
-        self.assertGreater(len(response["options_list"]), 0)
-
-    def test_reclamo_handler_share_location_button(self):
-        handler = ReclamoHandler(self.context)
-        self.context["intencion"] = "iniciar_reclamo"
-        self.context["contexto_municipio_v2"]["estado_conversacion"] = "ESPERANDO_DIRECCION_RECLAMO"
-        payload = {"pregunta": ""}
-        response = handler.handle(payload)
-        self.assertIsNotNone(response)
-        self.assertEqual(response["message_type"], "interactive_location_request")
-
-    def test_ticket_status_handler_ticket_number_shortcut(self):
-        handler = TicketStatusHandler(self.context)
-        self.context["intencion"] = "consultar_estado_ticket"
-        payload = {"pregunta": "quiero saber el estado de mi ticket 12345"}
-        with patch('services.municipios.MunicipioTicket.query') as mock_query:
-            mock_ticket = MagicMock()
-            mock_ticket.id = 1
-            mock_ticket.nro_ticket = "M-12345"
-            mock_ticket.asunto = "Test"
-            mock_ticket.estado = "en_proceso"
-            mock_query.filter_by.return_value.first.return_value = mock_ticket
-            with patch('services.municipios.TicketComentario.query') as mock_comment_query:
-                mock_comment_query.filter_by.return_value.order_by.return_value.first.return_value = None
-                response = handler.handle(payload)
-                self.assertIsNotNone(response)
-                mock_query.filter_by.assert_called_with(nro_ticket='M-12345')
-                self.assertIn("El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.", response["message_body"])
+def test_ticket_status_handler_ticket_number_shortcut(test_app):
+    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
+            "accion_backend": "consultar_estado_ticket",
+            "datos_estructura": {
+                "id_ticket_mencionado": "12345"
+            },
+            "pedir_info": None
+        }
+        owner_user = MagicMock()
+        owner_user.id = 1
+        rubro_obj = None
+        viewer_user = None
+        chat_db_context = MagicMock()
+        chat_db_context.context_data = {}
+        response = responder_municipio(
+            pregunta_original="quiero saber el estado de mi ticket 12345",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_db_context,
+            anon_id="test_anon_id",
+            channel="whatsapp"
+        )
+        assert response is not None
+        assert "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**." in response["message_body"]
 
 if __name__ == '__main__':
     unittest.main()

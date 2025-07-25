@@ -422,6 +422,13 @@ def _procesar_chat(
         if isinstance(resultado, dict) and "fuente" in resultado:
             formatted_web_response["fuente"] = resultado["fuente"]
 
+        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
+        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
+            return jsonify({
+                "respuesta": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
+                "pedir_info": ["nombre", "telefono", "email"]
+            }), 200
+
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:
             chat_context_obj.context_data["last_user_message"] = pregunta
