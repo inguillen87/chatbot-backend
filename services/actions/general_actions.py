@@ -33,6 +33,20 @@ class SmallTalkActionHandler(BaseActionHandler):
             "data": {"action_taken": "small_talk_acknowledged"}
         }
 
+class ErrorActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle error actions returned by the LLM."""
+        logger.error(f"Executing ErrorActionHandler with data: {action_data}")
+        message = action_data.get(
+            "respuesta_usuario_original_llm",
+            "Lo siento, hubo un problema al procesar tu solicitud."
+        )
+        return {
+            "success": False,
+            "message_to_user": message,
+            "data": {"error": action_data.get("error_details")},
+        }
+
 class DerivarHumanoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing DerivarHumanoAction with data: {action_data}")

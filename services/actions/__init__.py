@@ -30,6 +30,9 @@ ACTION_HANDLER_MAP = {
     "informar_usuario": "services.actions.common_actions.InformarUsuarioAction", # Assuming existing
     "registrar_usuario": "services.actions.general_actions.RegistrarUsuarioActionHandler",
 
+    # Error handler
+    "error": "services.actions.general_actions.ErrorActionHandler",
+
     # Placeholder for actions that might not have a dedicated backend handler beyond LLM response
     "no_accion": "services.actions.general_actions.NoActionHandler",
     "small_talk": "services.actions.general_actions.SmallTalkActionHandler",
