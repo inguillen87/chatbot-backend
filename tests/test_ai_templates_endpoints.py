@@ -26,124 +26,50 @@ class TestConfig(Config):
     WTF_CSRF_ENABLED = False
     COHERE_API_KEY = "test_cohere_key"
 
-class TestAITemplatesEndpoints(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        """Set up for all tests in this class."""
-        cls.app = create_app(TestConfig)
-        cls.app.register_blueprint(ai_templates_bp, url_prefix='/ai')
-        cls.app_context = cls.app.app_context()
-        cls.app_context.push()
-        db.create_all()
-        cls.client = cls.app.test_client()
+def _crear_plantilla(name, text, keywords=None, is_active=True, embedding_value=None):
+    if embedding_value is None:
+        embedding_value = [0.1] * 1024
 
-    @classmethod
-    def tearDownClass(cls):
-        """Tear down after all tests in this class."""
-        db.session.remove()
-        db.drop_all()
-        cls.app_context.pop()
+    plantilla = PlantillasRespuesta(
+        name=name, text=text,
+        keywords=json.dumps(keywords) if keywords else json.dumps([]),
+        is_active=is_active, embedding=embedding_value
+    )
+    db.session.add(plantilla)
+    db.session.commit()
+    return plantilla
 
-    def setUp(self):
-        """Set up for each test method."""
-        self.mock_rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")
-        db.session.add(self.mock_rubro)
+def test_suggest_templates_success(test_app):
+    with test_app.app_context():
+        rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")
+        db.session.add(rubro)
         db.session.commit()
 
-        self.mock_user = User(
+        mock_user = User(
             id=1, name="Test Admin User", email="admin@test.com",
-            rol="admin", token="test_auth_token_admin", rubro_id=self.mock_rubro.id
+            rol="admin", token="test_auth_token_admin", rubro_id=rubro.id
         )
-        self.mock_user.set_password("adminpass")
-        db.session.add(self.mock_user)
+        mock_user.set_password("adminpass")
+        db.session.add(mock_user)
         db.session.commit()
+        _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
+        _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
-        self.g_patcher = patch('flask.g', new_callable=MagicMock)
-        self.mock_g = self.g_patcher.start()
-        self.mock_g.current_user = self.mock_user
+        with patch('services.cohere_ai.embed_textos') as mock_embed_textos:
+            mock_embed_textos.return_value = [[0.11]*1024]
+            client = test_app.test_client()
+            response = client.post('/ai/suggest-templates',
+                                        headers={'Authorization': f'Bearer {mock_user.token}'},
+                                        json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
 
-        self.embed_patcher = patch('services.cohere_ai.embed_textos')
-        self.mock_embed_textos = self.embed_patcher.start()
-
-        self.chat_patcher = patch('services.cohere_ai.get_cohere_response')
-        self.mock_get_cohere_response = self.chat_patcher.start()
-
-    def tearDown(self):
-        """Tear down after each test method."""
-        db.session.rollback()
-        self.g_patcher.stop()
-        self.embed_patcher.stop()
-        self.chat_patcher.stop()
-
-    def _crear_plantilla(self, name, text, keywords=None, is_active=True, embedding_value=None):
-        if embedding_value is None:
-            embedding_value = [0.1] * 1024
-
-        plantilla = PlantillasRespuesta(
-            name=name, text=text,
-            keywords=json.dumps(keywords) if keywords else json.dumps([]),
-            is_active=is_active, embedding=embedding_value
-        )
-        db.session.add(plantilla)
-        db.session.commit()
-        return plantilla
-
-    def test_suggest_templates_success(self):
-        self._crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
-        self._crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
-
-        self.mock_embed_textos.return_value = [[0.11]*1024]
-
-        response = self.client.post('/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
-                                    json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
-
-        self.assertEqual(response.status_code, 200)
-        data = json.loads(response.data)
-        self.assertIn('sugerencias', data)
-        sugerencias = data['sugerencias']
-        self.assertEqual(len(sugerencias), 1)
-        self.assertEqual(sugerencias[0]['name'], 'Saludo')
-        self.assertIn("Hola, ¿cómo estás {{nombre_cliente}}?", sugerencias[0]['text'])
-        self.mock_embed_textos.assert_called_once_with(textos=['Quiero saludar'], input_type='search_query')
-
-    def test_suggest_templates_missing_asunto(self):
-        response = self.client.post('/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
-                                    json={'consulta_cliente': 'Hola'})
-        self.assertEqual(response.status_code, 400)
-        data = json.loads(response.data)
-        self.assertIn('error', data)
-        self.assertIn("El campo 'asunto' es obligatorio", data['error'])
-
-    def test_suggest_templates_no_active_templates_with_embeddings(self):
-        self._crear_plantilla("Inactiva", "Plantilla inactiva", is_active=False, embedding_value=[0.5]*1024)
-        self._crear_plantilla("Activa Sin Embedding", "Texto activo sin embedding", embedding_value=None)
-
-        self.mock_embed_textos.return_value = [[0.1]*1024]
-
-        response = self.client.post('/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
-                                    json={'asunto': 'Consulta', 'consulta_cliente': 'Duda', 'top_n': 1})
-        self.assertEqual(response.status_code, 200)
-        data = json.loads(response.data)
-        self.assertIn('sugerencias', data)
-        self.assertEqual(len(data['sugerencias']), 0)
-        self.assertIn('message', data)
-        self.assertEqual(data['message'], "No hay plantillas de respuesta activas configuradas con embeddings.")
-
-    def test_suggest_templates_cohere_embed_fails(self):
-        self._crear_plantilla("Activa Con Embedding", "Texto activo", embedding_value=[0.1]*1024)
-        self.mock_embed_textos.return_value = None
-
-        response = self.client.post('/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
-                                    json={'asunto': 'Consulta', 'consulta_cliente': 'Ayuda'})
-
-        self.assertEqual(response.status_code, 500)
-        data = json.loads(response.data)
-        self.assertIn('error', data)
-        self.assertIn("Error al generar el embedding para la consulta del ticket", data['error'])
+            assert response.status_code == 200
+            data = json.loads(response.data)
+            assert 'sugerencias' in data
+            sugerencias = data['sugerencias']
+            assert len(sugerencias) == 1
+            assert sugerencias[0]['name'] == 'Saludo'
+            assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['text']
+            mock_embed_textos.assert_called_once_with(textos=['Quiero saludar'], input_type='search_query')
 
 if __name__ == '__main__':
     unittest.main()

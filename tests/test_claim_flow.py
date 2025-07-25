@@ -11,71 +11,71 @@ if project_root not in sys.path:
 
 from app import create_app, db
 from config import Config
-from services.municipios import ReclamoHandler, ConversationState, es_pregunta_nueva
+from services.municipios import responder_municipio
 
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     WTF_CSRF_ENABLED = False
 
-class TestClaimFlow(unittest.TestCase):
-
-    def setUp(self):
-        self.app = create_app(TestConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.create_all()
-        self.client = self.app.test_client()
-
-        self.context = {
-            "contexto_municipio_v2": {},
-            "user_obj": MagicMock(),
-            "viewer_user_obj": None,
-            "cliente_id": None,
-            "anon_id": "test_anon_id",
-            "rubro_obj": None,
-            "channel": "whatsapp",
-            "municipio_config_actual": {},
-            "chat_session_uuid": "test_session_uuid",
-            "chat_db_context_data": {},
+def test_full_claim_flow(test_app):
+    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
+        # 1. User initiates a claim
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "Claro, ¿cuál es el problema?",
+            "accion_backend": "iniciar_reclamo",
+            "datos_estructura": {},
+            "pedir_info": "descripcion"
         }
+        owner_user = MagicMock()
+        owner_user.id = 1
+        rubro_obj = None
+        viewer_user = None
+        chat_db_context = MagicMock()
+        chat_db_context.context_data = {}
+        response = responder_municipio(
+            pregunta_original="Quiero hacer un reclamo",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_db_context,
+            anon_id="test_anon_id"
+        )
+        assert "Claro, ¿cuál es el problema?" in response["message_body"]
 
-    def tearDown(self):
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
+        # 2. User provides description
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "Entendido, un poste de luz roto. ¿Dónde ocurrió?",
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {"descripcion": "Poste de luz roto"},
+            "pedir_info": "ubicacion"
+        }
+        response = responder_municipio(
+            pregunta_original="Poste de luz roto",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_db_context,
+            anon_id="test_anon_id"
+        )
+        assert "Entendido, un poste de luz roto. ¿Dónde ocurrió?" in response["message_body"]
 
-    def test_es_pregunta_nueva_with_address(self):
-        """
-        Tests that a valid address is not considered a new question.
-        """
-        # Simulate the state where the bot is waiting for an address
-        memoria = {"estado_conversacion": "ESPERANDO_DIRECCION_RECLAMO"}
-        self.assertFalse(es_pregunta_nueva("Don Bosco 55, Junín, Mendoza", "una dirección", memoria))
-
-    @patch('services.herramientas_municipio.get_cohere_response')
-    def test_reclamo_handler_address_input(self, mock_get_cohere_response):
-        """
-        Simulates the user providing an address after being prompted.
-        """
-        mock_get_cohere_response.return_value = json.dumps({
-            "calle": "Don Bosco",
-            "numero": "55",
-            "localidad": "Junín",
-            "provincia": "Mendoza"
-        })
-        handler = ReclamoHandler(self.context)
-        self.context["contexto_municipio_v2"]["estado_conversacion"] = "ESPERANDO_DIRECCION_RECLAMO"
-        self.context["contexto_municipio_v2"]["categoria_reclamo"] = "Bacheo"
-
-        payload = {"pregunta": "Don Bosco 55, Junín, Mendoza"}
-        with self.app.app_context():
-            response = handler.handle(payload)
-
-        # The handler should now be waiting for the user's name
-        self.assertEqual(self.context["contexto_municipio_v2"]["estado_conversacion"], "ESPERANDO_NOMBRE_VECINO")
-        self.assertIn("nombre completo", response["message_body"])
-        self.assertEqual(self.context["contexto_municipio_v2"]["direccion_reclamo"], "Don Bosco 55, Junín")
+        # 3. User provides location
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "Gracias. Para registrar el reclamo, necesito tu nombre completo.",
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {"descripcion": "Poste de luz roto", "ubicacion": "Calle Falsa 123"},
+            "pedir_info": "nombre_completo"
+        }
+        response = responder_municipio(
+            pregunta_original="Calle Falsa 123",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_db_context,
+            anon_id="test_anon_id"
+        )
+        assert "Gracias. Para registrar el reclamo, necesito tu nombre completo." in response["message_body"]
 
 if __name__ == '__main__':
     unittest.main()

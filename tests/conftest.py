@@ -3,16 +3,17 @@ from unittest.mock import patch
 from app import create_app, db
 from config import TestConfig
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='function')
 def test_app():
-    app = create_app(config_class=TestConfig)
+    app = create_app(TestConfig)
     with app.app_context():
         db.create_all()
         yield app
         db.session.remove()
         db.drop_all()
+    return app
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='function')
 def test_client(test_app):
     return test_app.test_client()
 

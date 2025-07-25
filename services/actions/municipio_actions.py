@@ -58,21 +58,29 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         if campos_faltantes:
             mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
-            # Lógica para enviar botones en WhatsApp
-            if self.context.get("channel") == "whatsapp" and len(campos_faltantes) == 1:
-                # Si solo falta un dato, podemos ofrecer botones para acelerar
-                botones_whatsapp = []
-                if "ubicacion" in campos_faltantes[0]:
-                    botones_whatsapp = ["Compartir mi ubicación actual", "Ingresar dirección manualmente"]
-                # Podríamos añadir más lógica para otros campos si aplica
-
-                if botones_whatsapp:
-                    from utils.whatsapp import enviar_mensaje_whatsapp_con_botones
-                    enviar_mensaje_whatsapp_con_botones(self.context.get("anon_id"), mensaje, botones_whatsapp)
-                    # Devolvemos un mensaje de éxito para que el flujo principal no envíe otro texto
-                    return {"success": True, "message_to_user": "", "pedir_info": campos_faltantes}
-
             return { "success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes }
+
+        # Confirmation step
+        if not action_data.get("confirmed"):
+            confirmation_message = f"""He recibido la siguiente información:
+- Categoría: {categoria}
+- Descripción: {descripcion}
+- Ubicación: {ubicacion_llm}
+- Nombre: {nombre_vecino_llm}
+- Teléfono: {telefono_llm}
+- Email: {email_llm}
+
+¿Es correcta esta información?
+"""
+            return {
+                "success": False,
+                "message_to_user": confirmation_message,
+                "pedir_info": "confirmation",
+                "botones": [
+                    {"texto": "Sí, es correcto", "id_accion": "confirmar_reclamo"},
+                    {"texto": "No, quiero corregir", "id_accion": "corregir_reclamo"}
+                ]
+            }
 
         # 2. Recopilación de Información del Contexto
         viewer_user = self.context.get("viewer_user_obj")
@@ -380,26 +388,38 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CorregirDatosReclamoActionHandler with data: {action_data}")
 
-        campo_a_corregir = action_data.get("campo_a_corregir") # e.g., "ubicacion", "descripcion"
+        campo_a_corregir = action_data.get("campo_a_corregir")
         nuevo_valor = action_data.get("nuevo_valor")
-        # contexto_original = action_data.get("contexto_original_del_reclamo") # To identify which claim if multiple are possible in context
 
-        if not campo_a_corregir or nuevo_valor is None: # nuevo_valor can be empty string
+        if not campo_a_corregir or nuevo_valor is None:
             return {
                 "success": False,
                 "message_to_user": "No especificaste qué dato corregir o cuál es el nuevo valor.",
                 "pedir_info": "detalle_correccion"
             }
 
-        # Here, you would update the claim data in the session/context or database.
-        # For now, just acknowledge.
+        # Update the context with the new value
+        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
+        if campo_a_corregir == "ubicacion":
+            contexto_reclamo["direccion_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "descripcion":
+            contexto_reclamo["descripcion_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "categoria":
+            contexto_reclamo["categoria_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "nombre":
+            contexto_reclamo["nombre_vecino"] = nuevo_valor
+        elif campo_a_corregir == "telefono":
+            contexto_reclamo["telefono_vecino"] = nuevo_valor
+        elif campo_a_corregir == "email":
+            contexto_reclamo["email_vecino"] = nuevo_valor
+
         user_message = f"Entendido. He actualizado '{campo_a_corregir}' a '{nuevo_valor}'. ¿Algo más que desees cambiar o confirmamos el reclamo?"
 
         return {
             "success": True,
             "message_to_user": user_message,
             "data": {"campo_corregido": campo_a_corregir, "valor_actualizado": nuevo_valor},
-            "pedir_info": "confirmacion_tras_correccion" # Suggests asking for confirmation
+            "pedir_info": "confirmacion_tras_correccion"
         }
 
 # Add other handlers as needed

@@ -37,15 +37,10 @@ class TestAccionesMunicipio(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.actions.municipio_actions.validar_telefono')
-    @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.actions.municipio_actions.parse_direccion_completa')
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.actions.municipio_actions.crear_ticket_action_logic')
+    @patch('services.actions.municipio_actions.llamar_gemini')
     def test_accion_crear_reclamo_exito_completo_llm(
-        self, mock_enviar_whatsapp, mock_parse_direccion, mock_validar_email,
-        mock_validar_telefono, mock_formatear_telefono, mock_crear_ticket
+        self, mock_llamar_gemini, mock_crear_ticket_action_logic
     ):
         mock_ticket_simulado = MagicMock()
         mock_ticket_simulado.nro_ticket = "12345"

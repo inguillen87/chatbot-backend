@@ -183,6 +183,13 @@ def whatsapp_webhook():
             **kwargs_for_bot
         )
 
+        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
+        if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (bot_response_dict.get("datos_estructura", {}).get("nombre_usuario_detectado") and bot_response_dict.get("datos_estructura", {}).get("telefono_detectado") and bot_response_dict.get("datos_estructura", {}).get("email_detectado")):
+            bot_response_dict = {
+                "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
+                "pedir_info": ["nombre", "telefono", "email"]
+            }
+
         print(f"Raw response from responder_chatboc: {bot_response_dict}")
 
         # Validate the response from the bot logic

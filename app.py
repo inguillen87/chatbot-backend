@@ -125,12 +125,13 @@ def create_app(config_class=Config):
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
     # --- Inicialización de Extensiones ---
-    db.init_app(app)
-    migrate.init_app(app, db)
     init_celery(app) # Inicializar Celery con la app Flask
     login_manager.init_app(app) # Initialize Flask-Login
     login_manager.session_protection = "strong" # Configure session protection
     login_manager.login_view = "auth.login" # Set the login view
+    with app.app_context():
+        db.init_app(app)
+        migrate.init_app(app, db)
 
     @login_manager.user_loader
     def load_user(user_id):
@@ -236,7 +237,7 @@ def create_app(config_class=Config):
     return app
 
 # Esto crea el objeto 'app' global para Gunicorn:
-app = create_app()
+app = create_app(Config)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
