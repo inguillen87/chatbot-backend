@@ -94,6 +94,11 @@ def _clean_llm_json_output(llm_output: str) -> str:
     match = re.match(r"^\s*```json\s*([\s\S]*?)\s*```\s*$", llm_output, re.DOTALL)
     cleaned_output = match.group(1) if match else llm_output
 
+    # Extract the first JSON-like block in case the model added extra text
+    block_match = re.search(r"\{[\s\S]*\}|\[[\s\S]*\]", cleaned_output)
+    if block_match:
+        cleaned_output = block_match.group(0)
+
     # Remove trailing commas before closing braces or brackets
     cleaned_output = re.sub(r",\s*(?=[}\]])", "", cleaned_output)
 
