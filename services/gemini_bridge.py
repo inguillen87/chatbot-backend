@@ -407,11 +407,11 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
         # Asumimos que el primer candidato tiene la respuesta.
         # El prompt pide explícitamente un JSON, así que response.text debería serlo.
-        if response.candidates:
+        if response.candidates and response.candidates[0].content.parts:
             respuesta_texto_crudo = response.candidates[0].content.parts[0].text.strip()
             logger.info(f"Respuesta de Gemini (crudo): {respuesta_texto_crudo}")
         else:
-            logger.warning("La respuesta de Gemini no contiene candidatos.")
+            logger.error("Gemini no devolvió contenido en el primer candidato.")
             respuesta_texto_crudo = '{"respuesta_usuario": "No pude procesar tu solicitud en este momento. Por favor, intenta de nuevo más tarde.", "accion_backend": "error"}'
 
     except ImportError as ie:

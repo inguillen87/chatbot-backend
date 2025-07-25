@@ -428,7 +428,11 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     if request.content_type.startswith('application/json'):
         data = request.get_json()
-        comentario_texto = data.get("comentario")
+        if isinstance(data, dict):
+            comentario_texto = data.get("comentario")
+        else:
+            current_app.logger.warning("JSON payload inválido para respuesta de ticket")
+            return jsonify({"error": "Formato JSON inválido"}), 400
         # No files expected in JSON payload for this simplified handling
         current_app.logger.info(f"Admin response via JSON: {comentario_texto}")
     elif request.content_type.startswith('multipart/form-data'):
