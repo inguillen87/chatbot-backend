@@ -40,9 +40,9 @@ class ChatUserPanelTests(unittest.TestCase):
         db.session.commit()
 
     def tearDown(self):
+        db.session.query(ChatSessionContext).delete()
         db.session.query(User).delete()
         db.session.query(Rubro).delete()
-        db.session.query(ChatSessionContext).delete()
         db.session.commit()
 
     def test_register_and_associate_chat_session(self):
@@ -67,7 +67,7 @@ class ChatUserPanelTests(unittest.TestCase):
                 'empresa_token': self.owner_user.token
             }, headers={
                 'X-Chat-Session-Id': chat_session_id,
-                'Anon-Id': anon_id
+                'X-Anon-Id': anon_id
             })
 
         self.assertEqual(resp.status_code, 201)

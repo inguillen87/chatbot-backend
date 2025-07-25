@@ -62,7 +62,7 @@ def my_on_connect_listener(dbapi_connection, connection_record):
     except Exception:
         pass
 
-def create_app(config_class=Config):
+def create_app(config_name='default'):
     app = Flask(__name__)
     print("Creating app...")
 
@@ -71,6 +71,13 @@ def create_app(config_class=Config):
     # when running behind a reverse proxy (like Nginx, Heroku, Render, etc.)
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+    if config_name == 'testing':
+        from config import TestingConfig
+        config_class = TestingConfig
+    else:
+        from config import Config
+        config_class = Config
 
     app.config.from_object(config_class)
     print(f"Loaded config: {config_class}")
@@ -125,13 +132,12 @@ def create_app(config_class=Config):
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
     # --- Inicialización de Extensiones ---
+    db.init_app(app)
+    migrate.init_app(app, db)
     init_celery(app) # Inicializar Celery con la app Flask
     login_manager.init_app(app) # Initialize Flask-Login
     login_manager.session_protection = "strong" # Configure session protection
     login_manager.login_view = "auth.login" # Set the login view
-    with app.app_context():
-        db.init_app(app)
-        migrate.init_app(app, db)
 
     @login_manager.user_loader
     def load_user(user_id):
@@ -237,7 +243,7 @@ def create_app(config_class=Config):
     return app
 
 # Esto crea el objeto 'app' global para Gunicorn:
-app = create_app(Config)
+app = create_app()
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))

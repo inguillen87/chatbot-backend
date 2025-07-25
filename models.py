@@ -291,6 +291,17 @@ class Conversacion(db.Model):
     fuente = db.Column(db.String(50), nullable=False)
     rubro = db.Column(db.String(100), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ChatSessionContext(db.Model):
+    __tablename__ = 'chat_session_context'
+    chat_session_id = db.Column(db.String(255), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    anon_id = db.Column(db.String(255), nullable=True, index=True)
+    context_data = db.Column(JSON, default=lambda: {})
+    last_updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<ChatSessionContext {self.chat_session_id}>"
     session_id = db.Column(db.String(36), default=lambda: str(uuid.uuid4()), nullable=False)
     __table_args__ = (Index('ix_conversacion_session_id', 'session_id'),)
 
@@ -568,19 +579,6 @@ class PromocionAlcance(db.Model):
 #     promocion = db.relationship('Promocion', backref='usos_por_clientes')
 #     cliente = db.relationship('User', backref='promociones_usadas')
 #     pedido = db.relationship('PymePedido', backref='promociones_aplicadas_en_pedido')
-
-class ChatSessionContext(db.Model):
-    __tablename__ = "chat_session_context"
-    chat_session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
-    anon_id = db.Column(db.String(80), nullable=True, index=True) # Similar to MunicipioTicket.anon_id
-    context_data = db.Column(db.JSON, nullable=True) # Stores combined context (municipio, pyme, history, idempotency keys)
-    last_updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    user = db.relationship('User', backref=db.backref('chat_session_contexts', lazy='dynamic'))
-
-    def __repr__(self):
-        return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
 
 print("✅ models.py fue importado con éxito y contiene modelos.")
 

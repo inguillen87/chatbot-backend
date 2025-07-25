@@ -15,6 +15,34 @@ class ChatOrchestrator:
         'anon_id', 'channel', 'chat_db_context_data', etc.
         """
         self.global_context = global_context
+        self._load_context()
+
+    def _load_context(self):
+        from models import ChatSessionContext
+        import json
+        session_id = self.global_context.get("chat_session_uuid")
+        context_obj = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        if context_obj and context_obj.context_data:
+            self.global_context['contexto_municipio_v2'] = json.loads(context_obj.context_data).get('contexto_municipio_v2', {})
+        else:
+            self.global_context['contexto_municipio_v2'] = {}
+
+    def _save_context(self):
+        from models import db, ChatSessionContext
+        import json
+        session_id = self.global_context.get("chat_session_uuid")
+        context_obj = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        if not context_obj:
+            context_obj = ChatSessionContext(
+                chat_session_id=session_id,
+                user_id=self.global_context.get("viewer_user_id"),
+                anon_id=self.global_context.get("anon_id")
+            )
+            db.session.add(context_obj)
+
+        context_to_save = {'contexto_municipio_v2': self.global_context.get('contexto_municipio_v2', {})}
+        context_obj.context_data = json.dumps(context_to_save)
+        db.session.commit()
 
     def _get_handler_class(self, action_name: str):
         """
@@ -42,6 +70,43 @@ class ChatOrchestrator:
         except (ImportError, AttributeError) as e:
             logger.error(f"Error importing handler for action '{action_name}' with path '{handler_path_str}': {e}", exc_info=True)
             return None
+
+    def handle_message(self, user_message: str) -> Dict[str, Any]:
+        """
+        Main entry point for handling a user message.
+        It calls the LLM, then executes the resulting action.
+        """
+        from .gemini_bridge import llamar_gemini
+
+        # Here you would build the full context and history to send to the LLM
+        # For now, we'll keep it simple
+
+        # NOTE: The real implementation in `responder_municipio` and `responder_pyme`
+        # builds a much more complex prompt with history, context, etc.
+        # This is a simplified version for demonstration and testing.
+        llm_input_prompt = f"El usuario dice: '{user_message}'. ¿Qué acción debe realizar el bot?"
+
+        try:
+            llm_output = llamar_gemini(llm_input_prompt) # This needs to be adapted to your actual call
+
+            # Basic validation of LLM output
+            if not isinstance(llm_output, dict) or "accion_backend" not in llm_output:
+                logger.error(f"Invalid LLM output format: {llm_output}")
+                return {
+                    "success": False,
+                    "message_to_user": "No pude entender la respuesta del asistente inteligente.",
+                    "error_details": "Invalid LLM output format."
+                }
+
+            return self.execute_action(llm_output)
+
+        except Exception as e:
+            logger.error(f"Error calling LLM or processing its output: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Tuve un problema para conectar con el asistente inteligente.",
+                "error_details": str(e)
+            }
 
     def execute_action(self, llm_output: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -112,6 +177,9 @@ class ChatOrchestrator:
             # If the action handler indicates a need to ask for more info, propagate that
             if action_result.get("pedir_info"):
                 llm_output["pedir_info"] = action_result["pedir_info"]
+
+            # Save context after action execution
+            self._save_context()
 
             return action_result
 

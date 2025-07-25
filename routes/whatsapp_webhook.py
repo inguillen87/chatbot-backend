@@ -38,6 +38,44 @@ def whatsapp_webhook():
     if not validator.validate(url, post_vars, signature):
         abort(403, "Invalid Twilio signature")
 
+    from_number_raw = post_vars.get("From", "")
+    from_number_cleaned = from_number_raw.replace("whatsapp:", "") # User's phone number
+
+    # Lógica para usuarios anónimos
+    max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
+    session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+
+    last_message_time = db.session.query(func.max(Conversacion.timestamp)) \
+        .filter(Conversacion.session_id == from_number_cleaned) \
+        .scalar()
+
+    session_expired = False
+    if last_message_time:
+        if datetime.utcnow() - last_message_time > timedelta(minutes=session_timeout_minutes):
+            session_expired = True
+            current_app.logger.info(f"Sesión anónima {from_number_cleaned} expirada. Reiniciando conteo de mensajes.")
+
+    if not session_expired:
+        message_count_this_session = Conversacion.query \
+            .filter(Conversacion.session_id == from_number_cleaned) \
+            .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes)) \
+            .count()
+
+        current_app.logger.info(f"Usuario anónimo {from_number_cleaned}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
+
+        if message_count_this_session >= max_messages:
+            # Enviar mensaje de límite alcanzado por WhatsApp
+            if twilio_client:
+                try:
+                    twilio_client.messages.create(
+                        from_=post_vars.get("To"),
+                        to=from_number_raw,
+                        body="Alcanzaste el límite de mensajes para usuarios invitados. Para continuar, por favor regístrate en nuestro sitio web."
+                    )
+                except Exception as e:
+                    print(f"Error al enviar mensaje de límite por Twilio: {e}")
+            return "OK", 200
+
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
 
@@ -182,13 +220,6 @@ def whatsapp_webhook():
             channel="whatsapp",
             **kwargs_for_bot
         )
-
-        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
-        if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (bot_response_dict.get("datos_estructura", {}).get("nombre_usuario_detectado") and bot_response_dict.get("datos_estructura", {}).get("telefono_detectado") and bot_response_dict.get("datos_estructura", {}).get("email_detectado")):
-            bot_response_dict = {
-                "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
-                "pedir_info": ["nombre", "telefono", "email"]
-            }
 
         print(f"Raw response from responder_chatboc: {bot_response_dict}")
 

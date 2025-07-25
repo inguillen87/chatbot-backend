@@ -183,6 +183,19 @@ def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None
         lineas_carrito.append(f"\n**TOTAL A PAGAR: ${total_final_desc:,.2f} {moneda_carrito}**")
     return "\n".join(lineas_carrito)
 
+class PymeConversationState(Enum):
+    IDLE = auto(); ESPERANDO_PRODUCTO = auto(); CONFIRMANDO_PEDIDO = auto(); PEDIDO_FINALIZADO = auto()
+    ESPERANDO_DATOS_CLIENTE_NOMBRE = auto(); ESPERANDO_DATOS_CLIENTE_TELEFONO = auto()
+    ESPERANDO_DATOS_CLIENTE_DIRECCION = auto(); ESPERANDO_DATOS_CLIENTE_EMAIL = auto()
+    ESPERANDO_CONFIRMACION_FINAL_CON_DATOS = auto(); ESPERANDO_FEEDBACK = auto()
+    ESPERANDO_NUMERO_TICKET = auto(); ESPERANDO_CONFIRMACION_CIERRE = auto()
+    ESPERANDO_CALIFICACION = auto(); ESPERANDO_DETALLES_RECLAMO = auto()
+
+def serialize_state(state): return state.name if state else None
+def deserialize_state(value):
+    if not value: return None
+    try: return PymeConversationState[value]
+    except KeyError: return None
 
 # Helper to serialize Enum objects within dicts/lists for JSON
 def serializar_enum(obj):
@@ -229,8 +242,8 @@ class BaseHandler(BaseActionHandler):
         else:
             logger.error("[BaseHandler._guardar_contexto_pyme] chat_db_context_data no encontrado en self.context.")
 
-    def _actualizar_estado(self, nuevo_estado: str, reintentos: int = 0):
-        self.pyme_ctx["estado_conversacion"] = nuevo_estado
+    def _actualizar_estado(self, nuevo_estado: PymeConversationState, reintentos: int = 0):
+        self.pyme_ctx["estado_conversacion"] = serialize_state(nuevo_estado)
         self.pyme_ctx["reintentos"] = reintentos
         self._guardar_contexto_pyme()
 
@@ -397,16 +410,6 @@ class OfertasHandler(BaseHandler):
             "fuente": "pyme_ofertas_sin_promos_v2"
         }
 
-class PedidoHandler(BaseActionHandler):
-    def execute(self, action_data):
-        # This handler will be simplified or removed, as the logic will be
-        # handled by the LLM and other more specific action handlers.
-        # For now, it returns a simple message.
-        return {
-            "success": True,
-            "message_to_user": "Estoy procesando tu pedido.",
-            "fuente": "pyme_pedido_handler_placeholder"
-        }
 
 class FaqHandler(BaseHandler):
     def execute(self, action_data):
@@ -527,16 +530,51 @@ class UnclearHandler(BaseHandler): # Aunque no está en handler_map, es bueno te
             "fuente": "pyme_unclear_handler_v2"
         }
 
-class TicketStatusHandler(BaseActionHandler):
+class TicketStatusHandler(BaseHandler):
     def execute(self, action_data):
-        # This handler will be simplified or removed, as the logic will be
-        # handled by the LLM and other more specific action handlers.
-        # For now, it returns a simple message.
-        return {
-            "success": True,
-            "message_to_user": "Estoy consultando el estado de tu ticket.",
-            "fuente": "pyme_ticket_status_handler_placeholder"
-        }
+        pregunta = action_data.get("pregunta", "")
+        estado_actual = deserialize_state(self.pyme_ctx.get("estado_conversacion"))
+
+        if estado_actual == PymeConversationState.ESPERANDO_NUMERO_TICKET:
+            numero_ticket_buscado = re.findall(r'\d+', pregunta)
+            if numero_ticket_buscado:
+                num_ticket = numero_ticket_buscado[0]
+                # TODO: Buscar ticket en sistema de tickets usando servicio_tickets
+                # ticket_info = servicio_tickets.consultar_ticket(self.pyme_id_actual, num_ticket, cliente_id=self.cliente_id_actual)
+                ticket_info = None # Placeholder
+                self._actualizar_estado(PymeConversationState.IDLE)
+                if ticket_info:
+                    # respuesta = f"El ticket #{num_ticket} está en estado: {ticket_info.get('estado','Desconocido')}. Última actualización: {ticket_info.get('ultima_actualizacion','N/A')}."
+                    # if ticket_info.get('comentarios'):
+                    #     respuesta += f"\nÚltimo comentario: {ticket_info['comentarios'][-1]['texto']}"
+                    return {"message_body": f"Funcionalidad de consulta de ticket ({num_ticket}) aún no implementada.", "fuente": "pyme_ticket_status_found_placeholder_v2"}
+                else:
+                    return {"message_body": f"No encontré información para el ticket #{num_ticket}. Verifica el número e intenta de nuevo.", "fuente": "pyme_ticket_status_not_found_v2"}
+            else:
+                self.pyme_ctx["reintentos_numero_ticket"] = self.pyme_ctx.get("reintentos_numero_ticket", 0) + 1
+                if self.pyme_ctx["reintentos_numero_ticket"] > 2:
+                    self._actualizar_estado(PymeConversationState.IDLE)
+                    self.pyme_ctx["reintentos_numero_ticket"] = 0
+                    return {"message_body": "No pude identificar el número de ticket. Vuelvo al menú principal.", "fuente": "pyme_ticket_status_too_many_retries_v2"}
+                else:
+                    self._guardar_contexto_pyme()
+                    return {"message_body": "No entendí el número. Por favor, dime solo el número de tu ticket.", "fuente": "pyme_ticket_status_reintentando_numero_v2"}
+        else:
+            self._actualizar_estado(PymeConversationState.ESPERANDO_NUMERO_TICKET)
+            ultimo_ticket = self.pyme_ctx.get("ultimo_ticket_creado")
+            msg = "¿Cuál es el número de ticket que quieres consultar?"
+            options = []
+            if ultimo_ticket:
+                msg = f"¿Quieres consultar sobre tu último ticket (#{ultimo_ticket}) o ingresar otro número?"
+                options.append({"id": f"consultar_ticket_numero_{ultimo_ticket}", "texto": f"Sí, Ticket #{ultimo_ticket}"})
+                options.append({"id": "consultar_otro_ticket_numero", "texto": "Ingresar otro número"})
+
+            return {
+                "message_body": msg,
+                "options_list": options,
+                "message_type": "interactive_buttons" if options else "text",
+                "fuente": "pyme_ticket_status_solicitando_numero_v2"
+            }
 
 class FallbackHandler(BaseHandler):
     def execute(self, action_data):
@@ -700,183 +738,21 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
 from services.gemini_bridge import llamar_gemini # Importar llamar_gemini
 from .chat_orchestrator import ChatOrchestrator # Importar el nuevo Orchestrator
 
-def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
-    request_id = str(uuid.uuid4())
-    logger_actual = current_app.logger if current_app else logger
-
-    # --- 1. Procesamiento de Entrada y Carga de Contexto (simplificado) ---
-    received_payload = {}
-    pregunta_str = ""
-    if isinstance(pregunta_original, dict):
-        received_payload = pregunta_original
-        pregunta_str = received_payload.get("pregunta", "")
-    elif isinstance(pregunta_original, str):
-        pregunta_str = pregunta_original
-        received_payload["pregunta"] = pregunta_original
-    if kwargs: received_payload.update(kwargs)
-
-    if chat_db_context.context_data is None: chat_db_context.context_data = {}
-    pyme_ctx_actual = chat_db_context.context_data.get(CONTEXTO_PYME, {})
-    historial_chat_para_gemini = chat_db_context.context_data.get("mensajes_previos_gemini_formato", [])
-
-    # --- 2. Construir Información de Usuario para Gemini ---
-    nombre_pyme_display = getattr(owner_user, "nombre_empresa", "la tienda") if owner_user else "la tienda"
-    usuario_info_for_gemini = {
-        "nombre": getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None) or pyme_ctx_actual.get("nombre_cliente") or "Cliente",
-        "tipo_entidad": "pyme",
-        "pyme_info": {"nombre_pyme": nombre_pyme_display, "rubro": getattr(owner_user.rubro, "nombre", "general") if owner_user and hasattr(owner_user, "rubro") else "general"}
-    }
-    loc_usuario_texto = getattr(viewer_user, "direccion", None) or pyme_ctx_actual.get("direccion_cliente")
-    if loc_usuario_texto: usuario_info_for_gemini["ubicacion_conocida"] = loc_usuario_texto
-
-    # --- 3. Llamada Principal a Gemini ---
-    mensaje_para_gemini = pregunta_str # Simplificado, podría añadir info de adjuntos si es relevante aquí
-    # (Manejo de adjuntos y su análisis se delega a ActionHandlers si Gemini lo indica)
-
-    llm_response_structured = llamar_gemini(
-        mensaje_usuario=mensaje_para_gemini,
-        usuario=usuario_info_for_gemini,
-        historial=historial_chat_para_gemini
-    )
-
-    # Actualizar historial para la próxima llamada a Gemini
-    if "mensajes_previos_gemini_formato" not in chat_db_context.context_data:
-        chat_db_context.context_data["mensajes_previos_gemini_formato"] = []
-    chat_db_context.context_data["mensajes_previos_gemini_formato"].append({"role": "user", "parts": [{"text": mensaje_para_gemini}]})
-    # La respuesta del modelo al historial se añade después del ActionHandler
-
-    # --- 4. Preparar Contexto Global para ChatOrchestrator y Action Handlers ---
-    global_context_for_orchestrator = {
-        CONTEXTO_PYME: pyme_ctx_actual,
-        "user_id": getattr(owner_user, "id", None), # ID de la PYME (owner)
-        "nombre_pyme": nombre_pyme_display,
-        "rubro_nombre": getattr(owner_user.rubro, "nombre", "general").lower() if owner_user and hasattr(owner_user, "rubro") else "general",
-        "viewer_user_obj": viewer_user,
-        "cliente_id": getattr(viewer_user, "id", None), # ID del cliente final
+def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user, chat_db_context, anon_id, chat_session_uuid, channel, **kwargs):
+    # 1. Build the global context for the orchestrator
+    global_context = {
+        "owner_user_id": owner_user.id,
+        "viewer_user_id": viewer_user.id if viewer_user else None,
         "anon_id": anon_id,
-        "rubro_id": getattr(rubro_obj, "id", None) or (getattr(owner_user.rubro, "id", None) if owner_user and hasattr(owner_user, "rubro") else None),
-        "coleccion_qdrant": coleccion_catalogo_para_rubro(getattr(owner_user.rubro, "nombre", "general").lower() if owner_user and hasattr(owner_user, "rubro") else "general"),
-        "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context.context_data, # El dict vivo
+        "rubro_clave": rubro_obj.clave if rubro_obj else None,
         "channel": channel,
-        "target_entity_type": "pyme", # Para DerivarHumanoAction
-        "empresa_token": getattr(owner_user, "token", None),
-        # Pasar datos del payload que podrían ser útiles para handlers
-        "pregunta_actual_usuario": pregunta_str,
-        "action_button_payload": received_payload.get("action"),
-        "uploaded_file_info": received_payload.get("uploaded_file_info") or received_payload.get("uploaded_file_info_whatsapp"),
-        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"), # Si ya se subió un archivo
+        "chat_session_uuid": chat_session_uuid,
+        "nombre_pyme_o_municipio": owner_user.nombre_empresa or owner_user.name,
+        "pyme_config_actual": {},  # Add any pyme-specific config here
+        "chat_db_context": chat_db_context,
+        **kwargs
     }
 
-    # --- 5. Ejecutar Acción vía ChatOrchestrator ---
-    if llm_response_structured.get("accion_backend") == "saludar":
-        handler = SaludoHandler(global_context_for_orchestrator)
-        action_handler_result = handler.handle(pregunta_str)
-    else:
-        orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
-        action_handler_result = orchestrator.execute_action(llm_response_structured)
-
-    # --- 6. Procesar Resultado del Action Handler y Formatear Respuesta ---
-    respuesta_final_texto = action_handler_result.get("message_to_user")
-    if not respuesta_final_texto:
-        respuesta_final_texto = llm_response_structured.get("respuesta_usuario", "No estoy seguro de cómo proceder. ¿Podrías intentarlo de nuevo?")
-
-    opciones_finales = llm_response_structured.get("botones", [])
-    pedir_info_final = action_handler_result.get("pedir_info") or llm_response_structured.get("pedir_info")
-
-    # Actualizar estado de conversación en pyme_ctx_actual (que es global_context_for_orchestrator[CONTEXTO_PYME])
-    if action_handler_result.get("success") and not pedir_info_final:
-        if pyme_ctx_actual.get("estado_conversacion") not in [None, PymeConversationState.IDLE.name]:
-            logger_actual.info(f"Acción PYME '{llm_response_structured.get('accion_backend')}' exitosa y sin pedir_info. Limpiando estado PYME.")
-            pyme_ctx_actual.clear() # Limpia el sub-diccionario
-            # (preservar interacciones_anon_sesion si es necesario)
-    elif pedir_info_final:
-        # Mapear pedir_info_final a un PymeConversationState
-        # Esta lógica de mapeo es crucial y debe ser exhaustiva.
-        estado_objetivo_str_pyme = None
-        if pedir_info_final == "productos_del_pedido": estado_objetivo_str_pyme = PymeConversationState.ESPERANDO_PRODUCTO.name
-        elif pedir_info_final == "nombre_cliente_pedido": estado_objetivo_str_pyme = PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE.name
-        # ... más mapeos para PYME ...
-        if estado_objetivo_str_pyme:
-            pyme_ctx_actual["estado_conversacion"] = estado_objetivo_str_pyme
-        else:
-            logger_actual.warning(f"No se pudo mapear pedir_info_pyme '{pedir_info_final}' a PymeConversationState.")
-
-    # Guardar historial de chat_db_context con respuesta final
-    chat_db_context.context_data["mensajes_previos_gemini_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})
-    if len(chat_db_context.context_data["mensajes_previos_gemini_formato"]) > 20:
-        chat_db_context.context_data["mensajes_previos_gemini_formato"] = chat_db_context.context_data["mensajes_previos_gemini_formato"][-20:]
-
-    # --- Lógica de sugerencia de registro PROACTIVA (simplificada, similar a municipio) ---
-    if not viewer_user and anon_id and current_app and \
-       action_handler_result.get("fuente","") != "sugerencia_registro_pyme_v2": # No sugerir si ya es una sugerencia
-        
-        estado_actual_str_sug_pyme = pyme_ctx_actual.get("estado_conversacion")
-        estado_sug_pyme_enum = None
-        if estado_actual_str_sug_pyme:
-            try: estado_sug_pyme_enum = PymeConversationState[estado_actual_str_sug_pyme]
-            except KeyError: pass
-        
-        estados_evitar_sug_pyme = [ # Definir estados donde no se debe interrumpir con sugerencia
-            PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE, PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO,
-            PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION, PymeConversationState.ESPERANDO_DATOS_CLIENTE_EMAIL,
-            PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS, PymeConversationState.CONFIRMANDO_PEDIDO
-        ]
-        if not estado_sug_pyme_enum or estado_sug_pyme_enum not in estados_evitar_sug_pyme:
-            interacciones_anon_pyme = pyme_ctx_actual.get("interacciones_anon_sesion", 0)
-            if len(pregunta_str.split()) > 1 or pregunta_str.lower() not in ["si", "no", "ok"]:
-                interacciones_anon_pyme += 1
-            pyme_ctx_actual["interacciones_anon_sesion"] = interacciones_anon_pyme
-            umbral_sug_pyme = current_app.config.get("PYME_UMBRAL_SUGERENCIA_REGISTRO", 3)
-
-            if umbral_sug_pyme > 0 and interacciones_anon_pyme >= umbral_sug_pyme and \
-               not pyme_ctx_actual.get("sugerencia_registro_emitida_ronda", False):
-                logger_actual.info(f"Anon {anon_id} (PYME) alcanzó umbral. Añadiendo sugerencia de registro.")
-                pyme_ctx_actual["sugerencia_registro_emitida_ronda"] = True
-                sug_obj_pyme = construir_respuesta_sugerir_registro("Para una mejor experiencia de compra.", "pyme", channel)
-                respuesta_final_texto += f"\n\n{sug_obj_pyme['respuesta']}"
-                opciones_finales.extend(sug_obj_pyme.get('botones',[]))
-    
-    # Serializar y guardar contexto PYME final
-    estado_final_pyme_str = pyme_ctx_actual.get("estado_conversacion")
-    if isinstance(estado_final_pyme_str, PymeConversationState):
-        pyme_ctx_actual["estado_conversacion"] = estado_final_pyme_str.name
-    elif estado_final_pyme_str is None:
-        pyme_ctx_actual.pop("estado_conversacion", None)
-
-    contexto_pyme_serializado_para_db = serializar_enum(pyme_ctx_actual)
-    chat_db_context.context_data[CONTEXTO_PYME] = contexto_pyme_serializado_para_db
-    if chat_db_context:
-        flag_modified(chat_db_context, "context_data")
-
-    # Formatear respuesta
-    message_type_pyme = "text"
-    if opciones_finales:
-        num_opt = len(opciones_finales)
-        if 0 < num_opt <= 3: message_type_pyme = "interactive_buttons"
-        elif num_opt > 3: message_type_pyme = "interactive_list"
-
-    final_response_dict = {
-        "message_body": respuesta_final_texto, "options_list": opciones_finales,
-        "message_type": message_type_pyme,
-        "contexto_actualizado": {CONTEXTO_PYME: contexto_pyme_serializado_para_db},
-        "ticket_id": action_handler_result.get("data", {}).get("pedido_id"), # o ticket_id si es un reclamo pyme
-        "fuente": action_handler_result.get("fuente") or llm_response_structured.get("accion_backend", "pyme_general_v4"),
-        "adjuntos": [] # Manejar adjuntos si es necesario
-    }
-
-    # Log de conversación
-    if anon_id and not viewer_user:
-        try:
-            db.session.add(Conversacion(
-                session_id=kwargs.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
-                respuesta=final_response_dict["message_body"], fuente=final_response_dict["fuente"],
-                rubro=global_context_for_orchestrator["rubro_nombre"], user_id=None, pyme_id=global_context_for_orchestrator["user_id"]
-            ))
-            db.session.commit()
-        except Exception as e_conv_pyme_final:
-            logger_actual.error(f"Error guardando Conversacion final (PYME): {e_conv_pyme_final}", exc_info=True)
-            db.session.rollback()
-
-    logger.info(f"[RESPONDER_PYME_END_V4 - {request_id}] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
-    return final_response_dict
+    # 2. Instantiate and use the orchestrator
+    orchestrator = ChatOrchestrator(global_context)
+    return orchestrator.handle_message(pregunta_original)

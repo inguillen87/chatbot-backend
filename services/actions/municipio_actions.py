@@ -16,21 +16,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
         logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")
 
         # 1. Extracción y Validación de Datos
-        categoria = action_data.get("categoria", "Reclamo General")
-        descripcion = action_data.get("descripcion")
-        ubicacion_llm = action_data.get("ubicacion")
-        coordenadas_llm = action_data.get("coordenadas")
-        nombre_vecino_llm = action_data.get("usuario")
-        telefono_llm = action_data.get("telefono")
-        email_llm = action_data.get("email")
-        foto_url_llm = action_data.get("foto_url_adjunta")
-
-        campos_faltantes = []
-        # 1. Extracción y Validación de Datos (mejorado con contexto)
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
 
         # Priorizar datos de action_data, luego de contexto, y finalmente None
-        categoria = action_data.get("categoria") or contexto_reclamo.get("categoria_reclamo") or "Reclamo General"
+        categoria = action_data.get("categoria") or contexto_reclamo.get("categoria_reclamo")
         descripcion = action_data.get("descripcion") or contexto_reclamo.get("descripcion_reclamo")
         ubicacion_llm = action_data.get("ubicacion") or contexto_reclamo.get("direccion_reclamo")
         coordenadas_llm = action_data.get("coordenadas") or contexto_reclamo.get("coordenadas_reclamo")
@@ -57,29 +46,32 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not email_llm: campos_faltantes.append("tu correo electrónico")
 
         if campos_faltantes:
-            mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
+            mensaje = action_data.get("respuesta_usuario_original_llm")
+            if not mensaje:
+                mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
+
+            # Guardar el contexto antes de salir
+            self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+            # Suponiendo que BaseActionHandler tiene este método para persistir
+            if hasattr(self, '_guardar_contexto_municipio'):
+                self._guardar_contexto_municipio()
+
             return { "success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes }
 
-        # Confirmation step
+        # Proactive confirmation step
         if not action_data.get("confirmed"):
-            confirmation_message = f"""He recibido la siguiente información:
-- Categoría: {categoria}
-- Descripción: {descripcion}
-- Ubicación: {ubicacion_llm}
-- Nombre: {nombre_vecino_llm}
-- Teléfono: {telefono_llm}
-- Email: {email_llm}
-
-¿Es correcta esta información?
-"""
             return {
-                "success": False,
-                "message_to_user": confirmation_message,
-                "pedir_info": "confirmation",
+                "success": True,
+                "message_to_user": f"He recibido la siguiente información:\n\n"
+                                   f"Categoría: {categoria}\n"
+                                   f"Descripción: {descripcion}\n"
+                                   f"Ubicación: {ubicacion_llm}\n\n"
+                                   f"¿Deseas confirmar y crear el reclamo?",
                 "botones": [
-                    {"texto": "Sí, es correcto", "id_accion": "confirmar_reclamo"},
-                    {"texto": "No, quiero corregir", "id_accion": "corregir_reclamo"}
-                ]
+                    {"texto": "Sí, confirmar", "id_accion": "crear_reclamo_confirmado"},
+                    {"texto": "No, cancelar", "id_accion": "cancelar_reclamo"},
+                ],
+                "fuente": "confirmar_reclamo_proactivo",
             }
 
         # 2. Recopilación de Información del Contexto
@@ -388,38 +380,26 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CorregirDatosReclamoActionHandler with data: {action_data}")
 
-        campo_a_corregir = action_data.get("campo_a_corregir")
+        campo_a_corregir = action_data.get("campo_a_corregir") # e.g., "ubicacion", "descripcion"
         nuevo_valor = action_data.get("nuevo_valor")
+        # contexto_original = action_data.get("contexto_original_del_reclamo") # To identify which claim if multiple are possible in context
 
-        if not campo_a_corregir or nuevo_valor is None:
+        if not campo_a_corregir or nuevo_valor is None: # nuevo_valor can be empty string
             return {
                 "success": False,
                 "message_to_user": "No especificaste qué dato corregir o cuál es el nuevo valor.",
                 "pedir_info": "detalle_correccion"
             }
 
-        # Update the context with the new value
-        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
-        if campo_a_corregir == "ubicacion":
-            contexto_reclamo["direccion_reclamo"] = nuevo_valor
-        elif campo_a_corregir == "descripcion":
-            contexto_reclamo["descripcion_reclamo"] = nuevo_valor
-        elif campo_a_corregir == "categoria":
-            contexto_reclamo["categoria_reclamo"] = nuevo_valor
-        elif campo_a_corregir == "nombre":
-            contexto_reclamo["nombre_vecino"] = nuevo_valor
-        elif campo_a_corregir == "telefono":
-            contexto_reclamo["telefono_vecino"] = nuevo_valor
-        elif campo_a_corregir == "email":
-            contexto_reclamo["email_vecino"] = nuevo_valor
-
+        # Here, you would update the claim data in the session/context or database.
+        # For now, just acknowledge.
         user_message = f"Entendido. He actualizado '{campo_a_corregir}' a '{nuevo_valor}'. ¿Algo más que desees cambiar o confirmamos el reclamo?"
 
         return {
             "success": True,
             "message_to_user": user_message,
             "data": {"campo_corregido": campo_a_corregir, "valor_actualizado": nuevo_valor},
-            "pedir_info": "confirmacion_tras_correccion"
+            "pedir_info": "confirmacion_tras_correccion" # Suggests asking for confirmation
         }
 
 # Add other handlers as needed
