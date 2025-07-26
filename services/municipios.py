@@ -251,6 +251,7 @@ class ConversationState(Enum):
     ESPERANDO_INFO_RECLAMO_LLM = auto() # Nuevo estado para cuando el LLM está recopilando info para un reclamo
     CONVERSACION_GENERAL_LLM = auto() # Nuevo estado para cuando el LLM está en una conversación general
     ESPERANDO_CONFIRMACION_INICIAR_RECLAMO = auto()
+    ESPERANDO_CREACION_TICKET = auto()
 
 # --- Mapping pedir_info -> ConversationState ---
 def normalizar_str(s: str) -> str:
@@ -499,11 +500,9 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
             if not pedir_info_llm:
-                respuesta_accion = accion_crear_reclamo_municipio(datos_estructura_llm, context)
-                for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
-                    contexto_municipio_actual.pop(k, None)
-                contexto_municipio_actual["estado_conversacion"] = None
-                return respuesta_accion
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CREACION_TICKET.name
+            return _handle_ticket_creation(contexto_municipio_actual, context)
             else:
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
@@ -898,3 +897,21 @@ def responder_municipio(
 
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
+
+
+def _handle_ticket_creation(contexto_municipio_actual, context):
+    """
+    Handles the ticket creation process.
+    """
+    respuesta_accion = accion_crear_reclamo_municipio(contexto_municipio_actual["datos_parciales_llm_reclamo"], context)
+    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
+        contexto_municipio_actual.pop(k, None)
+    contexto_municipio_actual["estado_conversacion"] = None
+    if respuesta_accion.get("ticket_id"):
+        respuesta_accion["message_body"] = f"Se ha generado el ticket de reclamo N° {respuesta_accion['ticket_id']}. ¿Deseas confirmar la creación del mismo?"
+        respuesta_accion["options_list"] = [
+            {"id": "confirmar_ticket", "texto": "Sí"},
+            {"id": "cancelar_ticket", "texto": "No"},
+        ]
+        respuesta_accion["message_type"] = "interactive_buttons"
+    return respuesta_accion

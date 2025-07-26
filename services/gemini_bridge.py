@@ -372,7 +372,7 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             temperature=0.2,  # Más bajo para respuestas más deterministas/estructuradas
             top_p=0.95,
             top_k=40,
-            max_output_tokens=2048,  # Ajustar según necesidad
+            max_output_tokens=8192,  # Ajustar según necesidad
             response_mime_type="application/json"  # Solicitar JSON directamente
         )
 

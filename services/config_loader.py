@@ -15,28 +15,12 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
 
     La información se recarga automáticamente si el archivo es modificado.
     """
-    clave = (municipio_id, archivo)
-    ruta = os.path.join(BASE_CONFIG_PATH, municipio_id, archivo)
+    clave = ("default", archivo)
+    ruta = os.path.join(BASE_CONFIG_PATH, "default", archivo)
     try:
         mtime = os.path.getmtime(ruta)
     except OSError as e:
         logger.error(f"[CONFIG] No se pudo acceder a {ruta}: {e}")
-        if municipio_id != "default":
-            ruta_default = os.path.join(BASE_CONFIG_PATH, "default", archivo)
-            try:
-                mtime = os.path.getmtime(ruta_default)
-                with open(ruta_default, "r", encoding="utf-8") as f:
-                    datos = json.load(f)
-                _config_cache[clave] = datos
-                _mtime_cache[clave] = mtime
-                logger.warning(
-                    f"[CONFIG] Usando configuracion por defecto para municipio {municipio_id}"
-                )
-                return datos
-            except Exception as e_default:
-                logger.error(
-                    f"[CONFIG] No se pudo cargar config por defecto {ruta_default}: {e_default}"
-                )
         _config_cache[clave] = {}
         _mtime_cache[clave] = None
         return {}
