@@ -500,9 +500,15 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
             if not pedir_info_llm:
+<<<<<<< bugfix/chat-issues
+                contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CREACION_TICKET.name
+                return _handle_ticket_creation(contexto_municipio_actual, context)
+=======
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CREACION_TICKET.name
             return _handle_ticket_creation(contexto_municipio_actual, context)
+>>>>>>> main
             else:
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
@@ -653,16 +659,14 @@ def responder_municipio(
 
     # --- End Handle post-login resumption ---
 
-    # LLM-first approach. The main Gemini call will now be the primary driver.
-    # The old handlers will be retired.
-    # respuesta_manejada_por_llm = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context)
-    #
-    # if respuesta_manejada_por_llm:
-    #     contexto_municipio_serializado_para_db = serializar_enum(context.get(CONTEXTO_MUNICIPIO, {}))
-    #     if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
-    #         chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
-    #         flag_modified(chat_db_context, "context_data")
-    #     return respuesta_manejada_por_llm
+    if USAR_LLM_PARA_RECLAMOS:
+        respuesta_manejada_por_llm = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context)
+        if respuesta_manejada_por_llm:
+            contexto_municipio_serializado_para_db = serializar_enum(context.get(CONTEXTO_MUNICIPIO, {}))
+            if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
+                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
+                flag_modified(chat_db_context, "context_data")
+            return respuesta_manejada_por_llm
 
 
     # --- Construcción del Contexto Global para Orchestrator y Handlers ---
