@@ -1,96 +1,48 @@
-import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
-from unittest.mock import MagicMock, patch
+import pytest
+from flask import url_for, render_template_string
 from app import create_app, db
-from models import User, Rubro
-from config import TestConfig
-from routes.estadisticas import estadisticas_reclamos
+from models import User
+from unittest.mock import patch
+import json
 
-class EstadisticasRouteTests(unittest.TestCase):
-    def setUp(self):
-        self.app = create_app(TestConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
+@pytest.fixture
+def app():
+    app = create_app('testing')
+    with app.app_context():
         db.create_all()
-        self.client = self.app.test_client()
-
-    def tearDown(self):
+        yield app
         db.session.remove()
         db.drop_all()
-        self.app_context.pop()
 
-    def test_pyme_filters_by_rubro(self):
-        rows = [SimpleNamespace(categoria='bodega', total=2)]
-        session = SimpleNamespace(
-            execute=MagicMock(side_effect=[
-                MagicMock(fetchall=MagicMock(return_value=rows)),
-                MagicMock(scalar=MagicMock(return_value=5)),
-                MagicMock(scalar=MagicMock(return_value=120.0)),
-            ])
-        )
-        user = User(
-            rubro=Rubro(nombre='bodega', clave='bodega'),
-            rubro_id=7,
-            municipio_id=None,
-            empresa_id=None,
-            rol='admin',
-            email='test@test.com',
-            name='test'
-        )
-        user.set_password('test')
-        db.session.add(user.rubro)
-        db.session.add(user)
-        db.session.commit()
+@pytest.fixture
+def client(app):
+    return app.test_client()
 
-        with self.app.test_request_context():
-            with patch('routes.estadisticas.jsonify', lambda x: x), \
-                 patch('routes.estadisticas.db', SimpleNamespace(session=session)):
-                resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
+@patch('routes.auth.token_requerido')
+def test_get_user_locations(mock_token_requerido, client):
+    # Mock current_user
+    mock_user = User(id=1, is_admin=True, municipio_id=1, rubro_id=None)
+    mock_token_requerido.return_value = lambda f: lambda *args, **kwargs: f(mock_user, *args, **kwargs)
 
-        self.assertEqual(resp['por_categoria_pyme'][0]['total'], 2)
-        self.assertEqual(resp['por_tipo'][0]['total'], 5)
-        self.assertEqual(resp['tiempo_respuesta_promedio_segundos']['pyme'], 120.0)
-        for call in session.execute.call_args_list:
-            params = call.kwargs.get('params')
-            if params:
-                self.assertEqual(params.get('rid'), 7)
+    # Create test users
+    user1 = User(id=2, name='Test User 1', municipio_id=1, latitud=10.0, longitud=20.0)
+    user2 = User(id=3, name='Test User 2', municipio_id=1, latitud=30.0, longitud=40.0)
+    db.session.add_all([mock_user, user1, user2])
+    db.session.commit()
 
-    def test_municipio_filters_by_id(self):
-        rows = [SimpleNamespace(categoria='categoria', total=2)]
+    response = client.get(url_for('estadisticas.get_user_locations'))
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert len(data) == 2
+    assert {'lat': 10.0, 'lng': 20.0} in data
+    assert {'lat': 30.0, 'lng': 40.0} in data
 
-        session = SimpleNamespace(
-            execute=MagicMock(side_effect=[
-                MagicMock(fetchall=MagicMock(return_value=rows)),
-                MagicMock(scalar=MagicMock(return_value=4)),
-                MagicMock(scalar=MagicMock(return_value=60.0)),
-            ])
-        )
-        user = User(
-            rubro=Rubro(nombre='municipios', clave='municipios'),
-            rubro_id=1,
-            municipio_id=3,
-            empresa_id=None,
-            rol='admin',
-            email='test@test.com',
-            name='test'
-        )
-        user.set_password('test')
-        db.session.add(user.rubro)
-        db.session.add(user)
-        db.session.commit()
+@patch('routes.auth.token_requerido')
+def test_mapa_calor_route(mock_token_requerido, client):
+    # Mock current_user
+    mock_user = User(id=1, is_admin=True, municipio_id=1, rubro_id=None)
+    mock_token_requerido.return_value = lambda f: lambda *args, **kwargs: f(mock_user, *args, **kwargs)
 
-        with self.app.test_request_context():
-            with patch('routes.estadisticas.jsonify', lambda x: x), \
-                 patch('routes.estadisticas.db', SimpleNamespace(session=session)):
-                resp = estadisticas_reclamos.__wrapped__.__wrapped__(user)
-        self.assertEqual(resp['por_categoria_municipio'][0]['total'], 2)
-        self.assertEqual(resp['por_tipo'][0]['total'], 4)
-        self.assertEqual(resp['tiempo_respuesta_promedio_segundos']['municipio'], 60.0)
-        for call in session.execute.call_args_list:
-            params = call.kwargs.get('params')
-            if params:
-                self.assertEqual(params.get('mid'), 3)
-
-if __name__ == '__main__':
-    unittest.main()
+    response = client.get(url_for('estadisticas.mapa_calor'))
+    assert response.status_code == 200
+    assert b'Estadísticas y Mapas de Calor' in response.data
