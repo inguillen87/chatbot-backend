@@ -176,7 +176,7 @@ def create_app(config_class=Config):
         return resp
 
     # --- Registro de Blueprints (Rutas) ---
-    app.register_blueprint(auth_bp, url_prefix='/auth')
+    app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
     app.register_blueprint(crm_bp)
@@ -205,7 +205,7 @@ def create_app(config_class=Config):
     # --- Registro de comandos CLI ---
     register_commands(app)
 
-    socketio.init_app(app, cors_allowed_origins="*")
+    socketio.init_app(app)
 
     return app
 
