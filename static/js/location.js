@@ -2,25 +2,35 @@ function solicitarUbicacion() {
     if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(enviarUbicacion, manejarError);
     } else {
-        alert("La geolocalización no es soportada por este navegador.");
+        console.error("La geolocalización no es soportada por este navegador.");
     }
 }
 
 function enviarUbicacion(posicion) {
     const latitud = posicion.coords.latitude;
     const longitud = posicion.coords.longitude;
+    const token = localStorage.getItem('token');
 
-    // Enviar la ubicación al backend
+    if (!token) {
+        console.error('No se encontró token de autenticación.');
+        return;
+    }
+
     fetch('/chat/location', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ latitud, longitud }),
     })
     .then(response => response.json())
     .then(data => {
-        console.log('Ubicación enviada:', data);
+        if (data.error) {
+            console.error('Error al enviar la ubicación:', data.error);
+        } else {
+            console.log('Ubicación enviada:', data);
+        }
     })
     .catch((error) => {
         console.error('Error al enviar la ubicación:', error);

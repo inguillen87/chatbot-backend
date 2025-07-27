@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estadísticas y Mapas de Calor</title>
+    <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=visualization"></script>
+    <style>
+        #map {
+            height: 500px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <h1>Estadísticas y Mapas de Calor</h1>
+    <div id="map"></div>
+    <script>
+        let map, heatmap;
+
+        function initMap() {
+            map = new google.maps.Map(document.getElementById('map'), {
+                zoom: 13,
+                center: {lat: -34.6037, lng: -58.3816} // Centro en Buenos Aires
+            });
+
+            heatmap = new google.maps.visualization.HeatmapLayer({
+                data: getPoints(),
+                map: map
+            });
+        }
+
+        function getPoints() {
+            // Aquí se cargarán los datos de ubicación de los usuarios desde el backend
+            return [
+                new google.maps.LatLng(-34.6037, -58.3816),
+                new google.maps.LatLng(-34.6087, -58.3716),
+                new google.maps.LatLng(-34.5937, -58.3916)
+            ];
+        }
+
+        // Cargar el mapa al cargar la página
+        google.maps.event.addDomListener(window, 'load', initMap);
+    </script>
+</body>
+</html>
