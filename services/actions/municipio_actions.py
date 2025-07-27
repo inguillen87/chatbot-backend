@@ -58,7 +58,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not email_llm: campos_faltantes.append("tu correo electrónico")
 
         if campos_faltantes:
-            mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
+            mensaje = f"Para registrar tu reclamo, necesito que me indiques {', '.join(campos_faltantes)}."
+            if len(campos_faltantes) == 1:
+                mensaje = f"Para registrar tu reclamo, solo necesito que me indiques {campos_faltantes[0]}."
+
             # Guardar el contexto actualizado
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
             return { "success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes }
