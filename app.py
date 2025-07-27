@@ -167,7 +167,7 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- Configuración de CORS ---
-    CORS(app, origins=["https://www.chatboc.ar", "http://localhost:5000", "https://www.chatboc.ar"], supports_credentials=True)
+    CORS(app, origins=["http://localhost:8080", "https://www.chatboc.ar", "http://localhost:5000", "https://www.chatboc.ar"], supports_credentials=True)
 
     @app.after_request
     def add_permissions_policy(resp):
