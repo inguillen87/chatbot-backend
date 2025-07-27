@@ -500,6 +500,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
             if not pedir_info_llm:
+                return _handle_ticket_creation(contexto_municipio_actual, context)
 
             else:
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
