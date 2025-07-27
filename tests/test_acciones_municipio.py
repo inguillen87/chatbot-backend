@@ -90,9 +90,9 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(respuesta["data"]["ticket_id"], mock_ticket_simulado.id)
         mock_crear_ticket.assert_called_once()
         _, kwargs = mock_crear_ticket.call_args
-        self.assertEqual(kwargs['nombre_completo'], "Homero Simpson")
-        self.assertEqual(kwargs['telefono'], "+5491122334455")
-        self.assertEqual(kwargs['email'], "homero@example.com")
+        self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Homero Simpson")
+        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5491122334455")
+        self.assertEqual(kwargs['ticket_data']['email_vecino'], "homero@example.com")
         mock_enviar_whatsapp.assert_called_once_with("+5491122334455", "Homero Simpson", "12345", "Alumbrado")
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -159,9 +159,9 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_crear_ticket.assert_called_once()
         _, kwargs = mock_crear_ticket.call_args
 
-        self.assertEqual(kwargs['nombre_completo'], "Usuario LLM")
-        self.assertEqual(kwargs['telefono'], "+549876543210") # Tomado y formateado del perfil
-        self.assertEqual(kwargs['email'], "perfil_valido@example.com") # Tomado del perfil (mock_validar_email siempre True)
+        self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Usuario LLM")
+        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+549876543210") # Tomado y formateado del perfil
+        self.assertEqual(kwargs['ticket_data']['email_vecino'], "perfil_valido@example.com") # Tomado del perfil (mock_validar_email siempre True)
 
         mock_enviar_whatsapp.assert_called_once_with(
             "+549876543210", "Usuario LLM", "67890", "Varios"

@@ -19,7 +19,7 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
-    COHERE_API_KEY = "test_cohere_key"
+    COHERE_API_KEY = "test"
 
 class TestAISuggestions(unittest.TestCase):
     def setUp(self):
@@ -47,11 +47,7 @@ class TestAISuggestions(unittest.TestCase):
         self.mock_g = self.g_patcher.start()
         self.mock_g.current_user = self.mock_user
 
-        self.embed_patcher = patch('services.cohere_ai.embed_textos')
-        self.mock_embed_textos = self.embed_patcher.start()
 
-        self.chat_patcher = patch('services.cohere_ai.get_cohere_response')
-        self.mock_get_cohere_response = self.chat_patcher.start()
 
     def tearDown(self):
         """Tear down after each test method."""
@@ -76,12 +72,11 @@ class TestAISuggestions(unittest.TestCase):
         db.session.commit()
         return plantilla
 
-    @patch('services.cohere_ai.robust_embed')
-    def test_suggest_templates_success(self, mock_robust_embed):
+    @patch('services.cohere_ai.co_client')
+    def test_suggest_templates_success(self, mock_cohere_client):
+        mock_cohere_client.embed.return_value = MagicMock(embeddings=[[0.11]*1024])
         self._crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
         self._crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
-
-        mock_robust_embed.return_value = {"embeddings": [[0.11]*1024]}
 
         response = self.client.post('/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
@@ -92,9 +87,9 @@ class TestAISuggestions(unittest.TestCase):
         self.assertIn('sugerencias', data)
         sugerencias = data['sugerencias']
         self.assertEqual(len(sugerencias), 1)
-        self.assertEqual(sugerencias[0]['nombre_plantilla'], 'Saludo')
-        self.assertIn("Hola, ¿cómo estás {{nombre_cliente}}?", sugerencias[0]['texto_plantilla'])
-        mock_robust_embed.assert_called_once()
+        self.assertEqual(sugerencias[0]['name'], 'Saludo')
+        self.assertIn("Hola, ¿cómo estás {{nombre_cliente}}?", sugerencias[0]['text'])
+        mock_cohere_client.embed.assert_called_once()
 
     def test_suggest_templates_missing_asunto(self):
         response = self.client.post('/ai/suggest-templates',
@@ -105,32 +100,33 @@ class TestAISuggestions(unittest.TestCase):
         self.assertIn('error', data)
         self.assertIn("El campo 'asunto' es obligatorio", data['error'])
 
-    def test_suggest_templates_no_active_templates_with_embeddings(self):
+    @patch('services.cohere_ai.robust_embed')
+    def test_suggest_templates_no_active_templates_with_embeddings(self, mock_robust_embed):
         self._crear_plantilla("Inactiva", "Plantilla inactiva", is_active=False, embedding_value=[0.5]*1024)
         self._crear_plantilla("Activa Sin Embedding", "Texto activo sin embedding", embedding_value=None)
-
-        self.mock_embed_textos.return_value = [[0.1]*1024]
+        mock_robust_embed.return_value = {"embeddings": [[0.1]*1024]}
 
         response = self.client.post('/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
                                     json={'asunto': 'Consulta', 'consulta_cliente': 'Duda', 'top_n': 1})
         self.assertEqual(response.status_code, 200)
-        data = json.loads(response.data)
+        data = response.get_json()
         self.assertIn('sugerencias', data)
         self.assertEqual(len(data['sugerencias']), 0)
         self.assertIn('message', data)
         self.assertEqual(data['message'], "No hay plantillas de respuesta activas configuradas con embeddings.")
 
-    def test_suggest_templates_cohere_embed_fails(self):
+    @patch('services.cohere_ai.co_client')
+    def test_suggest_templates_cohere_embed_fails(self, mock_cohere_client):
         self._crear_plantilla("Activa Con Embedding", "Texto activo", embedding_value=[0.1]*1024)
-        self.mock_embed_textos.return_value = None
+        mock_cohere_client.embed.return_value = None
 
         response = self.client.post('/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
                                     json={'asunto': 'Consulta', 'consulta_cliente': 'Ayuda'})
 
         self.assertEqual(response.status_code, 500)
-        data = json.loads(response.data)
+        data = response.get_json()
         self.assertIn('error', data)
         self.assertIn("Error al generar el embedding para la consulta.", data['error'])
 

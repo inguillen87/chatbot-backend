@@ -9,6 +9,8 @@ class TestConfig(Config):
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
 
+from routes.catalogo import catalogo_bp
+
 class CatalogoEndpointsTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)

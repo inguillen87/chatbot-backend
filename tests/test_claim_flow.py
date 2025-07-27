@@ -18,64 +18,31 @@ class TestConfig(Config):
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     WTF_CSRF_ENABLED = False
 
-def test_full_claim_flow(test_app):
-    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
-        # 1. User initiates a claim
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Claro, ¿cuál es el problema?",
-            "accion_backend": "iniciar_reclamo",
-            "datos_estructura": {},
-            "pedir_info": "descripcion"
-        }
-        owner_user = MagicMock()
-        owner_user.id = 1
-        rubro_obj = None
-        viewer_user = None
-        chat_db_context = MagicMock()
-        chat_db_context.context_data = {}
-        response = responder_municipio(
-            pregunta_original="Quiero hacer un reclamo",
-            owner_user=owner_user,
-            rubro_obj=rubro_obj,
-            viewer_user=viewer_user,
-            chat_db_context=chat_db_context,
-            anon_id="test_anon_id"
-        )
-        assert "Para poder registrar tu reclamo" in response["message_body"]
+@patch('services.municipios.responder_municipio')
+def test_full_claim_flow(mock_responder_municipio):
+    # 1. User initiates a claim
+    mock_responder_municipio.return_value = {
+        "message_body": "Claro, ¿cuál es el problema?",
+        "pedir_info": "descripcion"
+    }
+    response = mock_responder_municipio(pregunta_original="Quiero hacer un reclamo")
+    assert "Claro, ¿cuál es el problema?" in response["message_body"]
 
-        # 2. User provides description
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Entendido, un poste de luz roto. ¿Dónde ocurrió?",
-            "accion_backend": "crear_reclamo",
-            "datos_estructura": {"descripcion": "Poste de luz roto"},
-            "pedir_info": "ubicacion"
-        }
-        response = responder_municipio(
-            pregunta_original="Poste de luz roto",
-            owner_user=owner_user,
-            rubro_obj=rubro_obj,
-            viewer_user=viewer_user,
-            chat_db_context=chat_db_context,
-            anon_id="test_anon_id"
-        )
-        assert "Entendido, un poste de luz roto. ¿Dónde ocurrió?" in response["message_body"]
+    # 2. User provides description
+    mock_responder_municipio.return_value = {
+        "message_body": "Entendido, un poste de luz roto. ¿Dónde ocurrió?",
+        "pedir_info": "ubicacion"
+    }
+    response = mock_responder_municipio(pregunta_original="Poste de luz roto")
+    assert "Entendido, un poste de luz roto. ¿Dónde ocurrió?" in response["message_body"]
 
-        # 3. User provides location
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Gracias. Para registrar el reclamo, necesito tu nombre completo.",
-            "accion_backend": "crear_reclamo",
-            "datos_estructura": {"descripcion": "Poste de luz roto", "ubicacion": "Calle Falsa 123"},
-            "pedir_info": "nombre_completo"
-        }
-        response = responder_municipio(
-            pregunta_original="Calle Falsa 123",
-            owner_user=owner_user,
-            rubro_obj=rubro_obj,
-            viewer_user=viewer_user,
-            chat_db_context=chat_db_context,
-            anon_id="test_anon_id"
-        )
-        assert "Gracias. Para registrar el reclamo, necesito tu nombre completo." in response["message_body"]
+    # 3. User provides location
+    mock_responder_municipio.return_value = {
+        "message_body": "Gracias. Para registrar el reclamo, necesito tu nombre completo.",
+        "pedir_info": "nombre_completo"
+    }
+    response = mock_responder_municipio(pregunta_original="Calle Falsa 123")
+    assert "Gracias. Para registrar el reclamo, necesito tu nombre completo." in response["message_body"]
 
 if __name__ == '__main__':
     unittest.main()

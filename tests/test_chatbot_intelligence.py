@@ -21,22 +21,11 @@ def mock_document_ai():
     with patch('services.document_processing_service.document_processing_service.process_document') as mock_docai:
         yield mock_docai
 
-@patch('services.chat_orchestrator.ChatOrchestrator')
-def test_responder_chatboc_pyme_flow(mock_orchestrator, mock_db_session, mock_llamar_gemini_pymes_session):
-    # Mock de la respuesta de Gemini para una intención de PYME
-    mock_llamar_gemini_pymes_session.return_value = {
-        "respuesta_usuario": "Claro, ¿qué te gustaría pedir?",
-        "accion_backend": "iniciar_pedido",
-        "datos_estructura": {"target": "pyme"},
-        "pedir_info": None,
-        "botones": []
-    }
-
-    # Mock de la respuesta del orchestrator
-    mock_orchestrator.return_value.execute_action.return_value = {
-        "success": True,
-        "message_to_user": "Claro, ¿qué te gustaría pedir?",
-        "fuente": "pyme_iniciar_pedido_v2"
+@patch('services.logic.responder_pyme')
+def test_responder_chatboc_pyme_flow(mock_responder_pyme, mock_db_session):
+    mock_responder_pyme.return_value = {
+        "fuente": "pyme_iniciar_pedido_v2",
+        "message_body": "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel."
     }
 
     owner_user = User(id=1, nombre_empresa="Pyme Test", tipo_chat="pyme")
@@ -57,22 +46,11 @@ def test_responder_chatboc_pyme_flow(mock_orchestrator, mock_db_session, mock_ll
     assert "pyme_iniciar_pedido_v2" in response.get("fuente", "")
     assert "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel." in response.get("message_body", "")
 
-@patch('services.chat_orchestrator.ChatOrchestrator')
-def test_responder_chatboc_municipio_flow(mock_orchestrator, mock_db_session, mock_llamar_gemini_municipios_session):
-    # Mock de la respuesta de Gemini para una intención de Municipio
-    mock_llamar_gemini_municipios_session.return_value = {
-        "respuesta_usuario": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {"target": "municipio"},
-        "pedir_info": "ubicacion",
-        "botones": []
-    }
-
-    # Mock de la respuesta del orchestrator
-    mock_orchestrator.return_value.execute_action.return_value = {
-        "success": True,
-        "message_to_user": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
-        "fuente": "municipio_crear_reclamo_v2"
+@patch('services.logic.responder_municipio')
+def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_session):
+    mock_responder_municipio.return_value = {
+        "fuente": "municipio_crear_reclamo_v2",
+        "message_body": "¿Cuál es la dirección del problema?"
     }
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -93,29 +71,12 @@ def test_responder_chatboc_municipio_flow(mock_orchestrator, mock_db_session, mo
     assert "municipio_crear_reclamo_v2" in response.get("fuente", "")
     assert "¿Cuál es la dirección del problema?" in response.get("message_body", "")
 
-@patch('services.chat_orchestrator.ChatOrchestrator')
-def test_image_analysis_reclamo_municipio(mock_orchestrator, mock_db_session, mock_google_vision, mock_llamar_gemini_municipios_session):
-    # Mock de la respuesta de Google Vision
-    mock_google_vision.return_value = {
-        "labels": [{"description": "pothole", "confidence": 0.9}],
-        "objects": [],
-        "full_text_annotation": None
-    }
-
-    # Mock de la respuesta de Gemini
-    mock_llamar_gemini_municipios_session.return_value = {
-        "respuesta_usuario": "He recibido la imagen. Parece un problema de 'Arreglo de calle'. ¿Cuál es la dirección?",
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {"target": "municipio", "categoria_sugerida": "Arreglo de calle"},
-        "pedir_info": "ubicacion",
-        "botones": []
-    }
-
-    # Mock de la respuesta del orchestrator
-    mock_orchestrator.return_value.execute_action.return_value = {
-        "success": True,
-        "message_to_user": "He recibido la imagen. Parece un problema de 'Arreglo de calle'. ¿Cuál es la dirección?",
-        "fuente": "municipio_crear_reclamo_v2"
+@patch('services.municipios.interpretar_imagen_para_chat')
+def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_db_session):
+    mock_interpretar_imagen.return_value = {
+        "es_reclamo": True,
+        "categoria_sugerida": "Arreglo de calle",
+        "descripcion_sugerida": "Bache en la calle"
     }
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -136,25 +97,10 @@ def test_image_analysis_reclamo_municipio(mock_orchestrator, mock_db_session, mo
     assert "Arreglo de calle" in response.get("message_body", "")
     assert "dirección" in response.get("message_body", "")
 
-@patch('services.chat_orchestrator.ChatOrchestrator')
-def test_document_processing_pedido_pyme(mock_orchestrator, mock_db_session, mock_document_ai, mock_llamar_gemini_pymes_session):
-    # Mock de la respuesta de Document AI
-    mock_document_ai.return_value = MagicMock(text="2 Coca Cola\n1 Papas Fritas")
-
-    # Mock de la respuesta de Gemini
-    mock_llamar_gemini_pymes_session.return_value = {
-        "respuesta_usuario": "He recibido el pedido. ¿Deseas confirmar?",
-        "accion_backend": "iniciar_pedido",
-        "datos_estructura": {"target": "pyme"},
-        "pedir_info": None,
-        "botones": []
-    }
-
-    # Mock de la respuesta del orchestrator
-    mock_orchestrator.return_value.execute_action.return_value = {
-        "success": True,
-        "message_to_user": "He recibido el pedido. ¿Deseas confirmar?",
-        "fuente": "pyme_iniciar_pedido_v2"
+@patch('services.pymes.interpretar_documento_para_chat')
+def test_document_processing_pedido_pyme(mock_interpretar_documento, mock_db_session):
+    mock_interpretar_documento.return_value = {
+        "productos": [{"producto": "Coca Cola", "cantidad": 2}, {"producto": "Papas Fritas", "cantidad": 1}]
     }
 
     owner_user = User(id=1, nombre_empresa="Pyme Test", tipo_chat="pyme")
@@ -172,23 +118,19 @@ def test_document_processing_pedido_pyme(mock_orchestrator, mock_db_session, moc
     )
 
     assert response is not None
-    assert "¿qué productos y cantidades te gustaría pedir? también puedes subir un archivo excel." in response.get("message_body", "").lower()
+    assert "He identificado los siguientes productos en tu pedido:" in response.get("message_body", "")
+    assert "2 x Coca Cola" in response.get("message_body", "")
+    assert "1 x Papas Fritas" in response.get("message_body", "")
 
-@patch('services.chat_orchestrator.ChatOrchestrator')
-def test_information_gathering_reclamo_municipio(mock_orchestrator, mock_db_session, mock_llamar_gemini_municipios_session):
+@patch('services.municipios.llamar_gemini')
+def test_information_gathering_reclamo_municipio(mock_llamar_gemini, mock_db_session):
     # 1. Initial request to create a reclamo
-    mock_llamar_gemini_municipios_session.return_value = {
+    mock_llamar_gemini.return_value = {
         "respuesta_usuario": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
         "accion_backend": "crear_reclamo",
         "datos_estructura": {"target": "municipio"},
         "pedir_info": "ubicacion",
         "botones": []
-    }
-    mock_orchestrator.return_value.execute_action.return_value = {
-        "success": False,
-        "message_to_user": "Para poder registrar tu reclamo, necesitaría que me indiques la ubicación del problema.",
-        "pedir_info": ["ubicacion"],
-        "fuente": "municipio_crear_reclamo_v2"
     }
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -206,22 +148,16 @@ def test_information_gathering_reclamo_municipio(mock_orchestrator, mock_db_sess
     )
 
     assert response1 is not None
-    assert "ubicación" in response1.get("message_body", "")
+    assert "dirección" in response1.get("message_body", "")
     assert chat_context.context_data['contexto_municipio_v2']['estado_conversacion'] == 'ESPERANDO_DIRECCION_RECLAMO'
 
     # 2. User provides the location
-    mock_llamar_gemini_municipios_session.return_value = {
+    mock_llamar_gemini.return_value = {
         "respuesta_usuario": "Gracias. Ahora necesito tu nombre completo.",
         "accion_backend": "crear_reclamo",
         "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
         "pedir_info": "nombre_completo",
         "botones": []
-    }
-    mock_orchestrator.return_value.execute_action.return_value = {
-        "success": False,
-        "message_to_user": "Gracias. Ahora necesito tu nombre completo.",
-        "pedir_info": ["nombre_completo"],
-        "fuente": "municipio_crear_reclamo_v2"
     }
 
     response2 = responder_municipio(

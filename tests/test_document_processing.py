@@ -8,6 +8,7 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    GOOGLE_DOCAI_PROCESSOR_ID = "fake-processor-id"
 
 class TestDocumentProcessingService(unittest.TestCase):
     def setUp(self):
