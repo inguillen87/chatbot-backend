@@ -180,26 +180,21 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
                 "pedir_info": "nombre_tramite"
             }
 
-        tramites_info = get_tramites_info()
-        # Case-insensitive search for the tramite
-        tramite_encontrado = None
-        for key, value in tramites_info.items():
-            if key.lower() == tramite_nombre.lower():
-                tramite_encontrado = value
-                break
+        from services.municipios import obtener_info_tramite_web
 
-        if tramite_encontrado:
-            info_message = tramite_encontrado.get("descripcion", "No hay información disponible para este trámite.")
-            return {
-                "success": True,
-                "message_to_user": info_message,
-                "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "real"}
-            }
-        else:
+        info_tramite = obtener_info_tramite_web(tramite_nombre)
+
+        if "error" in info_tramite:
             return {
                 "success": False,
                 "message_to_user": f"No encontré información sobre el trámite '{tramite_nombre}'.",
                 "pedir_info": "nombre_tramite"
+            }
+        else:
+            return {
+                "success": True,
+                "message_to_user": info_tramite.get("contenido", "No hay información disponible para este trámite."),
+                "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "web"}
             }
 
 class HacerSugerenciaActionHandler(BaseActionHandler):

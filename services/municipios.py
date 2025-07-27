@@ -222,6 +222,22 @@ def cargar_tramites_info():
 def get_tramites_info() -> dict:
     return cargar_tramites_info()
 
+def obtener_info_tramite_web(tramite_nombre: str) -> dict:
+    """
+    Busca información sobre un trámite en la web del municipio.
+    """
+    from services.scraper_avanzado import extraer_contenido_general
+
+    tramites_links = cargar_configuracion_municipio(MUNICIPIO_ID, "tramites_links.json")
+    if not tramites_links:
+        return {"error": "No se encontraron links de trámites."}
+
+    for nombre, url in tramites_links.items():
+        if tramite_nombre.lower() in nombre.lower():
+            return extraer_contenido_general(url)
+
+    return {"error": "No se encontró información sobre el trámite."}
+
 DEFAULT_TRAMITES_WEB_URL = CONFIG_MUNICIPIO.get(
     "tramites_web_url", "https://www.ejemplo.gob.ar/tramites/"
 )
