@@ -30,15 +30,16 @@ COHERE_EMBED_BATCH_SIZE = 90
 DEFAULT_MODEL = "command-r-plus"
 DEFAULT_TEMPERATURE = 0.3
 
-co_client = None
+cohere_client = None
 if COHERE_API_KEY:
     try:
-        co_client = cohere.Client(COHERE_API_KEY, timeout=60)
-        logger.info("[COHERE_CLIENT] Cliente de Cohere inicializado exitosamente.")
+        cohere_client = cohere.Client(COHERE_API_KEY)
+        logger.info("✅ [COHERE_CLIENT] Cliente de Cohere inicializado exitosamente.")
     except Exception as e:
-        logger.critical(f"[COHERE_CLIENT] CRÍTICO: No se pudo inicializar el cliente de Cohere. Error: {e}")
+        logger.error(f"❌ [COHERE_CLIENT] Error al inicializar el cliente de Cohere: {e}")
 else:
-    logger.warning("[COHERE_CLIENT] ADVERTENCIA: La variable de entorno COHERE_API_KEY no está configurada.")
+    logger.warning(" [COHERE_CLIENT] ADVERTENCIA: La variable de entorno COHERE_API_KEY no está configurada.")
+co_client = cohere_client
 
 
 def cohere_api_call(func):

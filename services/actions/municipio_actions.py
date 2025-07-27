@@ -61,27 +61,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
             mensaje = f"Para poder registrar tu reclamo, necesitaría que me indiques {', '.join(campos_faltantes)}."
             return { "success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes }
 
-        # Confirmation step
-        if not action_data.get("confirmed"):
-            confirmation_message = f"""He recibido la siguiente información:
-- Categoría: {categoria}
-- Descripción: {descripcion}
-- Ubicación: {ubicacion_llm}
-- Nombre: {nombre_vecino_llm}
-- Teléfono: {telefono_llm}
-- Email: {email_llm}
-
-¿Es correcta esta información?
-"""
-            return {
-                "success": False,
-                "message_to_user": confirmation_message,
-                "pedir_info": "confirmation",
-                "botones": [
-                    {"texto": "Sí, es correcto", "id_accion": "confirmar_reclamo"},
-                    {"texto": "No, quiero corregir", "id_accion": "corregir_reclamo"}
-                ]
-            }
 
         # 2. Recopilación de Información del Contexto
         viewer_user = self.context.get("viewer_user_obj")
@@ -110,10 +89,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         ticket_data = {
             "asunto": f"Reclamo (LLM): {categoria}", "categoria": categoria, "detalles": descripcion,
-            "direccion": direccion_final_txt, "nombre_vecino": nombre_vecino_final,
-            "telefono_vecino": telefono_final_validado_e164, "email_vecino": email_final_validado,
-            "estado": "nuevo", "user_id": user_id_db, "anon_id": anon_id_db,
-            "latitud": latitud_final, "longitud": longitud_final,
+            "direccion": direccion_final_txt,
+            "nombre_vecino": nombre_vecino_final,
+            "telefono_vecino": telefono_final_validado_e164,
+            "email_vecino": email_final_validado,
+            "estado": "nuevo",
+            "user_id": user_id_db,
+            "anon_id": anon_id_db,
+            "latitud": latitud_final,
+            "longitud": longitud_final,
             "origen_reclamo": "LLM_CHATBOT"
         }
         if self.context.get("foto_url"):

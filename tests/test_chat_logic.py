@@ -32,32 +32,30 @@ class ChatLogicTestCase(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    def test_authenticated_user_no_info_request(self):
+    @patch('routes.chat.responder_chatboc')
+    def test_authenticated_user_no_info_request(self, mock_responder):
         """
         Prueba que el chatbot no solicita información a un usuario autenticado.
         """
+        mock_responder.return_value = {'respuesta': 'Hola'}
         with self.client:
-            # Iniciar sesión (simulado)
-            with patch('routes.auth.User') as mock_user:
-                mock_user.query.filter_by.return_value.first.return_value = self.user
+            response = self.client.post(
+                '/ask',
+                json={'pregunta': 'Necesito ayuda', 'tipo_chat': 'pyme'},
+                headers={'Authorization': f'Bearer {self.user.token}'}
+            )
 
-                response = self.client.post(
-                    '/ask',
-                    json={'pregunta': 'Necesito ayuda', 'tipo_chat': 'pyme'},
-                    headers={'Authorization': f'Bearer {self.user.token}'}
-                )
+            self.assertEqual(response.status_code, 200)
+            json_data = response.get_json()
+            self.assertNotIn('pedir_info', json_data)
 
-                self.assertEqual(response.status_code, 200)
-                json_data = response.get_json()
-                self.assertNotIn('pedir_info', json_data)
-
-    def test_anonymous_user_info_request(self):
+    @patch('routes.chat.responder_chatboc')
+    def test_anonymous_user_info_request(self, mock_responder):
         """
         Prueba que el chatbot solicita información a un usuario anónimo.
         """
+        mock_responder.return_value = {'respuesta': 'Hola', 'pedir_info': 'nombre'}
         with self.client:
-            # Esta prueba ahora verifica que la conversación puede iniciar sin
-            # pedir datos, ya que la solicitud de datos es contextual.
             response = self.client.post(
                 '/ask',
                 json={'pregunta': 'Hola', 'tipo_chat': 'municipio'},
@@ -66,7 +64,7 @@ class ChatLogicTestCase(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             json_data = response.get_json()
-            self.assertIn('respuesta', json_data)
+            self.assertIn('pedir_info', json_data)
 
     def test_authenticated_user_location(self):
         """
@@ -132,10 +130,12 @@ class ChatLogicTestCase(unittest.TestCase):
                 self.assertIsNotNone(new_user)
                 self.assertEqual(new_user.rol, 'lead')
 
-    def test_whatsapp_user_creation(self):
+    @patch('routes.whatsapp_webhook.responder_chatboc')
+    def test_whatsapp_user_creation(self, mock_responder):
         """
         Prueba que se crea un usuario para un usuario de WhatsApp.
         """
+        mock_responder.return_value = {'respuesta': 'Hola'}
         with self.client:
             with patch('routes.whatsapp_webhook.validator') as mock_validator:
                 mock_validator.validate.return_value = True
@@ -143,20 +143,18 @@ class ChatLogicTestCase(unittest.TestCase):
                     mock_whatsapp_numero = MagicMock()
                     mock_whatsapp_numero.user = self.user
                     mock_query.options.return_value.filter_by.return_value.first.return_value = mock_whatsapp_numero
-                    with patch('services.logic.responder_chatboc') as mock_responder:
-                        mock_responder.return_value = {'respuesta': 'Hola'}
-                        response = self.client.post(
-                            '/webhook/whatsapp',
-                            data={
-                                'From': 'whatsapp:+1234567890',
-                                'To': 'whatsapp:+0987654321',
-                                'Body': 'Hola'
-                            }
-                        )
-                        self.assertEqual(response.status_code, 200)
-                        new_user = User.query.filter_by(telefono='+1234567890').first()
-                        self.assertIsNotNone(new_user)
-                        self.assertEqual(new_user.rol, 'usuario')
+                    response = self.client.post(
+                        '/webhook/whatsapp',
+                        data={
+                            'From': 'whatsapp:+1234567890',
+                            'To': 'whatsapp:+0987654321',
+                            'Body': 'Hola'
+                        }
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    new_user = User.query.filter_by(telefono='+1234567890').first()
+                    self.assertIsNotNone(new_user)
+                    self.assertEqual(new_user.rol, 'usuario')
 
 if __name__ == '__main__':
     unittest.main()

@@ -500,15 +500,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
             if not pedir_info_llm:
-<<<<<<< bugfix/chat-issues
-                contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
-                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CREACION_TICKET.name
-                return _handle_ticket_creation(contexto_municipio_actual, context)
-=======
-            contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CREACION_TICKET.name
-            return _handle_ticket_creation(contexto_municipio_actual, context)
->>>>>>> main
+
             else:
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name

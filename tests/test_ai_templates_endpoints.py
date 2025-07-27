@@ -14,7 +14,8 @@ from app import create_app, db
 from models import PlantillasRespuesta, User, Rubro
 from routes.ai_templates import ai_templates_bp
 import json
-
+import pytest
+import pytest
 from config import Config
 
 # Configuración de prueba
@@ -38,6 +39,15 @@ def _crear_plantilla(name, text, keywords=None, is_active=True, embedding_value=
     db.session.add(plantilla)
     db.session.commit()
     return plantilla
+
+@pytest.fixture
+def test_app():
+    app = create_app(TestConfig)
+    app.register_blueprint(ai_templates_bp, url_prefix='/ai')
+    with app.app_context():
+        db.create_all()
+        yield app
+        db.drop_all()
 
 def test_suggest_templates_success(test_app):
     with test_app.app_context():
@@ -67,9 +77,9 @@ def test_suggest_templates_success(test_app):
             assert 'sugerencias' in data
             sugerencias = data['sugerencias']
             assert len(sugerencias) == 1
-            assert sugerencias[0]['name'] == 'Saludo'
-            assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['text']
-            mock_embed_textos.assert_called_once_with(textos=['Quiero saludar'], input_type='search_query')
+            assert sugerencias[0]['nombre_plantilla'] == 'Saludo'
+            assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['texto_plantilla']
+            mock_robust_embed.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

@@ -12,6 +12,7 @@ from unittest.mock import patch, MagicMock, ANY
 
 from services.interpretacion_imagen_service import interpretar_imagen_para_chat, _descargar_imagen
 import models
+from models import db, User, ArchivoAdjunto, AnalisisArchivo
 
 # --- Configuración de App Flask para Pruebas con BD en Memoria ---
 from flask import Flask
@@ -21,8 +22,6 @@ from flask import Flask
 # Como `interpretar_imagen_reclamo` lo hace.
 
 def create_test_app():
-    from models import db
-    from models import User, ArchivoAdjunto, AnalisisArchivo
     app = Flask(__name__)
     app.config['TESTING'] = True
     # Usar SQLite en memoria para pruebas rápidas y aisladas
