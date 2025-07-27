@@ -167,34 +167,7 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- Configuración de CORS ---
-    CORS(app, origins=["https://www.chatboc.ar", "http://localhost:5000"], supports_credentials=True)
-
-    @app.after_request
-    def after_request(response):
-        # Asegurarse de que el origen de la solicitud esté permitido
-        # Nota: Idealmente, esto debería ser más restrictivo y basarse en una lista de orígenes permitidos.
-        # El '*' es conveniente para el desarrollo pero puede ser un riesgo de seguridad en producción.
-        origin = request.headers.get('Origin')
-        if origin:
-            response.headers.add('Access-Control-Allow-Origin', origin)
-
-        # Headers permitidos, incluyendo el crucial 'x-entity-token'
-        allowed_headers = [
-            'Content-Type',
-            'Authorization',
-            'x-chat-session-id',
-            'Anon-Id',
-            'x-entity-token'  # <-- AÑADIDO
-        ]
-        response.headers.add('Access-Control-Allow-Headers', ','.join(allowed_headers))
-
-        # Métodos permitidos
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-
-        # Permitir que las credenciales (como cookies o tokens de autorización) se envíen
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-
-        return response
+    CORS(app, origins=["https://www.chatboc.ar", "http://localhost:5000", "https://www.chatboc.ar"], supports_credentials=True)
 
     @app.after_request
     def add_permissions_policy(resp):
