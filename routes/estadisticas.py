@@ -14,7 +14,7 @@ def mapa_calor(current_user):
     """Renderiza el mapa de calor."""
     return render_template('estadisticas.html')
 
-@estadisticas_bp.route('/api/locations', methods=['GET'])
+@estadisticas_bp.route('/locations', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
 def get_user_locations(current_user):
