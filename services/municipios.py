@@ -23,6 +23,9 @@ from services.utils_placeholders import (
     obtener_respuesta_municipio,
 )
 from services.config_loader import cargar_configuracion_municipio
+from .actions.municipio_actions import (
+    CrearReclamoActionHandler,
+)
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
     categorizar_reclamo_por_palabra_clave,
