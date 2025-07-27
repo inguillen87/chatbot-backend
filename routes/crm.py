@@ -125,6 +125,29 @@ def listar_clientes(current_user: User):
     return jsonify(resultado)
 
 
+@crm_bp.route('/chat/location', methods=['POST'])
+@token_requerido
+def update_location(current_user: User):
+    """Actualiza la ubicación de un usuario."""
+    data = request.get_json()
+    if not data or 'latitud' not in data or 'longitud' not in data:
+        return jsonify({"error": "Datos de ubicación inválidos."}), 400
+
+    user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({"error": "Usuario no encontrado."}), 404
+
+    user.latitud = data['latitud']
+    user.longitud = data['longitud']
+    try:
+        db.session.commit()
+        return jsonify({"mensaje": "Ubicación actualizada correctamente."})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al actualizar ubicación para usuario {current_user.id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al guardar la ubicación."}), 500
+
+
 @crm_bp.route('/usuarios', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
