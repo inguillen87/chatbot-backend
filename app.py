@@ -190,7 +190,7 @@ def create_app(config_class=Config):
     app.register_blueprint(carrito_bp)
     # app.register_blueprint(cart_bp) # Corresponds to the removed import
     app.register_blueprint(estadisticas_bp)
-    app.register_blueprint(empleados_bp, url_prefix='/empleados')
+    app.register_blueprint(empleados_bp)
     app.register_blueprint(categorias_bp)
     app.register_blueprint(recordatorios_bp)
     app.register_blueprint(historial_bp)
