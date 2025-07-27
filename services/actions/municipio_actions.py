@@ -61,6 +61,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             mensaje = f"Para registrar tu reclamo, necesito que me indiques {', '.join(campos_faltantes)}."
             if len(campos_faltantes) == 1:
                 mensaje = f"Para registrar tu reclamo, solo necesito que me indiques {campos_faltantes[0]}."
+            else:
+                # Formato "a, b y c"
+                campos_str = ", ".join(campos_faltantes[:-1]) + " y " + campos_faltantes[-1]
+                mensaje = f"Para registrar tu reclamo, necesito que me indiques: {campos_str}."
+
 
             # Guardar el contexto actualizado
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo

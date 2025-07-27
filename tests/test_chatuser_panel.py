@@ -33,7 +33,7 @@ class ChatUserPanelTests(unittest.TestCase):
             token=str(uuid.uuid4()),
             rubro_id=self.rubro.id,
             nombre_empresa='TestCo',
-            rol='admin'
+            rol='usuario'
         )
         self.owner_user.set_password('password')
         db.session.add(self.owner_user)
