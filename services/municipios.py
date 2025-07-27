@@ -509,6 +509,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                 return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}
 
         elif accion_backend_llm == "derivar_humano":
@@ -658,7 +659,8 @@ def responder_municipio(
     if USAR_LLM_PARA_RECLAMOS:
         respuesta_manejada_por_llm = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context)
         if respuesta_manejada_por_llm:
-            contexto_municipio_serializado_para_db = serializar_enum(context.get(CONTEXTO_MUNICIPIO, {}))
+            # Actualizar el contexto en la base de datos
+            contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
             if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
                 flag_modified(chat_db_context, "context_data")
