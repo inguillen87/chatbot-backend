@@ -83,7 +83,7 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
         if smtp_user and smtp_password:
             server.login(smtp_user, smtp_password)
 
-        server.sendmail(from_email, [destino], msg.as_string())
+        server.send_message(msg)
         server.quit()
 
         logger.info(f"{log_prefix} Enviado exitosamente a {destino}")
