@@ -519,7 +519,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
             if not pedir_info_llm:
-                return _handle_ticket_creation(contexto_municipio_actual, context)
+                return _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm)
 
             else:
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
@@ -917,11 +917,15 @@ def responder_municipio(
     return final_response_dict
 
 
-def _handle_ticket_creation(contexto_municipio_actual, context):
+def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
     Handles the ticket creation process.
     """
-    respuesta_accion = accion_crear_reclamo_municipio(contexto_municipio_actual["datos_parciales_llm_reclamo"], context)
+    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", datos_estructura_llm)
+    respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
+    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
+        contexto_municipio_actual.pop(k, None)
+    contexto_municipio_actual["estado_conversacion"] = None
     if respuesta_accion.get("ticket_id"):
         for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
             contexto_municipio_actual.pop(k, None)
