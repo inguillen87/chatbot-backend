@@ -30,7 +30,7 @@ def test_get_user_locations(mock_token_requerido, client):
     db.session.add_all([mock_user, user1, user2])
     db.session.commit()
 
-    response = client.get(url_for('estadisticas.get_user_locations'))
+    response = client.get(url_for('estadisticas.api/locations'))
     assert response.status_code == 200
     data = json.loads(response.data)
     assert len(data) == 2
@@ -45,4 +45,4 @@ def test_mapa_calor_route(mock_token_requerido, client):
 
     response = client.get(url_for('estadisticas.mapa_calor'))
     assert response.status_code == 200
-    assert b'Estadísticas y Mapas de Calor' in response.data
+    assert 'Estadísticas y Mapas de Calor' in response.get_data(as_text=True)
