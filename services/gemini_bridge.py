@@ -521,8 +521,8 @@ def llamar_gemini(
 
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
-    if elapsed > delay_warning_seconds and isinstance(respuesta, dict) and respuesta.get("respuesta_usuario"):
-        respuesta["respuesta_usuario"] = "Sigo buscando la mejor respuesta, dame unos segundos más… " + respuesta["respuesta_usuario"]
+    # if elapsed > delay_warning_seconds and isinstance(respuesta, dict) and respuesta.get("respuesta_usuario"):
+    #     respuesta["respuesta_usuario"] = "Sigo buscando la mejor respuesta, dame unos segundos más… " + respuesta["respuesta_usuario"]
 
     return respuesta
 
