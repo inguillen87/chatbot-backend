@@ -18,21 +18,33 @@ def test_client():
 
     with app.app_context():
         db.create_all()
+        # Clean up database before each test run
+        db.session.query(ChatSessionContext).delete()
+        db.session.query(User).delete()
+        db.session.query(Rubro).delete()
+        db.session.commit()
+
         # Crear datos iniciales si es necesario
-        rubro = Rubro(nombre="municipio")
+        rubro = Rubro(nombre="municipio", clave="municipio")
+        db.session.add(rubro)
         user = User(
+            name="Test User",
+            email="test@example.com",
+            password_hash="test",
             nombre_empresa="Municipalidad de Test",
             tipo_chat="municipio",
             rubro=rubro,
             municipio_id=1
         )
-        db.session.add(rubro)
         db.session.add(user)
         db.session.commit()
 
     with app.test_client() as testing_client:
         with app.app_context():
             yield testing_client
+    # Cleanup after all tests in the module have run
+    with app.app_context():
+        db.drop_all()
 
 @pytest.fixture
 def mock_llm():
@@ -65,7 +77,7 @@ def test_full_claim_in_one_go(test_client, mock_llm):
 
     pregunta = "Quiero reportar un semáforo roto en Av. Siempre Viva 123. Mi nombre es Marcelo Guillen, mi teléfono es 2613168608 y mi email es marcelo.guillen@example.com."
 
-    with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+    with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
         mock_ticket = MagicMock()
         mock_ticket.nro_ticket = "12345"
         mock_crear_ticket.return_value = mock_ticket
@@ -136,7 +148,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
         "respuesta_usuario": "Gracias, he registrado tu reclamo."
     }
 
-    with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+    with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
         mock_ticket = MagicMock()
         mock_ticket.nro_ticket = "54321"
         mock_crear_ticket.return_value = mock_ticket
@@ -152,6 +164,6 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
         assert "registrado con el número M-54321" in respuesta["message_body"]
         mock_crear_ticket.assert_called_once()
         args, kwargs = mock_crear_ticket.call_args
-        assert kwargs['ticket_data']['descripcion'] == "semáforo roto"
+        assert kwargs['ticket_data']['detalles'] == "semáforo roto"
         assert kwargs['ticket_data']['direccion'] == "Calle Falsa 123"
         assert kwargs['ticket_data']['nombre_vecino'] == "Lisa Simpson"
