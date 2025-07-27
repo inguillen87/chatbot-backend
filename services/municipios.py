@@ -904,10 +904,10 @@ def _handle_ticket_creation(contexto_municipio_actual, context):
     Handles the ticket creation process.
     """
     respuesta_accion = accion_crear_reclamo_municipio(contexto_municipio_actual["datos_parciales_llm_reclamo"], context)
-    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
-        contexto_municipio_actual.pop(k, None)
-    contexto_municipio_actual["estado_conversacion"] = None
     if respuesta_accion.get("ticket_id"):
+        for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
+            contexto_municipio_actual.pop(k, None)
+        contexto_municipio_actual["estado_conversacion"] = None
         respuesta_accion["message_body"] = f"Se ha generado el ticket de reclamo N° {respuesta_accion['ticket_id']}. ¿Deseas confirmar la creación del mismo?"
         respuesta_accion["options_list"] = [
             {"id": "confirmar_ticket", "texto": "Sí"},
