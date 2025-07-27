@@ -99,6 +99,7 @@ class TestConfig(Config):
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     CELERY_TASK_ALWAYS_EAGER = True
     SESSION_COOKIE_SECURE = False
+    SERVER_NAME = 'localhost'
 
 class TestingConfig(TestConfig):
     pass
