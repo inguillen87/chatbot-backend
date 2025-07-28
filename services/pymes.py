@@ -781,7 +781,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---
     if llm_response_structured.get("accion_backend") == "saludar":
         handler = SaludoHandler(global_context_for_orchestrator)
-        action_handler_result = handler.handle(pregunta_str)
+        action_handler_result = handler.execute(pregunta_str)
     else:
         orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
         action_handler_result = orchestrator.execute_action(llm_response_structured)
