@@ -332,8 +332,61 @@ TOOL_REGISTRY = {
             "fecha": {"type": "string", "description": "La fecha de la consulta. Puede ser una palabra como 'hoy', 'mañana', 'este fin de semana', o una fecha específica como '15 de junio'."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "buscar_puntos_de_interes": {
+        "funcion": "buscar_puntos_de_interes",
+        "descripcion": "Busca puntos de interés cercanos a la ubicación del usuario. Los puntos de interés pueden ser: veterinarias, farmacias, hospitales, etc.",
+        "parametros": {
+            "rubro": {"type": "string", "description": "El tipo de punto de interés a buscar. Por ejemplo: 'veterinaria', 'farmacia', 'hospital', etc."},
+            "localidad": {"type": "string", "description": "La localidad donde se encuentra el usuario."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }
 }
+
+def buscar_puntos_de_interes(rubro: str, localidad: str) -> str:
+    """
+    Busca puntos de interés cercanos a la ubicación del usuario.
+    """
+    logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}'")
+
+    if not Maps_API_KEY:
+        logger.error("[HERRAMIENTA POI] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
+        return "Error de configuración: El servicio de mapas no está disponible en este momento."
+
+    geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={requests.utils.quote(localidad)}&key={Maps_API_KEY}&language=es"
+
+    try:
+        response = requests.get(geocode_url)
+        response.raise_for_status()
+        data = response.json()
+
+        if not data or data.get('status') != 'OK' or not data.get('results'):
+            logger.warning(f"[HERRAMIENTA POI] La API de Google no pudo geocodificar la localidad: {localidad}")
+            return f"No pude encontrar la localidad '{localidad}'. ¿Puedes ser más específico?"
+
+        location = data['results'][0]['geometry']['location']
+        lat, lng = location['lat'], location['lng']
+
+        places_url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json?location={lat},{lng}&radius=5000&keyword={requests.utils.quote(rubro)}&key={Maps_API_KEY}&language=es"
+
+        response = requests.get(places_url)
+        response.raise_for_status()
+        data = response.json()
+
+        if data and data.get('status') == 'OK' and data.get('results'):
+            resultados = data['results']
+            lista_resultados = "\n".join(f"- {item['name']}: {item['vicinity']}" for item in resultados)
+            return f"Encontré los siguientes puntos de interés para '{rubro}' en '{localidad}':\n{lista_resultados}"
+        else:
+            return f"No encontré puntos de interés para '{rubro}' en '{localidad}'."
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error de conexión con Google API para POI ({rubro}, {localidad}): {e}")
+        return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
+    except Exception as e:
+        logger.error(f"Error inesperado en búsqueda de POI para {rubro}, {localidad}: {e}", exc_info=True)
+        return "Ocurrió un error inesperado al buscar los puntos de interés."
 
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")

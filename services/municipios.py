@@ -381,7 +381,7 @@ class GreetingHandler(BaseMunicipioHandler):
         # This is a simplified greeting handler.
         # It could be expanded to include the user's name, etc.
         return {
-            "message_body": "¡Hola! ¿En qué puedo ayudarte?",
+            "message_body": "¡Hola! Soy tu asistente virtual. Estoy aquí para ayudarte con tus trámites y reclamos. Puedes hacer un reclamo, consultar el estado de un trámite, o pedir información. ¿Cómo puedo ayudarte hoy?",
             "options_list": [
                 {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
                 {"id": "consultar_estado_ticket", "texto": "Consultar estado de un trámite"},
@@ -780,7 +780,8 @@ def responder_municipio(
         if loaded_specific_config:
             final_municipio_config = loaded_specific_config
 
-    # (contexto_municipio_actual ya está definido y es el que se usa para el sub-contexto)
+    if location:
+        contexto_municipio_actual["ubicacion_usuario"] = location
 
     # Construir 'usuario_info_for_gemini' para la llamada a Gemini
     datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
