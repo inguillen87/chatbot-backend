@@ -921,19 +921,25 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     """
     Handles the ticket creation process.
     """
-    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", datos_estructura_llm)
+    # Combina los datos parciales con los nuevos datos recibidos
+    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+    datos_reclamo.update(datos_estructura_llm)
+
+    # Llama a la acción para crear el reclamo
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
+
+    # Limpia el contexto del reclamo en el municipio
     for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
         contexto_municipio_actual.pop(k, None)
     contexto_municipio_actual["estado_conversacion"] = None
+
+    # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion.get("ticket_id"):
-        for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
-            contexto_municipio_actual.pop(k, None)
-        contexto_municipio_actual["estado_conversacion"] = None
         respuesta_accion["message_body"] = f"Se ha generado el ticket de reclamo N° {respuesta_accion['ticket_id']}. ¿Deseas confirmar la creación del mismo?"
         respuesta_accion["options_list"] = [
             {"id": "confirmar_ticket", "texto": "Sí"},
             {"id": "cancelar_ticket", "texto": "No"},
         ]
         respuesta_accion["message_type"] = "interactive_buttons"
+    
     return respuesta_accion
