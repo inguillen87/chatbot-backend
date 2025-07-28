@@ -106,7 +106,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("Para poder registrar tu reclamo, necesitaría que me indiques una descripción del problema", respuesta["message_to_user"])
+        self.assertIn("Para registrar tu reclamo, necesito que me indiques: una descripción del problema, tu número de teléfono y tu correo electrónico.", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -116,7 +116,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("Para poder registrar tu reclamo, necesitaría que me indiques la ubicación del problema", respuesta["message_to_user"])
+        self.assertIn("Para registrar tu reclamo, necesito que me indiques: la ubicación del problema, tu número de teléfono y tu correo electrónico.", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')

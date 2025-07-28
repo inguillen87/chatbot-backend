@@ -45,4 +45,4 @@ def test_mapa_calor_route(mock_token_requerido, client):
 
     response = client.get(url_for('estadisticas.mapa_calor'))
     assert response.status_code == 200
-    assert b'Estadísticas y Mapas de Calor' in response.data
+    assert 'Estadísticas y Mapas de Calor' in response.data.decode('utf-8')

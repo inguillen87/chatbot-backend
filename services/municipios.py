@@ -454,9 +454,8 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
         "fuente": "accion_crear_reclamo_llm_error",
     }
 
-def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context):
+def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
     logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
-    contexto_municipio_actual = context.get(CONTEXTO_MUNICIPIO, {})
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
     invocar_llm = False
@@ -517,22 +516,42 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
 
         if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
+            # Si es el inicio de un nuevo reclamo, limpiar el contexto anterior
+            if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+                contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+                contexto_municipio_actual["historial_llm_reclamo"] = []
+
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
             if not pedir_info_llm:
-                return _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm)
+                respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm)
+                return respuesta_accion, contexto_municipio_actual
 
             else:
-                contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_estructura_llm
+                # Asegurarse de que datos_parciales_llm_reclamo exista y sea un diccionario
+                if not isinstance(contexto_municipio_actual.get("datos_parciales_llm_reclamo"), dict):
+                    contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+
+                # Actualizar con los nuevos datos, priorizando los que no son None
+                # Special handling for 'ubicacion' to ensure it is not overwritten with None
+                if 'ubicacion' in datos_estructura_llm and datos_estructura_llm['ubicacion'] is not None:
+                    contexto_municipio_actual["datos_parciales_llm_reclamo"]['ubicacion'] = datos_estructura_llm['ubicacion']
+
+                contexto_municipio_actual["datos_parciales_llm_reclamo"].update(
+                    {k: v for k, v in datos_estructura_llm.items() if v is not None and k != 'ubicacion'}
+                )
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-                context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}
+                # Update the context that will be passed to the next turn
+                if chat_db_context and hasattr(chat_db_context, 'context_data'):
+                    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                    flag_modified(chat_db_context, "context_data")
+                return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
 
         elif accion_backend_llm == "derivar_humano":
             context["intencion"] = "hablar_con_agente"
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
             logger.info("[HANDLE_LLM] LLM derivó a humano.")
-            return None
+            return None, contexto_municipio_actual
 
         else: # Respuesta general
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
@@ -541,7 +560,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 contexto_municipio_actual["esperando_info_general_llm"] = pedir_info_llm
             else:
                 contexto_municipio_actual.pop("esperando_info_general_llm", None)
-            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}
+            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}, contexto_municipio_actual
 
     except Exception as e_llm:
         logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
@@ -550,7 +569,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 contexto_municipio_actual[k] = None
             elif k != "estado_conversacion":
                 contexto_municipio_actual.pop(k, None)
-        return None
+        return None, contexto_municipio_actual
 
 def responder_municipio(
     pregunta_original,
@@ -610,6 +629,39 @@ def responder_municipio(
 
     # Crear una copia para modificar de forma segura para esta request.
     contexto_municipio_actual = dict(contexto_municipio_data_from_db)
+    if not contexto_municipio_actual:
+        contexto_municipio_actual = {
+            "estado_conversacion": None,
+            "historial_llm_reclamo": [],
+            "datos_parciales_llm_reclamo": {},
+            "esperando_info_llm_reclamo": None,
+            "historial_conversacion_general_llm": [],
+        }
+        # --- 2. CONSTRUCT THE 'context' DICTIONARY FOR HANDLERS (EARLY INITIALIZATION) ---
+        # This dictionary is passed to handlers and used throughout this function.
+        context = {
+            CONTEXTO_MUNICIPIO: contexto_municipio_actual, # The specific state for municipio flow
+            "user_obj": owner_user, # The User object of the bot instance (e.g., the Municipality)
+            "viewer_user_obj": viewer_user, # The User object of the end-user (vecino/ciudadano)
+            "cliente_id": getattr(viewer_user, "id", None),
+            "anon_id": anon_id,
+            "rubro_obj": rubro_obj,
+            "channel": channel,
+            "municipio_config_actual": CONFIG_MUNICIPIO, # Use the correct global constant here
+            "chat_session_uuid": kwargs.get("chat_session_uuid"),
+            "chat_db_context_data": chat_db_context_live_data, # Use the safely accessed live data dict
+            # Fields to be populated by payload/kwargs or later logic:
+            "intencion": kwargs.get("intencion"), # Initial intent from Orchestrator/kwargs
+            "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
+            "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
+            "es_ubicacion": received_payload.get("es_ubicacion", False),
+            "es_archivo": received_payload.get("es_archivo", False),
+            "action": received_payload.get("action"), # From button clicks, etc.
+            "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
+            "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        }
+        if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
+            logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
 
     # --- 2. CONSTRUCT THE 'context' DICTIONARY FOR HANDLERS (EARLY INITIALIZATION) ---
     # This dictionary is passed to handlers and used throughout this function.
@@ -673,13 +725,10 @@ def responder_municipio(
     # --- End Handle post-login resumption ---
 
     if USAR_LLM_PARA_RECLAMOS:
-        respuesta_manejada_por_llm = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context)
+        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
         if respuesta_manejada_por_llm:
-            # Actualizar el contexto en la base de datos
-            contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
             if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
-                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
-                flag_modified(chat_db_context, "context_data")
+                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
             return respuesta_manejada_por_llm
 
 
@@ -921,19 +970,27 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     """
     Handles the ticket creation process.
     """
-    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", datos_estructura_llm)
+    # Combina los datos parciales con los nuevos datos recibidos
+    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+    datos_reclamo.update(datos_estructura_llm)
+
+    # Llama a la acción para crear el reclamo
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
+
+    # Limpia el contexto del reclamo en el municipio
     for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
         contexto_municipio_actual.pop(k, None)
     contexto_municipio_actual["estado_conversacion"] = None
-    if respuesta_accion.get("ticket_id"):
-        for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
-            contexto_municipio_actual.pop(k, None)
-        contexto_municipio_actual["estado_conversacion"] = None
-        respuesta_accion["message_body"] = f"Se ha generado el ticket de reclamo N° {respuesta_accion['ticket_id']}. ¿Deseas confirmar la creación del mismo?"
+
+    # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
+    if respuesta_accion.get("success"):
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
+        contexto_municipio_actual["ticket_id_pendiente"] = respuesta_accion.get("data", {}).get("ticket_id")
+        respuesta_accion["message_body"] = respuesta_accion.get("message_to_user")
         respuesta_accion["options_list"] = [
             {"id": "confirmar_ticket", "texto": "Sí"},
             {"id": "cancelar_ticket", "texto": "No"},
         ]
         respuesta_accion["message_type"] = "interactive_buttons"
-    return respuesta_accion
+
+    return respuesta_accion, contexto_municipio_actual
