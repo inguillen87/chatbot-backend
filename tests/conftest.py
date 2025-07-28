@@ -1,10 +1,11 @@
 import pytest
 from app import create_app, db
+from config import TestingConfig
 
 @pytest.fixture(scope='session')
 def app():
     """Create a new app instance for each test session."""
-    app = create_app('testing')
+    app = create_app(TestingConfig)
     return app
 
 @pytest.fixture(scope='function')
