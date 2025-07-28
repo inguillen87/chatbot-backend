@@ -286,6 +286,7 @@ class AnalisisArchivo(db.Model):
 class Conversacion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    pyme_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     pregunta = db.Column(db.Text, nullable=False)
     respuesta = db.Column(db.Text, nullable=False)
     fuente = db.Column(db.String(50), nullable=False)
