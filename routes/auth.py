@@ -848,25 +848,32 @@ def actualizar_me(user):
         return jsonify({"error": "Error interno al guardar el perfil."}), 500
     
 def anon_o_token_requerido(f):
+    """
+    Decorador que maneja la autenticación para endpoints que aceptan
+    tanto usuarios autenticados con token como usuarios anónimos.
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
         if request.method == "OPTIONS":
             return "", 200
 
         token = obtener_token()
-        anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
+        user = User.query.filter_by(token=token).first() if token else None
 
-        user = None
-        if token:
-            user = User.query.filter_by(token=token).first()
+        # El ID anónimo se puede recibir por header o se genera uno nuevo.
+        # Se almacena en 'g' para que esté disponible durante toda la request.
+        g.anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
+        if not g.anon_id:
+            g.anon_id = str(uuid.uuid4())
+            current_app.logger.info(f"Generado nuevo ID anónimo para la request: {g.anon_id}")
 
         if user:
             # Usuario autenticado (puede ser un 'owner' o un 'viewer')
-            return f(current_user=user, owner_user=user, anon_id=anon_id, *args, **kwargs)
-        elif anon_id:
-            # Usuario anónimo
-            return f(current_user=None, owner_user=None, anon_id=anon_id, *args, **kwargs)
+            # El anon_id también se pasa, por si se necesita para alguna lógica de migración.
+            return f(current_user=user, owner_user=user, anon_id=g.anon_id, *args, **kwargs)
         else:
-            return jsonify({"error": "Se requiere un token de autenticación o un ID de anónimo."}), 401
+            # Usuario anónimo, se pasa el anon_id obtenido o generado.
+            return f(current_user=None, owner_user=None, anon_id=g.anon_id, *args, **kwargs)
+
     return decorated
 

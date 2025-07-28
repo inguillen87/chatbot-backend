@@ -86,28 +86,6 @@ class TestMunicipioImprovements(unittest.TestCase):
                 except TypeError as e:
                     self.fail(f"responder_municipio raised TypeError unexpectedly: {e}")
 
-    def test_unbound_local_error_fix_in_whatsapp_webhook(self):
-        """
-        Test that the UnboundLocalError in whatsapp_webhook is fixed.
-        This is tested by ensuring that bot_response_dict is initialized.
-        """
-        # This test is more conceptual as the fix is in the route.
-        # We can simulate the condition that caused the error.
-        with self.app.test_request_context('/webhook/whatsapp', method='POST', json={'messages': [{'from': '123', 'text': {'body': 'test'}}]}):
-            # The actual fix is initializing `bot_response_dict = {}` before the try block.
-            # We can't directly test the route's local variables, but we can ensure
-            # that a call that would have failed now works.
-            # A full integration test would be better, but this unit test can cover the logic.
-
-            # We will simulate the scenario where responder_chatboc raises an exception
-            with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-                mock_responder_chatboc.side_effect = Exception("Simulated error")
-
-                # In the actual route, this would be caught and bot_response_dict would be unassigned.
-                # The fix is to initialize bot_response_dict = {} before the try block.
-                # We can't test the route directly here without a full integration test setup,
-                # but we can assert that the logic in responder_municipio that could cause this is handled.
-                pass # This test is more of a placeholder to acknowledge the fix.
 
 if __name__ == '__main__':
     unittest.main()

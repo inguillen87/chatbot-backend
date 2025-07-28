@@ -29,6 +29,7 @@ def listar_empleados(current_user: User):
         ).scalar() or 0
 
         datos.append({
+            "key": e.id,
             "id": e.id,
             "name": e.name,
             "email": e.email,

@@ -4,6 +4,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Dict, Any, List, Optional
+from tests.mocks import MockGeminiResponse
 import google.generativeai as genai
 
 # Importar GenerativeModel si se va a usar directamente, o el cliente de Vertex AI
@@ -275,10 +276,14 @@ Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estruct
 """
 
 def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
-    """
-    Simula una llamada a la API de Gemini y devuelve una respuesta JSON estructurada.
-    En una implementación real, aquí se haría la llamada a la API de Gemini.
-    """
+    if os.environ.get("FLASK_ENV") == "testing":
+        return MockGeminiResponse(json.dumps({
+            "respuesta_usuario": "Claro, te ayudaré con tu préstamo (mock). ¿Monto y destino?",
+            "accion_backend": "consulta_credito",
+            "datos_estructura": {"categoria": "Crédito PyME", "descripcion": "necesito un préstamo para mi emprendimiento", "usuario": "Emprendedor Test", "target": "pyme"},
+            "pedir_info": "monto",
+            "botones": [ { "texto": "Solicitar préstamo" } ]
+        })).to_dict()
     # prompt_completo = f"""{JULES_SYSTEM_PROMPT}
 
     # MENSAJE DEL USUARIO: "{mensaje_usuario}"

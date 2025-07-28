@@ -37,6 +37,10 @@ from services.common_utils import generar_link_google_maps
 
 class UtilsTestCase(unittest.TestCase):
     def setUp(self):
+        self.app = create_app('testing')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
         self.original_models_module = sys.modules.get('models')
         sys.modules['models'] = models_stub
         import services.herramientas_pyme as hp
@@ -46,6 +50,9 @@ class UtilsTestCase(unittest.TestCase):
 
 
     def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
         if self.original_models_module:
             sys.modules['models'] = self.original_models_module
         else:
@@ -66,6 +73,10 @@ class UtilsTestCase(unittest.TestCase):
 
 class StockTestCase(unittest.TestCase):
     def setUp(self):
+        self.app = create_app('testing')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
         self.original_models_module = sys.modules.get('models')
         sys.modules['models'] = models_stub
         import services.herramientas_pyme as hp # Ensure hp uses the stubbed models
@@ -85,6 +96,9 @@ class StockTestCase(unittest.TestCase):
         ])
 
     def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
         if self.original_models_module:
             sys.modules['models'] = self.original_models_module
         else:
