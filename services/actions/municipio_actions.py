@@ -65,6 +65,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 # Formato "a, b y c"
                 campos_str = ", ".join(campos_faltantes[:-1]) + " y " + campos_faltantes[-1]
                 mensaje = f"Para registrar tu reclamo, necesito que me indiques: {campos_str}."
+            logger.error(f"Faltan campos para crear el reclamo: {campos_faltantes}")
 
 
             # Guardar el contexto actualizado
