@@ -992,5 +992,9 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
             {"id": "cancelar_ticket", "texto": "No"},
         ]
         respuesta_accion["message_type"] = "interactive_buttons"
+        return respuesta_accion, contexto_municipio_actual
+    else:
+        # En caso de fallo, simplemente devuelve la respuesta de error y el contexto actualizado.
+        return respuesta_accion, contexto_municipio_actual
 
 
