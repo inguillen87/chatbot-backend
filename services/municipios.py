@@ -453,6 +453,29 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
         "options_list": [],
         "fuente": "accion_crear_reclamo_llm_error",
     }
+def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
+    """
+    Handles the ticket creation process.
+    """
+    # Combina los datos parciales con los nuevos datos recibidos
+    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+    datos_reclamo.update(datos_estructura_llm)
+
+    # Llama a la acción para crear el reclamo
+    respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
+
+    # Limpia el contexto del reclamo en el municipio
+    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
+        contexto_municipio_actual.pop(k, None)
+    contexto_municipio_actual["estado_conversacion"] = None
+
+    # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
+    if respuesta_accion and respuesta_accion.get("ticket_id"):
+        return respuesta_accion, contexto_municipio_actual
+    else:
+        # En caso de fallo, simplemente devuelve la respuesta de error y el contexto actualizado.
+        return respuesta_accion, contexto_municipio_actual
+
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
     logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
@@ -469,13 +492,14 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
     if invocar_llm:
         logger.info(f"[HANDLE_LLM] Invocando LLM. Estado: {estado_conversacion_para_llm}")
 
+    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
     usuario_info_llm = {
-        "nombre": getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
+        "nombre": datos_reclamo.get("nombre_usuario_detectado") or getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
         "tipo_entidad": "municipio",
-        "ubicacion": getattr(viewer_user, "direccion", None) if viewer_user else None,
+        "ubicacion": datos_reclamo.get("ubicacion") or getattr(viewer_user, "direccion", None) if viewer_user else None,
         "contacto": {
-            "telefono": getattr(viewer_user, "telefono", None) if viewer_user else None,
-            "email": getattr(viewer_user, "email", None) if viewer_user else None
+            "telefono": datos_reclamo.get("telefono_detectado") or getattr(viewer_user, "telefono", None) if viewer_user else None,
+            "email": datos_reclamo.get("email_detectado") or getattr(viewer_user, "email", None) if viewer_user else None
         }
     }
 
@@ -502,7 +526,12 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
         except Exception as e:
             logger.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
-            return None
+            return {
+                "message_body": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "error"
+            }, contexto_municipio_actual
 
         respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
@@ -511,7 +540,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         botones_llm = respuesta_llm_dict.get("botones", [])
 
         if not respuesta_usuario_llm:
-            return None
+            return None, None
 
         nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
 
@@ -522,23 +551,22 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 contexto_municipio_actual["historial_llm_reclamo"] = []
 
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
+
+            # Actualizar con los nuevos datos, priorizando los que no son None
+            if not isinstance(contexto_municipio_actual.get("datos_parciales_llm_reclamo"), dict):
+                contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+
+            # Combinar datos antiguos y nuevos
+            datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+            nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
+            datos_actuales.update(nuevos_datos)
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
+
             if not pedir_info_llm:
-                respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm)
+                respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
                 return respuesta_accion, contexto_municipio_actual
 
             else:
-                # Asegurarse de que datos_parciales_llm_reclamo exista y sea un diccionario
-                if not isinstance(contexto_municipio_actual.get("datos_parciales_llm_reclamo"), dict):
-                    contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
-
-                # Actualizar con los nuevos datos, priorizando los que no son None
-                # Special handling for 'ubicacion' to ensure it is not overwritten with None
-                if 'ubicacion' in datos_estructura_llm and datos_estructura_llm['ubicacion'] is not None:
-                    contexto_municipio_actual["datos_parciales_llm_reclamo"]['ubicacion'] = datos_estructura_llm['ubicacion']
-
-                contexto_municipio_actual["datos_parciales_llm_reclamo"].update(
-                    {k: v for k, v in datos_estructura_llm.items() if v is not None and k != 'ubicacion'}
-                )
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
                 # Update the context that will be passed to the next turn
@@ -555,10 +583,11 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
         else: # Respuesta general
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
             if pedir_info_llm:
-                contexto_municipio_actual["esperando_info_general_llm"] = pedir_info_llm
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
             else:
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
                 contexto_municipio_actual.pop("esperando_info_general_llm", None)
             return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}, contexto_municipio_actual
 
@@ -964,33 +993,3 @@ def responder_municipio(
 
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
-
-
-def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
-    """
-    Handles the ticket creation process.
-    """
-    # Combina los datos parciales con los nuevos datos recibidos
-    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-    datos_reclamo.update(datos_estructura_llm)
-
-    # Llama a la acción para crear el reclamo
-    respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
-
-    # Limpia el contexto del reclamo en el municipio
-    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
-        contexto_municipio_actual.pop(k, None)
-    contexto_municipio_actual["estado_conversacion"] = None
-
-    # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
-    if respuesta_accion.get("success"):
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name
-        contexto_municipio_actual["ticket_id_pendiente"] = respuesta_accion.get("data", {}).get("ticket_id")
-        respuesta_accion["message_body"] = respuesta_accion.get("message_to_user")
-        respuesta_accion["options_list"] = [
-            {"id": "confirmar_ticket", "texto": "Sí"},
-            {"id": "cancelar_ticket", "texto": "No"},
-        ]
-        respuesta_accion["message_type"] = "interactive_buttons"
-
-
