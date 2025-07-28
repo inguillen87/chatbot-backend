@@ -132,6 +132,8 @@ def create_app(config_class=Config):
     with app.app_context():
         db.init_app(app)
         migrate.init_app(app, db)
+        if app.config.get("TESTING"):
+            db.create_all()
 
     @login_manager.user_loader
     def load_user(user_id):
