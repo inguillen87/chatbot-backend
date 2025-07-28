@@ -330,15 +330,8 @@ def register():
     current_app.logger.info(f"Tipo de chat final determinado: '{tipo_chat_final}'")
     # END: MODIFIED LOGIC FOR tipo_chat
 
-    empresa_existente = User.query.filter(
-        func.lower(User.nombre_empresa) == func.lower(required_campos['nombre_empresa'])
-    ).filter_by(empresa_id=None).first()
-    if empresa_existente:
-        rol_asignado = 'usuario'
-        empresa_id = empresa_existente.id
-    else:
-        rol_asignado = 'admin'
-        empresa_id = None
+    rol_asignado = 'admin'
+    empresa_id = None
     current_app.logger.info(f"[register] Attempting to register user with data: {data}")
     user = User(
         name=data['name'].strip(),
