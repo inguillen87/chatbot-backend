@@ -128,7 +128,10 @@ def _procesar_chat(
         viewer_obj = current_user # El que mira
 
         if is_anonymous and not anon_id:
-            return jsonify({"error": "No autenticado o identificado."}), 401
+            # This case should ideally not be reached if anon_o_token_requerido is working correctly,
+            # as it should have generated an anon_id. This is a safeguard.
+            current_app.logger.warning("anon_id no fue provisto a _procesar_chat para un usuario anónimo. El decorador podría no estar funcionando como se espera.")
+            return jsonify({"error": "No se pudo identificar la sesión anónima."}), 401
 
         if is_anonymous:
             # Lógica para usuarios anónimos
