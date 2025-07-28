@@ -993,4 +993,4 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
         ]
         respuesta_accion["message_type"] = "interactive_buttons"
 
-    return respuesta_accion, contexto_municipio_actual
+

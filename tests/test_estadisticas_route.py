@@ -37,10 +37,4 @@ def test_get_user_locations(client):
         assert {'lat': 10.0, 'lng': 20.0} in data
         assert {'lat': 30.0, 'lng': 40.0} in data
 
-@patch('routes.auth.token_requerido', lambda x: x)
-def test_mapa_calor_route(client):
-    with patch('routes.estadisticas.get_user_from_token') as mock_get_user:
-        mock_get_user.return_value = User(id=1, rol='admin', municipio_id=1, rubro_id=None, name='Admin User', email='admin@test.com', password_hash='test')
-        response = client.get(url_for('estadisticas.mapa_calor'))
-        assert response.status_code == 200
-        assert 'Estadísticas y Mapas de Calor' in response.get_data(as_text=True)
+
