@@ -471,7 +471,12 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
 
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("ticket_id"):
-        return respuesta_accion, contexto_municipio_actual
+        return {
+            "message_body": f"Se ha generado el ticket de reclamo con el número {respuesta_accion.get('ticket_id')}. Puede consultar el estado de su reclamo en cualquier momento con este número. Para hablar con un encargado, puede contactar a Marcelo al 2613168608.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "ticket_creado"
+        }, contexto_municipio_actual
     else:
         # En caso de fallo, simplemente devuelve la respuesta de error y el contexto actualizado.
         return respuesta_accion, contexto_municipio_actual
@@ -564,8 +569,10 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
             if not pedir_info_llm:
                 respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
-                return respuesta_accion, contexto_municipio_actual
-
+                if respuesta_accion and respuesta_accion.get("ticket_id"):
+                    return respuesta_accion, contexto_municipio_actual
+                else:
+                    return {"message_body": "Hubo un problema al crear el reclamo. Por favor, intente de nuevo.", "options_list": [], "message_type": "text", "fuente": "error"}, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
