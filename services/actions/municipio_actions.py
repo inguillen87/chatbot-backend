@@ -308,7 +308,7 @@ class EjecutarHerramientaActionHandler(BaseActionHandler):
 
         return {
             "success": True,
-            "message_to_user": resultado_herramienta,
+            "respuesta": resultado_herramienta,
             "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "real"}
         }
 
