@@ -10,6 +10,7 @@ if project_root not in sys.path:
 
 from app import create_app, db
 from services.actions.municipio_actions import CrearReclamoActionHandler
+from services.herramientas_municipio import direccion_es_valida
 from models import User
 from config import Config
 
@@ -40,11 +41,11 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
     @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.actions.municipio_actions.parse_direccion_completa')
+    @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
     def test_accion_crear_reclamo_exito_completo_llm(
-        self, mock_formatear_tel, mock_enviar_whatsapp, mock_parse_direccion,
+        self, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
         mock_ticket_simulado = MagicMock()
@@ -98,11 +99,11 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
     @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.actions.municipio_actions.parse_direccion_completa')
+    @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
     def test_accion_crear_reclamo_campos_detectados(
-        self, mock_formatear_tel, mock_enviar_whatsapp, mock_parse_direccion,
+        self, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
         mock_ticket_simulado = MagicMock()
@@ -171,11 +172,11 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
     @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.actions.municipio_actions.parse_direccion_completa')
+    @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
     def test_accion_crear_reclamo_contacto_llm_invalido_usa_perfil(
-        self, mock_formatear_tel, mock_enviar_whatsapp, mock_parse_direccion,
+        self, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email_func, mock_validar_telefono_func, mock_crear_ticket
     ):
         mock_ticket_simulado = MagicMock(); mock_ticket_simulado.nro_ticket = "67890"; mock_ticket_simulado.id = 2
@@ -254,6 +255,16 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         self.assertFalse(respuesta["success"])
         self.assertIn("Para registrar tu reclamo, necesito que me indiques: tu número de teléfono y tu correo electrónico.", respuesta["message_to_user"])
+
+    @patch('services.location_service.geocode_address')
+    def test_direccion_es_valida(self, mock_geocode_address):
+        # Caso 1: Dirección válida
+        mock_geocode_address.return_value = {"formatted_address": "Calle Falsa 123, Springfield, USA"}
+        self.assertTrue(direccion_es_valida("Calle Falsa 123"))
+
+        # Caso 2: Dirección inválida
+        mock_geocode_address.return_value = None
+        self.assertFalse(direccion_es_valida("una direccion invalida"))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

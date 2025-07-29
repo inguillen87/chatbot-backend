@@ -6,6 +6,7 @@ import os
 import unicodedata # <--- ¡Importante agregar esta línea!
 import re
 from services.config_loader import cargar_configuracion_municipio
+from services.location_service import geocode_address
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -117,19 +118,12 @@ def normalizar_texto(texto: str) -> str:
 
 # --- VALIDACIÓN DE DIRECCIONES ---
 def direccion_es_valida(texto: str) -> bool:
-    """Heurística simple para verificar si una dirección parece válida a grandes rasgos."""
+    """Verifica si una dirección es válida utilizando el servicio de geocodificación."""
     if not texto:
         return False
-    texto_norm = normalizar_texto(texto)
-    # Verifica que haya al menos una palabra (nombre de calle) y al menos un número.
-    # Esta es una validación muy básica. La función `parse_direccion_completa` hará el trabajo pesado.
-    tiene_numero = bool(re.search(r"\d+", texto_norm)) # Un número cualquiera
-    tiene_palabras_calle = bool(re.search(r"[a-zA-Z]{2,}", texto_norm)) # Al menos una palabra de 2+ letras para la calle
 
-    # Podríamos añadir más heurísticas si es necesario, por ejemplo,
-    # si la parte numérica está muy separada de la parte de texto, etc.
-    # Pero es mejor dejar que el LLM lo maneje.
-    return tiene_numero and tiene_palabras_calle
+    geocode_result = geocode_address(texto)
+    return geocode_result is not None
 
 
 def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None) -> dict | None:

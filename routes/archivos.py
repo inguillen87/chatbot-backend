@@ -7,10 +7,13 @@ from werkzeug.utils import secure_filename
 from datetime import datetime
 from routes.auth import token_requerido
 from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
+from google.cloud import storage
+from services.google_vision_service import analyze_image_from_content
+from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 
 archivos_bp = Blueprint('archivos_bp', __name__, url_prefix='/archivos')
 
-UPLOAD_FOLDER = os.path.join('data', 'archivos')
+BUCKET_NAME = "chatboc-files"
 # Extensiones permitidas para evitar archivos ejecutables sospechosos
 ALLOWED_EXTENSIONS = {
     'jpg',
@@ -174,38 +177,39 @@ def subir_archivo(current_user):
     archivos_guardados_info = [] # Para rollback en caso de error parcial
 
     for file in files:
-        if file.filename == '': # Ya cubierto arriba, pero por si acaso en el loop
+        if file.filename == '':
             continue
 
         original = secure_filename(file.filename)
         unique = f"{uuid.uuid4().hex}_{original}"
-        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-        save_path = os.path.join(UPLOAD_FOLDER, unique)
 
         try:
-            file.save(save_path)
-            tamano = os.path.getsize(save_path)
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(BUCKET_NAME)
+            blob = bucket.blob(unique)
+
+            blob.upload_from_file(file, content_type=file.mimetype)
+
+            tamano = blob.size
 
             if tamano > MAX_FILE_SIZE:
-                os.remove(save_path) # Eliminar archivo si excede el tamaño
-                # Limpiar archivos ya guardados en esta tanda si decidimos abortar todo
+                blob.delete()
                 for agi in archivos_guardados_info:
-                    os.remove(agi['path'])
-                return jsonify({'error': f'Archivo "{original}" demasiado grande (máx 10MB).'}), 413 # Payload Too Large
+                    try:
+                        storage_client.bucket(BUCKET_NAME).blob(agi['unique']).delete()
+                    except Exception as e_delete:
+                        current_app.logger.error(f"Error al eliminar archivo {agi['unique']} de GCS durante el rollback: {e_delete}", exc_info=True)
+                return jsonify({'error': f'Archivo "{original}" demasiado grande (máx 10MB).'}), 413
 
-            archivos_guardados_info.append({'path': save_path, 'unique': unique, 'original': original, 'mimetype': file.mimetype, 'tamano': tamano})
+            archivos_guardados_info.append({'path': blob.public_url, 'unique': unique, 'original': original, 'mimetype': file.mimetype, 'tamano': tamano})
 
         except Exception as e:
-            current_app.logger.error(f"Error al guardar el archivo {original}: {e}", exc_info=True)
-            # Limpiar archivos ya guardados en esta tanda
-            for agi in archivos_guardados_info:
-                if os.path.exists(agi['path']): # Verificar si existe antes de borrar
-                    os.remove(agi['path'])
-            return jsonify({'error': f'Error al guardar el archivo {original}.'}), 500
+            current_app.logger.error(f"Error al subir el archivo {original} a GCS: {e}", exc_info=True)
+            return jsonify({'error': f'Error al subir el archivo {original}.'}), 500
 
     # Si todos los archivos se guardaron bien, ahora los registramos en la BD
     for agi in archivos_guardados_info:
-        url = f"/archivos/{agi['unique']}"
+        url = agi['path']
         nuevo_adjunto = ArchivoAdjunto(
             user_id=current_user.id,
             session_id=session_id,
@@ -234,34 +238,38 @@ def subir_archivo(current_user):
             current_app.logger.info(
                 f"Archivo subido por user {current_user.id}: {agi['unique']} ({agi['original']}). ID: {nuevo_adjunto.id}"
             )
+
+            # Procesar el archivo con Document AI si es un PDF o una imagen
+            extracted_data = None
+            if agi['mimetype'] == 'application/pdf':
+                extracted_data = procesar_catalogo_pdf_google(agi['path'], current_user.id)
+            elif agi['mimetype'].startswith('image/'):
+                extracted_data = procesar_catalogo_imagen_google(agi['path'], current_user.id)
+
             resultados_subida.append({
                 'filename': agi['unique'],
                 'id': nuevo_adjunto.id,
                 'name': agi['original'],
                 'mimeType': agi['mimetype'],
                 'size': agi['tamano'],
-                'url': url
+                'url': url,
+                'extracted_data': extracted_data
             })
         except Exception as e_db:
             db.session.rollback()
             current_app.logger.error(f"Error al registrar en BD el archivo {agi['original']}: {e_db}", exc_info=True)
             # Eliminar el archivo físico que se guardó pero no se pudo registrar en BD
-            if os.path.exists(agi['path']):
-                 os.remove(agi['path'])
-            # Aquí podríamos decidir si continuar con otros archivos o abortar todo.
-            # Por ahora, si uno falla en la BD, se omite y se continúa con los demás.
-            # Para una operación más atómica, habría que hacer rollback de todos los archivos de la tanda.
-            # Para simplificar, un error en BD aquí no detiene los demás, pero no se añade a resultados_subida.
-            # Sin embargo, el diseño actual es guardar todos los archivos primero, luego BD.
-            # Si un commit falla, deberíamos hacer rollback de todos los archivos de la tanda.
+            try:
+                storage_client.bucket(BUCKET_NAME).blob(agi['unique']).delete()
+            except Exception as e_delete:
+                current_app.logger.error(f"Error al eliminar archivo {agi['unique']} de GCS durante el rollback: {e_delete}", exc_info=True)
 
     if not resultados_subida and archivos_guardados_info:
-        # Esto podría pasar si todos los archivos se guardaron pero todos fallaron el commit a BD
-        # o alguna otra lógica impidió que se agregaran a resultados_subida.
-        # Rollback de los archivos físicos guardados si la lista de resultados está vacía pero se guardaron archivos.
-        for agi_path in [item['path'] for item in archivos_guardados_info]:
-            if os.path.exists(agi_path):
-                os.remove(agi_path)
+        for agi in archivos_guardados_info:
+            try:
+                storage_client.bucket(BUCKET_NAME).blob(agi['unique']).delete()
+            except Exception as e_delete:
+                current_app.logger.error(f"Error al eliminar archivo {agi['unique']} de GCS durante el rollback: {e_delete}", exc_info=True)
         return jsonify({'error': 'Error al procesar archivos en la base de datos después de guardarlos.'}), 500
 
     if not resultados_subida and not files: # Si no se enviaron archivos válidos desde el principio
@@ -297,14 +305,19 @@ def subir_imagen(current_user):
         save_path = os.path.join(UPLOAD_FOLDER, unique)
 
         try:
-            file.save(save_path)
-            tamano = os.path.getsize(save_path)
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(BUCKET_NAME)
+            blob = bucket.blob(unique)
+
+            blob.upload_from_file(file, content_type=file.mimetype)
+
+            tamano = blob.size
 
             if tamano > MAX_FILE_SIZE:
-                os.remove(save_path)
+                blob.delete()
                 return jsonify({'error': 'Archivo demasiado grande (máx 10MB).'}), 413
 
-            url = f"/archivos/{unique}"
+            url = blob.public_url
             nuevo_adjunto = ArchivoAdjunto(
                 user_id=current_user.id,
                 filename=unique,
@@ -317,8 +330,11 @@ def subir_imagen(current_user):
             db.session.add(nuevo_adjunto)
             db.session.commit()
 
+            analysis_result = analyze_image_from_content(file.read())
+            file.seek(0)
+
             return jsonify({
-                'mensaje': 'Imagen subida correctamente.',
+                'mensaje': 'Imagen subida y analizada correctamente.',
                 'archivo': {
                     'filename': unique,
                     'id': nuevo_adjunto.id,
@@ -326,12 +342,13 @@ def subir_imagen(current_user):
                     'mimeType': file.mimetype,
                     'size': tamano,
                     'url': url
-                }
+                },
+                'analisis': analysis_result
             }), 200
 
         except Exception as e:
-            current_app.logger.error(f"Error al guardar la imagen {original}: {e}", exc_info=True)
-            return jsonify({'error': 'Error al guardar la imagen.'}), 500
+            current_app.logger.error(f"Error al subir la imagen {original} a GCS: {e}", exc_info=True)
+            return jsonify({'error': 'Error al subir la imagen.'}), 500
 
     return jsonify({'error': 'Formato de archivo no permitido'}), 400
 
@@ -383,7 +400,22 @@ def obtener_archivo(current_user: User, filename):
     else:
         return jsonify({'error': 'Permiso denegado.'}), 403
 
-    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(filename)
+
+        if not blob.exists():
+            return jsonify({'error': 'Archivo no encontrado en el almacenamiento.'}), 404
+
+        response = make_response(blob.download_as_bytes())
+        response.headers['Content-Type'] = adj.mime
+        response.headers['Content-Disposition'] = f'attachment; filename="{adj.nombre_original}"'
+        return response
+
+    except Exception as e:
+        current_app.logger.error(f"Error al descargar el archivo {filename} de GCS: {e}", exc_info=True)
+        return jsonify({'error': 'Error al descargar el archivo.'}), 500
 
 
 @archivos_bp.route('/sesion/<session_id>', methods=['OPTIONS'])
