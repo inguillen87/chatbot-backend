@@ -65,9 +65,23 @@ class CrearReclamoActionHandler(BaseActionHandler):
         campos_faltantes = []
         if not descripcion: campos_faltantes.append("una descripción del problema")
         if not ubicacion_llm and not coordenadas_llm: campos_faltantes.append("la ubicación del problema")
-        if not nombre_vecino_llm: campos_faltantes.append("tu nombre")
-        if not telefono_llm: campos_faltantes.append("tu número de teléfono")
-        if not email_llm: campos_faltantes.append("tu correo electrónico")
+        viewer_user = self.context.get("viewer_user_obj")
+        viewer_phone = getattr(viewer_user, "telefono", "") if viewer_user else ""
+        viewer_email = getattr(viewer_user, "email", "") if viewer_user else ""
+        viewer_name = getattr(viewer_user, "nombre", "") if viewer_user else ""
+        logger.debug(
+            "Viewer stored info - name: %s, phone: %s, email: %s",
+            viewer_name,
+            viewer_phone,
+            viewer_email,
+        )
+
+        if not nombre_vecino_llm and not viewer_name:
+            campos_faltantes.append("tu nombre")
+        if not telefono_llm and not validar_telefono(viewer_phone):
+            campos_faltantes.append("tu número de teléfono")
+        if not email_llm and not validar_email(viewer_email):
+            campos_faltantes.append("tu correo electrónico")
 
         if campos_faltantes:
             mensaje = f"Para registrar tu reclamo, necesito que me indiques {', '.join(campos_faltantes)}."
