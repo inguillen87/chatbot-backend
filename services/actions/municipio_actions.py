@@ -304,9 +304,14 @@ class EjecutarHerramientaActionHandler(BaseActionHandler):
             return {"success": False, "message_to_user": "No pude identificar la herramienta a ejecutar."}
 
         herramienta_func = TOOL_REGISTRY[nombre_herramienta]["funcion"]
+        logger.info(f"Ejecutando herramienta '{nombre_herramienta}' con parámetros: {parametros}")
         resultado_herramienta = herramienta_func(**parametros)
+        logger.info(f"Resultado de la herramienta '{nombre_herramienta}': {resultado_herramienta}")
 
+        contexto_municipio = self.context.get(CONTEXTO_MUNICIPIO, {})
         if "No encontré resultados" in resultado_herramienta:
+            contexto_municipio["estado_conversacion"] = "ESPERANDO_CONSULTA_GENERAL"
+            logger.warning(f"La herramienta '{nombre_herramienta}' no encontró resultados.")
             return {
                 "success": False,
                 "message_to_user": resultado_herramienta,
@@ -314,6 +319,8 @@ class EjecutarHerramientaActionHandler(BaseActionHandler):
                 "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "vacio"}
             }
         else:
+            contexto_municipio["estado_conversacion"] = "ESPERANDO_CONSULTA_GENERAL"
+            logger.info(f"La herramienta '{nombre_herramienta}' se ejecutó exitosamente.")
             return {
                 "success": True,
                 "message_to_user": resultado_herramienta,
