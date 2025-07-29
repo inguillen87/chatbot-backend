@@ -5,6 +5,7 @@ from typing import Dict, Any
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import parse_direccion_completa, direccion_es_valida
+from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.gemini_bridge import llamar_gemini
 
@@ -165,7 +166,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": True,
-                "message_to_user": f"¡Gracias {nombre_vecino_final}! Tu reclamo sobre '{categoria}' ha sido registrado con el número {nro_ticket_str}. Te mantendremos informado.",
+                "message_to_user": formatear_ticket_respuesta("reclamo", nombre_vecino_final, descripcion, categoria, nro_ticket_str),
                 "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
             }
         except Exception as e:
@@ -236,14 +237,50 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "message_to_user": "Claro, ¿cuál es tu sugerencia?",
                 "pedir_info": "descripcion_sugerencia"
             }
-        # Simulate saving suggestion
-        simulated_sug_id = "SUG-SIM" + str(action_data.get("id_simulacion", "001"))
-        user_message = f"¡Muchas gracias por tu sugerencia! La hemos registrado con el ID {simulated_sug_id} y será revisada por nuestro equipo."
-        return {
-            "success": True,
-            "message_to_user": user_message,
-            "data": {"sugerencia_id": simulated_sug_id, "status": "registrada"}
+        # Create a ticket for the suggestion
+        viewer_user = self.context.get("viewer_user_obj")
+        owner_user = self.context.get("user_obj")
+        user_id_db = getattr(viewer_user, "id", None)
+        anon_id_db = self.context.get("anon_id") if not user_id_db else None
+        municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
+        nombre_vecino_final = getattr(viewer_user, "nombre", "Ciudadano Anónimo")
+
+        ticket_data = {
+            "asunto": "Sugerencia de Ciudadano",
+            "categoria": "Sugerencia",
+            "detalles": descripcion_sugerencia,
+            "estado": "nuevo",
+            "user_id": user_id_db,
+            "anon_id": anon_id_db,
+            "origen_reclamo": "LLM_CHATBOT"
         }
+        if self.context.get("foto_url"):
+            ticket_data["foto_url_directa"] = self.context.get("foto_url")
+
+        ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+        if "municipio_id" in ticket_data_cleaned:
+            del ticket_data_cleaned["municipio_id"]
+
+        try:
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
+            if not ticket_creado:
+                raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
+
+            nro_ticket_str = f"S-{ticket_creado.nro_ticket}"
+            logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
+
+            return {
+                "success": True,
+                "message_to_user": formatear_ticket_respuesta("sugerencia", nombre_vecino_final, descripcion_sugerencia, "Sugerencia", nro_ticket_str),
+                "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
+            }
+        except Exception as e:
+            logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Hubo un problema al intentar registrar tu sugerencia. Por favor, intenta de nuevo más tarde.",
+                "error_details": str(e)
+            }
 
 class EjecutarHerramientaActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -330,9 +367,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             chat_id = f"M-{sala.nro_ticket}"
 
-            user_message = (
-                f"Hemos recibido tu solicitud para hablar con un agente. Tu número de chat es **{chat_id}**."
-            )
+            user_message = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
             return {
                 "success": True,
                 "message_to_user": user_message,
