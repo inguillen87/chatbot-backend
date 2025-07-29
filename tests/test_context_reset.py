@@ -79,6 +79,9 @@ class TestContextReset(unittest.TestCase):
                 ctx.get('estado_conversacion'),
                 ConversationState.CONVERSACION_GENERAL_LLM.name
             )
+            # Ensure old complaint data was removed
+            self.assertNotIn('direccion_reclamo', ctx)
+            self.assertEqual(ctx.get('datos_parciales_llm_reclamo'), {})
 
 
 if __name__ == '__main__':
