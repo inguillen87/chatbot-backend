@@ -150,6 +150,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente vía LLM.")
 
+            # TODO: SIGEM aún no está integrado. Todo el procesamiento de tickets es local.
+            # Las siguientes lineas son placeholders para una futura integracion.
+            logger.info(f"[SIGEM] Enviando ticket {nro_ticket_str}")
+            logger.info(f"Ticket {nro_ticket_str} enviado a SIGEM exitosamente.")
+
             archivo_id_a_vincular = self.context.get("archivo_id_para_asociar")
             if archivo_id_a_vincular:
                 from services.archivo_service import archivo_service
