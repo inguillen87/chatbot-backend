@@ -302,10 +302,13 @@ def consultar_eventos_culturales(fecha: str) -> str:
         # El LLM es bueno interpretando fechas, si nos pasa '15 de junio' y no lo tenemos, damos esta respuesta.
         return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
 
-def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) -> str:
+def buscar_puntos_de_interes(rubro: str = None, tipo_lugar: str = None, localidad: str = None, opennow: bool = False) -> str:
     """
     Busca puntos de interés cercanos a la ubicación del usuario.
     """
+    if not rubro and tipo_lugar:
+        rubro = tipo_lugar
+
     logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
 
     if not Maps_API_KEY:
