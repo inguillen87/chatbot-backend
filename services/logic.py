@@ -47,11 +47,8 @@ def es_rubro_publico(rubro) -> bool:
 
 
 from services.llm_utils import clasificar_entidad_con_llm
-
-try:
-    from services.cohere_ai import get_cohere_response
-except Exception:  # pragma: no cover - fallback for tests
-    from services.cohere_ai import robust_chat as get_cohere_response
+from services.municipios import responder_municipio
+from services.pymes import responder_pyme
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
@@ -192,8 +189,6 @@ def responder_chatboc(
     # su propio contexto desde/hacia chat_db_context.context_data usando chat_session_uuid como posible sub-key si es necesario.
 
     if tipo_chat == "municipio":
-        from services.municipios import responder_municipio
-
         # Añadir datos interpretados al contexto del usuario para el LLM
         if datos_interpretados_de_archivo:
             if not owner_user.datos_interpretados_archivo:
@@ -212,8 +207,6 @@ def responder_chatboc(
             **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
         )
     elif tipo_chat == "pyme":
-        from services.pymes import responder_pyme
-
         # Añadir datos interpretados al contexto del usuario para el LLM
         if datos_interpretados_de_archivo:
             if not owner_user.datos_interpretados_archivo:

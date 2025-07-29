@@ -62,10 +62,18 @@ def whatsapp_webhook():
 
     if media_url and media_content_type:
         print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
-        # Procesar imágenes, PDFs y otros documentos.
-        if media_content_type.startswith("image/") or media_content_type == "application/pdf" or media_content_type.startswith("application/vnd.openxmlformats-officedocument"):
-            file_extension = ".jpg"
-            if media_content_type == "application/pdf":
+        # Procesar imágenes, PDFs, audio y otros documentos.
+        if media_content_type.startswith("image/") or \
+           media_content_type.startswith("audio/") or \
+           media_content_type == "application/pdf" or \
+           media_content_type.startswith("application/vnd.openxmlformats-officedocument"):
+            
+            file_extension = ".bin" # Default extension
+            if media_content_type.startswith("image/"):
+                file_extension = ".jpg" 
+            elif media_content_type.startswith("audio/"):
+                file_extension = ".ogg"
+            elif media_content_type == "application/pdf":
                 file_extension = ".pdf"
             elif media_content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                 file_extension = ".docx"

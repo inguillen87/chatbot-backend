@@ -8,7 +8,6 @@ from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from services.logic import es_rubro_publico
 
 # from collections import Counter # Ya está importado arriba
-from .cohere_ai import embed_textos
 from qdrant_client.http import models as qdrant_models
 from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto

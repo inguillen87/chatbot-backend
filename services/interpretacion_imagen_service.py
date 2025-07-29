@@ -365,7 +365,7 @@ def _procesar_interpretacion_reclamo(
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
     logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis_id_for_log})")
 
-    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm, model="gemini-1.5-pro-preview-0409")
+    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
 
     datos_internos_analisis['llm_complaint_extraction_from_image'] = detalles_llm
     datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision

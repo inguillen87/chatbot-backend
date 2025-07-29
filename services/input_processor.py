@@ -1,6 +1,7 @@
 # services/input_processor.py
 import logging
 from typing import Dict, Any, Tuple
+from services.google_speech_to_text import SpeechToTextService
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +12,7 @@ class InputProcessor:
     """
 
     def __init__(self, speech_to_text_service=None): # speech_to_text_service can be injected
-        self.stt_service = speech_to_text_service
-        # Example: self.stt_service = SpeechToTextService() if not provided
+        self.stt_service = speech_to_text_service or SpeechToTextService()
 
     def process_input(self, payload: Dict[str, Any], channel: str) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
         """

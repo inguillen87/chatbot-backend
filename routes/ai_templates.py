@@ -42,7 +42,6 @@ def get_all_templates(user): # 'user' es inyectado por @token_requerido
         current_app.logger.error(f"Error al obtener todas las plantillas para el usuario {user.id if user else 'desconocido'}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener las plantillas."}), 500
 
-from services.cohere_ai import robust_embed # Importar la función de embedding
 
 @ai_templates_bp.route('/templates', methods=['POST'])
 @token_requerido

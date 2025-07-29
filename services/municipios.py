@@ -14,7 +14,6 @@ import difflib
 from flask import current_app, has_app_context  # Ensure current_app is imported directly
 from sqlalchemy.orm.attributes import flag_modified # Import for flag_modified
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion # Added Conversacion
-from services.cohere_ai import get_cohere_response
 from services.ticket_service import servicio_tickets
 from twilio.rest import Client
 from datetime import datetime, timedelta
@@ -653,19 +652,28 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
         elif accion_backend_llm == "ejecutar_herramienta":
             nombre_herramienta = datos_estructura_llm.get("nombre_herramienta")
-            parametros_herramienta = datos_estructura_llm.get("parametros_herramienta")
+            parametros_herramienta = datos_estructura_llm.get("parametros_herramienta", {})
+            parametros_faltantes = datos_estructura_llm.get("faltan_parametros_herramienta", [])
 
             if nombre_herramienta and nombre_herramienta in TOOL_REGISTRY:
+                if parametros_faltantes:
+                    # Guardar el estado actual y pedir al usuario la información que falta
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = parametros_faltantes[0] # Pedir un parámetro a la vez
+                    contexto_municipio_actual["datos_parciales_llm_reclamo"] = {
+                        "nombre_herramienta": nombre_herramienta,
+                        "parametros_herramienta": parametros_herramienta
+                    }
+                    return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "text", "fuente": "llm_pide_info_herramienta"}, contexto_municipio_actual
+
                 herramienta = TOOL_REGISTRY[nombre_herramienta]
                 funcion_herramienta = herramienta["funcion"]
 
                 try:
                     logger.info(f"[HERRAMIENTA] Intentando ejecutar: {nombre_herramienta} con params: {parametros_herramienta}")
-                    # Aquí llamas a la función de la herramienta con los parámetros
                     resultado_herramienta = funcion_herramienta(**parametros_herramienta)
-                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {resultado_herramienta[:200]}...") # Loguea una parte del resultado
+                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {resultado_herramienta[:200]}...")
 
-                    # Formateas la respuesta para el usuario con el resultado
                     respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
 
                     contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append({

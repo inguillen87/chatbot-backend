@@ -18,17 +18,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
         logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")
 
         # 1. Extracción y Validación de Datos
-        categoria = action_data.get("categoria", "Reclamo General")
-        descripcion = action_data.get("descripcion")
-        ubicacion_llm = action_data.get("ubicacion")
-        coordenadas_llm = action_data.get("coordenadas")
-        nombre_vecino_llm = action_data.get("usuario") or action_data.get("nombre_usuario_detectado")
-        telefono_llm = action_data.get("telefono") or action_data.get("telefono_detectado")
-        email_llm = action_data.get("email") or action_data.get("email_detectado")
-        foto_url_llm = action_data.get("foto_url_adjunta")
-
-        campos_faltantes = []
-        # 1. Extracción y Validación de Datos (mejorado con contexto)
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
 
         # Priorizar datos de action_data, luego de contexto, y finalmente None
@@ -66,6 +55,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         campos_faltantes = []
         if not descripcion: campos_faltantes.append("una descripción del problema")
         if not ubicacion_llm and not coordenadas_llm: campos_faltantes.append("la ubicación del problema")
+        
         viewer_user = self.context.get("viewer_user_obj")
         viewer_phone = getattr(viewer_user, "telefono", "") if viewer_user else ""
         viewer_email = getattr(viewer_user, "email", "") if viewer_user else ""
@@ -380,6 +370,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             ticket_type = "municipio"
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+            ticket_data_cleaned['tipo_ticket'] = ticket_type
             sala = servicio_tickets.crear_nuevo_ticket(ticket_type, ticket_data_cleaned)
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")

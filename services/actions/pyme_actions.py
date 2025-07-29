@@ -237,6 +237,7 @@ class DerivarHumanoActionHandlerPyme(BaseActionHandler):  # Renamed to avoid con
             }
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+            ticket_data_cleaned['tipo_ticket'] = 'pyme'
             sala = servicio_tickets.crear_nuevo_ticket("pyme", ticket_data_cleaned)
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")

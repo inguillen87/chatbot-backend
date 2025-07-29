@@ -1,4 +1,3 @@
-from services.cohere_ai import get_cohere_response # Asegúrate de poder importarlo aquí
 import json
 import logging
 import requests

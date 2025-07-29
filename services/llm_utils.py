@@ -202,6 +202,12 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
                 heuristic_value = extract_phone(text)
             elif field == "direccion_cliente":
                 heuristic_value = extract_address(text)
+                if not heuristic_value:
+                    # A more generic regex for addresses if the specific one fails
+                    address_regex = r'(?:en|en la)\s+((?:[\w\s,.-]+)+)'
+                    addresses = re.findall(address_regex, text, re.IGNORECASE)
+                    if addresses:
+                        heuristic_value = addresses[0].strip()
             elif field == "email_cliente":
                 heuristic_value = extract_email(text)
             if heuristic_value:
@@ -304,29 +310,24 @@ def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dic
     # For this version, we'll use a simple LLM call to re-summarize if the robust_chat is real.
     # If using the mock, it will do a basic append.
 
-    # Check if robust_chat is the mock or real one by checking its __module__ or specific attribute
-    # This is a bit hacky; a better way would be dependency injection or a config flag.
-    is_mock_chat = hasattr(robust_chat, '__module__') and robust_chat.__module__ == __name__ # if defined in this file
-
-    if not is_mock_chat: # Attempt to use LLM for a more intelligent merge
-        prompt = (
-            "You are a text summarization assistant. Given a CURRENT SUMMARY and NEW DATA, "
-            "intelligently update the summary. Integrate the new data naturally, avoid redundancy, "
-            "and maintain clarity. If new data contradicts or refines existing points, reflect that. "
-            "Return only the updated summary text. \n\n"
-            f"CURRENT SUMMARY: '''{current_summary}'''\n\n"
-            f"NEW DATA (in JSON format): '''{json.dumps(extracted_data, indent=2)}'''\n\n"
-            "UPDATED SUMMARY:"
-        )
-        try:
-            updated_summary = robust_chat(message=prompt, model_override="gpt-4o-mini") # Cheaper model for summary
-            if updated_summary:
-                return updated_summary.strip()
-            else: # Fallback if LLM returns empty
-                logger.warning("[LLM_UPDATE_SUMMARY] LLM returned empty for summary update. Using basic append.")
-        except Exception as e:
-            logger.error(f"[LLM_UPDATE_SUMMARY] Error calling LLM for summary update: {e}. Using basic append.")
-            # Fall through to basic append on error
+    prompt = (
+        "You are a text summarization assistant. Given a CURRENT SUMMARY and NEW DATA, "
+        "intelligently update the summary. Integrate the new data naturally, avoid redundancy, "
+        "and maintain clarity. If new data contradicts or refines existing points, reflect that. "
+        "Return only the updated summary text. \n\n"
+        f"CURRENT SUMMARY: '''{current_summary}'''\n\n"
+        f"NEW DATA (in JSON format): '''{json.dumps(extracted_data, indent=2)}'''\n\n"
+        "UPDATED SUMMARY:"
+    )
+    try:
+        updated_summary = robust_chat(message=prompt) # Removed model_override
+        if updated_summary:
+            return updated_summary.strip()
+        else: # Fallback if LLM returns empty
+            logger.warning("[LLM_UPDATE_SUMMARY] LLM returned empty for summary update. Using basic append.")
+    except Exception as e:
+        logger.error(f"[LLM_UPDATE_SUMMARY] Error calling LLM for summary update: {e}. Using basic append.")
+        # Fall through to basic append on error
 
     # Basic append logic (fallback or if mock is used)
     summary_lines = [current_summary] if current_summary else []
