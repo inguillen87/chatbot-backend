@@ -12,8 +12,6 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     phonenumbers = None
 
-from services.herramientas_municipio import direccion_es_valida
-
 
 def validate_name(nombre: str) -> bool:
     """Check that the name contains only letters and spaces."""
@@ -61,6 +59,7 @@ def normalize_phone(telefono: str, region: str = "AR") -> Optional[str]:
 
 def validate_address(direccion: str) -> bool:
     """Delegates to ``direccion_es_valida`` from municipio tools."""
+    from services.herramientas_municipio import direccion_es_valida
     return direccion_es_valida(direccion)
 
 
