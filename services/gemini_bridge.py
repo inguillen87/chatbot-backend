@@ -292,53 +292,6 @@ Recordá: Siempre devolvé el JSON, nunca texto plano, nunca código. La estruct
 """
 
 def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
-    if os.environ.get("FLASK_ENV") == "testing":
-        return MockGeminiResponse(json.dumps({
-            "respuesta_usuario": "Claro, te ayudaré con tu préstamo (mock). ¿Monto y destino?",
-            "accion_backend": "consulta_credito",
-            "datos_estructura": {"categoria": "Crédito PyME", "descripcion": "necesito un préstamo para mi emprendimiento", "usuario": "Emprendedor Test", "target": "pyme"},
-            "pedir_info": "monto",
-            "botones": [ { "texto": "Solicitar préstamo" } ]
-        })).to_dict()
-    # prompt_completo = f"""{JULES_SYSTEM_PROMPT}
-
-    # MENSAJE DEL USUARIO: "{mensaje_usuario}"
-    # USUARIO: {json.dumps(usuario, ensure_ascii=False, indent=2)}
-    # HISTORIAL: {json.dumps(historial, ensure_ascii=False, indent=2)}
-    # """
-    # print("--- PROMPT ENVIADO A GEMINI (SIMULADO) ---") # Mantener comentado el print del prompt completo
-    # print(prompt_completo)
-    # print("------------------------------------------")
-
-    # --- INICIO: LLAMADA REAL A GEMINI ---
-    if mensaje and not mensaje_usuario:
-        mensaje_usuario = mensaje
-    prompt_final_para_api = f"""{JULES_SYSTEM_PROMPT}
-
-MENSAJE DEL USUARIO: "{mensaje_usuario}"
-USUARIO: {json.dumps(usuario, ensure_ascii=False)}
-HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
-"""
-    # Configuración para asegurar que la respuesta sea JSON
-    # Esto puede variar ligeramente según la versión de la librería o el modelo exacto.
-    # Para gemini-1.5-pro-preview y la librería actual, se puede guiar por prompt
-    # o usar generation_config si está disponible y bien documentado para JSON mode.
-    # Por ahora, confiaremos en el prompt que explícitamente pide JSON.
-    
-    # Descomentar la siguiente línea e inicializar el modelo de Vertex AI
-    # from vertexai.preview.generative_models import GenerativeModel, GenerationConfig # Añadir GenerationConfig
-    
-    # model = GenerativeModel("gemini-1.5-pro-preview") 
-    # Si se quiere forzar JSON output con GenerationConfig (si el modelo y SDK lo soportan bien):
-    # generation_config = GenerationConfig(
-    #     response_mime_type="application/json",
-    # )
-    # response = model.generate_content(prompt_final_para_api, generation_config=generation_config)
-    
-    # Llamada estándar (confiando en el prompt para el formato JSON):
-    # response = model.generate_content(prompt_final_para_api)
-
-    # --- INICIO: LLAMADA REAL A GEMINI ---
     logger = logging.getLogger(__name__)
     try:
         import vertexai
@@ -360,15 +313,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             system_instruction=[JULES_SYSTEM_PROMPT]
         )
 
-        # Construir el historial para el modelo Gemini
-        # El historial debe ser una lista de objetos Content, alternando user y model.
-        # JULES_SYSTEM_PROMPT ya se pasa como system_instruction.
-        # El 'historial' que llega a esta función es una lista de dicts {"role": ..., "parts": ...}
-        # que necesita ser adaptada si la API de Gemini espera un formato diferente para el historial de chat.
-        # Por ahora, la API de generate_content con system_instruction y el último mensaje_usuario es más simple.
-        # Si se necesita un historial de chat más complejo, se usaría model.start_chat(history=...)
-
-        # Para una llamada simple con system prompt y el último mensaje:
+        if mensaje and not mensaje_usuario:
+            mensaje_usuario = mensaje
 
         mensaje_usuario_obj = {}
         texto_mensaje = ""
@@ -379,25 +325,21 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             texto_mensaje = mensaje_usuario
 
         contents_for_api = [
-            # JULES_SYSTEM_PROMPT ya está como system_instruction
             f"USUARIO: {json.dumps(usuario, ensure_ascii=False)}\nHISTORIAL PREVIO: {json.dumps(historial, ensure_ascii=False)}\nMENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}"
         ]
         if usuario and usuario.get("datos_interpretados_archivo"):
             contents_for_api.append(f"\nDATOS EXTRAIDOS DE ARCHIVO ADJUNTO: {json.dumps(usuario.get('datos_interpretados_archivo'), ensure_ascii=False)}")
 
         logger.info(f"Enviando a Gemini ({model_name}). Mensaje: {texto_mensaje[:100]}...")
-        # logger.debug(f"Contenido completo enviado a Gemini API (sin system prompt): {contents_for_api}")
 
-        # Configuración para intentar asegurar salida JSON y seguridad
         generation_config = GenerationConfig(
-            temperature=0.2,  # Más bajo para respuestas más deterministas/estructuradas
+            temperature=0.2,
             top_p=0.95,
             top_k=40,
-            max_output_tokens=8192,  # Ajustar según necesidad
-            response_mime_type="application/json"  # Solicitar JSON directamente
+            max_output_tokens=8192,
+            response_mime_type="application/json"
         )
 
-        # Ajustes de seguridad (bloquear lo mínimo posible para no interferir con JSON)
         safety_settings = {
             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
             HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
@@ -409,25 +351,19 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             contents_for_api,
             generation_config=generation_config,
             safety_settings=safety_settings,
-            # stream=False # Por ahora no streaming
         )
 
         logger.info(f"Respuesta recibida de Gemini. Candidates count: {len(response.candidates)}")
         if not response.candidates:
             logger.error("Gemini no devolvió candidatos en la respuesta.")
-            # Intentar obtener información de error si está disponible
             try:
                 block_reason = response.prompt_feedback.block_reason
                 block_reason_message = response.prompt_feedback.block_reason_message
                 logger.error(f"Prompt feedback: block_reason={block_reason}, message='{block_reason_message}'")
-                # Aquí podrías también revisar response.candidates[0].finish_reason y safety_ratings
-                # si un candidato existe pero fue bloqueado.
-            except Exception: # pragma: no cover
-                pass # No hay info de error detallada
+            except Exception:
+                pass
             raise ValueError("Respuesta de Gemini sin candidatos.")
 
-        # Asumimos que el primer candidato tiene la respuesta.
-        # El prompt pide explícitamente un JSON, así que response.text debería serlo.
         if response.candidates and response.candidates[0].content.parts:
             respuesta_texto_crudo = response.candidates[0].content.parts[0].text.strip()
             logger.info(f"Respuesta de Gemini (crudo): {respuesta_texto_crudo}")
@@ -437,14 +373,13 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
     except ImportError as ie:
         logger.error(f"Error importando librería google.generativeai: {ie}. Asegúrate que google-genai está instalado.")
-        # Fallback a un error simple o una acción segura
         return {
             "respuesta_usuario": "Error de configuración del servicio de IA. Por favor, contacta al administrador.",
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": f"Fallo de importación google.generativeai: {str(ie)}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
         }
-    except EnvironmentError as ee: # Para el error de GOOGLE_PROJECT_ID
+    except EnvironmentError as ee:
         logger.error(f"Error de entorno para google.generativeai: {ee}")
         return {
             "respuesta_usuario": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
@@ -454,11 +389,10 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
         }
     except Exception as e_gemini_call:
         logger.error(f"Error en la llamada a Gemini API: {e_gemini_call}", exc_info=True)
-        # Considerar si la respuesta tiene información de error más específica
         error_detail_from_api = str(e_gemini_call)
-        try: # Intentar obtener detalles de la respuesta si es un error de API
+        try:
             if hasattr(e_gemini_call, 'message'): error_detail_from_api = e_gemini_call.message
-        except: pass # pragma: no cover
+        except: pass
 
         return {
             "respuesta_usuario": "Lo siento, no pude procesar tu solicitud en este momento debido a un error con el asistente IA. Intenta de nuevo más tarde.",
@@ -466,11 +400,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             "datos_estructura": {"error_detalle": f"Error API Gemini: {error_detail_from_api}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
         }
-    # --- FIN: LLAMADA REAL A GEMINI ---
 
     try:
-        # Limpiar espacios antes/después y parsear
-        # Limpieza de ```json ... ``` y parseo
         if respuesta_texto_crudo.startswith("```json"):
             respuesta_texto_crudo = respuesta_texto_crudo[len("```json"):].strip()
         if respuesta_texto_crudo.endswith("```"):
@@ -482,7 +413,6 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
 
     except json.JSONDecodeError as e_json:
         logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
-        # Intentar reparar el JSON
         try:
             from services.llm_utils import _clean_llm_json_output
             repaired_json_str = _clean_llm_json_output(respuesta_texto_crudo)
@@ -491,7 +421,6 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
             return parsed_response
         except Exception as e_repair:
             logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")
-            # Fallback to a simple dictionary if parsing fails
             return {
                 "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
                 "accion_backend": "derivar_humano",
@@ -503,9 +432,8 @@ HISTORIAL: {json.dumps(historial, ensure_ascii=False)}
                 "pedir_info": None,
                 "botones": []
             }
-    except Exception as e_parse: # Otros errores durante el parseo o manejo
+    except Exception as e_parse:
         logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
-
         return {
             "respuesta_usuario": "Lo siento, hubo un error técnico al procesar la respuesta del asistente IA. Un humano revisará tu caso.",
             "accion_backend": "derivar_humano",
