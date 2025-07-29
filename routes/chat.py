@@ -257,10 +257,15 @@ def _procesar_chat(
         chat_session_id_header = request.headers.get("X-Chat-Session-Id")
 
         if not chat_session_id_header:
-            # Fallback: Generar un nuevo ID si no viene en el header.
-            # Idealmente, el frontend SIEMPRE debería enviarlo.
-            chat_session_id_header = str(uuid.uuid4())
-            current_app.logger.warning(f"X-Chat-Session-Id no encontrado en headers. Generando uno nuevo: {chat_session_id_header}")
+            from utils.session_utils import get_global_session_id
+
+            chat_session_id_header = get_global_session_id(
+                phone=getattr(actor_principal, "telefono", None),
+                email=getattr(actor_principal, "email", None),
+            )
+            current_app.logger.warning(
+                f"X-Chat-Session-Id no encontrado. Usando global session ID {chat_session_id_header}"
+            )
 
         current_app.logger.info(f"Usando Chat Session ID (from header or generated): {chat_session_id_header}")
 

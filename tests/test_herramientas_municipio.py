@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, Mock
-from services.herramientas_municipio import validar_y_formatear_direccion
+from services.herramientas_municipio import validar_y_formatear_direccion, buscar_negocios_cercanos
 
 @patch('services.herramientas_municipio.requests.get')
 def test_validar_y_formatear_direccion_exitosa(mock_get):
@@ -61,3 +61,35 @@ def test_validar_y_formatear_direccion_error_api(mock_get):
 
     # Assert
     assert resultado is None
+
+
+@patch('services.herramientas_municipio.requests.get')
+def test_buscar_negocios_cercanos(mock_get):
+    geocode_response = Mock()
+    geocode_response.raise_for_status.return_value = None
+    geocode_response.json.return_value = {
+        "status": "OK",
+        "results": [{"geometry": {"location": {"lat": 1.0, "lng": 2.0}}}]
+    }
+
+    places_response = Mock()
+    places_response.raise_for_status.return_value = None
+    places_response.json.return_value = {
+        "status": "OK",
+        "results": [
+            {"name": "Vet Uno", "vicinity": "Calle 1", "place_id": "abc"}
+        ]
+    }
+
+    details_response = Mock()
+    details_response.json.return_value = {
+        "result": {
+            "formatted_phone_number": "123",
+            "opening_hours": {"weekday_text": ["Lunes 9-18"]}
+        }
+    }
+
+    mock_get.side_effect = [geocode_response, places_response, details_response]
+
+    res = buscar_negocios_cercanos("veterinaria", "junin")
+    assert "Vet Uno" in res

@@ -117,7 +117,9 @@ def whatsapp_webhook():
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
     # --- Real Session Management using ChatSessionContext ---
-    chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
+    from utils.session_utils import get_global_session_id
+
+    chat_session_id_internal = get_global_session_id(phone=from_number_cleaned)
     session_context_db_entry = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_internal).first()
 
     initial_session_data_for_new_session = {

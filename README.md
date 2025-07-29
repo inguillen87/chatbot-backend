@@ -208,3 +208,10 @@ consulta el archivo [`docs/ejemplo-request-demo.md`](docs/ejemplo-request-demo.m
 
 ## SaaS Deployment
 This project can be deployed as a multi-tenant SaaS solution. Each company has its own token and context. See `docs/ARCHITECTURE.md` for how the LLM-driven flow integrates with the CRM modules.
+
+## New Features
+- The LLM now asks to confirm stored addresses before searching.
+- Queries like "veterinarias" reset any ongoing complaint context and clear previous complaint details.
+- Tool executions log parameters and show a fallback message when no results are found.
+- Sessions are now unified across channels using the phone number or email when available. Both the web and WhatsApp routes rely on `utils.session_utils.get_global_session_id` to ensure a single shared context.
+- Added `buscar_negocios_cercanos` tool to actually fetch nearby business listings when the LLM requests it.

@@ -369,6 +369,11 @@ def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) 
         logger.error(f"Error inesperado en búsqueda de POI para {rubro}, {localidad}: {e}", exc_info=True)
         return "Ocurrió un error inesperado al buscar los puntos de interés."
 
+
+def buscar_negocios_cercanos(rubro: str, localidad: str, opennow: bool = False) -> str:
+    """Wrapper que reutiliza buscar_puntos_de_interes para mantener compatibilidad."""
+    return buscar_puntos_de_interes(rubro, localidad, opennow)
+
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
@@ -521,6 +526,15 @@ TOOL_REGISTRY = {
         "parametros": {
             "rubro": {"type": "string", "description": "El tipo de punto de interés a buscar. Por ejemplo: 'veterinaria', 'farmacia', 'hospital', etc."},
             "localidad": {"type": "string", "description": "La localidad donde se encuentra el usuario."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "buscar_negocios_cercanos": {
+        "funcion": buscar_negocios_cercanos,
+        "descripcion": "Busca negocios cercanos a una dirección o localidad dada.",
+        "parametros": {
+            "rubro": {"type": "string", "description": "El tipo de negocio a buscar, por ejemplo 'veterinaria', 'farmacia', etc."},
+            "localidad": {"type": "string", "description": "La localidad o dirección donde buscar."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }
