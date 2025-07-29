@@ -208,3 +208,4 @@ consulta el archivo [`docs/ejemplo-request-demo.md`](docs/ejemplo-request-demo.m
 
 ## SaaS Deployment
 This project can be deployed as a multi-tenant SaaS solution. Each company has its own token and context. See `docs/ARCHITECTURE.md` for how the LLM-driven flow integrates with the CRM modules.
+\n## New Features\n- The LLM now asks to confirm stored addresses before searching.\n- Queries like "veterinarias" reset any ongoing complaint context.\n- Tool executions log parameters and show a fallback message when no results are found.

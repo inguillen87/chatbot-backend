@@ -289,7 +289,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
 class EjecutarHerramientaActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing EjecutarHerramientaActionHandler with data: {action_data}")
+        logger.info(
+            f"Executing EjecutarHerramientaActionHandler with data: {action_data}. "
+            f"Estado previo: {self.context.get(CONTEXTO_MUNICIPIO, {}).get('estado_conversacion')}"
+        )
         nombre_herramienta = action_data.get("nombre_herramienta")
         parametros = action_data.get("parametros_herramienta", {})
 
@@ -306,12 +309,16 @@ class EjecutarHerramientaActionHandler(BaseActionHandler):
         herramienta_func = TOOL_REGISTRY[nombre_herramienta]["funcion"]
         logger.info(f"Ejecutando herramienta '{nombre_herramienta}' con parámetros: {parametros}")
         resultado_herramienta = herramienta_func(**parametros)
-        logger.info(f"Resultado de la herramienta '{nombre_herramienta}': {resultado_herramienta}")
+        logger.info(
+            f"Resultado de la herramienta '{nombre_herramienta}' con parametros {parametros}: {resultado_herramienta}"
+        )
 
         contexto_municipio = self.context.get(CONTEXTO_MUNICIPIO, {})
         if "No encontré resultados" in resultado_herramienta:
             contexto_municipio["estado_conversacion"] = "ESPERANDO_CONSULTA_GENERAL"
-            logger.warning(f"La herramienta '{nombre_herramienta}' no encontró resultados.")
+            logger.warning(
+                f"La herramienta '{nombre_herramienta}' no encontró resultados. Contexto ubicacion={self.context.get(CONTEXTO_MUNICIPIO, {}).get('datos_parciales_llm_reclamo', {}).get('ubicacion')}"
+            )
             return {
                 "success": False,
                 "message_to_user": resultado_herramienta,
