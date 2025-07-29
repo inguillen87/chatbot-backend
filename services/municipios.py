@@ -638,6 +638,51 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     flag_modified(chat_db_context, "context_data")
                 return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
 
+        elif accion_backend_llm == "ejecutar_herramienta":
+            nombre_herramienta = datos_estructura_llm.get("nombre_herramienta")
+            parametros_herramienta = datos_estructura_llm.get("parametros_herramienta")
+
+            if nombre_herramienta and nombre_herramienta in TOOL_REGISTRY:
+                herramienta = TOOL_REGISTRY[nombre_herramienta]
+                funcion_herramienta = herramienta["funcion"]
+
+                try:
+                    logger.info(f"[HERRAMIENTA] Intentando ejecutar: {nombre_herramienta} con params: {parametros_herramienta}")
+                    # Aquí llamas a la función de la herramienta con los parámetros
+                    resultado_herramienta = funcion_herramienta(**parametros_herramienta)
+                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {resultado_herramienta[:200]}...") # Loguea una parte del resultado
+
+                    # Formateas la respuesta para el usuario con el resultado
+                    respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
+
+                    contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append({
+                        "pregunta_usuario": pregunta_str,
+                        "respuesta_ia": respuesta_final
+                    })
+
+                    return {
+                        "message_body": respuesta_final,
+                        "options_list": botones_llm,
+                        "message_type": "text",
+                        "fuente": f"herramienta_{nombre_herramienta}"
+                    }, contexto_municipio_actual
+
+                except Exception as e:
+                    logger.error(f"Error ejecutando la herramienta '{nombre_herramienta}': {e}", exc_info=True)
+                    return {
+                        "message_body": "Hubo un error al intentar usar la herramienta. Por favor, intenta de nuevo.",
+                        "options_list": [],
+                        "message_type": "text",
+                        "fuente": "error_herramienta"
+                    }, contexto_municipio_actual
+            else:
+                return {
+                    "message_body": "No se encontró la herramienta solicitada. Por favor, reformula tu pregunta.",
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "herramienta_no_encontrada"
+                }, contexto_municipio_actual
+
         elif accion_backend_llm == "derivar_humano":
             context["intencion"] = "hablar_con_agente"
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
