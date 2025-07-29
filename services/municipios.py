@@ -710,15 +710,39 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             logger.info("[HANDLE_LLM] LLM derivó a humano.")
             return None, contexto_municipio_actual
 
-        else: # Respuesta general
-            contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
-            if pedir_info_llm:
-                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-            else:
-                contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                contexto_municipio_actual.pop("esperando_info_general_llm", None)
-            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general"}, contexto_municipio_actual
+        else: # Respuesta general o continuación de un flujo
+            # Si estábamos esperando info para un reclamo y el LLM no generó una acción concreta
+            # pero sí extrajo datos, los fusionamos con los datos parciales.
+            if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name and datos_estructura_llm:
+                contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
+
+                # Fusionar datos nuevos con los existentes
+                datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+                nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
+                datos_actuales.update(nuevos_datos)
+                contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
+
+                # El LLM puede pedir más info o haber terminado de recopilar
+                if pedir_info_llm:
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                else:
+                    # Si no pide más info, podría ser momento de confirmar o crear el reclamo
+                    # (Esta lógica podría necesitar más refinamiento, pero por ahora es una respuesta general)
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+
+            else: # Conversación general que no es parte de un flujo de reclamo activo
+                contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
+                if pedir_info_llm:
+                    # Esto podría iniciar un nuevo flujo si el LLM lo decide
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                else:
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None) # Limpiar por si acaso
+
+            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general_v2"}, contexto_municipio_actual
 
     except Exception as e_llm:
         logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
