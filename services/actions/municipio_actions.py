@@ -292,17 +292,19 @@ class EjecutarHerramientaActionHandler(BaseActionHandler):
             logger.error(f"Nombre de herramienta no proporcionado o no válido: {nombre_herramienta}")
             return {"success": False, "message_to_user": "No pude identificar la herramienta a ejecutar."}
 
-        # Simulate tool execution
-        # herramienta_func = TOOL_REGISTRY[nombre_herramienta]["funcion"]
-        # resultado_herramienta = herramienta_func(**parametros)
-        resultado_simulado = f"Resultado simulado de la herramienta '{nombre_herramienta}' con parámetros {parametros}."
-        if nombre_herramienta == "consultar_recoleccion_por_direccion":
-            resultado_simulado = f"Según mis registros, la recolección en '{parametros.get('direccion', 'tu dirección')}' es los Lunes, Miércoles y Viernes por la mañana."
+        from services.herramientas_municipio import TOOL_REGISTRY
+
+        if not nombre_herramienta or nombre_herramienta not in TOOL_REGISTRY:
+            logger.error(f"Nombre de herramienta no proporcionado o no válido: {nombre_herramienta}")
+            return {"success": False, "message_to_user": "No pude identificar la herramienta a ejecutar."}
+
+        herramienta_func = TOOL_REGISTRY[nombre_herramienta]["funcion"]
+        resultado_herramienta = herramienta_func(**parametros)
 
         return {
             "success": True,
-            "message_to_user": resultado_simulado,
-            "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "simulado"}
+            "message_to_user": resultado_herramienta,
+            "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "real"}
         }
 
 class ActivarPanicoActionHandler(BaseActionHandler):
