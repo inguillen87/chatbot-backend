@@ -302,42 +302,6 @@ def consultar_eventos_culturales(fecha: str) -> str:
         # El LLM es bueno interpretando fechas, si nos pasa '15 de junio' y no lo tenemos, damos esta respuesta.
         return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
 
-
-# --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---
-
-TOOL_REGISTRY = {
-    "consultar_recoleccion_por_direccion": {
-        "funcion": consultar_recoleccion_por_direccion,
-        "descripcion": "Se usa para obtener los horarios y días de recolección de basura para una dirección específica.",
-        "parametros": {
-            "direccion": {
-                "type": "string",
-                "description": f"La dirección completa del lugar. Ejemplo: '{CONFIG_MUNICIPIO.get('ejemplo_direccion', 'Av. Siempreviva 123')}'."
-            }
-        },
-        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
-    },
-    
-    # --- NUEVA HERRAMIENTA REGISTRADA ---
-    "consultar_eventos_culturales": {
-        "funcion": consultar_eventos_culturales,
-        "descripcion": "Consulta la agenda de eventos culturales, recitales o actividades municipales para una fecha específica, como 'hoy', 'mañana' o 'el sábado'.",
-        "parametros": {
-            "fecha": {"type": "string", "description": "La fecha de la consulta. Puede ser una palabra como 'hoy', 'mañana', 'este fin de semana', o una fecha específica como '15 de junio'."}
-        },
-        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
-    },
-    "buscar_puntos_de_interes": {
-        "funcion": buscar_puntos_de_interes,
-        "descripcion": "Busca puntos de interés cercanos a la ubicación del usuario. Los puntos de interés pueden ser: veterinarias, farmacias, hospitales, etc.",
-        "parametros": {
-            "rubro": {"type": "string", "description": "El tipo de punto de interés a buscar. Por ejemplo: 'veterinaria', 'farmacia', 'hospital', etc."},
-            "localidad": {"type": "string", "description": "La localidad donde se encuentra el usuario."}
-        },
-        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
-    }
-}
-
 def buscar_puntos_de_interes(rubro: str, localidad: str) -> str:
     """
     Busca puntos de interés cercanos a la ubicación del usuario.
@@ -504,6 +468,7 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     except Exception as e: # Captura errores de JSONDecodeError u otros inesperados
         logger.error(f"Error inesperado en reverse geocoding para {lat},{lon}: {e}", exc_info=True)
         return None
+# --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---
 
 TOOL_REGISTRY = {
     "consultar_recoleccion_por_direccion": {
