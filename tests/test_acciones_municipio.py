@@ -96,6 +96,55 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_enviar_whatsapp.assert_called_once_with("+5491122334455", "Homero Simpson", "12345", "Alumbrado")
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.validar_telefono')
+    @patch('services.actions.municipio_actions.validar_email')
+    @patch('services.actions.municipio_actions.parse_direccion_completa')
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.actions.municipio_actions.formatear_telefono_e164')
+    def test_accion_crear_reclamo_campos_detectados(
+        self, mock_formatear_tel, mock_enviar_whatsapp, mock_parse_direccion,
+        mock_validar_email, mock_validar_telefono, mock_crear_ticket
+    ):
+        mock_ticket_simulado = MagicMock()
+        mock_ticket_simulado.nro_ticket = "55555"
+        mock_ticket_simulado.id = 5
+        mock_crear_ticket.return_value = mock_ticket_simulado
+
+        mock_validar_telefono.return_value = True
+        mock_formatear_tel.return_value = "+5499988776655"
+        mock_validar_email.return_value = True
+
+        mock_parse_direccion.return_value = {
+            "calle": "Ruta 40", "numero": "1", "localidad": "Mendoza"
+        }
+
+        datos_llm = {
+            "categoria": "Bacheo",
+            "descripcion": "Hueco grande",
+            "ubicacion": "Ruta 40 1, Mendoza",
+            "telefono_detectado": "9988776655",
+            "email_detectado": "vecino@ejemplo.com",
+            "nombre_usuario_detectado": "Vecino Detectado"
+        }
+
+        context = {
+            "viewer_user_obj": None,
+            "user_obj": MagicMock(id=1, municipio_id="testmuni"),
+            "anon_id": "anon123",
+            "municipio_config_actual": {}
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_llm)
+
+        self.assertTrue(respuesta["success"])
+        mock_crear_ticket.assert_called_once()
+        _, kwargs = mock_crear_ticket.call_args
+        self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Vecino Detectado")
+        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5499988776655")
+        self.assertEqual(kwargs['ticket_data']['email_vecino'], "vecino@ejemplo.com")
+
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
     @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+1234567890")
     def test_accion_crear_reclamo_sin_descripcion_llm(
