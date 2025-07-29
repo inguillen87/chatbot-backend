@@ -302,11 +302,11 @@ def consultar_eventos_culturales(fecha: str) -> str:
         # El LLM es bueno interpretando fechas, si nos pasa '15 de junio' y no lo tenemos, damos esta respuesta.
         return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
 
-def buscar_puntos_de_interes(rubro: str, localidad: str) -> str:
+def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) -> str:
     """
     Busca puntos de interés cercanos a la ubicación del usuario.
     """
-    logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}'")
+    logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
 
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA POI] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
@@ -327,17 +327,31 @@ def buscar_puntos_de_interes(rubro: str, localidad: str) -> str:
         lat, lng = location['lat'], location['lng']
 
         places_url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json?location={lat},{lng}&radius=5000&keyword={requests.utils.quote(rubro)}&key={Maps_API_KEY}&language=es"
+        if opennow:
+            places_url += "&opennow=true"
 
         response = requests.get(places_url)
         response.raise_for_status()
         data = response.json()
 
         if data and data.get('status') == 'OK' and data.get('results'):
-            resultados = data['results']
-            lista_resultados = "\n".join(f"- {item['name']}: {item['vicinity']}" for item in resultados)
-            return f"Encontré los siguientes puntos de interés para '{rubro}' en '{localidad}':\n{lista_resultados}"
+            mensaje = f"Encontré estos lugares para '{rubro}' cerca de tu ubicación:\n"
+            for i, item in enumerate(data['results'][:5], 1):  # solo 5 por mensaje
+                nombre = item.get('name')
+                direccion = item.get('vicinity')
+                place_id = item.get('place_id')
+                maps_link = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+
+                # Fetch details to get phone number
+                details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_phone_number&key={Maps_API_KEY}&language=es"
+                details_response = requests.get(details_url)
+                details_data = details_response.json()
+                telefono = details_data.get('result', {}).get('formatted_phone_number', 'No disponible')
+
+                mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}\n   [Ver en Google Maps]({maps_link})\n"
+            return mensaje
         else:
-            return f"No encontré puntos de interés para '{rubro}' en '{localidad}'."
+            return f"No encontré resultados para '{rubro}' en '{localidad}'."
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error de conexión con Google API para POI ({rubro}, {localidad}): {e}")
