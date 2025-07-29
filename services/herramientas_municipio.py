@@ -317,6 +317,9 @@ def buscar_puntos_de_interes(rubro: str = None, tipo_lugar: str = None, localida
 
     logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
 
+    if not localidad:
+        return "Por favor, decime la localidad donde querés buscar."
+
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA POI] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
         return "Error de configuración: El servicio de mapas no está disponible en este momento."
