@@ -271,6 +271,7 @@ class ConversationState(Enum):
     CONVERSACION_GENERAL_LLM = auto() # Nuevo estado para cuando el LLM está en una conversación general
     ESPERANDO_CONFIRMACION_INICIAR_RECLAMO = auto()
     ESPERANDO_CREACION_TICKET = auto()
+    ESPERANDO_CONFIRMACION_UBICACION = auto()
 
 # --- Mapping pedir_info -> ConversationState ---
 def normalizar_str(s: str) -> str:
@@ -535,7 +536,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
     historial_para_llm = []
     if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
         historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
-    elif estado_conversacion_para_llm == ConversationState.CONVERSACION_GENERAL_LLM.name:
+    else:
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
     try:
@@ -689,6 +690,13 @@ def responder_municipio(
 
     # Crear una copia para modificar de forma segura para esta request.
     contexto_municipio_actual = dict(contexto_municipio_data_from_db)
+
+    # If the user is not in the middle of a reclamo, clear the reclamo context
+    if contexto_municipio_actual.get("estado_conversacion") not in RECLAMO_STATES:
+        contexto_municipio_actual.pop("historial_llm_reclamo", None)
+        contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+
     if not contexto_municipio_actual:
         contexto_municipio_actual = {
             "estado_conversacion": None,
@@ -696,6 +704,7 @@ def responder_municipio(
             "datos_parciales_llm_reclamo": {},
             "esperando_info_llm_reclamo": None,
             "historial_conversacion_general_llm": [],
+            "contexto_consulta_general": {},
         }
         # --- 2. CONSTRUCT THE 'context' DICTIONARY FOR HANDLERS (EARLY INITIALIZATION) ---
         # This dictionary is passed to handlers and used throughout this function.
@@ -784,6 +793,20 @@ def responder_municipio(
 
     # --- End Handle post-login resumption ---
 
+    if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
+        if "si" in pregunta_str.lower():
+            contexto_municipio_actual["ubicacion_confirmada"] = True
+            contexto_municipio_actual["estado_conversacion"] = None
+        else:
+            contexto_municipio_actual["ubicacion_confirmada"] = False
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+            return {
+                "message_body": "Por favor, decime la nueva ubicación.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "pedir_nueva_ubicacion"
+            }, contexto_municipio_actual
+
     if USAR_LLM_PARA_RECLAMOS:
         respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
         if respuesta_manejada_por_llm:
@@ -823,7 +846,17 @@ def responder_municipio(
     }
     # Añadir ubicación si se conoce (del perfil del usuario o del contexto del reclamo)
     loc_usuario_texto = getattr(viewer_user, "direccion", None) or contexto_municipio_actual.get("direccion_reclamo")
-    if loc_usuario_texto: usuario_info_for_gemini["ubicacion_conocida"] = loc_usuario_texto
+    if loc_usuario_texto:
+        usuario_info_for_gemini["ubicacion_conocida"] = loc_usuario_texto
+        # Ask for confirmation
+        if not contexto_municipio_actual.get("ubicacion_confirmada"):
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
+            return {
+                "message_body": f"Veo que tu ubicación registrada es {loc_usuario_texto}. ¿Querés que busque cerca de ahí?",
+                "options_list": [{"texto": "Sí"}, {"texto": "No, usar otra ubicación"}],
+                "message_type": "interactive_buttons",
+                "fuente": "confirmacion_ubicacion"
+            }, contexto_municipio_actual
 
     # --- LLAMADA PRINCIPAL A GEMINI ---
     historial_chat_para_gemini = chat_db_context_live_data.get("mensajes_previos_gemini_formato", [])

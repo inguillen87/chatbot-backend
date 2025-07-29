@@ -265,9 +265,15 @@ def _procesar_chat(
         current_app.logger.info(f"Usando Chat Session ID (from header or generated): {chat_session_id_header}")
 
         # Cargar o crear el contexto de la base de datos
-        chat_context_obj = ChatSessionContext.query.get(chat_session_id_header)
+        if actor_principal:
+            chat_context_obj = ChatSessionContext.query.filter_by(user_id=actor_principal.id).first()
+        elif anon_id:
+            chat_context_obj = ChatSessionContext.query.filter_by(anon_id=anon_id).first()
+        else:
+            chat_context_obj = None
+
         if not chat_context_obj:
-            current_app.logger.info(f"No se encontró ChatSessionContext para {chat_session_id_header}. Creando uno nuevo.")
+            current_app.logger.info(f"No se encontró ChatSessionContext. Creando uno nuevo.")
             chat_context_obj = ChatSessionContext(
                 chat_session_id=chat_session_id_header,
                 user_id=getattr(actor_principal, 'id', None), # Asociar con usuario logueado si existe
@@ -277,16 +283,7 @@ def _procesar_chat(
             db.session.add(chat_context_obj)
             # No hacer commit aquí todavía, se hará después de procesar el chat
         else:
-            current_app.logger.info(f"ChatSessionContext cargado para {chat_session_id_header}. User_id: {chat_context_obj.user_id}, Anon_id: {chat_context_obj.anon_id}")
-            # Actualizar user_id o anon_id si es necesario (ej. usuario anónimo inicia sesión)
-            if actor_principal and chat_context_obj.user_id != actor_principal.id:
-                current_app.logger.info(f"Actualizando user_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.user_id} a {actor_principal.id}")
-                chat_context_obj.user_id = actor_principal.id
-                chat_context_obj.anon_id = None # Limpiar anon_id si se asocia a un usuario
-            elif not actor_principal and anon_id and chat_context_obj.anon_id != anon_id:
-                current_app.logger.info(f"Actualizando anon_id en ChatSessionContext {chat_session_id_header} de {chat_context_obj.anon_id} a {anon_id}")
-                chat_context_obj.anon_id = anon_id
-                # No limpiar user_id aquí, podría ser un usuario que cerró sesión y sigue como anónimo con el mismo session_id
+            current_app.logger.info(f"ChatSessionContext cargado. User_id: {chat_context_obj.user_id}, Anon_id: {chat_context_obj.anon_id}")
 
 
             # Detect if user just logged in with this session

@@ -306,11 +306,20 @@ class EjecutarHerramientaActionHandler(BaseActionHandler):
         herramienta_func = TOOL_REGISTRY[nombre_herramienta]["funcion"]
         resultado_herramienta = herramienta_func(**parametros)
 
-        return {
-            "success": True,
-            "respuesta": resultado_herramienta,
-            "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "real"}
-        }
+        if "No encontré resultados" in resultado_herramienta:
+            return {
+                "success": False,
+                "message_to_user": resultado_herramienta,
+                "options_list": [{"texto": "Buscar otro tipo de comercio"}, {"texto": "Hablar con un agente"}],
+                "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "vacio"}
+            }
+        else:
+            return {
+                "success": True,
+                "message_to_user": resultado_herramienta,
+                "options_list": [{"texto": "Buscar otro tipo de comercio"}, {"texto": "Hablar con un agente"}],
+                "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "real"}
+            }
 
 class ActivarPanicoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
