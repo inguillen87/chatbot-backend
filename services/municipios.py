@@ -555,6 +555,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
             respuesta_llm_dict = llamar_gemini(mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm)
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
+            logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as e:
             logger.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
             return {
@@ -646,6 +647,9 @@ def responder_municipio(
 ):
     logger_actual = current_app.logger if has_app_context() else logger
     logger_actual.info(
+        f"[RESPONDER_MUNICIPIO_START] =================================================="
+    )
+    logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
     
@@ -688,6 +692,10 @@ def responder_municipio(
     logger_actual.info(
         f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}"
     )
+
+    # Log the current state of the conversation
+    estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {estado_conversacion}")
 
     # Crear una copia para modificar de forma segura para esta request.
     contexto_municipio_actual = dict(contexto_municipio_data_from_db)

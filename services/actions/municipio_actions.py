@@ -75,7 +75,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes.append("tu nombre")
         if not telefono_llm and not validar_telefono(viewer_phone):
             campos_faltantes.append("tu número de teléfono")
-        if not email_llm and not validar_email(viewer_email):
+        if not email_llm and (not viewer_email or not validar_email(viewer_email)):
             campos_faltantes.append("tu correo electrónico")
 
         if campos_faltantes:

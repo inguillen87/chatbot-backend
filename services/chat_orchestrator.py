@@ -99,7 +99,8 @@ class ChatOrchestrator:
             return {
                 "success": False,
                 "message_to_user": "Hubo un problema al procesar tu solicitud (acción desconocida).",
-                "error_details": f"Handler for action '{action_name}' not found."
+                "error_details": f"Handler for action '{action_name}' not found.",
+                "fuente": "error_handler_not_found"
             }
 
         try:

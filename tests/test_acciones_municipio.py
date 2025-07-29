@@ -44,8 +44,9 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
+    @patch('services.herramientas_municipio.parse_direccion')
     def test_accion_crear_reclamo_exito_completo_llm(
-        self, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
+        self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
         mock_ticket_simulado = MagicMock()
@@ -102,8 +103,9 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
+    @patch('services.herramientas_municipio.parse_direccion')
     def test_accion_crear_reclamo_campos_detectados(
-        self, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
+        self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
         mock_ticket_simulado = MagicMock()
@@ -175,8 +177,9 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
+    @patch('services.herramientas_municipio.parse_direccion')
     def test_accion_crear_reclamo_contacto_llm_invalido_usa_perfil(
-        self, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
+        self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email_func, mock_validar_telefono_func, mock_crear_ticket
     ):
         mock_ticket_simulado = MagicMock(); mock_ticket_simulado.nro_ticket = "67890"; mock_ticket_simulado.id = 2
