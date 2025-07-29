@@ -520,5 +520,14 @@ TOOL_REGISTRY = {
             "localidad": {"type": "string", "description": "La localidad donde se encuentra el usuario."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "buscar_poi": {
+        "funcion": buscar_puntos_de_interes,
+        "descripcion": "Busca puntos de interés cercanos a la ubicación del usuario. Los puntos de interés pueden ser: veterinarias, farmacias, hospitales, etc.",
+        "parametros": {
+            "rubro": {"type": "string", "description": "El tipo de punto de interés a buscar. Por ejemplo: 'veterinaria', 'farmacia', 'hospital', etc."},
+            "localidad": {"type": "string", "description": "La localidad donde se encuentra el usuario."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }
 }
