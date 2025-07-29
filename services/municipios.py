@@ -274,6 +274,17 @@ class ConversationState(Enum):
     ESPERANDO_CONFIRMACION_UBICACION = auto()
     ESPERANDO_CONSULTA_GENERAL = auto()
 
+# Palabras clave sencillas para detectar consultas generales de servicios
+GENERAL_QUERY_KEYWORDS = [
+    "veterinaria", "veterinarias", "farmacia", "supermercado", "negocio",
+    "servicio", "buscar", "comercio", "local"
+]
+
+def es_consulta_general(texto: str) -> bool:
+    """Detecta si el texto parece una consulta de servicios generales."""
+    texto_norm = normalizar_texto(texto or "")
+    return any(k in texto_norm for k in GENERAL_QUERY_KEYWORDS)
+
 # --- Mapping pedir_info -> ConversationState ---
 def normalizar_str(s: str) -> str:
     """Normaliza cadenas a minusculas sin tildes ni espacios extra."""
@@ -511,8 +522,26 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
     logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
 
+    logger_actual.info(
+        f"[HANDLE_LLM_START] pregunta='{pregunta_str}' estado_previo='{contexto_municipio_actual.get('estado_conversacion')}' ubicacion='{contexto_municipio_actual.get('datos_parciales_llm_reclamo', {}).get('ubicacion')}'"
+    )
+
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
     invocar_llm = False
+
+    # Si se está esperando info de un reclamo pero el usuario consulta un servicio
+    if (
+        estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+        and es_consulta_general(pregunta_str)
+    ):
+        logger_actual.info(
+            "[HANDLE_LLM] Cambio de tema detectado durante flujo de reclamo. Reseteando contexto a conversacion general."
+        )
+        contexto_municipio_actual["historial_llm_reclamo"] = []
+        contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+        estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
     if estado_conversacion_para_llm in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
         invocar_llm = True
