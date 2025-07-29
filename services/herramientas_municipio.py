@@ -315,6 +315,9 @@ def buscar_puntos_de_interes(rubro: str = None, tipo_lugar: str = None, localida
         if not localidad:
             localidad = context['last_search'].get('localidad')
 
+    if not localidad:
+        return "No tengo la localidad para buscar. Por favor, decime dónde querés buscar."
+
     logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
 
     if not Maps_API_KEY:
