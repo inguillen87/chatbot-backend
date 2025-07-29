@@ -493,6 +493,12 @@ def widget_attention():
         )
     return jsonify({"mensaje": mensaje})
 
+from flask import render_template
+
+@chat_bp.route("/widget", methods=["GET"])
+def widget():
+    return render_template("widget.html")
+
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():
     return jsonify({"google_maps_key": current_app.config.get("GOOGLE_MAPS_API_KEY")})
