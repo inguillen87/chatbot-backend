@@ -39,7 +39,7 @@ class ErrorActionHandler(BaseActionHandler):
         logger.error(f"Executing ErrorActionHandler with data: {action_data}")
         message = action_data.get(
             "respuesta_usuario_original_llm",
-            "Lo siento, hubo un problema al procesar tu solicitud."
+            "No pude procesar tu solicitud"
         )
         return {
             "success": False,

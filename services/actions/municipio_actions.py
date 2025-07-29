@@ -21,9 +21,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
         descripcion = action_data.get("descripcion")
         ubicacion_llm = action_data.get("ubicacion")
         coordenadas_llm = action_data.get("coordenadas")
-        nombre_vecino_llm = action_data.get("usuario")
-        telefono_llm = action_data.get("telefono")
-        email_llm = action_data.get("email")
+        nombre_vecino_llm = action_data.get("usuario") or action_data.get("nombre_usuario_detectado")
+        telefono_llm = action_data.get("telefono") or action_data.get("telefono_detectado")
+        email_llm = action_data.get("email") or action_data.get("email_detectado")
         foto_url_llm = action_data.get("foto_url_adjunta")
 
         campos_faltantes = []
@@ -35,9 +35,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
         descripcion = action_data.get("descripcion") or contexto_reclamo.get("descripcion_reclamo")
         ubicacion_llm = action_data.get("ubicacion") or contexto_reclamo.get("direccion_reclamo")
         coordenadas_llm = action_data.get("coordenadas") or contexto_reclamo.get("coordenadas_reclamo")
-        nombre_vecino_llm = action_data.get("usuario") or contexto_reclamo.get("nombre_vecino")
-        telefono_llm = action_data.get("telefono") or contexto_reclamo.get("telefono_vecino")
-        email_llm = action_data.get("email") or contexto_reclamo.get("email_vecino")
+        nombre_vecino_llm = (
+            action_data.get("usuario")
+            or action_data.get("nombre_usuario_detectado")
+            or contexto_reclamo.get("nombre_vecino")
+        )
+        telefono_llm = (
+            action_data.get("telefono")
+            or action_data.get("telefono_detectado")
+            or contexto_reclamo.get("telefono_vecino")
+        )
+        email_llm = (
+            action_data.get("email")
+            or action_data.get("email_detectado")
+            or contexto_reclamo.get("email_vecino")
+        )
         foto_url_llm = action_data.get("foto_url_adjunta") or contexto_reclamo.get("foto_url")
 
         # Guardar datos en el contexto para persistencia entre turnos
