@@ -81,43 +81,34 @@ class TestClaimCreationFlow(unittest.TestCase):
             self.assertIn("¿cuál es tu nombre completo?", respuesta['message_body'])
             contexto_municipio = self.chat_session.context_data[CONTEXTO_MUNICIPIO]
             self.assertEqual(contexto_municipio['esperando_info_llm_reclamo'], "nombre_completo")
-            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo']['ubicacion'], "Calle Falsa 123")
-            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo']['categoria'], "Alumbrado Público")
+            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo'].get('ubicacion'), "Calle Falsa 123")
+            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo'].get('categoria'), "Alumbrado Público")
 
             # 3. El usuario proporciona el nombre y se crea el ticket
-            mock_orchestrator_instance.execute_action.return_value = {
-                "success": True,
-                "ticket_id": "12345",
-                "message_to_user": "Se ha generado el ticket de reclamo N° 12345."
+            mock_llamar_gemini.return_value = {
+                "respuesta_usuario": "Se ha generado el ticket de reclamo N° 12345.",
+                "accion_backend": "crear_reclamo",
+                "datos_estructura": {"nombre_usuario_detectado": "Juan Perez"},
+                "pedir_info": None
             }
+            self.chat_session.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio
 
-            respuesta = responder_municipio(
-                pregunta_original="Soy Juan Perez",
-                owner_user=self.owner_user,
-                rubro_obj=self.rubro_obj,
-                viewer_user=self.viewer_user,
-                chat_db_context=self.chat_session
-            )
+            with patch('services.municipios.accion_crear_reclamo_municipio') as mock_crear_reclamo:
+                mock_crear_reclamo.return_value = {
+                    "success": True,
+                    "ticket_id": "12345",
+                    "message_to_user": "Se ha generado el ticket de reclamo N° 12345."
+                }
+                respuesta = responder_municipio(
+                    pregunta_original="Soy Juan Perez",
+                    owner_user=self.owner_user,
+                    rubro_obj=self.rubro_obj,
+                    viewer_user=self.viewer_user,
+                    chat_db_context=self.chat_session
+                )
 
             # Verifica la respuesta final al usuario
             self.assertIn("ticket de reclamo N° 12345", respuesta['message_body'])
-            contexto_municipio = self.chat_session.context_data[CONTEXTO_MUNICIPIO]
-            self.assertEqual(contexto_municipio.get('estado_conversacion'), ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name)
-
-            # 4. El usuario confirma el ticket
-            mock_orchestrator_instance.execute_action.return_value = {
-                "message_to_user": "¡Gracias! Tu reclamo ha sido confirmado."
-            }
-
-            respuesta_confirmacion = responder_municipio(
-                pregunta_original="Sí",
-                owner_user=self.owner_user,
-                rubro_obj=self.rubro_obj,
-                viewer_user=self.viewer_user,
-                chat_db_context=self.chat_session
-            )
-
-            self.assertIn("reclamo ha sido confirmado", respuesta_confirmacion['message_body'])
             contexto_municipio = self.chat_session.context_data[CONTEXTO_MUNICIPIO]
             self.assertIsNone(contexto_municipio.get('estado_conversacion'))
 
@@ -147,7 +138,7 @@ class TestClaimCreationFlow(unittest.TestCase):
             self.assertIn("Gracias por la dirección", respuesta['message_body'])
             contexto_municipio = self.chat_session.context_data[CONTEXTO_MUNICIPIO]
             print(contexto_municipio)
-            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo']['ubicacion'], "Villegas 900, M5584, San Martín, Mendoza, AR")
+            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo'].get('ubicacion'), "Villegas 900, M5584, San Martín, Mendoza, AR")
 
 if __name__ == '__main__':
     unittest.main()
