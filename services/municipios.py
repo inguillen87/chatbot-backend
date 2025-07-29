@@ -461,6 +461,30 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
     datos_reclamo.update(datos_estructura_llm)
 
+    # Validar datos
+    nombre = datos_reclamo.get("nombre_usuario_detectado")
+    telefono = datos_reclamo.get("telefono_detectado")
+    email = datos_reclamo.get("email_detectado")
+    ubicacion = datos_reclamo.get("ubicacion")
+
+    if not all([nombre, telefono, email, ubicacion]):
+        campos_faltantes = []
+        if not nombre:
+            campos_faltantes.append("nombre")
+        if not telefono:
+            campos_faltantes.append("teléfono")
+        if not email:
+            campos_faltantes.append("email")
+        if not ubicacion:
+            campos_faltantes.append("ubicación")
+
+        return {
+            "message_body": f"Faltan los siguientes datos para poder crear el reclamo: {', '.join(campos_faltantes)}. Por favor, proporciónalos para continuar.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "datos_incompletos"
+        }, contexto_municipio_actual
+
     # Llama a la acción para crear el reclamo
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
 
