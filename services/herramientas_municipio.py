@@ -302,10 +302,19 @@ def consultar_eventos_culturales(fecha: str) -> str:
         # El LLM es bueno interpretando fechas, si nos pasa '15 de junio' y no lo tenemos, damos esta respuesta.
         return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
 
-def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) -> str:
+def buscar_puntos_de_interes(rubro: str = None, tipo_lugar: str = None, localidad: str = None, opennow: bool = False, context: dict = None) -> str:
     """
     Busca puntos de interés cercanos a la ubicación del usuario.
     """
+    if not rubro and tipo_lugar:
+        rubro = tipo_lugar
+
+    if context and context.get('last_search'):
+        if not rubro:
+            rubro = context['last_search'].get('rubro')
+        if not localidad:
+            localidad = context['last_search'].get('localidad')
+
     logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
 
     if not Maps_API_KEY:
@@ -335,8 +344,23 @@ def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) 
         data = response.json()
 
         if data and data.get('status') == 'OK' and data.get('results'):
+            if context:
+                context['last_search'] = {
+                    'rubro': rubro,
+                    'localidad': localidad,
+                    'results': data['results']
+                }
+
+            page = context.get('last_search_page', 0) if context else 0
+            start = page * 3
+            end = start + 3
+            results_to_show = data['results'][start:end]
+
+            if not results_to_show:
+                return "No hay más resultados para mostrar."
+
             mensaje = f"Encontré estos lugares para '{rubro}' cerca de tu ubicación:\n"
-            for i, item in enumerate(data['results'][:3], 1):  # Limitar a 3 resultados
+            for i, item in enumerate(results_to_show, 1):
                 nombre = item.get('name')
                 direccion = item.get('vicinity')
                 place_id = item.get('place_id')
@@ -349,8 +373,13 @@ def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) 
 
                 mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}\n   Ver en mapa: {maps_link}\n"
 
-            if len(data['results']) > 3:
+            if len(data['results']) > end:
                 mensaje += "\nSi querés ver más resultados, respondé 'más'."
+                if context:
+                    context['last_search_page'] = page + 1
+            elif context:
+                context.pop('last_search_page', None)
+
 
             return mensaje
         else:
