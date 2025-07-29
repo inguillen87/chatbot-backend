@@ -272,6 +272,7 @@ class ConversationState(Enum):
     ESPERANDO_CONFIRMACION_INICIAR_RECLAMO = auto()
     ESPERANDO_CREACION_TICKET = auto()
     ESPERANDO_CONFIRMACION_UBICACION = auto()
+    ESPERANDO_CONSULTA_GENERAL = auto()
 
 # --- Mapping pedir_info -> ConversationState ---
 def normalizar_str(s: str) -> str:
