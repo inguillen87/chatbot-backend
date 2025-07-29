@@ -336,25 +336,22 @@ def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) 
 
         if data and data.get('status') == 'OK' and data.get('results'):
             mensaje = f"Encontré estos lugares para '{rubro}' cerca de tu ubicación:\n"
-            for i, item in enumerate(data['results'][:5], 1):  # solo 5 por mensaje
+            for i, item in enumerate(data['results'][:3], 1):  # Limitar a 3 resultados
                 nombre = item.get('name')
                 direccion = item.get('vicinity')
                 place_id = item.get('place_id')
                 maps_link = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
 
-                # Fetch details to get phone number and opening hours
-                details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_phone_number,opening_hours&key={Maps_API_KEY}&language=es"
+                details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_phone_number&key={Maps_API_KEY}&language=es"
                 details_response = requests.get(details_url)
                 details_data = details_response.json()
                 telefono = details_data.get('result', {}).get('formatted_phone_number', 'No disponible')
-                opening_hours = details_data.get('result', {}).get('opening_hours', {}).get('weekday_text', [])
 
-                opening_hours_text = ""
-                if opening_hours:
-                    opening_hours_text = "\n   Horarios: " + " ".join(opening_hours)
+                mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}\n   Ver en mapa: {maps_link}\n"
 
+            if len(data['results']) > 3:
+                mensaje += "\nSi querés ver más resultados, respondé 'más'."
 
-                mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}{opening_hours_text}\n   [Ver en Google Maps]({maps_link})\n"
             return mensaje
         else:
             if opennow:
