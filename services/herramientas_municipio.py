@@ -342,16 +342,25 @@ def buscar_puntos_de_interes(rubro: str, localidad: str, opennow: bool = False) 
                 place_id = item.get('place_id')
                 maps_link = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
 
-                # Fetch details to get phone number
-                details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_phone_number&key={Maps_API_KEY}&language=es"
+                # Fetch details to get phone number and opening hours
+                details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_phone_number,opening_hours&key={Maps_API_KEY}&language=es"
                 details_response = requests.get(details_url)
                 details_data = details_response.json()
                 telefono = details_data.get('result', {}).get('formatted_phone_number', 'No disponible')
+                opening_hours = details_data.get('result', {}).get('opening_hours', {}).get('weekday_text', [])
 
-                mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}\n   [Ver en Google Maps]({maps_link})\n"
+                opening_hours_text = ""
+                if opening_hours:
+                    opening_hours_text = "\n   Horarios: " + " ".join(opening_hours)
+
+
+                mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}{opening_hours_text}\n   [Ver en Google Maps]({maps_link})\n"
             return mensaje
         else:
-            return f"No encontré resultados para '{rubro}' en '{localidad}'."
+            if opennow:
+                return f"No encontré resultados para '{rubro}' abiertos en este momento en '{localidad}'. ¿Querés que te muestre todos igualmente?"
+            else:
+                return f"No encontré resultados para '{rubro}' en '{localidad}'."
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error de conexión con Google API para POI ({rubro}, {localidad}): {e}")
