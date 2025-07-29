@@ -47,6 +47,13 @@ class TestAISuggestions(unittest.TestCase):
         self.mock_g = self.g_patcher.start()
         self.mock_g.current_user = self.mock_user
 
+        # Inicializar los patchers aquí para que siempre existan
+        self.embed_patcher = patch('services.cohere_ai.robust_embed', return_value={'embeddings': [[0.1]*1024]})
+        self.chat_patcher = patch('services.cohere_ai.co_client.chat', return_value=MagicMock())
+
+        # Iniciar los patchers que se usarán en múltiples pruebas
+        self.mock_embed = self.embed_patcher.start()
+        self.mock_chat = self.chat_patcher.start()
 
 
     def tearDown(self):
@@ -56,8 +63,8 @@ class TestAISuggestions(unittest.TestCase):
         self.app_context.pop()
 
         self.g_patcher.stop()
-        self.embed_patcher.stop()
-        self.chat_patcher.stop()
+        # Detener todos los patchers iniciados
+        patch.stopall()
 
     def _crear_plantilla(self, name, text, keywords=None, is_active=True, embedding_value=None):
         if embedding_value is None:
