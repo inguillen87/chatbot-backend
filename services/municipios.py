@@ -540,6 +540,19 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         contexto_municipio_actual["historial_llm_reclamo"] = []
         contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
         contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+        # Limpia datos residuales del reclamo previo
+        for campo in [
+            "categoria_reclamo",
+            "descripcion_reclamo",
+            "direccion_reclamo",
+            "coordenadas_reclamo",
+            "nombre_vecino",
+            "telefono_vecino",
+            "email_vecino",
+            "foto_url",
+        ]:
+            contexto_municipio_actual.pop(campo, None)
+
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
