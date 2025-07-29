@@ -219,7 +219,23 @@ JSON:
   "botones": []
 }
 
-**Ejemplo 8: Análisis de Imagen**
+**Ejemplo 8: Reclamo con datos incompletos**
+Usuario: "Hay un poste de luz roto en la plaza"
+JSON:
+{
+  "respuesta_usuario": "Entendido, un poste de luz roto en la plaza. Para poder generar el reclamo, ¿podrías darme tu nombre y un teléfono de contacto?",
+  "accion_backend": "crear_reclamo",
+  "datos_estructura": {
+    "target": "municipio",
+    "categoria": "Alumbrado Público",
+    "descripcion": "Poste de luz roto",
+    "ubicacion": "la plaza"
+  },
+  "pedir_info": "nombre_y_telefono",
+  "botones": []
+}
+
+**Ejemplo 9: Análisis de Imagen**
 Usuario: (sube una foto de un bache)
 JSON:
 {

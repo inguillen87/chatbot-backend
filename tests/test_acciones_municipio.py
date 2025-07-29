@@ -216,5 +216,44 @@ class TestAccionesMunicipio(unittest.TestCase):
             "+549876543210", "Usuario LLM", "67890", "Varios"
         )
 
+    def test_accion_crear_reclamo_datos_incompletos_llm(self):
+        """
+        Prueba que el sistema maneja correctamente los datos incompletos del LLM.
+        """
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Poste de luz caído y chispas.",
+            "ubicacion": "Calle Falsa 123, Springfield",
+            "coordenadas": {"lat": -32.8908, "lon": -68.8272},
+            "usuario": "Homero Simpson",
+            "telefono": None,
+            "email": None
+        }
+
+        mock_viewer_user = MagicMock(spec=User)
+        mock_viewer_user.id = 100
+        mock_viewer_user.nombre = "Homero J. Simpson"
+        mock_viewer_user.telefono = None
+        mock_viewer_user.email = None
+
+        mock_owner_user = MagicMock(spec=User)
+        mock_owner_user.id = 1
+        mock_owner_user.municipio_id = "springfield_municipio"
+
+        context = {
+            "viewer_user_obj": mock_viewer_user,
+            "user_obj": mock_owner_user,
+            "anon_id": None,
+            "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
+            "chat_session_uuid": "test-session-uuid-123",
+            "chat_db_context_data": {"processed_idempotency_keys": {}}
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_llm)
+
+        self.assertFalse(respuesta["success"])
+        self.assertIn("Para registrar tu reclamo, necesito que me indiques: tu número de teléfono y tu correo electrónico.", respuesta["message_to_user"])
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
