@@ -818,51 +818,11 @@ def responder_municipio(
     estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
     logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {estado_conversacion}")
 
-    # Crear una copia para modificar de forma segura para esta request.
-    contexto_municipio_actual = dict(contexto_municipio_data_from_db)
+    # Directly use the dictionary from the live context data.
+    # This ensures that modifications are made to the original object.
+    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
-    # If the user is not in the middle of a reclamo, clear the reclamo context
-    if contexto_municipio_actual.get("estado_conversacion") not in RECLAMO_STATES:
-        contexto_municipio_actual.pop("historial_llm_reclamo", None)
-        contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
-        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
-
-    if not contexto_municipio_actual:
-        contexto_municipio_actual = {
-            "estado_conversacion": None,
-            "historial_llm_reclamo": [],
-            "datos_parciales_llm_reclamo": {},
-            "esperando_info_llm_reclamo": None,
-            "historial_conversacion_general_llm": [],
-            "contexto_consulta_general": {},
-        }
-        # --- 2. CONSTRUCT THE 'context' DICTIONARY FOR HANDLERS (EARLY INITIALIZATION) ---
-        # This dictionary is passed to handlers and used throughout this function.
-        context = {
-            CONTEXTO_MUNICIPIO: contexto_municipio_actual, # The specific state for municipio flow
-            "user_obj": owner_user, # The User object of the bot instance (e.g., the Municipality)
-            "viewer_user_obj": viewer_user, # The User object of the end-user (vecino/ciudadano)
-            "cliente_id": getattr(viewer_user, "id", None),
-            "anon_id": anon_id,
-            "rubro_obj": rubro_obj,
-            "channel": channel,
-            "municipio_config_actual": CONFIG_MUNICIPIO, # Use the correct global constant here
-            "chat_session_uuid": kwargs.get("chat_session_uuid"),
-            "chat_db_context_data": chat_db_context_live_data, # Use the safely accessed live data dict
-            # Fields to be populated by payload/kwargs or later logic:
-            "intencion": kwargs.get("intencion"), # Initial intent from Orchestrator/kwargs
-            "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
-            "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
-            "es_ubicacion": received_payload.get("es_ubicacion", False),
-            "es_archivo": received_payload.get("es_archivo", False),
-            "action": received_payload.get("action"), # From button clicks, etc.
-            "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
-            "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        }
-        if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
-            logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
-
-    # --- 2. CONSTRUCT THE 'context' DICTIONARY FOR HANDLERS (EARLY INITIALIZATION) ---
+    # Initialize the context if it's empty
     # This dictionary is passed to handlers and used throughout this function.
     context = {
         CONTEXTO_MUNICIPIO: contexto_municipio_actual, # The specific state for municipio flow
@@ -938,10 +898,10 @@ def responder_municipio(
             }, contexto_municipio_actual
 
     if USAR_LLM_PARA_RECLAMOS:
-        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
+        logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
+        respuesta_manejada_por_llm, _ = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
+        logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         if respuesta_manejada_por_llm:
-            if chat_db_context and hasattr(chat_db_context, 'context_data') and chat_db_context.context_data is not None:
-                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
             return respuesta_manejada_por_llm
 
 
@@ -1151,8 +1111,6 @@ def responder_municipio(
     elif estado_final_para_guardar_str is None:
         contexto_municipio_actual.pop("estado_conversacion", None)
 
-    contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
-    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_serializado_para_db
     if chat_db_context:
         flag_modified(chat_db_context, "context_data")
 
