@@ -8,7 +8,9 @@ logger = logging.getLogger(__name__)
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
+TWILIO_WHATSAPP_NUMBER = os.environ.get(
+    "TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886"
+)
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 TWILIO_WELCOME_TEMPLATE = os.environ.get(
     "TWILIO_WELCOME_TEMPLATE", "bienvenida_chatbot_municipal_junin"

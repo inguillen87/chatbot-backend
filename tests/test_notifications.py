@@ -1,12 +1,15 @@
 import unittest
 from unittest.mock import patch, MagicMock
+import os
 
 import services.notifications as notifications
 
 class TestSendWhatsappTemplate(unittest.TestCase):
     @patch('services.notifications.Client')
-    @patch.dict(os.environ, {'TWILIO_ACCOUNT_SID': 'sid', 'TWILIO_AUTH_TOKEN': 'token'})
     def test_enviar_bienvenida_whatsapp(self, mock_client_cls):
+        notifications.TWILIO_ACCOUNT_SID = 'sid'
+        notifications.TWILIO_AUTH_TOKEN = 'token'
+        notifications.TWILIO_WHATSAPP_NUMBER = 'whatsapp:+123456789'
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_message = MagicMock()
