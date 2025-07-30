@@ -26,32 +26,38 @@ def _get_pyme_carts_data_from_context(context: Dict[str, Any]) -> Dict[int, List
 
 class AgregarItemCarritoAction(BaseActionHandler):
     def _find_product_details(self, pyme_id: int, product_identifier: str) -> Optional[Dict[str, Any]]:
-        pyme_user = self.context.get("user_obj")
-        rubro_nombre = getattr(pyme_user.rubro, "nombre", "general") if pyme_user and hasattr(pyme_user, "rubro") else "general"
-        qdrant_collection = CATALOGO_PYME # Assuming CATALOGO_PYME is the correct one for all
-
+        # This function can be expanded with more sophisticated search logic,
+        # including fuzzy matching, alias resolution, etc.
+        # For now, it relies on a direct Qdrant search.
+        qdrant_collection = CATALOGO_PYME
         logger.info(f"Searching Qdrant '{qdrant_collection}' for '{product_identifier}' (pyme_id: {pyme_id})")
         qdrant_results = buscar_catalogo_qdrant(user_id=pyme_id, texto_busqueda=product_identifier, limite=1, coleccion=qdrant_collection)
 
-        if qdrant_results and qdrant_results[0].payload:
-            payload = qdrant_results[0].payload
-            db_id = payload.get("db_id")
-            if db_id:
-                item_db = db.session.get(CatalogoItem, db_id)
-                if item_db:
-                    _, precio_float, moneda = parse_precio_flexible(item_db.precio)
-                    return {"catalogo_item_id": item_db.id, "nombre_producto": item_db.nombre,
-                            "precio_unitario": precio_float, "moneda": moneda or "ARS", "sku": item_db.sku,
-                            "presentacion": item_db.unidad, "imagen_url": item_db.imagen_url}
-            logger.warning(f"Qdrant found '{product_identifier}', but no DB record via db_id. Using Qdrant payload.")
-            _, precio_float, moneda = parse_precio_flexible(payload.get("precio_str","0"))
-            return {"catalogo_item_id": payload.get("sku") or payload.get("nombre"),
-                    "nombre_producto": payload.get("nombre", product_identifier), "precio_unitario": precio_float,
-                    "moneda": moneda or "ARS", "sku": payload.get("sku"),
-                    "presentacion": payload.get("unidad_descripcion") or payload.get("unidad_original"),
-                    "imagen_url": payload.get("imagen_url")}
-        logger.warning(f"Product '{product_identifier}' not found in Qdrant/DB for pyme_id {pyme_id}.")
-        return None
+        if not qdrant_results or not qdrant_results[0].payload:
+            logger.warning(f"Product '{product_identifier}' not found for pyme_id {pyme_id}.")
+            return None
+
+        payload = qdrant_results[0].payload
+        db_id = payload.get("db_id")
+        item_db = db.session.get(CatalogoItem, db_id) if db_id else None
+
+        if item_db:
+            _, precio_float, moneda = parse_precio_flexible(item_db.precio)
+            return {
+                "catalogo_item_id": item_db.id, "nombre_producto": item_db.nombre,
+                "precio_unitario": precio_float, "moneda": moneda or "ARS", "sku": item_db.sku,
+                "presentacion": item_db.unidad, "imagen_url": item_db.imagen_url
+            }
+
+        logger.warning(f"Qdrant found '{product_identifier}', but no corresponding DB record via db_id={db_id}. Using Qdrant payload as fallback.")
+        _, precio_float, moneda = parse_precio_flexible(payload.get("precio_str", "0"))
+        return {
+            "catalogo_item_id": payload.get("sku") or payload.get("nombre"),
+            "nombre_producto": payload.get("nombre", product_identifier),
+            "precio_unitario": precio_float, "moneda": moneda or "ARS",
+            "sku": payload.get("sku"), "presentacion": payload.get("unidad_descripcion") or payload.get("unidad_original"),
+            "imagen_url": payload.get("imagen_url")
+        }
 
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing AgregarItemCarritoAction with data: {action_data}")
@@ -60,32 +66,41 @@ class AgregarItemCarritoAction(BaseActionHandler):
             return {"success": False, "message_to_user": "Error: Tienda no identificada."}
 
         product_identifier = action_data.get("nombre_producto_mencionado") or action_data.get("producto_sku")
-        cantidad_str = str(action_data.get("cantidad_producto_mencionado", "1"))
-        try:
-            cantidad = int(cantidad_str)
-            if cantidad <=0: raise ValueError("Cantidad debe ser positiva")
-        except ValueError:
-            return {"success": False, "message_to_user": f"La cantidad '{cantidad_str}' no es válida."}
-
-
         if not product_identifier:
-            return {"success": False, "message_to_user": "Por favor, especifica el producto."}
+            return {"success": False, "message_to_user": "Por favor, especifica el producto que deseas agregar.", "pedir_info": "nombre_producto_mencionado"}
+
+        try:
+            cantidad = int(action_data.get("cantidad_producto_mencionado", 1))
+            if cantidad <= 0: raise ValueError("La cantidad debe ser un número positivo.")
+        except (ValueError, TypeError):
+            return {"success": False, "message_to_user": "La cantidad proporcionada no es válida. Por favor, indica un número."}
 
         producto_info = self._find_product_details(pyme_id, product_identifier)
-        if not producto_info or producto_info.get("precio_unitario") is None:
-            return {"success": False, "message_to_user": f"No encontré '{product_identifier}' o no tiene precio."}
+        if not producto_info:
+            return {"success": False, "message_to_user": f"No pude encontrar el producto '{product_identifier}'. ¿Quieres que busque otra cosa?"}
+        if producto_info.get("precio_unitario") is None:
+            return {"success": False, "message_to_user": f"El producto '{product_identifier}' no tiene un precio definido y no se puede agregar al carrito."}
 
         pyme_carts_data = _get_pyme_carts_data_from_context(self.context)
         add_item_to_cart(pyme_carts_data, pyme_id, producto_info, cantidad)
 
-        cliente_user_id = self.context.get("cliente_id")
-        cart_summary_obj = get_cart_summary(pyme_carts_data, pyme_id, cliente_user_id)
-        from services.pymes import formatear_carrito_desde_summary # Avoid circular import at top
+        cart_summary_obj = get_cart_summary(pyme_carts_data, pyme_id, self.context.get("cliente_id"))
+        from services.pymes import formatear_carrito_desde_summary
         cart_display_text = formatear_carrito_desde_summary(cart_summary_obj, self.context)
 
-        return {"success": True,
-                "message_to_user": f"'{producto_info['nombre_producto']}' (x{cantidad}) agregado.\n\n{cart_display_text}",
-                "data": {"cart_summary": cart_summary_obj, "last_added": producto_info['nombre_producto']}}
+        # Botones para acciones comunes después de agregar un item
+        botones = [
+            {"texto": "Finalizar Compra", "id_accion": "finalizar_compra"},
+            {"texto": "Ver Catálogo", "id_accion": "ver_catalogo_pyme"},
+            {"texto": "Modificar Carrito", "id_accion": "ver_carrito"},
+        ]
+
+        return {
+            "success": True,
+            "message_to_user": f"¡Listo! Agregué {cantidad} x '{producto_info['nombre_producto']}' a tu carrito.\n\n{cart_display_text}",
+            "data": {"cart_summary": cart_summary_obj, "last_added": producto_info['nombre_producto']},
+            "options_list": botones
+        }
 
 class CrearPedidoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,10 +113,10 @@ class CrearPedidoAction(BaseActionHandler):
         cliente_user_id = self.context.get("cliente_id")
         current_cart_summary = get_cart_summary(pyme_carts_data, pyme_id, cliente_user_id)
 
-        cart_items_for_pedido = current_cart_summary.get("items_detalle", [])
-        if not cart_items_for_pedido:
-            return {"success": False, "message_to_user": "Carrito vacío. Agrega productos primero."}
+        if not current_cart_summary.get("items_detalle"):
+            return {"success": False, "message_to_user": "Tu carrito está vacío. Por favor, agrega productos antes de crear un pedido."}
 
+        # Data validation for customer info
         nombre_cliente = action_data.get("nombre_usuario_detectado") or self.context.get("nombre_usuario_contexto")
         telefono_cliente_raw = str(action_data.get("telefono_detectado") or self.context.get("telefono_usuario_contexto", ""))
         email_cliente_raw = str(action_data.get("email_detectado") or self.context.get("email_usuario_contexto", "")).lower()
@@ -110,14 +125,16 @@ class CrearPedidoAction(BaseActionHandler):
         telefono_cliente_validado = formatear_telefono_e164(telefono_cliente_raw) if validar_telefono(telefono_cliente_raw) else None
         email_cliente_validado = email_cliente_raw if validar_email(email_cliente_raw) else None
 
-        if not nombre_cliente or not (telefono_cliente_validado or email_cliente_validado):
-            missing_contact = []
-            if not nombre_cliente: missing_contact.append("nombre")
-            if not (telefono_cliente_validado or email_cliente_validado): missing_contact.append("teléfono o email")
-            return {"success": False,
-                    "message_to_user": f"Necesitamos al menos tu {', '.join(missing_contact)} para el pedido.",
-                    "pedir_info": missing_contact[0] if missing_contact else "datos_contacto_pedido"}
+        missing_contact = []
+        if not nombre_cliente: missing_contact.append("nombre")
+        if not (telefono_cliente_validado or email_cliente_validado): missing_contact.append("un teléfono o email de contacto")
+        if not direccion_entrega: missing_contact.append("una dirección de entrega")
 
+        if missing_contact:
+            campos_str = " y ".join(missing_contact)
+            return {"success": False,
+                    "message_to_user": f"Para finalizar tu pedido, necesito que me indiques {campos_str}.",
+                    "pedir_info": missing_contact[0]}
 
         owner_user_obj = self.context.get("user_obj")
         rubro_pyme = getattr(owner_user_obj.rubro, "nombre", "General") if owner_user_obj and hasattr(owner_user_obj, "rubro") else "General"
@@ -125,35 +142,34 @@ class CrearPedidoAction(BaseActionHandler):
         detalles_json_str = json.dumps([{
             "nombre": item.get("nombre_producto"), "cantidad": item.get("cantidad"),
             "precio_unitario": item.get("precio_unitario_original"), "subtotal": item.get("subtotal_con_descuento"),
-            "sku": item.get("sku") # Categoria no está en cart_summary, omitir o buscar si es necesario
-        } for item in cart_items_for_pedido])
+            "sku": item.get("sku")
+        } for item in current_cart_summary.get("items_detalle", [])])
 
         pedido_payload_for_model = {
-            "asunto": f"Pedido Chatbot: {nombre_cliente}", "detalles": detalles_json_str, "rubro": rubro_pyme,
+            "asunto": f"Pedido desde Chatbot para: {nombre_cliente}", "detalles": detalles_json_str, "rubro": rubro_pyme,
             "nombre_cliente": nombre_cliente, "email_cliente": email_cliente_validado,
             "telefono_cliente": telefono_cliente_validado, "user_id": cliente_user_id,
             "direccion": direccion_entrega, "monto_total": current_cart_summary.get("total_final_con_descuento", 0.0),
-            "pyme_id": pyme_id # Ensure pyme_id is passed for PymePedido model
+            "pyme_id": pyme_id
         }
 
         try:
             nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_payload_for_model)
             if not nuevo_pedido:
-                 raise Exception("servicio_pedidos.crear_nuevo_pedido retornó None")
+                 raise Exception("El servicio de pedidos no pudo crear el registro.")
 
             clear_pyme_cart(pyme_carts_data, pyme_id)
+            logger.info(f"Pedido #{nuevo_pedido.nro_pedido} creado y carrito limpiado para pyme_id {pyme_id}.")
 
-            # TODO: Notifications
-            # from services.notification_service import enviar_notificacion_pedido_pyme
-            # enviar_notificacion_pedido_pyme(nuevo_pedido, self.context.get("channel"))
+            # Placeholder for notifications
+            # send_order_confirmation_notification(nuevo_pedido)
 
             return {"success": True,
-                    "message_to_user": f"¡Gracias {nombre_cliente}! Tu pedido #{nuevo_pedido.nro_pedido} fue registrado. Nos contactaremos.",
+                    "message_to_user": f"¡Gracias, {nombre_cliente}! Tu pedido #{nuevo_pedido.nro_pedido} ha sido registrado exitosamente. Nos pondremos en contacto contigo para coordinar el pago y la entrega.",
                     "data": {"nro_pedido": nuevo_pedido.nro_pedido, "pedido_id": nuevo_pedido.id, "status_pedido": "registrado"}}
         except Exception as e:
-            logger.error(f"Error creando PymePedido: {e}", exc_info=True)
-            # global_db.session.rollback() # If servicio_pedidos doesn't handle it
-            return {"success": False, "message_to_user": "Hubo un problema al registrar tu pedido."}
+            logger.error(f"Error crítico al crear PymePedido: {e}", exc_info=True)
+            return {"success": False, "message_to_user": "Hubo un problema técnico al registrar tu pedido. Por favor, intenta de nuevo más tarde o contacta a soporte."}
 
 
 class ConsultarProductoAction(BaseActionHandler):
@@ -359,3 +375,5 @@ class ProcesarAdjuntoPedidoAction(BaseActionHandler):
             msg += "¿Cómo procedemos con tu pedido?"
 
         return {"success": True, "message_to_user": msg, "data": {"adjunto_pedido_procesado": True, "datos_para_pedido": datos_extraidos}}
+
+[end of services/actions/pyme_order_actions.py]
