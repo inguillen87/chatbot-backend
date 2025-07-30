@@ -418,11 +418,11 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
     except json.JSONDecodeError as e_json:
         logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
+        # Attempt to fix the JSON by adding the missing quote
+        fixed_json_str = respuesta_texto_crudo.replace('id_archivo": null', 'id_archivo": null"')
         try:
-            from services.llm_utils import _clean_llm_json_output
-            repaired_json_str = _clean_llm_json_output(respuesta_texto_crudo)
-            logger.info(f"Intentando parsear JSON reparado: {repaired_json_str[:500]}...")
-            parsed_response = json.loads(repaired_json_str)
+            logger.info(f"Intentando parsear JSON reparado: {fixed_json_str[:500]}...")
+            parsed_response = json.loads(fixed_json_str)
             return parsed_response
         except Exception as e_repair:
             logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")

@@ -406,6 +406,11 @@ def _procesar_chat(
 
         # Ensure 'respuesta' and 'botones' are correctly populated in 'resultado'
         # by the formatter, using the new structured fields.
+        if isinstance(resultado, tuple):
+            # Handle error case where responder_chatboc returns a tuple
+            error_message, status_code = resultado
+            return jsonify(error_message), status_code
+
         web_body = resultado.get('message_body', resultado.get('respuesta', 'Error al procesar')) # Fallback
         web_options = resultado.get('options_list', resultado.get('botones', [])) # Fallback
         web_message_type = resultado.get('message_type', 'text')
@@ -437,7 +442,12 @@ def _procesar_chat(
             flag_modified(chat_context_obj, "context_data")
 
         # This commit is for User.preguntas_usadas primarily, and any other DB changes by responder_chatboc
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(f"Error during final commit: {e}", exc_info=True)
+            return jsonify({"error": "Error interno del servidor al guardar la sesión."}), 500
         return jsonify(formatted_web_response), 200
 
     except Exception as e:
