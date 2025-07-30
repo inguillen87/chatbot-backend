@@ -301,12 +301,27 @@ def consultar_eventos_culturales(fecha: str) -> str:
         # El LLM es bueno interpretando fechas, si nos pasa '15 de junio' y no lo tenemos, damos esta respuesta.
         return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
 
-def buscar_puntos_de_interes(rubro: str = None, tipo_lugar: str = None, localidad: str = None, opennow: bool = False, context: dict = None) -> str:
+def buscar_puntos_de_interes(
+    rubro: str = None,
+    tipo_lugar: str = None,
+    localidad: str = None,
+    opennow: bool = False,
+    context: dict = None,
+    ubicacion: str = None,
+    tipo_negocio: str = None,
+) -> str:
     """
     Busca puntos de interés cercanos a la ubicación del usuario.
     """
-    if not rubro and tipo_lugar:
-        rubro = tipo_lugar
+    # Aceptar sinónimos de parámetros usados por el LLM
+    if not rubro:
+        if tipo_lugar:
+            rubro = tipo_lugar
+        elif tipo_negocio:
+            rubro = tipo_negocio
+
+    if not localidad and ubicacion:
+        localidad = ubicacion
 
     if context and context.get('last_search'):
         if not rubro:
@@ -579,6 +594,24 @@ TOOL_REGISTRY = {
         "parametros": {
             "rubro": {"type": "string", "description": "El rubro del comercio a buscar. Por ejemplo: 'veterinaria', 'ferretería', 'restaurante'."},
             "localidad": {"type": "string", "description": "La localidad donde buscar el comercio."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "buscar_lugares_cercanos": {
+        "funcion": buscar_puntos_de_interes,
+        "descripcion": "Alias de 'buscar_puntos_de_interes'. Busca lugares de interés o comercios cercanos a una ubicación dada.",
+        "parametros": {
+            "rubro": {"type": "string", "description": "El tipo de lugar o comercio a buscar."},
+            "localidad": {"type": "string", "description": "La ubicación o localidad para centrar la búsqueda."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "buscar_negocios_cercanos": {
+        "funcion": buscar_puntos_de_interes,
+        "descripcion": "Alias de 'buscar_puntos_de_interes'. Busca negocios cercanos por rubro y ubicación.",
+        "parametros": {
+            "rubro": {"type": "string", "description": "El rubro o tipo de negocio a buscar."},
+            "localidad": {"type": "string", "description": "La ubicación o localidad de referencia."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }
