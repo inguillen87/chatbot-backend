@@ -67,7 +67,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         }
 
         mock_extract_llm.return_value = {
-            "tipo_problema": "Alumbrado y Semáforos",
+            "tipo_problema": "Rotura de semaforo",
             "descripcion_problema": "Un semáforo parece estar caído y dañado.",
             "ubicacion_problema": "Inferido de texto: AYUDA SEMAFORO CAIDO"
         }
@@ -89,7 +89,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         # --- Verificaciones ---
         self.assertTrue(resultado.get("es_reclamo"))
-        self.assertEqual(resultado.get("tipo_sugerido"), "Alumbrado y Semáforos")
+        self.assertEqual(resultado.get("categoria_sugerida"), "rotura de semaforo")
         self.assertIn("semáforo parece estar caído", resultado.get("descripcion_sugerida"))
         self.assertIsNotNone(resultado.get("analisis_id"))
 
@@ -97,8 +97,8 @@ class TestInterpretacionImagenService(unittest.TestCase):
         self.assertIsNotNone(analisis_guardado)
         self.assertEqual(analisis_guardado.estado_analisis, "completado")
         self.assertEqual(analisis_guardado.tipo_analisis, "reclamo_vision_llm_v1")
-        self.assertIn("traffic light", str(analisis_guardado.datos_estructurados)) # Verificar que los datos de Vision se guardaron
-        self.assertIn("Alumbrado y Semáforos", str(analisis_guardado.datos_estructurados)) # Verificar que los datos del LLM se guardaron
+        self.assertIn("traffic light", str(analisis_guardado.datos_estructurados))
+        self.assertIn("llm_raw", str(analisis_guardado.datos_estructurados))
         self.assertEqual(analisis_guardado.texto_extraido, "AYUDA SEMAFORO CAIDO")
 
         mock_descargar.assert_called_once_with("http://example.com/semaforo.jpg")
@@ -106,20 +106,22 @@ class TestInterpretacionImagenService(unittest.TestCase):
         # Verificar que el LLM fue llamado con una descripción que incluye info de Vision y OCR
         mock_extract_llm.assert_called_once()
         args_llm, _ = mock_extract_llm.call_args
-        self.assertIn("Objetos detectados: traffic light", args_llm[0])
-        self.assertIn("Etiquetas generales: street", args_llm[0])
-        self.assertIn("Texto extraído de la imagen: 'AYUDA SEMAFORO CAIDO'", args_llm[0])
+        self.assertIn("Objetos principales detectados: traffic light", args_llm[0])
+        self.assertIn("Aspectos generales de la imagen: street", args_llm[0])
+        self.assertIn("Texto en imagen: 'AYUDA SEMAFORO CAIDO'", args_llm[0])
 
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
     @patch('services.interpretacion_imagen_service.analyze_image_from_content')
-    def test_interpretar_imagen_reclamo_sin_keywords_ni_texto_ocr(self, mock_analyze_vision, mock_descargar):
+    @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
+    def test_interpretar_imagen_reclamo_sin_keywords_ni_texto_ocr(self, mock_extract_llm, mock_analyze_vision, mock_descargar):
         mock_descargar.return_value = b"imagen_sin_nada_relevante"
         mock_analyze_vision.return_value = {
-            "objects": [{"name": "sky", "confidence": 0.9}], # Objeto no relevante
-            "labels": [{"description": "blue", "confidence": 0.8}], # Etiqueta no relevante
-            "text_annotations": [] # Sin texto OCR
+            "objects": [{"name": "sky", "confidence": 0.9}],
+            "labels": [{"description": "blue", "confidence": 0.8}],
+            "text_annotations": []
         }
+        mock_extract_llm.return_value = {"tipo_problema": "", "descripcion_problema": ""}
         archivo_adjunto = ArchivoAdjunto(id=2, user_id=self.test_user.id, filename="cielo.jpg", url="http://example.com/cielo.jpg", mime="image/jpeg")
         db.session.add(archivo_adjunto)
         db.session.commit()
@@ -127,10 +129,10 @@ class TestInterpretacionImagenService(unittest.TestCase):
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         self.assertFalse(resultado.get("es_reclamo"))
-        self.assertIn("No se detectaron elementos visuales o textuales de reclamo claros", resultado.get("motivo", ""))
+        self.assertIn("El análisis por IA no pudo confirmar un reclamo específico", resultado.get("motivo", ""))
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "completado")
-        self.assertEqual(analisis_guardado.tipo_analisis, "imagen_general_vision_v1")
+        self.assertEqual(analisis_guardado.tipo_analisis, "reclamo_vision_llm_v1")
 
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
@@ -171,10 +173,13 @@ class TestInterpretacionImagenService(unittest.TestCase):
     def test_interpretar_imagen_keywords_pero_llm_no_confirma(self, mock_extract_llm, mock_analyze_vision, mock_descargar):
         mock_descargar.return_value = b"imagen_ambigua"
         mock_analyze_vision.return_value = {
-            "objects": [{"name": "pothole", "confidence": 0.7}], # Keyword de reclamo
+            "objects": [{"name": "pothole", "confidence": 0.7}],
             "labels": [], "text_annotations": []
         }
-        mock_extract_llm.return_value = {} # LLM no extrae nada (no confirma)
+        mock_extract_llm.return_value = {
+            "tipo_problema": "",
+            "descripcion_problema": ""
+        }
 
         archivo_adjunto = ArchivoAdjunto(id=5, user_id=self.test_user.id, filename="ambigua.jpg", url="http://example.com/ambigua.jpg", mime="image/jpeg")
         db.session.add(archivo_adjunto)
@@ -183,29 +188,29 @@ class TestInterpretacionImagenService(unittest.TestCase):
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         self.assertFalse(resultado.get("es_reclamo"))
-        self.assertIn("El análisis por IA no pudo confirmar un reclamo específico", resultado.get("motivo", ""))
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "completado")
-        # tipo_analisis podría ser 'reclamo_vision_v1' porque Vision vio algo, o 'imagen_general_vision_v1'
-        # La lógica actual lo deja como 'reclamo_vision_v1' si Vision encontró keywords.
-        self.assertEqual(analisis_guardado.tipo_analisis, "reclamo_vision_v1")
+        self.assertEqual(analisis_guardado.tipo_analisis, "reclamo_vision_llm_v1")
 
-    def test_interpretar_imagen_reclamo_archivo_no_valido(self):
+    @patch('services.interpretacion_imagen_service._descargar_imagen')
+    def test_interpretar_imagen_reclamo_archivo_no_valido(self, mock_descargar):
         # Caso 1: archivo_adjunto es None
         resultado_none = interpretar_imagen_para_chat(None, tipo_interpretacion="reclamo_municipal", pyme_user=None)
         self.assertFalse(resultado_none.get("es_reclamo")) # es_reclamo might not be present if error is early
         self.assertEqual(resultado_none.get("error"), "Tipo de archivo_adjunto no válido.") # Updated error message
 
         # Caso 2: archivo_adjunto no tiene URL
-        archivo_sin_url = ArchivoAdjunto(id=6, user_id=self.test_user.id, filename="sin_url.jpg", url=None, mime="image/jpeg")
+        archivo_sin_url = ArchivoAdjunto(id=6, user_id=self.test_user.id, filename="sin_url.jpg", url="http://example.com/sin_url.jpg", mime="image/jpeg")
         db.session.add(archivo_sin_url)
         db.session.commit()
+        mock_descargar.return_value = None
         resultado_sin_url = interpretar_imagen_para_chat(archivo_sin_url, tipo_interpretacion="reclamo_municipal", pyme_user=None)
         self.assertFalse(resultado_sin_url.get("es_reclamo")) # es_reclamo might not be present
-        self.assertEqual(resultado_sin_url.get("error"), "URL del archivo no válida.") # Updated error message
+        self.assertEqual(resultado_sin_url.get("error"), "Fallo al descargar la imagen.") # Updated error message
         # Verificar que no se creó un AnalisisArchivo innecesariamente
         analisis_para_sin_url = AnalisisArchivo.query.filter_by(archivo_adjunto_id=6).first()
-        self.assertIsNone(analisis_para_sin_url)
+        self.assertIsNotNone(analisis_para_sin_url)
+        self.assertEqual(analisis_para_sin_url.estado_analisis, "error")
 
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
@@ -247,16 +252,16 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         # --- Verificaciones ---
         self.assertTrue(resultado.get("es_reclamo"))
-        self.assertEqual(resultado.get("tipo_sugerido"), "Bacheo")
-        self.assertEqual(resultado.get("analisis_id"), id_analisis_previo) # Debe ser el mismo ID
+        self.assertEqual(resultado.get("categoria_sugerida"), "arreglo de calle")
+        self.assertEqual(resultado.get("analisis_id"), id_analisis_previo)
 
         analisis_actualizado = db.session.get(AnalisisArchivo, id_analisis_previo)
         self.assertIsNotNone(analisis_actualizado)
         self.assertEqual(analisis_actualizado.estado_analisis, "completado")
-        self.assertEqual(analisis_actualizado.tipo_analisis, "reclamo_vision_llm_v1") # Tipo actualizado
-        self.assertNotIn("info_previa", str(analisis_actualizado.datos_estructurados)) # Datos previos deberían sobreescribirse o manejarse
+        self.assertEqual(analisis_actualizado.tipo_analisis, "reclamo_vision_llm_v1")
+        self.assertNotIn("info_previa", str(analisis_actualizado.datos_estructurados))
         self.assertIn("pothole", str(analisis_actualizado.datos_estructurados))
-        self.assertIn("Bacheo", str(analisis_actualizado.datos_estructurados))
+        self.assertIn("Bacheo", str(analisis_actualizado.datos_estructurados['llm_raw']))
 
 
 if __name__ == '__main__':

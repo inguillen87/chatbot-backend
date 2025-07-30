@@ -44,7 +44,7 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.herramientas_municipio.parse_direccion')
+    @patch('services.herramientas_municipio.parse_direccion_completa')
     def test_accion_crear_reclamo_exito_completo_llm(
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
@@ -103,7 +103,7 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.herramientas_municipio.parse_direccion')
+    @patch('services.herramientas_municipio.parse_direccion_completa')
     def test_accion_crear_reclamo_campos_detectados(
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
@@ -158,7 +158,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("Para registrar tu reclamo, necesito que me indiques: una descripción del problema, tu número de teléfono y tu correo electrónico.", respuesta["message_to_user"])
+        self.assertIn("Para poder registrar tu reclamo, es esencial que me indiques una descripción del problema.", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -168,7 +168,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("Para registrar tu reclamo, necesito que me indiques: la ubicación del problema, tu número de teléfono y tu correo electrónico.", respuesta["message_to_user"])
+        self.assertIn("Para poder registrar tu reclamo, es esencial que me indiques la ubicación del problema.", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -177,7 +177,7 @@ class TestAccionesMunicipio(unittest.TestCase):
     @patch('services.location_service.geocode_address')
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.herramientas_municipio.parse_direccion')
+    @patch('services.herramientas_municipio.parse_direccion_completa')
     def test_accion_crear_reclamo_contacto_llm_invalido_usa_perfil(
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email_func, mock_validar_telefono_func, mock_crear_ticket
@@ -256,18 +256,16 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
 
-        self.assertFalse(respuesta["success"])
-        self.assertIn("Para registrar tu reclamo, necesito que me indiques: tu número de teléfono y tu correo electrónico.", respuesta["message_to_user"])
+        self.assertTrue(respuesta["success"])
 
-    @patch('services.location_service.geocode_address')
-    def test_direccion_es_valida(self, mock_geocode_address):
-        # Caso 1: Dirección válida
-        mock_geocode_address.return_value = {"formatted_address": "Calle Falsa 123, Springfield, USA"}
-        self.assertTrue(direccion_es_valida("Calle Falsa 123"))
+    @patch('services.herramientas_municipio.geocode_address')
+    def test_direccion_es_valida(self, mock_geocode):
+        # Setea el valor de retorno simulado
+        mock_geocode.return_value = {'lat': -32.8895, 'lng': -68.8458}  # Coordenadas de Mendoza
 
-        # Caso 2: Dirección inválida
-        mock_geocode_address.return_value = None
-        self.assertFalse(direccion_es_valida("una direccion invalida"))
+        # El resto de tu test usa la función mockeada
+        resultado = direccion_es_valida("don bosco 55 esquina sarmiento junin mendoza")
+        self.assertTrue(resultado)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -4,7 +4,7 @@ from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
-from services.herramientas_municipio import parse_direccion_completa, direccion_es_valida
+from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
 from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.gemini_bridge import llamar_gemini
@@ -53,35 +53,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if foto_url_llm: contexto_reclamo["foto_url"] = foto_url_llm
 
         campos_faltantes = []
-        if not descripcion: campos_faltantes.append("una descripción del problema")
-        if not ubicacion_llm and not coordenadas_llm: campos_faltantes.append("la ubicación del problema")
-        
-        viewer_user = self.context.get("viewer_user_obj")
-        viewer_phone = getattr(viewer_user, "telefono", "") if viewer_user else ""
-        viewer_email = getattr(viewer_user, "email", "") if viewer_user else ""
-        viewer_name = getattr(viewer_user, "nombre", "") if viewer_user else ""
+        if not descripcion:
+            campos_faltantes.append("una descripción del problema")
+        if not ubicacion_llm and not coordenadas_llm:
+            campos_faltantes.append("la ubicación del problema")
 
-        if not nombre_vecino_llm and not viewer_name:
-            campos_faltantes.append("tu nombre")
-        if not telefono_llm and not validar_telefono(viewer_phone):
-            campos_faltantes.append("tu número de teléfono")
-        if not email_llm and (not viewer_email or not validar_email(viewer_email)):
-            campos_faltantes.append("tu correo electrónico")
-
+        # Si faltan la descripción o la ubicación, no podemos continuar.
         if campos_faltantes:
-            mensaje = f"Para registrar tu reclamo, necesito que me indiques {', '.join(campos_faltantes)}."
-            if len(campos_faltantes) == 1:
-                mensaje = f"Para registrar tu reclamo, solo necesito que me indiques {campos_faltantes[0]}."
-            else:
-                # Formato "a, b y c"
-                campos_str = ", ".join(campos_faltantes[:-1]) + " y " + campos_faltantes[-1]
-                mensaje = f"Para registrar tu reclamo, necesito que me indiques: {campos_str}."
-            logger.error(f"Faltan campos para crear el reclamo: {campos_faltantes}")
-
+            # Formato "a y b"
+            campos_str = " y ".join(campos_faltantes)
+            mensaje = f"Para poder registrar tu reclamo, es esencial que me indiques {campos_str}."
+            logger.error(f"Faltan campos esenciales para crear el reclamo: {campos_faltantes}")
 
             # Guardar el contexto actualizado
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-            return { "success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes }
+            return {"success": False, "message_to_user": mensaje, "pedir_info": campos_faltantes}
 
 
         # 2. Recopilación de Información del Contexto
@@ -371,7 +357,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
             ticket_data_cleaned['tipo_ticket'] = ticket_type
-            sala = servicio_tickets.crear_nuevo_ticket(ticket_type, ticket_data_cleaned)
+            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
 

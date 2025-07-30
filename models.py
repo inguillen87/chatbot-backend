@@ -447,7 +447,7 @@ class PlantillasRespuesta(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.String(255), nullable=False)
     text = db.Column(db.Text, nullable=False)
-    embedding = db.Column(db.PickleType, nullable=True) # Almacenará el embedding de Cohere
+    embedding = db.Column(db.JSON, nullable=True) # Almacenará el embedding de Cohere
     keywords = db.Column(db.JSON, nullable=True) # Array de strings
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

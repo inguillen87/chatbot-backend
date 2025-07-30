@@ -58,6 +58,8 @@ def suggest_templates_route(current_user: User):
             PlantillasRespuesta.is_active == True,
             PlantillasRespuesta.embedding != None
         ).all()
+        print(f"Templates antes del filtro: {PlantillasRespuesta.query.all()}")
+        print(f"Templates después del filtro: {plantillas_activas}")
     except Exception as e:
         current_app.logger.error(f"[SUGGEST_TEMPLATES] Error al consultar plantillas en la BD: {e}", exc_info=True)
         return jsonify({"error": "Error al obtener plantillas de la base de datos."}), 500
