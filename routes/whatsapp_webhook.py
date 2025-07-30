@@ -5,8 +5,9 @@ import os # For accessing environment variables
 from models import WhatsappNumero, User, ChatSessionContext # Import necessary models
 from extensions import db # Import db instance for database operations
 import uuid
-from services.logic import responder_chatboc # Import the correct chatbot logic processor
-from sqlalchemy.orm import joinedload # To potentially eager load User.rubro
+from services.logic import responder_chatboc  # Import the correct chatbot logic processor
+from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
+from services.notifications import enviar_bienvenida_whatsapp
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -161,6 +162,11 @@ def whatsapp_webhook():
         )
         db.session.add(session_context_db_entry)
         print(f"New session DB entry prepared for {chat_session_id_internal}.")
+        try:
+            nombre_destino = getattr(end_user, "name", "") if end_user else ""
+            enviar_bienvenida_whatsapp(from_number_cleaned, nombre_destino)
+        except Exception as e:
+            print(f"Error sending welcome template: {e}")
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response

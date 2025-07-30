@@ -74,12 +74,16 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_twilio_client = self.twilio_client_patch.start()
         self.mock_twilio_create = self.mock_twilio_client.messages.create
 
+        self.welcome_patch = patch('routes.whatsapp_webhook.enviar_bienvenida_whatsapp', MagicMock())
+        self.mock_welcome = self.welcome_patch.start()
+
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
         self.validator_patch.stop()
         self.twilio_client_patch.stop()
+        self.welcome_patch.stop()
 
     def test_whatsapp_webhook_valid_request(self):
         # Arrange
@@ -110,6 +114,10 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             to=f"whatsapp:{self.test_user_number_str}",
             body=expected_bot_response
         )
+        self.mock_welcome.assert_called_once_with(
+            self.test_user_number_str,
+            "Usuario de WhatsApp 4321"
+        )
 
     def test_whatsapp_webhook_invalid_signature(self):
         # Arrange
@@ -128,6 +136,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 403) # Expect Forbidden
         self.mock_validator.validate.assert_called_once()
         self.mock_twilio_create.assert_not_called() # Message should not be sent
+        self.mock_welcome.assert_not_called()
 
     def test_whatsapp_webhook_number_not_found_in_db(self):
         # Arrange
@@ -147,6 +156,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 404) # Expect Not Found
         self.assertIn("WhatsApp number not configured", response.data.decode())
         self.mock_twilio_create.assert_not_called()
+        self.mock_welcome.assert_not_called()
 
     def test_whatsapp_webhook_number_inactive_in_db(self):
         # Arrange
@@ -173,6 +183,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 404) # Expect Not Found (as if not configured)
         self.assertIn("not found or inactive", response.data.decode())
         self.mock_twilio_create.assert_not_called()
+        self.mock_welcome.assert_not_called()
 
     def test_whatsapp_webhook_pdf_attachment(self):
         self.mock_validator.validate.return_value = True
@@ -208,6 +219,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 to=f"whatsapp:{self.test_user_number_str}",
                 body="Ok"
             )
+            self.mock_welcome.assert_called_once()
 
     def test_whatsapp_webhook_docx_attachment(self):
         self.mock_validator.validate.return_value = True
@@ -243,6 +255,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 to=f"whatsapp:{self.test_user_number_str}",
                 body="Ok"
             )
+            self.mock_welcome.assert_called_once()
 
     def test_whatsapp_webhook_image_attachment(self):
         self.mock_validator.validate.return_value = True
@@ -278,6 +291,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 to=f"whatsapp:{self.test_user_number_str}",
                 body="Ok"
             )
+            self.mock_welcome.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()
