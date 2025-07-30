@@ -10,6 +10,9 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
+TWILIO_WELCOME_TEMPLATE = os.environ.get(
+    "TWILIO_WELCOME_TEMPLATE", "bienvenida_chatbot_municipal_junin"
+)
 
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
     if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
@@ -34,3 +37,33 @@ def enviar_notificacion_whatsapp_con_plantilla(numero_destino: str, nombre: str,
         logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
     except Exception as e:
         logger.error(f"[NOTIFICACION WHATSAPP] Error al enviar plantilla: {e}", exc_info=True)
+
+
+def enviar_bienvenida_whatsapp(numero_destino: str, nombre: str):
+    """Envía el mensaje de bienvenida con botones usando una plantilla de WhatsApp."""
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
+        logger.error("[WHATSAPP] Faltan credenciales de Twilio para bienvenida.")
+        return
+
+    destinatario = f"whatsapp:{numero_destino}"
+    template_payload = {
+        "name": TWILIO_WELCOME_TEMPLATE,
+        "language": {"code": "es"},
+        "components": [
+            {"type": "body", "parameters": [{"type": "text", "text": nombre}]}
+        ],
+    }
+
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            from_=TWILIO_WHATSAPP_NUMBER,
+            to=destinatario,
+            template=template_payload,
+        )
+        logger.info(f"[WHATSAPP] Bienvenida enviada, SID: {message.sid}")
+    except Exception as e:
+        logger.error(
+            f"[WHATSAPP] Error al enviar mensaje de bienvenida: {e}",
+            exc_info=True,
+        )
