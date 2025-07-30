@@ -2,130 +2,122 @@
 import logging
 from typing import Dict, Any
 from .base_action_handler import BaseActionHandler
-# Import necessary services like document_processor, notification_service, etc.
-# from services.document_processor import process_document_for_claim, process_document_for_order
-# from services.notification_service import send_notification_to_human_agent
+from services.ticket_service import servicio_tickets
+from services.ticket_utils import formatear_ticket_respuesta
 
 logger = logging.getLogger(__name__)
 
 class DerivarHumanoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Crea un ticket real de chat en vivo y devuelve su identificador."""
         logger.info(f"Executing DerivarHumanoAction with data: {action_data}")
 
-        reason = action_data.get("razon_derivacion", "El usuario solicitó hablar con un humano.")
-        user_identifier = self.context.get("cliente_id") or self.context.get("anon_id")
-        chat_history_summary = "Últimos mensajes: " + str(self.context.get("mensajes_previos", [])[-3:]) # Example summary
+        try:
+            viewer_user = self.context.get("viewer_user_obj")
+            owner_user = self.context.get("user_obj")
+            pregunta_original = self.context.get("pregunta_actual_usuario", "")
+            target_entity_type = self.context.get("target_entity_type", "general")
 
-        # In a real system, this would trigger a notification to a human agent pool
-        # e.g., via a message queue, email, or a live chat system API.
-        # send_notification_to_human_agent(user_identifier, reason, chat_history_summary)
+            nombre = (getattr(viewer_user, "name", None) or action_data.get("nombre"))
+            telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
+            email = (getattr(viewer_user, "email", None) or action_data.get("email"))
 
-        logger.info(f"Derivación a humano solicitada para {user_identifier}. Razón: {reason}. Historial: {chat_history_summary}")
+            ticket_data = {
+                "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Usuario'}",
+                "categoria": "Atención en Vivo",
+                "pregunta": pregunta_original,
+                "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
+                "user_id": self.context.get("cliente_id"),
+                "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                "estado": "esperando_agente_en_vivo",
+                "nombre_vecino": nombre, # Usado por municipio
+                "telefono_vecino": telefono, # Usado por municipio
+                "email_vecino": email, # Usado por municipio
+                "nombre_cliente": nombre, # Usado por pyme
+                "telefono_cliente": telefono, # Usado por pyme
+                "email_cliente": email, # Usado por pyme
+            }
 
-        return {
-            "success": True,
-            "message_to_user": "Entendido. He notificado a un agente humano para que te asista. Se pondrán en contacto contigo a la brevedad.",
-            "data": {"status": "derivacion_iniciada"}
-        }
+            if target_entity_type == "municipio":
+                ticket_data["municipio_id"] = getattr(owner_user, "municipio_id", None)
+            else: # pyme
+                ticket_data["pyme_id"] = getattr(owner_user, "id", None)
+
+
+            ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+            ticket_data_cleaned['tipo_ticket'] = target_entity_type
+
+            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket=target_entity_type, ticket_data=ticket_data_cleaned)
+            if not sala:
+                raise Exception("crear_nuevo_ticket devolvió None")
+
+            servicio_tickets.crear_comentario(
+                ticket_id=sala.id,
+                tipo_ticket=target_entity_type,
+                comentario_data={
+                    "comentario": pregunta_original,
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id"),
+                    "es_admin": False,
+                },
+            )
+
+            # Formatear el prefijo del ID de chat según el tipo de entidad
+            chat_id_prefix = "M" if target_entity_type == "municipio" else "P"
+            chat_id = f"{chat_id_prefix}-{sala.nro_ticket}"
+
+            user_message = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
+            return {
+                "success": True,
+                "message_to_user": user_message,
+                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+            }
+        except Exception as e:
+            logger.error(f"Error en DerivarHumanoAction: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
+                "error_details": str(e),
+            }
+
+from services.document_processing_service import DocumentProcessingService
 
 class ProcesarAdjuntoAction(BaseActionHandler):
-    """
-    Action to initiate processing of an uploaded attachment (image, document).
-    This action itself might trigger an async task and update the context
-    for the orchestrator to check for results later.
-    """
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing ProcesarAdjuntoAction with data: {action_data}")
 
-        file_url = action_data.get("file_url")
-        mime_type = action_data.get("mime_type")
-        context_tipo = action_data.get("contexto_procesamiento") # e.g., "reclamo_municipal", "pedido_pyme_lista"
-        archivo_id_db = self.context.get("archivo_id_para_asociar") # ID if file already saved in ArchivoAdjunto
+        archivo_id = self.context.get("archivo_id_para_asociar")
+        if not archivo_id:
+            return {"success": False, "message_to_user": "No se encontró un archivo para procesar."}
 
-        if not (file_url or archivo_id_db) or not mime_type:
+        try:
+            processing_service = DocumentProcessingService()
+            analysis_result = processing_service.process_document_by_id(archivo_id)
+
+            if not analysis_result or not analysis_result.get("success"):
+                error_detail = analysis_result.get("error", "Error desconocido en el procesamiento del documento.")
+                logger.error(f"Fallo el procesamiento del documento para el archivo ID {archivo_id}: {error_detail}")
+                return {"success": False, "message_to_user": f"No se pudo procesar el archivo. Detalle: {error_detail}"}
+
+            extracted_data = analysis_result.get("extracted_data", {})
+            user_message = "He procesado el archivo. "
+            if extracted_data.get("es_catalogo"):
+                user_message += f"Detecté que es un catálogo con {extracted_data.get('numero_productos', 0)} productos."
+            elif extracted_data.get("es_reclamo_con_imagen"):
+                user_message += f"Gracias por la imagen. La he asociado a tu reclamo sobre: {extracted_data.get('categoria_sugerida', 'asunto no identificado')}."
+
             return {
-                "success": False,
-                "message_to_user": "No se proporcionó suficiente información del archivo para procesar.",
-                "error_details": "Missing file_url/archivo_id_db or mime_type for ProcesarAdjuntoAction."
+                "success": True,
+                "message_to_user": user_message,
+                "data": {
+                    "analysis_status": "completed",
+                    "extracted_data": extracted_data
+                }
             }
 
-        # Import the document_processor service (assuming it's created)
-        try:
-            from services.document_processor import DocumentProcessorService # Ensure this service is created
-            doc_processor = DocumentProcessorService() # Or get instance if it's a singleton
-
-            # This call might be asynchronous in a real system
-            # For now, let's assume it's synchronous for simplicity of this action handler,
-            # or that document_processor itself handles async and returns an immediate status.
-
-            processing_result = {}
-            if archivo_id_db: # If we have a DB record, pass its ID
-                logger.info(f"Procesando adjunto (ID DB: {archivo_id_db}) con mime_type: {mime_type}, contexto: {context_tipo}")
-                # The document_processor should be able to fetch the file from DB using its ID
-                # or expect a URL even if an ID is provided.
-                # Let's assume it can use archivo_id_db to get the file.
-                # This might involve calling a method like:
-                # processing_result = doc_processor.process_existing_attachment(archivo_id_db, context_tipo)
-                # For now, placeholder:
-                processing_result = {"status": "pending_analysis_for_db_id", "analisis_id": None, "message": "Análisis iniciado para archivo existente."}
-                # Actual implementation would call Vision/DocAI and store results in AnalisisArchivo
-
-            elif file_url: # If it's a direct URL (e.g. from WhatsApp not yet in DB)
-                logger.info(f"Procesando adjunto desde URL: {file_url}, mime_type: {mime_type}, contexto: {context_tipo}")
-                # processing_result = doc_processor.process_new_attachment_from_url(file_url, mime_type, context_tipo,
-                #                                                                  user_id=self.context.get("cliente_id"),
-                #                                                                  pyme_id=self.context.get("user_id"))
-                # For now, placeholder:
-                processing_result = {"status": "pending_analysis_for_url", "analisis_id": None, "message": "Análisis iniciado para archivo desde URL."}
-                # Actual implementation would save to ArchivoAdjunto, then call Vision/DocAI, then save AnalisisArchivo.
-
-            if processing_result.get("status") == "pending_analysis_for_db_id" or \
-               processing_result.get("status") == "pending_analysis_for_url":
-
-                # The orchestrator should now know to periodically check the status of this analysis_id
-                # or wait for a webhook/callback if the processing is truly async.
-                # For a synchronous LLM flow, the LLM might be re-invoked with "analysis_pending"
-                # and the user asked to wait or describe the issue while it processes.
-
-                # This action handler's response should inform the orchestrator that processing has started.
-                # The LLM (via orchestrator) will then decide the next conversational step.
-                return {
-                    "success": True,
-                    "message_to_user": "He comenzado a procesar el archivo que enviaste. Te avisaré cuando esté listo.", # LLM might override this
-                    "data": {
-                        "analysis_status": processing_result.get("status"),
-                        "analisis_id": processing_result.get("analisis_id"), # ID of the AnalisisArchivo record if created
-                        "next_action_suggestion": "poll_analysis_status" # Hint for orchestrator or LLM
-                    }
-                }
-            elif processing_result.get("status") == "completed":
-                 return {
-                    "success": True,
-                    "message_to_user": "El archivo ha sido procesado.", # LLM will use extracted data
-                    "data": {
-                        "analysis_status": "completed",
-                        "analisis_id": processing_result.get("analisis_id"),
-                        "extracted_data": processing_result.get("extracted_data") # Pass to LLM
-                    }
-                }
-            else: # Error or other status
-                logger.error(f"Procesamiento de adjunto falló o estado desconocido: {processing_result}")
-                return {
-                    "success": False,
-                    "message_to_user": "Hubo un problema al procesar tu archivo. Por favor, intenta de nuevo o descríbelo manualmente.",
-                    "error_details": processing_result.get("error", "Error desconocido durante procesamiento de adjunto")
-                }
-
-        except ImportError:
-            logger.error("Servicio 'document_processor' no encontrado. El procesamiento de adjuntos no está disponible.")
-            return {"success": False, "message_to_user": "El sistema no está configurado para procesar archivos en este momento."}
         except Exception as e:
             logger.error(f"Error en ProcesarAdjuntoAction: {e}", exc_info=True)
-            return {
-                "success": False,
-                "message_to_user": "Ocurrió un error técnico al intentar procesar tu archivo.",
-                "error_details": str(e)
-            }
+            return {"success": False, "message_to_user": "Ocurrió un error técnico al procesar el archivo."}
 
 # Example of another common action
 class InformarUsuarioAction(BaseActionHandler):
@@ -145,3 +137,27 @@ class InformarUsuarioAction(BaseActionHandler):
             "message_to_user": message, # This message comes directly from LLM's "respuesta_usuario" for this action
             "data": {}
         }
+
+class DescargarArchivoActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing DescargarArchivoActionHandler with data: {action_data}")
+        nombre_archivo = action_data.get("nombre_archivo")
+        if not nombre_archivo:
+            return {"success": False, "message_to_user": "No se especificó qué archivo descargar."}
+
+        # In a real implementation, you would generate a secure, temporary download link.
+        # For now, we'll construct a direct link to the /archivos/ endpoint.
+        # This assumes the 'archivos_bp' blueprint is registered at '/archivos'.
+        from flask import url_for
+        try:
+            # This requires an app context to work.
+            download_url = url_for('archivos.download_file', filename=nombre_archivo, _external=True)
+            user_message = f"Puedes descargar el archivo '{nombre_archivo}' desde el siguiente enlace: {download_url}"
+            return {"success": True, "message_to_user": user_message, "data": {"download_url": download_url}}
+        except RuntimeError:
+            # Fallback for when url_for is not available (e.g., outside of a request context)
+            logger.warning("Could not generate download URL using url_for due to no app context.")
+            # Provide a relative path as a fallback
+            download_url = f"/archivos/{nombre_archivo}"
+            user_message = f"Puedes descargar el archivo '{nombre_archivo}' desde el siguiente enlace: {download_url}"
+            return {"success": True, "message_to_user": user_message, "data": {"download_url": download_url}}

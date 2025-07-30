@@ -186,91 +186,121 @@ class SolicitarUbicacionTiendaActionHandler(BaseActionHandler):
             "data": {"ubicacion_principal": "Av. Siempre Viva 742"}
         }
 
+from services.pedido_service import servicio_pedidos
+
+
 class ConsultarEstadoPedidoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing ConsultarEstadoPedidoActionHandler with data: {action_data}")
-        id_pedido = action_data.get("id_pedido_mencionado")
-        if not id_pedido:
+        nro_pedido_llm = action_data.get("id_pedido_mencionado")
+        if not nro_pedido_llm:
             return {
                 "success": False,
                 "message_to_user": "Para consultar el estado de tu pedido, necesito el número de referencia.",
                 "pedir_info": "id_pedido_mencionado"
             }
-        # Simulate fetching order status
-        # pedido_info = PymePedido.query.filter_by(nro_pedido=id_pedido).first()
-        simulated_pedido_status = "En preparación"
-        user_message = f"Tu pedido {id_pedido} se encuentra: **{simulated_pedido_status}**. Estimamos que estará listo para envío/retiro pronto."
+
+        nro_pedido_str = str(nro_pedido_llm)
+        pedido = servicio_pedidos.consultar_pedido_por_numero(nro_pedido_str, pyme_id=self.context.get("user_id"))
+
+        if pedido:
+            user_message = f"Tu pedido #{nro_pedido_str} se encuentra en estado: **{pedido.estado}**."
+            if pedido.estado == "entregado":
+                user_message += " ¡Gracias por tu compra!"
+            elif pedido.estado == "en_camino":
+                user_message += " Debería llegar pronto."
+        else:
+            user_message = f"No encontré ningún pedido con el número #{nro_pedido_str}. Por favor, verifica el número e intenta de nuevo."
+
         return {
-            "success": True,
+            "success": True if pedido else False,
             "message_to_user": user_message,
-            "data": {"id_pedido": id_pedido, "status_actual": simulated_pedido_status}
+            "data": {"nro_pedido": nro_pedido_str, "estado_actual": pedido.estado if pedido else None}
         }
 
-class DerivarHumanoActionHandlerPyme(BaseActionHandler):  # Renamed to avoid conflict
+class ConsultarInfoPymeActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a real live chat ticket for a PYME user and return its ID."""
-        logger.info(
-            f"Executing DerivarHumanoActionHandlerPyme with data: {action_data}"
+        logger.info(f"Executing ConsultarInfoPymeActionHandler with data: {action_data}")
+        owner_user = self.context.get("user_obj")
+        if not owner_user:
+            return {"success": False, "message_to_user": "No se pudo identificar la empresa."}
+
+        info_pyme = {
+            "nombre": owner_user.nombre_empresa,
+            "direccion": getattr(owner_user, 'direccion_fisica', 'No especificada'),
+            "telefono": getattr(owner_user, 'telefono_contacto', 'No especificado'),
+            "email": owner_user.email,
+            "horarios": getattr(owner_user, 'horarios_atencion', 'No especificados')
+        }
+
+        respuesta = (
+            f"Aquí tienes la información sobre **{info_pyme['nombre']}**:\n"
+            f"- **Dirección**: {info_pyme['direccion']}\n"
+            f"- **Teléfono**: {info_pyme['telefono']}\n"
+            f"- **Email**: {info_pyme['email']}\n"
+            f"- **Horarios**: {info_pyme['horarios']}"
         )
 
-        try:
-            viewer_user = self.context.get("viewer_user_obj")
-            pregunta_original = self.context.get("pregunta_actual_usuario", "")
+        return {
+            "success": True,
+            "message_to_user": respuesta,
+            "data": info_pyme
+        }
 
-            nombre = getattr(viewer_user, "name", None) or action_data.get("nombre")
-            telefono = getattr(viewer_user, "telefono", None) or action_data.get("telefono")
-            email = getattr(viewer_user, "email", None) or action_data.get("email")
+# This handler is now centralized in common_actions.py
+# class DerivarHumanoActionHandlerPyme(BaseActionHandler): ...
 
-            ticket_data = {
-                "asunto": f"Chat en Vivo con {nombre or 'Cliente'}",
-                "categoria": "Atención en Vivo",
-                "pregunta": pregunta_original,
-                "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
-                "user_id": self.context.get("user_id"),
-                "anon_id": self.context.get("anon_id")
-                if not self.context.get("cliente_id")
-                else None,
-                "rubro_id": self.context.get("rubro_id"),
-                "estado": "esperando_agente_en_vivo",
-                "telefono": telefono,
-                "email": email,
+class HacerSugerenciaActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing HacerSugerenciaActionHandler for PYME with data: {action_data}")
+        descripcion_sugerencia = action_data.get("descripcion")
+        if not descripcion_sugerencia:
+            return {
+                "success": False,
+                "message_to_user": "Claro, ¿cuál es tu sugerencia o idea?",
+                "pedir_info": "descripcion_sugerencia"
             }
 
-            ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
-            ticket_data_cleaned['tipo_ticket'] = 'pyme'
-            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_cleaned)
-            if not sala:
-                raise Exception("crear_nuevo_ticket devolvió None")
+        viewer_user = self.context.get("viewer_user_obj")
+        owner_user = self.context.get("user_obj")
+        user_id_db = getattr(viewer_user, "id", None)
+        anon_id_db = self.context.get("anon_id") if not user_id_db else None
+        pyme_id_db = getattr(owner_user, "id", None)
+        nombre_cliente = getattr(viewer_user, "nombre", "Cliente Anónimo")
 
-            servicio_tickets.crear_comentario(
-                ticket_id=sala.id,
-                tipo_ticket="pyme",
-                comentario_data={
-                    "comentario": pregunta_original,
-                    "user_id": self.context.get("cliente_id"),
-                    "anon_id": self.context.get("anon_id"),
-                    "es_admin": False,
-                },
-            )
+        ticket_data = {
+            "asunto": f"Sugerencia de Cliente: {descripcion_sugerencia[:30]}...",
+            "categoria": "Sugerencia",
+            "detalles": descripcion_sugerencia,
+            "estado": "nuevo",
+            "user_id": user_id_db,
+            "anon_id": anon_id_db,
+            "pyme_id": pyme_id_db,
+            "origen_reclamo": "LLM_CHATBOT_PYME"
+        }
 
-            chat_id = f"P-{sala.nro_ticket}"
-            user_message = (
-                f"Hemos recibido tu solicitud para hablar con un agente. Tu número de chat es **{chat_id}**."
-            )
+        ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
 
+        try:
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_cleaned)
+            if not ticket_creado:
+                raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
+
+            nro_ticket_str = f"S-{ticket_creado.nro_ticket}"
+            logger.info(f"Ticket de sugerencia para PYME {nro_ticket_str} creado exitosamente.")
+
+            user_message = f"¡Muchas gracias, {nombre_cliente}! Hemos recibido tu sugerencia con el número de referencia {nro_ticket_str}. Valoramos mucho tus ideas."
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
             }
-        except Exception as e:  # pragma: no cover - unexpected paths
-            logger.error(
-                f"Error en DerivarHumanoActionHandlerPyme: {e}", exc_info=True
-            )
+        except Exception as e:
+            logger.error(f"Error en HacerSugerenciaActionHandler para PYME: {e}", exc_info=True)
             return {
                 "success": False,
-                "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
-                "error_details": str(e),
+                "message_to_user": "Hubo un problema al registrar tu sugerencia. Por favor, intenta de nuevo más tarde.",
+                "error_details": str(e)
             }
 
 class ProcesarAdjuntoPedidoActionHandler(BaseActionHandler):
