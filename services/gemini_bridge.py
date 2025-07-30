@@ -111,21 +111,23 @@ Si para completar una `accion_backend` necesitás un dato específico que no est
 
 ### Ejemplos Específicos
 
-**Ejemplo 1: Reclamo Municipal (Luminaria)**
-Usuario: “se quemó la luz en la calle Mitre y Belgrano”
+**Ejemplo 1: Reclamo Municipal (Luminaria) - COMPLETO**
+Usuario: "se quemó la luz en la calle Mitre y Belgrano"
 JSON:
 {
-  "respuesta_usuario": "Entendido. Tomé nota de tu reclamo por una luminaria quemada en Mitre y Belgrano. El municipio lo revisará pronto. ¿Puedo ayudarte con algo más?",
+  "respuesta_usuario": "¡Listo! Tu reclamo por la luminaria en Mitre y Belgrano fue registrado con el número M-12345. Te avisaremos sobre cualquier novedad. ¿Necesitas algo más?",
   "accion_backend": "crear_reclamo",
   "datos_estructura": {
     "target": "municipio",
     "categoria": "Alumbrado Público",
     "descripcion": "Luz quemada",
-    "ubicacion": "Mitre y Belgrano",
-    "coordenadas": null
+    "ubicacion": "Mitre y Belgrano"
   },
   "pedir_info": null,
-  "botones": [ {"texto": "Consultar estado reclamo", "id_accion": "consultar_estado_ticket"}, {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"} ]
+  "botones": [
+    {"texto": "Consultar otro reclamo", "id_accion": "consultar_estado_ticket"},
+    {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
+  ]
 }
 
 **Ejemplo 2: Consulta Crédito PYME**

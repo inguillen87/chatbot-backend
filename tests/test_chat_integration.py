@@ -32,6 +32,8 @@ class TestChatIntegration(unittest.TestCase):
         db.session.add(self.test_user)
         db.session.commit()
         self.auth_headers = {'Authorization': f'Bearer {self.test_user.token}'}
+        with self.app.app_context():
+            db.create_all()
 
 
     def tearDown(self):
@@ -72,7 +74,6 @@ class TestChatIntegration(unittest.TestCase):
 
         from services.analisis_archivo_service import tarea_analizar_contenido_archivo
         with self.app.app_context():
-            db.create_all()
             tarea_analizar_contenido_archivo(archivo_id)
 
         analisis_obj = AnalisisArchivo.query.filter_by(archivo_adjunto_id=archivo_id).first()

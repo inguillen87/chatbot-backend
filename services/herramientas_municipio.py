@@ -563,5 +563,23 @@ TOOL_REGISTRY = {
             "localidad": {"type": "string", "description": "La localidad donde se encuentra el usuario."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "buscar_comercios_por_rubro_y_localidad": {
+        "funcion": buscar_puntos_de_interes,
+        "descripcion": "Busca comercios o servicios por rubro y localidad. Es una alias de 'buscar_puntos_de_interes'.",
+        "parametros": {
+            "rubro": {"type": "string", "description": "El rubro del comercio a buscar. Por ejemplo: 'veterinaria', 'ferretería', 'restaurante'."},
+            "localidad": {"type": "string", "description": "La localidad donde buscar el comercio."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "buscar_comercios": {
+        "funcion": buscar_puntos_de_interes,
+        "descripcion": "Busca comercios o servicios por rubro y localidad. Es una alias de 'buscar_puntos_de_interes'.",
+        "parametros": {
+            "rubro": {"type": "string", "description": "El rubro del comercio a buscar. Por ejemplo: 'veterinaria', 'ferretería', 'restaurante'."},
+            "localidad": {"type": "string", "description": "La localidad donde buscar el comercio."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }
 }

@@ -116,7 +116,7 @@ def interpretar_imagen_para_chat(
 
     file_content = _descargar_imagen(input_url)
     if not file_content:
-        error_message = "Fallo al descargar el archivo."
+        error_message = "Fallo al descargar la imagen."
         if is_db_object and analisis_db_record:
             analisis_db_record.estado_analisis = "error"
             analisis_db_record.error_analisis = error_message
@@ -321,7 +321,9 @@ def _procesar_interpretacion_reclamo(
     logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL (auto_mode: {auto_mode}) para Análisis ID: {analisis_id_for_log}")
 
     sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
-    datos_internos_analisis = {}
+    datos_internos_analisis = {
+        'vision_api_raw': vision_results
+    }
 
     if auto_mode:
         if analisis_db_record:
@@ -354,9 +356,9 @@ def _procesar_interpretacion_reclamo(
 
          datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
          return {
-             'es_reclamo': bool(sugerida_categoria_vision),
-             'categoria_sugerida': sugerida_categoria_vision,
-             'descripcion_sugerida': "No se pudo generar una descripción automática. Por favor, describí el problema.",
+             'es_reclamo': False,
+             'categoria_sugerida': None,
+             'descripcion_sugerida': "No se detectaron elementos visuales o textuales de reclamo claros",
              'texto_ocr': extracted_ocr_text,
              'analisis_id': analisis_db_record.id if analisis_db_record else None, 'error': None,
              'analisis_interno': datos_internos_analisis
@@ -367,71 +369,57 @@ def _procesar_interpretacion_reclamo(
 
     detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
 
-    datos_internos_analisis['llm_complaint_extraction_from_image'] = detalles_llm
+    datos_internos_analisis['llm_raw'] = detalles_llm
     datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
 
-    final_categoria_sugerida = sugerida_categoria_vision
-
     llm_tipo_problema = detalles_llm.get("tipo_problema","").strip()
-    if llm_tipo_problema:
-        normalized_llm_cat = normalizar_texto_municipios(llm_tipo_problema)
-        matched_llm_cat = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto_municipios(cat) == normalized_llm_cat), None)
-        if not matched_llm_cat:
-            from services.categorias_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
-            from difflib import get_close_matches as get_close_matches_hm
+    llm_descripcion = detalles_llm.get("descripcion_problema", "").strip()
 
-            close_matches_llm = get_close_matches_hm(normalized_llm_cat, reclamo_categorias_norm_hm, n=1, cutoff=0.75)
-            if close_matches_llm:
-                idx = reclamo_categorias_norm_hm.index(close_matches_llm[0])
-                matched_llm_cat = CATEGORIAS_RECLAMO[idx]
+    if not llm_tipo_problema:
+        if analisis_db_record:
+            analisis_db_record.estado_analisis = "completado"
+            current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+            current_datos_db.update(datos_internos_analisis)
+            analisis_db_record.datos_estructurados = current_datos_db
+            db.session.commit()
+        return {
+            "es_reclamo": False,
+            "motivo": "El análisis por IA no pudo confirmar un reclamo específico",
+            'analisis_id': analisis_db_record.id if analisis_db_record else None,
+            'analisis_interno': datos_internos_analisis
+        }
 
-        if matched_llm_cat and matched_llm_cat != "otro motivo":
-            final_categoria_sugerida = matched_llm_cat
-            logger.info(f"[RECLAMO_IMG_PROC] LLM propuso categoría: '{llm_tipo_problema}', mapeada a: '{final_categoria_sugerida}'")
-        elif not final_categoria_sugerida and matched_llm_cat == "otro motivo":
-            final_categoria_sugerida = "otro motivo"
+    final_categoria_sugerida = ""
+    normalized_llm_cat = normalizar_texto_municipios(llm_tipo_problema)
+    matched_llm_cat = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto_municipios(cat) == normalized_llm_cat), None)
+    if not matched_llm_cat:
+        from services.categorias_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
+        from difflib import get_close_matches as get_close_matches_hm
 
-    final_descripcion_sugerida = detalles_llm.get("descripcion_problema", "").strip()
-    if not final_descripcion_sugerida or len(final_descripcion_sugerida) < 15:
-        desc_parts = []
-        if final_categoria_sugerida and final_categoria_sugerida != "otro motivo":
-            desc_parts.append(f"Posible problema de '{final_categoria_sugerida}'.")
+        close_matches_llm = get_close_matches_hm(normalized_llm_cat, reclamo_categorias_norm_hm, n=1, cutoff=0.75)
+        if close_matches_llm:
+            idx = reclamo_categorias_norm_hm.index(close_matches_llm[0])
+            matched_llm_cat = CATEGORIAS_RECLAMO[idx]
 
-        if top_objects_str:
-            desc_parts.append(f"Se observan: {top_objects_str}.")
-        elif top_labels_str:
-            desc_parts.append(f"Aspectos generales: {top_labels_str}.")
-
-        if ocr_snippet_for_prompt:
-            desc_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'.")
-
-        if desc_parts:
-            final_descripcion_sugerida = " ".join(desc_parts)
-            logger.info(f"[RECLAMO_IMG_PROC] Descripción generada por fallback: {final_descripcion_sugerida}")
-        else:
-            final_descripcion_sugerida = "No se pudo generar una descripción automática. Por favor, describe el problema que observaste en la imagen."
-
-    es_reclamo_valido_sugerido = bool(final_categoria_sugerida and final_categoria_sugerida != "otro motivo") or \
-                                 (final_descripcion_sugerida and len(final_descripcion_sugerida) >= 15 and "describe el problema" not in final_descripcion_sugerida.lower())
+    if matched_llm_cat:
+        final_categoria_sugerida = matched_llm_cat
+        logger.info(f"[RECLAMO_IMG_PROC] LLM propuso categoría: '{llm_tipo_problema}', mapeada a: '{final_categoria_sugerida}'")
 
     datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
-    datos_internos_analisis['final_descripcion_sugerida'] = final_descripcion_sugerida
-    datos_internos_analisis['es_reclamo_sugerido'] = es_reclamo_valido_sugerido
+    datos_internos_analisis['final_descripcion_sugerida'] = llm_descripcion
+    datos_internos_analisis['es_reclamo_sugerido'] = True
 
     if analisis_db_record:
         analisis_db_record.estado_analisis = "completado"
         current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
-        if 'vision_api_raw' not in datos_internos_analisis and 'vision_api_raw' in current_datos_db:
-            datos_internos_analisis['vision_api_raw'] = current_datos_db['vision_api_raw']
-
         current_datos_db.update(datos_internos_analisis)
         analisis_db_record.datos_estructurados = current_datos_db
         db.session.commit()
 
     return {
-        'es_reclamo': es_reclamo_valido_sugerido,
-        'categoria_sugerida': final_categoria_sugerida if final_categoria_sugerida else None,
-        'descripcion_sugerida': final_descripcion_sugerida if len(final_descripcion_sugerida) >=10 else None,
+        'es_reclamo': True,
+        'categoria_sugerida': final_categoria_sugerida,
+        'descripcion_sugerida': llm_descripcion,
         'texto_ocr': extracted_ocr_text,
         'analisis_id': analisis_db_record.id if analisis_db_record else None,
         'error': None,
@@ -844,119 +832,5 @@ if __name__ == '__main__':
 
     if original_db_session:
         db.session = original_db_session
-    # Esto requiere una app Flask y un contexto de base de datos para funcionar completamente.
-    # Simulación básica:
-    logging.basicConfig(level=logging.INFO)
-    logger.info("Ejecutando pruebas locales de interpretacion_imagen_service.py...")
 
-    # Crear un objeto ArchivoAdjunto simulado (normalmente vendría de la DB)
-    class MockArchivoAdjunto:
-        def __init__(self, id, url, analisis_existente=None):
-            self.id = id
-            self.url = url
-            self._analisis_existente = analisis_existente # Para simular uno ya creado
-
-    class MockAnalisisArchivo:
-        def __init__(self, archivo_adjunto_id):
-            self.id = random.randint(1000,2000)
-            self.archivo_adjunto_id = archivo_adjunto_id
-            self.estado_analisis = "pendiente"
-            self.tipo_analisis = None
-            self.datos_estructurados = {}
-            self.texto_extraido = None
-            self.error_analisis = None
-
-    # Simular la base de datos y sesión
-    class MockDbSession:
-        def add(self, instance):
-            logger.info(f"[MOCK_DB] add: {instance}")
-        def commit(self):
-            logger.info("[MOCK_DB] commit")
-        def query(self, model): # Simular query
-            class MockQuery:
-                def filter_by(self, **kwargs):
-                    logger.info(f"[MOCK_DB] filter_by: {kwargs}")
-                    # Para la prueba, si se busca analisis para el archivo_id=1, devolver uno mock
-                    if model == AnalisisArchivo and kwargs.get('archivo_adjunto_id') == 1:
-                        # Devolver el análisis existente si se pasó al mock de ArchivoAdjunto
-                        if hasattr(archivo_prueba, '_analisis_existente') and archivo_prueba._analisis_existente:
-                            return self
-                        return self # Devolver la query para poder llamar a first()
-                    return self
-                def first(self):
-                    logger.info("[MOCK_DB] first()")
-                    # Devolver el análisis existente si se pasó al mock de ArchivoAdjunto
-                    if hasattr(archivo_prueba, '_analisis_existente') and archivo_prueba._analisis_existente:
-                        return archivo_prueba._analisis_existente
-                    return None # Simular que no existe un análisis previo
-            return MockQuery()
-
-    # Reemplazar db.session con el mock para la prueba
-    # Esto es una simplificación. En un test real usarías pytest y mocks de unittest.mock
-    original_db_session = None
-    if 'db' in globals() and hasattr(db, 'session'):
-        original_db_session = db.session
-
-    # Para que la prueba se ejecute, necesitamos simular 'db' si no está en el contexto global
-    # (por ejemplo, si se ejecuta este archivo directamente sin la app Flask completa)
-    class MockDBGlobal:
-        session = MockDbSession()
-
-    # Aquí asignamos el mock a db.session. Cuidado si 'db' no está definido.
-    # En un entorno de prueba real, esto se manejaría de forma más limpia.
-    # Por ahora, asumimos que 'db' podría no estar completamente inicializado si se corre standalone.
-    # Lo ideal sería tener un contexto de aplicación Flask para esto.
-
-    # URL de una imagen de prueba (ej: un semáforo, un bache)
-    # ¡DEBES CAMBIAR ESTA URL POR UNA IMAGEN REAL ACCESIBLE PÚBLICAMENTE PARA PROBAR!
-    # Ejemplo: imagen de un semáforo de Wikipedia Commons
-    # URL_IMAGEN_PRUEBA = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Traffic_lights_in_Poland_-_Cykl_A_-_Krak%C3%B3w_2.jpg/640px-Traffic_lights_in_Poland_-_Cykl_A_-_Krak%C3%B3w_2.jpg"
-    # URL_IMAGEN_PRUEBA_BACHE = "https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Pothole_in_need_of_repair.JPG/640px-Pothole_in_need_of_repair.JPG"
-    URL_IMAGEN_PRUEBA_NO_RECLAMO = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Eq_it-na_pizza-margherita_sep2005_sml.jpg/640px-Eq_it-na_pizza-margherita_sep2005_sml.jpg" # Pizza
-
-    if not hasattr(globals(), 'db'): # Si db no está en el scope global (ej. corriendo standalone)
-        import sys
-        # Crear un mock simple para db
-        db_module_mock = type(sys)('db_mock')
-        db_module_mock.session = MockDbSession()
-        db = db_module_mock # Asignar el mock a una variable 'db' global
-        # Esto es muy hacky, solo para que el script no falle al ejecutarse directamente.
-        # No es una buena práctica para tests reales.
-        logger.warning("Se creó un mock global 'db' para ejecución standalone. Esto no es para producción.")
-
-
-    archivo_prueba = MockArchivoAdjunto(id=1, url=URL_IMAGEN_PRUEBA_NO_RECLAMO)
-    # Para simular que ya existe un AnalisisArchivo:
-    # analisis_existente_mock = MockAnalisisArchivo(archivo_adjunto_id=1)
-    # archivo_prueba_con_analisis = MockArchivoAdjunto(id=1, url=URL_IMAGEN_PRUEBA_BACHE, analisis_existente=analisis_existente_mock)
-
-
-    logger.info(f"Probando con URL: {archivo_prueba.url}")
-
-    # Necesitamos que services.google_vision_service.VISION_CLIENT esté inicializado
-    # Si se ejecuta este archivo directamente, google_vision_service se importa y su inicialización se ejecuta.
-    # Asegurarse de que las credenciales de Vision estén configuradas.
-    if not vision.VISION_CLIENT: # Asumiendo que vision viene de google_vision_service
-         logger.error("El cliente de Google Vision no está inicializado en google_vision_service.py. La prueba fallará o usará mocks.")
-         # Podríamos mockear analyze_image_from_content aquí si es necesario para un test aislado.
-
-    # La función interpretar_imagen_reclamo ya no existe.
-    # Se podría llamar a interpretar_imagen_para_chat con tipo_interpretacion="reclamo_municipal".
-    # Ejemplo:
-    # resultado_interpretacion = interpretar_imagen_para_chat(
-    #    archivo_adjunto=archivo_prueba,
-    #    tipo_interpretacion="reclamo_municipal"
-    # )
-    # Por ahora, comentaremos la llamada original para evitar errores.
-    # resultado_interpretacion = interpretar_imagen_reclamo(archivo_prueba) # Esta función no existe
-    resultado_interpretacion = {"mensaje": "Llamada a interpretar_imagen_reclamo comentada ya que la función no existe. Adaptar a interpretar_imagen_para_chat si es necesario para pruebas."}
-
-
-    logger.info("\n--- Resultado de la Interpretación ---")
-    import json as json_parser # para evitar conflicto con el modulo json de credenciales
-    logger.info(json_parser.dumps(resultado_interpretacion, indent=2, ensure_ascii=False))
-    logger.info("--- Fin de la Prueba Local ---")
-
-    # Restaurar db.session si lo habíamos mockeado y existía antes
-    if original_db_session:
-        db.session = original_db_session
+[end of services/interpretacion_imagen_service.py]
