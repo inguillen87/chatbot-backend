@@ -6,10 +6,12 @@ import services.notifications as notifications
 
 class TestSendWhatsappTemplate(unittest.TestCase):
     @patch('services.notifications.Client')
+    @patch.dict(os.environ, {
+        'TWILIO_ACCOUNT_SID': 'sid',
+        'TWILIO_AUTH_TOKEN': 'token',
+        'TWILIO_WHATSAPP_NUMBER': 'whatsapp:+123456789'
+    })
     def test_enviar_bienvenida_whatsapp(self, mock_client_cls):
-        notifications.TWILIO_ACCOUNT_SID = 'sid'
-        notifications.TWILIO_AUTH_TOKEN = 'token'
-        notifications.TWILIO_WHATSAPP_NUMBER = 'whatsapp:+123456789'
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_message = MagicMock()
@@ -20,7 +22,7 @@ class TestSendWhatsappTemplate(unittest.TestCase):
         mock_client.messages.create.assert_called_once()
         args, kwargs = mock_client.messages.create.call_args
         assert kwargs['to'] == 'whatsapp:+5491111111111'
-        assert kwargs['from_'] == notifications.TWILIO_WHATSAPP_NUMBER
+        assert kwargs['from_'] == 'whatsapp:+123456789'
         assert 'template' in kwargs
 
 if __name__ == '__main__':

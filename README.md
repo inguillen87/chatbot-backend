@@ -133,6 +133,14 @@ Si quieres rotar frases en el globito del chat puedes definir
 Consulta `docs/attention-bubble.md` para más detalles sobre el endpoint
 `/widget/attention` y cómo configurarlo.
 
+Para integrar WhatsApp Business con Twilio debes definir:
+
+- `TWILIO_ACCOUNT_SID` y `TWILIO_AUTH_TOKEN`.
+- `TWILIO_PHONE_NUMBER` si también envías SMS.
+- `TWILIO_WHATSAPP_NUMBER` con tu línea oficial en formato `whatsapp:+123456789`.
+- `TWILIO_WHATSAPP_CONTENT_SID` para plantillas preaprobadas.
+- `TWILIO_WELCOME_TEMPLATE` con el nombre exacto de la plantilla de bienvenida.
+
 ## Uso correcto del rubro
 
 El archivo `services/logic.py` define el conjunto `RUBROS_PUBLICOS` con los rubros que se tratan como entes públicos, por ejemplo `"municipio"` y `"municipios"`.

@@ -5,24 +5,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-TWILIO_WHATSAPP_NUMBER = os.environ.get(
-    "TWILIO_WHATSAPP_NUMBER", "whatsapp:+17432643718"
-)
-TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
-TWILIO_WELCOME_TEMPLATE = os.environ.get("TWILIO_WELCOME_TEMPLATE", "bienvenida")
+
+def _get_twilio_client():
+    sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    token = os.environ.get("TWILIO_AUTH_TOKEN")
+    if sid and token:
+        return Client(sid, token)
+    return None
 
 
 def enviar_notificacion_sms(numero_destino: str, mensaje: str):
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
+    phone = os.environ.get("TWILIO_PHONE_NUMBER")
+    client = _get_twilio_client()
+    if not client or not phone:
         print("[NOTIFICACION SMS] Faltan credenciales de Twilio SMS.")
         return
     try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         message = client.messages.create(
-            body=mensaje, from_=TWILIO_PHONE_NUMBER, to=numero_destino
+            body=mensaje, from_=phone, to=numero_destino
         )
         print(f"[NOTIFICACION SMS] SMS enviado SID: {message.sid}")
     except Exception as e:
@@ -32,26 +32,21 @@ def enviar_notificacion_sms(numero_destino: str, mensaje: str):
 def enviar_notificacion_whatsapp_con_plantilla(
     numero_destino: str, nombre: str, nro_ticket: str, categoria: str
 ):
-    if not all(
-        [
-            TWILIO_ACCOUNT_SID,
-            TWILIO_AUTH_TOKEN,
-            TWILIO_WHATSAPP_NUMBER,
-            TWILIO_WHATSAPP_CONTENT_SID,
-        ]
-    ):
+    client = _get_twilio_client()
+    whatsapp_number = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+17432643718")
+    content_sid = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
+    if not all([client, whatsapp_number, content_sid]):
         logger.error(
             "[NOTIFICACION WHATSAPP] Faltan credenciales de Twilio WhatsApp (SID/Token/Number/Content_SID)."
         )
         return
     destinatario_whatsapp = f"whatsapp:{numero_destino}"
     try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         variables_plantilla = {"1": nombre, "2": f"M-{nro_ticket}", "3": categoria}
         message = client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
+            from_=whatsapp_number,
             to=destinatario_whatsapp,
-            content_sid=TWILIO_WHATSAPP_CONTENT_SID,
+            content_sid=content_sid,
             content_variables=json.dumps(variables_plantilla),
         )
         logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
@@ -63,13 +58,16 @@ def enviar_notificacion_whatsapp_con_plantilla(
 
 def enviar_bienvenida_whatsapp(numero_destino: str, nombre: str):
     """Envía el mensaje de bienvenida con botones usando una plantilla de WhatsApp."""
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
+    client = _get_twilio_client()
+    whatsapp_number = os.environ.get("TWILIO_WHATSAPP_NUMBER")
+    template_name = os.environ.get("TWILIO_WELCOME_TEMPLATE", "bienvenida")
+    if not client or not whatsapp_number:
         logger.error("[WHATSAPP] Faltan credenciales de Twilio para bienvenida.")
         return
 
     destinatario = f"whatsapp:{numero_destino}"
     template_payload = {
-        "name": TWILIO_WELCOME_TEMPLATE,
+        "name": template_name,
         "language": {"code": "es"},
         "components": [
             {"type": "body", "parameters": [{"type": "text", "text": nombre}]}
@@ -77,9 +75,8 @@ def enviar_bienvenida_whatsapp(numero_destino: str, nombre: str):
     }
 
     try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         message = client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
+            from_=whatsapp_number,
             to=destinatario,
             template=template_payload,
         )
