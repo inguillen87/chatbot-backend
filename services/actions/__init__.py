@@ -25,6 +25,7 @@ ACTION_HANDLER_MAP = {
     "ejecutar_herramienta": "services.actions.municipio_actions.EjecutarHerramientaActionHandler",
     "activar_panico": "services.actions.municipio_actions.ActivarPanicoActionHandler",
     "corregir_datos": "services.actions.municipio_actions.CorregirDatosReclamoActionHandler",
+    "consultar_comercios": "services.actions.information_actions.ConsultarComerciosActionHandler",
 
     # Acciones de PYME (Generales)
     "consultar_producto_pyme": "services.actions.pyme_actions.ConsultarProductoActionHandler",
