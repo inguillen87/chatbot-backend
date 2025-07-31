@@ -143,5 +143,43 @@ class TestSimulatedClaimFlow(unittest.TestCase):
             self.assertEqual(ticket_data['telefono_vecino'], '+5492611234567')
             self.assertEqual(ticket_data['email_vecino'], 'juan.perez@example.com')
 
+    @patch('routes.ticket.db.session.get')
+    def test_get_tickets_del_usuario_logic(self, mock_get):
+        # Mock the current_user
+        current_user = MagicMock()
+        current_user.tipo_chat = "municipio"
+        current_user.municipio_id = 1
+        current_user.rol = "admin"
+
+        # Mock the query
+        mock_query = MagicMock()
+        mock_ticket = MagicMock()
+        mock_ticket.id = 76
+        mock_ticket.nro_ticket = "866333"
+        mock_ticket.asunto = "Reclamo (LLM): Alumbrado Público"
+        mock_ticket.estado = "nuevo"
+        mock_ticket.fecha = "2025-07-30T22:40:08.214704"
+        mock_ticket.categoria = "Alumbrado Público"
+        mock_ticket.direccion = "don bosco 55 junin mendoza"
+        mock_ticket.latitud = None
+        mock_ticket.longitud = None
+        mock_query.all.return_value = [mock_ticket]
+        mock_query.filter.return_value = mock_query
+        mock_query.order_by.return_value = mock_query
+        mock_query.offset.return_value = mock_query
+        mock_query.limit.return_value = mock_query
+
+        with patch('routes.ticket.MunicipioTicket.query') as mock_ticket_query:
+            mock_ticket_query.filter.return_value = mock_query
+            from routes.ticket import get_tickets_del_usuario_logic
+            from app import create_app
+            app = create_app()
+            with app.test_request_context('/tickets'):
+                response = get_tickets_del_usuario_logic(current_user)
+                self.assertEqual(response.status_code, 200)
+                data = json.loads(response.get_data(as_text=True))
+                self.assertEqual(len(data['tickets']), 1)
+                self.assertEqual(data['tickets'][0]['id'], 76)
+
 if __name__ == '__main__':
     unittest.main()
