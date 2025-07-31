@@ -631,6 +631,22 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             datos_actuales.update(nuevos_datos)
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
+            # Recopilación proactiva de datos de contacto
+            campos_faltantes = []
+            if not datos_actuales.get("nombre_usuario_detectado"):
+                campos_faltantes.append("nombre")
+            if not datos_actuales.get("telefono_detectado"):
+                campos_faltantes.append("teléfono")
+            if not datos_actuales.get("email_detectado"):
+                campos_faltantes.append("email")
+
+            if campos_faltantes:
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                info_a_pedir = f"Para continuar con el reclamo, por favor decime tu {' y '.join(campos_faltantes)}."
+                contexto_municipio_actual["esperando_info_llm_reclamo"] = campos_faltantes
+                return {"message_body": info_a_pedir, "options_list": [], "message_type": "text", "fuente": "llm_pide_info_contacto"}, contexto_municipio_actual
+
+
             if not pedir_info_llm:
                 respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
                 if respuesta_accion and respuesta_accion.get("ticket_id"):
@@ -761,382 +777,75 @@ def responder_municipio(
     **kwargs
 ):
     logger_actual = current_app.logger if has_app_context() else logger
-    logger_actual.info(
-        f"[RESPONDER_MUNICIPIO_START] =================================================="
-    )
-    logger_actual.info(
-        f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
-    )
-    
-    USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
-    respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
+    logger_actual.info(f"--- Inicia responder_municipio para: {pregunta_original} ---")
 
-    received_payload = {}
-    pregunta_str = ""
-    if isinstance(pregunta_original, dict):
-        received_payload = pregunta_original
-        pregunta_str = received_payload.get("pregunta", "")
-    elif isinstance(pregunta_original, str):
-        pregunta_str = pregunta_original
-        received_payload["pregunta"] = pregunta_original
-    else:
-        logger_actual.warning(
-            f"Tipo inesperado para pregunta_original: {type(pregunta_original)}. Contenido: {pregunta_original}"
-        )
-        pregunta_str = ""
-        received_payload["pregunta"] = ""
-    if kwargs:
-        for key, value in kwargs.items():
-            received_payload[key] = value
+    # 1. Cargar o inicializar contexto
+    if not chat_db_context.context_data:
+        chat_db_context.context_data = {}
 
-    contexto_municipio_data_from_db = {}
-    chat_db_context_live_data = {}
+    contexto_municipio_actual = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
 
-    if chat_db_context:
-        if chat_db_context.context_data is None:
-            chat_db_context.context_data = {}
-        chat_db_context_live_data = chat_db_context.context_data # Reference to the live dict
-        contexto_municipio_data_from_db = chat_db_context_live_data.get(
-            CONTEXTO_MUNICIPIO, {}
-        )
-    else:
-        logger_actual.warning("[RESPONDER_MUNICIPIO] chat_db_context is None. Municipio context will be empty for this request.")
-        # contexto_municipio_data_from_db remains {}
-        # chat_db_context_live_data remains {}
+    # 2. Determinar si es una nueva conversación (contexto vacío)
+    if not contexto_municipio_actual:
+        logger_actual.info("Contexto de municipio vacío. Iniciando con saludo.")
+        handler = GreetingHandler({})
+        respuesta = handler.handle({})
+        # Guardar el contexto inicial
+        chat_db_context.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "GREETING"}
+        flag_modified(chat_db_context, "context_data")
+        db.session.commit()
+        return respuesta
 
-    logger_actual.info(
-        f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}"
-    )
+    # 3. Orquestación principal (lógica de handlers basada en estado, etc.)
+    # Por ahora, se mantiene la llamada directa a handle_llm_interaction para el resto de los casos
 
-    # Log the current state of the conversation
-    estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
-    logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {estado_conversacion}")
-
-    # Directly use the dictionary from the live context data.
-    # This ensures that modifications are made to the original object.
-    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
-
-    # Initialize the context if it's empty
-    # This dictionary is passed to handlers and used throughout this function.
+    # Construir el contexto para los handlers
     context = {
-        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # The specific state for municipio flow
-        "user_obj": owner_user, # The User object of the bot instance (e.g., the Municipality)
-        "viewer_user_obj": viewer_user, # The User object of the end-user (vecino/ciudadano)
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+        "user_obj": owner_user,
+        "viewer_user_obj": viewer_user,
         "cliente_id": getattr(viewer_user, "id", None),
         "anon_id": anon_id,
         "rubro_obj": rubro_obj,
         "channel": channel,
-        "municipio_config_actual": CONFIG_MUNICIPIO, # Use the correct global constant here
+        "municipio_config_actual": CONFIG_MUNICIPIO,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context_live_data, # Use the safely accessed live data dict
-        # Fields to be populated by payload/kwargs or later logic:
-        "intencion": kwargs.get("intencion"), # Initial intent from Orchestrator/kwargs
-        "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
-        "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
-        "es_ubicacion": received_payload.get("es_ubicacion", False),
-        "es_archivo": received_payload.get("es_archivo", False),
-        "action": received_payload.get("action"), # From button clicks, etc.
-        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
-        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "chat_db_context_data": chat_db_context.context_data,
+        "pregunta_actual_usuario": pregunta_original,
     }
-    if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
-        logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
 
-
-    logger_actual.info(
-        f"[RESPONDER_MUNICIPIO_START_CONTEXT_INIT] Context inicializado. UserMunicipio: {context['user_obj'].id if context['user_obj'] else 'N/A'}, "
-        f"ViewerCiudadano: {context['cliente_id'] or context['anon_id']}"
+    respuesta, contexto_actualizado = handle_llm_interaction(
+        pregunta_original,
+        context,
+        viewer_user,
+        owner_user,
+        chat_db_context,
+        contexto_municipio_actual,
     )
-    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto DB para {CONTEXTO_MUNICIPIO}: {contexto_municipio_data_from_db}")
 
-
-    # --- Handle post-login resumption (modifies context[CONTEXTO_MUNICIPIO] and context["intencion"]) ---
-    # Ensure to check within context["chat_db_context_data"] which is the live dict from the ORM object
-    if viewer_user and context["chat_db_context_data"].get("just_logged_in_flag"):
-        logger_actual.info(f"User {viewer_user.id} identified as just logged in.")
-        chat_db_context.context_data.pop("just_logged_in_flag") # Consume the flag
-
-        accion_pendiente = contexto_municipio_actual.pop("accion_pendiente_post_login", None)
-        estado_pre_login_str = contexto_municipio_actual.pop("estado_conversacion_pre_login", None)
-
-        if accion_pendiente:
-            logger_actual.info(f"Retomando acción pendiente post-login: {accion_pendiente}, estado pre-login: {estado_pre_login_str}")
-            kwargs["intencion"] = accion_pendiente # Set intencion for current processing context
-            if estado_pre_login_str:
-                # Restore state directly into contexto_municipio_actual. It will be parsed to Enum later.
-                contexto_municipio_actual["estado_conversacion"] = estado_pre_login_str
-
-        # If the user's input is a generic acknowledgement of login, neutralize it
-        # so it doesn't interfere with the resumed flow.
-        generic_login_acks = ["ok", "listo", "ya está", "ya me loguee", "estoy logueado", "logged in", "continuar", "dale", "bueno"]
-        if pregunta_str.strip().lower() in generic_login_acks:
-            logger_actual.info(f"Input '{pregunta_str}' es un ack genérico post-login. Neutralizándolo.")
-            pregunta_str = "" # Neutralize for current processing
-            if "pregunta" in received_payload: # Ensure payload also reflects this
-                received_payload["pregunta"] = ""
-
-    # --- End Handle post-login resumption ---
-
-    if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
-        if "si" in pregunta_str.lower():
-            contexto_municipio_actual["ubicacion_confirmada"] = True
-            contexto_municipio_actual["estado_conversacion"] = None
-        else:
-            contexto_municipio_actual["ubicacion_confirmada"] = False
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-            return {
-                "message_body": "Por favor, decime la nueva ubicación.",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "pedir_nueva_ubicacion"
-            }, contexto_municipio_actual
-
-    if USAR_LLM_PARA_RECLAMOS:
-        logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
-        respuesta_manejada_por_llm, _ = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
-        logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
-        if respuesta_manejada_por_llm:
-            return respuesta_manejada_por_llm
-
-
-    # --- Construcción del Contexto Global para Orchestrator y Handlers ---
-    # Este es el 'global_context' que recibirá el ChatOrchestrator
-    # y que luego se pasará a cada ActionHandler.
-
-    # Cargar config específica del municipio (si existe)
-    final_municipio_config = CONFIG_MUNICIPIO # Default global
-    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
-        owner_user_municipio_id_str = str(owner_user.municipio_id)
-        loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
-        if loaded_specific_config:
-            final_municipio_config = loaded_specific_config
-
-    if location:
-        contexto_municipio_actual["ubicacion_usuario"] = location
-
-    # Construir 'usuario_info_for_gemini' para la llamada a Gemini
-    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-    usuario_info_for_gemini = {
-        "nombre": getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None) or datos_reclamo.get("nombre_usuario_detectado") or "Vecino/a",
-        "tipo_entidad": "municipio",
-        "municipio_config": { # Pasar datos relevantes de la config del municipio al LLM
-            "nombre_municipio": final_municipio_config.get("nombre_display", MUNICIPIO_ID.title()),
-            "servicios_principales": final_municipio_config.get("servicios_principales_chatbot", ["reclamos", "trámites", "consultas generales"])
-        },
-        "contacto": {
-            "telefono": datos_reclamo.get("telefono_detectado"),
-            "email": datos_reclamo.get("email_detectado")
-        }
-    }
-    # Añadir ubicación si se conoce (del perfil del usuario o del contexto del reclamo)
-    loc_usuario_texto = getattr(viewer_user, "direccion", None) or contexto_municipio_actual.get("direccion_reclamo")
-    if loc_usuario_texto:
-        usuario_info_for_gemini["ubicacion_conocida"] = loc_usuario_texto
-        # Ask for confirmation
-        if not contexto_municipio_actual.get("ubicacion_confirmada"):
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
-            return {
-                "message_body": f"Veo que tu ubicación registrada es {loc_usuario_texto}. ¿Querés que busque cerca de ahí?",
-                "options_list": [{"texto": "Sí"}, {"texto": "No, usar otra ubicación"}],
-                "message_type": "interactive_buttons",
-                "fuente": "confirmacion_ubicacion"
-            }, contexto_municipio_actual
-
-    # --- LLAMADA PRINCIPAL A GEMINI ---
-    historial_chat_para_gemini = chat_db_context_live_data.get("mensajes_previos_gemini_formato", [])
-
-    # La pregunta_str ya tiene el texto del usuario.
-    # Si hay una imagen, el prompt de Gemini debe ser instruido para considerarla.
-    # JULES_SYSTEM_PROMPT ya tiene instrucciones generales.
-    # Aquí podríamos añadir un prefijo al mensaje si hay una imagen:
-    mensaje_para_gemini = pregunta_str
-    if context.get("es_foto") and context.get("foto_url"):
-        # El LLM no puede ver la URL directamente. El JULES_SYSTEM_PROMPT debe guiarlo
-        # para que, si el usuario menciona una foto o el sistema indica que hay una,
-        # actúe en consecuencia (ej. pidiendo descripción o asumiendo que es para un reclamo).
-        # Aquí, informamos al LLM que hay una foto adjunta.
-        mensaje_para_gemini = f"[Sistema: El usuario ha adjuntado una imagen. URL para referencia interna: {context.get('foto_url')}] {pregunta_str}".strip()
-        # El análisis de imagen (Vision API) se haría en un ActionHandler si el LLM decide que es necesario.
-        # O, si la política es analizar siempre, se haría antes y los resultados se pasarían a Gemini.
-        # Por ahora, el flujo es: Gemini decide -> Orchestrator -> ActionHandler (que podría usar Vision).
-
-    try:
-        llm_response_structured = llamar_gemini(
-            mensaje_usuario=mensaje_para_gemini,
-            usuario=usuario_info_for_gemini,
-            historial=historial_chat_para_gemini
-        )
-    except Exception as e:
-        logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
-        # Fallback a una respuesta de error segura si la llamada a LLM falla
-        llm_response_structured = {
-            "respuesta_usuario": "Lo siento, estoy teniendo problemas para conectarme con el asistente inteligente. Un agente humano revisará tu consulta.",
-            "accion_backend": "derivar_humano",
-            "datos_estructura": {"target": "municipio", "error_llm": True, "detalle_error": str(e)},
-            "pedir_info": None,
-            "botones": []
-        }
-    if llm_response_structured.get("accion_backend") == "error":
+    if respuesta is None and contexto_actualizado is None:
+        # Error en LLM, fallback a una respuesta genérica
         return {
-                "message_body": "Hubo un problema al procesar tu solicitud (acción desconocida).",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "error"
-            }
+            "message_body": "Lo siento, estoy teniendo problemas para procesar tu solicitud. Por favor, intenta de nuevo más tarde.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "error_fallback"
+        }
 
-    # Actualizar el historial de chat_db_context con este turno (pregunta y respuesta_usuario del LLM)
-    # Esto es para que la próxima llamada a Gemini tenga este contexto.
-    # (Asegurarse que el formato sea el esperado por llamar_gemini)
-    if "mensajes_previos_gemini_formato" not in chat_db_context_live_data:
-        chat_db_context_live_data["mensajes_previos_gemini_formato"] = []
-    chat_db_context_live_data["mensajes_previos_gemini_formato"].append({"role": "user", "parts": [{"text": mensaje_para_gemini}]})
-    # La respuesta del modelo se añadirá después de que el ActionHandler la confirme/modifique.
+    # 4. Guardar contexto actualizado
+    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_actualizado
+    flag_modified(chat_db_context, "context_data")
+    db.session.commit()
 
-    # --- Preparar CONTEXTO GLOBAL para ChatOrchestrator y Action Handlers ---
-    # Este es el 'global_context' que se pasa.
-    # `contexto_municipio_actual` es el sub-diccionario específico del flujo de municipio.
+    # 5. Enviar respuesta
+    if channel == "whatsapp":
+        from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+        enviar_mensaje_whatsapp_con_fallback(
+            numero_destino=viewer_user.telefono if viewer_user else anon_id,
+            cuerpo=respuesta["message_body"],
+            botones=[b["texto"] for b in respuesta.get("options_list", [])] if respuesta.get("message_type") == "interactive_buttons" else None,
+            lista={"titulo": "Opciones", "secciones": [{"title": "Opciones", "rows": [{"id": f"op_{i}", "title": b["texto"]} for i, b in enumerate(respuesta.get("options_list", []))]}]} if respuesta.get("message_type") == "interactive_list" else None
+        )
 
-    global_context_for_orchestrator = {
-        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # El estado actual del flujo municipal
-        "user_obj": owner_user, # El User object del Bot (Municipio)
-        "viewer_user_obj": viewer_user, # El User object del ciudadano (puede ser None)
-        "cliente_id": getattr(viewer_user, "id", None),
-        "anon_id": anon_id,
-        "rubro_obj": rubro_obj, # Objeto Rubro del Bot
-        "channel": channel,
-        "municipio_config_actual": final_municipio_config, # Config específica del municipio
-        "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context_live_data, # El dict vivo de context_data
-        "empresa_token": getattr(owner_user, "token", None),
-
-        # Datos del turno actual que pueden ser útiles para los handlers:
-        "pregunta_actual_usuario": pregunta_str, # Texto original del usuario para este turno
-        "ubicacion_actual_payload": received_payload.get("ubicacion_usuario"), # Si el usuario compartió GPS en este turno
-        "es_foto_actual_payload": context.get("es_foto", False), # Si este turno incluyó una foto
-        "foto_url_actual_payload": context.get("foto_url"),
-        "archivo_id_para_asociar": context.get("archivo_id_para_asociar"), # Si es un archivo web con ID
-        "action_button_payload": received_payload.get("action"), # Si fue un click de botón
-        "target_entity_type": "municipio" # Para que DerivarHumanoAction sepa a qué pool notificar
-    }
-
-    # --- EJECUTAR ACCIÓN VIA ChatOrchestrator ---
-    from .chat_orchestrator import ChatOrchestrator # Importar aquí para evitar problemas de importación circular a nivel de módulo
-
-    if llm_response_structured.get("accion_backend") == "saludar":
-        handler = GreetingHandler(global_context_for_orchestrator)
-        action_handler_result = handler.handle(received_payload)
-    else:
-        orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
-        action_handler_result = orchestrator.execute_action(llm_response_structured)
-
-    # Ensure we always have a dictionary to avoid AttributeError when handlers return None
-    if action_handler_result is None:
-        logger.warning("Action handler returned None; defaulting to empty result dictionary")
-        action_handler_result = {}
-
-    # --- PROCESAR RESULTADO DEL ACTION HANDLER ---
-    respuesta_final_texto = action_handler_result.get("message_to_user")
-    if not respuesta_final_texto: # Si el handler no dio un mensaje, usar el del LLM
-        respuesta_final_texto = llm_response_structured.get("respuesta_usuario", "No entendí, ¿podrías repetirlo?")
-
-    # Tomar botones del LLM original, a menos que el handler los haya modificado (no implementado aún)
-    opciones_finales = llm_response_structured.get("botones", [])
-
-    # Determinar 'pedir_info' final: priorizar el del action_handler si existe, sino el del LLM
-    pedir_info_final = action_handler_result.get("pedir_info") or llm_response_structured.get("pedir_info")
-
-    # --- Actualizar estado de conversación en contexto_municipio_actual ---
-    # (Esta sección se ha movido y mejorado)
-    estado_conversacion_actual_str = contexto_municipio_actual.get("estado_conversacion")
-
-    # Si el LLM pide info, la guardamos para el siguiente turno.
-    if pedir_info_final:
-        contexto_municipio_actual["esperando_info_llm"] = pedir_info_final
-        # Mapear 'pedir_info' a un estado de conversación más granular si es posible
-        pedir_info_norm = normalizar_str(str(pedir_info_final))
-        estado_objetivo = None
-        for key, state in PEDIR_INFO_TO_STATE.items():
-            if key in pedir_info_norm:
-                estado_objetivo = state
-                break
-        if estado_objetivo:
-            contexto_municipio_actual["estado_conversacion"] = estado_objetivo.name
-            logger_actual.info(f"Estado de conversación actualizado a: {estado_objetivo.name} por 'pedir_info'")
-        else:
-            # Si no hay un estado específico, pero se pide info, nos ponemos en un estado de espera genérico.
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-            logger_actual.info(f"Estado de conversación actualizado a ESPERANDO_INFO_RECLAMO_LLM por 'pedir_info' no mapeado.")
-
-    # Si el estado actual es de espera de datos, y el LLM no está pidiendo más,
-    # significa que los datos se proporcionaron. Limpiamos el estado de espera.
-    elif estado_conversacion_actual_str and estado_conversacion_actual_str.startswith("ESPERANDO_") and not pedir_info_final:
-         # Si la acción fue exitosa, limpiamos el estado.
-        if action_handler_result.get("success"):
-            logger_actual.info(f"Acción exitosa sin 'pedir_info' adicional. Limpiando estado de conversación '{estado_conversacion_actual_str}'.")
-            contexto_municipio_actual.pop("estado_conversacion", None)
-            contexto_municipio_actual.pop("esperando_info_llm", None)
-
-    # --- Guardar el historial de chat_db_context con la respuesta final del CHATBOT ---
-    chat_db_context_live_data["mensajes_previos_gemini_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})
-    # Limitar historial si es necesario
-    if len(chat_db_context_live_data["mensajes_previos_gemini_formato"]) > 20: # Ejemplo de límite
-        chat_db_context_live_data["mensajes_previos_gemini_formato"] = chat_db_context_live_data["mensajes_previos_gemini_formato"][-20:]
-
-
-    # --- Serializar y guardar contexto final ---
-    # (La lógica de serialización y guardado de contexto_municipio_actual y flag_modified permanece igual que al final del original)
-    # ... (código de serialización y guardado) ...
-
-    # ---- INICIO: Lógica de sugerencia de registro PROACTIVA (adaptada) ----
-    # Esta lógica ahora se ejecuta DESPUÉS de la lógica principal del handler y ANTES de formatear la respuesta final,
-    # solo si la respuesta principal no fue ya una sugerencia de registro.
-    # Y solo si el usuario es anónimo.
-
-    respuesta_principal_ya_generada = True # Asumimos que respuesta_final_texto ya tiene algo
-
-    # ---- FIN: Lógica de sugerencia de registro PROACTIVA ----
-
-
-    # --- Serializar y guardar contexto final ---
-    estado_final_para_guardar_str = contexto_municipio_actual.get("estado_conversacion") # Debería ser string o None
-    if isinstance(estado_final_para_guardar_str, ConversationState): # Por si acaso no se convirtió a string
-        logger_actual.warning(f"Estado {estado_final_para_guardar_str} era Enum antes de serializar. Convirtiendo.")
-        contexto_municipio_actual["estado_conversacion"] = estado_final_para_guardar_str.name
-    elif estado_final_para_guardar_str is None:
-        contexto_municipio_actual.pop("estado_conversacion", None)
-
-    if chat_db_context:
-        flag_modified(chat_db_context, "context_data")
-
-    # --- Formatear respuesta final ---
-    message_type_final = "text"
-    if opciones_finales:
-        num_options = len(opciones_finales)
-        if 0 < num_options <= 3: message_type_final = "interactive_buttons"
-        elif num_options > 3: message_type_final = "interactive_list"
-
-    final_response_dict = {
-        "message_body": respuesta_final_texto,
-        "options_list": opciones_finales,
-        "message_type": message_type_final,
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio_serializado_para_db},
-        "ticket_id": action_handler_result.get("data", {}).get("ticket_id") or action_handler_result.get("data", {}).get("sugerencia_id"), # Tomar de data si existe
-        "fuente": action_handler_result.get("fuente") or llm_response_structured.get("accion_backend", "municipio_general_v4"),
-        # Otros campos como media_url, location_data, adjuntos se manejarían si son parte de la respuesta
-    }
-
-    # Log de conversación para anónimos
-    if anon_id and not viewer_user:
-        try:
-            db.session.add(Conversacion(
-                session_id=kwargs.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
-                respuesta=final_response_dict["message_body"], fuente=final_response_dict["fuente"],
-                rubro=getattr(rubro_obj, "nombre", "municipio_general"), user_id=None,
-            ))
-            db.session.commit()
-        except Exception as e_conv_muni_final:
-            logger_actual.error(f"Error guardando Conversacion final (municipio): {e_conv_muni_final}", exc_info=True)
-            db.session.rollback()
-
-    logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
-    return final_response_dict
+    logger_actual.info(f"--- Fin responder_municipio. Respuesta: {respuesta.get('message_body', 'N/A')[:100]}... ---")
+    return respuesta
