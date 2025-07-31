@@ -332,6 +332,24 @@ JSON:
 - En `respuesta_usuario`, preguntá específicamente por el dato correcto o qué desea cambiar. Ej: "Entendido. ¿Cuál sería la dirección correcta?" o "¿Qué dato te gustaría modificar del reclamo?".
 - Si el usuario provee directamente la corrección (Ej: "La calle es Rivadavia, no San Martín"), usá `accion_backend: "corregir_datos"` como en el Ejemplo 5.
 
+**Ejemplo 13: Consulta de Información (Supermercados)**
+*Usuario:* "información sobre supermercados cerca"
+*Tu JSON de salida:*
+{
+  "respuesta_usuario": "¡Claro! Puedo buscar supermercados por vos. Para empezar, ¿qué tipo de comercio o rubro te interesa? Veo que estás en Junín, puedo buscar cerca de tu zona.",
+  "accion_backend": "consultar_comercios",
+  "datos_estructura": {
+    "target": "municipio",
+    "categoria": "Supermercados"
+  },
+  "pedir_info": null,
+  "botones": [
+    {"texto": "Supermercados", "id_accion": "consultar_supermercados"},
+    {"texto": "Farmacias", "id_accion": "consultar_farmacias"},
+    {"texto": "Restaurantes", "id_accion": "consultar_restaurantes"}
+  ]
+}
+
 **Ejemplo 12: Consulta de Trámite (Licencia de Conducir)**
 *Usuario:* "¿Qué necesito para sacar la licencia de conducir por primera vez?"
 *Tu JSON de salida:*

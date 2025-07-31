@@ -59,6 +59,19 @@ def enviar_notificacion_whatsapp_con_plantilla(
         logger.error(
             f"[NOTIFICACION WHATSAPP] Error al enviar plantilla: {e}", exc_info=True
         )
+        try:
+            logger.info(f"Intentando enviar mensaje de texto plano como fallback a {destinatario_whatsapp}")
+            fallback_message = f"Hola {nombre}, tu reclamo por '{categoria}' ha sido registrado con el número de ticket M-{nro_ticket}."
+            client.messages.create(
+                from_=TWILIO_WHATSAPP_NUMBER,
+                to=destinatario_whatsapp,
+                body=fallback_message,
+            )
+            logger.info(f"[NOTIFICACION WHATSAPP] Mensaje de fallback enviado con éxito.")
+        except Exception as e_fallback:
+            logger.error(
+                f"[NOTIFICACION WHATSAPP] Error al enviar mensaje de fallback: {e_fallback}", exc_info=True
+            )
 
 
 def enviar_bienvenida_whatsapp(numero_destino: str, nombre: str):
