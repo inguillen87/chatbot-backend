@@ -400,10 +400,11 @@ class GreetingHandler(BaseMunicipioHandler):
                 {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
                 {"id": "consultar_estado_ticket", "texto": "Consultar estado de un trámite"},
                 {"id": "info_tramite", "texto": "Consultar un trámite"},
+                {"id": "consultar_puntos_de_interes", "texto": "Consultas Generales"},
                 {"id": "info_contacto", "texto": "Información de contacto"}
             ],
             "message_type": "interactive_buttons",
-            "fuente": "greeting_handler_v3"
+            "fuente": "greeting_handler_v4"
         }
 
 def safe_llm_call(prompt, preamble, fallback=None):
