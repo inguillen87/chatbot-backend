@@ -73,7 +73,7 @@ class TestInputProcessor(unittest.TestCase):
 
     def test_process_whatsapp_input_text(self):
         mock_whatsapp_payload = {
-            "From": "whatsapp:+5491112345678", "To": "whatsapp:+14155238886",
+            "From": "whatsapp:+5491112345678", "To": "whatsapp:+17432643718",
             "Body": "Pedido de prueba" # 'Body' is used as 'pregunta' by WhatsApp handler typically
         }
         # Simulate how the payload might look after initial transformation by a webhook handler
@@ -92,7 +92,7 @@ class TestInputProcessor(unittest.TestCase):
         self.mock_stt_service.transcribe_audio_url.return_value = "Audio transcrito: hola que tal"
 
         mock_whatsapp_payload = {
-            "From": "whatsapp:+549112", "To": "whatsapp:+14155238886", "Body": "Audio adjunto.", # User might type this
+            "From": "whatsapp:+549112", "To": "whatsapp:+17432643718", "Body": "Audio adjunto.", # User might type this
             "NumMedia": "1", "MediaUrl0": "http://example.com/voice.ogg", "MediaContentType0": "audio/ogg",
         }
         transformed_payload = {"pregunta": mock_whatsapp_payload["Body"], **mock_whatsapp_payload}
@@ -108,7 +108,7 @@ class TestInputProcessor(unittest.TestCase):
 
     def test_process_whatsapp_input_location(self):
         mock_whatsapp_payload = {
-            "From": "whatsapp:+549113", "To": "whatsapp:+14155238886", "Body": "",
+            "From": "whatsapp:+549113", "To": "whatsapp:+17432643718", "Body": "",
             "Latitude": "-34.567", "Longitude": "-58.789",
         }
         transformed_payload = {"pregunta": "", "ubicacion_usuario": {"lat": -34.567, "lon": -58.789}, **mock_whatsapp_payload}
@@ -124,7 +124,7 @@ class TestInputProcessor(unittest.TestCase):
     def test_process_whatsapp_input_button_payload(self):
         # WhatsApp button clicks often send 'Body' as the button text and 'ButtonPayload'
         mock_whatsapp_payload = {
-            "From": "whatsapp:+549114", "To": "whatsapp:+14155238886",
+            "From": "whatsapp:+549114", "To": "whatsapp:+17432643718",
             "Body": "Texto del Botón",
             "ButtonPayload": "action_button_id_123"
         }

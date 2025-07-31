@@ -462,7 +462,7 @@ class PlantillasRespuesta(db.Model):
 class WhatsappNumero(db.Model):
     __tablename__ = "whatsapp_numero"
     id = db.Column(db.Integer, primary_key=True)
-    numero_whatsapp = db.Column(db.String(25), unique=True, nullable=False, index=True) # e.g., "+14155238886"
+    numero_whatsapp = db.Column(db.String(25), unique=True, nullable=False, index=True) # e.g., "+17432643718"
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) # FK to User.id
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
