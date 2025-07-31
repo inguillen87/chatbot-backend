@@ -486,9 +486,17 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
 
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("ticket_id"):
+        message_body = f"Se ha generado el ticket de reclamo con el número {respuesta_accion.get('ticket_id')}. Puede consultar el estado de su reclamo en cualquier momento con este número."
+        options_list = []
+
+        contacto_especializado = datos_estructura_llm.get("contacto_especializado")
+        if contacto_especializado:
+            message_body += f" Para hablar con un encargado, puede contactar a {contacto_especializado.get('nombre')} al {contacto_especializado.get('telefono')}."
+            options_list.append({"texto": f"Llamar a {contacto_especializado.get('nombre')}", "url": f"tel:{contacto_especializado.get('telefono')}"})
+
         return {
-            "message_body": f"Se ha generado el ticket de reclamo con el número {respuesta_accion.get('ticket_id')}. Puede consultar el estado de su reclamo en cualquier momento con este número. Para hablar con un encargado, puede contactar a Marcelo al 2613168608.",
-            "options_list": [],
+            "message_body": message_body,
+            "options_list": options_list,
             "message_type": "text",
             "fuente": "ticket_creado"
         }, contexto_municipio_actual

@@ -113,7 +113,7 @@ class ServicioTickets:
                 db.session.add(comentario)
 
             db.session.commit()
-            logger.info(f"Ticket #{ticket.nro_ticket} ({tipo_ticket}) creado localmente.")
+            logger.info(f"Ticket #{ticket.nro_ticket} (ID: {ticket.id}) ({tipo_ticket}) creado localmente. Datos: {ticket_data}")
 
             # Integración con SIGEM para tickets municipales
             if tipo_ticket == "municipio" and isinstance(ticket, MunicipioTicket):
