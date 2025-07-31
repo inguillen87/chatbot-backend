@@ -418,6 +418,8 @@ def serializar_enum(obj):
 def handle_location_update(data):
     """
     Handles a location update from the client.
+    It receives latitude and longitude, gets the address,
+    and stores it in the user's session.
     """
     from .herramientas_municipio import obtener_direccion_de_coordenadas
     from flask import session
