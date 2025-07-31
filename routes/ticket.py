@@ -118,7 +118,8 @@ def get_tickets_del_usuario_logic(current_user: User):
                 "asunto": getattr(t, 'asunto', 'N/A'), "estado": t.estado,
                 "fecha": t.fecha.isoformat(), "categoria": getattr(t, 'categoria', None),
                 "direccion": getattr(t, 'direccion', None),
-                "latitud": getattr(t, 'latitud', None), "longitud": getattr(t, 'longitud', None)
+                "latitud": getattr(t, 'latitud', None), "longitud": getattr(t, 'longitud', None),
+                "nombre_vecino": getattr(t, 'nombre_vecino', None)
             }
             if ticket_type_str == 'pyme':
                 data.update({
