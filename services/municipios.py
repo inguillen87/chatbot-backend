@@ -1132,5 +1132,14 @@ def responder_municipio(
             logger_actual.error(f"Error guardando Conversacion final (municipio): {e_conv_muni_final}", exc_info=True)
             db.session.rollback()
 
+    if channel == "whatsapp":
+        from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+        enviar_mensaje_whatsapp_con_fallback(
+            numero_destino=viewer_user.telefono if viewer_user else anon_id,
+            cuerpo=final_response_dict["message_body"],
+            botones=[b["texto"] for b in opciones_finales] if message_type_final == "interactive_buttons" else None,
+            lista={"titulo": "Opciones", "secciones": [{"title": "Opciones", "rows": [{"id": f"op_{i}", "title": b["texto"]} for i, b in enumerate(opciones_finales)]}]} if message_type_final == "interactive_list" else None
+        )
+
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
