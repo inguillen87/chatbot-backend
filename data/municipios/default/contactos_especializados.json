@@ -1,0 +1,17 @@
+{
+  "Bacheo": {
+    "nombre": "Juan Carlos de Obras Públicas",
+    "titulo": "Encargado de Bacheo",
+    "telefono": "+5492613000001"
+  },
+  "Luminaria": {
+    "nombre": "Ana María de Servicios",
+    "titulo": "Supervisora de Alumbrado",
+    "telefono": "+5492613000002"
+  },
+  "default": {
+    "nombre": "Atención al Vecino",
+    "titulo": "Mesa de Ayuda",
+    "telefono": "+5492613168608"
+  }
+}
