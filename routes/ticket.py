@@ -184,8 +184,9 @@ def get_tickets_del_usuario_logic(current_user: User):
         summary_by_status["total"] = len(all_tickets_for_summary_calculation)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
+        current_app.logger.info(f"Filtros aplicados: estado={requested_estado_filter}, categoria={requested_categoria_filter}")
         final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
-        if requested_estado_filter:
+        if requested_estado_filter and requested_estado_filter != 'todos':
             final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
 
         page = int(request.args.get("page", 1))
