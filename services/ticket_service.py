@@ -35,7 +35,7 @@ class MunicipioTicketCreator(TicketCreator):
         )
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
-            municipio_id=ticket_data.get("owner_user").municipio_id if ticket_data.get("owner_user") else None,
+            municipio_id=ticket_data.get("municipio_id"),
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),

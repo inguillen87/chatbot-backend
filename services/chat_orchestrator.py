@@ -78,20 +78,15 @@ class ChatOrchestrator:
                 "executed_action_handler": "SolicitarUbicacionHandler"
             }
 
-        if not action_name or action_name in ["no_accion", "small_talk"]:
-            handler_class = self._get_handler_class(action_name or "no_accion")
-            if handler_class:
-                handler_instance = handler_class(self.global_context)
-                action_result = handler_instance.execute(action_data)
-                action_result["executed_action_handler"] = handler_class.__name__
-                return action_result
-            else:
-                return {
-                    "success": True,
-                    "message_to_user": llm_output.get("respuesta_usuario", "Entendido."),
-                    "data": {"action_performed": action_name or "none"},
-                    "executed_action_handler": None
-                }
+        if not action_name or action_name in ["no_accion", "small_talk", "respuesta_generica"]:
+            # Para respuestas genéricas, usamos la respuesta del LLM directamente
+            # sin necesidad de un handler específico.
+            return {
+                "success": True,
+                "message_to_user": llm_output.get("respuesta_usuario", "Entendido."),
+                "data": {"action_performed": action_name or "none"},
+                "executed_action_handler": "GenericResponseHandler" # Identificador para logging
+            }
 
         handler_class = self._get_handler_class(action_name)
         if not handler_class:
