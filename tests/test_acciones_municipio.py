@@ -158,7 +158,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("Para poder registrar tu reclamo, es esencial que me indiques una descripción del problema.", respuesta["message_to_user"])
+        # Updated assertion to match new generic error message
+        self.assertIn("necesito algunos datos más: **descripcion, email, nombre, telefono**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -168,7 +169,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        self.assertIn("Para poder registrar tu reclamo, es esencial que me indiques la ubicación del problema.", respuesta["message_to_user"])
+        # Updated assertion to match new generic error message
+        self.assertIn("necesito algunos datos más: **email, nombre, telefono, ubicacion**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -186,10 +188,14 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_crear_ticket.return_value = mock_ticket_simulado
         mock_parse_direccion.return_value = {"calle": "Avenida Falsa", "numero": "456", "localidad": "Testville"}
 
-        # Teléfono del LLM inválido, teléfono del perfil válido
+        # Simular que el teléfono del LLM es inválido, pero el del perfil es válido.
+        # La función mockeada 'validar_telefono' devolverá False para el primer llamado (LLM) y True para el segundo (perfil).
         mock_validar_telefono_func.side_effect = [False, True]
+        # Simular el mismo comportamiento para el email.
         mock_validar_email_func.side_effect = [False, True]
-        mock_formatear_tel.return_value = "+549876543210" # Formato del teléfono del perfil
+
+        # El mock de formatear_telefono_e164 debe devolver el teléfono del *perfil* ya formateado.
+        mock_formatear_tel.return_value = "+549876543210"
 
         datos_llm = {
             "categoria": "Varios", "descripcion": "Problema general", "ubicacion": "Avenida Falsa 456",
@@ -203,7 +209,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         context = {
             "viewer_user_obj": mock_viewer_user, "user_obj": MagicMock(id=1, municipio_id="testmuni"),
             "anon_id": None, "municipio_config_actual": {},
-            "current_user": mock_viewer_user
+            "current_user": mock_viewer_user,
+            "pregunta_actual_usuario": "mi pregunta de prueba"
         }
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
@@ -214,7 +221,8 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Usuario LLM")
         self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+549876543210") # Tomado y formateado del perfil
-        self.assertEqual(kwargs['ticket_data']['email_vecino'], "perfil_valido@example.com") # Tomado del perfil (mock_validar_email siempre True)
+        self.assertEqual(kwargs['ticket_data']['email_vecino'], "perfil_valido@example.com") # Tomado del perfil
+        self.assertEqual(kwargs['ticket_data']['pregunta'], "mi pregunta de prueba")
 
         mock_enviar_whatsapp.assert_called_once_with(
             "+549876543210", "Usuario LLM", "67890", "Varios"

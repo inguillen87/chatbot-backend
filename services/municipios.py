@@ -632,11 +632,8 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
             if not pedir_info_llm:
-                respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
-                if respuesta_accion and respuesta_accion.get("ticket_id"):
-                    return respuesta_accion, contexto_municipio_actual
-                else:
-                    return {"message_body": "Hubo un problema al crear el reclamo. Por favor, intente de nuevo.", "options_list": [], "message_type": "text", "fuente": "error"}, contexto_municipio_actual
+                # _handle_ticket_creation returns the tuple (response, context), which is what this function should return.
+                return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
