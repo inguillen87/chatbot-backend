@@ -18,3 +18,17 @@ class ConsultarComerciosActionHandler(BaseActionHandler):
             "message_to_user": f"Aquí tienes una lista de {categoria} cerca de {ubicacion}: [Ver en Google Maps](https://www.google.com/maps/search/{categoria}+{ubicacion})",
             "data": {"categoria": categoria, "ubicacion": ubicacion}
         }
+
+class ConsultarFarmaciasActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing ConsultarFarmaciasActionHandler with data: {action_data}")
+
+        ubicacion = self.context.get("ubicacion_usuario") or "Junín, Mendoza"
+
+        # Por ahora, devolvemos una respuesta predefinida con un link a Google Maps.
+        # Más adelante, se puede mejorar para que busque en la base de datos.
+        return {
+            "success": True,
+            "message_to_user": f"Aquí tienes una lista de farmacias de turno cerca de {ubicacion}: [Ver en Google Maps](https://www.google.com/maps/search/farmacias+de+turno+{ubicacion})",
+            "data": {"ubicacion": ubicacion}
+        }

@@ -395,13 +395,15 @@ class GreetingHandler(BaseMunicipioHandler):
         # This is a simplified greeting handler.
         # It could be expanded to include the user's name, etc.
         return {
-            "message_body": "¡Hola! Soy tu asistente virtual. Estoy aquí para ayudarte con tus trámites y reclamos. Puedes hacer un reclamo, consultar el estado de un trámite, o pedir información. ¿Cómo puedo ayudarte hoy?",
+            "message_body": "¡Hola! Soy Jules, tu asistente virtual del Municipio de Junín. Estoy aquí para ayudarte con tus trámites y reclamos. ¿En qué puedo ayudarte hoy?",
             "options_list": [
                 {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
                 {"id": "consultar_estado_ticket", "texto": "Consultar estado de un trámite"},
+                {"id": "info_tramite", "texto": "Consultar un trámite"},
+                {"id": "info_contacto", "texto": "Información de contacto"}
             ],
             "message_type": "interactive_buttons",
-            "fuente": "greeting_handler_v2"
+            "fuente": "greeting_handler_v3"
         }
 
 def safe_llm_call(prompt, preamble, fallback=None):
