@@ -370,6 +370,8 @@ class BaseMunicipioHandler:
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         # Enhanced greeting handler with more information
+        custom_message = payload.get("custom_message", "¿Cómo puedo ayudarte hoy?")
+
         welcome_message = (
             "¡Hola! Soy Jules, tu asistente virtual del Municipio de Junín.\n\n"
             "Estoy aquí para ayudarte con:\n"
@@ -378,7 +380,7 @@ class GreetingHandler(BaseMunicipioHandler):
             "✅ Consultas generales (horarios, ubicaciones)\n\n"
             "🌐 Web: [www.junin.gob.ar](https://www.junin.gob.ar)\n"
             "📍 Ubicación: [Ver en Google Maps](https://maps.google.com/?q=Municipalidad+de+Junin)\n\n"
-            "¿Cómo puedo ayudarte hoy?"
+            f"{custom_message}"
         )
         return {
             "message_body": welcome_message,
@@ -388,7 +390,7 @@ class GreetingHandler(BaseMunicipioHandler):
                 {"id": "consultar_puntos_de_interes", "texto": "C. Consultas Generales"},
             ],
             "message_type": "interactive_buttons",
-            "fuente": "greeting_handler_v5"
+            "fuente": "greeting_handler_v6"
         }
 
 def safe_llm_call(prompt, preamble, fallback=None):
@@ -490,9 +492,7 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
 
     # Limpia el contexto del reclamo en el municipio
-    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
-        contexto_municipio_actual.pop(k, None)
-    contexto_municipio_actual["estado_conversacion"] = None
+    contexto_municipio_actual.clear()
 
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("success"):
@@ -510,11 +510,14 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
                 {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
             ])
 
+        # Create a combined message
+        final_message = f"{message_body}\n\n¿Hay algo más en lo que pueda ayudarte?"
+
         return {
-            "message_body": message_body,
+            "message_body": final_message,
             "options_list": options_list,
             "message_type": "interactive_buttons",
-            "fuente": "ticket_creado_v2" # Fuente actualizada para trazabilidad
+            "fuente": "ticket_creado_v2"
         }, contexto_municipio_actual
     else:
         # En caso de fallo, simplemente devuelve la respuesta de error del handler.
