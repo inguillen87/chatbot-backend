@@ -469,6 +469,59 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
     }
 
 
+def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
+    """
+    Handles the ticket creation process.
+    """
+    # Combina los datos parciales con los nuevos datos recibidos
+    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+    datos_reclamo.update(datos_estructura_llm)
+
+    # Validar datos
+    nombre = datos_reclamo.get("nombre_usuario_detectado")
+    telefono = datos_reclamo.get("telefono_detectado")
+    email = datos_reclamo.get("email_detectado")
+    ubicacion = datos_reclamo.get("ubicacion")
+
+    if not all([nombre, telefono, email, ubicacion]):
+        campos_faltantes = []
+        if not nombre:
+            campos_faltantes.append("nombre")
+        if not telefono:
+            campos_faltantes.append("teléfono")
+        if not email:
+            campos_faltantes.append("email")
+        if not ubicacion:
+            campos_faltantes.append("ubicación")
+
+        return {
+            "message_body": f"Faltan los siguientes datos para poder crear el reclamo: {', '.join(campos_faltantes)}. Por favor, proporciónalos para continuar.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "datos_incompletos"
+        }, contexto_municipio_actual
+
+    # Llama a la acción para crear el reclamo
+    respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
+
+    # Limpia el contexto del reclamo en el municipio
+    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
+        contexto_municipio_actual.pop(k, None)
+    contexto_municipio_actual["estado_conversacion"] = None
+
+    # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
+    if respuesta_accion and respuesta_accion.get("ticket_id"):
+        return {
+            "message_body": f"Se ha generado el ticket de reclamo con el número {respuesta_accion.get('ticket_id')}. Puede consultar el estado de su reclamo en cualquier momento con este número. Para hablar con un encargado, puede contactar a Marcelo al 2613168608.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "ticket_creado"
+        }, contexto_municipio_actual
+    else:
+        # En caso de fallo, simplemente devuelve la respuesta de error y el contexto actualizado.
+        return respuesta_accion, contexto_municipio_actual
+
+
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
     logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
 

@@ -265,12 +265,7 @@ def _procesar_chat(
         current_app.logger.info(f"Usando Chat Session ID (from header or generated): {chat_session_id_header}")
 
         # Cargar o crear el contexto de la base de datos
-        if actor_principal:
-            chat_context_obj = ChatSessionContext.query.filter_by(user_id=actor_principal.id).first()
-        elif anon_id:
-            chat_context_obj = ChatSessionContext.query.filter_by(anon_id=anon_id).first()
-        else:
-            chat_context_obj = None
+        chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
 
         if not chat_context_obj:
             current_app.logger.info(f"No se encontró ChatSessionContext. Creando uno nuevo.")
