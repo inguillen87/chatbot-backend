@@ -25,16 +25,31 @@ class CrearReclamoActionHandler(BaseActionHandler):
         descripcion = action_data.get("descripcion") or contexto_reclamo.get("descripcion_reclamo")
         ubicacion_llm = action_data.get("ubicacion") or contexto_reclamo.get("direccion_reclamo")
         coordenadas_llm = action_data.get("coordenadas") or contexto_reclamo.get("coordenadas_reclamo")
-        nombre_vecino_llm = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or contexto_reclamo.get("nombre_vecino") or getattr(viewer_user, "nombre", None)
-        telefono_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or contexto_reclamo.get("telefono_vecino") or getattr(viewer_user, "telefono", None)
-        email_llm = action_data.get("email") or action_data.get("email_detectado") or contexto_reclamo.get("email_vecino") or getattr(viewer_user, "email", None)
         foto_url_llm = action_data.get("foto_url_adjunta") or contexto_reclamo.get("foto_url")
+
+        # Lógica de fusión de datos de contacto mejorada
+        nombre_vecino_final = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or contexto_reclamo.get("nombre_vecino") or getattr(viewer_user, "nombre", None)
+
+        telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado")
+        telefono_final = None
+        if telefono_from_llm and validar_telefono(telefono_from_llm):
+            telefono_final = formatear_telefono_e164(telefono_from_llm)
+        elif viewer_user and getattr(viewer_user, "telefono", None) and validar_telefono(viewer_user.telefono):
+            telefono_final = formatear_telefono_e164(viewer_user.telefono)
+
+        email_from_llm = action_data.get("email") or action_data.get("email_detectado")
+        email_final = None
+        if email_from_llm and validar_email(email_from_llm):
+            email_final = email_from_llm.lower()
+        elif viewer_user and getattr(viewer_user, "email", None) and validar_email(viewer_user.email):
+            email_final = viewer_user.email.lower()
+
 
         # Actualizar el contexto con los datos más recientes para persistencia
         for key, value in [("categoria_reclamo", categoria), ("descripcion_reclamo", descripcion),
                            ("direccion_reclamo", ubicacion_llm), ("coordenadas_reclamo", coordenadas_llm),
-                           ("nombre_vecino", nombre_vecino_llm), ("telefono_vecino", telefono_llm),
-                           ("email_vecino", email_llm), ("foto_url", foto_url_llm)]:
+                           ("nombre_vecino", nombre_vecino_final), ("telefono_vecino", telefono_final),
+                           ("email_vecino", email_final), ("foto_url", foto_url_llm)]:
             if value:
                 contexto_reclamo[key] = value
 
@@ -44,7 +59,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes.append("descripcion")
         if not ubicacion_llm and not coordenadas_llm:
             campos_faltantes.append("ubicacion")
-        if not viewer_user and not all([nombre_vecino_llm, telefono_llm, email_llm]):
+        if not viewer_user and not all([nombre_vecino_final, telefono_final, email_final]):
              campos_faltantes.extend(["nombre", "telefono", "email"])
 
 
@@ -69,14 +84,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Recopilación final de datos y creación del ticket
         owner_user = self.context.get("user_obj")
         owner_user = self.context.get("user_obj")
+        pregunta_original = self.context.get("pregunta_actual_usuario", "")
         ticket_data = {
+            "pregunta": pregunta_original,
             "asunto": f"Reclamo (LLM): {categoria or 'General'}",
             "categoria": categoria or "Reclamo General",
             "detalles": descripcion,
             "direccion": ubicacion_llm,
-            "nombre_vecino": nombre_vecino_llm,
-            "telefono_vecino": formatear_telefono_e164(telefono_llm) if telefono_llm and validar_telefono(telefono_llm) else None,
-            "email_vecino": email_llm.lower() if email_llm and validar_email(email_llm) else None,
+            "nombre_vecino": nombre_vecino_final,
+            "telefono_vecino": telefono_final,
+            "email_vecino": email_final,
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id") if not getattr(viewer_user, "id", None) else None,
