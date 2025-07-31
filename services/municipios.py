@@ -786,15 +786,15 @@ def responder_municipio(
     contexto_municipio_actual = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
 
     # 2. Determinar si es una nueva conversación (contexto vacío)
-    if not contexto_municipio_actual:
-        logger_actual.info("Contexto de municipio vacío. Iniciando con saludo.")
-        handler = GreetingHandler({})
-        respuesta = handler.handle({})
-        # Guardar el contexto inicial
-        chat_db_context.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "GREETING"}
-        flag_modified(chat_db_context, "context_data")
-        db.session.commit()
-        return respuesta
+    # if not contexto_municipio_actual:
+    #     logger_actual.info("Contexto de municipio vacío. Iniciando con saludo.")
+    #     handler = GreetingHandler({})
+    #     respuesta = handler.handle({})
+    #     # Guardar el contexto inicial
+    #     chat_db_context.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "GREETING"}
+    #     flag_modified(chat_db_context, "context_data")
+    #     db.session.commit()
+    #     return respuesta
 
     # 3. Orquestación principal (lógica de handlers basada en estado, etc.)
     # Por ahora, se mantiene la llamada directa a handle_llm_interaction para el resto de los casos

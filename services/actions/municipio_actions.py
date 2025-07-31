@@ -68,8 +68,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Recopilación final de datos y creación del ticket
         owner_user = self.context.get("user_obj")
+        owner_user = self.context.get("user_obj")
         ticket_data = {
-            "asunto": f"Reclamo (LLM): {categoria or 'General'}", "categoria": categoria or "Reclamo General", "detalles": descripcion,
+            "asunto": f"Reclamo (LLM): {categoria or 'General'}",
+            "categoria": categoria or "Reclamo General",
+            "detalles": descripcion,
             "direccion": ubicacion_llm,
             "nombre_vecino": nombre_vecino_llm,
             "telefono_vecino": formatear_telefono_e164(telefono_llm) if telefono_llm and validar_telefono(telefono_llm) else None,
@@ -77,10 +80,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id") if not getattr(viewer_user, "id", None) else None,
+            "municipio_id": getattr(owner_user, "municipio_id", None),  # Asegurar que el municipio_id se pasa aquí
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
             "origen_reclamo": "LLM_CHATBOT",
-            "foto_url_directa": foto_url_llm
+            "foto_url_directa": foto_url_llm,
         }
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}

@@ -57,7 +57,7 @@ class TestClaimCreationFlow(unittest.TestCase):
                 chat_db_context=self.chat_session
             )
 
-            self.assertIn("decime la dirección", respuesta['message_body'])
+            self.assertIn("Para crear tu reclamo, decime la dirección.", respuesta['message_body'])
             contexto_municipio = self.chat_session.context_data[CONTEXTO_MUNICIPIO]
             self.assertEqual(contexto_municipio['estado_conversacion'], ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name)
             self.assertEqual(contexto_municipio['esperando_info_llm_reclamo'], "ubicacion")
@@ -135,10 +135,10 @@ class TestClaimCreationFlow(unittest.TestCase):
                 chat_db_context=self.chat_session
             )
 
-            self.assertIn("Gracias por la dirección", respuesta['message_body'])
+            self.assertIn("Gracias por la dirección. ¿Podrías describir el problema?", respuesta['message_body'])
             contexto_municipio = self.chat_session.context_data[CONTEXTO_MUNICIPIO]
             print(contexto_municipio)
-            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo'].get('ubicacion'), "Villegas 900, M5584, San Martín, Mendoza, AR")
+            self.assertEqual(contexto_municipio['datos_parciales_llm_reclamo']['ubicacion'], "Villegas 900, M5584, San Martín, Mendoza, AR")
 
 if __name__ == '__main__':
     unittest.main()
