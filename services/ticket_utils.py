@@ -25,8 +25,12 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     if id_ticket:
         respuesta += f"  - **N° de Ticket:** {id_ticket}\n"
 
-    if nombre_asesor:
-        respuesta += f"\n👤 **Asesor a cargo:** {nombre_asesor}"
+    if nombre_asesor and telefono_asesor and link_whatsapp:
+        respuesta += (
+            f"\n\n**Contacto para seguimiento:**\n"
+            f"👤 **Asesor:** {nombre_asesor}\n"
+            f"📞 **WhatsApp:** [{telefono_asesor}]({link_whatsapp})"
+        )
 
     respuesta += f"\n\nTe mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"
     return respuesta

@@ -41,7 +41,7 @@ class TestNewFeatures(unittest.TestCase):
             "reclamo", "Marcelo", "Bache en la calle", "Bacheo", "M-12345", contacto
         )
         self.assertIn("Juan Obras", respuesta)
-        self.assertNotIn("+5491122334455", respuesta) # The raw number should not be in the text
+        self.assertIn("[+5491122334455](https://wa.me/5491122334455", respuesta)
 
     def test_greeting_handler_enhanced_message(self):
         """
@@ -54,7 +54,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("www.junin.gob.ar", respuesta["message_body"])
         self.assertIn("https://maps.google.com/?q=Municipalidad+de+Junin", respuesta["message_body"])
         self.assertIn("A. Hacer un reclamo", [btn["texto"] for btn in respuesta["options_list"]])
-        self.assertEqual(respuesta["fuente"], "greeting_handler_v5")
+        self.assertEqual(respuesta["fuente"], "greeting_handler_v6")
 
 if __name__ == '__main__':
     unittest.main()
