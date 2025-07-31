@@ -467,57 +467,6 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
         "options_list": [],
         "fuente": "accion_crear_reclamo_llm_error",
     }
-def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
-    """
-    Handles the ticket creation process.
-    """
-    # Combina los datos parciales con los nuevos datos recibidos
-    datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-    datos_reclamo.update(datos_estructura_llm)
-
-    # Validar datos
-    nombre = datos_reclamo.get("nombre_usuario_detectado")
-    telefono = datos_reclamo.get("telefono_detectado")
-    email = datos_reclamo.get("email_detectado")
-    ubicacion = datos_reclamo.get("ubicacion")
-
-    if not all([nombre, telefono, email, ubicacion]):
-        campos_faltantes = []
-        if not nombre:
-            campos_faltantes.append("nombre")
-        if not telefono:
-            campos_faltantes.append("teléfono")
-        if not email:
-            campos_faltantes.append("email")
-        if not ubicacion:
-            campos_faltantes.append("ubicación")
-
-        return {
-            "message_body": f"Faltan los siguientes datos para poder crear el reclamo: {', '.join(campos_faltantes)}. Por favor, proporciónalos para continuar.",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "datos_incompletos"
-        }, contexto_municipio_actual
-
-    # Llama a la acción para crear el reclamo
-    respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
-
-    # Limpia el contexto del reclamo en el municipio
-    for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo"]:
-        contexto_municipio_actual.pop(k, None)
-    contexto_municipio_actual["estado_conversacion"] = None
-
-    # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
-    if respuesta_accion and respuesta_accion.get("ticket_id"):
-        return {
-            "message_body": f"Se ha generado el ticket de reclamo con el número {respuesta_accion.get('ticket_id')}. Puede consultar el estado de su reclamo en cualquier momento con este número. Para hablar con un encargado, puede contactar a Marcelo al 2613168608.",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "ticket_creado"
-        }, contexto_municipio_actual
-    else:
-        # En caso de fallo, simplemente devuelve la respuesta de error y el contexto actualizado.
-        return respuesta_accion, contexto_municipio_actual
 
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
@@ -639,10 +588,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
             if not pedir_info_llm:
                 respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
-                if respuesta_accion and respuesta_accion.get("ticket_id"):
-                    return respuesta_accion, contexto_municipio_actual
-                else:
-                    return {"message_body": "Hubo un problema al crear el reclamo. Por favor, intente de nuevo.", "options_list": [], "message_type": "text", "fuente": "error"}, contexto_municipio_actual
+                return respuesta_accion, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
@@ -1143,6 +1089,15 @@ def responder_municipio(
         except Exception as e_conv_muni_final:
             logger_actual.error(f"Error guardando Conversacion final (municipio): {e_conv_muni_final}", exc_info=True)
             db.session.rollback()
+
+    if channel == "whatsapp":
+        from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+        enviar_mensaje_whatsapp_con_fallback(
+            numero_destino=viewer_user.telefono if viewer_user else anon_id,
+            cuerpo=final_response_dict["message_body"],
+            botones=[b["texto"] for b in opciones_finales] if message_type_final == "interactive_buttons" else None,
+            lista={"titulo": "Opciones", "secciones": [{"title": "Opciones", "rows": [{"id": f"op_{i}", "title": b["texto"]} for i, b in enumerate(opciones_finales)]}]} if message_type_final == "interactive_list" else None
+        )
 
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
