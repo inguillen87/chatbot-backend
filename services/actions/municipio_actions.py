@@ -235,53 +235,34 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "error_details": str(e)
             }
 
-class EjecutarHerramientaActionHandler(BaseActionHandler):
+class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(
-            f"Executing EjecutarHerramientaActionHandler with data: {action_data}. "
-            f"Estado previo: {self.context.get(CONTEXTO_MUNICIPIO, {}).get('estado_conversacion')}"
-        )
-        nombre_herramienta = action_data.get("nombre_herramienta")
-        parametros = action_data.get("parametros_herramienta", {})
+        logger.info(f"Executing ConsultarPuntosDeInteresActionHandler with data: {action_data}")
 
-        if not nombre_herramienta: # or nombre_herramienta not in TOOL_REGISTRY:
-            logger.error(f"Nombre de herramienta no proporcionado o no válido: {nombre_herramienta}")
-            return {"success": False, "message_to_user": "No pude identificar la herramienta a ejecutar."}
+        tipo_de_comercio = action_data.get("tipo_comercio")
+        if not tipo_de_comercio:
+            return {"success": False, "message_to_user": "No especificaste qué tipo de comercio buscar."}
 
-        from services.herramientas_municipio import TOOL_REGISTRY
-
-        if not nombre_herramienta or nombre_herramienta not in TOOL_REGISTRY:
-            logger.error(f"Nombre de herramienta no proporcionado o no válido: {nombre_herramienta}")
-            return {"success": False, "message_to_user": "No pude identificar la herramienta a ejecutar."}
-
-        herramienta_func = TOOL_REGISTRY[nombre_herramienta]["funcion"]
-        logger.info(f"Ejecutando herramienta '{nombre_herramienta}' con parámetros: {parametros}")
-        resultado_herramienta = herramienta_func(**parametros)
-        logger.info(
-            f"Resultado de la herramienta '{nombre_herramienta}' con parametros {parametros}: {resultado_herramienta}"
-        )
-
-        contexto_municipio = self.context.get(CONTEXTO_MUNICIPIO, {})
-        if "No encontré resultados" in resultado_herramienta:
-            contexto_municipio["estado_conversacion"] = "ESPERANDO_CONSULTA_GENERAL"
-            logger.warning(
-                f"La herramienta '{nombre_herramienta}' no encontró resultados. Contexto ubicacion={self.context.get(CONTEXTO_MUNICIPIO, {}).get('datos_parciales_llm_reclamo', {}).get('ubicacion')}"
-            )
+        # La ubicación se obtiene del perfil del usuario o se usa una por defecto si no está disponible.
+        # Esto debería ser mejorado para obtener la ubicación del contexto de la conversación si es posible.
+        ubicacion = self.context.get("ubicacion_usuario")
+        if not ubicacion:
+            # Si no hay ubicación en el contexto, se la pedimos al usuario.
             return {
                 "success": False,
-                "message_to_user": resultado_herramienta,
-                "options_list": [{"texto": "Buscar otro tipo de comercio"}, {"texto": "Hablar con un agente"}],
-                "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "vacio"}
+                "message_to_user": "Para poder ayudarte a encontrar lo que buscas, necesito que me digas tu ubicación. Por favor, compártela o decime en qué zona estás.",
+                "pedir_info": "ubicacion"
             }
-        else:
-            contexto_municipio["estado_conversacion"] = "ESPERANDO_CONSULTA_GENERAL"
-            logger.info(f"La herramienta '{nombre_herramienta}' se ejecutó exitosamente.")
-            return {
-                "success": True,
-                "message_to_user": resultado_herramienta,
-                "options_list": [{"texto": "Buscar otro tipo de comercio"}, {"texto": "Hablar con un agente"}],
-                "data": {"herramienta_ejecutada": nombre_herramienta, "resultado": "real"}
-            }
+
+        from services.herramientas_municipio import buscar_comercios_por_rubro_y_ubicacion
+
+        resultado = buscar_comercios_por_rubro_y_ubicacion(tipo_de_comercio, ubicacion)
+
+        return {
+            "success": True,
+            "message_to_user": resultado,
+            "data": {"tipo_comercio_buscado": tipo_de_comercio, "ubicacion_usada": ubicacion}
+        }
 
 class ActivarPanicoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:

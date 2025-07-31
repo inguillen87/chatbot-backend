@@ -35,7 +35,7 @@ class MunicipioTicketCreator(TicketCreator):
         )
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
-            municipio_id=ticket_data.get("municipio_id"),
+            municipio_id=ticket_data.get("owner_user").municipio_id if ticket_data.get("owner_user") else None,
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
@@ -113,7 +113,7 @@ class ServicioTickets:
                 db.session.add(comentario)
 
             db.session.commit()
-            logger.info(f"Ticket #{ticket.nro_ticket} (ID: {ticket.id}) ({tipo_ticket}) creado localmente. Datos: {ticket.__dict__}")
+            logger.info(f"Ticket #{ticket.nro_ticket} (ID: {ticket.id}) ({tipo_ticket}) creado localmente. Municipio ID: {ticket.municipio_id}. Datos: {ticket.__dict__}")
 
             # Integración con SIGEM para tickets municipales
             if tipo_ticket == "municipio" and isinstance(ticket, MunicipioTicket):
