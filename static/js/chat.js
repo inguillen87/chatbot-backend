@@ -48,4 +48,10 @@ document.addEventListener('DOMContentLoaded', () => {
             requestLocation();
         }
     });
+
+    // Add a "Share Location" button to the UI
+    const locationButton = document.createElement('button');
+    locationButton.innerText = 'Compartir Ubicación';
+    locationButton.addEventListener('click', solicitarUbicacion);
+    document.getElementById('message-form').appendChild(locationButton);
 });

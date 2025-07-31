@@ -146,7 +146,23 @@ def tarea_analizar_contenido_archivo(self, archivo_adjunto_id: int):
                 analisis_archivo.estado_analisis = "omitido_config"
                 analisis_archivo.tipo_analisis = "pdf_docai_config_faltante"
         
-        # 5. Archivos de Texto Plano y otros tipos genéricos
+        # 5. Speech-to-Text for Audio Files
+        elif mime_type.startswith("audio/"):
+            logger.info(f"Archivo {archivo_adjunto_id} es un archivo de audio. Iniciando transcripción.")
+            from services.google_speech_to_text import SpeechToTextService
+            stt_service = SpeechToTextService()
+            transcription = stt_service.transcribe_audio_url(archivo_adjunto.url, mime_type)
+            if transcription:
+                analisis_archivo.texto_extraido = transcription
+                analisis_archivo.tipo_analisis = "speech_to_text"
+                analisis_archivo.estado_analisis = "completado"
+                logger.info(f"Transcripción de audio completada para Archivo ID: {archivo_adjunto.id}. Texto: {transcription[:100]}...")
+                # Ahora que tenemos el texto, podemos tratarlo como un mensaje de texto normal.
+                # Esto se manejará en el flujo del chat, no aquí.
+            else:
+                analisis_archivo.estado_analisis = "error"
+                analisis_archivo.error_analisis = "No se pudo transcribir el audio."
+        # 6. Archivos de Texto Plano y otros tipos genéricos
         else:
             logger.info(f"Intentando procesamiento genérico para archivo {archivo_adjunto_id} con MIME type: {mime_type}")
             ruta_fisica_archivo = obtener_ruta_fisica_archivo(archivo_adjunto)

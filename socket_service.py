@@ -15,3 +15,9 @@ def on_join(data):
 def on_new_chat(data):
     room = data['room']
     socketio.emit('new_chat', data, room=room)
+
+@socketio.on('location')
+def on_location(data):
+    from services.municipios import handle_location_update
+    response = handle_location_update(data)
+    socketio.emit('message', response)

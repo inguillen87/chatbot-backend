@@ -415,6 +415,31 @@ def serializar_enum(obj):
     elif isinstance(obj, list): return [serializar_enum(v) for v in obj]
     else: return obj
 
+def handle_location_update(data):
+    """
+    Handles a location update from the client.
+    """
+    from .herramientas_municipio import obtener_direccion_de_coordenadas
+    from flask import session
+
+    lat = data.get("lat")
+    lon = data.get("lon")
+
+    if not lat or not lon:
+        return {"respuesta": "No se pudo obtener la ubicación."}
+
+    direccion_info = obtener_direccion_de_coordenadas(lat, lon)
+
+    if not direccion_info:
+        return {"respuesta": "No se pudo obtener la dirección desde las coordenadas."}
+
+    session["user_location"] = direccion_info
+    session.modified = True
+
+    return {
+        "respuesta": f"Ubicación actualizada a: {direccion_info.get('formatted_address')}"
+    }
+
 BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
 
 import random # Asegurar que random está importado para el mock_ticket_nro
@@ -849,6 +874,14 @@ def responder_municipio(
     if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
         logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
 
+    # Check for completed analysis in the context
+    if chat_db_context_live_data.get("web_analisis_listo"):
+        analisis_info = chat_db_context_live_data.pop("web_analisis_listo")
+        from models import AnalisisArchivo
+        analisis_obj = db.session.get(AnalisisArchivo, analisis_info.get("archivo_id"))
+        if analisis_obj and analisis_obj.texto_extraido:
+            pregunta_str = analisis_obj.texto_extraido
+            logger_actual.info(f"Usando texto de análisis de archivo como pregunta: '{pregunta_str}'")
 
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START_CONTEXT_INIT] Context inicializado. UserMunicipio: {context['user_obj'].id if context['user_obj'] else 'N/A'}, "
@@ -950,6 +983,8 @@ def responder_municipio(
             }, contexto_municipio_actual
 
     # --- LLAMADA PRINCIPAL A GEMINI ---
+    if "user_location" in flask_session:
+        contexto_municipio_actual["ubicacion_usuario"] = flask_session["user_location"]
     historial_chat_para_gemini = chat_db_context_live_data.get("mensajes_previos_gemini_formato", [])
 
     # La pregunta_str ya tiene el texto del usuario.
