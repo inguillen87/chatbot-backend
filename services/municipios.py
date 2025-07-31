@@ -369,19 +369,26 @@ class BaseMunicipioHandler:
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        # This is a simplified greeting handler.
-        # It could be expanded to include the user's name, etc.
+        # Enhanced greeting handler with more information
+        welcome_message = (
+            "¡Hola! Soy Jules, tu asistente virtual del Municipio de Junín.\n\n"
+            "Estoy aquí para ayudarte con:\n"
+            "✅ Reclamos (baches, luminaria, etc.)\n"
+            "✅ Trámites (licencia de conducir, etc.)\n"
+            "✅ Consultas generales (horarios, ubicaciones)\n\n"
+            "🌐 Web: [www.junin.gob.ar](https://www.junin.gob.ar)\n"
+            "📍 Ubicación: [Ver en Google Maps](https://maps.google.com/?q=Municipalidad+de+Junin)\n\n"
+            "¿Cómo puedo ayudarte hoy?"
+        )
         return {
-            "message_body": "¡Hola! Soy Jules, tu asistente virtual del Municipio de Junín. Estoy aquí para ayudarte con tus trámites y reclamos. ¿En qué puedo ayudarte hoy?",
+            "message_body": welcome_message,
             "options_list": [
-                {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
-                {"id": "consultar_estado_ticket", "texto": "Consultar estado de un trámite"},
-                {"id": "info_tramite", "texto": "Consultar un trámite"},
-                {"id": "consultar_puntos_de_interes", "texto": "Consultas Generales"},
-                {"id": "info_contacto", "texto": "Información de contacto"}
+                {"id": "iniciar_reclamo", "texto": "A. Hacer un reclamo"},
+                {"id": "info_tramite", "texto": "B. Consultar un trámite"},
+                {"id": "consultar_puntos_de_interes", "texto": "C. Consultas Generales"},
             ],
             "message_type": "interactive_buttons",
-            "fuente": "greeting_handler_v4"
+            "fuente": "greeting_handler_v5"
         }
 
 def safe_llm_call(prompt, preamble, fallback=None):

@@ -8,6 +8,7 @@ from services.herramientas_municipio import parse_direccion_completa as parse_di
 from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.gemini_bridge import llamar_gemini
+from services.config_loader import cargar_configuracion_municipio
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
             nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
+            # Cargar contactos y encontrar el específico para la categoría
+            contactos = cargar_configuracion_municipio(getattr(owner_user, "municipio_id", "default"), "contactos_especializados.json")
+            contacto_especializado = contactos.get(categoria, contactos.get("default"))
+
             # Limpiar contexto de reclamo después de la creación exitosa
             keys_to_clear = [k for k in contexto_reclamo if k.endswith("_reclamo") or k.startswith("nombre_vecino") or k.startswith("telefono_vecino") or k.startswith("email_vecino") or k.startswith("foto_url")]
             for key in keys_to_clear:
@@ -131,7 +136,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": True,
-                "message_to_user": formatear_ticket_respuesta("reclamo", ticket_data_cleaned["nombre_vecino"], descripcion, categoria, nro_ticket_str),
+                "message_to_user": formatear_ticket_respuesta("reclamo", ticket_data_cleaned["nombre_vecino"], descripcion, categoria, nro_ticket_str, contacto_especializado),
                 "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
             }
         except Exception as e:
