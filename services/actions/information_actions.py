@@ -27,10 +27,23 @@ class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
 
         ubicacion = self.context.get("ubicacion_usuario") or "Junín, Mendoza"
 
+        from services.config_loader import cargar_configuracion_municipio
+
+        municipio_id = self.context.get("user_obj").municipio_id if self.context.get("user_obj") else "default"
+        config_municipio = cargar_configuracion_municipio(municipio_id, "config.json")
+
         # Por ahora, devolvemos una respuesta predefinida con un link a Google Maps.
         # Más adelante, se puede mejorar para que busque en la base de datos.
+        message_to_user = f"Aquí tienes una lista de {categoria} cerca de {ubicacion}: [Ver en Google Maps](https://www.google.com/maps/search/{categoria}+{ubicacion})"
+
+        if config_municipio:
+            if "telefono" in config_municipio:
+                message_to_user += f"\nTambién podés llamar al {config_municipio['telefono']}."
+            if "web" in config_municipio:
+                message_to_user += f"\nO visitar el sitio web: {config_municipio['web']}"
+
         return {
             "success": True,
-            "message_to_user": f"Aquí tienes una lista de {categoria} cerca de {ubicacion}: [Ver en Google Maps](https://www.google.com/maps/search/{categoria}+{ubicacion})",
+            "message_to_user": message_to_user,
             "data": {"categoria": categoria, "ubicacion": ubicacion}
         }
