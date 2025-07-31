@@ -18,6 +18,11 @@ def on_new_chat(data):
 
 @socketio.on('location')
 def on_location(data):
+    """
+    Handles a location update from the client.
+    The data is expected to be a dictionary with 'lat' and 'lon' keys.
+    e.g., {'lat': -34.6037, 'lon': -58.3816}
+    """
     from services.municipios import handle_location_update
     response = handle_location_update(data)
     socketio.emit('message', response)
