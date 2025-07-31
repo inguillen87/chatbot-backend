@@ -97,8 +97,12 @@ class TestSimulatedClaimFlow(unittest.TestCase):
         self.assertEqual(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], ConversationState.ESPERANDO_NOMBRE_VECINO.name)
 
         # Step 4: User provides personal data
-        with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+        with patch('services.ticket_service.db.session.add'), \
+             patch('services.ticket_service.db.session.flush'), \
+             patch('services.ticket_service.db.session.commit'), \
+             patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
             mock_ticket = MagicMock()
+            mock_ticket.id = 123
             mock_ticket.nro_ticket = "M-12345"
             mock_crear_ticket.return_value = mock_ticket
 
@@ -111,7 +115,8 @@ class TestSimulatedClaimFlow(unittest.TestCase):
                     "descripcion": "Contenedor de basura rebalsado",
                     "ubicacion": "Don Bosco 55, Junín, Mendoza",
                     "nombre_usuario_detectado": "Juan Perez",
-                    "telefono_detectado": "2611234567"
+                    "telefono_detectado": "2611234567",
+                    "email_detectado": "juan.perez@example.com"
                 },
                 "pedir_info": None,
                 "botones": [
@@ -130,6 +135,13 @@ class TestSimulatedClaimFlow(unittest.TestCase):
 
             self.assertIn("Se ha generado el ticket de reclamo con el número", response['message_body'])
             self.assertIsNone(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO].get('estado_conversacion'))
+            mock_crear_ticket.assert_called_once()
+            # Get the actual call arguments
+            call_args, call_kwargs = mock_crear_ticket.call_args
+            ticket_data = call_kwargs['ticket_data']
+            self.assertEqual(ticket_data['nombre_vecino'], 'Juan Perez')
+            self.assertEqual(ticket_data['telefono_vecino'], '+5492611234567')
+            self.assertEqual(ticket_data['email_vecino'], 'juan.perez@example.com')
 
 if __name__ == '__main__':
     unittest.main()
