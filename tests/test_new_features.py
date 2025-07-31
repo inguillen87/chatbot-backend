@@ -41,8 +41,7 @@ class TestNewFeatures(unittest.TestCase):
             "reclamo", "Marcelo", "Bache en la calle", "Bacheo", "M-12345", contacto
         )
         self.assertIn("Juan Obras", respuesta)
-        self.assertIn("+5491122334455", respuesta)
-        self.assertIn("https://wa.me/5491122334455", respuesta)
+        self.assertNotIn("+5491122334455", respuesta) # The raw number should not be in the text
 
     def test_greeting_handler_enhanced_message(self):
         """

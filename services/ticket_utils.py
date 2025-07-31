@@ -17,18 +17,16 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     texto_tipo = tipos.get(tipo, "consulta")
 
     respuesta = (
-        f"✅ {texto_tipo.capitalize()} recibido, {nombre_usuario}!\n"
-        f"• Categoría: {categoria}\n"
-        f"• Descripción: {descripcion}\n"
+        f"✅ {texto_tipo.capitalize()} recibido, {nombre_usuario}!\n\n"
+        f"📄 **Resumen:**\n"
+        f"  - **Categoría:** {categoria}\n"
+        f"  - **Descripción:** {descripcion}\n"
     )
     if id_ticket:
-        respuesta += f"• Número de ticket: {id_ticket}\n"
+        respuesta += f"  - **N° de Ticket:** {id_ticket}\n"
 
-    if nombre_asesor and link_whatsapp:
-        respuesta += (
-            f"\n👉 Para hacer el seguimiento o recibir ayuda personalizada, podés comunicarte con nuestro asesor {nombre_asesor} "
-            f"al WhatsApp {telefono_asesor} o haciendo clic aquí: {link_whatsapp}\n"
-        )
+    if nombre_asesor:
+        respuesta += f"\n👤 **Asesor a cargo:** {nombre_asesor}"
 
-    respuesta += f"\n¡Gracias por comunicarte! Vamos a darle seguimiento a tu {texto_tipo}."
+    respuesta += f"\n\nTe mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"
     return respuesta

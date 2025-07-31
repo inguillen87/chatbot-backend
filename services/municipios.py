@@ -502,7 +502,9 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
 
         # Opcional: añadir botones si el handler no los proveyó
         options_list = respuesta_accion.get("options_list", [])
+        logger.info(f"Options list from action handler: {options_list}")
         if not options_list:
+            logger.info("Action handler did not provide options, adding default buttons.")
             options_list.extend([
                 {"texto": "Ver estado de mi reclamo", "id_accion": "consultar_estado_ticket"},
                 {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
