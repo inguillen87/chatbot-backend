@@ -345,29 +345,6 @@ Si no tenés info suficiente, decilo y sugerí contactar al municipio.
 PREGUNTA: "{pregunta_usuario}"
 Respuesta:
 """
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def crear_prompt_decision_herramienta(pregunta_usuario: str) -> str:
     descripcion_herramientas_json = {}
     for nombre, detalles in TOOL_REGISTRY.items(): descripcion_herramientas_json[nombre] = {"descripcion": detalles["descripcion"], "parametros": detalles["parametros"]}
@@ -467,8 +444,6 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
         "options_list": [],
         "fuente": "accion_crear_reclamo_llm_error",
     }
-
-
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
     Handles the ticket creation process.
@@ -641,7 +616,10 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
             if not pedir_info_llm:
                 respuesta_accion, contexto_municipio_actual = _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
-                return respuesta_accion, contexto_municipio_actual
+                if respuesta_accion and respuesta_accion.get("ticket_id"):
+                    return respuesta_accion, contexto_municipio_actual
+                else:
+                    return {"message_body": "Hubo un problema al crear el reclamo. Por favor, intente de nuevo.", "options_list": [], "message_type": "text", "fuente": "error"}, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
@@ -1142,15 +1120,6 @@ def responder_municipio(
         except Exception as e_conv_muni_final:
             logger_actual.error(f"Error guardando Conversacion final (municipio): {e_conv_muni_final}", exc_info=True)
             db.session.rollback()
-
-    if channel == "whatsapp":
-        from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
-        enviar_mensaje_whatsapp_con_fallback(
-            numero_destino=viewer_user.telefono if viewer_user else anon_id,
-            cuerpo=final_response_dict["message_body"],
-            botones=[b["texto"] for b in opciones_finales] if message_type_final == "interactive_buttons" else None,
-            lista={"titulo": "Opciones", "secciones": [{"title": "Opciones", "rows": [{"id": f"op_{i}", "title": b["texto"]} for i, b in enumerate(opciones_finales)]}]} if message_type_final == "interactive_list" else None
-        )
 
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
