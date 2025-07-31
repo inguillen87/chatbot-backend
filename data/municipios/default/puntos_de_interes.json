@@ -1,0 +1,11 @@
+{
+  "Farmacias": ["farmacia", "farmacias", "farmacia de turno", "remedios", "medicamentos"],
+  "Veterinarias": ["veterinaria", "veterinarias", "perro", "gato", "animales"],
+  "Hospitales": ["hospital", "hospitales", "salita", "salitas", "emergencia", "urgencia"],
+  "Supermercados": ["supermercado", "supermercados", "compras", "almacen"],
+  "Registro Civil": ["registro civil", "dni", "partida de nacimiento", "casamiento"],
+  "Correo": ["correo", "carta", "paquete", "encomienda"],
+  "Policía": ["policia", "comisaria", "denuncia"],
+  "Bomberos": ["bomberos", "incendio"],
+  "Municipalidad": ["municipalidad", "municipio", "municipalidad de junin"]
+}
