@@ -342,17 +342,17 @@ JSON:
 *Tu JSON de salida:*
 {
   "respuesta_usuario": "¡Claro! Puedo buscar supermercados por vos. Para empezar, ¿qué tipo de comercio o rubro te interesa? Veo que estás en Junín, puedo buscar cerca de tu zona.",
-  "accion_backend": "consultar_puntos_de_interes",
+  "accion_backend": "ejecutar_herramienta",
   "datos_estructura": {
     "target": "municipio",
-    "categoria": "Supermercados",
-    "descripcion": "información sobre supermercados cerca"
+    "nombre_herramienta": "buscar_puntos_de_interes",
+    "parametros_herramienta": {"rubro": "Supermercados"},
+    "faltan_parametros_herramienta": ["localidad"]
   },
-  "pedir_info": null,
+  "pedir_info": "ubicacion",
   "botones": [
-    {"texto": "Supermercados", "id_accion": "consultar_supermercados"},
-    {"texto": "Farmacias", "id_accion": "consultar_farmacias"},
-    {"texto": "Restaurantes", "id_accion": "consultar_restaurantes"}
+    {"texto": "Compartir mi ubicación", "id_accion": "compartir_ubicacion"},
+    {"texto": "Ingresar una dirección", "id_accion": "ingresar_direccion"}
   ]
 }
 

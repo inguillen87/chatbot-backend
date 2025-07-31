@@ -488,29 +488,27 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     contexto_municipio_actual["estado_conversacion"] = None
 
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
-    if respuesta_accion and respuesta_accion.get("ticket_id"):
-        logger.info(f"Ticket creado con ID: {respuesta_accion.get('ticket_id')}")
-        message_body = f"Se ha generado el ticket de reclamo con el número {respuesta_accion.get('ticket_id')}. Puede consultar el estado de su reclamo en cualquier momento con este número."
-        options_list = []
+    if respuesta_accion and respuesta_accion.get("success"):
+        logger.info(f"Ticket creado con ID: {respuesta_accion.get('data', {}).get('ticket_id')}")
+        # Usar el mensaje ya formateado por el ActionHandler
+        message_body = respuesta_accion.get("message_to_user")
 
-        contacto_especializado = datos_estructura_llm.get("contacto_especializado")
-        if contacto_especializado:
-            message_body += f" Para hablar con un encargado, puede contactar a {contacto_especializado.get('nombre')} al {contacto_especializado.get('telefono')}."
-            options_list.append({"texto": f"Llamar a {contacto_especializado.get('nombre')}", "url": f"tel:{contacto_especializado.get('telefono')}"})
-
-        options_list.extend([
-            {"texto": "Ver estado de mi reclamo", "id_accion": "consultar_estado_ticket"},
-            {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
-        ])
+        # Opcional: añadir botones si el handler no los proveyó
+        options_list = respuesta_accion.get("options_list", [])
+        if not options_list:
+            options_list.extend([
+                {"texto": "Ver estado de mi reclamo", "id_accion": "consultar_estado_ticket"},
+                {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
+            ])
 
         return {
             "message_body": message_body,
             "options_list": options_list,
             "message_type": "interactive_buttons",
-            "fuente": "ticket_creado"
+            "fuente": "ticket_creado_v2" # Fuente actualizada para trazabilidad
         }, contexto_municipio_actual
     else:
-        # En caso de fallo, simplemente devuelve la respuesta de error y el contexto actualizado.
+        # En caso de fallo, simplemente devuelve la respuesta de error del handler.
         return respuesta_accion, contexto_municipio_actual
 
 

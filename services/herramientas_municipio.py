@@ -391,7 +391,16 @@ def buscar_puntos_de_interes(
                 details_data = details_response.json()
                 telefono = details_data.get('result', {}).get('formatted_phone_number', 'No disponible')
 
-                mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}\n   Ver en mapa: {maps_link}\n"
+                whatsapp_link = ""
+                if telefono != 'No disponible':
+                    telefono_numerico = ''.join(filter(str.isdigit, telefono))
+                    if telefono_numerico:
+                        whatsapp_link = f"https://wa.me/{telefono_numerico}"
+
+                mensaje += f"{i}. {nombre}\n   Dirección: {direccion}\n   Tel: {telefono}\n"
+                if whatsapp_link:
+                    mensaje += f"   WhatsApp: {whatsapp_link}\n"
+                mensaje += f"   Ver en mapa: {maps_link}\n"
 
             if len(data['results']) > end:
                 mensaje += "\nSi querés ver más resultados, respondé 'más'."
