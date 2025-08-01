@@ -1,6 +1,6 @@
 import logging
 from typing import List, Optional
-from services.gemini_bridge import llamar_gemini_para_generacion_texto
+from services.gemini_bridge import llamar_gemini as llamar_gemini_para_generacion_texto
 
 logger = logging.getLogger(__name__)
 

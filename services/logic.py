@@ -47,7 +47,7 @@ def es_rubro_publico(rubro) -> bool:
 
 
 from services.llm_utils import clasificar_entidad_con_llm
-from services.municipios import responder_municipio
+from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.

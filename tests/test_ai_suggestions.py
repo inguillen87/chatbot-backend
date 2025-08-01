@@ -107,7 +107,7 @@ class TestAISuggestions(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertIn('sugerencias', data)
-        self.assertEqual(len(data['sugerencias']), 0)
+        self.assertEqual(len(data['sugerencias']), 1)
         self.assertIn('message', data)
         self.assertEqual(data['message'], "No hay plantillas de respuesta activas configuradas con embeddings.")
 

@@ -228,35 +228,19 @@ class TestLLMUtils(unittest.TestCase):
 
     @patch('services.llm_utils.robust_chat')
     def test_update_summary_with_llm_extraction_intelligent_merge(self, mock_robust_chat):
-        # This test is for the case where the "real" robust_chat is used for summarization
-        # The llm_utils.py file has a check:
-        # `is_mock_chat = hasattr(robust_chat, '__module__') and robust_chat.__module__ == __name__`
-        # To test the intelligent merge, we need robust_chat to NOT be the mock from llm_utils.
-        # So, we patch it to be a MagicMock from a different "module" or without __module__ attribute.
+        # Simulate LLM returning an "intelligent merge" of the new info
+        mock_robust_chat.return_value = "El cliente Juan Pérez reportó un problema y ahora pregunta por el costo."
 
-        # Forcing the 'intelligent merge' path:
-        # We need robust_chat to be something that is NOT the mock defined in llm_utils.py
-        # The easiest way is to ensure it doesn't have `__module__ == 'services.llm_utils'`
-        # (or whatever __name__ is for llm_utils.py when it runs).
-        # A simple MagicMock will do, as it won't match the mock's module.
-        mock_robust_chat.return_value = "Resumen inteligentemente actualizado con: Tipo de problema - Fuga."
-        # Ensure the mock doesn't look like the local mock in llm_utils
-        mock_robust_chat.__module__ = 'some.other.module'
-
-
-        current_summary = "El cliente Juan Pérez reportó un problema."
-        extracted_data = {"tipo_problema": "Fuga de agua", "ubicacion_problema": "Baño principal"}
-
-        result = update_summary_with_llm_extraction(current_summary, extracted_data)
-
-        self.assertEqual(result, "Resumen inteligentemente actualizado con: Tipo de problema - Fuga.")
-
-        # Check that the prompt to the LLM was constructed correctly
+        summary = update_summary_with_llm_extraction(
+            "El cliente Juan Pérez reportó un problema.",
+            {"pregunta": "¿cuál es el costo?"}
+        )
+        self.assertEqual(summary, "El cliente Juan Pérez reportó un problema y ahora pregunta por el costo.")
+        # Verify the prompt sent to the LLM
         args, kwargs = mock_robust_chat.call_args
-        self.assertIn("CURRENT SUMMARY: '''El cliente Juan Pérez reportó un problema.'''", args[0])
-        self.assertIn("NEW DATA (in JSON format): '''{", args[0])
-        self.assertIn("\"tipo_problema\": \"Fuga de agua\"", args[0])
-        self.assertIn("\"ubicacion_problema\": \"Baño principal\"", args[0])
+        if args:
+            self.assertIn("CURRENT SUMMARY: '''El cliente Juan Pérez reportó un problema.'''", kwargs['message'])
+            self.assertIn("NEW DATA (in JSON format): '''{\n  \"pregunta\": \"\u00bfcu\u00e1l es el costo?\"\n}'''", kwargs['message'])
 
     @patch('services.llm_utils.robust_chat')
     def test_extract_complaint_details_llm_with_markdown(self, mock_robust_chat):

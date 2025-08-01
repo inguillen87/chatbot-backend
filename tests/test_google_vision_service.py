@@ -8,17 +8,17 @@ from unittest.mock import patch, MagicMock
 # o que estés corriendo las pruebas de una manera que Python pueda encontrar 'services'.
 # Una forma común es tener un __init__.py en la raíz y en 'services'.
 try:
-    from services.google_vision_service import analyze_image_from_content, VISION_CLIENT
+    from services.google_vision_service import GoogleVisionService
 except ImportError:
     # Fallback si la importación directa falla (ej. corriendo tests desde una subcarpeta sin setup de path)
     import sys
     import os
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from services.google_vision_service import analyze_image_from_content, VISION_CLIENT
+    from services.google_vision_service import GoogleVisionService
 
 class TestGoogleVisionService(unittest.TestCase):
 
-    @patch('services.google_vision_service.VISION_CLIENT')
+    @patch('services.google_vision_service.vision.ImageAnnotatorClient')
     def test_analyze_image_from_content_success(self, mock_vision_client):
         # Configurar el mock para el cliente de Vision
         mock_response = MagicMock()
@@ -62,30 +62,37 @@ class TestGoogleVisionService(unittest.TestCase):
         mock_response.label_annotations = [MagicMock(description="Test Label", score=0.85)]
         mock_response.text_annotations = [MagicMock(description="Test OCR Text")]
 
-        result = analyze_image_from_content(test_image_content, min_confidence)
+        vision_service = GoogleVisionService()
+        vision_service.client = mock_vision_client
+
+        result = vision_service.analyze_image_from_content(test_image_content, min_confidence)
 
         self.assertNotIn("error", result)
         self.assertEqual(result["labels"], expected_result["labels"])
         self.assertEqual(result["full_text_annotation"]["description"], expected_result["text"])
         mock_vision_client.annotate_image.assert_called_once()
 
-    @patch('services.google_vision_service.VISION_CLIENT')
+    @patch('services.google_vision_service.vision.ImageAnnotatorClient')
     def test_analyze_image_api_error(self, mock_vision_client):
         mock_response = MagicMock()
         mock_response.error.message = "API Error Occurred"
         mock_vision_client.annotate_image.return_value = mock_response
 
-        result = analyze_image_from_content(b"fake_image_bytes")
+        vision_service = GoogleVisionService()
+        vision_service.client = mock_vision_client
+
+        result = vision_service.analyze_image_from_content(b"fake_image_bytes")
         self.assertIn("error", result)
         self.assertEqual(result["error"], "Vision API error: API Error Occurred")
 
     def test_analyze_image_no_content(self):
         # No necesita mockear VISION_CLIENT si la validación de contenido es anterior
-        result = analyze_image_from_content(b"")
+        vision_service = GoogleVisionService()
+        result = vision_service.analyze_image_from_content(b"")
         self.assertIn("error", result)
         self.assertEqual(result["error"], "Contenido de imagen vacío.")
 
-    @patch('services.google_vision_service.VISION_CLIENT', None) # Simular que el cliente no se inicializó
+    @patch('services.google_vision_service.GoogleVisionService.client', None) # Simular que el cliente no se inicializó
     @patch('services.google_vision_service.logger') # Mockear el logger para verificar mensajes
     def test_analyze_image_no_client(self, mock_logger):
         # Esta prueba es un poco más compleja porque VISION_CLIENT es global.
@@ -98,7 +105,7 @@ class TestGoogleVisionService(unittest.TestCase):
         # Asumiendo que `analyze_image_from_content` usa el VISION_CLIENT global:
 
         # Guardar el estado original del cliente y restaurarlo después
-        original_client = VISION_CLIENT # Esto accede al VISION_CLIENT global del módulo
+        vision_service = GoogleVisionService()
         try:
             # Forzar que el cliente sea None para esta prueba
             # Esto es problemático porque VISION_CLIENT se carga al importar el módulo.
@@ -107,7 +114,7 @@ class TestGoogleVisionService(unittest.TestCase):
             # esta prueba funcionaría si pudiéramos setear VISION_CLIENT a None temporalmente.
             # Sin embargo, el @patch ya lo setea a None para el scope de esta prueba.
 
-            result = analyze_image_from_content(b"some_bytes")
+            result = vision_service.analyze_image_from_content(b"some_bytes")
             self.assertIn("error", result)
             self.assertEqual(result["error"], "Cliente de Vision no inicializado.")
             # Verificar que se logueó el error (opcional)

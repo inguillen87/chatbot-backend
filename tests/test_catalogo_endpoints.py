@@ -14,6 +14,7 @@ from routes.catalogo import catalogo_bp
 class CatalogoEndpointsTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)
+        self.app.register_blueprint(catalogo_bp)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

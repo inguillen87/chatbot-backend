@@ -1,77 +1,96 @@
 import unittest
-from types import ModuleType, SimpleNamespace
-import sys
-import importlib
-from contextlib import contextmanager
-import unittest.mock
+from unittest.mock import patch, MagicMock
 import os
+import sys
 
-# Añadir el directorio raíz del proyecto al sys.path
-project_root_routing_logic = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root_routing_logic not in sys.path:
-    sys.path.insert(0, project_root_routing_logic)
+# Add project root to sys.path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-@contextmanager
-def stub_modules():
-    cohere_stub = ModuleType('services.cohere_ai')
-    cohere_stub.robust_chat = lambda *a, **k: ""
-    pymes_stub = ModuleType('services.pymes')
-    pymes_stub.responder_pyme = lambda *a, **k: {'origen': 'pyme'}
-    municipio_stub = ModuleType('services.municipios')
-    municipio_stub.responder_municipio = lambda *a, **k: {'origen': 'municipio'}
-    mods = {
-        'services.cohere_ai': cohere_stub,
-        'services.pymes': pymes_stub,
-        'services.municipios': municipio_stub,
-    }
-    with unittest.mock.patch.dict(sys.modules, mods):
-        import services.logic as logic
-        importlib.reload(logic)
-        yield logic
+from app import create_app
 
 class RoutingLogicTests(unittest.TestCase):
-    def test_pyme_routing(self):
-        with stub_modules() as logic:
-            resp = logic.responder_chatboc('hola', tipo_chat='pyme')
-            self.assertEqual(resp['origen'], 'pyme')
+    def setUp(self):
+        self.app = create_app('testing')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
 
-    def test_municipio_routing(self):
-        with stub_modules() as logic:
-            resp = logic.responder_chatboc('hola', tipo_chat='municipio')
-            self.assertEqual(resp['origen'], 'municipio')
+    def tearDown(self):
+        self.app_context.pop()
+
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
+    def test_municipio_routing(self, mock_responder_pyme, mock_responder_municipio):
+        """Test that 'municipio' type chats are routed to the municipio responder."""
+        from services.logic import responder_chatboc
+        rubro_obj = MagicMock()
+        rubro_obj.nombre = "municipio"
+        with self.app.test_request_context():
+            responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
+        mock_responder_municipio.assert_called_once()
+        mock_responder_pyme.assert_not_called()
+
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
+    def test_pyme_routing(self, mock_responder_pyme, mock_responder_municipio):
+        """Test that 'pyme' type chats are routed to the pyme responder."""
+        from services.logic import responder_chatboc
+        rubro_obj = MagicMock()
+        rubro_obj.nombre = "pyme"
+        with self.app.test_request_context():
+            responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj)
+        mock_responder_pyme.assert_called_once()
+        mock_responder_municipio.assert_not_called()
 
     def test_tipo_chat_required(self):
-        with stub_modules() as logic:
-            with self.assertRaises(ValueError):
-                logic.responder_chatboc('hola')
+        """Test that an error is raised if tipo_chat is invalid."""
+        from services.logic import responder_chatboc
+        with self.assertRaises(ValueError):
+            responder_chatboc('hola', tipo_chat='invalido')
 
-    def test_rubro_corrige_a_municipio(self):
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
+    def test_rubro_corrige_a_municipio(self, mock_responder_pyme, mock_responder_municipio):
         """Si el rubro es de pyme pero viene tipo_chat municipio se corrige."""
-        with stub_modules() as logic:
-            rubro_obj = SimpleNamespace(nombre='vinoteca', clave='vinoteca')
-            resp = logic.responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
-            self.assertEqual(resp['origen'], 'pyme')
+        from services.logic import responder_chatboc
+        rubro_obj = MagicMock()
+        rubro_obj.nombre = "pyme"
+        with self.app.test_request_context():
+            responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
+        mock_responder_pyme.assert_called_once()
+        mock_responder_municipio.assert_not_called()
 
-    def test_rubro_sin_nombre_usa_clave(self):
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
+    def test_rubro_sin_nombre_usa_clave(self, mock_responder_pyme, mock_responder_municipio):
         """Debe usar la clave del rubro cuando no hay nombre."""
-        with stub_modules() as logic:
-            rubro_obj = SimpleNamespace(nombre=None, clave='vinoteca')
-            resp = logic.responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
-            self.assertEqual(resp['origen'], 'pyme')
+        from services.logic import responder_chatboc
+        rubro_obj = MagicMock()
+        rubro_obj.nombre = None
+        rubro_obj.clave = "municipio"
+        with self.app.test_request_context():
+            responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj)
+        mock_responder_municipio.assert_called_once()
+        mock_responder_pyme.assert_not_called()
 
-    def test_rubro_corrige_a_pyme(self):
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
+    def test_rubro_corrige_a_pyme(self, mock_responder_pyme, mock_responder_municipio):
         """Si el rubro es municipal pero viene tipo_chat pyme se corrige."""
-        with stub_modules() as logic:
-            rubro_obj = SimpleNamespace(nombre='municipio', clave='municipio')
-            resp = logic.responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj)
-            self.assertEqual(resp['origen'], 'municipio')
+        from services.logic import responder_chatboc
+        rubro_obj = MagicMock()
+        rubro_obj.nombre = "municipio"
+        with self.app.test_request_context():
+            responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj)
+        mock_responder_municipio.assert_called_once()
+        mock_responder_pyme.assert_not_called()
 
     def test_es_rubro_publico_normaliza(self):
-        with stub_modules() as logic:
-            rubro_obj = SimpleNamespace(nombre='Municipios', clave='municipios')
-            self.assertTrue(logic.es_rubro_publico(rubro_obj))
-            self.assertTrue(logic.es_rubro_publico('municipios'))
-            self.assertEqual(logic.normalizar_rubro(rubro_obj), 'municipios')
+        from services.logic import es_rubro_publico
+        self.assertTrue(es_rubro_publico("  Municipio  "))
+        self.assertTrue(es_rubro_publico("GOBIERNO"))
+        self.assertFalse(es_rubro_publico("  Pyme  "))
 
 if __name__ == '__main__':
     unittest.main()

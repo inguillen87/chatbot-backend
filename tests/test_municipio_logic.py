@@ -190,9 +190,8 @@ class MunicipioLogicTests(unittest.TestCase):
 
         importlib.reload(municipios)
 
-    @patch('services.municipios.get_cohere_response', return_value='')
     @patch('services.municipios.servicio_tickets')
-    def test_human_escalation(self, mock_servicio, mock_llm_cohere_generic):
+    def test_human_escalation(self, mock_servicio):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         mock_servicio.crear_comentario.return_value = None
         user = DummyUser()
@@ -212,9 +211,8 @@ class MunicipioLogicTests(unittest.TestCase):
         self.assertIn('Hemos recibido tu solicitud', resp['message_body'])
         self.assertIn('M-', resp['message_body'])
 
-    @patch('services.municipios.get_cohere_response', return_value='')
     @patch('services.municipios.servicio_tickets')
-    def test_human_escalation_anonymous_requires_login(self, mock_servicio, mock_llm_cohere_generic):
+    def test_human_escalation_anonymous_requires_login(self, mock_servicio):
         mock_servicio.crear_nuevo_ticket.return_value = DummyTicket()
         with patch('services.gemini_bridge.llamar_gemini') as mock_llamar_gemini:
             mock_llamar_gemini.return_value = {
@@ -447,240 +445,244 @@ class MunicipioReclamoFlowTests(unittest.TestCase):
 
     @patch('services.llm_utils.robust_chat') # This mocks the internal LLM call in ReclamoHandler
     def test_complaint_llm_extracts_all_initial_details(self, mock_internal_llm_robust_chat):
-        municipio_context_state = {}
-        user_initial_complaint = "Quiero hacer un reclamo por una luminaria rota en Av. San Martin 123. La luz no funciona hace una semana y es peligroso. Mi nombre es Vecino Preocupado, tel 261000111, email vecino.preocupado@example.com"
+        with self.app.app_context():
+            municipio_context_state = {}
+            user_initial_complaint = "Quiero hacer un reclamo por una luminaria rota en Av. San Martin 123. La luz no funciona hace una semana y es peligroso. Mi nombre es Vecino Preocupado, tel 261000111, email vecino.preocupado@example.com"
 
-        # Simulate main Gemini call extracting ALL details
-        main_llm_extraction = {
-            "target": "municipio",
-            "categoria": "Alumbrado Público", # Assuming LLM normalizes/maps this
-            "descripcion": "Luminaria rota, no funciona hace una semana y es peligroso.",
-            "ubicacion": "Av. San Martin 123",
-            "nombre_usuario_detectado": "Vecino Preocupado",
-            "telefono_detectado": "261000111",
-            "email_detectado": "vecino.preocupado@example.com"
-        }
-
-        payload = {
-            "pregunta": user_initial_complaint,
-            "llamar_gemini_mock_return": {
-                 "respuesta_usuario": "Gracias. Hemos registrado tu reclamo por la luminaria. ¿Algo más?", # Example response
-                 "accion_backend": "crear_reclamo_municipio",
-                 "datos_estructura": main_llm_extraction,
-                 "pedir_info": None,
-                 "botones": [{"texto": "Ver estado reclamo"}, {"texto": "Nuevo reclamo"}]
+            # Simulate main Gemini call extracting ALL details
+            main_llm_extraction = {
+                "target": "municipio",
+                "categoria": "Alumbrado Público", # Assuming LLM normalizes/maps this
+                "descripcion": "Luminaria rota, no funciona hace una semana y es peligroso.",
+                "ubicacion": "Av. San Martin 123",
+                "nombre_usuario_detectado": "Vecino Preocupado",
+                "telefono_detectado": "261000111",
+                "email_detectado": "vecino.preocupado@example.com"
             }
-        }
 
-        # The internal LLM in ReclamoHandler should NOT be called if main LLM provides all data
-        mock_internal_llm_robust_chat.return_value = json.dumps({})
+            payload = {
+                "pregunta": user_initial_complaint,
+                "llamar_gemini_mock_return": {
+                     "respuesta_usuario": "Gracias. Hemos registrado tu reclamo por la luminaria. ¿Algo más?", # Example response
+                     "accion_backend": "crear_reclamo_municipio",
+                     "datos_estructura": main_llm_extraction,
+                     "pedir_info": None,
+                     "botones": [{"texto": "Ver estado reclamo"}, {"texto": "Nuevo reclamo"}]
+                }
+            }
 
-        response, municipio_context_state, db_mock = self._call_responder_municipio(payload, municipio_context_state)
+            # The internal LLM in ReclamoHandler should NOT be called if main LLM provides all data
+            mock_internal_llm_robust_chat.return_value = json.dumps({})
 
-        mock_internal_llm_robust_chat.assert_not_called() # Crucial: internal LLM should be skipped
+            response, municipio_context_state, db_mock = self._call_responder_municipio(payload, municipio_context_state)
 
-        # Check if the `accion_crear_reclamo_municipio` was effectively called by the orchestrator
-        # This is indirect; we check if a ticket was created by servicio_tickets.crear_nuevo_ticket
-        # which is called by `accion_crear_reclamo_municipio`.
-        # We need to patch `servicio_tickets.crear_nuevo_ticket` for this.
-        with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
-            mock_crear_ticket.return_value = SimpleNamespace(id=999, nro_ticket="T999") # Simulate successful ticket creation
+            mock_internal_llm_robust_chat.assert_not_called() # Crucial: internal LLM should be skipped
 
-            # Re-run with the ticket creation mock active
-            response, municipio_context_state, db_mock = self._call_responder_municipio(payload, {}) # Fresh context
+            # Check if the `accion_crear_reclamo_municipio` was effectively called by the orchestrator
+            # This is indirect; we check if a ticket was created by servicio_tickets.crear_nuevo_ticket
+            # which is called by `accion_crear_reclamo_municipio`.
+            # We need to patch `servicio_tickets.crear_nuevo_ticket` for this.
+            with patch('services.ticket_service.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+                mock_crear_ticket.return_value = SimpleNamespace(id=999, nro_ticket="T999") # Simulate successful ticket creation
 
-            mock_crear_ticket.assert_called_once()
-            args_call, kwargs_call = mock_crear_ticket.call_args
-            ticket_data_sent = kwargs_call.get('ticket_data', {})
+                # Re-run with the ticket creation mock active
+                response, municipio_context_state, db_mock = self._call_responder_municipio(payload, {}) # Fresh context
 
-            self.assertEqual(ticket_data_sent.get("categoria"), "Alumbrado Público")
-            self.assertEqual(ticket_data_sent.get("direccion"), "Av. San Martin 123")
-            self.assertIn("Luminaria rota", ticket_data_sent.get("detalles"))
-            self.assertEqual(ticket_data_sent.get("nombre_vecino"), "Vecino Preocupado")
-            self.assertIsNotNone(ticket_data_sent.get("telefono_vecino")) # Check it's processed
-            self.assertEqual(ticket_data_sent.get("email_vecino"), "vecino.preocupado@example.com")
+                mock_crear_ticket.assert_called_once()
+                args_call, kwargs_call = mock_crear_ticket.call_args
+                ticket_data_sent = kwargs_call.get('ticket_data', {})
 
-        # After successful creation by LLM, context should be cleared or state reset
-        # The exact state depends on `accion_crear_reclamo_municipio`'s return and `responder_municipio` logic
-        self.assertIsNone(municipio_context_state.get("estado_conversacion")) # Expect cleared state
-        self.assertIn("reclamo ha sido registrado", response["message_body"])
+                self.assertEqual(ticket_data_sent.get("categoria"), "Alumbrado Público")
+                self.assertEqual(ticket_data_sent.get("direccion"), "Av. San Martin 123")
+                self.assertIn("Luminaria rota", ticket_data_sent.get("detalles"))
+                self.assertEqual(ticket_data_sent.get("nombre_vecino"), "Vecino Preocupado")
+                self.assertIsNotNone(ticket_data_sent.get("telefono_vecino")) # Check it's processed
+                self.assertEqual(ticket_data_sent.get("email_vecino"), "vecino.preocupado@example.com")
+
+            # After successful creation by LLM, context should be cleared or state reset
+            # The exact state depends on `accion_crear_reclamo_municipio`'s return and `responder_municipio` logic
+            self.assertIsNone(municipio_context_state.get("estado_conversacion")) # Expect cleared state
+            self.assertIn("reclamo ha sido registrado", response["message_body"])
 
 
 
     @patch('services.llm_utils.robust_chat') # Mock for ReclamoHandler's internal LLM (should not be called much)
     def test_complaint_llm_extracts_partial_then_prompts(self, mock_internal_llm_robust_chat):
-        municipio_context_state = {}
-        user_initial_complaint = "Hay un árbol caído en la plaza principal."
+        with self.app.app_context():
+            municipio_context_state = {}
+            user_initial_complaint = "Hay un árbol caído en la plaza principal."
 
-        mock_internal_llm_robust_chat.return_value = json.dumps({}) # Default for internal, should not be relied upon heavily
+            mock_internal_llm_robust_chat.return_value = json.dumps({}) # Default for internal, should not be relied upon heavily
 
-        # 1. Initial complaint: Main LLM extracts some info, asks for more
-        main_llm_extraction_step1 = {
-            "target": "municipio",
-            "categoria": "Arbol Caido", # Matched by LLM
-            "descripcion": "árbol caído", # Partial description
-            "ubicacion": "plaza principal"
-        }
-        payload_step1 = {
-            "pregunta": user_initial_complaint,
-            "llamar_gemini_mock_return": {
-                 "respuesta_usuario": "Entendido lo del árbol caído en la plaza. Para completar el reclamo, ¿podrías darme tu nombre completo?",
-                 "accion_backend": "iniciar_reclamo", # Or "crear_reclamo_municipio" if it can proceed partially
-                 "datos_estructura": main_llm_extraction_step1,
-                 "pedir_info": "nombre_completo",
-                 "botones": []
+            # 1. Initial complaint: Main LLM extracts some info, asks for more
+            main_llm_extraction_step1 = {
+                "target": "municipio",
+                "categoria": "Arbol Caido", # Matched by LLM
+                "descripcion": "árbol caído", # Partial description
+                "ubicacion": "plaza principal"
             }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload_step1, municipio_context_state)
-
-        self.assertEqual(municipio_context_state.get("categoria_reclamo"), "Arbol Caido")
-        self.assertEqual(municipio_context_state.get("direccion_reclamo"), "plaza principal")
-        self.assertEqual(municipio_context_state.get("descripcion_reclamo"), "árbol caído")
-        self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_NOMBRE_VECINO)
-        self.assertIn("nombre completo", response["message_body"].lower())
-
-        # 2. User provides name
-        payload_step2 = {
-            "pregunta": "Soy Ana Vecina",
-            "llamar_gemini_mock_return": { # Main LLM just continues flow
-                 "respuesta_usuario": "Gracias Ana. ¿Tu número de teléfono?",
-                 "accion_backend": "continuar_flujo", # No new primary action, just data gathering
-                 "datos_estructura": {"target": "municipio", "nombre_usuario_detectado": "Ana Vecina"}, # LLM might echo back
-                 "pedir_info": "telefono",
-                 "botones": []
-            }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload_step2, municipio_context_state)
-        self.assertEqual(municipio_context_state.get("nombre_vecino"), "Ana Vecina")
-        self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_TELEFONO_VECINO)
-        self.assertIn("número de teléfono", response["message_body"].lower())
-
-        # 3. User provides phone
-        payload_step3 = {
-            "pregunta": "Es 2612345678",
-            "llamar_gemini_mock_return": {
-                 "respuesta_usuario": "Perfecto. ¿Y tu email?",
-                 "accion_backend": "continuar_flujo",
-                 "datos_estructura": {"target": "municipio", "telefono_detectado": "2612345678"},
-                 "pedir_info": "email",
-                 "botones": []
-            }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload_step3, municipio_context_state)
-        self.assertTrue(validar_telefono(municipio_context_state.get("telefono_vecino")))
-        self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_EMAIL_VECINO)
-        self.assertIn("email", response["message_body"].lower())
-
-        # 4. User provides email
-        payload_step4 = {
-            "pregunta": "ana@vecina.com",
-             "llamar_gemini_mock_return": {
-                 "respuesta_usuario": "Gracias. ¿Querés agregar algo más a la descripción del árbol caído?",
-                 "accion_backend": "continuar_flujo",
-                 "datos_estructura": {"target": "municipio", "email_detectado": "ana@vecina.com"},
-                 "pedir_info": "descripcion_adicional_opcional", # Or could go to adjuntos / confirmacion
-                 "botones": []
-            }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload_step4, municipio_context_state)
-        self.assertEqual(municipio_context_state.get("email_vecino"), "ana@vecina.com")
-        # Assuming description was already partially filled, it might ask for adjuntos or confirmation
-        # Let's assume it asks for adjuntos if description is minimal
-        if not municipio_context_state.get("descripcion_reclamo") or len(municipio_context_state.get("descripcion_reclamo")) < 20:
-             self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_DESCRIPCION_RECLAMO)
-             self.assertIn("detalle cuál es el problema", response["message_body"].lower())
-             # Now provide full description
-             payload_step5_desc = {
-                "pregunta": "Sí, el árbol es muy grande y está bloqueando toda la calle.",
+            payload_step1 = {
+                "pregunta": user_initial_complaint,
                 "llamar_gemini_mock_return": {
-                     "respuesta_usuario": "Entendido. ¿Querés adjuntar una foto?",
-                     "accion_backend": "continuar_flujo",
-                     "datos_estructura": {"target": "municipio", "descripcion": "Sí, el árbol es muy grande y está bloqueando toda la calle."},
-                     "pedir_info": "adjuntos",
+                     "respuesta_usuario": "Entendido lo del árbol caído en la plaza. Para completar el reclamo, ¿podrías darme tu nombre completo?",
+                     "accion_backend": "iniciar_reclamo", # Or "crear_reclamo_municipio" if it can proceed partially
+                     "datos_estructura": main_llm_extraction_step1,
+                     "pedir_info": "nombre_completo",
                      "botones": []
-                }}
-             response, municipio_context_state, _ = self._call_responder_municipio(payload_step5_desc, municipio_context_state)
-             self.assertEqual(municipio_context_state.get("descripcion_reclamo"), "Sí, el árbol es muy grande y está bloqueando toda la calle.")
-             self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_ADJUNTOS_RECLAMO)
-        else: # If description was sufficient
-            self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_ADJUNTOS_RECLAMO)
+                }
+            }
+            response, municipio_context_state, _ = self._call_responder_municipio(payload_step1, municipio_context_state)
 
-        self.assertIn("adjuntar una foto", response["message_body"].lower())
+            self.assertEqual(municipio_context_state.get("categoria_reclamo"), "Arbol Caido")
+            self.assertEqual(municipio_context_state.get("direccion_reclamo"), "plaza principal")
+            self.assertEqual(municipio_context_state.get("descripcion_reclamo"), "árbol caído")
+            self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_NOMBRE_VECINO)
+            self.assertIn("nombre completo", response["message_body"].lower())
+
+            # 2. User provides name
+            payload_step2 = {
+                "pregunta": "Soy Ana Vecina",
+                "llamar_gemini_mock_return": { # Main LLM just continues flow
+                     "respuesta_usuario": "Gracias Ana. ¿Tu número de teléfono?",
+                     "accion_backend": "continuar_flujo", # No new primary action, just data gathering
+                     "datos_estructura": {"target": "municipio", "nombre_usuario_detectado": "Ana Vecina"}, # LLM might echo back
+                     "pedir_info": "telefono",
+                     "botones": []
+                }
+            }
+            response, municipio_context_state, _ = self._call_responder_municipio(payload_step2, municipio_context_state)
+            self.assertEqual(municipio_context_state.get("nombre_vecino"), "Ana Vecina")
+            self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_TELEFONO_VECINO)
+            self.assertIn("número de teléfono", response["message_body"].lower())
+
+            # 3. User provides phone
+            payload_step3 = {
+                "pregunta": "Es 2612345678",
+                "llamar_gemini_mock_return": {
+                     "respuesta_usuario": "Perfecto. ¿Y tu email?",
+                     "accion_backend": "continuar_flujo",
+                     "datos_estructura": {"target": "municipio", "telefono_detectado": "2612345678"},
+                     "pedir_info": "email",
+                     "botones": []
+                }
+            }
+            response, municipio_context_state, _ = self._call_responder_municipio(payload_step3, municipio_context_state)
+            self.assertTrue(validar_telefono(municipio_context_state.get("telefono_vecino")))
+            self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_EMAIL_VECINO)
+            self.assertIn("email", response["message_body"].lower())
+
+            # 4. User provides email
+            payload_step4 = {
+                "pregunta": "ana@vecina.com",
+                 "llamar_gemini_mock_return": {
+                     "respuesta_usuario": "Gracias. ¿Querés agregar algo más a la descripción del árbol caído?",
+                     "accion_backend": "continuar_flujo",
+                     "datos_estructura": {"target": "municipio", "email_detectado": "ana@vecina.com"},
+                     "pedir_info": "descripcion_adicional_opcional", # Or could go to adjuntos / confirmacion
+                     "botones": []
+                }
+            }
+            response, municipio_context_state, _ = self._call_responder_municipio(payload_step4, municipio_context_state)
+            self.assertEqual(municipio_context_state.get("email_vecino"), "ana@vecina.com")
+            # Assuming description was already partially filled, it might ask for adjuntos or confirmation
+            # Let's assume it asks for adjuntos if description is minimal
+            if not municipio_context_state.get("descripcion_reclamo") or len(municipio_context_state.get("descripcion_reclamo")) < 20:
+                 self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_DESCRIPCION_RECLAMO)
+                 self.assertIn("detalle cuál es el problema", response["message_body"].lower())
+                 # Now provide full description
+                 payload_step5_desc = {
+                    "pregunta": "Sí, el árbol es muy grande y está bloqueando toda la calle.",
+                    "llamar_gemini_mock_return": {
+                         "respuesta_usuario": "Entendido. ¿Querés adjuntar una foto?",
+                         "accion_backend": "continuar_flujo",
+                         "datos_estructura": {"target": "municipio", "descripcion": "Sí, el árbol es muy grande y está bloqueando toda la calle."},
+                         "pedir_info": "adjuntos",
+                         "botones": []
+                    }}
+                 response, municipio_context_state, _ = self._call_responder_municipio(payload_step5_desc, municipio_context_state)
+                 self.assertEqual(municipio_context_state.get("descripcion_reclamo"), "Sí, el árbol es muy grande y está bloqueando toda la calle.")
+                 self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_ADJUNTOS_RECLAMO)
+            else: # If description was sufficient
+                self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_ADJUNTOS_RECLAMO)
+
+            self.assertIn("adjuntar una foto", response["message_body"].lower())
 
 
     @patch('services.llm_utils.robust_chat')
     def test_complaint_no_llm_extraction_traditional_flow(self, mock_internal_llm_robust_chat):
-        municipio_context_state = {}
-        user_initial_complaint = "Tengo una queja."
+        with self.app.app_context():
+            municipio_context_state = {}
+            user_initial_complaint = "Tengo una queja."
 
-        mock_internal_llm_robust_chat.return_value = json.dumps({}) # Internal LLM should not extract much in this flow
+            mock_internal_llm_robust_chat.return_value = json.dumps({}) # Internal LLM should not extract much in this flow
 
-        # 1. Initial generic complaint
-        payload_step1 = {
-            "pregunta": user_initial_complaint,
-            "llamar_gemini_mock_return": {
-                 "respuesta_usuario": "Entendido. ¿Sobre qué categoría es tu reclamo?",
-                 "accion_backend": "iniciar_reclamo",
-                 "datos_estructura": {"target": "municipio"}, # Minimal extraction
-                 "pedir_info": "categoria",
-                 "botones": [{"texto": "Luminaria"}, {"texto": "Arbolado"}]
+            # 1. Initial generic complaint
+            payload_step1 = {
+                "pregunta": user_initial_complaint,
+                "llamar_gemini_mock_return": {
+                     "respuesta_usuario": "Entendido. ¿Sobre qué categoría es tu reclamo?",
+                     "accion_backend": "iniciar_reclamo",
+                     "datos_estructura": {"target": "municipio"}, # Minimal extraction
+                     "pedir_info": "categoria",
+                     "botones": [{"texto": "Luminaria"}, {"texto": "Arbolado"}]
+                }
             }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload_step1, municipio_context_state)
+            response, municipio_context_state, _ = self._call_responder_municipio(payload_step1, municipio_context_state)
 
-        self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_CATEGORIA_RECLAMO)
-        self.assertIn("categoría es tu reclamo", response.get("message_body", "").lower())
+            self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_CATEGORIA_RECLAMO)
+            self.assertIn("categoría es tu reclamo", response.get("message_body", "").lower())
 
-        # 2. User provides category
-        payload_step2 = {
-            "pregunta": "luminaria", # User chooses/types category
-            "llamar_gemini_mock_return": { # Main LLM just continues
-                 "respuesta_usuario": "Ok, luminaria. ¿Cuál es la dirección exacta del problema?",
-                 "accion_backend": "continuar_flujo",
-                 "datos_estructura": {"target": "municipio", "categoria": "luminaria"}, # LLM might confirm category
-                 "pedir_info": "ubicacion",
-                 "botones": []
+            # 2. User provides category
+            payload_step2 = {
+                "pregunta": "luminaria", # User chooses/types category
+                "llamar_gemini_mock_return": { # Main LLM just continues
+                     "respuesta_usuario": "Ok, luminaria. ¿Cuál es la dirección exacta del problema?",
+                     "accion_backend": "continuar_flujo",
+                     "datos_estructura": {"target": "municipio", "categoria": "luminaria"}, # LLM might confirm category
+                     "pedir_info": "ubicacion",
+                     "botones": []
+                }
             }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload_step2, municipio_context_state)
-        # In the traditional flow, ReclamoHandler itself matches "luminaria" to a known category.
-        # We need to ensure municipios.CATEGORIAS_RECLAMO is populated for this test if ReclamoHandler relies on it.
-        # For now, assume 'luminaria' is directly set or matched by ReclamoHandler's non-LLM logic.
-        self.assertEqual(municipio_context_state.get("categoria_reclamo").lower(), "luminaria")
-        self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_DIRECCION_RECLAMO)
-        self.assertIn("dirección exacta", response.get("message_body", "").lower())
+            response, municipio_context_state, _ = self._call_responder_municipio(payload_step2, municipio_context_state)
+            # In the traditional flow, ReclamoHandler itself matches "luminaria" to a known category.
+            # We need to ensure municipios.CATEGORIAS_RECLAMO is populated for this test if ReclamoHandler relies on it.
+            # For now, assume 'luminaria' is directly set or matched by ReclamoHandler's non-LLM logic.
+            self.assertEqual(municipio_context_state.get("categoria_reclamo").lower(), "luminaria")
+            self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_DIRECCION_RECLAMO)
+            self.assertIn("dirección exacta", response.get("message_body", "").lower())
 
-        # 3. User provides address
-        payload_step3 = {
-            "pregunta": "Calle Luz Mala 100",
-            "llamar_gemini_mock_return": {
-                 "respuesta_usuario": "Anotado: Calle Luz Mala 100. ¿Tu nombre completo?",
-                 "accion_backend": "continuar_flujo",
-                 "datos_estructura": {"target": "municipio", "ubicacion": "Calle Luz Mala 100"},
-                 "pedir_info": "nombre_completo",
-                 "botones": []
+            # 3. User provides address
+            payload_step3 = {
+                "pregunta": "Calle Luz Mala 100",
+                "llamar_gemini_mock_return": {
+                     "respuesta_usuario": "Anotado: Calle Luz Mala 100. ¿Tu nombre completo?",
+                     "accion_backend": "continuar_flujo",
+                     "datos_estructura": {"target": "municipio", "ubicacion": "Calle Luz Mala 100"},
+                     "pedir_info": "nombre_completo",
+                     "botones": []
+                }
             }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload_step3, municipio_context_state)
-        self.assertEqual(municipio_context_state.get("direccion_reclamo"), "Calle Luz Mala 100")
-        self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_NOMBRE_VECINO)
-        self.assertIn("nombre completo", response.get("message_body", "").lower())
+            response, municipio_context_state, _ = self._call_responder_municipio(payload_step3, municipio_context_state)
+            self.assertEqual(municipio_context_state.get("direccion_reclamo"), "Calle Luz Mala 100")
+            self.assertEqual(municipio_context_state.get("estado_conversacion"), ConversationState.ESPERANDO_NOMBRE_VECINO)
+            self.assertIn("nombre completo", response.get("message_body", "").lower())
 
     def test_invalid_pedir_info_resets_flow(self):
-        municipio_context_state = {}
-        payload = {
-            "pregunta": "quiero hacer un reclamo",
-            "llamar_gemini_mock_return": {
-                "respuesta_usuario": "Necesito un dato extraño",
-                "accion_backend": "iniciar_reclamo",
-                "datos_estructura": {"target": "municipio"},
-                "pedir_info": "dato_inexistente",
-                "botones": []
+        with self.app.app_context():
+            municipio_context_state = {}
+            payload = {
+                "pregunta": "quiero hacer un reclamo",
+                "llamar_gemini_mock_return": {
+                    "respuesta_usuario": "Necesito un dato extraño",
+                    "accion_backend": "iniciar_reclamo",
+                    "datos_estructura": {"target": "municipio"},
+                    "pedir_info": "dato_inexistente",
+                    "botones": []
+                }
             }
-        }
-        response, municipio_context_state, _ = self._call_responder_municipio(payload, municipio_context_state)
-        self.assertIsNone(municipio_context_state.get("estado_conversacion"))
-        self.assertIn("perd\xc3\xb3n, tuve un problema", response.get("message_body", "").lower())
+            response, municipio_context_state, _ = self._call_responder_municipio(payload, municipio_context_state)
+            self.assertIsNone(municipio_context_state.get("estado_conversacion"))
+            self.assertIn("perd\xc3\xb3n, tuve un problema", response.get("message_body", "").lower())
 
 
     def test_json_parsing_error_from_gemini(self):

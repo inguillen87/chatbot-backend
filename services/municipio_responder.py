@@ -102,7 +102,7 @@ PALABRAS_CLAVE_CONFIRMACION = {
 
 # Keywords for requesting to edit information during a flow
 EDIT_KEYWORDS = {
-    "editar", "cambiar", "corregir", "modificar", 
+    "editar", "cambiar", "corregir", "modificar",
     "no era asi", "me equivoque", "error", "equivocado",
     "editar datos", "editar_reclamo_datos", "quiero editar", "necesito cambiar"
 }
@@ -836,7 +836,7 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
-    
+
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
 
