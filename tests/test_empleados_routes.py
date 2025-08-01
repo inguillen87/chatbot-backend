@@ -40,8 +40,10 @@ class EmpleadosRouteTests(unittest.TestCase):
         db.session.commit()
         data = {"name": "Emp", "email": "emp@e.com", "password": "123"}
         with self.client:
-            self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
-            response = self.client.post('/empleados', json=data)
+            login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
+            token = login_response.get_json()['token']
+            headers = {'Authorization': f'Bearer {token}'}
+            response = self.client.post('/empleados', json=data, headers=headers)
             self.assertEqual(response.status_code, 400)
 
     def test_crear_empleado_con_categorias(self):

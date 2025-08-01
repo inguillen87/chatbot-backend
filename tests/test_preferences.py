@@ -15,11 +15,12 @@ class PreferencesTests(unittest.TestCase):
         self.ctx.pop()
 
     def test_add_and_get(self):
-        add_preference('color', 'rojo')
-        add_preference('color', 'azul')
-        add_preference('vino', 'malbec')
-        self.assertEqual(set(get_preferences('color')), {'rojo', 'azul'})
-        self.assertEqual(get_preferences('vino'), ['malbec'])
+        context = {}
+        add_preference(context, 'color', 'rojo')
+        add_preference(context, 'color', 'azul')
+        add_preference(context, 'vino', 'malbec')
+        self.assertEqual(set(get_preferences(context, 'color')), {'rojo', 'azul'})
+        self.assertEqual(get_preferences(context, 'vino'), ['malbec'])
 
 
 if __name__ == '__main__':

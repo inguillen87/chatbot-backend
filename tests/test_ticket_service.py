@@ -75,6 +75,8 @@ class TicketServiceTests(unittest.TestCase):
 
         class DummyModel:
             def __init__(self, **kwargs):
+                self.latitud = None
+                self.longitud = None
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 
@@ -125,6 +127,8 @@ class TicketServiceTests(unittest.TestCase):
 
         class DummyModel:
             def __init__(self, **kwargs):
+                self.latitud = None
+                self.longitud = None
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 

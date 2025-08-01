@@ -5,7 +5,7 @@ import random # Para el mock de AnalisisArchivo en las pruebas
 from typing import Dict, Any, List, Optional
 
 from models import ArchivoAdjunto, AnalisisArchivo, User, CatalogoItem, db
-from services.google_vision_service import analyze_image_from_content, VISION_CLIENT # Import VISION_CLIENT para pruebas
+from services.google_vision_service import GoogleVisionService
 from services.llm_utils import extract_complaint_details_llm
 from services.common_utils import limpiar_texto_base, parse_precio_flexible # Para procesar texto de pedido
 from services.pedido_processor_service import calcular_similitud_levenshtein, UMBRAL_SIMILITUD_PRODUCTO_PEDIDO # Reutilizar lógica de matching
@@ -127,7 +127,8 @@ def interpretar_imagen_para_chat(
 
     if "image" in input_mime_type:
         logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a Vision API...")
-        vision_results = analyze_image_from_content(file_content) # Esta función ya loguea sus errores
+        vision_service = GoogleVisionService()
+        vision_results = vision_service.analyze_image_from_content(file_content) # Esta función ya loguea sus errores
     elif "pdf" in input_mime_type or "spreadsheet" in input_mime_type or "excel" in input_mime_type:
         from services.document_processing_service import document_processing_service
         doc_ai_result = document_processing_service.process_document(file_content, input_mime_type)

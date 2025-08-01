@@ -32,9 +32,6 @@ class TestChatIntegration(unittest.TestCase):
         db.session.add(self.test_user)
         db.session.commit()
         self.auth_headers = {'Authorization': f'Bearer {self.test_user.token}'}
-        with self.app.app_context():
-            db.create_all()
-
 
     def tearDown(self):
         db.session.remove()

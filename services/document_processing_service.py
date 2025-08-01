@@ -19,15 +19,15 @@ class DocumentProcessingService:
             return {"success": False, "error": "Archivo no encontrado."}
 
         # Delegate to a more specific method based on MIME type
-        if archivo.mimetype.startswith("image/"):
+        if archivo.mime.startswith("image/"):
             return self._process_image(archivo)
-        elif archivo.mimetype == "application/pdf":
+        elif archivo.mime == "application/pdf":
             return self._process_pdf(archivo)
-        elif "spreadsheet" in archivo.mimetype or ".xls" in archivo.nombre_original:
+        elif "spreadsheet" in archivo.mime or ".xls" in archivo.nombre_original:
             return self._process_spreadsheet(archivo)
         else:
-            logger.warning(f"Unsupported MIME type for automatic processing: {archivo.mimetype}")
-            return {"success": False, "error": f"Tipo de archivo no soportado: {archivo.mimetype}"}
+            logger.warning(f"Unsupported MIME type for automatic processing: {archivo.mime}")
+            return {"success": False, "error": f"Tipo de archivo no soportado: {archivo.mime}"}
 
     def _process_image(self, archivo: ArchivoAdjunto) -> Dict[str, Any]:
         logger.info(f"Processing image: {archivo.nombre_original} (ID: {archivo.id})")

@@ -48,6 +48,7 @@ class ChatLogicTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             json_data = response.get_json()
             self.assertNotIn('pedir_info', json_data)
+            self.assertIn('respuesta', json_data)
 
     @patch('routes.chat.responder_chatboc')
     def test_anonymous_user_info_request(self, mock_responder):
