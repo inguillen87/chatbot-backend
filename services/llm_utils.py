@@ -108,6 +108,50 @@ def _clean_llm_json_output(llm_output: str) -> str:
     return cleaned_output.strip()
 
 
+def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> Optional[Dict | List]:
+    """
+    Calls the LLM (Gemini) requesting a JSON output and parses it safely.
+
+    Args:
+        system_prompt: The system prompt guiding the LLM's task.
+        user_prompt: The user prompt, containing the data to be processed.
+
+    Returns:
+        A dictionary or list parsed from the LLM's JSON response, or None on error.
+    """
+    from services.gemini_bridge import llamar_gemini_para_generacion_texto
+
+    logger.info("Calling LLM for structured JSON output.")
+    try:
+        # Call the generic Gemini function, requesting JSON output
+        response_text = llamar_gemini_para_generacion_texto(
+            system_prompt_especifico=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.1,  # Lower temp for more deterministic JSON extraction
+            json_output=True
+        )
+
+        if not response_text:
+            logger.error("LLM returned no text for JSON extraction.")
+            return None
+
+        # Clean and parse the response
+        cleaned_json_str = _clean_llm_json_output(response_text)
+        if not cleaned_json_str:
+            logger.error("LLM response was empty after cleaning.")
+            return None
+
+        return json.loads(cleaned_json_str)
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode JSON from LLM response: {e}", exc_info=True)
+        logger.debug(f"Raw response was: {response_text}")
+        return None
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during LLM JSON extraction: {e}", exc_info=True)
+        return None
+
+
 def _close_open_json_structures(json_str: str) -> str:
     """Try to close quotes and brackets for a possibly truncated JSON string."""
     if not json_str:
