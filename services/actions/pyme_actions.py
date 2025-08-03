@@ -186,11 +186,9 @@ class SolicitarUbicacionTiendaActionHandler(BaseActionHandler):
             "data": {"ubicacion_principal": "Av. Siempre Viva 742"}
         }
 
-from services.pedido_service import servicio_pedidos
-
-
 class ConsultarEstadoPedidoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        from services.pedido_service import servicio_pedidos
         logger.info(f"Executing ConsultarEstadoPedidoActionHandler with data: {action_data}")
         nro_pedido_llm = action_data.get("id_pedido_mencionado")
         if not nro_pedido_llm:

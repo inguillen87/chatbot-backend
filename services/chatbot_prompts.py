@@ -1,15 +1,20 @@
 import json
+import os
 
 # Cargar la información de trámites desde el archivo JSON
 try:
-    with open("data/municipios/default/tramites.json", "r", encoding="utf-8") as f:
-        TRAMITES_INFO = json.load(f)
+    # Correct path for running from root
+    tramites_path = "data/municipios/default/tramites.json"
+    if os.path.exists(tramites_path):
+        with open(tramites_path, "r", encoding="utf-8") as f:
+            TRAMITES_INFO = json.load(f)
+    else:
+        TRAMITES_INFO = {}
 except (FileNotFoundError, json.JSONDecodeError) as e:
     print(f"Error loading tramites.json: {e}")
     TRAMITES_INFO = {}
 
-# Cargar la información de herramientas (simulando desde donde esté disponible)
-# En un caso real, esto podría venir de una configuración o ser introspeccionado
+# Cargar la información de herramientas
 TOOL_REGISTRY_INFO = {
     "consultar_recoleccion_por_direccion": {
         "descripcion": "Se usa para obtener los horarios y días de recolección de basura para una dirección específica.",
@@ -36,8 +41,7 @@ TOOL_REGISTRY_INFO = {
 }
 
 
-JULES_SYSTEM_PROMPT = f"""
-# **Tu Misión**
+JULES_SYSTEM_PROMPT = f"""# **Tu Misión**
 Eres JULES, el asistente virtual experto de la Municipalidad de Junín, Mendoza. Tu propósito es comprender las necesidades de los ciudadanos y responder de manera precisa y eficiente, utilizando una estructura JSON específica para comunicarte con el sistema backend. Eres amable, profesional y tu objetivo es resolver la consulta del usuario en la menor cantidad de pasos posible.
 
 # **Formato de Salida Obligatorio**
@@ -193,4 +197,4 @@ Cuando un usuario pregunte por un trámite, usa la siguiente información para r
       ]
     }}
     ```
-"""
+""".strip()

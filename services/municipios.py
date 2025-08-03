@@ -837,6 +837,10 @@ def responder_municipio(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
     
+    opciones_finales = []
+    respuesta_final_texto = ""
+    action_handler_result = {}
+    llm_response_structured = {}
     received_payload = {}
     pregunta_str = ""
     if isinstance(pregunta_original, dict):

@@ -11,7 +11,7 @@ from google.oauth2 import service_account
 from tenacity import retry, stop_after_attempt, wait_fixed
 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 import vertexai
-from services.prompts.jules_system_prompt import JULES_SYSTEM_PROMPT
+from services.chatbot_prompts import JULES_SYSTEM_PROMPT
 
 # Configuración del logger
 logger = logging.getLogger(__name__)
@@ -90,7 +90,8 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-        model_name = GEMINI_MODEL_PRESTAMOS
+        model_name = "gemini-2.5-pro"
+
         model = GenerativeModel(
             model_name,
             system_instruction=[JULES_SYSTEM_PROMPT]
@@ -225,6 +226,47 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         }
 
 
+def llamar_gemini_para_generacion_texto(
+    system_prompt_especifico: str,
+    user_prompt: str,
+    temperature: float = 0.5
+) -> str:
+    """
+    Llama a Gemini para una tarea de generación de texto simple, sin esperar JSON.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        project_id = os.environ.get("GOOGLE_PROJECT_ID")
+        location = "us-central1"
+
+        if not project_id:
+            logger.error("GOOGLE_PROJECT_ID no está configurado.")
+            raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
+
+        vertexai.init(project=project_id, location=location)
+        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[system_prompt_especifico])
+        
+        generation_config = GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=2048
+        )
+
+        response = model.generate_content(
+            [user_prompt],
+            generation_config=generation_config,
+        )
+        
+        if response.candidates and response.candidates[0].content.parts:
+            return response.candidates[0].content.parts[0].text
+        else:
+            logger.error("Respuesta de Gemini para generación de texto vacía.")
+            return ""
+
+    except Exception as e:
+        logger.error(f"Error en llamar_gemini_para_generacion_texto: {e}", exc_info=True)
+        return ""
+
+
 def llamar_gemini(
     mensaje_usuario: str = None,
     usuario: dict = None,
@@ -257,75 +299,6 @@ def llamar_gemini(
     #     respuesta["respuesta_usuario"] = "Sigo buscando la mejor respuesta, dame unos segundos más… " + respuesta["respuesta_usuario"]
 
     return respuesta
-
-
-def llamar_gemini_para_generacion_texto(
-    system_prompt_especifico: str,
-    user_prompt: str,
-    model_name: str = "gemini-2.5-pro",
-    temperature: float = 0.3,
-    json_output: bool = False
-) -> Optional[str]:
-    """
-    Una función más genérica para llamar a Gemini con un system prompt y un user prompt específicos.
-    Ideal para tareas de generación o extracción de texto que no dependen del historial de chat.
-
-    Args:
-        system_prompt_especifico: El system prompt para esta tarea.
-        user_prompt: El prompt del usuario (ej. el texto a analizar).
-        model_name: El modelo de Gemini a utilizar.
-        temperature: La temperatura para la generación.
-        json_output: Si es True, se solicitará una salida JSON.
-
-    Returns:
-        La respuesta de texto del LLM, o None si hay un error.
-    """
-    logger.info(f"Llamando a Gemini (modelo {model_name}) para generación de texto con temp {temperature}.")
-    try:
-        # Inicialización y configuración (similar a _llamar_gemini_impl)
-        project_id = os.environ.get("GOOGLE_PROJECT_ID")
-        location = "us-central1"
-        if not project_id:
-            logger.error("GOOGLE_PROJECT_ID no está configurado.")
-            return None
-
-        # vertexai.init podría ser llamado múltiples veces, es idempotente.
-        vertexai.init(project=project_id, location=location)
-
-        model = GenerativeModel(
-            model_name,
-            system_instruction=[system_prompt_especifico]
-        )
-
-        gen_config_args = {
-            "temperature": temperature,
-            "max_output_tokens": 8192,
-        }
-        if json_output:
-            gen_config_args["response_mime_type"] = "application/json"
-
-        generation_config = GenerationConfig(**gen_config_args)
-
-        # La llamada a `generate_content` con reintentos
-        response = robust_chat(
-            model,
-            [user_prompt],
-            generation_config=generation_config,
-            safety_settings=GEMINI_SAFETY_SETTINGS,
-        )
-
-        if response.candidates and response.candidates[0].content.parts:
-            respuesta_texto = response.candidates[0].content.parts[0].text
-            logger.info(f"Respuesta de texto recibida de Gemini (genérica): {respuesta_texto[:200]}...")
-            return respuesta_texto
-        else:
-            logger.error("Llamada genérica a Gemini no devolvió contenido.")
-            return None
-
-    except Exception as e:
-        logger.error(f"Error en llamada genérica a Gemini: {e}", exc_info=True)
-        return None
-
 
 if __name__ == '__main__':
     # Configurar logging básico para pruebas locales si no está ya configurado
