@@ -28,37 +28,56 @@ catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
 
 from werkzeug.utils import secure_filename
-from services.catalog_upload_service import catalog_upload_service
+from services.intelligent_catalog_processor import IntelligentCatalogProcessor
+import tempfile
 
 @catalogo_bp.route('/upload', methods=['POST'])
 @token_requerido
 def upload_catalog(user):
     """
-    Endpoint para subir un archivo de catálogo.
+    Endpoint para subir un archivo de catálogo (PDF, Excel, Word, Imagen).
+    El archivo es procesado inteligentemente para extraer los productos.
     """
     if 'file' not in request.files:
-        return jsonify({"error": "No se encontró el archivo"}), 400
+        return jsonify({"error": "No se encontró el archivo ('file' part)"}), 400
 
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No se seleccionó ningún archivo"}), 400
 
     if file:
-        filename = secure_filename(file.filename)
-        # Guardar el archivo temporalmente para procesarlo
-        filepath = os.path.join('/tmp', filename)
-        file.save(filepath)
+        original_filename = secure_filename(file.filename)
 
-        try:
-            # Llamar al servicio para procesar el catálogo
-            catalog_upload_service.process_catalog(filepath, user.id)
-            return jsonify({"mensaje": "Catálogo subido y procesándose."}), 202
-        except Exception as e:
-            return jsonify({"error": f"Error al procesar el catálogo: {e}"}), 500
+        # Usar un directorio temporal seguro
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, original_filename)
+            file.save(filepath)
+
+            try:
+                # Llamar al nuevo servicio de procesamiento inteligente
+                processor = IntelligentCatalogProcessor(user_id=user.id)
+                success = processor.process_file(filepath, original_filename)
+
+                if success:
+                    return jsonify({"mensaje": "Catálogo subido y procesado exitosamente."}), 202
+                else:
+                    return jsonify({"error": "No se pudo procesar el catálogo. Revise los logs para más detalles."}), 500
+
+            except Exception as e:
+                # Loggear el error en un ambiente de producción
+                # from flask import current_app
+                # current_app.logger.error(f"Error fatal en upload_catalog: {e}", exc_info=True)
+                return jsonify({"error": f"Error crítico al procesar el catálogo: {e}"}), 500
+
+    return jsonify({"error": "Archivo no válido"}), 400
+
 
 @catalogo_bp.route('/cargar', methods=['POST'])
 def cargar_catalogo():
-    """Alias que reutiliza la lógica de ``subir_catalogo``."""
+    """
+    DEPRECADO: Este endpoint está obsoleto. Usar /upload en su lugar.
+    Alias que reutiliza la lógica de ``subir_catalogo``.
+    """
     return _subir_catalogo()
 
 

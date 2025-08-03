@@ -6,7 +6,7 @@ import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from routes.auth import token_requerido
-from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
+# from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 from google.cloud import storage
 from services.google_vision_service import analyze_image_from_content
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google

@@ -148,7 +148,7 @@ def parse_precio_flexible(precio_str: str) -> Tuple[str, Optional[float], Option
 
     return precio_str_limpio_retorno, precio_float, moneda_detectada
 
-def crear_mapa_de_columnas_inteligente(df: pd.DataFrame) -> Optional[Tuple[Dict[str, Any], int]]:
+def crear_mapa_de_columnas_inteligente(df: pd.DataFrame, umbral_similitud: float = 0.8) -> Optional[Tuple[Dict[str, Any], int]]:
     """
     PLACEHOLDER: Intelligent column mapping.
     Original implementation needs to be restored.
@@ -328,7 +328,7 @@ def crear_mapa_de_columnas_inteligente(df: pd.DataFrame) -> Optional[Tuple[Dict[
 KEYWORD_MAP: Dict[str, List[str]] = {
     "nombre": [
         "nombre", "producto", "item", "articulo", "descripción", "descripcion",
-        "designacion", "titulo", "name", "product", "title"
+        "designacion", "titulo", "name", "product", "title", "nombre del producto"
     ],
     "precio": [
         "precio", "valor", "costo", "importe", "precio venta", "precio unitario",
@@ -354,7 +354,7 @@ KEYWORD_MAP: Dict[str, List[str]] = {
     ],
     "stock": [ # Cantidad disponible
         "stock", "cantidad", "disponible", "existencias", "disponibilidad",
-        "quantity", "qty", "available", "in stock"
+        "quantity", "qty", "available", "in stock", "stock disponible"
     ],
     "categoria_producto": [
         "categoria", "rubro", "tipo", "familia", "linea", "category", "type", "group", "line"
