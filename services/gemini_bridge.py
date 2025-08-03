@@ -11,6 +11,7 @@ from google.oauth2 import service_account
 from tenacity import retry, stop_after_attempt, wait_fixed
 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 import vertexai
+from services.chatbot_prompts import JULES_SYSTEM_PROMPT
 
 # Configuración del logger
 logger = logging.getLogger(__name__)
@@ -223,6 +224,47 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             "datos_estructura": {"error_detalle": f"Fallo general post-LLM: {str(e_parse)}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
         }
+
+
+def llamar_gemini_para_generacion_texto(
+    system_prompt_especifico: str,
+    user_prompt: str,
+    temperature: float = 0.5
+) -> str:
+    """
+    Llama a Gemini para una tarea de generación de texto simple, sin esperar JSON.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        project_id = os.environ.get("GOOGLE_PROJECT_ID")
+        location = "us-central1"
+
+        if not project_id:
+            logger.error("GOOGLE_PROJECT_ID no está configurado.")
+            raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
+
+        vertexai.init(project=project_id, location=location)
+        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[system_prompt_especifico])
+
+        generation_config = GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=2048
+        )
+
+        response = model.generate_content(
+            [user_prompt],
+            generation_config=generation_config,
+        )
+
+        if response.candidates and response.candidates[0].content.parts:
+            return response.candidates[0].content.parts[0].text
+        else:
+            logger.error("Respuesta de Gemini para generación de texto vacía.")
+            return ""
+
+    except Exception as e:
+        logger.error(f"Error en llamar_gemini_para_generacion_texto: {e}", exc_info=True)
+        return ""
 
 
 def llamar_gemini(
