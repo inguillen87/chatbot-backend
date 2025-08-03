@@ -4,7 +4,7 @@ from .email_service import (
     enviar_email_pedido_admin,
     enviar_email_pedido_cliente,
 )
-from .municipios import (
+from .notifications import (
     enviar_notificacion_sms,
     enviar_notificacion_whatsapp_con_plantilla,
 )

@@ -90,8 +90,9 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
+        model_name = GEMINI_MODEL_PRESTAMOS
         model = GenerativeModel(
-            GEMINI_MODEL_PRESTAMOS,
+            model_name,
             system_instruction=[JULES_SYSTEM_PROMPT]
         )
 
