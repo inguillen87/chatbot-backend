@@ -263,7 +263,7 @@ def llamar_gemini(
 def llamar_gemini_para_generacion_texto(
     system_prompt_especifico: str,
     user_prompt: str,
-    model_name: str = GEMINI_MODEL_PRESTAMOS,
+    model_name: str = "gemini-2.5-pro",
     temperature: float = 0.3,
     json_output: bool = False
 ) -> Optional[str]:
