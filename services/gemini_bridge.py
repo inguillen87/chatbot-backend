@@ -11,11 +11,7 @@ from google.oauth2 import service_account
 from tenacity import retry, stop_after_attempt, wait_fixed
 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 import vertexai
-<<<<<<< feat/intelligent-catalog-processor
 from services.prompts.jules_system_prompt import JULES_SYSTEM_PROMPT
-=======
-from services.prompts import JULES_SYSTEM_PROMPT
->>>>>>> main
 
 # Configuración del logger
 logger = logging.getLogger(__name__)
