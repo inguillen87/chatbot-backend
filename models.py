@@ -596,3 +596,24 @@ class CatalogoCompartido(db.Model):
     catalogo = db.relationship('ArchivoAdjunto', backref='compartidos')
     owner = db.relationship('User', foreign_keys=[owner_id])
     shared_with = db.relationship('User', foreign_keys=[shared_with_id])
+
+class CatalogMapping(db.Model):
+    __tablename__ = "catalog_mapping"
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    pyme_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    name = db.Column(db.String(255), nullable=False)
+    mapping = db.Column(db.JSON, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    pyme = db.relationship('User', backref=db.backref('catalog_mappings', lazy='dynamic'))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "pymeId": self.pyme_id,
+            "name": self.name,
+            "mapping": self.mapping,
+            "createdAt": self.created_at.isoformat(),
+            "updatedAt": self.updated_at.isoformat()
+        }
