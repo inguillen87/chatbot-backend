@@ -404,7 +404,7 @@ class GreetingHandler(BaseMunicipioHandler):
         custom_message = payload.get("custom_message", "¿Cómo puedo ayudarte hoy?")
 
         welcome_message = (
-            "¡Hola! Soy Jules, tu asistente virtual del Municipio de Junín.\n\n"
+            "¡Hola! Soy JuniA, tu asistente virtual del Municipio de Junín.\n\n"
             "Estoy aquí para ayudarte con:\n"
             "✅ Reclamos (baches, luminaria, etc.)\n"
             "✅ Trámites (licencia de conducir, etc.)\n"
