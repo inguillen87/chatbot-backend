@@ -114,20 +114,35 @@ def build_interactive_response(options: list,
         if message_type in ['interactive_buttons', 'interactive_list', 'quick_replies'] and options:
             formatted_botones = []
             for o in options:
-                # Use action_id for web. If type is 'url', default action_id to 'open_url_action' unless specified otherwise.
-                action_id = o.get("id", o.get("action", o["texto"]))
-                if o.get("type") == "url":
-                    action_id = o.get("action_id", "open_url_action")
+                btn = None
+                if isinstance(o, str):
+                    # Handle the case where an option is a simple string.
+                    btn = {"texto": o, "action_id": o}
+                elif isinstance(o, dict):
+                    # It's a dictionary, process it.
+                    btn_text = o.get("texto")
+                    if not btn_text:
+                        logger.warning(f"Button object is missing 'texto' key: {o}")
+                        continue
 
-                btn = {"texto": o["texto"], "action_id": action_id}
+                    # Use action_id for web. If type is 'url', default action_id to 'open_url_action' unless specified otherwise.
+                    action_id = o.get("id", o.get("action", btn_text))
+                    if o.get("type") == "url":
+                        action_id = o.get("action_id", "open_url_action")
 
-                if o.get("type") == "url" and o.get("url"):
-                    btn["url"] = o["url"]
+                    btn = {"texto": btn_text, "action_id": action_id}
 
-                if message_type == 'quick_replies':
+                    if o.get("type") == "url" and o.get("url"):
+                        btn["url"] = o["url"]
+                else:
+                    logger.warning(f"Unsupported type in options list: {type(o)}. Skipping.")
+                    continue
+
+                if message_type == 'quick_replies' and btn:
                     btn["type"] = "quick_reply"
 
-                formatted_botones.append(btn)
+                if btn:
+                    formatted_botones.append(btn)
             web_response["botones"] = formatted_botones
 
         # Clean None values from web_response for cleaner JSON, if desired
