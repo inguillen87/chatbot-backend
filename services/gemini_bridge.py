@@ -17,8 +17,8 @@ from services.prompts.jules_system_prompt import JULES_SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 # --- Modelos de Gemini ---
-GEMINI_MODEL_PRESTAMOS = "gemini-1.5-pro"
-GEMINI_MODEL_STANDARD = "gemini-1.5-flash"
+GEMINI_MODEL_PRESTAMOS = "gemini-2.5-pro"
+GEMINI_MODEL_STANDARD = "gemini-2.5-pro"
 MAX_HISTORIAL_MESSAGES = 10
 
 def _limpiar_historial_gemini(historial: list) -> list:
@@ -261,7 +261,7 @@ def llamar_gemini(
 def llamar_gemini_para_generacion_texto(
     system_prompt_especifico: str,
     user_prompt: str,
-    model_name: str = GEMINI_MODEL_PRESTAMOS,
+    model_name: str = "gemini-2.5-pro",
     temperature: float = 0.3,
     json_output: bool = False
 ) -> Optional[str]:
