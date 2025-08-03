@@ -1,74 +1,566 @@
 {
-    "mesa de entrada": {
-    "descripcion": "Podés presentar notas, reclamos y solicitudes en la Mesa de Entrada ubicada en [direccion]. También encontrás formularios en https://www.juninmendoza.gov.ar/1645-2/.",
-    "botones": [
-      {
-        "texto": "Ir a Mesa de Entrada",
-        "url": "https://www.juninmendoza.gov.ar/1645-2/"
-      }
-    ]
-  },
+    "mesa_de_entrada": {
+        "descripcion": "La sección de 'MESA DE ENTRADA' incluye los siguientes trámites: FUNCIONES, SOLICITUD Y CERTIFICACIÓN. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "FUNCIONES",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1603"
+            },
+            {
+                "texto": "SOLICITUD Y CERTIFICACIÓN",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1645"
+            }
+        ]
+    },
+    "funciones": {
+        "descripcion": "MESA DE ENTRADAS    En su personal cuenta con una Jefa y encargado más un administrativo, donde las labores que desempeñan cumplen un rol importantísimo en la recepción y distribución de diferentes documentos, los cuáles son remitidos a las áreas correspondientes para brindar un servicio de calidad en lo que respecta a la atención al público.   Dentro de sus labores cotidianas se encuentra la recepción de notas, correspondencia y Audiencias para el Intendente Municipal y Secretario General de Gobierno, además funciona como nexo para el inicio de trámites y expedientes.  FUNCIONES a – Iniciar l",
+        "botones": [
+            {
+                "texto": "Ir a FUNCIONES",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1603"
+            }
+        ]
+    },
+    "solicitud_y_certificacin": {
+        "descripcion": "MESA DE ENTRADAS FORMULARIOS DE USO COMÚN PARA PRESENTAR EN MESA DE ENTRADAS  CERTIFICADO.FORMULARIO DE SOLICITUD ",
+        "botones": [
+            {
+                "texto": "Ir a SOLICITUD Y CERTIFICACIÓN",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1645"
+            }
+        ]
+    },
     "rentas": {
-    "descripcion": "Consultá tus impuestos municipales o generá boletas desde https://www.juninmendoza.gov.ar/vencimientos/. También podés acercarte al área de Rentas en [direccion].",
-    "botones": [
-      {
-        "texto": "Ir a Rentas",
-        "url": "https://www.juninmendoza.gov.ar/vencimientos/"
-      }
-    ]
-  },
-    "obras privadas": {
-    "descripcion": "Los permisos de construcción y consultas de planos se gestionan en Obras Privadas. Revisá requisitos en la web municipal https://www.juninmendoza.gov.ar/tramites-on-line-obras-privadas/ o acercate a [direccion].",
-    "botones": [
-      {
-        "texto": "Obras Privadas",
-        "url": "https://www.juninmendoza.gov.ar/tramites-on-line-obras-privadas/"
-      }
-    ]
-  },
+        "descripcion": "La sección de 'RENTAS' incluye los siguientes trámites: VENCIMIENTOS, SELLADOS, VALORES ESPECÍFICOS, DESCUENTOS, EXCEPCIONES. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "VENCIMIENTOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=346"
+            },
+            {
+                "texto": "SELLADOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1632"
+            },
+            {
+                "texto": "VALORES ESPECÍFICOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1609"
+            },
+            {
+                "texto": "DESCUENTOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1616"
+            },
+            {
+                "texto": "EXCEPCIONES",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1616"
+            }
+        ]
+    },
+    "vencimientos": {
+        "descripcion": "EN JUNÍN OPERAN VENCIMIENTOS DE SERVICIOS La Subdirección de Rentas de la Municipalidad de Junín dio a conocer las fechas bimestrales y anuales correspondientes al año 2020 de Tasas por Servicios Municipales y de Derechos Generales (Comercio). A continuación, el cronograma de vencimientos: Segundo bimestre 30/03/2021Tercer bimestre 31/05/2021Cuarto bimestre 30/07/2021Quinto bimestre 30/09/2021Sexto bimestre 30/ 12/2021Pago Anual 30/04/2021Pago semestral 29/10/2021 Segundo semestre 30/04/2021Tercer semestre 30/06/2021Cuarto semestre 31/ 08/2021Quinto semestre 29/ 10/2021Sexto semestre 30/ 12/20",
+        "botones": [
+            {
+                "texto": "Ir a VENCIMIENTOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=346"
+            }
+        ]
+    },
+    "sellados": {
+        "descripcion": "La Subdirección de Rentas del departamento de Junín comunica a toda la comunidad que para iniciar los trámites que se detallarán a continuación, deberán abonar un sellado Solicitud de cementerio. Habilitación de comercio e industrias, venta ambulante o habilitación de sustancias alimenticias o de cargas generales. Solicitud para realizar espectáculos públicos o bailes. Cortado o desrramado de árboles. Solicitud para construcción, ampliación, aprobación de instalaciones eléctricas o sanitarias, otorgamiento de viviendas económicas. Solicitud para efectuar copias de planos. Aprobación de planos ",
+        "botones": [
+            {
+                "texto": "Ir a SELLADOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1632"
+            }
+        ]
+    },
+    "valores_especficos": {
+        "descripcion": "VALORES ESPECÍFICOS VENCIMIENTOSSELLADOSDESCUENTOSEXCEPCIONES",
+        "botones": [
+            {
+                "texto": "Ir a VALORES ESPECÍFICOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1609"
+            }
+        ]
+    },
+    "descuentos": {
+        "descripcion": "DESCUENTOS Y EXEPCIONES JUBILADOS, PENSIONADOS Y DISCAPACITADOS Exímase del pago de las Tasas de Servicios a la propiedad Raíz en un 50% a los jubilados, pensionados y discapacitados, beneficiarios del sistema Nacional o Provincial siempre y cuando acrediten su condición como tal. REQUISITOS: Certificado de registro de la propiedad, el cual puede tramitarse en el Departamento de Vivienda cuya oficina se encuentra ubicada en el edificio ubicado frente a la Comisaría 19 de la Ciudad de Junín. Fotocopia de D.N.I. Fotocopia Acta de Matrimonio y/o defunción. Fotocopia del último bono de sueldo. Fot",
+        "botones": [
+            {
+                "texto": "Ir a DESCUENTOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1616"
+            }
+        ]
+    },
+    "excepciones": {
+        "descripcion": "DESCUENTOS Y EXEPCIONES JUBILADOS, PENSIONADOS Y DISCAPACITADOS Exímase del pago de las Tasas de Servicios a la propiedad Raíz en un 50% a los jubilados, pensionados y discapacitados, beneficiarios del sistema Nacional o Provincial siempre y cuando acrediten su condición como tal. REQUISITOS: Certificado de registro de la propiedad, el cual puede tramitarse en el Departamento de Vivienda cuya oficina se encuentra ubicada en el edificio ubicado frente a la Comisaría 19 de la Ciudad de Junín. Fotocopia de D.N.I. Fotocopia Acta de Matrimonio y/o defunción. Fotocopia del último bono de sueldo. Fot",
+        "botones": [
+            {
+                "texto": "Ir a EXCEPCIONES",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1616"
+            }
+        ]
+    },
+    "obras_privadas": {
+        "descripcion": "La sección de 'OBRAS PRIVADAS' incluye los siguientes trámites: cartel de obra, cerco provisorio, Declaración Jurada Conexiones Provisorias, Formulario conexión eléctrica, Formulario Instalación Sanitaria, Notificación para demoliciones, Notificación Viviendas Prefabricadas No Reglamentarias, Planilla DEIE, Planos Pilastras Eléctricas, Protocolo Covid-19, Requisitos Remoción de Piso, Requisitos conexión eléctrica, Solicitud de Inspección, Solicitud de Remoción de piso, agua, cloaca y gas, Solicitud Única de Obra – Trámite Digital, MODELO DE ROTULOS MUNICIPALES (dwg), OBRA NUEVA ARQUITECTURA, OBRA NUEVA ESTRUCTURA, OBRA NUEVA INSTALACION ELECTRICA, OBRA NUEVA INSTALACION SANITARIA (CONEXION A POZO), OBRA NUEVA INSTALACION SANITARIA (CONEXION A RED), RELEVAMIENTO ARQUITECTURA, RELEVAMIENTO INSTALACION ELECTRICA, RELEVAMIENTO INSTALACION SANITARIA (CONEXION A POZO), RELEVAMIENTO INSTALACION SANITARIA (CONEXION A RED). Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "cartel de obra",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Cartel%20de Obra.pdf"
+            },
+            {
+                "texto": "cerco provisorio",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Cerco%20Provisorio MJ.pdf"
+            },
+            {
+                "texto": "Declaración Jurada Conexiones Provisorias",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Declaración%20Jurada Conexiones Provisorias.pdf"
+            },
+            {
+                "texto": "Formulario conexión eléctrica",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Formulario conexion-electrica.pdf"
+            },
+            {
+                "texto": "Formulario Instalación Sanitaria",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Formulario%20Instalación Sanitaria -12-2020.pdf"
+            },
+            {
+                "texto": "Notificación para demoliciones",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Notificación%20para demoliciones.pdf"
+            },
+            {
+                "texto": "Notificación Viviendas Prefabricadas No Reglamentarias",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Notificacion%20Viviendas Prefabricadas No Reglamentarias.pdf"
+            },
+            {
+                "texto": "Planilla DEIE",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Planilla%20DEIE.pdf"
+            },
+            {
+                "texto": "Planos Pilastras Eléctricas",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Planos%20Pilastras Eléctricas.zip"
+            },
+            {
+                "texto": "Protocolo Covid-19",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Protocolo-Covid-19.pdf"
+            },
+            {
+                "texto": "Requisitos Remoción de Piso",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Requisitos%20para Remoción de Piso.pdf"
+            },
+            {
+                "texto": "Requisitos conexión eléctrica",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Requisitos-para-conexión-eléctrica%2024-08-20.pdf"
+            },
+            {
+                "texto": "Solicitud de Inspección",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud%20de Inspección.pdf"
+            },
+            {
+                "texto": "Solicitud de Remoción de piso, agua, cloaca y gas",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud%20de Remoción de piso -agua cloaca gas-06-2020.pdf"
+            },
+            {
+                "texto": "Solicitud Única de Obra – Trámite Digital",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud-Unica-d-Obra-p-Trámite-Digital-v003-10-06-2020.pdf"
+            },
+            {
+                "texto": "MODELO DE ROTULOS MUNICIPALES (dwg)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-DE-ROTULOS-MUNICIPALES.zip"
+            },
+            {
+                "texto": "OBRA NUEVA ARQUITECTURA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-ARQUITECTURA.pdf"
+            },
+            {
+                "texto": "OBRA NUEVA ESTRUCTURA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-ESTRUCTURA.pdf"
+            },
+            {
+                "texto": "OBRA NUEVA INSTALACION ELECTRICA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-ELECTRICA.pdf"
+            },
+            {
+                "texto": "OBRA NUEVA INSTALACION SANITARIA (CONEXION A POZO)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-SANITARIA-CONEXION-A-POZO.pdf"
+            },
+            {
+                "texto": "OBRA NUEVA INSTALACION SANITARIA (CONEXION A RED)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-SANITARIA-CONEXION-A-RED.pdf"
+            },
+            {
+                "texto": "RELEVAMIENTO ARQUITECTURA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-ARQUITECTURA.pdf"
+            },
+            {
+                "texto": "RELEVAMIENTO INSTALACION ELECTRICA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-ELECTRICA.pdf"
+            },
+            {
+                "texto": "RELEVAMIENTO INSTALACION SANITARIA (CONEXION A POZO)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-SANITARIA-CONEXION-A-POZO.pdf"
+            },
+            {
+                "texto": "RELEVAMIENTO INSTALACION SANITARIA (CONEXION A RED)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-SANITARIA-CONEXION-A-RED.pdf"
+            }
+        ]
+    },
+    "cartel_de_obra": {
+        "descripcion": "Documento 'cartel de obra' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a cartel de obra",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Cartel%20de Obra.pdf"
+            }
+        ]
+    },
+    "cerco_provisorio": {
+        "descripcion": "Documento 'cerco provisorio' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a cerco provisorio",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Cerco%20Provisorio MJ.pdf"
+            }
+        ]
+    },
+    "declaracin_jurada_conexiones_provisorias": {
+        "descripcion": "Documento 'Declaración Jurada Conexiones Provisorias' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Declaración Jurada Conexiones Provisorias",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Declaración%20Jurada Conexiones Provisorias.pdf"
+            }
+        ]
+    },
+    "formulario_conexin_elctrica": {
+        "descripcion": "Documento 'Formulario conexión eléctrica' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Formulario conexión eléctrica",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Formulario conexion-electrica.pdf"
+            }
+        ]
+    },
+    "formulario_instalacin_sanitaria": {
+        "descripcion": "Documento 'Formulario Instalación Sanitaria' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Formulario Instalación Sanitaria",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Formulario%20Instalación Sanitaria -12-2020.pdf"
+            }
+        ]
+    },
+    "notificacin_para_demoliciones": {
+        "descripcion": "Documento 'Notificación para demoliciones' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Notificación para demoliciones",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Notificación%20para demoliciones.pdf"
+            }
+        ]
+    },
+    "notificacin_viviendas_prefabricadas_no_reglamentarias": {
+        "descripcion": "Documento 'Notificación Viviendas Prefabricadas No Reglamentarias' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Notificación Viviendas Prefabricadas No Reglamentarias",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Notificacion%20Viviendas Prefabricadas No Reglamentarias.pdf"
+            }
+        ]
+    },
+    "planilla_deie": {
+        "descripcion": "Documento 'Planilla DEIE' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Planilla DEIE",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Planilla%20DEIE.pdf"
+            }
+        ]
+    },
+    "planos_pilastras_elctricas": {
+        "descripcion": "Documento 'Planos Pilastras Eléctricas' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Planos Pilastras Eléctricas",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Planos%20Pilastras Eléctricas.zip"
+            }
+        ]
+    },
+    "protocolo_covid19": {
+        "descripcion": "Documento 'Protocolo Covid-19' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Protocolo Covid-19",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Protocolo-Covid-19.pdf"
+            }
+        ]
+    },
+    "requisitos_remocin_de_piso": {
+        "descripcion": "Documento 'Requisitos Remoción de Piso' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Requisitos Remoción de Piso",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Requisitos%20para Remoción de Piso.pdf"
+            }
+        ]
+    },
+    "requisitos_conexin_elctrica": {
+        "descripcion": "Documento 'Requisitos conexión eléctrica' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Requisitos conexión eléctrica",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Requisitos-para-conexión-eléctrica%2024-08-20.pdf"
+            }
+        ]
+    },
+    "solicitud_de_inspeccin": {
+        "descripcion": "Documento 'Solicitud de Inspección' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Solicitud de Inspección",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud%20de Inspección.pdf"
+            }
+        ]
+    },
+    "solicitud_de_remocin_de_piso_agua_cloaca_y_gas": {
+        "descripcion": "Documento 'Solicitud de Remoción de piso, agua, cloaca y gas' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Solicitud de Remoción de piso, agua, cloaca y gas",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud%20de Remoción de piso -agua cloaca gas-06-2020.pdf"
+            }
+        ]
+    },
+    "solicitud_nica_de_obra__trmite_digital": {
+        "descripcion": "Documento 'Solicitud Única de Obra – Trámite Digital' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Solicitud Única de Obra – Trámite Digital",
+                "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud-Unica-d-Obra-p-Trámite-Digital-v003-10-06-2020.pdf"
+            }
+        ]
+    },
+    "modelo_de_rotulos_municipales_dwg": {
+        "descripcion": "Documento 'MODELO DE ROTULOS MUNICIPALES (dwg)' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a MODELO DE ROTULOS MUNICIPALES (dwg)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-DE-ROTULOS-MUNICIPALES.zip"
+            }
+        ]
+    },
+    "obra_nueva_arquitectura": {
+        "descripcion": "Documento 'OBRA NUEVA ARQUITECTURA' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a OBRA NUEVA ARQUITECTURA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-ARQUITECTURA.pdf"
+            }
+        ]
+    },
+    "obra_nueva_estructura": {
+        "descripcion": "Documento 'OBRA NUEVA ESTRUCTURA' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a OBRA NUEVA ESTRUCTURA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-ESTRUCTURA.pdf"
+            }
+        ]
+    },
+    "obra_nueva_instalacion_electrica": {
+        "descripcion": "Documento 'OBRA NUEVA INSTALACION ELECTRICA' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a OBRA NUEVA INSTALACION ELECTRICA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-ELECTRICA.pdf"
+            }
+        ]
+    },
+    "obra_nueva_instalacion_sanitaria_conexion_a_pozo": {
+        "descripcion": "Documento 'OBRA NUEVA INSTALACION SANITARIA (CONEXION A POZO)' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a OBRA NUEVA INSTALACION SANITARIA (CONEXION A POZO)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-SANITARIA-CONEXION-A-POZO.pdf"
+            }
+        ]
+    },
+    "obra_nueva_instalacion_sanitaria_conexion_a_red": {
+        "descripcion": "Documento 'OBRA NUEVA INSTALACION SANITARIA (CONEXION A RED)' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a OBRA NUEVA INSTALACION SANITARIA (CONEXION A RED)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-SANITARIA-CONEXION-A-RED.pdf"
+            }
+        ]
+    },
+    "relevamiento_arquitectura": {
+        "descripcion": "Documento 'RELEVAMIENTO ARQUITECTURA' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a RELEVAMIENTO ARQUITECTURA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-ARQUITECTURA.pdf"
+            }
+        ]
+    },
+    "relevamiento_instalacion_electrica": {
+        "descripcion": "Documento 'RELEVAMIENTO INSTALACION ELECTRICA' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a RELEVAMIENTO INSTALACION ELECTRICA",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-ELECTRICA.pdf"
+            }
+        ]
+    },
+    "relevamiento_instalacion_sanitaria_conexion_a_pozo": {
+        "descripcion": "Documento 'RELEVAMIENTO INSTALACION SANITARIA (CONEXION A POZO)' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a RELEVAMIENTO INSTALACION SANITARIA (CONEXION A POZO)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-SANITARIA-CONEXION-A-POZO.pdf"
+            }
+        ]
+    },
+    "relevamiento_instalacion_sanitaria_conexion_a_red": {
+        "descripcion": "Documento 'RELEVAMIENTO INSTALACION SANITARIA (CONEXION A RED)' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a RELEVAMIENTO INSTALACION SANITARIA (CONEXION A RED)",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-SANITARIA-CONEXION-A-RED.pdf"
+            }
+        ]
+    },
     "catastro": {
-    "descripcion": "Para certificados catastrales y actualizaciones de parcelas, dirigite al sector Catastro en [direccion] o consultá en https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx.",
-    "botones": [
-      {
-        "texto": "Catastro",
-        "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx"
-      }
-    ]
-  },
+        "descripcion": "La sección de 'CATASTRO' incluye los siguientes trámites: Formulario de Transferencia. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "Formulario de Transferencia",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx"
+            }
+        ]
+    },
+    "formulario_de_transferencia": {
+        "descripcion": "Documento 'Formulario de Transferencia' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a Formulario de Transferencia",
+                "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx"
+            }
+        ]
+    },
     "forestales": {
-    "descripcion": "Solicitá permisos de poda, extracción o forestación en la Dirección de Forestales. Más información disponible en https://www.juninmendoza.gov.ar/solicitudforestales/.",
-    "botones": [
-      {
-        "texto": "Forestales",
-        "url": "https://www.juninmendoza.gov.ar/solicitudforestales/"
-      }
-    ]
-  },
-    "carnet de sanidad": {
-    "descripcion": "El carnet sanitario para manipuladores de alimentos se tramita en Sanidad municipal. Podés pedir turno online desde https://www.juninmendoza.gov.ar/carnet-de-sanidad/.",
-    "botones": [
-      {
-        "texto": "Carnet de Sanidad",
-        "url": "https://www.juninmendoza.gov.ar/carnet-de-sanidad/"
-      }
-    ]
-  },
-    "registro de artesanos": {
-    "descripcion": "La inscripción al Registro de Artesanos y ferias se realiza en el área de Cultura municipal. Consultá requisitos en https://www.juninmendoza.gov.ar/registro-de-artesanos/.",
-    "botones": [
-      {
-        "texto": "Registro de Artesanos",
-        "url": "https://www.juninmendoza.gov.ar/registro-de-artesanos/"
-      }
-    ]
-  },
-    "licencia de conducir": {
-    "descripcion": "Tramite tu licencia de conducir en el Centro de Licencias municipal. Consultá requisitos y turnos en https://tlc.mendoza.gov.ar/turnos",
-    "botones": [
-      {
-        "texto": "Sacar Turno",
-        "url": "https://tlc.mendoza.gov.ar/turnos"
-      }
-    ]
-  }
+        "descripcion": "La sección de 'FORESTALES' incluye los siguientes trámites: SOLICITUD, ERRADICACIÓN. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "SOLICITUD",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=4355"
+            },
+            {
+                "texto": "ERRADICACIÓN",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=3777"
+            }
+        ]
+    },
+    "solicitud": {
+        "descripcion": "DESCARGUE EL FORMULARIO HACIENDO «CLICK» EN LA IMAGEN ",
+        "botones": [
+            {
+                "texto": "Ir a SOLICITUD",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=4355"
+            }
+        ]
+    },
+    "erradicacin": {
+        "descripcion": "Secretaría deServicios Públicos Erradicación de Forestales Erradicar plantas, árboles y forestales, ubicados dentro de la vía pública donde se encuentra el domicilio del titular interesado, siempre y cuando se encuentre dentro de la zona urbana del departamento de Junín. Motivo de la solicitud Esta solicitud no incluye corte de ramas,para ello debe dirigirse a laSecretaríade Servicios Públicos,ubicada en Esquina de Calle San Martín y Salvador González, para realizar las gestiones pertinentes; o bien comunicarse alTeléfono 0263-4492050/191 interno 199. En caso de solicitar la desinfección de fo",
+        "botones": [
+            {
+                "texto": "Ir a ERRADICACIÓN",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=3777"
+            }
+        ]
+    },
+    "carnet_de_sanidad": {
+        "descripcion": "La sección de 'CARNET DE SANIDAD' incluye los siguientes trámites: REQUISITOS. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "REQUISITOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1599"
+            }
+        ]
+    },
+    "requisitos": {
+        "descripcion": "CARNET DE SANIDAD Los mismos serán otorgados únicamente a los habitantes que residan en el Departamento de Junín; y a aquellos que acrediten su lugar de trabajo dentro del Departamento. Los montos a abonar a partir del día 05/07/2024, son los siguientes: / Por cada uno, para establecimientos industriales y comerciales: Carnet de Sanidad y revisación médica semestral, se deberá abonar la suma de pesosTres mil trescientos ($ 3.300) / Por la renovación semestral del mismo, se deberá abonar la suma de pesos mil seiscientos cincuenta ($ 1.650) / Por carnet de sanidad y revisación médica semestral p",
+        "botones": [
+            {
+                "texto": "Ir a REQUISITOS",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1599"
+            }
+        ]
+    },
+    "registro_de_artesanos": {
+        "descripcion": "La sección de 'REGISTRO DE ARTESANOS' incluye los siguientes trámites: FORMULARIO. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "FORMULARIO",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1636"
+            }
+        ]
+    },
+    "formulario": {
+        "descripcion": "REGISTRO DE ARTESANOS: ORDENANZA  N° 258 / 2.012 Que es importante brindar a los artesanos, la posibilidad de que posean un elemento de identificación y reconocimiento de su desempeño, por eso la importancia de la creación del“Registro Único de Artesanos” (RUA) del Departamento; Que se entiende por artesanías a las modalidades de producción consistentes en actividades, destrezas o técnicas empíricas con permanente dinamismo resolutivo y estético, mediante las cuales se obtienen objetos no industriales, elaborados manualmente o con recursos instrumentales sencillos donde la actividad manual es ",
+        "botones": [
+            {
+                "texto": "Ir a FORMULARIO",
+                "url": "https://www.juninmendoza.gov.ar/?page_id=1636"
+            }
+        ]
+    },
+    "promocin_econmica_y_oficina_de_empleo": {
+        "descripcion": "La sección de 'Promoción Económica y Oficina de Empleo:' incluye los siguientes trámites: [email protected], [email protected]. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "[email protected]",
+                "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#b2c2d7d1dddcdddfdbd1d3f2d8c7dcdbdcdfd7dcd6ddc8d39cd5ddc49cd3c0"
+            },
+            {
+                "texto": "[email protected]",
+                "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#9ef1f8f7fdf7f0fffafbfbf3eef2fbf1f4ebf0f7f0def9f3fff7f2b0fdf1f3"
+            }
+        ]
+    },
+    "emailprotected": {
+        "descripcion": "Documento '[email protected]' disponible para descargar.",
+        "botones": [
+            {
+                "texto": "Ir a [email protected]",
+                "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#aec3cfdbdcc7cdc7c1dccfc3c7dccbd4d8c7d8c7cbc0cacfeef7cfc6c1c180cdc1c380cfdc"
+            }
+        ]
+    },
+    "subdireccin_de_rentas": {
+        "descripcion": "La sección de 'Subdirección de Rentas' incluye los siguientes trámites: [email protected]. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "[email protected]",
+                "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#fd8f9893899c8ebd97889394939098939992879cd39a928bd39c8f"
+            }
+        ]
+    },
+    "direccin_de_viviendas": {
+        "descripcion": "La sección de 'Dirección de Viviendas' incluye los siguientes trámites: [email protected], [email protected], [email protected]. Puedes pedirme información sobre cualquiera de ellos.",
+        "botones": [
+            {
+                "texto": "[email protected]",
+                "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#8cfae5fae5e9e2e8edcce6f9e2e5e2e1e9e2e8e3f6eda2ebe3faa2edfe"
+            },
+            {
+                "texto": "[email protected]",
+                "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#fd9a9188939cbd948d8b9098939992879cd39a928bd39c8f"
+            },
+            {
+                "texto": "[email protected]",
+                "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#aec3cfdbdcc7cdc7c1dccfc3c7dccbd4d8c7d8c7cbc0cacfeef7cfc6c1c180cdc1c380cfdc"
+            }
+        ]
+    }
 }
