@@ -993,6 +993,36 @@ def responder_municipio(
             }, contexto_municipio_actual
 
     if USAR_LLM_PARA_RECLAMOS:
+        # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---
+        datos_interpretados = kwargs.get("datos_interpretados_archivo")
+        if datos_interpretados and isinstance(datos_interpretados, dict):
+            logger_actual.info("[CONTEXT_RESET] Se detectaron datos de archivo interpretados. Forzando reseteo de contexto de reclamo.")
+
+            # Guardar datos de contacto antes de limpiar
+            datos_parciales_existentes = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+            datos_de_contacto_a_preservar = {
+                "nombre_usuario_detectado": datos_parciales_existentes.get("nombre_usuario_detectado"),
+                "telefono_detectado": datos_parciales_existentes.get("telefono_detectado"),
+                "email_detectado": datos_parciales_existentes.get("email_detectado"),
+            }
+
+            # Limpiar contexto de reclamo anterior
+            contexto_municipio_actual["historial_llm_reclamo"] = []
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+
+            # Repoblar con la nueva información del análisis de imagen
+            if datos_interpretados.get("categoria_sugerida"):
+                contexto_municipio_actual["datos_parciales_llm_reclamo"]["categoria"] = datos_interpretados["categoria_sugerida"]
+            if datos_interpretados.get("descripcion_sugerida"):
+                contexto_municipio_actual["datos_parciales_llm_reclamo"]["descripcion"] = datos_interpretados["descripcion_sugerida"]
+
+            # Restaurar datos de contacto si existían
+            contexto_municipio_actual["datos_parciales_llm_reclamo"].update({k: v for k, v in datos_de_contacto_a_preservar.items() if v})
+
+            # Establecer el estado para que el LLM sepa que está en un flujo de reclamo
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+
+
         logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         respuesta_manejada_por_llm, _ = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
         logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
