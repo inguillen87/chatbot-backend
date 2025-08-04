@@ -1,13 +1,13 @@
 import requests
 from google.cloud import speech
 
-def transcribe_audio_from_url(url: str) -> str | None:
+def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> str | None:
     """
     Downloads an audio file from a URL and transcribes it using Google Speech-to-Text.
     """
     try:
-        # Download the audio file
-        audio_response = requests.get(url)
+        # Download the audio file using Twilio credentials for authentication
+        audio_response = requests.get(url, auth=(account_sid, auth_token))
         audio_response.raise_for_status()
         audio_content = audio_response.content
 

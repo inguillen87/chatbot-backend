@@ -65,7 +65,7 @@ def whatsapp_webhook():
         print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
         if media_content_type.startswith("audio/"):
             from services.audio_transcription_service import transcribe_audio_from_url
-            transcribed_text = transcribe_audio_from_url(media_url)
+            transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             if transcribed_text:
                 message_body = transcribed_text
                 print(f"Audio transcribed to: '{transcribed_text}'")

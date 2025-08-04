@@ -23,11 +23,11 @@ class TestAudioTranscriptionService(unittest.TestCase):
         mock_speech_instance.recognize.return_value = mock_recognize_response
 
         # Call the function
-        result = transcribe_audio_from_url('http://example.com/audio.ogg')
+        result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
 
         # Assertions
         self.assertEqual(result, 'hello world')
-        mock_requests_get.assert_called_once_with('http://example.com/audio.ogg')
+        mock_requests_get.assert_called_once_with('http://example.com/audio.ogg', auth=('fake_sid', 'fake_token'))
         mock_speech_client.assert_called_once()
         mock_speech_instance.recognize.assert_called_once()
 
@@ -37,7 +37,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
         mock_requests_get.side_effect = Exception('Download failed')
 
         # Call the function
-        result = transcribe_audio_from_url('http://example.com/audio.ogg')
+        result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
 
         # Assertions
         self.assertIsNone(result)
@@ -57,7 +57,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
         mock_speech_instance.recognize.side_effect = Exception('Transcription failed')
 
         # Call the function
-        result = transcribe_audio_from_url('http://example.com/audio.ogg')
+        result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
 
         # Assertions
         self.assertIsNone(result)
