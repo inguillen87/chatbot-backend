@@ -63,6 +63,17 @@ def whatsapp_webhook():
 
     if media_url and media_content_type:
         print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
+        if media_content_type.startswith("audio/"):
+            from services.audio_transcription_service import transcribe_audio_from_url
+            transcribed_text = transcribe_audio_from_url(media_url)
+            if transcribed_text:
+                message_body = transcribed_text
+                print(f"Audio transcribed to: '{transcribed_text}'")
+            else:
+                print("Audio transcription failed or returned empty.")
+                # Optionally, send a message to the user that transcription failed
+                # For now, we'll just proceed with an empty message_body, which might trigger a re-prompt
+
         # Procesar imágenes, PDFs, audio y otros documentos.
         if media_content_type.startswith("image/") or \
            media_content_type.startswith("audio/") or \
@@ -82,6 +93,8 @@ def whatsapp_webhook():
                 file_extension = ".xlsx"
 
             uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}", "source": "whatsapp"}
+            if media_content_type.startswith("audio/") and message_body:
+                 uploaded_file_info_whatsapp["transcribed_text"] = message_body
             post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
             print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
         else:
