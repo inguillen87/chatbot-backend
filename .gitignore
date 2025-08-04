@@ -13,6 +13,10 @@ instance/*
 __pycache__/
 *.pyc
 venv/
+.venv/
+env/
+venv/
+test_venv/
 sandbox_venv/
 
 # Pero permite que la estructura instance/ exista
