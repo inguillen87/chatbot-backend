@@ -401,19 +401,8 @@ class BaseMunicipioHandler:
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         welcome_message = (
-<<<<<<< feature/chatbot-flow-improvements
             "¡Hola! Soy JuniA, el asistente virtual de la Municipalidad de Junín.\n"
             "Estas son las cosas que puedo hacer por vos:"
-=======
-            "¡Hola! Soy JuniA, tu asistente virtual del Municipio de Junín.\n\n"
-            "Estoy aquí para ayudarte con:\n"
-            "✅ Reclamos (baches, luminaria, etc.)\n"
-            "✅ Trámites (licencia de conducir, etc.)\n"
-            "✅ Consultas generales (horarios, ubicaciones)\n\n"
-            "🌐 Web: [www.junin.gob.ar](https://www.junin.gob.ar)\n"
-            "📍 Ubicación: [Ver en Google Maps](https://maps.google.com/?q=Municipalidad+de+Junin)\n\n"
-            f"{custom_message}"
->>>>>>> main
         )
         return {
             "message_body": welcome_message,
