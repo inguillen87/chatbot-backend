@@ -401,28 +401,72 @@ class BaseMunicipioHandler:
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         # Enhanced greeting handler with more information
-        custom_message = payload.get("custom_message", "¿Cómo puedo ayudarte hoy?")
+        custom_message = payload.get("custom_message", "Por favor, seleccioná un ítem para comenzar.")
 
         welcome_message = (
-            "¡Hola! Soy Jules, tu asistente virtual del Municipio de Junín.\n\n"
-            "Estoy aquí para ayudarte con:\n"
-            "✅ Reclamos (baches, luminaria, etc.)\n"
-            "✅ Trámites (licencia de conducir, etc.)\n"
-            "✅ Consultas generales (horarios, ubicaciones)\n\n"
-            "🌐 Web: [www.junin.gob.ar](https://www.junin.gob.ar)\n"
-            "📍 Ubicación: [Ver en Google Maps](https://maps.google.com/?q=Municipalidad+de+Junin)\n\n"
+            "¡Hola! Soy JunIA, el asistente virtual de la Municipalidad de Junín.\n"
+            "Estas son las cosas que puedo hacer por vos:\n\n"
+            "- RECLAMOS\n"
+            "- LICENCIA DE CONDUCIR\n"
+            "- PAGO DE TASAS VIGENTES\n"
+            "- DEFENSA DEL CONSUMIDOR\n"
+            "- VETERINARIA Y BROMATOLOGÍA\n\n"
             f"{custom_message}"
         )
         return {
             "message_body": welcome_message,
             "options_list": [
-                {"id": "iniciar_reclamo", "texto": "A. Hacer un reclamo"},
-                {"id": "info_tramite", "texto": "B. Consultar un trámite"},
-                {"id": "consultar_puntos_de_interes", "texto": "C. Consultas Generales"},
+                {"id": "iniciar_reclamo", "texto": "RECLAMOS"},
+                {"id": "info_licencia_conducir", "texto": "LICENCIA DE CONDUCIR"},
+                {"id": "info_pago_tasas", "texto": "PAGO DE TASAS VIGENTES"},
+                {"id": "info_defensa_consumidor", "texto": "DEFENSA DEL CONSUMIDOR"},
+                {"id": "info_veterinaria", "texto": "VETERINARIA Y BROMATOLOGÍA"},
             ],
             "message_type": "interactive_buttons",
-            "fuente": "greeting_handler_v6"
+            "fuente": "greeting_handler_v7"
         }
+
+
+def handle_info_requests(action_id: str) -> dict:
+    """
+    Handles simple informational requests based on action IDs from buttons.
+    """
+    tramites_info = get_tramites_info()
+    contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
+
+    info_map = {
+        "info_licencia_conducir": "licencia_de_conducir",
+        "info_pago_tasas": "pago_de_tasas_vigentes",
+        "info_defensa_consumidor": "defensa_del_consumidor",
+    }
+
+    if action_id in info_map:
+        tramite_key = info_map[action_id]
+        if tramite_key in tramites_info:
+            tramite_data = tramites_info[tramite_key]
+            return {
+                "message_body": tramite_data["descripcion"],
+                "options_list": tramite_data["botones"],
+                "message_type": "interactive_buttons" if tramite_data["botones"] else "text",
+                "fuente": f"info_request_{tramite_key}"
+            }
+    elif action_id == "info_veterinaria":
+        contacto_data = contactos_info.get("Veterinaria y Bromatologia")
+        if contacto_data:
+            return {
+                "message_body": f"Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp: {contacto_data['telefono']}",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "info_request_veterinaria"
+            }
+
+    return {
+        "message_body": "No encontré la información solicitada. Por favor, intentá de nuevo.",
+        "options_list": [],
+        "message_type": "text",
+        "fuente": "info_request_not_found"
+    }
+
 
 def safe_llm_call(prompt, preamble, fallback=None):
     logger.debug(f"[LLM_CALL_PROMPT] Enviando prompt a LLM. Preamble: '{preamble}'. Prompt: '{prompt[:500]}...'")
@@ -860,6 +904,57 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
+
+    received_payload = {}
+    if isinstance(pregunta_original, dict):
+        received_payload = pregunta_original
+    elif isinstance(pregunta_original, str):
+        received_payload['pregunta'] = pregunta_original
+
+    action = received_payload.get("action")
+
+    if action in ["info_licencia_conducir", "info_pago_tasas", "info_defensa_consumidor", "info_veterinaria"]:
+        return handle_info_requests(action)
+
+    if action == "iniciar_reclamo":
+        return {
+            "message_body": "Seleccioná el tipo de reclamo:",
+            "options_list": [
+                {"id": "reclamo_luminaria", "texto": "Luminaria"},
+                {"id": "reclamo_arbolado", "texto": "Arbolado"},
+                {"id": "reclamo_limpieza_riego", "texto": "Limpieza y riego"},
+                {"id": "reclamo_arreglo_calle", "texto": "Arreglo de calle"},
+                {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
+                {"id": "reclamo_otros", "texto": "Otros"},
+            ],
+            "message_type": "interactive_list",
+            "fuente": "submenu_reclamos"
+        }
+
+    if action == "reclamo_perdida_agua":
+        return {
+            "message_body": "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "info_perdida_agua"
+        }
+
+    reclamo_categories = {
+        "reclamo_luminaria": "Luminaria",
+        "reclamo_arbolado": "Arbolado",
+        "reclamo_limpieza_riego": "Limpieza y riego",
+        "reclamo_arreglo_calle": "Arreglo de calle",
+        "reclamo_otros": "Otros",
+    }
+    if action in reclamo_categories:
+        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['categoria_reclamo'] = reclamo_categories[action]
+        return {
+            "message_body": f"Entendido, iniciaste un reclamo por **{reclamo_categories[action]}**. Por favor, describí la incidencia.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "inicio_flujo_reclamo_categorizado"
+        }
 
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
