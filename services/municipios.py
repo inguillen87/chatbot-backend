@@ -400,10 +400,11 @@ class BaseMunicipioHandler:
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        # Enhanced greeting handler with more information
-        custom_message = payload.get("custom_message", "¿Cómo puedo ayudarte hoy?")
-
         welcome_message = (
+<<<<<<< feature/chatbot-flow-improvements
+            "¡Hola! Soy JuniA, el asistente virtual de la Municipalidad de Junín.\n"
+            "Estas son las cosas que puedo hacer por vos:"
+=======
             "¡Hola! Soy JuniA, tu asistente virtual del Municipio de Junín.\n\n"
             "Estoy aquí para ayudarte con:\n"
             "✅ Reclamos (baches, luminaria, etc.)\n"
@@ -412,16 +413,79 @@ class GreetingHandler(BaseMunicipioHandler):
             "🌐 Web: [www.junin.gob.ar](https://www.junin.gob.ar)\n"
             "📍 Ubicación: [Ver en Google Maps](https://maps.google.com/?q=Municipalidad+de+Junin)\n\n"
             f"{custom_message}"
+>>>>>>> main
         )
         return {
             "message_body": welcome_message,
             "options_list": [
-                {"id": "iniciar_reclamo", "texto": "A. Hacer un reclamo"},
-                {"id": "info_tramite", "texto": "B. Consultar un trámite"},
-                {"id": "consultar_puntos_de_interes", "texto": "C. Consultas Generales"},
+                {"id": "reclamos", "texto": "RECLAMOS"},
+                {"id": "licencia_conducir", "texto": "LICENCIA DE CONDUCIR"},
+                {"id": "pago_tasas", "texto": "PAGO DE TASAS VIGENTES"},
+                {"id": "defensa_consumidor", "texto": "DEFENSA DEL CONSUMIDOR"},
+                {"id": "veterinaria_bromatologia", "texto": "VETERINARIA Y BROMATOLOGÍA"},
             ],
-            "message_type": "interactive_buttons",
-            "fuente": "greeting_handler_v6"
+            "message_type": "interactive_list", # A list is better for this many options
+            "fuente": "greeting_handler_v7_junin"
+        }
+
+class ReclamosMenuHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        return {
+            "message_body": "Por favor, seleccioná el tipo de reclamo:",
+            "options_list": [
+                {"id": "reclamo_luminaria", "texto": "Luminaria"},
+                {"id": "reclamo_arbolado", "texto": "Arbolado"},
+                {"id": "reclamo_limpieza", "texto": "Limpieza y riego"},
+                {"id": "reclamo_calle", "texto": "Arreglo de calle"},
+                {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
+                {"id": "reclamo_otros", "texto": "Otros"},
+            ],
+            "message_type": "interactive_list",
+            "fuente": "reclamos_menu_handler"
+        }
+
+class LicenciaConducirHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        message_body = "Para requisitos y turnos de licencia de conducir visitá:\nhttps://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
+        botones = agregar_botones_para_links(message_body, [])
+        return {
+            "message_body": message_body,
+            "options_list": botones,
+            "fuente": "licencia_conducir_handler"
+        }
+
+class PagoTasasHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        message_body = "Para pagar o descargar boletos vigentes, dirigite a:\nhttps://epagos.juninmendoza.gov.ar/jrentas/"
+        botones = agregar_botones_para_links(message_body, [])
+        return {
+            "message_body": message_body,
+            "options_list": botones,
+            "fuente": "pago_tasas_handler"
+        }
+
+class DefensaConsumidorHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        return {
+            "message_body": "Para asesoramiento, escribí a:\ndefensadelconsumidorjuninmza@gmail.com",
+            "fuente": "defensa_consumidor_handler"
+        }
+
+class VeterinariaBromatologiaHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        return {
+            "message_body": "Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp:\n+54 9 2634 52-1563",
+            "fuente": "veterinaria_bromatologia_handler"
+        }
+
+class PerdidaDeAguaHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        message_body = "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/"
+        botones = agregar_botones_para_links(message_body, [])
+        return {
+            "message_body": message_body,
+            "options_list": botones,
+            "fuente": "perdida_de_agua_handler"
         }
 
 def safe_llm_call(prompt, preamble, fallback=None):
@@ -816,7 +880,16 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 contexto_municipio_actual[k] = None
             elif k != "estado_conversacion":
                 contexto_municipio_actual.pop(k, None)
-        return None, contexto_municipio_actual
+
+        error_response = {
+            "message_body": "Lo siento, ocurrió un error inesperado al procesar tu mensaje. Por favor, intenta de nuevo más tarde.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "error_handle_llm_interaction"
+        }
+        return error_response, contexto_municipio_actual
+
+GREETING_KEYWORDS = {"hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "hi", "hello"}
 
 def responder_municipio(
     pregunta_original,
@@ -886,6 +959,18 @@ def responder_municipio(
     # This ensures that modifications are made to the original object.
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
+    # --- Context Timeout Logic ---
+    if chat_db_context and chat_db_context.last_updated:
+        from datetime import datetime, timedelta
+        if datetime.utcnow() - chat_db_context.last_updated > timedelta(minutes=15):
+            logger_actual.info(f"Context for session {kwargs.get('chat_session_uuid')} timed out. Resetting.")
+            contexto_municipio_actual.clear()
+            # Also reset the higher-level context to ensure a clean slate
+            chat_db_context_live_data.clear()
+            # Re-initialize the essential structure
+            chat_db_context_live_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+
+
     # Initialize the context if it's empty
     # This dictionary is passed to handlers and used throughout this function.
     context = {
@@ -926,6 +1011,32 @@ def responder_municipio(
         f"ViewerCiudadano: {context['cliente_id'] or context['anon_id']}"
     )
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto DB para {CONTEXTO_MUNICIPIO}: {contexto_municipio_data_from_db}")
+
+    # --- Greeting Handler Check ---
+    # If the user sends a simple greeting, bypass the LLM and show the welcome menu.
+    if pregunta_str.strip().lower() in GREETING_KEYWORDS:
+        handler = GreetingHandler(context)
+        return handler.handle(received_payload)
+
+    # --- Simple Router for Main Menu Options ---
+    pregunta_str_lower = pregunta_str.strip().lower()
+    if pregunta_str_lower == "reclamos":
+        return ReclamosMenuHandler(context).handle(received_payload)
+    elif pregunta_str_lower == "licencia_conducir":
+        return LicenciaConducirHandler(context).handle(received_payload)
+    elif pregunta_str_lower == "pago_tasas":
+        return PagoTasasHandler(context).handle(received_payload)
+    elif pregunta_str_lower == "defensa_consumidor":
+        return DefensaConsumidorHandler(context).handle(received_payload)
+    elif pregunta_str_lower == "veterinaria_bromatologia":
+        return VeterinariaBromatologiaHandler(context).handle(received_payload)
+    elif pregunta_str_lower == "reclamo_perdida_agua":
+        return PerdidaDeAguaHandler(context).handle(received_payload)
+    elif pregunta_str_lower.startswith("reclamo_"):
+        categoria = pregunta_str_lower.replace("reclamo_", "").replace("_", " ").title()
+        contexto_municipio_actual['categoria_reclamo'] = categoria
+        # Let it fall through to the LLM to ask for the claim details
+        pregunta_str = f"Quiero hacer un reclamo de {categoria}."
 
 
     # --- Handle post-login resumption (modifies context[CONTEXTO_MUNICIPIO] and context["intencion"]) ---
