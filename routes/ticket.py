@@ -296,6 +296,100 @@ def get_mis_tickets(current_user: User):
         return jsonify({"error": "Error interno al obtener tus tickets."}), 500
 
 # ---------- DETALLE DE TICKET ----------
+def _get_user_info(ticket, user_model):
+    """Helper to consolidate user info extraction."""
+    user_info = {
+        "nombre": "No especificado",
+        "telefono": "No especificado",
+        "email": "No especificado",
+        "direccion": "No especificada",
+        "dni": "No especificado",
+        "descripcion": ""
+    }
+
+    # 1. Get data from User model if available
+    ticket_owner_user = db.session.get(user_model, ticket.user_id) if ticket.user_id else None
+    if ticket_owner_user:
+        user_info["nombre"] = ticket_owner_user.name or user_info["nombre"]
+        user_info["telefono"] = ticket_owner_user.telefono or user_info["telefono"]
+        user_info["email"] = ticket_owner_user.email or user_info["email"]
+        user_info["direccion"] = ticket_owner_user.direccion or user_info["direccion"]
+        # El modelo User no tiene DNI, así que no lo sacamos de aquí.
+
+    # 2. Fallback to ticket fields (for anonymous or overriding)
+    user_info["nombre"] = getattr(ticket, 'nombre_vecino', user_info["nombre"]) or user_info["nombre"]
+    user_info["telefono"] = getattr(ticket, 'telefono_vecino', getattr(ticket, 'telefono', user_info["telefono"])) or user_info["telefono"]
+    user_info["email"] = getattr(ticket, 'email_vecino', getattr(ticket, 'email', user_info["email"])) or user_info["email"]
+    user_info["direccion"] = getattr(ticket, 'direccion', user_info["direccion"]) or user_info["direccion"]
+    user_info["dni"] = getattr(ticket, 'dni', user_info["dni"]) or user_info["dni"] # Para PymeTicket
+
+    # 3. Fallback to 'detalles' field for any missing info
+    detalles_texto = getattr(ticket, 'detalles', '') or ''
+    user_info["descripcion"] = detalles_texto
+    if "Nombre:" in detalles_texto and user_info["nombre"] == "No especificado":
+        user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
+    if "Teléfono:" in detalles_texto and user_info["telefono"] == "No especificado":
+        user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
+    if "Email:" in detalles_texto and user_info["email"] == "No especificado":
+        user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
+    if "Dirección:" in detalles_texto and user_info["direccion"] == "No especificada":
+        user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
+    if "DNI:" in detalles_texto and user_info["dni"] == "No especificado":
+        user_info["dni"] = detalles_texto.split("DNI:")[1].split("\n")[0].strip()
+
+    return user_info
+
+def _serialize_ticket_details(ticket, ticket_type):
+    """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
+    user_data = _get_user_info(ticket, User)
+
+    comentarios = [
+        {"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin}
+        for c in ticket.comentarios
+    ]
+
+    archivos_adjuntos_data = []
+    if hasattr(ticket, 'archivos'):
+        archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
+        for adj in archivos_list:
+            analisis_data = None
+            if adj.analisis:
+                analisis = adj.analisis
+                analisis_data = {
+                    "id": analisis.id, "resumen": analisis.resumen, "estado_analisis": analisis.estado_analisis,
+                    "fecha_analisis": analisis.fecha_analisis.isoformat() if analisis.fecha_analisis else None,
+                    "error_analisis": analisis.error_analisis, "texto_extraido": analisis.texto_extraido,
+                    "datos_estructurados": analisis.datos_estructurados, "tipo_analisis": analisis.tipo_analisis,
+                }
+            archivos_adjuntos_data.append({
+                "id": adj.id, "name": adj.nombre_original or adj.filename, "mimeType": adj.mime,
+                "size": adj.tamano, "url": adj.url, "fecha": adj.fecha.isoformat() if adj.fecha else None,
+                "analisis": analisis_data
+            })
+
+    ticket_data = {
+        "id": ticket.id,
+        "tipo": ticket_type,
+        "nro_ticket": ticket.nro_ticket,
+        "asunto": getattr(ticket, 'asunto', ''),
+        "categoria": getattr(ticket, 'categoria', ''),
+        "estado": ticket.estado,
+        "fecha": ticket.fecha.isoformat(),
+        "pregunta": getattr(ticket, 'pregunta', ''),
+        "detalles": user_data["descripcion"],
+        "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
+        "nombre_usuario": user_data["nombre"],
+        "telefono": user_data["telefono"],
+        "email_usuario": user_data["email"],
+        "dni": user_data["dni"],
+        "direccion": user_data["direccion"],
+        "descripcion": user_data["descripcion"], # Mantenemos este campo por si el frontend lo usa
+        "archivos_adjuntos": archivos_adjuntos_data,
+        "latitud": getattr(ticket, 'latitud', None),
+        "longitud": getattr(ticket, 'longitud', None)
+    }
+    return ticket_data
+
 @ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
 @token_requerido
 def get_ticket_details(current_user: User, ticket_id: int):
@@ -303,121 +397,37 @@ def get_ticket_details(current_user: User, ticket_id: int):
     Devuelve el detalle de un ticket municipal, verificando que el usuario
     (admin o empleado) pertenezca al municipio correcto.
     """
-    # 1. Validar que el usuario es de tipo municipio
     if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
         return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
 
-    # 2. Obtener el ticket
     ticket = db.session.get(MunicipioTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    # 3. Verificar Permiso: El municipio_id del ticket debe coincidir con el del usuario
     if ticket.municipio_id != current_user.municipio_id:
-        current_app.logger.warning(
-            f"PERMISO DENEGADO | endpoint={request.endpoint} | ticket_id={ticket_id} | "
-            f"user_id={current_user.id} (municipio_id={current_user.municipio_id}) intentó acceder a "
-            f"ticket de municipio_id={ticket.municipio_id}."
-        )
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
-    # --- SERIALIZACIÓN ---
-    def _get_user_info(ticket, user_model):
-        """Helper to consolidate user info extraction."""
-        user_info = {
-            "nombre": "No especificado",
-            "telefono": "No especificado",
-            "email": "No especificado",
-            "direccion": "No especificada",
-            "descripcion": ""
-        }
+    ticket_data = _serialize_ticket_details(ticket, "municipio")
+    return jsonify(ticket_data)
 
-        # 1. Get data from User model if available
-        ticket_owner_user = db.session.get(user_model, ticket.user_id) if ticket.user_id else None
-        if ticket_owner_user:
-            user_info["nombre"] = ticket_owner_user.name or user_info["nombre"]
-            user_info["telefono"] = ticket_owner_user.telefono or user_info["telefono"]
-            user_info["email"] = ticket_owner_user.email or user_info["email"]
-            user_info["direccion"] = ticket_owner_user.direccion or user_info["direccion"]
+@ticket_bp.route('/tickets/pyme/<int:ticket_id>', methods=['GET'])
+@token_requerido
+def get_ticket_details_pyme(current_user: User, ticket_id: int):
+    """
+    Devuelve el detalle de un ticket de pyme, verificando que el usuario
+    (admin o empleado) pertenezca a la pyme correcta.
+    """
+    if current_user.tipo_chat != "pyme" or not current_user.rubro_id:
+        return jsonify({"error": "Acceso denegado. Se requiere un usuario de pyme."}), 403
 
-        # 2. Fallback to ticket fields (for anonymous or overriding)
-        user_info["nombre"] = getattr(ticket, 'nombre_vecino', user_info["nombre"]) or user_info["nombre"]
-        user_info["telefono"] = getattr(ticket, 'telefono_vecino', getattr(ticket, 'telefono', user_info["telefono"])) or user_info["telefono"]
-        user_info["email"] = getattr(ticket, 'email_vecino', getattr(ticket, 'email', user_info["email"])) or user_info["email"]
-        user_info["direccion"] = getattr(ticket, 'direccion', user_info["direccion"]) or user_info["direccion"]
+    ticket = db.session.get(PymeTicket, ticket_id)
+    if not ticket:
+        return jsonify({"error": "Ticket no encontrado."}), 404
 
-        # 3. Fallback to 'detalles' field
-        detalles_texto = getattr(ticket, 'detalles', '') or ''
-        user_info["descripcion"] = detalles_texto
-        if "Nombre:" in detalles_texto and user_info["nombre"] == "No especificado":
-            user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
-        if "Teléfono:" in detalles_texto and user_info["telefono"] == "No especificado":
-            user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
-        if "Email:" in detalles_texto and user_info["email"] == "No especificado":
-            user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
-        if "Dirección:" in detalles_texto and user_info["direccion"] == "No especificada":
-            user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
+    if ticket.rubro_id != current_user.rubro_id:
+        return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
-        return user_info
-
-    user_data = _get_user_info(ticket, User)
-    detalles_texto = getattr(ticket, 'detalles', '') or ''
-
-
-    comentarios = [
-        {"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin}
-        for c in ticket.comentarios
-    ]
-
-    # Serializar archivos adjuntos
-    archivos_adjuntos_data = []
-    if hasattr(ticket, 'archivos'):
-        archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
-        for adj in archivos_list:
-            analisis_data = None
-            if adj.analisis: # adj.analisis es la relación one-to-one con AnalisisArchivo
-                analisis = adj.analisis
-                analisis_data = {
-                    "id": analisis.id,
-                    "resumen": analisis.resumen,
-                    "estado_analisis": analisis.estado_analisis,
-                    "fecha_analisis": analisis.fecha_analisis.isoformat() if analisis.fecha_analisis else None,
-                    "error_analisis": analisis.error_analisis,
-                    "texto_extraido": analisis.texto_extraido,
-                    "datos_estructurados": analisis.datos_estructurados, # Esto es JSON, el frontend lo parseará
-                    "tipo_analisis": analisis.tipo_analisis,
-                }
-
-            archivos_adjuntos_data.append({
-                "id": adj.id,
-                "name": adj.nombre_original or adj.filename,
-                "mimeType": adj.mime,
-                "size": adj.tamano,
-                "url": adj.url, # URL para descargar/ver el archivo original
-                "fecha": adj.fecha.isoformat() if adj.fecha else None,
-                "analisis": analisis_data # Incluir los datos del análisis
-            })
-
-    ticket_data = {
-        "id": ticket.id,
-        "tipo": "municipio",
-        "nro_ticket": ticket.nro_ticket,
-        "asunto": getattr(ticket, 'asunto', ''),
-        "categoria": getattr(ticket, 'categoria', ''),
-        "estado": ticket.estado,
-        "fecha": ticket.fecha.isoformat(),
-        "pregunta": getattr(ticket, 'pregunta', ''),
-        "detalles": detalles_texto,
-        "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "nombre_usuario": user_data["nombre"],
-        "telefono": user_data["telefono"],
-        "email_usuario": user_data["email"],
-        "direccion": user_data["direccion"],
-        "descripcion": user_data["descripcion"],
-        "archivos_adjuntos": archivos_adjuntos_data,
-        "latitud": getattr(ticket, 'latitud', None),
-        "longitud": getattr(ticket, 'longitud', None)
-    }
+    ticket_data = _serialize_ticket_details(ticket, "pyme")
     return jsonify(ticket_data)
 
 # ---------- RESPONDER A TICKET (AGENTE) ----------

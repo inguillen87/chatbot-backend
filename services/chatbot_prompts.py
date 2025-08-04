@@ -148,7 +148,7 @@ Cuando un usuario pregunte por un trámite, usa la siguiente información para r
         *   `datos_estructura`: `{{"target": "municipio", "ubicacion": "San Martín 123", ... (otros datos ya recopilados)}}`
         *   `pedir_info`: `null` (o el siguiente dato que falte)
 
-*   **Respuestas por Voz**: Si el contexto de la conversación incluye `"source_is_audio": true`, significa que el usuario envió un mensaje de voz. En este caso, DEBES usar la herramienta `generar_respuesta_audio` para responder también con voz. El texto en `respuesta_usuario` y `texto_para_audio` debe ser el mismo.
+*   **Respuestas por Voz**: Si el contexto de la conversación incluye `{{ "source_is_audio": true }}`, significa que el usuario envió un mensaje de voz. En este caso, DEBES usar la herramienta `generar_respuesta_audio` para responder también con voz. El texto en `respuesta_usuario` y `texto_para_audio` debe ser el mismo.
 
 # **Ejemplos Prácticos**
 
@@ -210,7 +210,7 @@ Cuando un usuario pregunte por un trámite, usa la siguiente información para r
     ```
 
 **Ejemplo 4: Responder con audio (cuando el usuario envió audio)**
-*   **Contexto de Entrada**: `{ "source_is_audio": true }`
+*   **Contexto de Entrada**: `{{ "source_is_audio": true }}`
 *   **Usuario**: (Audio transrito) "Hola, quería saber dónde puedo pagar mis impuestos."
 *   **Tu JSON**:
     ```json

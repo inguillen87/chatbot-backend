@@ -1,7 +1,7 @@
 import unittest
 import sys
 from types import SimpleNamespace, ModuleType
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import os
 
 # Añadir el directorio raíz del proyecto al sys.path
