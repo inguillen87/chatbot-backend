@@ -741,7 +741,23 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     resultado_herramienta = funcion_herramienta(**parametros_herramienta)
                     logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {resultado_herramienta[:200]}...")
 
-                    respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
+                    # --- INICIO FIX: Manejo inteligente de la respuesta de la herramienta ---
+                    info_needed_prefixes = [
+                        "No tengo la localidad para buscar",
+                        "Por favor, decime la localidad",
+                        "Por favor, decime qué tipo de lugar o comercio estás buscando",
+                        "No pude encontrar la localidad"
+                    ]
+
+                    is_info_needed = any(str(resultado_herramienta).strip().startswith(prefix) for prefix in info_needed_prefixes)
+
+                    if is_info_needed:
+                        # Si la herramienta pide más datos, su respuesta es la única que debe ir.
+                        respuesta_final = resultado_herramienta
+                    else:
+                        # Si la herramienta da un resultado, lo combinamos con la respuesta del LLM.
+                        respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
+                    # --- FIN FIX ---
 
                     contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append({
                         "pregunta_usuario": pregunta_str,
