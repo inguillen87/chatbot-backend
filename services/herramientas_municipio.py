@@ -332,10 +332,10 @@ def buscar_puntos_de_interes(
     if not localidad:
         return "No tengo la localidad para buscar. Por favor, decime dónde querés buscar."
 
-    logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
+    if not rubro:
+        return "Por favor, decime qué tipo de lugar o comercio estás buscando (por ejemplo, 'farmacia', 'ferretería', etc.)."
 
-    if not localidad:
-        return "Por favor, decime la localidad donde querés buscar."
+    logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
 
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA POI] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
@@ -355,7 +355,8 @@ def buscar_puntos_de_interes(
         location = data['results'][0]['geometry']['location']
         lat, lng = location['lat'], location['lng']
 
-        places_url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json?location={lat},{lng}&radius=5000&keyword={requests.utils.quote(rubro)}&key={Maps_API_KEY}&language=es"
+        keyword_param = str(rubro) if rubro else ""
+        places_url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json?location={lat},{lng}&radius=5000&keyword={requests.utils.quote(keyword_param)}&key={Maps_API_KEY}&language=es"
         if opennow:
             places_url += "&opennow=true"
 

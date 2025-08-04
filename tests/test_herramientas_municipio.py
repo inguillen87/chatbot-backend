@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch, Mock
 from services.herramientas_municipio import validar_y_formatear_direccion
 
+@patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
 def test_validar_y_formatear_direccion_exitosa(mock_get):
     # Arrange
@@ -32,6 +33,7 @@ def test_validar_y_formatear_direccion_exitosa(mock_get):
     assert resultado["lat"] == 40.7128
     assert resultado["lng"] == -74.0060
 
+@patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
 def test_validar_y_formatear_direccion_invalida(mock_get):
     # Arrange
@@ -49,6 +51,7 @@ def test_validar_y_formatear_direccion_invalida(mock_get):
     # Assert
     assert resultado is None
 
+@patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
 def test_validar_y_formatear_direccion_error_api(mock_get):
     # Arrange
