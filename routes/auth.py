@@ -844,6 +844,7 @@ def anon_o_token_requerido(f):
     """
     Decorador que maneja la autenticación para endpoints que aceptan
     tanto usuarios autenticados con token como usuarios anónimos.
+    Para anónimos en endpoints de municipio, carga un owner por defecto.
     """
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -852,21 +853,46 @@ def anon_o_token_requerido(f):
 
         token = obtener_token()
         user = User.query.filter_by(token=token).first() if token else None
+        owner_user = user # Por defecto, el owner es el mismo usuario
 
-        # El ID anónimo se puede recibir por header o se genera uno nuevo.
-        # Se almacena en 'g' para que esté disponible durante toda la request.
         g.anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
         if not g.anon_id:
             g.anon_id = str(uuid.uuid4())
             current_app.logger.info(f"Generado nuevo ID anónimo para la request: {g.anon_id}")
 
-        if user:
-            # Usuario autenticado (puede ser un 'owner' o un 'viewer')
-            # El anon_id también se pasa, por si se necesita para alguna lógica de migración.
-            return f(current_user=user, owner_user=user, anon_id=g.anon_id, *args, **kwargs)
+        if not user:
+            # Lógica para usuarios anónimos
+            current_user = None
+            # Si es una ruta de municipio, se necesita un owner para el contexto del bot.
+            # El token de la entidad/municipio DEBERÍA venir en el request (como 'empresa_token' o similar).
+            # obtener_token() ya lo maneja. Si aún así no hay user, es un anónimo total.
+
+            # Como fallback para endpoints públicos de municipio, cargamos un owner por defecto.
+            if 'municipio' in request.path:
+                # Busca el token de la entidad específica en el cuerpo de la solicitud,
+                # esto permite que diferentes widgets de municipio funcionen en el mismo sistema.
+                json_data = request.get_json(silent=True) or {}
+                empresa_token = json_data.get("empresa_token")
+
+                if empresa_token:
+                    owner_user = User.query.filter_by(token=empresa_token).first()
+                    if owner_user:
+                        current_app.logger.info(f"Anonymous request to '{request.path}', loaded owner_user '{owner_user.id}' via 'empresa_token'.")
+                    else:
+                         current_app.logger.warning(f"Anonymous request with an invalid 'empresa_token': {empresa_token}")
+
+                # Si no se proveyó un token de empresa específico, se carga el default.
+                if not owner_user:
+                    owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
+                    if owner_user:
+                        current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")
+                    else:
+                        current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
         else:
-            # Usuario anónimo, se pasa el anon_id obtenido o generado.
-            return f(current_user=None, owner_user=None, anon_id=g.anon_id, *args, **kwargs)
+            # Lógica para usuarios autenticados
+            current_user = user
+
+        return f(current_user=current_user, owner_user=owner_user, anon_id=g.anon_id, *args, **kwargs)
 
     return decorated
 
