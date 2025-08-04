@@ -600,9 +600,11 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         logger_actual.info(
             "[HANDLE_LLM] Cambio de tema detectado durante flujo de reclamo. Reseteando contexto a conversacion general."
         )
+        # Clear all claim-related context
         contexto_municipio_actual["historial_llm_reclamo"] = []
         contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
         contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+        contexto_municipio_actual.pop("esperando_info_llm", None)
         # Limpia datos residuales del reclamo previo
         for campo in [
             "categoria_reclamo",
@@ -774,6 +776,12 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
             logger.info("[HANDLE_LLM] LLM derivó a humano.")
             return None, contexto_municipio_actual
+
+        elif accion_backend_llm == "responder_directamente":
+            logger.info("[HANDLE_LLM] LLM solicitó responder directamente.")
+            contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_directa"}, contexto_municipio_actual
 
         else: # Respuesta general o continuación de un flujo
             # Si estábamos esperando info para un reclamo y el LLM no generó una acción concreta
@@ -974,6 +982,20 @@ def responder_municipio(
         logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         if respuesta_manejada_por_llm:
             return respuesta_manejada_por_llm
+
+        # Si la intención se estableció en derivar a un agente, significa que el flujo del LLM
+        # ya manejó la lógica y no debemos continuar con el flujo antiguo.
+        if context.get("intencion") == "hablar_con_agente":
+            mensaje_para_escalar = contexto_municipio_actual.get("mensaje_previo_llm_para_escalamiento", "Un agente se pondrá en contacto contigo en breve.")
+            # Ensure the context is saved before returning
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return {
+                "message_body": mensaje_para_escalar,
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "llm_derivar_humano_v2"
+            }
 
 
     # --- Construcción del Contexto Global para Orchestrator y Handlers ---
