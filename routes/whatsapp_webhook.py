@@ -41,79 +41,10 @@ def whatsapp_webhook():
 
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
-
-    # Check for interactive message replies from Twilio
-    button_payload = post_vars.get("ButtonPayload") # For Button Reply ID
-    list_id = post_vars.get("ListId") # For List Reply ID
-
-    if button_payload:
-        message_body = button_payload # Use the ID from the button
-        print(f"Received WhatsApp Button Reply. Using ID: '{button_payload}' as message_body.")
-    elif list_id:
-        message_body = list_id # Use the ID from the list item
-        print(f"Received WhatsApp List Reply. Using ID: '{list_id}' as message_body.")
-    else:
-        message_body = post_vars.get("Body", "") # Standard text message
-        print(f"Received WhatsApp standard text message. Body: '{message_body}'")
-
-    # --- Manejo de Archivos Adjuntos de WhatsApp ---
-    media_url = post_vars.get("MediaUrl0")
-    media_content_type = post_vars.get("MediaContentType0")
-    uploaded_file_info_whatsapp = None
-
-    if media_url and media_content_type:
-        print(f"Received media from WhatsApp: URL='{media_url}', ContentType='{media_content_type}'")
-        if media_content_type.startswith("audio/"):
-            from services.audio_transcription_service import transcribe_audio_from_url
-            transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            if transcribed_text:
-                message_body = transcribed_text
-                print(f"Audio transcribed to: '{transcribed_text}'")
-            else:
-                print("Audio transcription failed or returned empty.")
-                # Optionally, send a message to the user that transcription failed
-                # For now, we'll just proceed with an empty message_body, which might trigger a re-prompt
-
-        # Procesar imágenes, PDFs, audio y otros documentos.
-        if media_content_type.startswith("image/") or \
-           media_content_type.startswith("audio/") or \
-           media_content_type == "application/pdf" or \
-           media_content_type.startswith("application/vnd.openxmlformats-officedocument"):
-            
-            file_extension = ".bin" # Default extension
-            if media_content_type.startswith("image/"):
-                file_extension = ".jpg" 
-            elif media_content_type.startswith("audio/"):
-                file_extension = ".ogg"
-            elif media_content_type == "application/pdf":
-                file_extension = ".pdf"
-            elif media_content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                file_extension = ".docx"
-            elif media_content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                file_extension = ".xlsx"
-
-            uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}", "source": "whatsapp"}
-            if media_content_type.startswith("audio/") and message_body:
-                 uploaded_file_info_whatsapp["transcribed_text"] = message_body
-            post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
-            print(f"Prepared 'uploaded_file_info_whatsapp' for responder_chatboc: {uploaded_file_info_whatsapp}")
-        else:
-            print(f"Media type {media_content_type} from WhatsApp not currently processed for automatic analysis.")
-    # --- Fin Manejo de Archivos Adjuntos de WhatsApp ---
-
     to_number_cleaned = to_number_raw.replace("whatsapp:", "")
-    from_number_cleaned = from_number_raw.replace("whatsapp:", "") # User's phone number
+    from_number_cleaned = from_number_raw.replace("whatsapp:", "")
 
-    log_message_parts = [
-        f"Received WhatsApp message to: {to_number_cleaned}",
-        f"from: {from_number_cleaned}",
-        f"body: '{message_body}'"
-    ]
-    if uploaded_file_info_whatsapp:
-        log_message_parts.append(f"with media: {uploaded_file_info_whatsapp['mime_type']}")
-    print(", ".join(log_message_parts))
-
-    # Eager load the 'user' and 'user.rubro' relationships to avoid separate queries later
+    # --- Session Management FIRST ---
     whatsapp_mapping = WhatsappNumero.query.options(
         joinedload(WhatsappNumero.user).joinedload(User.rubro)
     ).filter_by(numero_whatsapp=to_number_cleaned, is_active=True).first()
@@ -122,64 +53,88 @@ def whatsapp_webhook():
         print(f"Error: WhatsApp number {to_number_cleaned} not found or inactive in database.")
         return "WhatsApp number not configured for any client.", 404
 
-    client_user = whatsapp_mapping.user # This is the User object for the company/municipality
+    client_user = whatsapp_mapping.user
     if not client_user:
         print(f"Error: No user associated with WhatsappNumero id {whatsapp_mapping.id} for number {to_number_cleaned}.")
         return "Internal configuration error: WhatsApp number mapped to non-existent user.", 500
 
     empresa_id = client_user.id
-    client_name = client_user.nombre_empresa or client_user.name
-    client_type = client_user.tipo_chat
-    rubro_object = client_user.rubro # Access the Rubro object
-
-    print(f"Mensaje para cliente: {client_name} (ID: {empresa_id}, Tipo: {client_type}, Rubro: {rubro_object.nombre if rubro_object else 'N/A'})")
-
-    # --- User Management ---
     from services.pymes import get_or_create_user_by_phone
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
-    # --- Real Session Management using ChatSessionContext ---
     chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
     session_context_db_entry = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_internal).first()
 
-    initial_session_data_for_new_session = {
-        "historial_chat": [],
-        "estado_conversacion": "inicio", # responder_chatboc will manage this
-        "user_id_empresa": empresa_id,
-        "telefono_usuario": from_number_cleaned,
-        "canal_origen": "whatsapp"
-    }
-
-    if session_context_db_entry:
-        # Ensure context_data is a dict; if None or invalid, start fresh for safety
-        if not isinstance(session_context_db_entry.context_data, dict):
-            session_context_db_entry.context_data = initial_session_data_for_new_session
-        # Ensure essential keys are present
-        session_context_db_entry.context_data.setdefault("historial_chat", [])
-        session_context_db_entry.context_data.setdefault("estado_conversacion", "continuando")
-        print(f"Session found for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
-
-        # Check if a human chat is in progress
-        if session_context_db_entry.context_data.get("human_chat_in_progress"):
-            room = session_context_db_entry.context_data.get("room")
-            if room:
-                from socket_service import socketio
-                socketio.emit('message', {'msg': message_body}, room=room)
-                return "OK", 200
-    else:
+    if not session_context_db_entry:
+        initial_session_data = {
+            "historial_chat": [], "estado_conversacion": "inicio",
+            "user_id_empresa": empresa_id, "telefono_usuario": from_number_cleaned,
+            "canal_origen": "whatsapp"
+        }
         session_context_db_entry = ChatSessionContext(
-            chat_session_id=chat_session_id_internal,
-            user_id=empresa_id,
-            anon_id=from_number_cleaned, # WhatsApp user's phone number as anon identifier
-            context_data=initial_session_data_for_new_session
+            chat_session_id=chat_session_id_internal, user_id=empresa_id,
+            anon_id=from_number_cleaned, context_data=initial_session_data
         )
         db.session.add(session_context_db_entry)
         print(f"New session DB entry prepared for {chat_session_id_internal}.")
         try:
-            nombre_destino = getattr(end_user, "name", "") if end_user else ""
+            nombre_destino = getattr(end_user, "name", "") or ""
             enviar_bienvenida_whatsapp(from_number_cleaned, nombre_destino)
         except Exception as e:
             print(f"Error sending welcome template: {e}")
+
+    # Ensure context_data is a dict
+    if not isinstance(session_context_db_entry.context_data, dict):
+        session_context_db_entry.context_data = {}
+
+    # --- Message and Media Handling SECOND ---
+    button_payload = post_vars.get("ButtonPayload")
+    list_id = post_vars.get("ListId")
+    media_url = post_vars.get("MediaUrl0")
+    media_content_type = post_vars.get("MediaContentType0")
+    uploaded_file_info_whatsapp = None
+    message_body = ""
+
+    if button_payload:
+        message_body = button_payload
+    elif list_id:
+        message_body = list_id
+    else:
+        message_body = post_vars.get("Body", "")
+
+    if media_url and media_content_type:
+        if media_content_type.startswith("audio/"):
+            session_context_db_entry.context_data['source_is_audio'] = True
+            from services.audio_transcription_service import transcribe_audio_from_url
+            transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            if transcribed_text:
+                message_body = transcribed_text
+            else:
+                print("Audio transcription failed or returned empty.")
+        else:
+            # If it's not audio, ensure the flag is not set for this interaction
+            session_context_db_entry.context_data.pop('source_is_audio', None)
+
+        # Generic file processing logic
+        file_extension = ".bin"
+        if media_content_type.startswith("image/"): file_extension = ".jpg"
+        elif media_content_type.startswith("audio/"): file_extension = ".ogg"
+        # ... other extensions
+        uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}", "source": "whatsapp"}
+        if media_content_type.startswith("audio/") and message_body:
+            uploaded_file_info_whatsapp["transcribed_text"] = message_body
+        post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
+    else:
+        # If no media, ensure the flag is not set
+        session_context_db_entry.context_data.pop('source_is_audio', None)
+
+    # --- Human Chat Check ---
+    if session_context_db_entry.context_data.get("human_chat_in_progress"):
+        room = session_context_db_entry.context_data.get("room")
+        if room:
+            from socket_service import socketio
+            socketio.emit('message', {'msg': message_body}, room=room)
+            return "OK", 200
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -321,6 +276,17 @@ def whatsapp_webhook():
                 'to': from_number_raw,
                 'body': body_for_formatter,  # Fallback text
             }
+
+            audio_url = bot_response_dict.get('audio_url')
+            if audio_url:
+                # Ensure the URL is absolute
+                if audio_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    absolute_audio_url = f"{base_url}{audio_url}"
+                else:
+                    absolute_audio_url = audio_url
+                message_params['media_url'] = [absolute_audio_url]
+
 
             # For interactive messages, the actual content is sent via 'PersistentAction'
             # The payload for PersistentAction should be a JSON string of the interactive object.

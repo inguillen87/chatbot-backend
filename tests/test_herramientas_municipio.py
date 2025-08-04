@@ -51,6 +51,18 @@ def test_validar_y_formatear_direccion_invalida(mock_get):
     # Assert
     assert resultado is None
 
+def test_generar_respuesta_audio_in_tool_registry():
+    """
+    Tests that the 'generar_respuesta_audio' tool is correctly registered.
+    """
+    from services.herramientas_municipio import TOOL_REGISTRY
+    assert "generar_respuesta_audio" in TOOL_REGISTRY
+    tool_info = TOOL_REGISTRY["generar_respuesta_audio"]
+    assert "funcion" in tool_info
+    assert "descripcion" in tool_info
+    assert "parametros" in tool_info
+    assert "texto_para_audio" in tool_info["parametros"]
+
 @patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
 def test_validar_y_formatear_direccion_error_api(mock_get):

@@ -10,6 +10,7 @@ def build_interactive_response(options: list,
                                original_bot_response: dict = None, # The full dict from responder_pyme/municipio
                                header_text: str = None,
                                footer_text: str = None,
+                               audio_url: str = None,
                                # recipient_id: str = None # Removed: To be handled by the sending service
                                ) -> dict:
     if original_bot_response is None:
@@ -18,6 +19,12 @@ def build_interactive_response(options: list,
     if channel == "whatsapp":
         # This function will now return the content part of the WhatsApp message.
         # The sending service (e.g., WhatsAppService) will add "messaging_product", "to".
+
+        if audio_url:
+            return {
+                "type": "audio",
+                "audio": {"link": audio_url}
+            }
 
         if message_type == 'interactive_buttons' and options:
             if not (1 <= len(options) <= 3):
@@ -108,7 +115,8 @@ def build_interactive_response(options: list,
             "limite_preguntas": original_bot_response.get("limite_preguntas"),
             "interpretacion_adjunto": original_bot_response.get("interpretacion_adjunto"),
             "estado_respuesta": original_bot_response.get("estado_respuesta"),
-            "adjuntos": original_bot_response.get("adjuntos", [])
+            "adjuntos": original_bot_response.get("adjuntos", []),
+            "audio_url": original_bot_response.get("audio_url")
         }
 
         if message_type in ['interactive_buttons', 'interactive_list', 'quick_replies'] and options:

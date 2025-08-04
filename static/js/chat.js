@@ -1,11 +1,116 @@
+// This script assumes the following HTML structure exists:
+// <div id="chat-messages"></div>
+// <form id="message-form">
+//   <input id="message-input" autocomplete="off" />
+//   <button type="submit">Send</button>
+// </form>
+// <button id="record-button">Record</button>
+// <button id="location-button">Share Location</button>
+
 document.addEventListener('DOMContentLoaded', () => {
+    // Connect to the server using Socket.IO
     const socket = io();
 
+    // Get references to the necessary HTML elements
     const chatMessages = document.getElementById('chat-messages');
     const messageForm = document.getElementById('message-form');
     const messageInput = document.getElementById('message-input');
+    const recordButton = document.getElementById('record-button');
+    const locationButton = document.getElementById('location-button');
 
-    const requestLocation = () => {
+    let mediaRecorder;
+    let audioChunks = [];
+    let isRecording = false;
+
+    // --- Audio Recording Logic ---
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        console.log('getUserMedia supported.');
+
+        recordButton.addEventListener('click', () => {
+            if (isRecording) {
+                // Stop recording
+                mediaRecorder.stop();
+                recordButton.textContent = 'Record';
+                isRecording = false;
+            } else {
+                // Start recording
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(stream => {
+                        mediaRecorder = new MediaRecorder(stream);
+                        mediaRecorder.start();
+                        recordButton.textContent = 'Stop Recording';
+                        isRecording = true;
+                        audioChunks = []; // Clear previous chunks
+
+                        mediaRecorder.addEventListener("dataavailable", event => {
+                            audioChunks.push(event.data);
+                        });
+
+                        mediaRecorder.addEventListener("stop", () => {
+                            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                            sendAudioMessage(audioBlob);
+                        });
+                    })
+                    .catch(error => {
+                        console.error('Error accessing microphone:', error);
+                        alert('Could not access your microphone. Please check your browser permissions.');
+                    });
+            }
+        });
+
+    } else {
+        console.error('getUserMedia not supported on your browser!');
+        recordButton.disabled = true;
+        recordButton.textContent = 'Recording Not Supported';
+    }
+
+    // --- Message Sending Logic ---
+
+    // Send text message when the form is submitted
+    messageForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const message = messageInput.value;
+        if (message) {
+            // Add the user's message to the chat window
+            appendMessage('user', message);
+            // Emit the message to the server
+            socket.emit('message', { pregunta: message });
+            messageInput.value = '';
+        }
+    });
+
+    // Function to send audio message
+    function sendAudioMessage(audioBlob) {
+        const formData = new FormData();
+        formData.append('audio_file', audioBlob, 'recording.webm');
+
+        // Add a visual indicator that the audio is being sent
+        appendMessage('user', '[Sending audio...]');
+
+        // Use fetch to send the audio data to the /ask endpoint
+        fetch('/ask/municipio', { // Assuming a default endpoint, adjust if necessary
+            method: 'POST',
+            body: formData,
+            headers: {
+                // 'Content-Type': 'multipart/form-data' is set automatically by the browser with FormData
+                'X-Chat-Session-Id': getSessionId() // Important for session context
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            // The server will handle the audio and the response will come via Socket.IO
+            console.log('Audio sent successfully, waiting for socket response.');
+        })
+        .catch(error => {
+            console.error('Error sending audio:', error);
+            appendMessage('system', 'Error sending audio.');
+        });
+    }
+
+    // --- Location Logic ---
+
+    locationButton.addEventListener('click', () => {
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(
                 (position) => {
@@ -13,45 +118,88 @@ document.addEventListener('DOMContentLoaded', () => {
                         lat: position.coords.latitude,
                         lon: position.coords.longitude,
                     };
+                    // Add a message indicating location is being sent
+                    appendMessage('user', `[Sharing location: ${location.lat}, ${location.lon}]`);
+                    // Emit the location to the server
                     socket.emit('location', location);
                 },
                 (error) => {
                     console.error('Error getting location:', error);
-                    // Notify the user that we couldn't get the location
-                    const errorMessage = document.createElement('div');
-                    errorMessage.innerText = 'No se pudo obtener tu ubicación.';
-                    chatMessages.appendChild(errorMessage);
+                    appendMessage('system', 'Could not get your location.');
                 }
             );
         } else {
             console.error('Geolocation is not supported by this browser.');
-            // Notify the user that geolocation is not supported
-            const errorMessage = document.createElement('div');
-            errorMessage.innerText = 'La geolocalización no es compatible con este navegador.';
-            chatMessages.appendChild(errorMessage);
+            appendMessage('system', 'Geolocation is not supported by this browser.');
         }
-    };
-
-    messageForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const message = messageInput.value;
-        socket.emit('message', message);
-        messageInput.value = '';
     });
 
+    // --- Response Handling Logic ---
+
+    // Listen for messages from the server
     socket.on('message', (data) => {
-        const messageElement = document.createElement('div');
-        messageElement.innerText = data.respuesta;
-        chatMessages.appendChild(messageElement);
+        console.log('Received message from server:', data);
+        const messageText = data.respuesta || data.message_body || 'No response text.';
 
-        if (data.solicitar_ubicacion) {
-            requestLocation();
+        // Add the bot's message to the chat window
+        appendMessage('bot', messageText);
+
+        // If the response contains an audio URL, play it
+        if (data.audio_url) {
+            playAudio(data.audio_url);
+        }
+
+        // If the response contains buttons, display them
+        if (data.botones && data.botones.length > 0) {
+            appendButtons(data.botones);
         }
     });
 
-    // Add a "Share Location" button to the UI
-    const locationButton = document.createElement('button');
-    locationButton.innerText = 'Compartir Ubicación';
-    locationButton.addEventListener('click', solicitarUbicacion);
-    document.getElementById('message-form').appendChild(locationButton);
+    // --- Helper Functions ---
+
+    // Function to append a message to the chat window
+    function appendMessage(sender, text) {
+        const messageElement = document.createElement('div');
+        messageElement.classList.add('message', `${sender}-message`);
+        messageElement.innerText = text;
+        chatMessages.appendChild(messageElement);
+        chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to the bottom
+    }
+
+    // Function to play an audio URL
+    function playAudio(url) {
+        const audioElement = new Audio(url);
+        audioElement.play()
+            .catch(error => console.error('Error playing audio:', error));
+    }
+
+    // Function to display buttons
+    function appendButtons(buttons) {
+        const buttonContainer = document.createElement('div');
+        buttonContainer.classList.add('button-container');
+        buttons.forEach(buttonInfo => {
+            const button = document.createElement('button');
+            button.innerText = buttonInfo.texto;
+            button.addEventListener('click', () => {
+                const message = buttonInfo.action_id || buttonInfo.texto;
+                appendMessage('user', message);
+                socket.emit('message', { pregunta: message });
+                // Remove buttons after one is clicked
+                buttonContainer.remove();
+            });
+            buttonContainer.appendChild(button);
+        });
+        chatMessages.appendChild(buttonContainer);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // Function to get or generate a session ID (for stateful communication)
+    function getSessionId() {
+        let sessionId = sessionStorage.getItem('chat_session_id');
+        if (!sessionId) {
+            sessionId = `web-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            sessionStorage.setItem('chat_session_id', sessionId);
+        }
+        return sessionId;
+    }
 });

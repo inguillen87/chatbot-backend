@@ -2,7 +2,7 @@ import logging
 import json
 from typing import Dict, Any, List, Optional
 
-from models import AnalisisArchivo # Para type hinting
+# from models import AnalisisArchivo # Movido para evitar importación circular
 # Asumiendo que robust_chat está en llm_utils o cohere_ai
 from services.llm_utils import robust_chat, _clean_llm_json_output # _clean_llm_json_output es de llm_utils
 
@@ -119,10 +119,11 @@ class InterpretacionService:
 
     def interpretar_analisis_para_datos_ticket(
         self,
-        analisis_archivo: AnalisisArchivo,
+        analisis_archivo, #: AnalisisArchivo, # Type hint removido para evitar importación temprana
         tipo_contexto: str, # "municipio" o "pyme"
         user_id: Optional[int] = None # Para pasar a las llamadas LLM si es necesario
     ) -> Dict[str, Any]:
+        from models import AnalisisArchivo # Importación local para evitar ciclo
         """
         Interpreta el contenido de un AnalisisArchivo para extraer datos estructurados
         útiles para pre-llenar un ticket o pedido.

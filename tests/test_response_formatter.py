@@ -140,10 +140,10 @@ class TestResponseFormatter(unittest.TestCase):
             options=options, body_text="Opción web", channel="web",
             message_type='interactive_buttons', original_bot_response=original_context
         )
-        self.assertEqual(response["respuesta"], "Opción web")
-        self.assertEqual(len(response["botones"]), 1)
-        self.assertEqual(response["botones"][0]["texto"], "Web Opción 1")
-        self.assertEqual(response["botones"][0]["action_id"], "web_opt1")
+        # Test the HOTFIX behavior
+        expected_text = "Opción web\n\n➡️ Web Opción 1"
+        self.assertEqual(response["respuesta"], expected_text)
+        self.assertEqual(len(response["botones"]), 0) # Buttons are flattened
         self.assertEqual(response["fuente"], "test_web_sugg")
 
     def test_web_response_structure_text(self):
@@ -161,10 +161,77 @@ class TestResponseFormatter(unittest.TestCase):
         response = build_interactive_response(
             options=options, body_text="Enlace:", channel="web", message_type='interactive_buttons'
         )
-        self.assertEqual(len(response["botones"]), 1)
-        self.assertEqual(response["botones"][0]["texto"], "Visitar Web")
-        self.assertEqual(response["botones"][0]["url"], "https://example.com")
-        self.assertEqual(response["botones"][0]["action_id"], "open_url_action") # Default action_id if 'type' is 'url' and no 'action_id' provided
+        # Test the HOTFIX behavior
+        expected_text = "Enlace:\n\n➡️ Visitar Web"
+        self.assertEqual(response["respuesta"], expected_text)
+        self.assertEqual(len(response["botones"]), 0) # Buttons are flattened
+
+
+    def test_web_response_with_audio_url(self):
+        """
+        Test that the web formatter includes the audio_url when provided.
+        """
+        bot_response = {
+            "message_body": "This is a test.",
+            "audio_url": "/static/audio/test.mp3"
+        }
+        formatted_response = build_interactive_response(
+            options=[],
+            body_text=bot_response["message_body"],
+            channel="web",
+            original_bot_response=bot_response
+        )
+        self.assertIn("audio_url", formatted_response)
+        self.assertEqual(formatted_response["audio_url"], "/static/audio/test.mp3")
+        self.assertEqual(formatted_response["respuesta"], "This is a test.")
+
+    def test_web_response_without_audio_url(self):
+        """
+        Test that the web formatter handles responses without an audio_url.
+        """
+        bot_response = {"message_body": "This is a test."}
+        formatted_response = build_interactive_response(
+            options=[],
+            body_text=bot_response["message_body"],
+            channel="web",
+            original_bot_response=bot_response
+        )
+        self.assertIn("audio_url", formatted_response)
+        self.assertIsNone(formatted_response["audio_url"])
+        self.assertEqual(formatted_response["respuesta"], "This is a test.")
+
+    def test_whatsapp_response_with_audio_url(self):
+        """
+        Test that the WhatsApp formatter creates an audio message payload.
+        """
+        audio_url = "https://example.com/audio.mp3"
+        formatted_response = build_interactive_response(
+            options=[],
+            body_text="This is a caption.",
+            channel="whatsapp",
+            audio_url=audio_url
+        )
+        expected_payload = {
+            "type": "audio",
+            "audio": {"link": audio_url}
+        }
+        self.assertEqual(formatted_response, expected_payload)
+
+    def test_whatsapp_response_without_audio_url(self):
+        """
+        Test that the WhatsApp formatter falls back to a text message.
+        """
+        formatted_response = build_interactive_response(
+            options=[],
+            body_text="This is a standard text message.",
+            channel="whatsapp",
+            audio_url=None # Explicitly None
+        )
+        expected_payload = {
+            "type": "text",
+            "text": {"body": "This is a standard text message."}
+        }
+        self.assertEqual(formatted_response, expected_payload)
 
 
 if __name__ == '__main__':

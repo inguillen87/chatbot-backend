@@ -157,5 +157,53 @@ class ChatLogicTestCase(unittest.TestCase):
                     self.assertIsNotNone(new_user)
                     self.assertEqual(new_user.rol, 'usuario')
 
+    @patch('services.municipios.llamar_gemini')
+    @patch('services.herramientas_municipio.tts_service.synthesize_speech')
+    def test_audio_response_flow(self, mock_synthesize_speech, mock_llamar_gemini):
+        """
+        Tests the full flow when the LLM decides to respond with audio.
+        """
+        # 1. Mock LLM response to use the audio tool
+        mock_llm_response = {
+            "respuesta_usuario": "Aquí está la información que pediste.",
+            "accion_backend": "ejecutar_herramienta",
+            "datos_estructura": {
+                "nombre_herramienta": "generar_respuesta_audio",
+                "parametros_herramienta": {
+                    "texto_para_audio": "Aquí está la información que pediste."
+                }
+            }
+        }
+        mock_llamar_gemini.return_value = mock_llm_response
+
+        # 2. Mock TTS service to return a fake URL
+        mock_synthesize_speech.return_value = "/static/audio/test_audio.mp3"
+
+        # 3. Call the main logic function (responder_chatboc)
+        from services.logic import responder_chatboc
+        from models import ChatSessionContext
+
+        # Create a dummy context object for the test
+        chat_context = ChatSessionContext(chat_session_id="test-session", context_data={'source_is_audio': True})
+
+        response = responder_chatboc(
+            pregunta="Quiero saber sobre los impuestos",
+            owner_user=self.user,
+            chat_db_context=chat_context,
+            channel="web"
+        )
+
+        # 4. Assertions
+        # Verify that the TTS service was called
+        mock_synthesize_speech.assert_called_once_with(text="Aquí está la información que pediste.")
+
+        # Verify that the final response contains the audio_url
+        self.assertIn("audio_url", response)
+        self.assertEqual(response["audio_url"], "/static/audio/test_audio.mp3")
+
+        # Verify that the text response is also present
+        self.assertEqual(response["message_body"], "Aquí está la información que pediste.")
+
+
 if __name__ == '__main__':
     unittest.main()
