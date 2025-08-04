@@ -84,7 +84,22 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Recopilación final de datos y creación del ticket
         owner_user = self.context.get("user_obj")
-        owner_user = self.context.get("user_obj")
+
+        # Update viewer_user object if it exists and we have new info
+        if viewer_user:
+            updated = False
+            if nombre_vecino_final and not viewer_user.name:
+                viewer_user.name = nombre_vecino_final
+                updated = True
+            if telefono_final and not viewer_user.telefono:
+                viewer_user.telefono = telefono_final
+                updated = True
+            if email_final and not viewer_user.email:
+                viewer_user.email = email_final
+                updated = True
+            if updated:
+                db.session.add(viewer_user)
+                logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
         ticket_data = {
             "pregunta": pregunta_original,
@@ -107,6 +122,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
         logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
+
+        # Enhanced logging for debugging contact info
+        logger.info(f"DEBUG_CONTACT_INFO: nombre='{ticket_data_cleaned.get('nombre_vecino')}', "
+                    f"telefono='{ticket_data_cleaned.get('telefono_vecino')}', "
+                    f"email='{ticket_data_cleaned.get('email_vecino')}'")
 
         try:
             ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
