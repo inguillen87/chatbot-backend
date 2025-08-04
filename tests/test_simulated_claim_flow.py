@@ -198,8 +198,10 @@ class TestSimulatedClaimFlow(unittest.TestCase):
                 app = create_app()
                 with app.test_request_context('/tickets'):
                     response = get_tickets_del_usuario_logic(current_user)
+                    # The function returns a jsonify object, which is a Response instance
                     self.assertEqual(response.status_code, 200)
-                    data = json.loads(response.get_data(as_text=True))
+                    data = response.get_json()
+                    self.assertIn('tickets', data)
                     self.assertEqual(len(data['tickets']), 1)
                     self.assertEqual(data['tickets'][0]['id'], 76)
 

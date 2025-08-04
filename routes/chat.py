@@ -304,10 +304,6 @@ def _procesar_chat(
             else:
                 current_app.logger.error(f"No se encontró ArchivoAdjunto con ID {archivo_adjunto_id} en la DB.")
 
-        # Import uuid al inicio del archivo si no está ya
-        import uuid
-        from models import ChatSessionContext
-
         # Leer el X-Chat-Session-Id del header
         chat_session_id_header = request.headers.get("X-Chat-Session-Id")
 

@@ -67,11 +67,12 @@ class TicketsEndpointTest(unittest.TestCase):
                 resp = get_tickets_del_usuario_logic(user)
                 self.assertEqual(resp.status_code, 200)
                 data = resp.get_json()
-                self.assertIsInstance(data, list)
-                self.assertEqual(len(data), 1)
-                self.assertEqual(data[0]['id'], 1)
-                self.assertEqual(data[0]['nro_ticket'], 101)
-                self.assertEqual(data[0]['asunto'], 'Test Ticket 1')
+                self.assertIn('tickets', data)
+                self.assertIsInstance(data['tickets'], list)
+                self.assertEqual(len(data['tickets']), 1)
+                self.assertEqual(data['tickets'][0]['id'], 1)
+                self.assertEqual(data['tickets'][0]['nro_ticket'], '101')
+                self.assertEqual(data['tickets'][0]['asunto'], 'Test Ticket 1')
 
 if __name__ == '__main__':
     unittest.main()
