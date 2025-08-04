@@ -15,7 +15,6 @@ from config import TestConfig
 from services.actions.common_actions import DerivarHumanoAction
 from services.chat_orchestrator import ChatOrchestrator
 from services.actions.municipio_actions import DerivarHumanoActionHandler
-from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
 
 
 class DerivarHumanoActionHandlerTests(unittest.TestCase):
@@ -52,36 +51,34 @@ class DerivarHumanoActionHandlerTests(unittest.TestCase):
         self.assertTrue(result['success'])
         self.assertIn('M-', result['data']['chat_id'])
 
-    @patch('services.actions.pyme_actions.servicio_tickets')
+    @patch('services.actions.common_actions.servicio_tickets')
     def test_crea_ticket_pyme(self, mock_service):
         mock_service.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket=222222)
         mock_service.crear_comentario.return_value = None
         context = {
             'viewer_user_obj': SimpleNamespace(name='Ana', telefono='456', email='x@y.com'),
-            'user_id': 2,
-            'rubro_id': 99,
+            'user_obj': SimpleNamespace(id=2),
             'cliente_id': 9,
             'anon_id': None,
             'target_entity_type': 'pyme'
         }
-        handler = DerivarHumanoActionHandlerPyme(context)
+        handler = DerivarHumanoAction(context)
         result = handler.execute({'motivo_derivacion': 'test'})
         mock_service.crear_nuevo_ticket.assert_called_once()
         args, kwargs = mock_service.crear_nuevo_ticket.call_args
         self.assertEqual(kwargs['tipo_ticket'], 'pyme')
         ticket_data = kwargs['ticket_data']
-        self.assertIn('Chat en Vivo', ticket_data['asunto'])
+        self.assertIn('Solicitud de Chat en Vivo', ticket_data['asunto'])
         self.assertTrue(result['success'])
         self.assertIn('P-', result['data']['chat_id'])
 
-    @patch('services.actions.pyme_actions.servicio_tickets')
+    @patch('services.actions.common_actions.servicio_tickets')
     def test_orchestrator_routes_to_pyme_handler(self, mock_service):
         mock_service.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket=333333)
         mock_service.crear_comentario.return_value = None
         context = {
             'viewer_user_obj': SimpleNamespace(name='Ana', telefono='456', email='x@y.com'),
-            'user_id': 2,
-            'rubro_id': 99,
+            'user_obj': SimpleNamespace(id=2),
             'cliente_id': 9,
             'anon_id': None,
             'target_entity_type': 'pyme'
@@ -89,7 +86,7 @@ class DerivarHumanoActionHandlerTests(unittest.TestCase):
         orchestrator = ChatOrchestrator(global_context=context)
         result = orchestrator.execute_action({'accion_backend': 'derivar_humano', 'datos_estructura': {'motivo_derivacion': 'test'}})
         mock_service.crear_nuevo_ticket.assert_called_once()
-        self.assertEqual(result['executed_action_handler'], 'DerivarHumanoActionHandlerPyme')
+        self.assertEqual(result['executed_action_handler'], 'DerivarHumanoAction')
         self.assertTrue(result['success'])
         self.assertIn('P-', result['data']['chat_id'])
 
