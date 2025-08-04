@@ -29,6 +29,45 @@ class SpeechToTextService:
             logger.error(f"Failed to initialize Google Speech-to-Text client: {e}", exc_info=True)
             self.client = None
 
+    def transcribe_audio_file(self, file_path: str, mime_type: str) -> str:
+        """
+        Reads an audio file from a local path, converts it, and transcribes it.
+        """
+        if not self.client:
+            logger.error("Speech-to-Text client is not available. Cannot transcribe.")
+            return ""
+
+        try:
+            # 1. Convert audio to WAV format
+            audio = AudioSegment.from_file(file_path)
+            wav_path = file_path + ".wav"
+            audio.export(wav_path, format="wav", parameters=["-ar", "16000", "-ac", "1"])
+            logger.info(f"Audio converted to WAV at {wav_path}")
+
+            # 2. Read the converted WAV file and send to API
+            with open(wav_path, "rb") as audio_file:
+                content = audio_file.read()
+
+            recognition_audio = speech.RecognitionAudio(content=content)
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                sample_rate_hertz=16000,
+                language_code="es-US",
+                model="default",
+            )
+
+            response = self.client.recognize(config=config, audio=recognition_audio)
+
+            if response.results and response.results[0].alternatives:
+                return response.results[0].alternatives[0].transcript
+            return ""
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during file transcription: {e}", exc_info=True)
+            return ""
+        finally:
+            if 'wav_path' in locals() and os.path.exists(wav_path):
+                os.remove(wav_path)
+
     def transcribe_audio_url(self, url: str, mime_type: str) -> str:
         """
         Downloads an audio file from a URL, converts it to a compatible format,

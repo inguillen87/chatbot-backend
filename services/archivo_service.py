@@ -1,7 +1,7 @@
 import logging
 from typing import List
 from extensions import db
-from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, User # User puede no ser necesario aquí directamente
+# from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, User # Movido para evitar importación circular
 from datetime import datetime, timedelta # Para posible filtro de tiempo
 
 logger = logging.getLogger(__name__)

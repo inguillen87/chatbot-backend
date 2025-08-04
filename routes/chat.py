@@ -107,23 +107,78 @@ def _procesar_chat(
     owner_user=None,
     anon_id: str | None = None,
 ):
-    try:
-        (
-            pregunta,
-            contexto_previo,
-            tipo_chat,
-            rubro_id,
-            rubro_clave,
-            uploaded_file_info,
-            archivo_adjunto_id,
-            location,
-            error_response,
-        ) = _parse_request(tipo_chat_fijo)
-        if error_response:
-            return error_response, 400
+    # --- Session and Context Initialization ---
+    chat_session_id_header = request.headers.get("X-Chat-Session-Id")
+    if not chat_session_id_header:
+        chat_session_id_header = str(uuid.uuid4())
+        current_app.logger.warning(f"X-Chat-Session-Id not found. Generated new: {chat_session_id_header}")
 
-        # Determinar el actor principal y el tipo de usuario
-        actor_principal = owner_user or current_user
+    actor_principal = owner_user or current_user
+    chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
+
+    if not chat_context_obj:
+        current_app.logger.info(f"No ChatSessionContext found for {chat_session_id_header}. Creating new one.")
+        chat_context_obj = ChatSessionContext(
+            chat_session_id=chat_session_id_header,
+            user_id=getattr(actor_principal, 'id', None),
+            anon_id=anon_id if not actor_principal else None,
+            context_data={}
+        )
+        db.session.add(chat_context_obj)
+
+    # --- Request Parsing (Audio or JSON) ---
+    if 'audio_file' in request.files:
+        audio_file = request.files['audio_file']
+        if audio_file.filename != '':
+            from services.google_speech_to_text import SpeechToTextService
+            import tempfile
+
+            chat_context_obj.context_data['source_is_audio'] = True
+
+            # Use a more unique filename to avoid collisions
+            temp_filename = f"{uuid.uuid4()}_{audio_file.filename}"
+            temp_path = os.path.join(tempfile.gettempdir(), temp_filename)
+            audio_file.save(temp_path)
+
+            stt_service = SpeechToTextService()
+            pregunta = stt_service.transcribe_audio_file(file_path=temp_path, mime_type=audio_file.mimetype)
+
+            os.remove(temp_path)
+
+            if not pregunta:
+                pregunta = "[Audio could not be transcribed]"
+
+            # Set default values for other parameters when processing audio
+            contexto_previo = None
+            tipo_chat = tipo_chat_fijo or 'municipio'
+            rubro_id = request.form.get('rubro_id')
+            rubro_clave = request.form.get('rubro_clave')
+            uploaded_file_info = None
+            archivo_adjunto_id = None
+            location = None
+        else:
+            return jsonify({"error": "Audio file is empty."}), 400
+    else:
+        chat_context_obj.context_data.pop('source_is_audio', None) # Remove flag if it's a text message
+        try:
+            (
+                pregunta,
+                contexto_previo,
+                tipo_chat,
+                rubro_id,
+                rubro_clave,
+                uploaded_file_info,
+                archivo_adjunto_id,
+                location,
+                error_response,
+            ) = _parse_request(tipo_chat_fijo)
+            if error_response:
+                return error_response, 400
+        except Exception as e:
+            return jsonify({"error": f"Invalid request format: {e}"}), 400
+
+    try:
+        # --- User and Role Determination ---
         is_anonymous = not actor_principal
         viewer_obj = current_user # El que mira
 

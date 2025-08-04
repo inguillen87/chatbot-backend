@@ -6,6 +6,10 @@ import unicodedata # <--- ¡Importante agregar esta línea!
 import re
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
+from services.google_text_to_speech import TextToSpeechService
+
+# Instanciar el servicio de TTS
+tts_service = TextToSpeechService()
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -561,8 +565,6 @@ TOOL_REGISTRY = {
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
-
-    # --- NUEVA HERRAMIENTA REGISTRADA ---
     "consultar_eventos_culturales": {
         "funcion": consultar_eventos_culturales,
         "descripcion": "Consulta la agenda de eventos culturales, recitales o actividades municipales para una fecha específica, como 'hoy', 'mañana' o 'el sábado'.",
@@ -622,6 +624,17 @@ TOOL_REGISTRY = {
         "parametros": {
             "rubro": {"type": "string", "description": "El rubro o tipo de negocio a buscar."},
             "localidad": {"type": "string", "description": "La ubicación o localidad de referencia."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "generar_respuesta_audio": {
+        "funcion": tts_service.synthesize_speech,
+        "descripcion": "Convierte un texto a voz y devuelve la URL de un archivo de audio.",
+        "parametros": {
+            "texto_para_audio": {
+                "type": "string",
+                "description": "El texto que se convertirá a voz."
+            }
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }

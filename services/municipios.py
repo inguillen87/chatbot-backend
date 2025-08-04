@@ -790,21 +790,26 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 try:
                     logger.info(f"[HERRAMIENTA] Intentando ejecutar: {nombre_herramienta} con params: {parametros_herramienta}")
                     resultado_herramienta = funcion_herramienta(**parametros_herramienta)
-                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {resultado_herramienta[:200]}...")
+                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {resultado_herramienta[:200] if resultado_herramienta else ''}...")
 
-                    respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
-
-                    contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append({
-                        "pregunta_usuario": pregunta_str,
-                        "respuesta_ia": respuesta_final
-                    })
-
-                    return {
-                        "message_body": respuesta_final,
+                    response_dict = {
+                        "message_body": respuesta_usuario_llm,
                         "options_list": botones_llm,
                         "message_type": "text",
                         "fuente": f"herramienta_{nombre_herramienta}"
-                    }, contexto_municipio_actual
+                    }
+
+                    if nombre_herramienta == "generar_respuesta_audio":
+                        response_dict["audio_url"] = resultado_herramienta
+                    else:
+                        response_dict["message_body"] = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
+
+                    contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append({
+                        "pregunta_usuario": pregunta_str,
+                        "respuesta_ia": response_dict["message_body"]
+                    })
+
+                    return response_dict, contexto_municipio_actual
 
                 except Exception as e:
                     logger.error(f"Error ejecutando la herramienta '{nombre_herramienta}': {e}", exc_info=True)

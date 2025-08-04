@@ -74,9 +74,12 @@ class TicketServiceTests(unittest.TestCase):
         t4 = DummyTicket(id=4, estado='abierto', latitud=12.0, longitud=22.0, municipio_id=6, fecha=datetime.utcnow(), categoria=None, asunto=None) # Different municipio
 
         class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+
             def __init__(self, **kwargs):
-                self.latitud = None
-                self.longitud = None
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 
@@ -126,9 +129,12 @@ class TicketServiceTests(unittest.TestCase):
         t3 = DummyTicket(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None) # Different rubro
 
         class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+
             def __init__(self, **kwargs):
-                self.latitud = None
-                self.longitud = None
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 
