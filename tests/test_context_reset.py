@@ -84,6 +84,71 @@ class TestContextReset(unittest.TestCase):
             self.assertEqual(ctx.get('datos_parciales_llm_reclamo'), {})
 
 
+    @patch('services.municipio_responder.accion_crear_reclamo_municipio')
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_ticket_creation_clears_context(self, mock_llm, mock_crear_reclamo):
+        with self.app.app_context():
+            owner_user = User.query.get(1)
+            viewer_user = User.query.get(2)
+            rubro = Rubro.query.get(1)
+
+            # 1. Setup initial context: user is in the middle of a claim
+            chat_session = ChatSessionContext(
+                chat_session_id='session_ticket_creation',
+                user_id=owner_user.id,
+                context_data={
+                    CONTEXTO_MUNICIPIO: {
+                        'estado_conversacion': ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+                        'esperando_info_llm_reclamo': 'ubicacion',
+                        'datos_parciales_llm_reclamo': {
+                            'categoria': 'Bacheo',
+                            'descripcion': 'Hay un pozo muy grande'
+                        },
+                        'historial_llm_reclamo': [
+                            {'pregunta_usuario': 'Quiero reportar un bache', 'respuesta_ia': 'Ok, ¿dónde está?'}
+                        ]
+                    }
+                }
+            )
+            db.session.add(chat_session)
+            db.session.commit()
+
+            # 2. Mock the LLM response: user provides the final piece of info
+            mock_llm.return_value = {
+                'respuesta_usuario': '¡Gracias! Creando tu reclamo...',
+                'accion_backend': 'crear_reclamo',
+                'datos_estructura': {
+                    'target': 'municipio',
+                    'ubicacion': 'Calle Falsa 123'
+                },
+                'pedir_info': None, # No more info needed
+                'botones': []
+            }
+
+            # 3. Mock the ticket creation action to simulate success
+            mock_crear_reclamo.return_value = {
+                "success": True,
+                "message_to_user": "✅ Reclamo recibido! N° de Ticket: T-12345",
+                "data": {"ticket_id": 123}
+            }
+
+            # 4. Call the main responder function
+            from services.municipio_responder import responder_municipio
+            responder_municipio(
+                pregunta_original='Es en Calle Falsa 123',
+                owner_user=owner_user,
+                rubro_obj=rubro,
+                viewer_user=viewer_user,
+                chat_db_context=chat_session,
+            )
+
+            # 5. Assert that the context was cleared
+            ctx = chat_session.context_data[CONTEXTO_MUNICIPIO]
+
+            # After ticket creation, the specific context should be empty
+            self.assertEqual(ctx, {})
+
+
 if __name__ == '__main__':
     unittest.main()
 

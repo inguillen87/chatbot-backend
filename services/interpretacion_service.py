@@ -2,7 +2,7 @@ import logging
 import json
 from typing import Dict, Any, List, Optional
 
-from models import AnalisisArchivo # Para type hinting
+# from models import AnalisisArchivo # Para type hinting - MOVING TO FIX CIRCULAR IMPORT
 # Asumiendo que robust_chat está en llm_utils o cohere_ai
 from services.llm_utils import robust_chat, _clean_llm_json_output # _clean_llm_json_output es de llm_utils
 
@@ -119,7 +119,7 @@ class InterpretacionService:
 
     def interpretar_analisis_para_datos_ticket(
         self,
-        analisis_archivo: AnalisisArchivo,
+        analisis_archivo: 'AnalisisArchivo',
         tipo_contexto: str, # "municipio" o "pyme"
         user_id: Optional[int] = None # Para pasar a las llamadas LLM si es necesario
     ) -> Dict[str, Any]:

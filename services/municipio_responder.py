@@ -562,14 +562,15 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
         options_list = respuesta_accion.get("options_list", [])
         logger.info(f"Options list from action handler: {options_list}")
         if not options_list:
-            logger.info("Action handler did not provide options, adding default buttons.")
+            logger.info("Action handler did not provide options, adding main menu buttons.")
             options_list.extend([
-                {"texto": "Ver estado de mi reclamo", "id_accion": "consultar_estado_ticket"},
-                {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
+                {"id": "iniciar_reclamo", "texto": "Hacer un reclamo"},
+                {"id": "info_tramite", "texto": "Consultar un trámite"},
+                {"id": "consultar_puntos_de_interes", "texto": "Consultas Generales"},
             ])
 
         # Create a combined message
-        final_message = f"{message_body}\n\n¿Hay algo más en lo que pueda ayudarte?"
+        final_message = f"{message_body}\n\n¿En qué más puedo ayudarte?"
 
         return {
             "message_body": final_message,
@@ -978,7 +979,7 @@ def responder_municipio(
 
     if USAR_LLM_PARA_RECLAMOS:
         logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
-        respuesta_manejada_por_llm, _ = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
+        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
         logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         if respuesta_manejada_por_llm:
             return respuesta_manejada_por_llm

@@ -1,10 +1,11 @@
 # services/interpretacion_imagen_service.py
+from __future__ import annotations
 import logging
 import requests
 import random # Para el mock de AnalisisArchivo en las pruebas
 from typing import Dict, Any, List, Optional
 
-from models import ArchivoAdjunto, AnalisisArchivo, User, CatalogoItem, db
+from models import ArchivoAdjunto, User, CatalogoItem, db
 from services.google_vision_service import GoogleVisionService
 from services.llm_utils import extract_complaint_details_llm
 from services.common_utils import limpiar_texto_base, parse_precio_flexible # Para procesar texto de pedido
@@ -51,8 +52,9 @@ def _descargar_imagen(url: str) -> Optional[bytes]:
         logger.error(f"❌ Error al descargar imagen desde {url}: {e}", exc_info=True)
         return None
 
-def _inicializar_analisis_archivo(archivo_adjunto_id: int, tipo_analisis_inicial: str) -> AnalisisArchivo:
+def _inicializar_analisis_archivo(archivo_adjunto_id: int, tipo_analisis_inicial: str) -> 'AnalisisArchivo':
     """Obtiene o crea un registro de AnalisisArchivo."""
+    from models import AnalisisArchivo
     analisis = AnalisisArchivo.query.filter_by(archivo_adjunto_id=archivo_adjunto_id).first()
     if not analisis:
         analisis = AnalisisArchivo(
@@ -312,7 +314,7 @@ def _infer_category_from_vision_results(vision_results: Dict[str, Any], min_conf
 
 
 def _procesar_interpretacion_reclamo(
-    analisis_db_record: Optional[AnalisisArchivo], # Puede ser None si es de WhatsApp
+    analisis_db_record: Optional['AnalisisArchivo'], # Puede ser None si es de WhatsApp
     vision_results: Dict[str, Any],
     extracted_ocr_text: str,
     auto_mode: bool = False
@@ -429,7 +431,7 @@ def _procesar_interpretacion_reclamo(
 
 # --- Lógica para Interpretación de Pedidos PYME ---
 def _procesar_interpretacion_pedido_pyme(
-    analisis_db_record: Optional[AnalisisArchivo], # Puede ser None
+    analisis_db_record: Optional['AnalisisArchivo'], # Puede ser None
     vision_results: Dict[str, Any],
     extracted_ocr_text: str,
     pyme_user: User
@@ -647,7 +649,7 @@ def _procesar_interpretacion_pedido_pyme(
     }
 
 def _procesar_interpretacion_orden_de_compra(
-    analisis_db_record: Optional[AnalisisArchivo],
+    analisis_db_record: Optional['AnalisisArchivo'],
     vision_results: Dict[str, Any],
     extracted_ocr_text: str
 ) -> Dict[str, Any]:
