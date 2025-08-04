@@ -562,5 +562,27 @@
                 "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#aec3cfdbdcc7cdc7c1dccfc3c7dccbd4d8c7d8c7cbc0cacfeef7cfc6c1c180cdc1c380cfdc"
             }
         ]
+    },
+    "licencia_de_conducir": {
+        "descripcion": "Para requisitos y turnos de licencia de conducir visitá:",
+        "botones": [
+            {
+                "texto": "Ir a Licencia de Conducir",
+                "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
+            }
+        ]
+    },
+    "pago_de_tasas_vigentes": {
+        "descripcion": "Para pagar o descargar boletos vigentes, dirigite a:",
+        "botones": [
+            {
+                "texto": "Ir a ePagos",
+                "url": "https://epagos.juninmendoza.gov.ar/jrentas/"
+            }
+        ]
+    },
+    "defensa_del_consumidor": {
+        "descripcion": "Para asesoramiento, escribí a: defensadelconsumidorjuninmza@gmail.com",
+        "botones": []
     }
 }
