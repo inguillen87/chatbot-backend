@@ -152,9 +152,9 @@ def build_interactive_response(options: list,
 
             # Añadir los textos de los botones a la respuesta principal
             if body_text:
-                web_response["respuesta"] = f"{body_text}\n\n{'\n'.join(button_texts)}"
+                web_response["respuesta"] = body_text + "\n\n" + "\n".join(button_texts)
             else:
-                web_response["respuesta"] = '\n'.join(button_texts)
+                web_response["respuesta"] = "\n".join(button_texts)
 
             # Vaciar el array de botones para que el frontend no lo procese
             web_response["botones"] = []
