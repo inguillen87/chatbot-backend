@@ -1001,9 +1001,17 @@ def responder_municipio(
     )
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto DB para {CONTEXTO_MUNICIPIO}: {contexto_municipio_data_from_db}")
 
-    # --- Greeting Handler Check ---
-    # If the user sends a simple greeting, bypass the LLM and show the welcome menu.
-    if pregunta_str.strip().lower() in GREETING_KEYWORDS:
+    # --- Greeting and Reset Logic ---
+    pregunta_str_lower = pregunta_str.strip().lower()
+    pregunta_words = set(pregunta_str_lower.split())
+    reset_keywords = {"termino", "gracias", "empezar de nuevo", "menu", "opciones"}
+
+    if GREETING_KEYWORDS.intersection(pregunta_words) or reset_keywords.intersection(pregunta_words):
+        if GREETING_KEYWORDS.intersection(pregunta_words):
+             logger_actual.info("Greeting detected. Resetting context and showing welcome menu.")
+        else:
+             logger_actual.info("Reset keyword detected. Resetting context and showing welcome menu.")
+        contexto_municipio_actual.clear()
         handler = GreetingHandler(context)
         return handler.handle(received_payload)
 
