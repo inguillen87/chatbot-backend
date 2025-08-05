@@ -5,9 +5,10 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     boton_contacto = None
 
     if contacto_especializado:
-        nombre_asesor = contacto_especializado.get("nombre", "Atención al Vecino")
+        # No hardcodear el default aquí, se debe manejar en el llamador.
+        nombre_asesor = contacto_especializado.get("nombre")
         telefono_asesor = contacto_especializado.get("telefono")
-        if telefono_asesor:
+        if nombre_asesor and telefono_asesor:
             # Limpiar y asegurar que el número de teléfono sea solo dígitos
             telefono_numerico = ''.join(filter(str.isdigit, telefono_asesor))
             link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20quiero%20hacer%20seguimiento%20de%20mi%20{tipo}%20(ID:{id_ticket})"
@@ -41,7 +42,8 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
         respuesta += f"  - **N° de Ticket:** {id_ticket}
 "
 
-    if nombre_asesor and link_whatsapp:
+    # No mostrar el link en el texto, solo en el botón.
+    if nombre_asesor:
         respuesta += (
             f"
 
