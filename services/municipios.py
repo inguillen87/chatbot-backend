@@ -651,24 +651,14 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         and es_consulta_general(pregunta_str)
     ):
         logger_actual.info(
-            "[HANDLE_LLM] Cambio de tema detectado durante flujo de reclamo. Reseteando contexto a conversacion general."
+            "[HANDLE_LLM] Cambio de tema detectado durante flujo de reclamo. Reseteando contexto TOTAL a conversacion general."
         )
-        contexto_municipio_actual["historial_llm_reclamo"] = []
-        contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
-        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
-        # Limpia datos residuales del reclamo previo
-        for campo in [
-            "categoria_reclamo",
-            "descripcion_reclamo",
-            "direccion_reclamo",
-            "coordenadas_reclamo",
-            "nombre_vecino",
-            "telefono_vecino",
-            "email_vecino",
-            "foto_url",
-        ]:
-            contexto_municipio_actual.pop(campo, None)
+        # BUG FIX: El contexto anterior era parcial y dejaba estados viejos.
+        # Se limpia COMPLETAMENTE el contexto del municipio para evitar que el fallback
+        # a la lógica antigua recoja estados residuales de un reclamo anterior.
+        contexto_municipio_actual.clear()
 
+        # Se restablece el estado únicamente al modo de conversación general con el LLM.
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
@@ -1030,7 +1020,7 @@ def responder_municipio(
         return PagoTasasHandler(context).handle(received_payload)
     elif pregunta_str_lower == "defensa_consumidor":
         return DefensaConsumidorHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "veterinaria_bromatologia":
+    elif "veterinaria" in pregunta_str_lower or "bromatologia" in pregunta_str_lower:
         return VeterinariaBromatologiaHandler(context).handle(received_payload)
     elif pregunta_str_lower == "reclamo_perdida_agua":
         return PerdidaDeAguaHandler(context).handle(received_payload)
