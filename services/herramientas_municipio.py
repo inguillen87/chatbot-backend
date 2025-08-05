@@ -631,7 +631,7 @@ TOOL_REGISTRY = {
         "funcion": tts_service.synthesize_speech,
         "descripcion": "Convierte un texto a voz y devuelve la URL de un archivo de audio.",
         "parametros": {
-            "texto_para_audio": {
+            "text": {
                 "type": "string",
                 "description": "El texto que se convertirá a voz."
             }
