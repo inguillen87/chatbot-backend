@@ -6,22 +6,13 @@
   },
   "Arreglo de calle": {
     "nombre": "Juan Carlos de Obras Públicas",
-<<<<<<< fix/chatbot-context-bug
     "titulo": "Encargado de Bacheo y Calles",
     "telefono": "+5492610000001"
-=======
-    "titulo": "Encargado de Bacheo",
-    "telefono": "+5492613168608"
->>>>>>> main
   },
   "Luminaria": {
     "nombre": "Ana María de Servicios",
     "titulo": "Supervisora de Alumbrado",
-<<<<<<< fix/chatbot-context-bug
     "telefono": "+5492610000002"
-=======
-    "telefono": "++5492613168608"
->>>>>>> main
   },
   "Arbolado": {
     "nombre": "Roberto de Espacios Verdes",
