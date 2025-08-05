@@ -164,46 +164,42 @@ class TestSimulatedClaimFlow(unittest.TestCase):
             self.assertEqual(ticket_data['telefono_vecino'], '+5492611234567')
             self.assertEqual(ticket_data['email_vecino'], 'juan.perez@example.com')
 
-    @patch('routes.ticket.db.session.get')
-    def test_get_tickets_del_usuario_logic(self, mock_get):
+    def test_get_tickets_del_usuario_logic(self):
+        from datetime import datetime
+        from models import MunicipioTicket
         with self.app.app_context():
-            # Mock the current_user
-            current_user = MagicMock()
-            current_user.tipo_chat = "municipio"
-            current_user.municipio_id = 1
-            current_user.rol = "admin"
+            # Create a real user and ticket
+            admin_user = User(
+                email='admin@junin.com',
+                name='Admin Junin',
+                rol='admin',
+                municipio_id=1,
+                tipo_chat='municipio'
+            )
+            admin_user.set_password('adminpass')
+            db.session.add(admin_user)
+            db.session.commit()
 
-            # Mock the query
-            mock_query = MagicMock()
-            mock_ticket = MagicMock()
-            mock_ticket.id = 76
-            mock_ticket.nro_ticket = "866333"
-            mock_ticket.asunto = "Reclamo (LLM): Alumbrado Público"
-            mock_ticket.estado = "nuevo"
-            mock_ticket.fecha = "2025-07-30T22:40:08.214704"
-            mock_ticket.categoria = "Alumbrado Público"
-            mock_ticket.direccion = "don bosco 55 junin mendoza"
-            mock_ticket.latitud = None
-            mock_ticket.longitud = None
-            mock_query.all.return_value = [mock_ticket]
-            mock_query.filter.return_value = mock_query
-            mock_query.order_by.return_value = mock_query
-            mock_query.offset.return_value = mock_query
-            mock_query.limit.return_value = mock_query
+            ticket1 = MunicipioTicket(
+                municipio_id=1,
+                user_id=admin_user.id,
+                asunto='Bache en la calle',
+                categoria='calle',
+                pregunta='Hay un bache grande en la calle principal.',
+                fecha=datetime.fromisoformat("2025-07-30T22:40:08.214704")
+            )
+            db.session.add(ticket1)
+            db.session.commit()
 
-            with patch('routes.ticket.MunicipioTicket.query') as mock_ticket_query:
-                mock_ticket_query.filter.return_value = mock_query
-                from routes.ticket import get_tickets_del_usuario_logic
-                from app import create_app
-                app = create_app()
-                with app.test_request_context('/tickets'):
-                    response = get_tickets_del_usuario_logic(current_user)
-                    # The function returns a jsonify object, which is a Response instance
-                    self.assertEqual(response.status_code, 200)
-                    data = response.get_json()
-                    self.assertIn('tickets', data)
-                    self.assertEqual(len(data['tickets']), 1)
-                    self.assertEqual(data['tickets'][0]['id'], 76)
+            from routes.ticket import get_tickets_del_usuario_logic
+            with self.app.test_request_context('/tickets'):
+                response = get_tickets_del_usuario_logic(admin_user)
+                self.assertEqual(response.status_code, 200)
+                data = response.get_json()
+                self.assertIn('tickets', data)
+                self.assertEqual(len(data['tickets']), 1)
+                self.assertEqual(data['tickets'][0]['asunto'], 'Bache en la calle')
+                self.assertIn('id_ticket', data['tickets'][0])
 
 if __name__ == '__main__':
     unittest.main()

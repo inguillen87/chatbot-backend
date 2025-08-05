@@ -150,6 +150,11 @@ class MunicipioTicket(db.Model):
     telefono_vecino = db.Column(db.String(30), nullable=True)
     email_vecino = db.Column(db.String(120), nullable=True)
     foto_url_directa = db.Column(db.String(255), nullable=True) # For simple photo URL if not using full ArchivoAdjunto flow initially
+    # Nuevos campos requeridos
+    canal_ingreso = db.Column(db.String(50), nullable=True) # ej: WhatsApp, Web, API
+    contacto_seguimiento = db.Column(db.String(255), nullable=True) # ej: link a wa.me, mailto, etc.
+    nombre_display_whatsapp = db.Column(db.String(150), nullable=True)
+    url_avatar_whatsapp = db.Column(db.String(255), nullable=True)
     # archivo_url = db.Column(db.String(255), nullable=True) # Campo obsoleto, se usará la relación
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
     archivos = db.relationship(

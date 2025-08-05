@@ -100,6 +100,20 @@ def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ti
 # ---------- LISTA DE TICKETS (logueado) ----------
 from flask import redirect, url_for
 
+def _generate_friendly_ticket_id(ticket, ticket_type_str):
+    """Genera un ID de ticket amigable como M-992323 o P-123."""
+    if ticket_type_str == "municipio":
+        # Para MunicipioTicket, nro_ticket es un UUID string. Usamos los primeros 6 caracteres.
+        prefix = "M"
+        if isinstance(ticket.nro_ticket, str) and len(ticket.nro_ticket) > 6:
+            return f"{prefix}-{ticket.nro_ticket[:6].upper()}"
+        return f"{prefix}-{ticket.id}" # Fallback
+    elif ticket_type_str == "pyme":
+        # Para PymeTicket, nro_ticket es un entero.
+        prefix = "P"
+        return f"{prefix}-{ticket.nro_ticket}"
+    return str(ticket.id) # Fallback para otros casos
+
 def get_tickets_del_usuario_logic(current_user: User):
     if not current_user:
         return jsonify({"error": "Usuario no asociado, no se pueden mostrar tickets."}), 404
@@ -113,18 +127,37 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         # Definir función de serialización genérica primero
         def serialize_ticket_func(t, ticket_type_str):
+            # Lógica de contacto unificada
+            nombre_completo = getattr(t, 'nombre_vecino', None) or getattr(t, 'nombre_cliente', None) or getattr(t, 'name', None)
+            telefono_contacto = getattr(t, 'telefono_vecino', None) or getattr(t, 'telefono_cliente', None) or getattr(t, 'telefono', None)
+            mail_contacto = getattr(t, 'email_vecino', None) or getattr(t, 'email_cliente', None) or getattr(t, 'email', None)
+
             data = {
-                "id": t.id, "tipo": ticket_type_str, "nro_ticket": t.nro_ticket,
-                "asunto": getattr(t, 'asunto', 'N/A'), "estado": t.estado,
-                "fecha": t.fecha.isoformat(), "categoria": getattr(t, 'categoria', None),
-                "direccion": getattr(t, 'direccion', None),
-                "latitud": getattr(t, 'latitud', None), "longitud": getattr(t, 'longitud', None),
-                "nombre_vecino": getattr(t, 'nombre_vecino', None)
+                "id": t.id,
+                "id_ticket": _generate_friendly_ticket_id(t, ticket_type_str),
+                "tipo": ticket_type_str,
+                "asunto": getattr(t, 'asunto', 'N/A'),
+                "estado_ticket": t.estado,
+                "fecha_hora_creacion": t.fecha.isoformat(),
+                "categoria_reclamo": getattr(t, 'categoria', None),
+                "direccion_exacta_aproximada": getattr(t, 'direccion', None),
+                "ubicacion_geografica": {
+                    "latitud": getattr(t, 'latitud', None),
+                    "longitud": getattr(t, 'longitud', None),
+                },
+                "nombre_completo_solicitante": nombre_completo,
+                "descripcion_completa_reclamo": getattr(t, 'pregunta', ''),
+                "telefono_contacto": telefono_contacto,
+                "mail_contacto": mail_contacto,
+                "canal_ingreso": getattr(t, 'canal_ingreso', None),
+                "contacto_seguimiento": getattr(t, 'contacto_seguimiento', None),
+                "nombre_y_avatar_whatsapp": {
+                    "nombre": getattr(t, 'nombre_display_whatsapp', None),
+                    "avatar_url": getattr(t, 'url_avatar_whatsapp', None)
+                }
             }
             if ticket_type_str == 'pyme':
                 data.update({
-                    "telefono": getattr(t, 'telefono', None),
-                    "email": getattr(t, 'email', None),
                     "dni": getattr(t, 'dni', None),
                     "estado_cliente": getattr(t, 'estado_cliente', None),
                 })
@@ -369,24 +402,30 @@ def _serialize_ticket_details(ticket, ticket_type):
 
     ticket_data = {
         "id": ticket.id,
+        "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "tipo": ticket_type,
-        "nro_ticket": ticket.nro_ticket,
+        "nro_ticket_original": ticket.nro_ticket, # Mantenemos el nro original por si acaso
         "asunto": getattr(ticket, 'asunto', ''),
-        "categoria": getattr(ticket, 'categoria', ''),
-        "estado": ticket.estado,
-        "fecha": ticket.fecha.isoformat(),
-        "pregunta": getattr(ticket, 'pregunta', ''),
-        "detalles": user_data["descripcion"],
+        "categoria_reclamo": getattr(ticket, 'categoria', ''),
+        "estado_ticket": ticket.estado,
+        "fecha_hora_creacion": ticket.fecha.isoformat(),
+        "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),
+        "detalles_adicionales": user_data["descripcion"], # Datos extraídos del campo 'detalles'
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "nombre_usuario": user_data["nombre"],
-        "telefono": user_data["telefono"],
-        "email_usuario": user_data["email"],
+        "nombre_completo_solicitante": user_data["nombre"],
+        "telefono_contacto": user_data["telefono"],
+        "mail_contacto": user_data["email"],
         "dni": user_data["dni"],
-        "direccion": user_data["direccion"],
-        "descripcion": user_data["descripcion"], # Mantenemos este campo por si el frontend lo usa
+        "direccion_exacta_aproximada": user_data["direccion"],
         "archivos_adjuntos": archivos_adjuntos_data,
-        "latitud": getattr(ticket, 'latitud', None),
-        "longitud": getattr(ticket, 'longitud', None)
+        "ubicacion_geografica": {
+            "latitud": getattr(ticket, 'latitud', None),
+            "longitud": getattr(ticket, 'longitud', None),
+        },
+        "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
+        "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
+        "nombre_y_avatar_whatsapp": { "nombre": getattr(ticket, 'nombre_display_whatsapp', None), "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None)
+        }
     }
     return ticket_data
 
