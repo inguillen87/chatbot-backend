@@ -1020,7 +1020,7 @@ def responder_municipio(
         return PagoTasasHandler(context).handle(received_payload)
     elif pregunta_str_lower == "defensa_consumidor":
         return DefensaConsumidorHandler(context).handle(received_payload)
-    elif "veterinaria" in pregunta_str_lower or "bromatologia" in pregunta_str_lower:
+    elif pregunta_str_lower == "veterinaria_bromatologia":
         return VeterinariaBromatologiaHandler(context).handle(received_payload)
     elif pregunta_str_lower == "reclamo_perdida_agua":
         return PerdidaDeAguaHandler(context).handle(received_payload)
