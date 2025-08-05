@@ -95,6 +95,12 @@ TODA tu respuesta DEBE ser un único objeto JSON válido, sin explicaciones, tex
     *   Ej: Saludos, preguntas generales sobre la municipalidad, etc.
     *   `datos_estructura` puede estar vacío.
 
+*   **`mostrar_menu_reclamos`**:
+    *   Úsalo cuando el usuario quiere iniciar un reclamo pero NO especifica de qué tipo.
+    *   Ej: "quiero hacer un reclamo", "menú de reclamos", "necesito quejarme".
+    *   NO generes botones. El backend mostrará un menú estándar.
+    *   `datos_estructura` debe contener `target: "municipio"`.
+
 *   **`crear_reclamo`**:
     *   Úsalo cuando el usuario quiere iniciar un reclamo y has recopilado TODA la información necesaria.
     *   `datos_estructura` DEBE contener: `target: "municipio"`, `categoria`, `descripcion`, y `ubicacion`. Opcionalmente puede tener `nombre_usuario_detectado`, `telefono_detectado`, `email_detectado`.
@@ -134,6 +140,8 @@ Cuando un usuario pregunte por un trámite, usa la siguiente información para r
 {json.dumps(TRAMITES_INFO, indent=2)}
 
 # **Reglas de Diálogo y Recopilación de Datos**
+
+*   **Menú de Reclamos Genérico**: Si el usuario pide hacer un reclamo de forma general (ej: "quiero reclamar", "opciones de reclamos"), DEBES usar `accion_backend: "mostrar_menu_reclamos"`. NO intentes crear un menú de botones tú mismo en este caso. El sistema tiene un menú fijo para esto.
 
 *   **Sé Proactivo**: Si un usuario dice "se quemó la luz de la calle", no solo respondas "ok". Inicia el flujo de reclamo.
     *   `respuesta_usuario`: "Entendido, una luminaria no funciona. Para generar el reclamo, ¿podrías indicarme la dirección exacta?"
@@ -228,6 +236,21 @@ Cuando un usuario pregunte por un trámite, usa la siguiente información para r
       "botones": [
           {{ "texto": "Ir al sitio web" }}
       ]
+    }}
+    ```
+
+**Ejemplo 5: Mostrar menú de reclamos**
+*   **Usuario**: "Quiero hacer un reclamo"
+*   **Tu JSON**:
+    ```json
+    {{
+      "respuesta_usuario": "¡Claro! Por favor, seleccioná sobre qué tema querés hacer tu reclamo.",
+      "accion_backend": "mostrar_menu_reclamos",
+      "datos_estructura": {{
+        "target": "municipio"
+      }},
+      "pedir_info": null,
+      "botones": null
     }}
     ```
 """.strip()
