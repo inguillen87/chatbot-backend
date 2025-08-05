@@ -20,3 +20,4 @@ test_venv/
 sandbox_venv/
 
 # Pero permite que la estructura instance/ exista
+node_modules
