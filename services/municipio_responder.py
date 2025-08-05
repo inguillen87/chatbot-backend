@@ -400,31 +400,82 @@ class BaseMunicipioHandler:
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        # Enhanced greeting handler with more information
-        custom_message = payload.get("custom_message", "Por favor, seleccioná un ítem para comenzar.")
-
-        welcome_message = (
-            "¡Hola! Soy JunIA, el asistente virtual de la Municipalidad de Junín.\n"
-            "Estas son las cosas que puedo hacer por vos:\n\n"
-            "- RECLAMOS\n"
-            "- LICENCIA DE CONDUCIR\n"
-            "- PAGO DE TASAS VIGENTES\n"
-            "- DEFENSA DEL CONSUMIDOR\n"
-            "- VETERINARIA Y BROMATOLOGÍA\n\n"
-            f"{custom_message}"
-        )
+        # As per the new specification from the user/frontend team.
         return {
-            "message_body": welcome_message,
-            "options_list": [
-                {"id": "iniciar_reclamo", "texto": "RECLAMOS"},
-                {"id": "info_licencia_conducir", "texto": "LICENCIA DE CONDUCIR"},
-                {"id": "info_pago_tasas", "texto": "PAGO DE TASAS VIGENTES"},
-                {"id": "info_defensa_consumidor", "texto": "DEFENSA DEL CONSUMIDOR"},
-                {"id": "info_veterinaria", "texto": "VETERINARIA Y BROMATOLOGÍA"},
+            "respuesta_usuario": "¡Hola! Soy JUNI, el asistente virtual de la Municipalidad de Junín.\nEstas son las cosas que puedo hacer por vos:",
+            "categorias": [
+                {
+                    "titulo": "Trámites y Consultas",
+                    "botones": [
+                        {"texto": "Licencia de Conducir", "action_id": "licencia_conducir"},
+                        {"texto": "Pagar Tasas", "action_id": "pago_tasas_vigentes"},
+                        {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+                    ]
+                },
+                {
+                    "titulo": "Reclamos y Denuncias",
+                    "botones": [
+                        {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                        {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
+                    ]
+                },
+                {
+                    "titulo": "Servicios y Turnos",
+                    "botones": [
+                        {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+                        {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
+                    ]
+                },
+                {
+                    "titulo": "Información General",
+                    "botones": [
+                        {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+                        {"texto": "Novedades", "action_id": "novedades"},
+                        {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+                    ]
+                }
             ],
-            "message_type": "interactive_buttons",
-            "fuente": "greeting_handler_v7"
+            "botones": [],
+            "accion_backend": "responder_directamente",
+            "fuente": "greeting_handler_categorized_v1"
         }
+
+def handle_main_menu_action(action_id: str) -> dict:
+    """
+    Handles actions from the new categorized main menu.
+    """
+    if action_id == "mostrar_menu_reclamos":
+        return _get_reclamos_menu()
+
+    action_responses = {
+        "licencia_conducir": "Para requisitos y turnos de licencia de conducir visitá:\nhttps://www.juninmendoza.gov.ar/licencia-de-conducir-junin/",
+        "pago_tasas_vigentes": "Para pagar o descargar boletos vigentes, dirigite a:\nhttps://epagos.juninmendoza.gov.ar/jrentas/",
+        "defensa_del_consumidor": "Para asesoramiento, escribí a:\ndefensadelconsumidorjuninmza@gmail.com",
+        "veterinaria_y_bromatologia": "Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp:\n+54 9 2634 52-1563",
+    }
+
+    if action_id in action_responses:
+        return {
+            "message_body": action_responses[action_id],
+            "options_list": [],
+            "message_type": "text",
+            "fuente": f"info_request_{action_id}"
+        }
+
+    # Placeholder for actions without a defined response yet
+    unimplemented_actions = [
+        "consultar_otros_tramites", "denuncias", "solicitar_turnos",
+        "agenda_cultural_y_turistica", "novedades"
+    ]
+    if action_id in unimplemented_actions:
+        return {
+            "message_body": "Esta función aún no está implementada.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": f"unimplemented_{action_id}"
+        }
+
+    return None # Return None if the action is not recognized by this handler
 
 
 def handle_info_requests(action_id: str) -> dict:
@@ -756,6 +807,11 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                     flag_modified(chat_db_context, "context_data")
                 return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
+        elif accion_backend_llm == "mostrar_menu_reclamos":
+            logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú de reclamos.")
+            # La función _get_reclamos_menu ya devuelve el diccionario de respuesta formateado.
+            # Lo devolvemos junto con el contexto actual.
+            return _get_reclamos_menu(), contexto_municipio_actual
         elif accion_backend_llm == "derivar_humano":
             context["intencion"] = "hablar_con_agente"
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
@@ -886,6 +942,23 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 contexto_municipio_actual.pop(k, None)
         return None, contexto_municipio_actual
 
+def _get_reclamos_menu():
+    """Devuelve la estructura del menú de reclamos estandarizado."""
+    return {
+        "message_body": "Seleccioná el tipo de reclamo:",
+        "options_list": [
+            {"id": "reclamo_luminaria", "texto": "Luminaria"},
+            {"id": "reclamo_arbolado", "texto": "Arbolado"},
+            {"id": "reclamo_limpieza_riego", "texto": "Limpieza y riego"},
+            {"id": "reclamo_arreglo_calle", "texto": "Arreglo de calle"},
+            {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
+            {"id": "reclamo_otros", "texto": "Otros"},
+        ],
+        "message_type": "interactive_list",
+        "fuente": "submenu_reclamos_estandar"
+    }
+
+
 def responder_municipio(
     pregunta_original,
     owner_user,
@@ -913,23 +986,14 @@ def responder_municipio(
 
     action = received_payload.get("action")
 
-    if action in ["info_licencia_conducir", "info_pago_tasas", "info_defensa_consumidor", "info_veterinaria"]:
-        return handle_info_requests(action)
+    # New main menu handler
+    if action:
+        response = handle_main_menu_action(action)
+        if response:
+            return response
 
-    if action == "iniciar_reclamo":
-        return {
-            "message_body": "Seleccioná el tipo de reclamo:",
-            "options_list": [
-                {"id": "reclamo_luminaria", "texto": "Luminaria"},
-                {"id": "reclamo_arbolado", "texto": "Arbolado"},
-                {"id": "reclamo_limpieza_riego", "texto": "Limpieza y riego"},
-                {"id": "reclamo_arreglo_calle", "texto": "Arreglo de calle"},
-                {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
-                {"id": "reclamo_otros", "texto": "Otros"},
-            ],
-            "message_type": "interactive_list",
-            "fuente": "submenu_reclamos"
-        }
+    if action == "iniciar_reclamo": # Kept for backward compatibility or other flows
+        return _get_reclamos_menu()
 
     if action == "reclamo_perdida_agua":
         return {

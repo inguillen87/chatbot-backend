@@ -45,16 +45,16 @@ class TestNewFeatures(unittest.TestCase):
 
     def test_greeting_handler_enhanced_message(self):
         """
-        Verifica que el GreetingHandler devuelve el nuevo mensaje de bienvenida mejorado.
+        Verifica que el GreetingHandler devuelve el nuevo menú categorizado.
         """
         handler = GreetingHandler(context={})
         respuesta = handler.handle(payload={})
 
-        self.assertIn("¡Hola! Soy Jules, tu asistente virtual del Municipio de Junín.", respuesta["message_body"])
-        self.assertIn("www.junin.gob.ar", respuesta["message_body"])
-        self.assertIn("https://maps.google.com/?q=Municipalidad+de+Junin", respuesta["message_body"])
-        self.assertIn("A. Hacer un reclamo", [btn["texto"] for btn in respuesta["options_list"]])
-        self.assertEqual(respuesta["fuente"], "greeting_handler_v6")
+        self.assertIn("¡Hola! Soy JUNI, el asistente virtual de la Municipalidad de Junín.", respuesta["respuesta_usuario"])
+        self.assertIn("categorias", respuesta)
+        self.assertEqual(len(respuesta["categorias"]), 4)
+        self.assertEqual(respuesta["categorias"][0]["titulo"], "Trámites y Consultas")
+        self.assertEqual(respuesta["fuente"], "greeting_handler_categorized_v1")
 
 if __name__ == '__main__':
     unittest.main()
