@@ -1355,8 +1355,17 @@ def responder_municipio(
     message_type_final = "text"
     if opciones_finales:
         num_options = len(opciones_finales)
-        if 0 < num_options <= 3: message_type_final = "interactive_buttons"
-        elif num_options > 3: message_type_final = "interactive_list"
+        if 0 < num_options <= 3:
+            message_type_final = "interactive_buttons"
+        elif num_options > 3:
+            message_type_final = "interactive_list"
+
+        # Fallback to text-based menu for WhatsApp
+        if channel == 'whatsapp':
+            texto_opciones = "\n\n*Opciones:*\n"
+            for i, opcion in enumerate(opciones_finales, 1):
+                texto_opciones += f"{i}. {opcion['texto']}\n"
+            respuesta_final_texto += texto_opciones
 
     final_response_dict = {
         "message_body": respuesta_final_texto,
