@@ -1013,6 +1013,7 @@ def responder_municipio(
     if action in reclamo_categories:
         contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['categoria_reclamo'] = reclamo_categories[action]
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
         return {
             "message_body": f"Entendido, iniciaste un reclamo por **{reclamo_categories[action]}**. Por favor, describí la incidencia.",
             "options_list": [],
