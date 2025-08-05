@@ -30,6 +30,22 @@ def build_interactive_response(options: list,
             if not (1 <= len(options) <= 3):
                 logger.warning(f"WhatsApp 'button' type requires 1-3 options, got {len(options)}. Truncating or consider 'list'.")
 
+            # Check for URL buttons
+            has_url_button = any(o.get("url") for o in options)
+
+            if has_url_button:
+                # If there is a URL button, send a text message with the options formatted.
+                # This is a workaround for the lack of URL button support in interactive messages.
+                for o in options:
+                    if o.get("url"):
+                        body_text += f"\n\n{o['texto']}: {o['url']}"
+                    else:
+                        body_text += f"\n- {o['texto']}"
+                return {
+                    "type": "text",
+                    "text": {"body": body_text}
+                }
+
             interactive_payload_content = {
                 "type": "button",
                 "body": {"text": body_text}
@@ -41,7 +57,7 @@ def build_interactive_response(options: list,
 
             interactive_payload_content["action"] = {
                 "buttons": [
-                    {"type": "reply", "reply": {"id": str(o.get("id", o["texto"]))[:200], "title": o["texto"][:20]}}
+                    {"type": "reply", "reply": {"id": str(o.get("id", o.get("action_id", o["texto"])))[:200], "title": o["texto"][:20]}}
                     for o in options[:3] # Max 3 buttons
                 ]
             }
