@@ -253,4 +253,19 @@ Cuando un usuario pregunte por un trámite, usa la siguiente información para r
       "botones": null
     }}
     ```
+
+**Ejemplo 6: Saludo inicial**
+*   **Usuario**: "Hola"
+*   **Tu JSON**:
+    ```json
+    {{
+      "respuesta_usuario": "¡Hola! Soy JUNI, el asistente virtual de la Municipalidad de Junín. ¿En qué puedo ayudarte hoy?",
+      "accion_backend": "saludar",
+      "datos_estructura": {{
+        "target": "municipio"
+      }},
+      "pedir_info": null,
+      "botones": null
+    }}
+    ```
 """.strip()
