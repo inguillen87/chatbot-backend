@@ -31,14 +31,14 @@ def build_interactive_response(options: list,
                 logger.warning(f"WhatsApp 'button' type requires 1-3 options, got {len(options)}. Truncating or consider 'list'.")
 
             # Check for URL buttons
-            has_url_button = any(o.get("url") for o in options)
+            has_url_button = any(o.get("url") or (isinstance(o.get("action_id"), str) and o["action_id"].startswith("http")) for o in options)
 
             if has_url_button:
                 # If there is a URL button, send a text message with the options formatted.
-                # This is a workaround for the lack of URL button support in interactive messages.
                 for o in options:
-                    if o.get("url"):
-                        body_text += f"\n\n{o['texto']}: {o['url']}"
+                    url = o.get("url") or (o.get("action_id") if isinstance(o.get("action_id"), str) and o["action_id"].startswith("http") else None)
+                    if url:
+                        body_text += f"\n\n{o['texto']}: {url}"
                     else:
                         body_text += f"\n- {o['texto']}"
                 return {
