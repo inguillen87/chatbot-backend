@@ -75,6 +75,52 @@ def test_register_creates_admin_user(client):
     assert user is not None
     assert user.rol == 'admin'
 
+def test_get_profile_endpoints(client):
+    """
+    Tests that the /me, /perfil, and /profile endpoints return user data for an authenticated user.
+    """
+    # First, create a user and a rubro to associate with
+    from models import Rubro
+    if not Rubro.query.first():
+        rubro = Rubro(clave='testing', nombre='Testing')
+        db.session.add(rubro)
+        db.session.commit()
+    rubro = Rubro.query.first()
+
+    user = User(
+        email="profile@test.com",
+        name="Profile User",
+        token="profile-test-token",
+        rubro_id=rubro.id
+    )
+    user.set_password("password")
+    db.session.add(user)
+    db.session.commit()
+
+    headers = {
+        'Authorization': f'Bearer {user.token}'
+    }
+
+    # Test /auth/me
+    response_me = client.get('/me', headers=headers)
+    assert response_me.status_code == 200
+    assert response_me.get_json()['email'] == user.email
+
+    # Test /auth/perfil
+    response_perfil = client.get('/perfil', headers=headers)
+    assert response_perfil.status_code == 200
+    assert response_perfil.get_json()['email'] == user.email
+
+    # Test /auth/profile (the new one)
+    response_profile = client.get('/profile', headers=headers)
+    assert response_profile.status_code == 200
+    assert response_profile.get_json()['email'] == user.email
+
+    # Test without token
+    response_no_token = client.get('/profile')
+    assert response_no_token.status_code == 401
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main()
