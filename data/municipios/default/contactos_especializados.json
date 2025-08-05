@@ -1,22 +1,61 @@
 {
-  "Bacheo": {
+  "default": {
+    "nombre": "Atención al Vecino",
+    "titulo": "Mesa de Ayuda General",
+    "telefono": "+5492613168608"
+  },
+  "Arreglo de calle": {
     "nombre": "Juan Carlos de Obras Públicas",
+<<<<<<< fix/chatbot-context-bug
+    "titulo": "Encargado de Bacheo y Calles",
+    "telefono": "+5492610000001"
+=======
     "titulo": "Encargado de Bacheo",
     "telefono": "+5492613168608"
+>>>>>>> main
   },
   "Luminaria": {
     "nombre": "Ana María de Servicios",
     "titulo": "Supervisora de Alumbrado",
+<<<<<<< fix/chatbot-context-bug
+    "telefono": "+5492610000002"
+=======
     "telefono": "++5492613168608"
+>>>>>>> main
   },
-  "default": {
-    "nombre": "Atención al Vecino",
-    "titulo": "Mesa de Ayuda",
-    "telefono": "+5492613168608"
+  "Arbolado": {
+    "nombre": "Roberto de Espacios Verdes",
+    "titulo": "Encargado de Arbolado",
+    "telefono": "+5492610000003"
+  },
+  "Limpieza y riego": {
+    "nombre": "Marta de Limpieza",
+    "titulo": "Coordinadora de Limpieza",
+    "telefono": "+5492610000004"
   },
   "Veterinaria y Bromatologia": {
-    "nombre": "Atención de Veterinaria y Bromatología",
-    "titulo": "Contacto",
+    "nombre": "Dra. Laura Funes",
+    "titulo": "Encargada de Veterinaria y Bromatología",
     "telefono": "+5492634521563"
+  },
+  "Licencia de Conducir": {
+    "nombre": "Oficina de Licencias",
+    "titulo": "Consultas sobre Licencias",
+    "telefono": "+5492610000005"
+  },
+  "Pago de Tasas": {
+    "nombre": "Oficina de Rentas",
+    "titulo": "Consultas sobre Tasas y Pagos",
+    "telefono": "+5492610000006"
+  },
+  "Defensa del Consumidor": {
+    "nombre": "Asesor de Defensa del Consumidor",
+    "titulo": "Consultas y Denuncias",
+    "telefono": "+5492610000007"
+  },
+  "Otros": {
+    "nombre": "Atención al Vecino",
+    "titulo": "Mesa de Ayuda General",
+    "telefono": "+5492613168608"
   }
 }
