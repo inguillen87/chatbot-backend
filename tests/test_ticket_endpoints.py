@@ -76,18 +76,24 @@ class TicketEndpointsTest(unittest.TestCase):
         token = json.loads(login_resp.data)['token']
 
         headers = {'Authorization': f'Bearer {token}'}
-        tickets_resp = self.client.get('/tickets/usuarios', headers=headers)
+        tickets_resp = self.client.get('/tickets', headers=headers)
         self.assertEqual(tickets_resp.status_code, 200)
 
         # Verificar que la respuesta contiene los tickets correctos
         data = json.loads(tickets_resp.data)
-        self.assertIsInstance(data, list)
-        self.assertEqual(len(data), 2) # Solo los tickets del municipio 1
+        self.assertIn('tickets', data)
+        tickets = data['tickets']
+        self.assertIsInstance(tickets, list)
+        self.assertEqual(len(tickets), 2) # Solo los tickets del municipio 1
 
-        asuntos = {t['asunto'] for t in data}
+        asuntos = {t['asunto'] for t in tickets}
         self.assertIn('Bache en la calle', asuntos)
         self.assertIn('Luz quemada', asuntos)
         self.assertNotIn('Arbol caido', asuntos)
+
+        # Check for new fields
+        self.assertIn('id_ticket', tickets[0])
+        self.assertIn('nro_ticket_original', tickets[0])
 
 if __name__ == '__main__':
     unittest.main()

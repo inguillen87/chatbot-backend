@@ -25,36 +25,29 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     }
     texto_tipo = tipos.get(tipo, "Consulta")
 
-    respuesta = (
-        f"✅ ¡{texto_tipo} recibido, {nombre_usuario}!
+    respuesta = f"""✅ ¡{texto_tipo} recibido, {nombre_usuario}!
 
-"
-        f"📄 **Resumen:**
-"
-    )
+📄 **Resumen:**"""
     if categoria:
-        respuesta += f"  - **Categoría:** {categoria}
-"
+        respuesta += f"""  - **Categoría:** {categoria}
+"""
     if descripcion:
-        respuesta += f"  - **Descripción:** {descripcion}
-"
+        respuesta += f"""  - **Descripción:** {descripcion}
+"""
     if id_ticket:
-        respuesta += f"  - **N° de Ticket:** {id_ticket}
-"
+        respuesta += f"""  - **N° de Ticket:** {id_ticket}
+"""
 
     # No mostrar el link en el texto, solo en el botón.
     if nombre_asesor:
-        respuesta += (
-            f"
+        respuesta += f"""
 
 **Contacto para seguimiento:**
-"
-            f"Para seguir el estado de tu ticket, podés hablar directamente con **{nombre_asesor}**."
-        )
+Para seguir el estado de tu ticket, podés hablar directamente con **{nombre_asesor}**."""
 
-    respuesta += f"
+    respuesta += f"""
 
-Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"
+Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
 
     # Devuelve tanto el texto formateado como el botón de contacto si existe
     return respuesta, boton_contacto
