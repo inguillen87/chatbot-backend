@@ -154,9 +154,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 except Exception as e_notify:
                     logger.error(f"Error enviando notificaciones para {nro_ticket_str}: {e_notify}")
 
+            # Formatear respuesta y obtener el botón de contacto
+            mensaje_respuesta, boton_contacto = formatear_ticket_respuesta(
+                "reclamo",
+                ticket_data_cleaned["nombre_vecino"],
+                descripcion,
+                categoria,
+                nro_ticket_str,
+                contacto_especializado
+            )
+
+            botones_finales = []
+            if boton_contacto:
+                botones_finales.append(boton_contacto)
+
             return {
                 "success": True,
-                "message_to_user": formatear_ticket_respuesta("reclamo", ticket_data_cleaned["nombre_vecino"], descripcion, categoria, nro_ticket_str, contacto_especializado),
+                "message_to_user": mensaje_respuesta,
+                "options_list": botones_finales,
+                "message_type": "interactive_buttons" if botones_finales else "text",
                 "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
             }
         except Exception as e:
