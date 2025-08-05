@@ -991,11 +991,16 @@ def get_panel_por_categoria(current_user: User):
                             direccion = line.split("Dirección del problema:")[1].strip()
                             break
 
+                user_data = _get_user_info(ticket_obj, User)
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "municipio", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
                     "fecha": ticket_obj.fecha.isoformat(), "direccion": direccion,
-                    "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None)
+                    "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
+                    "nombre_usuario": user_data["nombre"],
+                    "telefono": user_data["telefono"],
+                    "email_usuario": user_data["email"],
+                    "dni": user_data["dni"],
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 
@@ -1060,6 +1065,7 @@ def get_panel_pyme(current_user: User):
                     summary_by_status_for_cat["otros"] += 1
                 summary_by_status_for_cat["total"] = summary_by_status_for_cat.get("total", 0) + 1
 
+                user_data = _get_user_info(ticket_obj, User)
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "pyme", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
@@ -1067,8 +1073,10 @@ def get_panel_pyme(current_user: User):
                     "direccion": getattr(ticket_obj, 'direccion', None),
                     "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
                      # PYME specific fields for serialization if needed by frontend for this view
-                    "telefono": getattr(ticket_obj, 'telefono', None),
-                    "email": getattr(ticket_obj, 'email', None),
+                    "nombre_usuario": user_data["nombre"],
+                    "telefono": user_data["telefono"],
+                    "email_usuario": user_data["email"],
+                    "dni": user_data["dni"],
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 
