@@ -1,7 +1,7 @@
 import os
 import logging
 import sys
-from flask import Flask, request, current_app, jsonify
+from flask import Flask, request, current_app, jsonify, Blueprint, make_response
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from flask_cors import CORS
@@ -51,6 +51,18 @@ from routes.ai_templates import ai_templates_bp
 from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
 from routes.catalog_mappings import catalog_mappings_bp
 from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
+
+# Blueprint to handle OPTIONS preflight requests for problematic routes
+cors_preflight_bp = Blueprint('cors_preflight', __name__)
+
+@cors_preflight_bp.route('/login', methods=['OPTIONS'])
+@cors_preflight_bp.route('/perfil', methods=['OPTIONS'])
+@cors_preflight_bp.route('/tickets', methods=['OPTIONS'])
+def options_handler():
+    response = make_response()
+    # The actual CORS headers will be set by the Flask-CORS extension.
+    # This handler just needs to return a 200 OK response.
+    return response
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
 def my_on_connect_listener(dbapi_connection, connection_record):
@@ -205,6 +217,7 @@ def create_app(config_class=Config):
     app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
     app.register_blueprint(catalog_mappings_bp)
     app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
+    app.register_blueprint(cors_preflight_bp) # Register the CORS preflight handler
 
     # --- Registro de comandos CLI ---
     register_commands(app)
