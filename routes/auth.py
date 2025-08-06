@@ -86,10 +86,6 @@ from flask_login import current_user
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Permitir solicitudes OPTIONS (preflight CORS) sin autenticación
-        if request.method == "OPTIONS":
-            return "", 200
-
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
             return f(current_user, *args, **kwargs)
