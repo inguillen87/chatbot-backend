@@ -131,17 +131,14 @@ class ServicioTickets:
             # Notificar panel en tiempo real
             try:
                 from socket_service import emit_ticket_update
-                data = {
-                    "message": f"Nuevo ticket creado: #{ticket.nro_ticket}",
-                    "ticket_id": ticket.id,
-                    "tipo": tipo_ticket,
-                    "nuevo_estado": ticket.estado,
-                    "asunto": getattr(ticket, "asunto", ""),
-                    "categoria": getattr(ticket, "categoria", None),
-                    "fecha": ticket.fecha.isoformat() if ticket.fecha else None,
-                    "nro_ticket": ticket.nro_ticket
-                }
-                emit_ticket_update(data)
+                from routes.ticket import serialize_ticket_to_json # Importar la nueva función
+
+                # Serializar el ticket completo para la notificación
+                ticket_json = serialize_ticket_to_json(ticket, tipo_ticket)
+
+                # El evento 'ticket_update' ahora enviará el objeto de ticket completo
+                emit_ticket_update(ticket_json)
+
             except Exception as e_notify:
                 logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
 
