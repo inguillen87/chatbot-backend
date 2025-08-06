@@ -1,11 +1,10 @@
 import unittest
 import json
 from app import create_app, db
-from config import TestingConfig
 
 class TestLocationService(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestingConfig)
+        self.app = create_app("testing")
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

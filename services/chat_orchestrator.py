@@ -1,90 +1,123 @@
 # services/chat_orchestrator.py
 import logging
 import importlib
-from typing import Dict, Any, Type
-from services.actions.base_action_handler import BaseActionHandler
-import importlib
+from typing import Dict, Any
+from services.actions import ACTION_HANDLER_MAP # Import the map
 
 logger = logging.getLogger(__name__)
 
 class ChatOrchestrator:
-    def __init__(self, db_session):
-        self.db_session = db_session
+    def __init__(self, global_context: Dict[str, Any]):
+        """
+        Initializes the ChatOrchestrator with a global context.
+        This context is passed to the instantiated action handlers.
+        It should contain things like 'user_obj', 'viewer_user_obj', 'cliente_id',
+        'anon_id', 'channel', 'chat_db_context_data', etc.
+        """
+        self.global_context = global_context
 
-    def _get_handler_class(self, action_name: str, target: str) -> Type[BaseActionHandler] | None:
-        # Intenta obtener el handler específico para el target (ej. 'municipio' o 'pyme')
-        module_name = f"services.actions.{target}_actions"
-        class_name = f"{action_name.replace('_', ' ').title().replace(' ', '')}ActionHandler"
+    def _get_handler_class(self, action_name: str):
+        """
+        Dynamically imports and returns the handler class for the given action name.
+        """
+        handler_path_str = ACTION_HANDLER_MAP.get(action_name)
+
+        # Special-case routing: if the action is "derivar_humano" and the
+        # context indicates a PYME interaction, use the dedicated PYME handler
+        if (
+            action_name == "derivar_humano"
+            and self.global_context.get("target_entity_type") == "pyme"
+        ):
+            handler_path_str = "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme"
+
+        if not handler_path_str:
+            logger.warning(f"No handler found for action: {action_name}")
+            return None
 
         try:
-            module = importlib.import_module(module_name)
-            handler_class = getattr(module, class_name, None)
-            if handler_class:
-                logger.info(f"Handler '{class_name}' encontrado en el módulo específico '{module_name}'.")
-                return handler_class
-        except ImportError:
-            logger.warning(f"No se encontró el módulo de acciones específicas: '{module_name}'.")
+            module_path, class_name = handler_path_str.rsplit('.', 1)
+            module = importlib.import_module(module_path)
+            handler_class = getattr(module, class_name)
+            return handler_class
+        except (ImportError, AttributeError) as e:
+            logger.error(f"Error importing handler for action '{action_name}' with path '{handler_path_str}': {e}", exc_info=True)
+            return None
 
-        # Si no se encuentra un handler específico, busca en los handlers generales/comunes
-        module_name = "services.actions.general_actions"
-        try:
-            module = importlib.import_module(module_name)
-            handler_class = getattr(module, class_name, None)
-            if handler_class:
-                logger.info(f"Handler '{class_name}' encontrado en el módulo general '{module_name}'.")
-                return handler_class
-        except ImportError:
-            logger.error(f"No se pudo importar el módulo de acciones generales: '{module_name}'.")
+    def execute_action(self, llm_output: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Executes the appropriate action based on the LLM output.
+        """
+        action_name = llm_output.get("accion_backend")
+        action_data = llm_output.get("datos_estructura", {})
 
-        logger.warning(f"No se encontró una clase de handler '{class_name}' en los módulos buscados.")
-        return None
+        # Si el usuario está autenticado, no solicitar datos personales
+        if self.global_context.get("user_obj") and action_name in ["solicitar_datos_personales", "solicitar_ubicacion"]:
+            # Check if we have the specific data, not just if the user exists
+            user_obj = self.global_context.get("user_obj")
+            if action_name == "solicitar_datos_personales" and user_obj.get("name") and user_obj.get("email"):
+                return {
+                    "success": True,
+                    "message_to_user": "Ya tengo tus datos, podemos continuar.",
+                    "executed_action_handler": "SkipInfoRequest"
+                }
+            if action_name == "solicitar_ubicacion" and self.global_context.get("location"):
+                 return {
+                    "success": True,
+                    "message_to_user": "Ya tengo tu ubicación, podemos continuar.",
+                    "executed_action_handler": "SkipInfoRequest"
+                }
 
-    def route_action(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
-        action_name = llm_response.get("accion_backend")
-        datos_estructura = llm_response.get("datos_estructura", {})
-        target = datos_estructura.get("target", "general") # 'municipio', 'pyme', etc.
+        if "respuesta_usuario" in llm_output:
+            action_data["respuesta_usuario_original_llm"] = llm_output["respuesta_usuario"]
 
-        if not action_name:
-            logger.warning("No se especificó 'accion_backend' en la respuesta del LLM.")
-            # Directly return the error response without needing to instantiate a handler
-            return {
-                "success": False,
-                "message_to_user": "La IA no especificó una acción.",
-                "fuente": "error_no_action"
-            }
-
-        # Acciones genéricas que no necesitan un handler y se devuelven directamente
-        if action_name in ["responder_directamente", "saludar", "no_accion", "small_talk", "respuesta_generica"]:
-            logger.info(f"Acción genérica '{action_name}' no requiere handler. Devolviendo respuesta del LLM.")
+        if action_name == "solicitar_ubicacion":
             return {
                 "success": True,
-                "message_to_user": llm_response.get("respuesta_usuario", "Entendido."),
-                "data": {"action_performed": action_name},
-                "executed_action_handler": "GenericResponseHandler",
-                "botones": llm_response.get("botones", [])
+                "message_to_user": "Para continuar, necesito tu ubicación.",
+                "solicitar_ubicacion": True,
+                "executed_action_handler": "SolicitarUbicacionHandler"
             }
 
-        handler_class = self._get_handler_class(action_name, target)
+        if not action_name or action_name in ["no_accion", "small_talk", "respuesta_generica"]:
+            # Para respuestas genéricas, usamos la respuesta del LLM directamente
+            # sin necesidad de un handler específico.
+            return {
+                "success": True,
+                "message_to_user": llm_output.get("respuesta_usuario", "Entendido."),
+                "data": {"action_performed": action_name or "none"},
+                "executed_action_handler": "GenericResponseHandler" # Identificador para logging
+            }
 
-        if handler_class:
-            try:
-                handler_instance = handler_class(self.db_session)
-                handler_data = {**datos_estructura, "respuesta_usuario_original_llm": llm_response.get("respuesta_usuario")}
-                logger.info(f"Executing action '{action_name}' with handler '{handler_class.__name__}' and data: {handler_data}")
-                return handler_instance.execute(handler_data)
-            except Exception as e:
-                logger.error(f"Error al ejecutar el handler para la acción '{action_name}': {e}", exc_info=True)
-                return {
-                    "success": False,
-                    "message_to_user": f"Error interno al procesar la acción: {action_name}.",
-                    "fuente": "error_handler_execution"
-                }
-        else:
-            logger.error(f"No se encontró un handler para la acción: '{action_name}' con target '{target}'.")
+        handler_class = self._get_handler_class(action_name)
+        if not handler_class:
+            logger.error(f"Could not find or import handler for action: {action_name}")
             return {
                 "success": False,
-                "message_to_user": f"Acción '{action_name}' desconocida o no implementada.",
+                "message_to_user": "Hubo un problema al procesar tu solicitud (acción desconocida).",
+                "error_details": f"Handler for action '{action_name}' not found.",
                 "fuente": "error_handler_not_found"
+            }
+
+        try:
+            # Pass the global_context to the handler instance
+            handler_instance = handler_class(self.global_context)
+            logger.info(f"Executing action '{action_name}' with handler '{handler_class.__name__}' and data: {action_data}")
+            action_result = handler_instance.execute(action_data)
+            action_result["executed_action_handler"] = handler_class.__name__ # Add which handler ran
+
+            # If the action handler indicates a need to ask for more info, propagate that
+            if action_result.get("pedir_info"):
+                llm_output["pedir_info"] = action_result["pedir_info"]
+
+            return action_result
+
+        except Exception as e:
+            logger.error(f"Error executing action '{action_name}' with handler '{handler_class.__name__}': {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Ocurrió un error interno al realizar la acción solicitada.",
+                "error_details": str(e),
+                "executed_action_handler": handler_class.__name__
             }
 
 if __name__ == '__main__': # pragma: no cover

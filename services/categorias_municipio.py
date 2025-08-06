@@ -1,6 +1,5 @@
 import unicodedata
 import re
-from services.herramientas_municipio import KEYWORD_TO_CATEGORY_MAP
 
 def normalizar_texto(texto: str) -> str:
     """Normaliza un texto eliminando acentos y puntuación sin modificar palabras."""
@@ -25,4 +24,3 @@ def normalizar_texto(texto: str) -> str:
 
 CATEGORIAS_RECLAMO = ["arbol caido", "arreglo de calle", "castracion de mascota", "falta de agua, rotura de caño", "fumigacion", "inspeccion de comercio", "limpieza", "luminaria", "riego de calle", "rotura de semaforo", "tramites de obras privadas", "incendio", "otro motivo"]
 categorias_normalizadas = [normalizar_texto(c) for c in CATEGORIAS_RECLAMO]
-TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
