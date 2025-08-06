@@ -17,6 +17,16 @@ def build_interactive_response(options: list,
         original_bot_response = {}
 
     if channel == "whatsapp":
+        if original_bot_response and original_bot_response.get('botones'):
+            options_text = "\n".join([
+                f"*{i+1}*. {boton['texto']}"
+                for i, boton in enumerate(original_bot_response['botones'])
+            ])
+            body_text += f"\n\n{options_text}\n\nResponde con el número de la opción que necesites."
+            # Clear the options so they are not processed as interactive buttons
+            options = []
+            message_type = 'text'
+
         # This function will now return the content part of the WhatsApp message.
         # The sending service (e.g., WhatsAppService) will add "messaging_product", "to".
 
