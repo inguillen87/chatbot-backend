@@ -7,7 +7,7 @@ import os
 from services.google_maps_service import obtener_direccion_de_coordenadas
 from services.logging_config import get_logger
 from services.gemini_bridge import llamar_gemini
-from services.herramientas_municipio import TOOL_REGISTRY
+from services.herramientas_municipio import TOOL_REGISTRY, TODAS_LAS_CATEGORIAS_UNICAS
 from services.chat_orchestrator import ChatOrchestrator
 from services.actions.municipio_actions import (
     GreetingHandler,
