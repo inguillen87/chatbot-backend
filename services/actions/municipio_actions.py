@@ -3,6 +3,7 @@ import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 from services.ticket_service import servicio_tickets
+from models import db
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
 from services.ticket_utils import formatear_ticket_respuesta
@@ -13,51 +14,6 @@ from services.config_loader import cargar_configuracion_municipio
 logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
-
-class MenuPrincipalActionHandler(BaseActionHandler):
-    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Handles the selection from the main menu.
-        """
-        # The 'action_id' from the button click is expected in action_data
-        # For now, we'll assume it's passed in a 'selected_option_id' field.
-        # This part might need adjustment depending on how the frontend sends the data.
-        selected_option_id = action_data.get("selected_option_id")
-
-        if not selected_option_id:
-            # If no option is selected, maybe just re-display the menu or a default message.
-            # This case might happen if the action is triggered without a button click.
-            return {
-                "success": False,
-                "message_to_user": "Por favor, selecciona una opción del menú.",
-                "fuente": "menu_principal_no_option"
-            }
-
-        # Here you would have the logic to map the selected_option_id to a specific response or another action.
-        # For example:
-        if selected_option_id == "licencia_conducir":
-            # This could be a direct response or could trigger another action handler.
-            # Let's provide a direct informational response for this example.
-            return {
-                "success": True,
-                "message_to_user": "Para todo lo relacionado con la Licencia de Conducir, como requisitos, costos y turnos, puedes visitar nuestro sitio oficial. También puedo responderte preguntas específicas sobre el tema.",
-                "options_list": [
-                    {"texto": "Ir al Sitio Oficial", "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"},
-                    {"texto": "Ver Requisitos", "id_accion": "faq_licencia_requisitos"},
-                    {"texto": "Pedir Turno", "id_accion": "faq_licencia_turno"}
-                ],
-                "message_type": "interactive_buttons"
-            }
-        elif selected_option_id == "mostrar_menu_reclamos":
-            from services.municipio_responder import _get_reclamos_menu
-            return _get_reclamos_menu()
-        # Add other options here...
-        else:
-            return {
-                "success": False,
-                "message_to_user": "La opción seleccionada no es válida en este momento. Por favor, intenta de nuevo.",
-                "fuente": "menu_principal_opcion_invalida"
-            }
 
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -518,5 +474,44 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
             "pedir_info": "confirmacion_tras_correccion"
         }
 
-# Add other handlers as needed
-# e.g., CalificarAtencionActionHandler, ConfirmarCierreTicketActionHandler
+class GreetingHandler(BaseActionHandler):
+    def execute(self, data: dict) -> dict:
+        welcome_message = (
+            "¡Hola! Soy JuniA, el asistente virtual de la Municipalidad de Junín.\n"
+            "Estas son las cosas que puedo hacer por vos:"
+        )
+        return {
+            "message_body": welcome_message,
+            "options_list": [
+                {"id": "reclamos", "texto": "RECLAMOS"},
+                {"id": "licencia_conducir", "texto": "LICENCIA DE CONDUCIR"},
+                {"id": "pago_tasas", "texto": "PAGO DE TASAS VIGENTES"},
+                {"id": "defensa_consumidor", "texto": "DEFENSA DEL CONSUMIDOR"},
+                {"id": "veterinaria_bromatologia", "texto": "VETERINARIA Y BROMATOLOGÍA"},
+            ],
+            "message_type": "interactive_list",
+            "fuente": "greeting_handler_v7_junin"
+        }
+
+class MenuPrincipalActionHandler(BaseActionHandler):
+    def execute(self, data: dict) -> dict:
+        # This is a placeholder. The real implementation would fetch the menu from a database or a file.
+        return {
+            "message_body": "Este es el menú principal.",
+            "options_list": [
+                {"id": "reclamos", "texto": "Reclamos"},
+                {"id": "tramites", "texto": "Trámites"},
+            ],
+            "message_type": "interactive_list",
+            "fuente": "menu_principal_handler"
+        }
+
+class ErrorActionHandler(BaseActionHandler):
+    def execute(self, data: dict) -> dict:
+        error_message = data.get("error_message", "Lo siento, no pude procesar tu solicitud.")
+        return {
+            "message_body": error_message,
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "error_handler"
+        }
