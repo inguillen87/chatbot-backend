@@ -199,7 +199,7 @@ class TestSimulatedClaimFlow(unittest.TestCase):
                 self.assertIn('tickets', data)
                 self.assertEqual(len(data['tickets']), 1)
                 self.assertEqual(data['tickets'][0]['asunto'], 'Bache en la calle')
-                self.assertIn('id_ticket', data['tickets'][0])
+                self.assertIn('id', data['tickets'][0]) # FIX: The new serialization uses 'id'
 
 if __name__ == '__main__':
     unittest.main()

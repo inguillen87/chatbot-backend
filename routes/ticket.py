@@ -102,17 +102,62 @@ from flask import redirect, url_for
 
 def _generate_friendly_ticket_id(ticket, ticket_type_str):
     """Genera un ID de ticket amigable como M-992323 o P-123."""
-    if ticket_type_str == "municipio":
-        # Para MunicipioTicket, nro_ticket es un UUID string. Usamos los primeros 6 caracteres.
-        prefix = "M"
-        if isinstance(ticket.nro_ticket, str) and len(ticket.nro_ticket) > 6:
-            return f"{prefix}-{ticket.nro_ticket[:6].upper()}"
-        return f"{prefix}-{ticket.id}" # Fallback
-    elif ticket_type_str == "pyme":
-        # Para PymeTicket, nro_ticket es un entero.
-        prefix = "P"
-        return f"{prefix}-{ticket.nro_ticket}"
-    return str(ticket.id) # Fallback para otros casos
+    # Para MunicipioTicket, nro_ticket es un UUID string. Usamos los primeros 6 caracteres.
+    prefix = "M" if ticket_type_str == "municipio" else "P"
+
+    # El nro_ticket de MunicipioTicket ahora es un entero como el de Pyme,
+    # así que podemos unificar la lógica.
+    # El formato amigable será M-XXXXXX o P-XXXXXX.
+    # Usamos el nro_ticket si existe y es un número, sino el id.
+    ticket_number = getattr(ticket, 'nro_ticket', ticket.id)
+    if not isinstance(ticket_number, (int, str)) or not str(ticket_number).isdigit():
+        ticket_number = ticket.id
+
+    return f"{prefix}-{ticket_number}"
+
+
+def serialize_ticket_to_json(ticket, ticket_type):
+    """
+    Serializa un objeto de ticket a un diccionario JSON con el formato
+    específico requerido por el frontend del panel de CRM.
+    """
+    # Obtener el último comentario para usarlo como 'lastMessage'
+    last_comment = None
+    if ticket.comentarios:
+        # La relación está configurada como 'dynamic', por lo que se puede ordenar y limitar
+        last_comment = ticket.comentarios.order_by(TicketComentario.fecha.desc()).first()
+
+    last_message_text = last_comment.comentario if last_comment else ""
+
+    # Reutilizar la lógica existente para obtener la información de contacto unificada
+    # Esta función necesita el modelo User, que ya está importado en este archivo.
+    user_data = _get_user_info(ticket, User)
+
+    # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
+    description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
+
+
+    # Construir el diccionario con la estructura deseada
+    serialized_data = {
+        "id": ticket.id,
+        "tipo": ticket_type,
+        "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
+        "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
+        "estado": ticket.estado,
+        "fecha": ticket.fecha.isoformat() + "Z",  # Asegurar formato ISO con Z para UTC
+        "categoria": getattr(ticket, 'categoria', 'Sin Categoría'),
+        "direccion": user_data.get("direccion", "No especificada"),
+        "latitud": getattr(ticket, 'latitud', None),
+        "longitud": getattr(ticket, 'longitud', None),
+        "nombre_usuario": user_data.get("nombre", "No especificado"),
+        "email": user_data.get("email", "No especificado"),
+        "telefono": user_data.get("telefono", "No especificado"),
+        "description": description,
+        "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
+        "lastMessage": last_message_text,
+    }
+    return serialized_data
+
 
 def get_tickets_del_usuario_logic(current_user: User):
     if not current_user:
@@ -124,44 +169,6 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
-
-        # Definir función de serialización genérica primero
-        def serialize_ticket_func(t, ticket_type_str):
-            # Lógica de contacto unificada
-            nombre_completo = getattr(t, 'nombre_vecino', None) or getattr(t, 'nombre_cliente', None) or getattr(t, 'name', None)
-            telefono_contacto = getattr(t, 'telefono_vecino', None) or getattr(t, 'telefono_cliente', None) or getattr(t, 'telefono', None)
-            mail_contacto = getattr(t, 'email_vecino', None) or getattr(t, 'email_cliente', None) or getattr(t, 'email', None)
-
-            data = {
-                "id": t.id,
-                "id_ticket": _generate_friendly_ticket_id(t, ticket_type_str),
-                "tipo": ticket_type_str,
-                "asunto": getattr(t, 'asunto', 'N/A'),
-                "estado_ticket": t.estado,
-                "fecha_hora_creacion": t.fecha.isoformat(),
-                "categoria_reclamo": getattr(t, 'categoria', None),
-                "direccion_exacta_aproximada": getattr(t, 'direccion', None),
-                "ubicacion_geografica": {
-                    "latitud": getattr(t, 'latitud', None),
-                    "longitud": getattr(t, 'longitud', None),
-                },
-                "nombre_completo_solicitante": nombre_completo,
-                "descripcion_completa_reclamo": getattr(t, 'pregunta', ''),
-                "telefono_contacto": telefono_contacto,
-                "mail_contacto": mail_contacto,
-                "canal_ingreso": getattr(t, 'canal_ingreso', None),
-                "contacto_seguimiento": getattr(t, 'contacto_seguimiento', None),
-                "nombre_y_avatar_whatsapp": {
-                    "nombre": getattr(t, 'nombre_display_whatsapp', None),
-                    "avatar_url": getattr(t, 'url_avatar_whatsapp', None)
-                }
-            }
-            if ticket_type_str == 'pyme':
-                data.update({
-                    "dni": getattr(t, 'dni', None),
-                    "estado_cliente": getattr(t, 'estado_cliente', None),
-                })
-            return data
 
         if current_user.tipo_chat == "municipio":
             TicketModel = MunicipioTicket
@@ -234,7 +241,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             .all()
         )
 
-        serialized_tickets = [serialize_ticket_func(t, tipo_ticket_str) for t in tickets_for_list_page]
+        serialized_tickets = [serialize_ticket_to_json(t, tipo_ticket_str) for t in tickets_for_list_page]
 
         # Devolver tanto la lista de tickets para la página actual como el resumen
         return jsonify({
@@ -600,17 +607,10 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
         current_app.logger.info(f"Notificaciones para respuesta de ticket {ticket_id} (tipo {tipo}) procesadas.")
 
-        # Notificación por Pusher
-        channel = f"ticket-{tipo}-{ticket_id}"
-        event = "nueva-respuesta"
-        data = {
-            "message": mensaje_notificacion_base,
-            "ticket_id": ticket_id,
-            "tipo": tipo,
-            "comentario": nuevo_comentario_obj.to_dict() if nuevo_comentario_obj else None,
-            "archivos": [a.to_dict() for a in archivos_adjuntados_db]
-        }
-        emit_ticket_update(data)
+        # Notificación por Websocket/Pusher
+        # Serializar el ticket completo para enviar todos los datos actualizados
+        ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
+        emit_ticket_update(ticket_json)
 
 
     except Exception as e_notif:
@@ -712,13 +712,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
 
     # Notificación por Websocket
-    data = {
-        "message": f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'.",
-        "ticket_id": ticket_id,
-        "tipo": tipo,
-        "nuevo_estado": nuevo_estado
-    }
-    emit_ticket_update(data)
+    ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
+    emit_ticket_update(ticket_json)
 
     comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
     ticket_data = {

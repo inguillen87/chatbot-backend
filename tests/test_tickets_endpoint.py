@@ -71,7 +71,7 @@ class TicketsEndpointTest(unittest.TestCase):
                 self.assertIsInstance(data['tickets'], list)
                 self.assertEqual(len(data['tickets']), 1)
                 self.assertEqual(data['tickets'][0]['id'], 1)
-                self.assertEqual(data['tickets'][0]['nro_ticket'], '101')
+                self.assertEqual(data['tickets'][0]['nro_ticket'], 'M-101')
                 self.assertEqual(data['tickets'][0]['asunto'], 'Test Ticket 1')
 
 if __name__ == '__main__':
