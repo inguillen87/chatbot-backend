@@ -145,6 +145,7 @@ class MunicipioTicket(db.Model):
     direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
+    distrito = db.Column(db.String(100), nullable=True)
     fecha = db.Column(db.DateTime, default=get_local_now)
     nombre_vecino = db.Column(db.String(150), nullable=True)
     telefono_vecino = db.Column(db.String(30), nullable=True)

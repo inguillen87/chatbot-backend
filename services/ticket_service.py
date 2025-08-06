@@ -95,6 +95,10 @@ class ServicioTickets:
 
         ticket_data["nro_ticket"] = random.randint(100000, 999999)
         try:
+            # Eliminar el prefijo "Reclamo (LLM):" del asunto si existe
+            if ticket_data.get("asunto", "").startswith("Reclamo (LLM):"):
+                ticket_data["asunto"] = ticket_data["asunto"].replace("Reclamo (LLM):", "").strip()
+
             ticket = creator.create(ticket_data)
             db.session.add(ticket)
             db.session.flush()
