@@ -9,10 +9,11 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from app import create_app
+from config import TestConfig
 
 class RoutingLogicTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app('testing')
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
 

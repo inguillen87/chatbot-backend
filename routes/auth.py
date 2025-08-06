@@ -86,12 +86,6 @@ from flask_login import current_user
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Permitir que las solicitudes OPTIONS pasen sin verificar el token para la verificación pre-vuelo de CORS
-        if request.method == 'OPTIONS':
-            # Flask-CORS se encargará de agregar los encabezados necesarios.
-            # Devolver una respuesta vacía y exitosa. 204 No Content es apropiado aquí.
-            return '', 204
-
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
             return f(current_user, *args, **kwargs)

@@ -39,11 +39,11 @@ class CorsOptionsTests(unittest.TestCase):
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
     def test_perfil_options(self):
-        resp = self.client.options('/perfil', headers={
+        resp = self.client.options('/auth/perfil', headers={
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'PUT'
         })
-        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
 if __name__ == '__main__':

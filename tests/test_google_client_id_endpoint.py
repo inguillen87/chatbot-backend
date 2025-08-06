@@ -12,7 +12,7 @@ class GoogleClientIdEndpointTest(unittest.TestCase):
 
     def test_first_client_id_returned(self):
         with self.app.app_context():
-            resp = self.client.get('/google-client-id')
+            resp = self.client.get('/auth/google-client-id')
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
             self.assertEqual(data.get('client_id'), 'id1')

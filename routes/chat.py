@@ -447,52 +447,51 @@ def _procesar_chat(
 
         # ... (previous commit for ChatSessionContext) ...
 
-        # Format the response for the web channel using the formatter
-        from services.response_formatter import build_interactive_response
+        # The 'resultado' dictionary from responder_chatboc is now structured
+        # exactly as the LLM specified, which is what the frontend expects.
+        # We just need to pass it through after adding any necessary metadata.
 
-        # Ensure 'respuesta' and 'botones' are correctly populated in 'resultado'
-        # by the formatter, using the new structured fields.
         if isinstance(resultado, tuple):
-            # Handle error case where responder_chatboc returns a tuple
+            # Handle error cases where responder_chatboc returns a tuple
             error_message, status_code = resultado
             return jsonify(error_message), status_code
 
-        web_body = resultado.get('message_body', resultado.get('respuesta', 'Error al procesar')) # Fallback
-        web_options = resultado.get('options_list', resultado.get('botones', [])) # Fallback
-        web_message_type = resultado.get('message_type', 'text')
-        if web_options and web_message_type == 'text': # If options are present, it should be an interactive type
-            web_message_type = 'interactive_buttons' # Default for web if options exist
+        if not isinstance(resultado, dict):
+            # Fallback for unexpected response types
+            current_app.logger.error(f"Unexpected response type from responder_chatboc: {type(resultado)}")
+            resultado = {"respuesta_usuario": "Ocurrió un error inesperado en el servidor."}
 
-        formatted_web_response = build_interactive_response(
-            options=web_options,
-            body_text=web_body,
-            channel="web",
-            message_type=web_message_type,
-            original_bot_response=resultado # Pass the full dict from responder_chatboc
-        )
-        if isinstance(resultado, dict) and "fuente" in resultado:
-            formatted_web_response["fuente"] = resultado["fuente"]
+
+        # Add metadata to the response
+        resultado["es_publico"] = es_publico
+        if owner_del_bot:
+            from utils.plan_limits import limite_para_usuario
+            resultado["preguntas_usadas"] = owner_del_bot.preguntas_usadas
+            resultado["limite_preguntas"] = limite_para_usuario(owner_del_bot)
+
+        if interpretacion_imagen_resultado and not interpretacion_imagen_resultado.get("error"):
+            resultado["interpretacion_adjunto"] = interpretacion_imagen_resultado
 
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
-            formatted_web_response['pedir_info'] = ["nombre", "telefono", "email"]
-            return jsonify(formatted_web_response), 200
+            resultado['pedir_info'] = ["nombre", "telefono", "email"]
 
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:
             chat_context_obj.context_data["last_user_message"] = pregunta
             chat_context_obj.context_data["last_user_message_time"] = datetime.utcnow().isoformat()
-            chat_context_obj.context_data["last_bot_response"] = formatted_web_response
+            chat_context_obj.context_data["last_bot_response"] = resultado
             flag_modified(chat_context_obj, "context_data")
 
-        # This commit is for User.preguntas_usadas primarily, and any other DB changes by responder_chatboc
+        # This commit is for User.preguntas_usadas and ChatSessionContext primarily
         try:
             db.session.commit()
         except Exception as e:
             db.session.rollback()
             current_app.logger.error(f"Error during final commit: {e}", exc_info=True)
             return jsonify({"error": "Error interno del servidor al guardar la sesión."}), 500
-        return jsonify(formatted_web_response), 200
+
+        return jsonify(resultado), 200
 
     except Exception as e:
         db.session.rollback()
