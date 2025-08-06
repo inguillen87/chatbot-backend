@@ -169,3 +169,31 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
 
 # More general handlers can be added here if they are truly common across municipio and pyme.
 # Otherwise, they should go into their specific action files.
+
+class MenuPrincipalActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing MenuPrincipalActionHandler with data: {action_data}")
+
+        main_menu = {
+            "title": "Menú Principal",
+            "options": [
+                {"text": "Hacer un reclamo", "action_id": "iniciar_reclamo"},
+                {"text": "Licencia de conducir", "action_id": "consultar_tramite_licencia"},
+                {"text": "Pago de tasas", "action_id": "pagar_tasas"},
+                {"text": "Defensa del consumidor", "action_id": "defensa_consumidor"},
+                {"text": "Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+                {"text": "Consultar otros trámites", "action_id": "consultar_tramites"},
+                {"text": "Solicitar turnos", "action_id": "solicitar_turnos"},
+                {"text": "Multas de tránsito", "action_id": "multas_transito"},
+                {"text": "Denuncias", "action_id": "denuncias"},
+                {"text": "Agenda Cultural y Turística", "action_id": "agenda_cultural"},
+                {"text": "Novedades", "action_id": "novedades"},
+            ]
+        }
+
+        return {
+            "success": True,
+            "message_to_user": "Aquí tienes el menú principal:",
+            "data": main_menu,
+            "message_type": "interactive_menu" # A new message type for the formatter
+        }
