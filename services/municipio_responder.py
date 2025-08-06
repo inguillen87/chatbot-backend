@@ -260,13 +260,20 @@ def obtener_info_tramite_web(tramite_nombre: str) -> dict:
     """
     from services.scraper_avanzado import extraer_contenido_general
 
-    tramites_links = cargar_configuracion_municipio(MUNICIPIO_ID, "tramites_links.json")
-    if not tramites_links:
-        return {"error": "No se encontraron links de trámites."}
+    # Corregido: Cargar tramites.json que contiene los links, no un archivo inexistente.
+    tramites_info = get_tramites_info() # Esto carga tramites.json
+    if not tramites_info:
+        return {"error": "No se pudo cargar la información de trámites."}
 
-    for nombre, url in tramites_links.items():
-        if tramite_nombre.lower() in nombre.lower():
-            return extraer_contenido_general(url)
+    # Buscar el trámite por nombre en el diccionario cargado
+    for key, info in tramites_info.items():
+        if tramite_nombre.lower() in key.lower() or tramite_nombre.lower() in info.get("nombre", "").lower():
+            url = info.get("url")
+            if url:
+                return extraer_contenido_general(url)
+            else:
+                # Si no hay URL, pero hay descripción, devolverla.
+                return {"descripcion": info.get("descripcion", "No se encontró un link para este trámite, pero la descripción es la siguiente.")}
 
     return {"error": "No se encontró información sobre el trámite."}
 
@@ -403,41 +410,17 @@ class GreetingHandler(BaseMunicipioHandler):
         # As per the new specification from the user/frontend team.
         return {
             "respuesta_usuario": "¡Hola! Soy JUNI, el asistente virtual de la Municipalidad de Junín.\nEstas son las cosas que puedo hacer por vos:",
-            "categorias": [
-                {
-                    "titulo": "Trámites y Consultas",
-                    "botones": [
-                        {"texto": "Licencia de Conducir", "action_id": "licencia_conducir"},
-                        {"texto": "Pagar Tasas", "action_id": "pago_tasas_vigentes"},
-                        {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
-                    ]
-                },
-                {
-                    "titulo": "Reclamos y Denuncias",
-                    "botones": [
-                        {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                        {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
-                    ]
-                },
-                {
-                    "titulo": "Servicios y Turnos",
-                    "botones": [
-                        {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                        {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
-                    ]
-                },
-                {
-                    "titulo": "Información General",
-                    "botones": [
-                        {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                        {"texto": "Novedades", "action_id": "novedades"},
-                        {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
-                    ]
-                }
+            "accion_backend": "menu_principal",
+            "datos_estructura": {
+                "target": "municipio"
+            },
+            "botones": [
+                {"texto": "Licencia de Conducir", "action_id": "licencia_conducir"},
+                {"texto": "Pagar Tasas", "action_id": "pago_tasas_vigentes"},
+                {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
             ],
-            "botones": [],
-            "accion_backend": "responder_directamente",
-            "fuente": "greeting_handler_categorized_v1"
+            "fuente": "greeting_handler_main_menu_v1"
         }
 
 def handle_main_menu_action(action_id: str) -> dict:
@@ -996,14 +979,10 @@ def responder_municipio(
 
     action = received_payload.get("action")
 
-    # New main menu handler
-    if action:
-        response = handle_main_menu_action(action)
-        if response:
-            return response
-
-    if action == "iniciar_reclamo": # Kept for backward compatibility or other flows
-        return _get_reclamos_menu()
+    # The new orchestrator-based flow will handle actions.
+    # The 'action' from the payload is now passed into the global_context
+    # for the orchestrator and its handlers to use.
+    # We remove the direct 'if action:' block.
 
     if action == "reclamo_perdida_agua":
         return {
