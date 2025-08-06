@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import json
 import os
-from services.google_maps import obtener_direccion_de_coordenadas
+from services.google_maps_service import obtener_direccion_de_coordenadas
 from services.logging_config import get_logger
 from services.gemini_bridge import llamar_gemini
 from services.herramientas_municipio import TOOL_REGISTRY
