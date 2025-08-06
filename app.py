@@ -168,10 +168,11 @@ def create_app(config_class=Config):
 
     # --- Configuración de CORS ---
     CORS(app,
-         origins=["http://localhost:8080", "https://www.chatboc.ar", "http://localhost:5000", "https://chatboc-demo-widget-oigs.vercel.app"],
+         origins=["https://www.chatboc.ar"],
          supports_credentials=True,
-         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "X-Entity-Token", "X-Chat-Session-Id", "Anon-Id"])
+         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+         allow_headers=["Authorization", "Content-Type", "Anon-Id", "X-Chat-Session-Id", "X-Entity-Token"])
+
 
     @app.after_request
     def add_permissions_policy(resp):

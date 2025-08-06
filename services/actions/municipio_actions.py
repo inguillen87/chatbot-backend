@@ -14,6 +14,51 @@ logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
+class MenuPrincipalActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handles the selection from the main menu.
+        """
+        # The 'action_id' from the button click is expected in action_data
+        # For now, we'll assume it's passed in a 'selected_option_id' field.
+        # This part might need adjustment depending on how the frontend sends the data.
+        selected_option_id = action_data.get("selected_option_id")
+
+        if not selected_option_id:
+            # If no option is selected, maybe just re-display the menu or a default message.
+            # This case might happen if the action is triggered without a button click.
+            return {
+                "success": False,
+                "message_to_user": "Por favor, selecciona una opción del menú.",
+                "fuente": "menu_principal_no_option"
+            }
+
+        # Here you would have the logic to map the selected_option_id to a specific response or another action.
+        # For example:
+        if selected_option_id == "licencia_conducir":
+            # This could be a direct response or could trigger another action handler.
+            # Let's provide a direct informational response for this example.
+            return {
+                "success": True,
+                "message_to_user": "Para todo lo relacionado con la Licencia de Conducir, como requisitos, costos y turnos, puedes visitar nuestro sitio oficial. También puedo responderte preguntas específicas sobre el tema.",
+                "options_list": [
+                    {"texto": "Ir al Sitio Oficial", "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"},
+                    {"texto": "Ver Requisitos", "id_accion": "faq_licencia_requisitos"},
+                    {"texto": "Pedir Turno", "id_accion": "faq_licencia_turno"}
+                ],
+                "message_type": "interactive_buttons"
+            }
+        elif selected_option_id == "mostrar_menu_reclamos":
+            from services.municipio_responder import _get_reclamos_menu
+            return _get_reclamos_menu()
+        # Add other options here...
+        else:
+            return {
+                "success": False,
+                "message_to_user": "La opción seleccionada no es válida en este momento. Por favor, intenta de nuevo.",
+                "fuente": "menu_principal_opcion_invalida"
+            }
+
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")

@@ -78,7 +78,7 @@ class ChatOrchestrator:
                 "executed_action_handler": "SolicitarUbicacionHandler"
             }
 
-        if not action_name or action_name in ["no_accion", "small_talk", "respuesta_generica"]:
+        if not action_name or action_name in ["no_accion", "small_talk", "respuesta_generica", "responder_directamente", "menu_principal"]:
             # Para respuestas genéricas, usamos la respuesta del LLM directamente
             # sin necesidad de un handler específico.
             return {
@@ -91,9 +91,12 @@ class ChatOrchestrator:
         handler_class = self._get_handler_class(action_name)
         if not handler_class:
             logger.error(f"Could not find or import handler for action: {action_name}")
+            # Fallback mechanism for unknown actions
             return {
                 "success": False,
-                "message_to_user": "Hubo un problema al procesar tu solicitud (acción desconocida).",
+                "message_to_user": "No estoy seguro de cómo procesar esa solicitud. ¿Podrías intentar reformularla? También puedes pedir hablar con un agente.",
+                "options_list": [{"texto": "Hablar con un agente", "id_accion": "derivar_humano"}],
+                "message_type": "interactive_buttons",
                 "error_details": f"Handler for action '{action_name}' not found.",
                 "fuente": "error_handler_not_found"
             }
