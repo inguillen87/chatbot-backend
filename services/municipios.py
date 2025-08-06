@@ -8,7 +8,8 @@ from services.google_maps_service import obtener_direccion_de_coordenadas
 from services.logging_config import get_logger
 from services.gemini_bridge import llamar_gemini
 from services.herramientas_municipio import TOOL_REGISTRY
-from services.chat_orchestrator import ChatOrchestrator, GreetingHandler, ConsultarInfoTramiteActionHandler, MenuPrincipalActionHandler, ErrorActionHandler
+from services.chat_orchestrator import ChatOrchestrator, ConsultarInfoTramiteActionHandler, MenuPrincipalActionHandler, ErrorActionHandler
+from services.actions.municipio_actions import GreetingHandler
 from models import User, MunicipioTicket, TicketComentario, SitioWebInfo, Conversacion, db
 from sqlalchemy.orm.attributes import flag_modified
 from utils.nlp_utils import encontrar_saludo, validar_telefono
