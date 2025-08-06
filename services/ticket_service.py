@@ -49,7 +49,8 @@ class MunicipioTicketCreator(TicketCreator):
             nombre_vecino=ticket_data.get("nombre_vecino"),
             telefono_vecino=ticket_data.get("telefono_vecino"),
             email_vecino=ticket_data.get("email_vecino"),
-            foto_url_directa=ticket_data.get("foto_url_directa") # Para la foto inicial del reclamo
+            foto_url_directa=ticket_data.get("foto_url_directa"), # Para la foto inicial del reclamo
+            canal_ingreso=ticket_data.get("canal_ingreso")
         )
 
 class PymeTicketCreator(TicketCreator):

@@ -120,6 +120,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
             "origen_reclamo": "LLM_CHATBOT",
             "foto_url_directa": foto_url_llm,
+            "canal_ingreso": self.context.get("channel"),
         }
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
