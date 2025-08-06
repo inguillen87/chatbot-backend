@@ -709,7 +709,12 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
 from services.gemini_bridge import llamar_gemini # Importar llamar_gemini
 from .chat_orchestrator import ChatOrchestrator # Importar el nuevo Orchestrator
 
+from services.municipios import responder_municipio
+
 def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
+    if kwargs.get("endpoint") == "municipio":
+        return responder_municipio(pregunta_original, owner_user, rubro_obj, viewer_user, chat_db_context, anon_id, channel, **kwargs)
+
     request_id = str(uuid.uuid4())
     logger_actual = current_app.logger if current_app else logger
 
@@ -792,7 +797,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if not respuesta_final_texto:
         respuesta_final_texto = llm_response_structured.get("respuesta_usuario", "No estoy seguro de cómo proceder. ¿Podrías intentarlo de nuevo?")
 
-    opciones_finales = llm_response_structured.get("botones", [])
+    opciones_finales = llm_response_structured.get("botones") or []
     pedir_info_final = action_handler_result.get("pedir_info") or llm_response_structured.get("pedir_info")
 
     # Actualizar estado de conversación en pyme_ctx_actual (que es global_context_for_orchestrator[CONTEXTO_PYME])
