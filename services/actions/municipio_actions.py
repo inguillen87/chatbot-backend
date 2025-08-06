@@ -25,6 +25,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         categoria = action_data.get("categoria") or contexto_reclamo.get("categoria_reclamo")
         descripcion = action_data.get("descripcion") or contexto_reclamo.get("descripcion_reclamo")
         ubicacion_llm = action_data.get("ubicacion") or contexto_reclamo.get("direccion_reclamo")
+        distrito_llm = action_data.get("distrito") or contexto_reclamo.get("distrito_reclamo")
         coordenadas_llm = action_data.get("coordenadas") or contexto_reclamo.get("coordenadas_reclamo")
         foto_url_llm = action_data.get("foto_url_adjunta") or contexto_reclamo.get("foto_url")
 
@@ -107,6 +108,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "categoria": categoria or "Reclamo General",
             "detalles": descripcion,
             "direccion": ubicacion_llm,
+            "distrito": distrito_llm,
             "nombre_vecino": nombre_vecino_final,
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,

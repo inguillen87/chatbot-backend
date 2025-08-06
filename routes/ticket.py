@@ -147,6 +147,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "fecha": ticket.fecha.isoformat() + "Z",  # Asegurar formato ISO con Z para UTC
         "categoria": getattr(ticket, 'categoria', 'Sin Categoría'),
         "direccion": user_data.get("direccion", "No especificada"),
+        "distrito": getattr(ticket, 'distrito', None),
         "latitud": getattr(ticket, 'latitud', None),
         "longitud": getattr(ticket, 'longitud', None),
         "nombre_usuario": user_data.get("nombre", "No especificado"),

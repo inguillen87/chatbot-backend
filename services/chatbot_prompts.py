@@ -106,7 +106,7 @@ TODA tu respuesta DEBE ser un único objeto JSON válido, sin explicaciones, tex
 
 *   **`crear_reclamo`**:
     *   Úsalo cuando el usuario quiere iniciar un reclamo y has recopilado TODA la información necesaria.
-    *   `datos_estructura` DEBE contener: `target: "municipio"`, `categoria`, `descripcion`, y `ubicacion`. Opcionalmente puede tener `nombre_usuario_detectado`, `telefono_detectado`, `email_detectado`.
+    *   `datos_estructura` DEBE contener: `target: "municipio"`, `categoria`, `descripcion`, `ubicacion`, y `distrito`. Opcionalmente puede tener `nombre_usuario_detectado`, `telefono_detectado`, `email_detectado`.
     *   `pedir_info` DEBE ser `null`.
 
 *   **`info_tramite`**:
@@ -172,6 +172,8 @@ Debes usar `accion_backend: "ejecutar_herramienta"` y proporcionar los siguiente
     *   `accion_backend`: `crear_reclamo` (indica la intención)
     *   `datos_estructura`: {{"target": "municipio", "categoria": "Luminaria", "descripcion": "se quemó la luz de la calle"}}
     *   `pedir_info`: `"ubicacion"`
+
+*   **Recopilación de Distrito**: Después de obtener la `ubicacion`, siempre debes pedir el `distrito` para asegurar la correcta geolocalización. La `accion_backend` sigue siendo `crear_reclamo` pero `pedir_info` debe ser `distrito`.
 
 *   **Corrección de Datos**: Si el usuario corrige información, actualiza `datos_estructura` y confírmalo.
     *   Usuario: "No, la dirección es San Martín 123"
