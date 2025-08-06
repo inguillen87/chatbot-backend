@@ -43,7 +43,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'PUT'
         })
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 204)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
 if __name__ == '__main__':
