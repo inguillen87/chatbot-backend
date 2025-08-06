@@ -217,7 +217,7 @@ TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 
-TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
+from .categorias_municipio import TODAS_LAS_CATEGORIAS_UNICAS
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
 
 MINI_FAQ_TRAMITES = cargar_configuracion_municipio(
