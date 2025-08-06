@@ -118,7 +118,7 @@ class ChatLogicTestCase(unittest.TestCase):
             with patch('services.pymes.get_or_create_pyme_user_by_token') as mock_get_or_create:
                 mock_get_or_create.return_value = self.user
                 response = self.client.post(
-                    '/chatuserregisterpanel',
+                    '/auth/chatuserregisterpanel',
                     json={
                         'empresa_token': 'some_token',
                         'name': 'Anonymous User',

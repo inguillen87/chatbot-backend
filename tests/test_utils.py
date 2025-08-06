@@ -32,13 +32,14 @@ models_stub.User = type('User', (), {}) # Add dummy User to the stub
 # Import after potential sys.path modification, but before test class for global names if needed
 from services.common_utils import generar_link_google_maps
 from app import create_app, db
+from config import TestConfig
 # Import 'hp' and 'verificar_stock_producto' inside setUp or test methods if they depend on the stub
 # import services.herramientas_pyme as hp
 # verificar_stock_producto = hp.verificar_stock_producto
 
 class UtilsTestCase(unittest.TestCase):
     def setUp(self):
-        self.app = create_app('testing')
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -74,7 +75,7 @@ class UtilsTestCase(unittest.TestCase):
 
 class StockTestCase(unittest.TestCase):
     def setUp(self):
-        self.app = create_app('testing')
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

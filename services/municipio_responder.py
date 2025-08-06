@@ -897,7 +897,17 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             logger.info("[HANDLE_LLM] LLM solicitó responder directamente.")
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
             contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_directa"}, contexto_municipio_actual
+
+            # Devolvemos un diccionario que se asemeja más a la respuesta original del LLM
+            # para que el frontend pueda procesarlo directamente.
+            return {
+                "respuesta_usuario": respuesta_usuario_llm,
+                "botones": botones_llm,
+                "accion_backend": accion_backend_llm,
+                "datos_estructura": datos_estructura_llm,
+                "pedir_info": pedir_info_llm,
+                "fuente": "llm_respuesta_directa"
+            }, contexto_municipio_actual
 
         else: # Respuesta general o continuación de un flujo
             # Si estábamos esperando info para un reclamo y el LLM no generó una acción concreta

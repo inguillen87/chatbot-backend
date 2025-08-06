@@ -1,9 +1,10 @@
 import unittest
 from app import create_app, db
+from config import TestConfig
 
 class TempTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app('testing')
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

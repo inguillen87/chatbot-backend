@@ -945,7 +945,7 @@ def responder_municipio(
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
     # --- Context Timeout Logic ---
-    if chat_db_context and chat_db_context.last_updated:
+    if chat_db_context and hasattr(chat_db_context, 'last_updated') and chat_db_context.last_updated:
         from datetime import datetime, timedelta
         if datetime.utcnow() - chat_db_context.last_updated > timedelta(minutes=15):
             logger_actual.info(f"Context for session {kwargs.get('chat_session_uuid')} timed out. Resetting.")

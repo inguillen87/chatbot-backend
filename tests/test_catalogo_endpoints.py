@@ -40,7 +40,7 @@ class CatalogoEndpointsTests(unittest.TestCase):
                 with self.client as client:
                     with client.session_transaction() as sess:
                         sess['user_id'] = user.id
-                    response = client.get('/faq_texto')
+                    response = client.get('/catalogo/faq_texto')
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json, ['q1 a1', 'q2 a2'])
 
@@ -58,7 +58,7 @@ class CatalogoEndpointsTests(unittest.TestCase):
                 with self.client as client:
                     with client.session_transaction() as sess:
                         sess['user_id'] = user.id
-                    response = client.get('/textos_perfil')
+                    response = client.get('/catalogo/textos_perfil')
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json, ['uno', 'dos'])
 
@@ -76,7 +76,7 @@ class CatalogoEndpointsTests(unittest.TestCase):
             with self.client as client:
                 with client.session_transaction() as sess:
                     sess['user_id'] = user.id
-                response = client.get('/resumen_catalogo')
+                response = client.get('/catalogo/resumen_catalogo')
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json['total'], 3)
                 self.assertIn({'nombre': 'vino', 'cantidad': 2}, response.json['categorias'])
