@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify
 from routes.auth import token_requerido
 from utils.permissions import require_role
-from services.municipios import TODAS_LAS_CATEGORIAS_UNICAS
+from services.categorias_municipio import TODAS_LAS_CATEGORIAS_UNICAS
 
 categorias_bp = Blueprint('categorias', __name__, url_prefix='/categorias')
 
