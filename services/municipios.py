@@ -8,8 +8,14 @@ from services.google_maps_service import obtener_direccion_de_coordenadas
 from services.logging_config import get_logger
 from services.gemini_bridge import llamar_gemini
 from services.herramientas_municipio import TOOL_REGISTRY
-from services.chat_orchestrator import ChatOrchestrator, ConsultarInfoTramiteActionHandler, MenuPrincipalActionHandler, ErrorActionHandler
-from services.actions.municipio_actions import GreetingHandler
+from services.chat_orchestrator import ChatOrchestrator
+from services.actions.municipio_actions import (
+    GreetingHandler,
+    ConsultarInfoTramiteActionHandler,
+    MenuPrincipalActionHandler,
+    ErrorActionHandler,
+    CrearReclamoActionHandler,
+)
 from models import User, MunicipioTicket, TicketComentario, SitioWebInfo, Conversacion, db
 from sqlalchemy.orm.attributes import flag_modified
 from utils.nlp_utils import encontrar_saludo, validar_telefono
@@ -89,9 +95,9 @@ def responder_municipio(pregunta_original: any, owner_user: User, rubro_obj: Any
     pregunta_str = pregunta_original.get("pregunta", "") if isinstance(pregunta_original, dict) else str(pregunta_original)
 
     if "hola" in pregunta_str:
-        final_result = GreetingHandler(db.session).handle()
+        final_result = GreetingHandler(db.session).execute({})
     elif "tramite" in pregunta_str:
-        final_result = MenuPrincipalActionHandler(db.session).handle()
+        final_result = MenuPrincipalActionHandler(db.session).execute({})
     else:
         # LLM Call
         llm_response = llamar_gemini(mensaje_usuario=pregunta_str)
