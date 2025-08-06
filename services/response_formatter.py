@@ -135,7 +135,10 @@ def build_interactive_response(options: list,
             "audio_url": original_bot_response.get("audio_url")
         }
 
-        if message_type in ['interactive_buttons', 'interactive_list', 'quick_replies'] and options:
+        if message_type == 'interactive_menu' and original_bot_response.get("data"):
+            web_response["menu"] = original_bot_response["data"]
+            web_response["botones"] = [] # Ensure buttons are not processed separately
+        elif message_type in ['interactive_buttons', 'interactive_list', 'quick_replies'] and options:
             formatted_botones = []
             for o in options:
                 btn = None
@@ -168,20 +171,6 @@ def build_interactive_response(options: list,
                 if btn:
                     formatted_botones.append(btn)
             web_response["botones"] = formatted_botones
-
-        # HOTFIX: Aplana los botones en el texto de respuesta para el cliente web
-        # que parece no poder renderizarlos.
-        if web_response.get("botones"):
-            button_texts = [f"➡️ {btn.get('texto', '')}" for btn in web_response["botones"]]
-
-            # Añadir los textos de los botones a la respuesta principal
-            if body_text:
-                web_response["respuesta"] = body_text + "\n\n" + "\n".join(button_texts)
-            else:
-                web_response["respuesta"] = "\n".join(button_texts)
-
-            # Vaciar el array de botones para que el frontend no lo procese
-            web_response["botones"] = []
 
         # Clean None values from web_response for cleaner JSON, if desired
         # web_response_cleaned = {k: v for k, v in web_response.items() if v is not None}
