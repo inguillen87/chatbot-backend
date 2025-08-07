@@ -234,7 +234,7 @@ def enviar_email_ticket_cliente(ticket) -> bool:
 
 
 def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
-    """Notifica al cliente que su ticket tiene una novedad."""
+    """Notifica al cliente que su ticket tiene una novedad con una plantilla HTML mejorada."""
     destino = getattr(ticket, "email", None)
     if not destino and getattr(ticket, "user_id", None):
         from models import User # Importar User aquí para evitar importación circular a nivel de módulo
@@ -245,11 +245,48 @@ def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
         return False
 
     asunto = f"Actualización en tu ticket {ticket.nro_ticket}"
-    cuerpo_html_novedad = (
-        f"<p>Hola,</p>"
-        f"<p>Se registró una nueva actividad en tu ticket <strong>{ticket.nro_ticket}</strong>.</p>"
-        f"<p>{mensaje}</p>"
-    )
+
+    # --- Plantilla HTML Mejorada ---
+    cuerpo_html_novedad = f"""\
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{asunto}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f7;">
+    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+        <tr>
+            <td style="padding: 30px 40px; border-bottom: 1px solid #eeeeee;">
+                <h1 style="margin: 0; color: #1a1a1a; font-size: 24px; font-weight: 600;">Actualización de tu Ticket</h1>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 30px 40px;">
+                <p style="margin: 0 0 15px; color: #444444; font-size: 16px; line-height: 1.6;">Hola,</p>
+                <p style="margin: 0 0 20px; color: #444444; font-size: 16px; line-height: 1.6;">
+                    Se registró una nueva actividad en tu ticket <strong>#{ticket.nro_ticket}</strong>.
+                </p>
+                <div style="background-color: #f9f9f9; border-left: 4px solid #007bff; padding: 15px 20px; margin-bottom: 20px;">
+                    <p style="margin: 0; color: #333333; font-size: 16px; font-style: italic;">"{mensaje}"</p>
+                </div>
+                <p style="margin: 0; color: #444444; font-size: 16px; line-height: 1.6;">
+                    Puedes ver el estado de tu ticket y responder ingresando a nuestro portal.
+                </p>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 20px 40px; text-align: center; background-color: #f9f9f9; border-top: 1px solid #eeeeee; border-radius: 0 0 8px 8px;">
+                <p style="margin: 0; color: #888888; font-size: 12px;">
+                    Este es un mensaje automático. Por favor, no respondas a este correo.
+                </p>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+"""
     return enviar_email(destino, asunto, cuerpo_html_novedad)
 
 
