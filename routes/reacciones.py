@@ -6,14 +6,6 @@ from routes.auth import token_requerido
 reacciones_bp = Blueprint("reacciones", __name__, url_prefix="/reacciones")
 
 
-@reacciones_bp.route("", methods=["OPTIONS"])
-@reacciones_bp.route("/<int:conv_id>", methods=["OPTIONS"])
-def reacciones_options(conv_id=None):
-    from routes.chat import cors_options_response
-
-    return cors_options_response()
-
-
 @reacciones_bp.route("", methods=["POST"])
 @token_requerido
 def agregar_reaccion(current_user: User):

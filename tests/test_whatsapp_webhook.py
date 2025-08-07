@@ -211,8 +211,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
             mock_bot.assert_called_once()
             _, kwargs = mock_bot.call_args
-            self.assertIn("uploaded_file_info_whatsapp", kwargs)
-            self.assertEqual(kwargs["uploaded_file_info_whatsapp"]["mime_type"], "application/pdf")
+            self.assertIn("uploaded_file_info", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "application/pdf")
 
             self.mock_twilio_create.assert_called_once_with(
                 from_=f"whatsapp:{self.test_whatsapp_number_str}",
@@ -247,8 +247,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
             mock_bot.assert_called_once()
             _, kwargs = mock_bot.call_args
-            self.assertIn("uploaded_file_info_whatsapp", kwargs)
-            self.assertEqual(kwargs["uploaded_file_info_whatsapp"]["mime_type"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            self.assertIn("uploaded_file_info", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
             self.mock_twilio_create.assert_called_once_with(
                 from_=f"whatsapp:{self.test_whatsapp_number_str}",
@@ -283,8 +283,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
             mock_bot.assert_called_once()
             _, kwargs = mock_bot.call_args
-            self.assertIn("uploaded_file_info_whatsapp", kwargs)
-            self.assertEqual(kwargs["uploaded_file_info_whatsapp"]["mime_type"], "image/jpeg")
+            self.assertIn("uploaded_file_info", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "image/jpeg")
 
             self.mock_twilio_create.assert_called_once_with(
                 from_=f"whatsapp:{self.test_whatsapp_number_str}",

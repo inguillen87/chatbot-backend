@@ -131,6 +131,7 @@ def responder_chatboc(
     procesamiento_archivo_en_curso = False # Nueva bandera
 
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
+        logger.info(f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}")
         if uploaded_file_info.get("id"):
             archivo_id = uploaded_file_info.get("id")
             current_app.logger.info(f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}")
@@ -188,6 +189,7 @@ def responder_chatboc(
     # Los handlers (responder_municipio, responder_pyme) son responsables de cargar/guardar
     # su propio contexto desde/hacia chat_db_context.context_data usando chat_session_uuid como posible sub-key si es necesario.
 
+    response_data = None
     if tipo_chat == "municipio":
         # Añadir datos interpretados al contexto del usuario para el LLM
         if datos_interpretados_de_archivo:
@@ -195,7 +197,7 @@ def responder_chatboc(
                 owner_user.datos_interpretados_archivo = {}
             owner_user.datos_interpretados_archivo.update(datos_interpretados_de_archivo)
 
-        return responder_municipio(
+        response_data = responder_municipio(
             pregunta_original=pregunta, # La pregunta original del usuario
             owner_user=owner_user,
             rubro_obj=rubro_obj,
@@ -213,7 +215,7 @@ def responder_chatboc(
                 owner_user.datos_interpretados_archivo = {}
             owner_user.datos_interpretados_archivo.update(datos_interpretados_de_archivo)
 
-        return responder_pyme(
+        response_data = responder_pyme(
             pregunta_original=pregunta,
             owner_user=owner_user,
             rubro_obj=rubro_obj,
@@ -227,4 +229,20 @@ def responder_chatboc(
     else:
         # Esto no debería ocurrir debido a las validaciones previas de tipo_chat
         logger.error(f"Error crítico: tipo_chat '{tipo_chat}' no es ni 'municipio' ni 'pyme' en la parte final de responder_chatboc.")
-        return {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
+        response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
+
+    # --- Audio Response Generation ---
+    if chat_db_context and chat_db_context.context_data and chat_db_context.context_data.get('source_is_audio'):
+        text_to_speak = response_data.get('message_body')
+        if text_to_speak:
+            from services.google_text_to_speech import TextToSpeechService
+            tts_service = TextToSpeechService()
+            audio_url = tts_service.synthesize_speech(text_to_speak)
+            if audio_url:
+                response_data['audio_url'] = audio_url
+                logger.info(f"Generated audio response at {audio_url}")
+
+        # Clean up the flag after processing to avoid responding with audio to a text message
+        chat_db_context.context_data.pop('source_is_audio', None)
+
+    return response_data

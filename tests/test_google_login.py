@@ -25,9 +25,14 @@ with patch.dict(sys.modules, {'models': models_stub, 'sqlalchemy': sqlalchemy_st
     importlib.reload(gauth)
 
 class GoogleLoginTests(unittest.TestCase):
+    @patch.object(gauth, 'ALLOWED_CLIENT_IDS', ['test-client-id'])
     @patch.object(gauth.id_token, 'verify_oauth2_token')
     def test_crea_usuario_nuevo(self, mock_verify):
-
+        mock_verify.return_value = {
+            'aud': 'test-client-id',
+            'email': 'new@example.com',
+            'name': 'Nuevo Usuario'
+        }
 
         dummy_user = SimpleNamespace(id=1, email='new@example.com', name='Nuevo', token='tok')
         query = MagicMock()
@@ -48,10 +53,16 @@ class GoogleLoginTests(unittest.TestCase):
         args, kwargs = UserMock.call_args
         self.assertEqual(kwargs.get('rol'), 'admin')
         self.assertEqual(kwargs.get('tipo_chat'), 'municipio')
+        self.assertEqual(kwargs.get('name'), 'Nuevo Usuario')
 
+    @patch.object(gauth, 'ALLOWED_CLIENT_IDS', ['test-client-id'])
     @patch.object(gauth.id_token, 'verify_oauth2_token')
     def test_usa_usuario_existente(self, mock_verify):
-
+        mock_verify.return_value = {
+            'aud': 'test-client-id',
+            'email': 'exist@example.com',
+            'name': 'Usuario Existente'
+        }
 
         existing = SimpleNamespace(id=2, email='exist@example.com', name='Exist', token='tok2')
         query = MagicMock()

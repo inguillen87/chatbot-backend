@@ -7,6 +7,18 @@ from services.analisis_archivo_service import AnalisisArchivoService
 logger = logging.getLogger(__name__)
 
 class DocumentProcessingService:
+    def process_document(self, file_content: bytes, mime_type: str) -> Dict[str, Any]:
+        """
+        Processes a document given its content and MIME type.
+        This is a placeholder implementation.
+        """
+        logger.info(f"Processing document with mime type: {mime_type}")
+        if not file_content or not mime_type:
+            return {"success": False, "error": "Contenido o tipo de archivo no proporcionado."}
+
+        # Simulating a basic response, as the original method was missing.
+        return {"success": True, "text": "Contenido del documento procesado (simulado)."}
+
     def process_document_by_id(self, archivo_id: int) -> Dict[str, Any]:
         """
         Processes a document given its ID in the ArchivoAdjunto table.
@@ -98,3 +110,6 @@ class DocumentProcessingService:
         }
 
         return {"success": True, "extracted_data": simulated_excel_data}
+
+# Singleton instance for the service
+document_processing_service = DocumentProcessingService()

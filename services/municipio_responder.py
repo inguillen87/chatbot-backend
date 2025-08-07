@@ -817,6 +817,26 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
             logger.info("[HANDLE_LLM] LLM derivó a humano.")
             return None, contexto_municipio_actual
+        elif accion_backend_llm == "finalizar_tramite":
+            logger.info(
+                "[HANDLE_LLM] LLM finalizó el trámite. Reseteando contexto de reclamo."
+            )
+            # Clear all claim-related context
+            contexto_municipio_actual["historial_llm_reclamo"] = []
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+            contexto_municipio_actual.pop("esperando_info_llm", None)
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+            # Also add the final user-facing message to the general history
+            contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
+
+            return {
+                "message_body": respuesta_usuario_llm,
+                "options_list": botones_llm,
+                "message_type": "interactive_buttons" if botones_llm else "text",
+                "fuente": "llm_finalizar_tramite"
+            }, contexto_municipio_actual
         elif accion_backend_llm == "ejecutar_herramienta":
             nombre_herramienta = datos_estructura_llm.get("nombre_herramienta")
             parametros_herramienta = datos_estructura_llm.get("parametros_herramienta", {})

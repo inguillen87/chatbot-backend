@@ -7,6 +7,10 @@ from werkzeug.utils import secure_filename
 # Configuración del logger
 logger = logging.getLogger(__name__)
 
+class GoogleAPICallError(Exception):
+    """Custom exception for Vision API call errors."""
+    pass
+
 class GoogleVisionService:
     def __init__(self, credentials_path=None):
         self.client = None
