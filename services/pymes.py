@@ -608,12 +608,28 @@ class FinalizarPedidoHandler(BaseHandler):
                 "fuente": "pyme_pedido_finalizado_error"
             }
 
+from services.google_search import google_search
+
 class FallbackHandler(BaseHandler):
     def execute(self, action_data):
         pregunta = action_data.get("pregunta", "")
-        # Este es el último recurso. Intenta dar una respuesta genérica o escalar.
         logger.warning(f"[PYME_FALLBACK_HANDLER] Pregunta no manejada: '{pregunta}', Intención: {self.context.get('intencion')}, Estado: {self.pyme_ctx.get('estado_conversacion')}")
-        return UnclearHandler(self.context).handle(pregunta)
+
+        search_results = google_search(pregunta)
+
+        if not search_results:
+            return UnclearHandler(self.context).handle(pregunta)
+
+        search_items = []
+        for result in search_results[:3]:
+            search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
+
+        return {
+            "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "pyme_fallback_google_search"
+        }
 
 
 class ToolHandlerPyme(BaseHandler):
