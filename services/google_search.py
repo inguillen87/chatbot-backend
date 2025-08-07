@@ -5,7 +5,7 @@ import time
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
-cache = TTLCache(maxsize=100, ttl=3600)
+cache = TTLCache(maxsize=100, ttl=86400)
 
 def google_search(query: str):
     """
