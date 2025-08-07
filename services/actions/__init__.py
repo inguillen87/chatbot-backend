@@ -42,6 +42,8 @@ ACTION_HANDLER_MAP = {
     "ver_carrito": "services.actions.pyme_order_actions.VerCarritoAction",
     "modificar_carrito": "services.actions.pyme_order_actions.ModificarCarritoAction",
     "finalizar_compra": "services.actions.pyme_order_actions.FinalizarCompraAction",
+    "finalizar_pedido_pyme": "services.actions.pyme_order_actions.CrearPedidoAction",
+    "procesar_adjunto_pedido": "services.actions.pyme_order_actions.ProcesarAdjuntoPedidoAction",
     "corregir_datos_pedido": "services.actions.pyme_actions.CorregirDatosPedidoActionHandler",
 
     # Saludos (pueden tener lógica específica por_entidad si es necesario)

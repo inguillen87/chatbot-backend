@@ -2,38 +2,28 @@ from flask import Blueprint, request, jsonify, current_app
 from models import User, PymePedido, db
 from routes.auth import token_requerido, admin_o_empleado_requerido
 from services.logic import es_rubro_publico
+from services.email_service import enviar_email_pedido_admin
 from datetime import datetime, timedelta
 from sqlalchemy import func
+import json
 
 pedidos_bp = Blueprint('pedidos_bp', __name__, url_prefix='/pedidos')
 
 def _serialize_pedido(pedido: PymePedido):
-    # PymePedido model has a to_dict() method from the model definition.
     return pedido.to_dict()
 
 @pedidos_bp.route('', methods=['GET'])
 @token_requerido
 def listar_pedidos_pyme(current_user: User):
-    is_pyme_user = False
-    if hasattr(current_user, 'tipo_chat') and current_user.tipo_chat == "pyme":
-        is_pyme_user = True
-    elif current_user.rubro and not es_rubro_publico(current_user.rubro):
-        is_pyme_user = True
+    is_pyme_user = current_user.tipo_chat == "pyme"
 
     if not is_pyme_user:
-        # Si es un usuario municipal, delegamos al listado de tickets
         if current_user.tipo_chat == "municipio":
             from routes.ticket import get_tickets_del_usuario_logic
             return get_tickets_del_usuario_logic(current_user)
         return jsonify({"error": "Acceso denegado. Esta sección es solo para PYMEs."}), 403
 
-    if not current_user.rubro or not current_user.rubro.nombre:
-         current_app.logger.warning(f"Admin PYME {current_user.id} intentando listar pedidos sin rubro asignado.")
-         return jsonify({"error": "Usuario PYME no tiene un rubro configurado para filtrar pedidos."}), 400
-        
-    # SECURITY NOTE: Filtering by PymePedido.rubro (string) == current_user.rubro.nombre (string)
-    # is a temporary workaround. PymePedido should ideally have a direct empresa_id foreign key.
-    query = PymePedido.query.filter(PymePedido.rubro == current_user.rubro.nombre)
+    query = PymePedido.query.filter(PymePedido.pyme_id == current_user.id)
 
     estado_filter = request.args.get('estado')
     fecha_inicio_str = request.args.get('fecha_inicio')
@@ -58,12 +48,6 @@ def listar_pedidos_pyme(current_user: User):
     except ValueError:
         return jsonify({"error": "Formato de fecha inválido. Usar YYYY-MM-DD."}), 400
 
-    # Calculate total value per status for the filtered query
-    # To do this correctly, we need to apply filters before aggregation.
-    # One way is to get all filtered IDs, then query again, or use a subquery.
-
-    # Simpler approach for now: calculate on the Python side after fetching filtered list.
-    # More performant for DB would be a GROUP BY on the filtered query.
     pedidos_list = query.order_by(PymePedido.fecha.desc()).all()
 
     resumen_valor_por_estado = {}
@@ -82,20 +66,12 @@ def listar_pedidos_pyme(current_user: User):
 @token_requerido
 @admin_o_empleado_requerido
 def obtener_pedido_pyme(current_user: User, pedido_id: int):
-    is_pyme_user = False
-    if hasattr(current_user, 'tipo_chat') and current_user.tipo_chat == "pyme":
-        is_pyme_user = True
-    elif current_user.rubro and not es_rubro_publico(current_user.rubro):
-        is_pyme_user = True
-    if not is_pyme_user:
-        return jsonify({"error": "Acceso denegado."}), 403
-
     pedido = PymePedido.query.get(pedido_id)
     if not pedido:
         return jsonify({"error": "Pedido no encontrado."}), 404
 
-    if not current_user.rubro or pedido.rubro != current_user.rubro.nombre:
-         return jsonify({"error": "Acceso denegado a este pedido (no coincide rubro)."}), 403
+    if pedido.pyme_id != current_user.id:
+        return jsonify({"error": "Acceso denegado a este pedido."}), 403
 
     return jsonify(_serialize_pedido(pedido))
 
@@ -103,20 +79,12 @@ def obtener_pedido_pyme(current_user: User, pedido_id: int):
 @token_requerido
 @admin_o_empleado_requerido
 def actualizar_estado_pedido_pyme(current_user: User, pedido_id: int):
-    is_pyme_user = False
-    if hasattr(current_user, 'tipo_chat') and current_user.tipo_chat == "pyme":
-        is_pyme_user = True
-    elif current_user.rubro and not es_rubro_publico(current_user.rubro):
-        is_pyme_user = True
-    if not is_pyme_user:
-        return jsonify({"error": "Acceso denegado."}), 403
-        
     pedido = PymePedido.query.get(pedido_id)
     if not pedido:
         return jsonify({"error": "Pedido no encontrado."}), 404
 
-    if not current_user.rubro or pedido.rubro != current_user.rubro.nombre:
-         return jsonify({"error": "Acceso denegado a este pedido (no coincide rubro)."}), 403
+    if pedido.pyme_id != current_user.id:
+        return jsonify({"error": "Acceso denegado a este pedido."}), 403
 
     data = request.get_json()
     nuevo_estado = data.get('estado')
@@ -131,11 +99,58 @@ def actualizar_estado_pedido_pyme(current_user: User, pedido_id: int):
     pedido.estado = nuevo_estado
     try:
         db.session.commit()
+        if nuevo_estado == "confirmado":
+            enviar_email_pedido_admin(pedido)
         return jsonify(_serialize_pedido(pedido))
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Error al actualizar estado del pedido {pedido_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al actualizar estado."}), 500
+
+@pedidos_bp.route('', methods=['POST'])
+@token_requerido
+@admin_o_empleado_requerido
+def crear_pedido_pyme(current_user: User):
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Datos no proporcionados."}), 400
+
+    detalles = data.get('detalles')
+    if not detalles or not isinstance(detalles, list):
+        return jsonify({"error": "El campo 'detalles' es obligatorio y debe ser una lista de items."}), 400
+
+    try:
+        detalles_str = json.dumps(detalles)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Formato de 'detalles' inválido. Debe ser un JSON serializable."}), 400
+
+    nuevo_pedido = PymePedido(
+        pyme_id=current_user.id,
+        asunto=data.get('asunto', f'Pedido de {data.get("nombre_cliente", "cliente")}'),
+        detalles=detalles_str,
+        monto_total=data.get('monto_total'),
+        nombre_cliente=data.get('nombre_cliente'),
+        email_cliente=data.get('email_cliente'),
+        telefono_cliente=data.get('telefono_cliente'),
+        direccion=data.get('direccion'),
+        latitud=data.get('latitud'),
+        longitud=data.get('longitud'),
+        user_id=data.get('user_id')
+    )
+
+    if data.get('estado'):
+        allowed_statuses = ["pendiente", "confirmado", "en_proceso", "enviado", "entregado", "completado", "cancelado", "devuelto"]
+        if data['estado'] in allowed_statuses:
+            nuevo_pedido.estado = data['estado']
+
+    try:
+        db.session.add(nuevo_pedido)
+        db.session.commit()
+        return jsonify(_serialize_pedido(nuevo_pedido)), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error al crear pedido para pyme {current_user.id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al crear el pedido."}), 500
 
 # Nota: Registrar este blueprint en app.py o __init__.py de la aplicación principal.
 # from routes.pedidos import pedidos_bp

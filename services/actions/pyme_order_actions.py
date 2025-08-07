@@ -361,19 +361,37 @@ class CorregirDatosPedidoAction(BaseActionHandler):
 class ProcesarAdjuntoPedidoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing ProcesarAdjuntoPedidoAction for PYME with data: {action_data}")
-        # Similar to ProcesarAdjuntoReclamoAction, but for PYME context (e.g. Excel order list)
-        archivo_info_llm = action_data.get("archivo_adjunto_info", {})
-        if not archivo_info_llm.get("url"):
-            return {"success": False, "message_to_user": "No se especificó adjunto para procesar."}
 
-        datos_extraidos = archivo_info_llm.get("datos_extraidos_del_analisis", {})
-        msg = f"Procesé el adjunto ({archivo_info_llm.get('url')}). "
-        if datos_extraidos.get("lista_productos_excel"):
-            msg += f"Detecté {len(datos_extraidos['lista_productos_excel'])} productos. ¿Los agrego al carrito?"
-            # Data to be used by AgregarItemCarritoAction or similar
-        else:
-            msg += "¿Cómo procedemos con tu pedido?"
+        archivo_id = self.context.get("archivo_id_para_asociar")
+        if not archivo_id:
+            return {"success": False, "message_to_user": "No se encontró un archivo para procesar."}
 
-        return {"success": True, "message_to_user": msg, "data": {"adjunto_pedido_procesado": True, "datos_para_pedido": datos_extraidos}}
+        from services.document_processing_service import document_processing_service
+        processing_result = document_processing_service.process_document_by_id(archivo_id)
 
-[end of services/actions/pyme_order_actions.py]
+        if not processing_result.get("success"):
+            return {"success": False, "message_to_user": f"Hubo un error al procesar el archivo: {processing_result.get('error')}"}
+
+        extracted_data = processing_result.get("extracted_data", {})
+        texto_extraido = extracted_data.get("texto_ocr") or extracted_data.get("texto_extraido")
+
+        if not texto_extraido:
+            return {"success": False, "message_to_user": "No se pudo extraer texto del archivo para procesar el pedido."}
+
+        # Use the LLM to parse the extracted text into a structured order
+        # This is a conceptual step. The actual implementation will require a prompt that
+        # tells the LLM to extract order items from the text.
+
+        # For now, I will just return the extracted text and ask the user to confirm.
+
+        message = f"He procesado el archivo y extraje el siguiente texto:\n\n---\n{texto_extraido[:500]}...\n\n---\n\n¿Quieres que intente crear un pedido con esta información?"
+
+        # In a real implementation, we would parse this with another LLM call,
+        # then match with catalog, and then create the order.
+        # For now, we will just confirm with the user.
+
+        return {
+            "success": True,
+            "message_to_user": message,
+            "data": {"adjunto_pedido_procesado": True, "texto_extraido": texto_extraido}
+        }
