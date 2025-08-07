@@ -198,8 +198,12 @@ class PymeTicket(db.Model):
 class PymePedido(db.Model):
     __tablename__ = "pyme_pedido"
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) # Permite anónimos
-    user = db.relationship('User', backref='pyme_pedidos')
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) # El cliente que hace el pedido (puede ser anónimo)
+    pyme_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) # La pyme a la que se le hace el pedido
+
+    user = db.relationship('User', foreign_keys=[user_id], backref='pyme_pedidos_realizados')
+    pyme = db.relationship('User', foreign_keys=[pyme_id], backref='pyme_pedidos_recibidos')
+
     nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
     asunto = db.Column(db.String(255), nullable=True)
     estado = db.Column(db.String(30), default="pendiente")
@@ -209,15 +213,15 @@ class PymePedido(db.Model):
     nombre_cliente = db.Column(db.String(100), nullable=True)
     email_cliente = db.Column(db.String(100), nullable=True)
     telefono_cliente = db.Column(db.String(50), nullable=True)
-    rubro = db.Column(db.String(100), nullable=True)
     direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
 
-    def __init__(self, asunto, detalles, rubro, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None, direccion=None, latitud=None, longitud=None):
+    def __init__(self, pyme_id, asunto, detalles, monto_total=None, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None, direccion=None, latitud=None, longitud=None):
+        self.pyme_id = pyme_id
         self.asunto = asunto
         self.detalles = detalles
-        self.rubro = rubro
+        self.monto_total = monto_total
         self.nombre_cliente = nombre_cliente
         self.email_cliente = email_cliente
         self.telefono_cliente = telefono_cliente
@@ -241,6 +245,7 @@ class PymePedido(db.Model):
 
         return {
             "id": self.id,
+            "pyme_id": self.pyme_id,
             "nro_pedido": self.nro_pedido,
             "asunto": self.asunto,
             "estado": self.estado,
@@ -250,7 +255,6 @@ class PymePedido(db.Model):
             "nombre_cliente": self.nombre_cliente,
             "email_cliente": self.email_cliente,
             "telefono_cliente": self.telefono_cliente,
-            "rubro": self.rubro,
             "direccion": self.direccion,
             "latitud": self.latitud,
             "longitud": self.longitud,

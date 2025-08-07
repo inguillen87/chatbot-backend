@@ -7,7 +7,7 @@ from typing import Optional
 from enum import Enum, auto
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
-from models import Conversacion, db
+from models import Conversacion, db, PymePedido
 try:
     from flask import session as flask_session, current_app, request # Añadir request
 except Exception:
@@ -547,6 +547,67 @@ class TicketStatusHandler(BaseActionHandler):
             "fuente": "pyme_ticket_status_handler_placeholder"
         }
 
+class FinalizarPedidoHandler(BaseHandler):
+    def execute(self, action_data):
+        if not self.pyme_id_actual:
+            return {"message_to_user": "No puedo identificar la tienda para finalizar el pedido.", "fuente": "finalizar_pedido_sin_pyme_id"}
+
+        cart_summary = cart_service.get_cart_summary(self.pyme_carts_data, self.pyme_id_actual, self.cliente_id_actual)
+
+        if not cart_summary or not cart_summary.get("items_detalle"):
+            return {"message_to_user": "Tu carrito está vacío. Agrega productos antes de finalizar el pedido.", "fuente": "finalizar_pedido_carrito_vacio"}
+
+        detalles_pedido = json.dumps(cart_summary.get("items_detalle"))
+        monto_total_pedido = cart_summary.get("total_final_con_descuento")
+
+        # Get client data from context
+        nombre_cliente = self.pyme_ctx.get("nombre_cliente")
+        email_cliente = self.pyme_ctx.get("email_cliente")
+        telefono_cliente = self.pyme_ctx.get("telefono_cliente")
+        direccion_cliente = self.pyme_ctx.get("direccion_cliente")
+        latitud_cliente = self.pyme_ctx.get("latitud_cliente")
+        longitud_cliente = self.pyme_ctx.get("longitud_cliente")
+
+        # Create the order
+        nuevo_pedido = PymePedido(
+            pyme_id=self.pyme_id_actual,
+            asunto=f"Pedido de {nombre_cliente or 'cliente'}",
+            detalles=detalles_pedido,
+            monto_total=monto_total_pedido,
+            nombre_cliente=nombre_cliente,
+            email_cliente=email_cliente,
+            telefono_cliente=telefono_cliente,
+            direccion=direccion_cliente,
+            latitud=latitud_cliente,
+            longitud=longitud_cliente,
+            user_id=self.cliente_id_actual
+        )
+
+        try:
+            db.session.add(nuevo_pedido)
+            db.session.commit()
+
+            # Clear the cart
+            cart_service.clear_pyme_cart(self.pyme_carts_data, self.pyme_id_actual)
+            self._guardar_contexto_pyme()
+
+            # TODO: Send email notification to logistics
+
+            return {
+                "success": True,
+                "message_to_user": f"¡Gracias por tu compra! Tu pedido #{nuevo_pedido.nro_pedido} ha sido creado con éxito. Te mantendremos informado sobre el estado.",
+                "fuente": "pyme_pedido_finalizado_exitosamente",
+                "data": {"pedido_id": nuevo_pedido.id, "nro_pedido": nuevo_pedido.nro_pedido}
+            }
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error al crear pedido final desde carrito para pyme {self.pyme_id_actual}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Hubo un error al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
+                "fuente": "pyme_pedido_finalizado_error"
+            }
+
 class FallbackHandler(BaseHandler):
     def execute(self, action_data):
         pregunta = action_data.get("pregunta", "")
@@ -889,5 +950,34 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             logger_actual.error(f"Error guardando Conversacion final (PYME): {e_conv_pyme_final}", exc_info=True)
             db.session.rollback()
 
+    # Proactive suggestions
+    sugerencia_proactiva = sugerir_productos_relacionados(historial_chat_para_gemini, owner_user.id)
+    if sugerencia_proactiva:
+        final_response_dict["message_body"] += f"\n\n{sugerencia_proactiva}"
+
     logger.info(f"[RESPONDER_PYME_END_V4 - {request_id}] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
+
+def sugerir_productos_relacionados(historial_chat: list, pyme_id: int) -> Optional[str]:
+    """
+    Analiza el historial de chat para sugerir productos relacionados o promociones.
+    """
+    if not historial_chat:
+        return None
+
+    last_user_message = ""
+    for msg in reversed(historial_chat):
+        if msg.get("role") == "user":
+            last_user_message = msg.get("parts", [{}])[0].get("text", "")
+            break
+
+    if not last_user_message:
+        return None
+
+    # Simple keyword-based suggestion for now
+    if "vino" in last_user_message.lower():
+        return "Veo que te interesa el vino. ¿Te gustaría probar nuestra selección de quesos para acompañar?"
+    elif "queso" in last_user_message.lower():
+        return "El queso es una excelente elección. ¿Qué tal un vino Malbec para maridar?"
+
+    return None
