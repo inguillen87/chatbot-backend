@@ -1,7 +1,7 @@
 import os
 import logging
 import sys
-from flask import Flask, request, current_app, jsonify, Blueprint, make_response, redirect, url_for
+from flask import Flask, request, current_app, jsonify
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from flask_cors import CORS
@@ -51,39 +51,6 @@ from routes.ai_templates import ai_templates_bp
 from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
 from routes.catalog_mappings import catalog_mappings_bp
 from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
-
-# Blueprint to handle OPTIONS preflight requests and redirects for legacy routes
-cors_preflight_bp = Blueprint('cors_preflight', __name__)
-
-@cors_preflight_bp.route('/login', methods=['OPTIONS', 'POST'])
-def login_redirect():
-    if request.method == 'OPTIONS':
-        response = make_response()
-        return response
-    # Use a 307 redirect to preserve the method (POST)
-    return redirect(url_for('auth.login'), code=307)
-
-@cors_preflight_bp.route('/perfil', methods=['OPTIONS', 'GET', 'POST', 'PUT'])
-def perfil_redirect():
-    if request.method == 'OPTIONS':
-        response = make_response()
-        return response
-
-    # Redirect to the correct endpoint based on the method
-    if request.method == 'GET':
-        return redirect(url_for('auth.get_current_user'), code=307)
-    elif request.method in ['POST', 'PUT']:
-        # The profile update endpoint uses PUT
-        return redirect(url_for('auth.actualizar_me'), code=307)
-
-@cors_preflight_bp.route('/tickets', methods=['OPTIONS', 'GET', 'POST'])
-def tickets_redirect():
-    if request.method == 'OPTIONS':
-        response = make_response()
-        return response
-
-    # Redirect both GET and POST to the main ticket list view
-    return redirect(url_for('ticket_bp.get_tickets_del_usuario'), code=307)
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
 def my_on_connect_listener(dbapi_connection, connection_record):
@@ -213,7 +180,7 @@ def create_app(config_class=Config):
         return resp
 
     # --- Registro de Blueprints (Rutas) ---
-    app.register_blueprint(auth_bp, url_prefix='/auth')
+    app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
     app.register_blueprint(crm_bp)
@@ -238,7 +205,6 @@ def create_app(config_class=Config):
     app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
     app.register_blueprint(catalog_mappings_bp)
     app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
-    app.register_blueprint(cors_preflight_bp) # Register the CORS preflight handler
 
     # --- Registro de comandos CLI ---
     register_commands(app)
