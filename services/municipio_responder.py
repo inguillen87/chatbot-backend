@@ -1056,14 +1056,14 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado."""
     return {
-        "message_body": "Seleccioná el tipo de reclamo:",
-        "options_list": [
-            {"id": "reclamo_luminaria", "texto": "Luminaria"},
-            {"id": "reclamo_arbolado", "texto": "Arbolado"},
-            {"id": "reclamo_limpieza_riego", "texto": "Limpieza y riego"},
-            {"id": "reclamo_arreglo_calle", "texto": "Arreglo de calle"},
-            {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
-            {"id": "reclamo_otros", "texto": "Otros"},
+        "respuesta_usuario": "Seleccioná el tipo de reclamo:",
+        "botones": [
+            {"texto": "Luminaria", "action_id": "reclamo_luminaria"},
+            {"texto": "Arbolado", "action_id": "reclamo_arbolado"},
+            {"texto": "Limpieza y riego", "action_id": "reclamo_limpieza_riego"},
+            {"texto": "Arreglo de calle", "action_id": "reclamo_arreglo_calle"},
+            {"texto": "Pérdida de agua", "action_id": "reclamo_perdida_agua"},
+            {"texto": "Otros", "action_id": "reclamo_otros"},
         ],
         "message_type": "interactive_list",
         "fuente": "submenu_reclamos_estandar"
@@ -1093,19 +1093,20 @@ def responder_municipio(
                     if 0 <= choice_index < len(last_options):
                         selected_option = last_options[choice_index]
 
-                        # The user's numeric choice is now mapped to an action.
-                        # We replace the numeric 'pregunta_original' with a dictionary
-                        # that simulates a button click.
-                        pregunta_original = {
-                            "pregunta": selected_option.get("texto", ""),
-                            "action": selected_option.get("id", selected_option.get("action_id"))
-                        }
-                        logger.info(f"Input numérico '{choice_index + 1}' mapeado a la acción: {pregunta_original['action']}")
+                        action_id = selected_option.get("id") or selected_option.get("action_id")
+
+                        # Replace the numeric input with the corresponding text of the option
+                        # to make the conversation flow more natural for the LLM.
+                        pregunta_original = selected_option.get("texto", "")
+
+                        # Pass the action_id in the kwargs so it can be processed like a button click
+                        kwargs['action'] = action_id
+
+                        logger.info(f"Input numérico '{choice_index + 1}' mapeado al texto: '{pregunta_original}' y acción: {action_id}")
 
                         # Clean up the context so these options aren't reused accidentally.
                         contexto_municipio.pop("last_options_sent", None)
                         flag_modified(chat_db_context, "context_data")
-
                     else:
                         logger.warning(f"Input numérico '{choice_index + 1}' fuera de rango para las opciones guardadas.")
                 except (ValueError, IndexError) as e:
@@ -1134,6 +1135,23 @@ def responder_municipio(
             pregunta_original = f"Ubicación compartida: Lat {location_info['latitude']}, Lon {location_info['longitude']}"
 
         logger.info(f"Se detectó una ubicación nativa. Se procesará como la pregunta principal: '{pregunta_original}'")
+
+        # --- START ENHANCEMENT: Reverse geocode to get district ---
+        try:
+            from .herramientas_municipio import obtener_direccion_de_coordenadas
+            direccion_info = obtener_direccion_de_coordenadas(location_info['latitude'], location_info['longitude'])
+            if direccion_info and direccion_info.get('locality'):
+                distrito = direccion_info.get('locality')
+                logger.info(f"Distrito extraído de la ubicación: {distrito}")
+                # Add the district to the context so the bot doesn't have to ask for it.
+                if chat_db_context and chat_db_context.context_data:
+                    contexto_municipio = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+                    datos_parciales = contexto_municipio.setdefault("datos_parciales_llm_reclamo", {})
+                    datos_parciales["distrito"] = distrito
+                    flag_modified(chat_db_context, "context_data")
+        except Exception as e:
+            logger.error(f"Error al hacer reverse geocoding para la ubicación: {e}")
+        # --- END ENHANCEMENT ---
     # --- END FIX ---
 
     received_payload = {}

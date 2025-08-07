@@ -3,5 +3,6 @@
   "ejemplo_direccion": "San Martín 123, Barrio Centro, Junín",
   "tramites_web_url": "https://www.juninmendoza.gov.ar/tramites/",
   "web_url": "https://www.juninmendoza.gov.ar",
-  "ciudad": "Junín, Mendoza"
+  "ciudad": "Junín, Mendoza",
+  "base_chat_url": "https://www.chatboc.ar/chat"
 }

@@ -23,12 +23,16 @@ class ReaccionesEndpointTests(unittest.TestCase):
         app.config["TESTING"] = True
         self.client = app.test_client()
         with app.app_context():
-            # db and Conversacion are now imported at the top
+            from models import User
             db.create_all()
-            conv = Conversacion(pregunta="p", respuesta="r", fuente="bot")
+            # Create a user with the token 'tok'
+            user = User(email="reacciones@test.com", name="Test User", token="tok")
+            db.session.add(user)
+            conv = Conversacion(pregunta="p", respuesta="r", fuente="bot", user_id=user.id)
             db.session.add(conv)
             db.session.commit()
             self.conv_id = conv.id
+            self.user_id = user.id
 
     def test_options(self):
         resp = self.client.options(

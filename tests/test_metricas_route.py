@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from routes.metricas import obtener_metricas, obtener_metricas_pyme
+from routes.metricas import obtener_metricas
 
 class DummyResult:
     def __init__(self, value):
@@ -23,13 +23,13 @@ def _dummy_db(value):
 
 class MetricasRouteTests(unittest.TestCase):
     def test_pyme_alias_returns_same_metrics(self):
+        # Test that `obtener_metricas` returns the correct values.
+        # The alias `obtener_metricas_pyme` has been removed.
         user = SimpleNamespace(preguntas_usadas=10, id=3)
         db_mock = _dummy_db(5)
         with patch('routes.metricas.db', db_mock), \
              patch('routes.metricas.jsonify', lambda x: x):
             normal = obtener_metricas.__wrapped__(user)
-            alias = obtener_metricas_pyme.__wrapped__(user)
-        self.assertEqual(normal, alias)
         self.assertEqual(len(normal), 4)
         self.assertEqual(normal[0]['value'], 10)
         self.assertEqual(normal[1]['value'], 5)

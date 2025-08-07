@@ -26,7 +26,7 @@ class TestPedidos(unittest.TestCase):
         db.session.commit()
 
         # Get a token for the pyme user
-        res = self.client.post('/login', data=json.dumps({
+        res = self.client.post('/auth/login', data=json.dumps({
             "email": "pyme@test.com",
             "password": "pyme_password"
         }), content_type='application/json')

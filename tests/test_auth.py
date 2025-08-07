@@ -8,7 +8,7 @@ def test_login_no_json(client):
     """
     Tests that the login route returns a 400 error if the request is not JSON.
     """
-    response = client.post('/login', data="not a json")
+    response = client.post('/auth/login', data="not a json")
     assert response.status_code == 400
     assert response.get_json() == {"error": "La solicitud debe ser de tipo JSON."}
 
@@ -16,7 +16,7 @@ def test_login_missing_credentials(client):
     """
     Tests that the login route returns a 400 error if the email or password are not provided.
     """
-    response = client.post('/login', json={})
+    response = client.post('/auth/login', json={})
     assert response.status_code == 400
     assert response.get_json() == {"error": "Email y contraseña requeridos."}
 
@@ -24,7 +24,7 @@ def test_login_invalid_credentials(client):
     """
     Tests that the login route returns a 401 error if the credentials are invalid.
     """
-    response = client.post('/login', json={"email": "a@b.com", "password": "c"})
+    response = client.post('/auth/login', json={"email": "a@b.com", "password": "c"})
     assert response.status_code == 401
     assert response.get_json() == {"error": "Email o contraseña incorrectos."}
 
@@ -37,7 +37,7 @@ def test_login_successful(client):
     db.session.add(user)
     db.session.commit()
 
-    response = client.post('/login', json={"email": "a@b.com", "password": "c"})
+    response = client.post('/auth/login', json={"email": "a@b.com", "password": "c"})
     assert response.status_code == 200
     assert "token" in response.get_json()
 
@@ -64,7 +64,7 @@ def test_register_creates_admin_user(client):
         "acepto_terminos": True
     }
 
-    response = client.post('/register', json=registration_data)
+    response = client.post('/auth/register', json=registration_data)
 
     assert response.status_code == 201
     json_data = response.get_json()
@@ -77,7 +77,7 @@ def test_register_creates_admin_user(client):
 
 def test_get_profile_endpoints(client):
     """
-    Tests that the /me, /perfil, and /profile endpoints return user data for an authenticated user.
+    Tests that the /perfil and /me endpoints return user data for an authenticated user.
     """
     # First, create a user and a rubro to associate with
     from models import Rubro
@@ -101,23 +101,18 @@ def test_get_profile_endpoints(client):
         'Authorization': f'Bearer {user.token}'
     }
 
-    # Test /auth/me
-    response_me = client.get('/me', headers=headers)
-    assert response_me.status_code == 200
-    assert response_me.get_json()['email'] == user.email
-
-    # Test /auth/perfil
+    # Test /perfil
     response_perfil = client.get('/perfil', headers=headers)
     assert response_perfil.status_code == 200
     assert response_perfil.get_json()['email'] == user.email
 
-    # Test /auth/profile (the new one)
-    response_profile = client.get('/profile', headers=headers)
-    assert response_profile.status_code == 200
-    assert response_profile.get_json()['email'] == user.email
+    # Test /me
+    response_me = client.get('/me', headers=headers)
+    assert response_me.status_code == 200
+    assert response_me.get_json()['email'] == user.email
 
     # Test without token
-    response_no_token = client.get('/profile')
+    response_no_token = client.get('/perfil')
     assert response_no_token.status_code == 401
 
 

@@ -157,19 +157,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 except Exception as e_notify:
                     logger.error(f"Error enviando notificaciones para {nro_ticket_str}: {e_notify}")
 
+            # Cargar config para obtener la URL base del chat
+            municipio_config = cargar_configuracion_municipio(getattr(owner_user, "municipio_id", "default"), "config.json")
+            base_chat_url = municipio_config.get("base_chat_url")
+
             # Formatear respuesta y obtener el botón de contacto
-            mensaje_respuesta, boton_contacto = formatear_ticket_respuesta(
+            mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
                 ticket_data_cleaned["nombre_vecino"],
                 descripcion,
                 categoria,
                 nro_ticket_str,
-                contacto_especializado
+                contacto_especializado,
+                base_chat_url=base_chat_url
             )
-
-            botones_finales = []
-            if boton_contacto:
-                botones_finales.append(boton_contacto)
 
             return {
                 "success": True,

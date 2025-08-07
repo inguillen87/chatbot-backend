@@ -46,8 +46,16 @@ class CorsOptionsTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
-    def test_profile_options(self):
-        resp = self.client.options('/auth/profile', headers={
+    def test_legacy_perfil_get_options(self):
+        resp = self.client.options('/perfil', headers={
+            'Origin': 'http://localhost:8080',
+            'Access-Control-Request-Method': 'GET'
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('Access-Control-Allow-Origin', resp.headers)
+
+    def test_legacy_me_get_options(self):
+        resp = self.client.options('/me', headers={
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'GET'
         })

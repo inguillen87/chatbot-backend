@@ -7,19 +7,19 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from services.municipios import responder_municipio
+from services.municipio_responder import responder_municipio
 
-def test_reclamo_handler_categoria_buttons(test_app):
-    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
+def test_reclamo_handler_categoria_buttons(client):
+    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
             "respuesta_usuario": "Por favor, elegí una de las siguientes categorías:",
             "accion_backend": "iniciar_reclamo",
             "datos_estructura": {},
             "pedir_info": "categoria",
             "botones": [
-                {"texto": "Alumbrado Público", "id_accion": "alumbrado_publico"},
-                {"texto": "Bacheo", "id_accion": "bacheo"},
-                {"texto": "Recolección de Residuos", "id_accion": "recoleccion_de_residuos"},
+                {"texto": "Alumbrado Público", "action_id": "alumbrado_publico"},
+                {"texto": "Bacheo", "action_id": "bacheo"},
+                {"texto": "Recolección de Residuos", "action_id": "recoleccion_de_residuos"},
             ]
         }
         owner_user = MagicMock()
@@ -38,18 +38,18 @@ def test_reclamo_handler_categoria_buttons(test_app):
             channel="whatsapp"
         )
         assert response is not None
-        assert response["message_type"] == "interactive_buttons"
-        assert len(response["options_list"]) > 0
+        assert response["message_body"] == "Por favor, elegí una de las siguientes categorías:\n\n1. Alumbrado Público\n2. Bacheo\n3. Recolección de Residuos"
 
-def test_reclamo_handler_share_location_button(test_app):
-    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
+
+def test_reclamo_handler_share_location_button(client):
+    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
             "respuesta_usuario": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
             "accion_backend": "iniciar_reclamo",
             "datos_estructura": {},
             "pedir_info": "ubicacion",
             "botones": [
-                {"texto": "Compartir ubicación", "id_accion": "compartir_ubicacion"}
+                {"texto": "Compartir ubicación", "action_id": "compartir_ubicacion"}
             ]
         }
         owner_user = MagicMock()
@@ -68,10 +68,11 @@ def test_reclamo_handler_share_location_button(test_app):
             channel="whatsapp"
         )
         assert response is not None
-        assert response["message_type"] == "interactive_buttons"
+        assert response["message_body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo."
 
-def test_ticket_status_handler_ticket_number_shortcut(test_app):
-    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
+
+def test_ticket_status_handler_ticket_number_shortcut(client):
+    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
             "respuesta_usuario": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
             "accion_backend": "consultar_estado_ticket",
