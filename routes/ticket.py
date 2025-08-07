@@ -597,14 +597,15 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             enviar_sms_ticket_novedad,
             enviar_whatsapp_ticket_novedad,
         )
-        # Email y SMS se comentan para priorizar WhatsApp y reducir costos, según requerimiento.
-        # enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion_base)
+        # Email siempre se envía si hay email
+        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion_base) # TODO: Email con adjuntos? Por ahora solo texto.
 
-        # enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion_base)
+        # SMS siempre se envía si hay teléfono (solo texto)
+        enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion_base)
 
-        # WhatsApp es ahora el canal principal para respuestas de agentes.
-        # Se envía tanto para municipio como para pyme.
-        enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
+        # WhatsApp con adjuntos (si los hay)
+        if tipo == "municipio": # Asumiendo que WhatsApp es principalmente para municipio por ahora
+            enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
         current_app.logger.info(f"Notificaciones para respuesta de ticket {ticket_id} (tipo {tipo}) procesadas.")
 
         # Notificación por Websocket/Pusher
