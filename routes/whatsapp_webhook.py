@@ -375,12 +375,15 @@ def whatsapp_webhook():
             # For interactive messages, the actual content is sent via 'PersistentAction'
             # The payload for PersistentAction should be a JSON string of the interactive object.
             # The formatter now returns the full object including the "type": "interactive" wrapper.
-            if formatted_whatsapp_payload.get("type") == "interactive":
-                # The `PersistentAction` expects a list of strings, where each string is
-                # 'channel:JSON_payload'.
-                persistent_action_payload = f"whatsapp:{json.dumps(formatted_whatsapp_payload)}"
+            if formatted_whatsapp_payload.get("type") == "interactive" and bot_response_dict.get("template_sid"):
+                # --- Professional Template-Based Approach ---
+                # The user wants to use approved templates. The bot's response should include
+                # a 'template_sid' key. We use this with a 'persistent_action'.
+                persistent_action_payload = f"wa:template:{bot_response_dict['template_sid']}"
                 message_params['persistent_action'] = [persistent_action_payload]
-                print(f"Preparing to send WhatsApp interactive message with PersistentAction: {persistent_action_payload[:250]}...")
+                # The 'body' parameter serves as a fallback if the template fails.
+                print(f"Preparing to send WhatsApp message with PersistentAction Template SID: {bot_response_dict['template_sid']}")
+
             elif formatted_whatsapp_payload.get("type") == "text":
                 # For plain text, the body is already set and no PersistentAction is needed.
                 # We just update the body to be sure it's from the formatted payload.

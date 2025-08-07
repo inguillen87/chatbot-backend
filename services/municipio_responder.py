@@ -1081,6 +1081,36 @@ def responder_municipio(
     location=None,
     **kwargs
 ):
+    # --- Numeric Input Handler for WhatsApp ---
+    if channel == "whatsapp" and pregunta_original.strip().isdigit():
+        if chat_db_context and chat_db_context.context_data:
+            contexto_municipio = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
+            last_options = contexto_municipio.get("last_options_sent")
+
+            if last_options:
+                try:
+                    choice_index = int(pregunta_original.strip()) - 1
+                    if 0 <= choice_index < len(last_options):
+                        selected_option = last_options[choice_index]
+
+                        # The user's numeric choice is now mapped to an action.
+                        # We replace the numeric 'pregunta_original' with a dictionary
+                        # that simulates a button click.
+                        pregunta_original = {
+                            "pregunta": selected_option.get("texto", ""),
+                            "action": selected_option.get("id", selected_option.get("action_id"))
+                        }
+                        logger.info(f"Input numérico '{choice_index + 1}' mapeado a la acción: {pregunta_original['action']}")
+
+                        # Clean up the context so these options aren't reused accidentally.
+                        contexto_municipio.pop("last_options_sent", None)
+                        flag_modified(chat_db_context, "context_data")
+
+                    else:
+                        logger.warning(f"Input numérico '{choice_index + 1}' fuera de rango para las opciones guardadas.")
+                except (ValueError, IndexError) as e:
+                    logger.error(f"Error al procesar input numérico: {e}")
+
     logger_actual = current_app.logger if has_app_context() else logger
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] =================================================="
@@ -1088,6 +1118,23 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
+    logger_actual.info(f"FULL PAYLOAD: {pregunta_original}")
+    logger_actual.info(f"KWARGS: {kwargs}")
+
+    # --- START FIX: Handle incoming native location data ---
+    location_info = kwargs.get("location_info")
+    if location_info and isinstance(location_info, dict):
+        # The user sent a location. Let's make this the primary input.
+        # If there's an address from Twilio, use it as the user's message.
+        # Otherwise, create a descriptive string.
+        address_from_location = location_info.get("address")
+        if address_from_location:
+            pregunta_original = address_from_location
+        else:
+            pregunta_original = f"Ubicación compartida: Lat {location_info['latitude']}, Lon {location_info['longitude']}"
+
+        logger.info(f"Se detectó una ubicación nativa. Se procesará como la pregunta principal: '{pregunta_original}'")
+    # --- END FIX ---
 
     received_payload = {}
     if isinstance(pregunta_original, dict):
@@ -1105,6 +1152,26 @@ def responder_municipio(
 
     if action == "iniciar_reclamo": # Kept for backward compatibility or other flows
         return _get_reclamos_menu()
+
+    # --- START FIX: Handle sub-category selections from the web widget ---
+    reclamo_categories = {
+        "reclamo_luminaria": "Luminaria",
+        "reclamo_arbolado": "Arbolado",
+        "reclamo_limpieza_riego": "Limpieza y riego",
+        "reclamo_arreglo_calle": "Arreglo de calle",
+        "reclamo_otros": "Otros",
+    }
+    if action in reclamo_categories:
+        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['categoria_reclamo'] = reclamo_categories[action]
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
+        return {
+            "message_body": f"Entendido, iniciaste un reclamo por **{reclamo_categories[action]}**. Por favor, describí la incidencia.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "inicio_flujo_reclamo_categorizado"
+        }
+    # --- END FIX ---
 
     if action == "reclamo_perdida_agua":
         return {
