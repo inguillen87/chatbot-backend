@@ -1,6 +1,6 @@
 # Contenido COMPLETO para: routes/auth.py
 
-from flask import Blueprint, request, jsonify, current_app, g
+from flask import Blueprint, request, jsonify, current_app, g, make_response
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
@@ -86,6 +86,10 @@ from flask_login import current_user
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Handle CORS preflight requests
+        if request.method == 'OPTIONS':
+            return make_response()
+
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
             return f(current_user, *args, **kwargs)
