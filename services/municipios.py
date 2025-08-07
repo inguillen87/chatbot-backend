@@ -659,8 +659,13 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         # a la lógica antigua recoja estados residuales de un reclamo anterior.
         contexto_municipio_actual.clear()
 
-        # Se restablece el estado únicamente al modo de conversación general con el LLM.
+        # Se restablece el estado únicamente al modo de conversación general con el LLM,
+        # inicializando las claves esperadas para evitar KeyErrors.
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+        contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+        contexto_municipio_actual["historial_llm_reclamo"] = []
+        contexto_municipio_actual["historial_conversacion_general_llm"] = []
+
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
     if estado_conversacion_para_llm in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
@@ -757,8 +762,9 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         elif accion_backend_llm == "derivar_humano":
             context["intencion"] = "hablar_con_agente"
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
-            logger.info("[HANDLE_LLM] LLM derivó a humano.")
-            return None, contexto_municipio_actual
+            logger.info("[HANDLE_LLM] LLM derivó a humano, retornando mensaje para el usuario.")
+            # Devolver el mensaje del LLM directamente en lugar de depender del fallback.
+            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "fuente": "llm_deriva_humano"}, contexto_municipio_actual
         elif accion_backend_llm == "ejecutar_herramienta":
             nombre_herramienta = datos_estructura_llm.get("nombre_herramienta")
             parametros_herramienta = datos_estructura_llm.get("parametros_herramienta", {})

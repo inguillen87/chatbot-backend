@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import json
 import sys
 import os
+from datetime import datetime
 
 # Add project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -37,23 +38,17 @@ class TestSimulatedClaimFlow(unittest.TestCase):
 
         self.chat_db_context = MagicMock()
         self.chat_db_context.context_data = {}
+        self.chat_db_context.last_updated = datetime.now()
 
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.gemini_bridge.llamar_gemini')
+    @patch('services.municipios.llamar_gemini')
     def test_full_claim_flow(self, mock_llamar_gemini):
-        # Step 1: User says "Hola"
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "¡Hola! Soy tu asistente virtual. ¿Cómo puedo ayudarte hoy?",
-            "accion_backend": "saludar",
-            "datos_estructura": {"target": "general"},
-            "pedir_info": None,
-            "botones": [{"texto": "Hacer un reclamo"}, {"texto": "Consultar trámite"}]
-        }
-
+        # Step 1: User says "Hola" - This now triggers the GreetingHandler directly, bypassing the LLM.
+        # The test needs to reflect this new, simpler logic.
         response = responder_municipio(
             pregunta_original="Hola",
             owner_user=self.owner_user,
@@ -63,7 +58,8 @@ class TestSimulatedClaimFlow(unittest.TestCase):
             rubro_obj=self.owner_user.rubro
         )
 
-        self.assertEqual(response['message_body'], "¡Hola! Soy tu asistente virtual. ¿Cómo puedo ayudarte hoy?")
+        self.assertIn("¡Hola! Soy JuniA, el asistente virtual", response['message_body'])
+        self.assertEqual(response['fuente'], "greeting_handler_v7_junin")
 
         # Step 2: User wants to make a claim
         mock_llamar_gemini.return_value = {
@@ -88,7 +84,7 @@ class TestSimulatedClaimFlow(unittest.TestCase):
         )
 
         self.assertEqual(response['message_body'], "Entendido. Para registrar tu reclamo por el contenedor de basura, ¿podrías decirme la dirección exacta donde se encuentra?")
-        self.assertEqual(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], ConversationState.ESPERANDO_DIRECCION_RECLAMO.name)
+        self.assertEqual(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name)
 
         # Step 3: User provides location
         mock_llamar_gemini.return_value = {
@@ -114,7 +110,7 @@ class TestSimulatedClaimFlow(unittest.TestCase):
         )
 
         self.assertEqual(response['message_body'], "Perfecto. Registré tu reclamo por un contenedor lleno en Don Bosco 55, Junín, Mendoza. Para finalizar, ¿me podrías dar tu nombre completo y un teléfono?")
-        self.assertEqual(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], ConversationState.ESPERANDO_NOMBRE_VECINO.name)
+        self.assertEqual(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name)
 
         # Step 4: User provides personal data
         with patch('services.ticket_service.db.session.add'), \
@@ -154,8 +150,10 @@ class TestSimulatedClaimFlow(unittest.TestCase):
                 rubro_obj=self.owner_user.rubro
             )
 
-            self.assertIn("Se ha generado el ticket de reclamo con el número", response['message_body'])
-            self.assertIsNone(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO].get('estado_conversacion'))
+            self.assertIn("¡Reclamo recibido, Juan Perez!", response['message_body'])
+            self.assertIn("M-M-12345", response['message_body'])
+            # The context is now cleared by the action handler, so we expect it to be gone
+            self.assertNotIn(CONTEXTO_MUNICIPIO, self.chat_db_context.context_data)
             mock_crear_ticket.assert_called_once()
             # Get the actual call arguments
             call_args, call_kwargs = mock_crear_ticket.call_args

@@ -92,7 +92,7 @@ def whatsapp_webhook():
     list_id = post_vars.get("ListId")
     media_url = post_vars.get("MediaUrl0")
     media_content_type = post_vars.get("MediaContentType0")
-    uploaded_file_info_whatsapp = None
+    uploaded_file_info = None
     message_body = ""
 
     if button_payload:
@@ -120,13 +120,27 @@ def whatsapp_webhook():
         if media_content_type.startswith("image/"): file_extension = ".jpg"
         elif media_content_type.startswith("audio/"): file_extension = ".ogg"
         # ... other extensions
-        uploaded_file_info_whatsapp = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}", "source": "whatsapp"}
+        uploaded_file_info = {"url": media_url, "mime_type": media_content_type, "name": f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}", "source": "whatsapp"}
         if media_content_type.startswith("audio/") and message_body:
-            uploaded_file_info_whatsapp["transcribed_text"] = message_body
-        post_vars["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
+            uploaded_file_info["transcribed_text"] = message_body
+        post_vars["uploaded_file_info"] = uploaded_file_info
     else:
         # If no media, ensure the flag is not set
         session_context_db_entry.context_data.pop('source_is_audio', None)
+
+    # --- Location Handling ---
+    latitude = post_vars.get("Latitude")
+    longitude = post_vars.get("Longitude")
+    location_info = None
+    if latitude and longitude:
+        location_info = {"latitude": latitude, "longitude": longitude}
+        address = post_vars.get("Address")
+        label = post_vars.get("Label")
+        if address:
+            location_info["address"] = address
+        if label:
+            location_info["label"] = label
+        print(f"Received location data: {location_info}")
 
     # --- Human Chat Check ---
     if session_context_db_entry.context_data.get("human_chat_in_progress"):
@@ -155,8 +169,10 @@ def whatsapp_webhook():
         kwargs_for_bot = {
             "source_channel": "whatsapp"
         }
-        if uploaded_file_info_whatsapp:
-            kwargs_for_bot["uploaded_file_info_whatsapp"] = uploaded_file_info_whatsapp
+        if uploaded_file_info:
+            kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
+        if location_info:
+            kwargs_for_bot["location_info"] = location_info
 
         # The actual call that might raise an exception
         bot_response_dict = responder_chatboc(
@@ -247,6 +263,18 @@ def whatsapp_webhook():
         try:
             from services.response_formatter import build_interactive_response
             import json
+            import logging
+            logger = logging.getLogger(__name__)
+
+            # --- Force Text Buttons Fallback ---
+            # If the context has a flag to force text-based buttons for accessibility
+            if session_context_db_entry.context_data.get('force_text_buttons') and bot_response_dict.get('options_list'):
+                # Move the interactive options to the 'botones' key which the formatter
+                # already knows how to handle as a text list.
+                bot_response_dict['botones'] = bot_response_dict.pop('options_list', [])
+                # Ensure the message type is 'text' to prevent attempts to create interactive messages.
+                bot_response_dict['message_type'] = 'text'
+                logger.info("Forcing text-based button fallback due to context flag.")
 
             # Use new structured keys from bot_response_dict
             body_for_formatter = bot_response_dict.get('message_body', respuesta_del_bot_text) # Fallback to old 'respuesta' if new key not present
