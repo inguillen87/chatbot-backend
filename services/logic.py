@@ -138,6 +138,7 @@ def responder_chatboc(
             # El resto de la lógica para archivos subidos desde el frontend va aquí
         elif uploaded_file_info.get("source") == "whatsapp":
             from services.document_processing_service import document_processing_service
+            from services.interpretacion_imagen_service import interpretar_imagen_para_chat
             import requests
 
             media_url = uploaded_file_info.get("url")
@@ -149,8 +150,10 @@ def responder_chatboc(
                 file_content = response.content
 
                 if media_content_type.startswith("image/"):
-                    from services.interpretacion_imagen_service import interpretar_imagen_para_chat
-                    datos_interpretados_de_archivo = interpretar_imagen_para_chat(archivo_adjunto={"url": media_url, "mime_type": media_content_type}, tipo_interpretacion="reclamo_auto_descripcion_categoria")
+                    datos_interpretados_de_archivo = interpretar_imagen_para_chat(
+                        archivo_adjunto=uploaded_file_info,
+                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                    )
                 else:
                     doc_ai_result = document_processing_service.process_document(file_content, media_content_type)
                     if doc_ai_result:

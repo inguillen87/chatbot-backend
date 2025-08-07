@@ -15,7 +15,6 @@ from models import PlantillasRespuesta, User, Rubro
 from routes.ai_templates import ai_templates_bp
 import json
 import pytest
-import pytest
 from config import Config
 
 # Configuración de prueba
@@ -40,46 +39,35 @@ def _crear_plantilla(name, text, keywords=None, is_active=True, embedding_value=
     db.session.commit()
     return plantilla
 
-@pytest.fixture
-def test_app():
-    app = create_app(TestConfig)
-    app.register_blueprint(ai_templates_bp, url_prefix='/ai')
-    with app.app_context():
-        db.create_all()
-        yield app
-        db.drop_all()
+def test_suggest_templates_success(client):
+    rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")
+    db.session.add(rubro)
+    db.session.commit()
 
-def test_suggest_templates_success(test_app):
-    with test_app.app_context():
-        rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")
-        db.session.add(rubro)
-        db.session.commit()
+    mock_user = User(
+        id=1, name="Test Admin User", email="admin@test.com",
+        rol="admin", token="test_auth_token_admin", rubro_id=rubro.id
+    )
+    mock_user.set_password("adminpass")
+    db.session.add(mock_user)
+    db.session.commit()
+    _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
+    _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
-        mock_user = User(
-            id=1, name="Test Admin User", email="admin@test.com",
-            rol="admin", token="test_auth_token_admin", rubro_id=rubro.id
-        )
-        mock_user.set_password("adminpass")
-        db.session.add(mock_user)
-        db.session.commit()
-        _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
-        _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
+    with patch('services.embedding_service.embed_textos_gemini') as mock_embed_textos_gemini:
+        mock_embed_textos_gemini.return_value = {"embeddings": [[0.11]*1024]}
+        response = client.post('/ai/suggest-templates',
+                                    headers={'Authorization': f'Bearer {mock_user.token}'},
+                                    json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
 
-        with patch('services.cohere_ai.robust_embed') as mock_robust_embed:
-            mock_robust_embed.return_value = {"embeddings": [[0.11]*1024]}
-            client = test_app.test_client()
-            response = client.post('/ai/suggest-templates',
-                                        headers={'Authorization': f'Bearer {mock_user.token}'},
-                                        json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
-
-            assert response.status_code == 200
-            data = response.get_json()
-            assert 'sugerencias' in data
-            sugerencias = data['sugerencias']
-            assert len(sugerencias) == 1
-            assert sugerencias[0]['nombre_plantilla'] == 'Saludo'
-            assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['texto_plantilla']
-            mock_robust_embed.assert_called_once()
+        assert response.status_code == 200
+        data = response.get_json()
+        assert 'sugerencias' in data
+        sugerencias = data['sugerencias']
+        assert len(sugerencias) == 1
+        assert sugerencias[0]['nombre_plantilla'] == 'Saludo'
+        assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['texto_plantilla']
+        mock_embed_textos_gemini.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

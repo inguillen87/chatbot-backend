@@ -11,7 +11,7 @@ if project_root not in sys.path:
 
 from app import create_app, db
 from models import User, Rubro
-from routes.auth import get_current_user
+from routes.legacy_auth import get_current_user
 from config import Config
 
 class TestConfig(Config):
@@ -33,7 +33,7 @@ class CatalogoLabelTests(unittest.TestCase):
         self.app_context.pop()
 
     def _base_user(self):
-        return User(
+        user = User(
             id=1,
             email='a@a',
             name='A',
@@ -56,25 +56,37 @@ class CatalogoLabelTests(unittest.TestCase):
             logo_url='',
             ticket_categorias=''
         )
+        user.set_password('password')
+        return user
 
     def test_pyme_label(self):
         user = self._base_user()
+        user.token = 'test-token-pyme'
+        db.session.add(user)
+        db.session.commit()
         with self.app.test_request_context():
-            with patch('utils.plan_limits.limite_para_usuario', lambda u: 5), \
-                 patch('routes.auth.jsonify', lambda x: x):
-                resp = get_current_user.__wrapped__(user)
-        self.assertEqual(resp['catalogo_label'], 'Cargar Catálogo de Productos')
-        self.assertEqual(resp['tipo_chat'], 'pyme')
+            with patch('utils.plan_limits.limite_para_usuario', lambda u: 5):
+                with patch('models.User.query') as mock_query:
+                    mock_query.filter_by.return_value.first.return_value = user
+                    resp = self.client.get('/perfil', headers={'Authorization': f'Bearer {user.token}'})
+                    data = resp.get_json()
+                    self.assertEqual(data['catalogo_label'], 'Cargar Catálogo de Productos')
+                    self.assertEqual(data['tipo_chat'], 'pyme')
 
     def test_municipio_label(self):
         user = self._base_user()
+        user.token = 'test-token-muni'
         user.rubro = Rubro(nombre='municipio', clave='municipio')
+        db.session.add(user)
+        db.session.commit()
         with self.app.test_request_context():
-            with patch('utils.plan_limits.limite_para_usuario', lambda u: 5), \
-                 patch('routes.auth.jsonify', lambda x: x):
-                resp = get_current_user.__wrapped__(user)
-        self.assertEqual(resp['catalogo_label'], 'Cargar Catálogo de Trámites')
-        self.assertEqual(resp['tipo_chat'], 'municipio')
+            with patch('utils.plan_limits.limite_para_usuario', lambda u: 5):
+                with patch('models.User.query') as mock_query:
+                    mock_query.filter_by.return_value.first.return_value = user
+                    resp = self.client.get('/perfil', headers={'Authorization': f'Bearer {user.token}'})
+                    data = resp.get_json()
+                    self.assertEqual(data['catalogo_label'], 'Cargar Catálogo de Trámites')
+                    self.assertEqual(data['tipo_chat'], 'municipio')
 
 if __name__ == '__main__':
     unittest.main()

@@ -7,100 +7,79 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from services.municipios import responder_municipio
+from services.municipio_responder import responder_municipio
 
-def test_greeting_handler(test_app):
-    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "¡Hola! ¿En qué puedo ayudarte?",
-            "accion_backend": "saludar",
-            "datos_estructura": {},
-            "pedir_info": None,
-            "botones": [
-                {"texto": "Hacer un reclamo", "id_accion": "iniciar_reclamo"},
-                {"texto": "Consultar estado de un trámite", "id_accion": "info_tramite"}
-            ]
+def test_greeting_handler(client):
+    # Mockear el manejador de saludos para que no dependa de la configuración de Junín
+    with patch('services.municipio_responder.GreetingHandler') as mock_greeting_handler:
+        mock_handler_instance = mock_greeting_handler.return_value
+        mock_handler_instance.handle.return_value = {
+            "message_body": "Hola, bienvenido al test.",
+            "fuente": "mocked_greeting"
         }
-        owner_user = MagicMock()
-        owner_user.id = 1
-        rubro_obj = None
-        viewer_user = None
-        chat_db_context = MagicMock()
-        chat_db_context.context_data = {}
+
+        # Simular una solicitud con un input de saludo
         response = responder_municipio(
             pregunta_original="hola",
-            owner_user=owner_user,
-            rubro_obj=rubro_obj,
-            viewer_user=viewer_user,
-            chat_db_context=chat_db_context,
-            anon_id="test_anon_id"
+            owner_user=MagicMock(),
+            viewer_user=MagicMock(),
+            chat_db_context=MagicMock(),
+            rubro_obj=MagicMock(nombre='municipio')
         )
-        assert response is not None
-        assert "¡Hola! ¿En qué puedo ayudarte?" in response["message_body"]
 
-def test_reclamo_handler_inicio(test_app):
-    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Lamento que estés teniendo un problema. ¿Me podrías describir la situación?",
-            "accion_backend": "iniciar_reclamo",
-            "datos_estructura": {},
-            "pedir_info": "descripcion"
+        # Verificar que el manejador de saludos fue llamado
+        mock_greeting_handler.assert_called_once()
+        mock_handler_instance.handle.assert_called_once()
+
+        # Verificar que la respuesta es la que esperábamos del mock
+        assert response["message_body"] == "Hola, bienvenido al test."
+        assert response["fuente"] == "mocked_greeting"
+
+
+def test_reclamo_handler_inicio(client):
+    with patch('services.municipio_responder.ReclamoHandler') as mock_reclamo_handler:
+        mock_handler_instance = mock_reclamo_handler.return_value
+        mock_handler_instance.handle.return_value = {
+            "message_body": "Iniciando reclamo de test.",
+            "fuente": "mocked_reclamo"
         }
-        owner_user = MagicMock()
-        owner_user.id = 1
-        rubro_obj = None
-        viewer_user = None
-        chat_db_context = MagicMock()
-        chat_db_context.context_data = {}
+
+        # Simular una solicitud para iniciar un reclamo
         response = responder_municipio(
-            pregunta_original="quiero hacer un reclamo",
-            owner_user=owner_user,
-            rubro_obj=rubro_obj,
-            viewer_user=viewer_user,
-            chat_db_context=chat_db_context,
-            anon_id="test_anon_id"
+            pregunta_original="reclamo",
+            owner_user=MagicMock(),
+            viewer_user=MagicMock(),
+            chat_db_context=MagicMock(),
+            rubro_obj=MagicMock(nombre='municipio')
         )
-        assert response is not None
-        assert "Lamento que estés teniendo un problema." in response["message_body"]
 
-def test_responder_municipio_imagen(test_app):
-    with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
-        with patch('services.municipios.process_image_for_chat_task.delay') as mock_process_image_task:
-            mock_llamar_gemini.return_value = {
-                "respuesta_usuario": "He recibido tu imagen y la estoy analizando. Te enviaré un mensaje cuando termine.",
-                "accion_backend": "analizar_imagen",
-                "datos_estructura": {},
-                "pedir_info": None
-            }
-            pregunta_original = ""
-            owner_user = MagicMock()
-            owner_user.id = 1
-            rubro_obj = None
-            viewer_user = None
-            chat_db_context = MagicMock()
-            chat_db_context.context_data = {}
+        mock_reclamo_handler.assert_called_once()
+        mock_handler_instance.handle.assert_called_once()
 
-            kwargs = {
-                "chat_session_uuid": "test_session_uuid",
-                "uploaded_file_info_whatsapp": {
-                    "url": "http://example.com/imagen.jpg",
-                    "mime_type": "image/jpeg",
-                    "source": "whatsapp",
-                },
-            }
+        assert response["message_body"] == "Iniciando reclamo de test."
+        assert response["fuente"] == "mocked_reclamo"
 
-            response = responder_municipio(
-                pregunta_original,
-                owner_user,
-                rubro_obj,
-                viewer_user,
-                chat_db_context,
-                "test_anon_id",
-                **kwargs,
-            )
+def test_responder_municipio_imagen(client):
+    with patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') as mock_interpretar:
+        mock_interpretar.return_value = {
+            "es_reclamo": True,
+            "categoria_sugerida": "Bacheo",
+            "descripcion_sugerida": "Parece ser un bache."
+        }
 
-            assert response is not None
-            assert "He recibido tu imagen y la estoy analizando." in response["message_body"]
+        response = responder_municipio(
+            pregunta_original="Mira esta foto",
+            owner_user=MagicMock(),
+            viewer_user=MagicMock(),
+            chat_db_context=MagicMock(),
+            rubro_obj=MagicMock(nombre='municipio'),
+            # Simular datos de imagen adjunta
+            attachment_info={'url': 'http://example.com/img.png', 'mime_type': 'image/png'}
+        )
+
+        mock_interpretar.assert_called_once()
+        assert "categoria_sugerida" in response
+        assert response["categoria_sugerida"] == "Bacheo"
 
 if __name__ == '__main__':
     unittest.main()
