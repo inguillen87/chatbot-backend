@@ -11,123 +11,48 @@ def build_interactive_response(options: list,
                                header_text: str = None,
                                footer_text: str = None,
                                audio_url: str = None,
-                               # recipient_id: str = None # Removed: To be handled by the sending service
                                ) -> dict:
     if original_bot_response is None:
         original_bot_response = {}
 
-    if channel == "whatsapp":
-        if original_bot_response and original_bot_response.get('botones'):
-            options_text = "\n".join([
-                f"*{i+1}*. {boton['texto']}"
-                for i, boton in enumerate(original_bot_response['botones'])
-            ])
-            body_text += f"\n\n{options_text}\n\nResponde con el número de la opción que necesites."
-            # Clear the options so they are not processed as interactive buttons
-            options = []
-            message_type = 'text'
+    # Prioritize options from original_bot_response if available
+    if original_bot_response.get('botones'):
+        options = original_bot_response['botones']
+    elif original_bot_response.get('options_list'):
+        options = original_bot_response['options_list']
 
-        # This function will now return the content part of the WhatsApp message.
-        # The sending service (e.g., WhatsAppService) will add "messaging_product", "to".
+
+    if channel == "whatsapp":
+        # --- Professional Template-Based Approach ---
+        # This will be used if a template SID is configured.
+        # For now, we will keep the rustic fallback as the primary method.
+        # To enable professional templates, the code in services/notifications.py
+        # will need to be updated to check for a template_sid in the response
+        # and use it to send a persistent_action.
+
+        # --- Rustic & Reliable Numbered List Fallback (Primary Method) ---
+        if options:
+            if original_bot_response and "contexto_actualizado" in original_bot_response and original_bot_response["contexto_actualizado"] is not None:
+                if "contexto_municipio_v2" not in original_bot_response["contexto_actualizado"]:
+                    original_bot_response["contexto_actualizado"]["contexto_municipio_v2"] = {}
+                original_bot_response["contexto_actualizado"]["contexto_municipio_v2"]["last_options_sent"] = options
+
+            option_texts = [o.get("texto", o.get("title", "")) for o in options]
+            options_text_list = "\n".join([f"*{i+1}*. {text}" for i, text in enumerate(option_texts) if text])
+            full_body_text = f"{body_text}\n\n{options_text_list}\n\nResponde con el número de la opción que necesites."
+
+            return {
+                "type": "text",
+                "text": {"body": full_body_text.strip()}
+            }
 
         if audio_url:
-            return {
-                "type": "audio",
-                "audio": {"link": audio_url}
-            }
+            return {"type": "audio", "audio": {"link": audio_url}}
 
-        if message_type == 'interactive_buttons' and options:
-            if not (1 <= len(options) <= 3):
-                logger.warning(f"WhatsApp 'button' type requires 1-3 options, got {len(options)}. Truncating or consider 'list'.")
-
-            # Check for URL buttons
-            has_url_button = any(o.get("url") or (isinstance(o.get("action_id"), str) and o["action_id"].startswith("http")) for o in options)
-
-            if has_url_button:
-                # If there is a URL button, send a text message with the options formatted.
-                for o in options:
-                    url = o.get("url") or (o.get("action_id") if isinstance(o.get("action_id"), str) and o["action_id"].startswith("http") else None)
-                    if url:
-                        body_text += f"\n\n{o['texto']}: {url}"
-                    else:
-                        body_text += f"\n- {o['texto']}"
-                return {
-                    "type": "text",
-                    "text": {"body": body_text}
-                }
-
-            interactive_payload_content = {
-                "type": "button",
-                "body": {"text": body_text}
-            }
-            if header_text:
-                interactive_payload_content["header"] = {"type": "text", "text": header_text}
-            if footer_text:
-                interactive_payload_content["footer"] = {"text": footer_text}
-
-            interactive_payload_content["action"] = {
-                "buttons": [
-                    {"type": "reply", "reply": {"id": str(o.get("id", o.get("action_id", o["texto"])))[:200], "title": o["texto"][:20]}}
-                    for o in options[:3] # Max 3 buttons
-                ]
-            }
-            return {
-                "type": "interactive",
-                "interactive": interactive_payload_content
-            }
-
-        elif message_type == 'interactive_list' and options:
-            if not (1 <= len(options) <= 10):
-                logger.warning(f"WhatsApp 'list' type requires 1-10 options per section, got {len(options)}. Truncating.")
-
-            list_button_text = original_bot_response.get("interactive_list_button_text", "Ver opciones")[:20]
-            section_title = original_bot_response.get("interactive_list_section_title", "Opciones disponibles")[:24]
-
-
-            interactive_payload_content = {
-                "type": "list",
-                "body": {"text": body_text}
-            }
-            if header_text:
-                interactive_payload_content["header"] = {"type": "text", "text": header_text}
-            if footer_text:
-                interactive_payload_content["footer"] = {"text": footer_text}
-
-            interactive_payload_content["action"] = {
-                "button": list_button_text,
-                "sections": [
-                    {
-                        "title": section_title,
-                        "rows": [
-                            {"id": str(o.get("id", o["texto"]))[:200],
-                             "title": o["texto"][:24],
-                             "description": str(o.get("description", ""))[:72] if o.get("description") else ""}
-                            for o in options[:10] # Max 10 rows
-                        ]
-                    }
-                ]
-            }
-            # Ensure description is not present if empty, as WhatsApp API might reject empty string for description
-            for row in interactive_payload_content["action"]["sections"][0]["rows"]:
-                if not row["description"]:
-                    del row["description"]
-
-            return {
-                "type": "interactive",
-                "interactive": interactive_payload_content
-            }
-
-        elif message_type == 'text' or not options: # Simple text message
-            return {
-                "type": "text",
-                "text": {"body": body_text}
-            }
-        else: # Fallback or unsupported message_type for WhatsApp by this formatter
-            logger.warning(f"Unsupported message_type '{message_type}' or missing options for WhatsApp interactive. Sending plain text.")
-            return {
-                "type": "text",
-                "text": {"body": body_text}
-            }
+        return {
+            "type": "text",
+            "text": {"body": body_text}
+        }
 
     elif channel == "web":
         web_response = {
