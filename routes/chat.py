@@ -19,7 +19,7 @@ from services.logic import (
     normalizar_rubro,
     es_rubro_publico,
 )
-from .auth import anon_o_token_requerido
+from utils.auth_helpers import anon_o_token_requerido
 from datetime import datetime, timedelta
 
 chat_bp = Blueprint("chat_bp", __name__)

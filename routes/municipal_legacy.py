@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request, current_app
-from routes.auth import token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime, timedelta
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes

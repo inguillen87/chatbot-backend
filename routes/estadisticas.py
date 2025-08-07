@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, render_template
 from sqlalchemy import text
-from routes.auth import token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from models import db, User
 from services.logic import es_rubro_publico
 from datetime import datetime, timedelta

@@ -2,7 +2,7 @@
 
 from flask import Blueprint, jsonify, request, current_app
 from models import PlantillasRespuesta, db # db será necesario para las operaciones de escritura/actualización
-from routes.auth import token_requerido, admin_o_empleado_requerido # Importar decoradores
+from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 
 # Definir el Blueprint con el prefijo de URL /api/ai
 ai_templates_bp = Blueprint('ai_templates', __name__, url_prefix='/api/ai')

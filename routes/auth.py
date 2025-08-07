@@ -16,106 +16,9 @@ from services.pymes import get_or_create_pyme_user_by_token
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-def obtener_token():
-    """Extrae el token desde header, query string o payload."""
-    current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
-    auth_header = request.headers.get("Authorization", "").strip()
-    if auth_header:
-        current_app.logger.debug(f"[obtener_token] Found Authorization header: '{auth_header[:30]}...'")
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header.split(" ", 1)[1]
-            current_app.logger.debug(f"[obtener_token] Extracted Bearer token: '{token[:10]}...'")
-            return token
-        current_app.logger.debug(f"[obtener_token] Returning raw Authorization header as token: '{auth_header[:10]}...'")
-        return auth_header
-
-    token_x_token = request.headers.get("X-Token")
-    if token_x_token:
-        token_x_token = token_x_token.strip()
-        current_app.logger.debug(f"[obtener_token] Found X-Token header: '{token_x_token[:10]}...'")
-        return token_x_token
-
-    token_x_entity_token = request.headers.get("X-Entity-Token")
-    if token_x_entity_token:
-        token_x_entity_token = token_x_entity_token.strip()
-        current_app.logger.debug(f"[obtener_token] Found X-Entity-Token header: '{token_x_entity_token[:10]}...'")
-        return token_x_entity_token
-
-    token_args = request.args.get("token")
-    if token_args:
-        token_args = token_args.strip()
-        current_app.logger.debug(f"[obtener_token] Found token in query args: '{token_args[:10]}...'")
-        return token_args
-
-    if request.is_json:
-        json_data = request.get_json(silent=True) or {}
-        token_json = json_data.get("token")
-        if token_json:
-            token_json = token_json.strip()
-            current_app.logger.debug(f"[obtener_token] Found token in JSON payload: '{token_json[:10]}...'")
-            return token_json
-        # Also check for 'empresa_token' in JSON for /ask/municipio if it's being sent there for anonymous
-        # This is specific for debugging the /ask/municipio anonymous case
-        if request.path == '/ask/municipio' or request.path.endswith('/ask/municipio'): # Or other relevant /ask paths
-            empresa_token_json = json_data.get("empresa_token")
-            if empresa_token_json:
-                empresa_token_json = empresa_token_json.strip()
-                current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in JSON payload for {request.path}: '{empresa_token_json[:10]}...'")
-                return empresa_token_json
-
-
-    token_form = request.form.get("token")
-    if token_form:
-        token_form = token_form.strip()
-        current_app.logger.debug(f"[obtener_token] Found token in form data: '{token_form[:10]}...'")
-        return token_form
-    
-    # For /ask/municipio anonymous, check form data for 'empresa_token' as well
-    if request.path == '/ask/municipio' or request.path.endswith('/ask/municipio'):
-        empresa_token_form = request.form.get("empresa_token")
-        if empresa_token_form:
-            empresa_token_form = empresa_token_form.strip()
-            current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in form data for {request.path}: '{empresa_token_form[:10]}...'")
-            return empresa_token_form
-
-    current_app.logger.debug("[obtener_token] No token found in any common location.")
-    return None
-
+from utils.auth_helpers import token_requerido, obtener_token
 from flask_login import current_user
 
-def token_requerido(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if request.method == 'OPTIONS':
-            return '', 200
-
-        # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
-        if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
-            return f(current_user, *args, **kwargs)
-
-        # Si no, buscar el token como se hacía antes
-        token = obtener_token()
-
-        if not token:
-            return jsonify({"error": "Token faltante o malformado"}), 401
-
-        user = User.query.filter_by(token=token).first()
-
-        if not user:
-            return jsonify({"error": "Token inválido o sesión expirada"}), 401
-
-        return f(user, *args, **kwargs)
-    return decorated
-
-def admin_o_empleado_requerido(f):
-    """Permite solo a admins (empresa_id None) o empleados."""
-    @wraps(f)
-    def decorated(user: User, *args, **kwargs):
-        if user.empresa_id is not None and user.rol != "empleado":
-            return jsonify({"error": "Permisos insuficientes"}), 403
-        return f(user, *args, **kwargs)
-
-    return decorated
 
 def solo_admin_requerido(f):
     """Permite solo a usuarios administradores (empresa_id None)."""
@@ -681,48 +584,6 @@ def chatuser_login_panel():
         "tipo_chat": tipo_chat,
     })
 
-@auth_bp.route('/me', methods=['GET', 'OPTIONS'])
-@auth_bp.route('/perfil', methods=['GET', 'OPTIONS'])
-@auth_bp.route('/profile', methods=['GET', 'OPTIONS'])
-@token_requerido
-def get_current_user(user):
-    rubro_nombre = user.rubro.nombre if user.rubro else "General"
-    from utils.plan_limits import limite_para_usuario
-    tipo_chat = getattr(user, "tipo_chat", None) or (
-        "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
-    )
-    catalogo_label = (
-        "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
-    )
-    return jsonify({
-        "id": user.id,
-        "email": user.email,
-        "name": user.name,
-        "token": user.token,
-        "rubro": rubro_nombre,
-        "nombre_empresa": user.nombre_empresa,
-        "rol": user.rol,
-        "empresa_id": user.empresa_id,
-        "telefono": user.telefono,
-        "direccion": user.direccion,
-        "ciudad": user.ciudad,
-        "provincia": user.provincia,
-        "pais": user.pais,
-        "latitud": user.latitud,
-        "longitud": user.longitud,
-        "link_web": user.link_web,
-        "plan": user.plan,
-        "preguntas_usadas": user.preguntas_usadas,
-        "limite_preguntas": limite_para_usuario(user),
-        "horario_json": user.horario_json,
-        "logo_url": getattr(user, "logo_url", ""),
-        "color_primario": getattr(user, "color_primario", None),
-        "color_secundario": getattr(user, "color_secundario", None),
-        "badge_tipo": getattr(user, "badge_tipo", None),
-        "categorias": user.ticket_categorias or "",
-        "tipo_chat": tipo_chat,
-        "catalogo_label": catalogo_label,
-    })
 
 # Nueva ruta para obtener información básica del token
 @auth_bp.route('/token-info', methods=['GET', 'OPTIONS'])
@@ -840,59 +701,4 @@ def actualizar_me(user):
         )
         return jsonify({"error": "Error interno al guardar el perfil."}), 500
     
-def anon_o_token_requerido(f):
-    """
-    Decorador que maneja la autenticación para endpoints que aceptan
-    tanto usuarios autenticados con token como usuarios anónimos.
-    Para anónimos en endpoints de municipio, carga un owner por defecto.
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if request.method == "OPTIONS":
-            return "", 200
-
-        token = obtener_token()
-        user = User.query.filter_by(token=token).first() if token else None
-        owner_user = user # Por defecto, el owner es el mismo usuario
-
-        g.anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
-        if not g.anon_id:
-            g.anon_id = str(uuid.uuid4())
-            current_app.logger.info(f"Generado nuevo ID anónimo para la request: {g.anon_id}")
-
-        if not user:
-            # Lógica para usuarios anónimos
-            current_user = None
-            # Si es una ruta de municipio, se necesita un owner para el contexto del bot.
-            # El token de la entidad/municipio DEBERÍA venir en el request (como 'empresa_token' o similar).
-            # obtener_token() ya lo maneja. Si aún así no hay user, es un anónimo total.
-
-            # Como fallback para endpoints públicos de municipio, cargamos un owner por defecto.
-            if 'municipio' in request.path:
-                # Busca el token de la entidad específica en el cuerpo de la solicitud,
-                # esto permite que diferentes widgets de municipio funcionen en el mismo sistema.
-                json_data = request.get_json(silent=True) or {}
-                empresa_token = json_data.get("empresa_token")
-
-                if empresa_token:
-                    owner_user = User.query.filter_by(token=empresa_token).first()
-                    if owner_user:
-                        current_app.logger.info(f"Anonymous request to '{request.path}', loaded owner_user '{owner_user.id}' via 'empresa_token'.")
-                    else:
-                         current_app.logger.warning(f"Anonymous request with an invalid 'empresa_token': {empresa_token}")
-
-                # Si no se proveyó un token de empresa específico, se carga el default.
-                if not owner_user:
-                    owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-                    if owner_user:
-                        current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")
-                    else:
-                        current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
-        else:
-            # Lógica para usuarios autenticados
-            current_user = user
-
-        return f(current_user=current_user, owner_user=owner_user, anon_id=g.anon_id, *args, **kwargs)
-
-    return decorated
 

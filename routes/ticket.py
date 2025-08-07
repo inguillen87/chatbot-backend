@@ -16,7 +16,7 @@ from models import (
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
 from services.gcs_service import upload_to_gcs # Import the new GCS service
-from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
 logger = logging.getLogger("app")

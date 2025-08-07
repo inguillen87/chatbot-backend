@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, current_app
 from models import db, User, Promocion, PromocionAlcance, CatalogoItem
-from routes.auth import token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime
 import uuid # Asegurar que uuid esté importado para los defaults de los modelos
 

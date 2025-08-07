@@ -26,6 +26,7 @@ from models import User
 
 # Importación de todas tus rutas (Blueprints)
 from routes.auth import auth_bp
+from routes.legacy_auth import legacy_auth_bp
 from routes.chat import chat_bp
 from routes.ticket import ticket_bp
 from routes.crm import crm_bp
@@ -181,6 +182,7 @@ def create_app(config_class=Config):
 
     # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
+    app.register_blueprint(legacy_auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
     app.register_blueprint(crm_bp)

@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, current_app
 from models import User, PymePedido, db
-from routes.auth import token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from services.logic import es_rubro_publico
 from services.email_service import enviar_email_pedido_admin
 from datetime import datetime, timedelta
