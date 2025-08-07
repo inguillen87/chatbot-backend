@@ -1056,14 +1056,14 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado."""
     return {
-        "message_body": "Seleccioná el tipo de reclamo:",
-        "options_list": [
-            {"id": "reclamo_luminaria", "texto": "Luminaria"},
-            {"id": "reclamo_arbolado", "texto": "Arbolado"},
-            {"id": "reclamo_limpieza_riego", "texto": "Limpieza y riego"},
-            {"id": "reclamo_arreglo_calle", "texto": "Arreglo de calle"},
-            {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
-            {"id": "reclamo_otros", "texto": "Otros"},
+        "respuesta_usuario": "Seleccioná el tipo de reclamo:",
+        "botones": [
+            {"texto": "Luminaria", "action_id": "reclamo_luminaria"},
+            {"texto": "Arbolado", "action_id": "reclamo_arbolado"},
+            {"texto": "Limpieza y riego", "action_id": "reclamo_limpieza_riego"},
+            {"texto": "Arreglo de calle", "action_id": "reclamo_arreglo_calle"},
+            {"texto": "Pérdida de agua", "action_id": "reclamo_perdida_agua"},
+            {"texto": "Otros", "action_id": "reclamo_otros"},
         ],
         "message_type": "interactive_list",
         "fuente": "submenu_reclamos_estandar"
@@ -1081,6 +1081,37 @@ def responder_municipio(
     location=None,
     **kwargs
 ):
+    # --- Numeric Input Handler for WhatsApp ---
+    if channel == "whatsapp" and pregunta_original.strip().isdigit():
+        if chat_db_context and chat_db_context.context_data:
+            contexto_municipio = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
+            last_options = contexto_municipio.get("last_options_sent")
+
+            if last_options:
+                try:
+                    choice_index = int(pregunta_original.strip()) - 1
+                    if 0 <= choice_index < len(last_options):
+                        selected_option = last_options[choice_index]
+
+                        action_id = selected_option.get("id") or selected_option.get("action_id")
+
+                        # Replace the numeric input with the corresponding text of the option
+                        # to make the conversation flow more natural for the LLM.
+                        pregunta_original = selected_option.get("texto", "")
+
+                        # Pass the action_id in the kwargs so it can be processed like a button click
+                        kwargs['action'] = action_id
+
+                        logger.info(f"Input numérico '{choice_index + 1}' mapeado al texto: '{pregunta_original}' y acción: {action_id}")
+
+                        # Clean up the context so these options aren't reused accidentally.
+                        contexto_municipio.pop("last_options_sent", None)
+                        flag_modified(chat_db_context, "context_data")
+                    else:
+                        logger.warning(f"Input numérico '{choice_index + 1}' fuera de rango para las opciones guardadas.")
+                except (ValueError, IndexError) as e:
+                    logger.error(f"Error al procesar input numérico: {e}")
+
     logger_actual = current_app.logger if has_app_context() else logger
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] =================================================="
@@ -1088,6 +1119,40 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
+    logger_actual.info(f"FULL PAYLOAD: {pregunta_original}")
+    logger_actual.info(f"KWARGS: {kwargs}")
+
+    # --- START FIX: Handle incoming native location data ---
+    location_info = kwargs.get("location_info")
+    if location_info and isinstance(location_info, dict):
+        # The user sent a location. Let's make this the primary input.
+        # If there's an address from Twilio, use it as the user's message.
+        # Otherwise, create a descriptive string.
+        address_from_location = location_info.get("address")
+        if address_from_location:
+            pregunta_original = address_from_location
+        else:
+            pregunta_original = f"Ubicación compartida: Lat {location_info['latitude']}, Lon {location_info['longitude']}"
+
+        logger.info(f"Se detectó una ubicación nativa. Se procesará como la pregunta principal: '{pregunta_original}'")
+
+        # --- START ENHANCEMENT: Reverse geocode to get district ---
+        try:
+            from .herramientas_municipio import obtener_direccion_de_coordenadas
+            direccion_info = obtener_direccion_de_coordenadas(location_info['latitude'], location_info['longitude'])
+            if direccion_info and direccion_info.get('locality'):
+                distrito = direccion_info.get('locality')
+                logger.info(f"Distrito extraído de la ubicación: {distrito}")
+                # Add the district to the context so the bot doesn't have to ask for it.
+                if chat_db_context and chat_db_context.context_data:
+                    contexto_municipio = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+                    datos_parciales = contexto_municipio.setdefault("datos_parciales_llm_reclamo", {})
+                    datos_parciales["distrito"] = distrito
+                    flag_modified(chat_db_context, "context_data")
+        except Exception as e:
+            logger.error(f"Error al hacer reverse geocoding para la ubicación: {e}")
+        # --- END ENHANCEMENT ---
+    # --- END FIX ---
 
     received_payload = {}
     if isinstance(pregunta_original, dict):
@@ -1105,6 +1170,26 @@ def responder_municipio(
 
     if action == "iniciar_reclamo": # Kept for backward compatibility or other flows
         return _get_reclamos_menu()
+
+    # --- START FIX: Handle sub-category selections from the web widget ---
+    reclamo_categories = {
+        "reclamo_luminaria": "Luminaria",
+        "reclamo_arbolado": "Arbolado",
+        "reclamo_limpieza_riego": "Limpieza y riego",
+        "reclamo_arreglo_calle": "Arreglo de calle",
+        "reclamo_otros": "Otros",
+    }
+    if action in reclamo_categories:
+        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['categoria_reclamo'] = reclamo_categories[action]
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
+        return {
+            "message_body": f"Entendido, iniciaste un reclamo por **{reclamo_categories[action]}**. Por favor, describí la incidencia.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "inicio_flujo_reclamo_categorizado"
+        }
+    # --- END FIX ---
 
     if action == "reclamo_perdida_agua":
         return {

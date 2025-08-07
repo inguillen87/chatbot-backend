@@ -158,10 +158,10 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         # Check that the state is now general conversation
         self.assertEqual(final_context.get('estado_conversacion'), ConversationState.CONVERSACION_GENERAL_LLM.name)
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
     @patch('requests.get')
-    def test_media_and_location_data_is_passed_to_handler(self, mock_requests_get, mock_interpretar_imagen, mock_responder_municipio):
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
+    @patch('services.logic.responder_municipio')
+    def test_media_and_location_data_is_passed_to_handler(self, mock_responder_municipio, mock_interpretar_imagen, mock_requests_get):
         """
         Tests that location and interpreted image data are correctly passed to the final handler.
         """

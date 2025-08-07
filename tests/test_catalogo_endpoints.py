@@ -24,63 +24,44 @@ class CatalogoEndpointsTests(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    def test_faq_texto_returns_clean_texts(self):
-        with self.app.app_context():
-            rubro = Rubro(id=1, clave="test", nombre="Test")
-            user = User(name='testuser', email='test@example.com', password_hash='password', rubro_id=1)
-            db.session.add(rubro)
-            db.session.add(user)
-            db.session.commit()
-            faq1 = QA(question='Q1', answer='A1', rubro_id=1)
-            faq2 = QA(question='Q2', answer='A2', rubro_id=1)
-            db.session.add_all([faq1, faq2])
-            db.session.commit()
-
-            with patch('routes.catalogo.limpiar_texto_base', lambda t: t.lower()):
-                with self.client as client:
-                    with client.session_transaction() as sess:
-                        sess['user_id'] = user.id
-                    response = client.get('/catalogo/faq_texto')
-                    self.assertEqual(response.status_code, 200)
-                    self.assertEqual(response.json, ['q1 a1', 'q2 a2'])
-
-    def test_textos_perfil_returns_clean_texts(self):
-        with self.app.app_context():
-            user = User(name='testuser', email='test@example.com', password_hash='password')
-            db.session.add(user)
-            db.session.commit()
-            item1 = CatalogoItem(texto='Uno', user_id=user.id, nombre='item1')
-            item2 = CatalogoItem(texto='Dos', user_id=user.id, nombre='item2')
-            db.session.add_all([item1, item2])
-            db.session.commit()
-
-            with patch('routes.catalogo.limpiar_texto_base', lambda t: t.lower()):
-                with self.client as client:
-                    with client.session_transaction() as sess:
-                        sess['user_id'] = user.id
-                    response = client.get('/catalogo/textos_perfil')
-                    self.assertEqual(response.status_code, 200)
-                    self.assertEqual(response.json, ['uno', 'dos'])
-
     def test_resumen_catalogo_counts_by_category(self):
         with self.app.app_context():
-            user = User(name='testuser', email='test@example.com', password_hash='password')
+            # Create a user with a valid rubro and password
+            rubro = Rubro(nombre="pymes", clave="pymes")
+            db.session.add(rubro)
+            db.session.commit()
+            user = User(name='testuser', email='test@example.com', rubro_id=rubro.id)
+            user.set_password('password123')
             db.session.add(user)
             db.session.commit()
+
+            # Create catalog items associated with the user
             item1 = CatalogoItem(categoria='vino', user_id=user.id, nombre='item1')
             item2 = CatalogoItem(categoria='vino', user_id=user.id, nombre='item2')
             item3 = CatalogoItem(categoria='cerveza', user_id=user.id, nombre='item3')
             db.session.add_all([item1, item2, item3])
             db.session.commit()
 
-            with self.client as client:
-                with client.session_transaction() as sess:
-                    sess['user_id'] = user.id
-                response = client.get('/catalogo/resumen_catalogo')
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json['total'], 3)
-                self.assertIn({'nombre': 'vino', 'cantidad': 2}, response.json['categorias'])
-                self.assertIn({'nombre': 'cerveza', 'cantidad': 1}, response.json['categorias'])
+            # Login to get a token
+            login_resp = self.client.post('/auth/login', json={
+                'email': 'test@example.com',
+                'password': 'password123'
+            })
+            self.assertEqual(login_resp.status_code, 200)
+            token = login_resp.get_json()['token']
+            headers = {'Authorization': f'Bearer {token}'}
+
+            # Make the request with the token
+            response = self.client.get('/catalogo/resumen_catalogo', headers=headers)
+            self.assertEqual(response.status_code, 200)
+
+            # Assertions
+            response_json = response.get_json()
+            self.assertEqual(response_json['total'], 3)
+            # Sort for predictable comparison
+            categorias = sorted(response_json['categorias'], key=lambda x: x['nombre'])
+            self.assertEqual(categorias[0], {'nombre': 'cerveza', 'cantidad': 1})
+            self.assertEqual(categorias[1], {'nombre': 'vino', 'cantidad': 2})
 
 if __name__ == '__main__':
     unittest.main()

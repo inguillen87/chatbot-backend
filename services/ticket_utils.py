@@ -1,8 +1,8 @@
-def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None):
+def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None):
     nombre_asesor = None
     telefono_asesor = None
     link_whatsapp = None
-    boton_contacto = None
+    botones = []
 
     if contacto_especializado:
         # No hardcodear el default aquí, se debe manejar en el llamador.
@@ -12,10 +12,24 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
             # Limpiar y asegurar que el número de teléfono sea solo dígitos
             telefono_numerico = ''.join(filter(str.isdigit, telefono_asesor))
             link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20quiero%20hacer%20seguimiento%20de%20mi%20{tipo}%20(ID:{id_ticket})"
-            boton_contacto = {
+            botones.append({
                 "texto": f"Contactar a {nombre_asesor}",
                 "url": link_whatsapp
-            }
+            })
+
+    # --- START ENHANCEMENT: Add "Go to Chat" button ---
+    if id_ticket and base_chat_url:
+        # Asegurarse de que la URL base no tenga una barra al final
+        if base_chat_url.endswith('/'):
+            base_chat_url = base_chat_url[:-1]
+
+        chat_url = f"{base_chat_url}/{id_ticket}"
+        botones.append({
+            "texto": "Ir al Chat",
+            "url": chat_url,
+            "persistent_action": True # Para que el botón aparezca en la notificación
+        })
+    # --- END ENHANCEMENT ---
 
     tipos = {
         "reclamo": "Reclamo",
@@ -50,4 +64,4 @@ Para seguir el estado de tu ticket, podés hablar directamente con **{nombre_ase
 Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
 
     # Devuelve tanto el texto formateado como el botón de contacto si existe
-    return respuesta, boton_contacto
+    return respuesta, botones

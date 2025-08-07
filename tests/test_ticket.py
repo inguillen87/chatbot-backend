@@ -31,7 +31,7 @@ class TicketRoutesTests(unittest.TestCase):
             db.session.commit()
             ticket_id = ticket.id
 
-        response = self.client.get(f'/tickets/chat/{ticket_id}/mensajes', headers={'Anon-Id': 'test-anon-id'})
+        response = self.client.get(f'/tickets/chat/{ticket_id}/mensajes', headers={'X-Anon-Id': 'test-anon-id'})
         self.assertEqual(response.status_code, 200)
 
     def test_get_chat_mensajes_anon_failure(self):
@@ -44,7 +44,7 @@ class TicketRoutesTests(unittest.TestCase):
             db.session.commit()
             ticket_id = ticket.id
 
-        response = self.client.get(f'/tickets/chat/{ticket_id}/mensajes', headers={'Anon-Id': 'invalid-anon-id'})
+        response = self.client.get(f'/tickets/chat/{ticket_id}/mensajes', headers={'X-Anon-Id': 'invalid-anon-id'})
         self.assertEqual(response.status_code, 403)
 
 if __name__ == '__main__':

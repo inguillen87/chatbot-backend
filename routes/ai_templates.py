@@ -3,6 +3,7 @@
 from flask import Blueprint, jsonify, request, current_app
 from models import PlantillasRespuesta, db # db será necesario para las operaciones de escritura/actualización
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
+from services.embedding_service import embed_textos_gemini
 
 # Definir el Blueprint con el prefijo de URL /api/ai
 ai_templates_bp = Blueprint('ai_templates', __name__, url_prefix='/api/ai')
@@ -78,8 +79,8 @@ def create_template(user):
     embedding_vector = None
     if text:
         try:
-            # robust_embed espera una lista de textos y devuelve una lista de embeddings
-            embeddings_list = robust_embed(textos=[text.strip()], input_type="search_document")
+            # embed_textos_gemini espera una lista de textos y devuelve una lista de embeddings
+            embeddings_list = embed_textos_gemini(textos=[text.strip()], input_type="search_document")
             if embeddings_list and len(embeddings_list) > 0:
                 embedding_vector = embeddings_list[0]
             else:
@@ -195,7 +196,7 @@ def update_template(user, template_id):
         updated_fields.append('text') # Ahora sí lo agregamos a los campos actualizados
         current_app.logger.info(f"El texto de la plantilla '{plantilla.id}' ha cambiado. Regenerando embedding.")
         try:
-            embeddings_list = robust_embed(textos=[plantilla.text], input_type="search_document")
+            embeddings_list = embed_textos_gemini(textos=[plantilla.text], input_type="search_document")
             if embeddings_list and len(embeddings_list) > 0:
                 plantilla.embedding = embeddings_list[0]
                 embedding_regenerated = True
@@ -257,7 +258,6 @@ def delete_template(user, template_id):
         current_app.logger.error(f"Error al eliminar plantilla '{template_id}' por usuario {user.id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al eliminar la plantilla."}), 500
 
-# from services.cohere_ai import get_cohere_response # Reemplazado por Gemini
 from services.gemini_bridge import llamar_gemini_para_generacion_texto
 
 @ai_templates_bp.route('/generate-template-text', methods=['POST'])
