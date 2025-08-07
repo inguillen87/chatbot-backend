@@ -15,6 +15,7 @@ from models import (
 )
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
+from services.gcs_service import upload_to_gcs # Import the new GCS service
 from .auth import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
@@ -22,44 +23,32 @@ logger = logging.getLogger("app")
 
 ticket_bp = Blueprint('ticket_bp', __name__)
 
-# Carpeta para adjuntos de tickets
-TICKET_ATTACHMENT_FOLDER = os.path.join(os.getcwd(), "data", "archivos_tickets")
-os.makedirs(TICKET_ATTACHMENT_FOLDER, exist_ok=True)
-
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
 
 def guardar_archivo_adjunto_ticket(file_storage, user_id, ticket_id, tipo_ticket) -> ArchivoAdjunto | None:
+    """
+    Handles the upload of a file to GCS and creates an ArchivoAdjunto record.
+    """
     if not file_storage or not file_storage.filename:
         return None
 
+    # Use the centralized GCS upload function
+    upload_result = upload_to_gcs(file_storage)
+
+    if not upload_result:
+        current_app.logger.error(f"GCS upload failed for ticket {tipo_ticket} {ticket_id}.")
+        return None
+
     try:
-        original_filename = secure_filename(file_storage.filename)
-        extension = os.path.splitext(original_filename)[1].lower()
-        # Podríamos añadir una validación de extensiones aquí si es necesario
-        # ALLOWED_TICKET_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx", ".txt", ".xls", ".xlsx"}
-        # if extension not in ALLOWED_TICKET_EXTENSIONS:
-        #     current_app.logger.warning(f"Intento de subir archivo con extensión no permitida: {extension}")
-        #     return None # O lanzar una excepción específica
-
-        unique_filename = f"{uuid.uuid4().hex}{extension}"
-        save_path = os.path.join(TICKET_ATTACHMENT_FOLDER, unique_filename)
-        
-        file_storage.save(save_path)
-        file_size = os.path.getsize(save_path)
-
-        # Crear la URL. Esto dependerá de cómo se sirvan los archivos.
-        # Asumiré una ruta /tickets/archivos/<filename> que habrá que crear.
-        file_url = f"/tickets/archivos/{unique_filename}" 
-
         nuevo_adjunto = ArchivoAdjunto(
-            user_id=user_id, # El ID del agente que sube el archivo
-            filename=unique_filename,
-            nombre_original=original_filename,
-            mime=file_storage.mimetype,
-            tamano=file_size,
-            tipo="adjunto_ticket_respuesta", # Un tipo para diferenciarlo de otros usos de ArchivoAdjunto
-            url=file_url
+            user_id=user_id,
+            filename=upload_result["unique_name"],
+            nombre_original=upload_result["original_name"],
+            mime=upload_result["mimetype"],
+            tamano=upload_result["size"],
+            tipo="adjunto_ticket_respuesta",
+            url=upload_result["public_url"]
         )
 
         if tipo_ticket == "municipio":
@@ -68,20 +57,17 @@ def guardar_archivo_adjunto_ticket(file_storage, user_id, ticket_id, tipo_ticket
             nuevo_adjunto.pyme_ticket_id = ticket_id
         else:
             current_app.logger.error(f"Tipo de ticket desconocido '{tipo_ticket}' al guardar adjunto.")
-            os.remove(save_path) # Limpiar archivo guardado si hay error
+            # Here we might want to delete the GCS object if the ticket type is invalid
             return None
 
         db.session.add(nuevo_adjunto)
-        # El commit se hará después de procesar todos los archivos y el comentario.
+        # The commit will be handled by the calling function after all operations.
         return nuevo_adjunto
     except Exception as e:
-        current_app.logger.error(f"Error al guardar archivo adjunto para ticket {tipo_ticket} {ticket_id}: {e}", exc_info=True)
-        # Si hay un path guardado y ocurre un error, intentar borrarlo
-        if 'save_path' in locals() and os.path.exists(save_path):
-            try:
-                os.remove(save_path)
-            except Exception as e_remove:
-                current_app.logger.error(f"Error al limpiar archivo {save_path} tras error: {e_remove}")
+        current_app.logger.error(f"Error creating ArchivoAdjunto record for ticket {tipo_ticket} {ticket_id}: {e}", exc_info=True)
+        # Attempt to clean up the orphaned GCS object
+        # (Requires a delete function in gcs_service, for now we log)
+        current_app.logger.error(f"Orphaned GCS object may exist: {upload_result.get('unique_name')}")
         return None
 
 def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ticket_obj) -> None:
@@ -487,13 +473,12 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     if request.content_type.startswith('application/json'):
         data = request.get_json()
-        if isinstance(data, dict):
-            comentario_texto = data.get("comentario")
-        else:
-            current_app.logger.warning("JSON payload inválido para respuesta de ticket")
+        if not isinstance(data, dict):
             return jsonify({"error": "Formato JSON inválido"}), 400
-        # No files expected in JSON payload for this simplified handling
-        current_app.logger.info(f"Admin response via JSON: {comentario_texto}")
+        comentario_texto = data.get("comentario")
+        attachment_info = data.get("attachment_info")
+        archivos_subidos = [] # No files in JSON payload
+        current_app.logger.info(f"Admin response via JSON: text='{comentario_texto}', attachment_info={attachment_info}")
     elif request.content_type.startswith('multipart/form-data'):
         comentario_texto = request.form.get("comentario")
         archivos_subidos = request.files.getlist("archivos") # 'archivos' es el name del input type="file"
@@ -542,37 +527,70 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         ticket_obj,
     )
 
-    nuevo_comentario_obj = None
-    if comentario_texto: # Solo crear comentario si hay texto
-        nuevo_comentario_obj = servicio_tickets.crear_comentario(
-            ticket_id=ticket_id, tipo_ticket=tipo,
-            comentario_data={"comentario": comentario_texto, "user_id": current_user.id, "es_admin": True}
-        )
-        if not nuevo_comentario_obj:
-             # Si falla la creación del comentario (y era requerido), podría ser un error 500
-            if not archivos_subidos: # Si no hay archivos, el comentario era lo único
-                 return jsonify({"error": "No se pudo guardar el comentario."}), 500
-            # Si hay archivos, continuamos para intentar guardarlos, pero logueamos el fallo del comentario
-            current_app.logger.error(f"No se pudo guardar el comentario para el ticket {ticket_id}, pero se procederá con los archivos.")
-
-
+    # Process file uploads first to get their IDs
     archivos_adjuntados_db = []
     if archivos_subidos:
         for file_storage in archivos_subidos:
-            if file_storage and file_storage.filename: # Verificar que hay un archivo real
+            if file_storage and file_storage.filename:
                 adjunto_db = guardar_archivo_adjunto_ticket(file_storage, current_user.id, ticket_id, tipo)
                 if adjunto_db:
                     archivos_adjuntados_db.append(adjunto_db)
                 else:
-                    # Si un archivo falla, ¿deberíamos detener todo o continuar?
-                    # Por ahora, continuaremos pero informaremos. Podría ser un error parcial.
                     current_app.logger.error(f"No se pudo guardar uno de los archivos para el ticket {ticket_id}.")
-                    # Podríamos devolver un error específico si NINGÚN archivo se pudo guardar y no hay comentario
-                    if not comentario_texto and not any(archivos_adjuntados_db):
-                         return jsonify({"error": "No se pudo guardar el comentario ni los archivos adjuntos."}), 500
-    
-    if not nuevo_comentario_obj and not archivos_adjuntados_db:
-        # Esto podría pasar si el comentario está vacío y la subida de todos los archivos falló.
+                    # If a file fails, we might want to stop, but for now, we'll continue and report at the end.
+
+    # Now create comments
+    comentarios_creados = []
+    # Create a comment for the text part, if it exists
+    if comentario_texto and comentario_texto.strip():
+        comentario_obj = servicio_tickets.crear_comentario(
+            ticket_id=ticket_id, tipo_ticket=tipo,
+            comentario_data={"comentario": comentario_texto, "user_id": current_user.id, "es_admin": True}
+        )
+        if comentario_obj:
+            comentarios_creados.append(comentario_obj)
+        else:
+            current_app.logger.error(f"No se pudo guardar el comentario de texto para el ticket {ticket_id}.")
+
+    # If the request was JSON and had attachment_info, create a comment for it
+    if 'attachment_info' in locals() and attachment_info:
+        file_comment_text = f"[Archivo adjunto: {attachment_info.get('name', 'archivo')}]"
+        file_comment_obj = servicio_tickets.crear_comentario(
+            ticket_id=ticket_id, tipo_ticket=tipo,
+            comentario_data={
+                "comentario": file_comment_text,
+                "user_id": current_user.id,
+                "es_admin": True,
+                "archivo_adjunto_id": attachment_info.get('id')
+            }
+        )
+        if file_comment_obj:
+            comentarios_creados.append(file_comment_obj)
+        else:
+            current_app.logger.error(f"No se pudo crear el comentario para el archivo adjunto ID: {attachment_info.get('id')}.")
+
+    # Create a separate comment for each physically attached file (from multipart)
+    for adjunto in archivos_adjuntados_db:
+        db.session.add(adjunto)
+        db.session.flush()
+
+        file_comment_text = f"[Archivo adjunto: {adjunto.nombre_original}]"
+        file_comment_obj = servicio_tickets.crear_comentario(
+            ticket_id=ticket_id, tipo_ticket=tipo,
+            comentario_data={
+                "comentario": file_comment_text,
+                "user_id": current_user.id,
+                "es_admin": True,
+                "archivo_adjunto_id": adjunto.id
+            }
+        )
+        if file_comment_obj:
+            comentarios_creados.append(file_comment_obj)
+        else:
+            current_app.logger.error(f"No se pudo crear el comentario para el archivo adjunto ID: {adjunto.id}.")
+
+    # Check if anything was successfully created
+    if not comentarios_creados and not archivos_adjuntados_db:
         return jsonify({"error": "No se pudo guardar la respuesta (ni comentario ni archivos)."}), 500
 
     try:
@@ -1331,54 +1349,17 @@ def mapa_de_tickets(current_user: User, tipo: str):
 
     return jsonify(datos)
 
-# También se necesitará una ruta para servir los archivos.
-from flask_login import login_required, current_user as flask_login_current_user # Importar para Flask-Login
+# The local file serving route is no longer needed as files are served from GCS public URLs.
+# from flask_login import login_required, current_user as flask_login_current_user
 
-@ticket_bp.route('/tickets/archivos/<filename>', methods=['GET'])
-@login_required # Usar login_required de Flask-Login
-def get_ticket_adjunto(filename): # current_user ahora vendrá de flask_login_current_user
-    current_user = flask_login_current_user # Obtener el usuario de Flask-Login
-    # Validar filename para evitar directory traversal
-    safe_filename = secure_filename(filename)
-    if safe_filename != filename:
-        return jsonify({"error": "Nombre de archivo no válido."}), 400
-
-    # Verificar permisos: ¿Quién puede acceder a este archivo?
-    # 1. El usuario que lo subió (current_user.id == archivo.user_id)
-    # 2. Si el archivo está asociado a un ticket, el dueño del ticket o un admin/empleado con permiso al ticket.
-    archivo_obj = ArchivoAdjunto.query.filter_by(filename=safe_filename).first()
-    if not archivo_obj:
-        return jsonify({"error": "Archivo no encontrado."}), 404
-
-    # Lógica de permisos (simplificada, podría necesitar ser más robusta):
-    puede_acceder = False
-    if archivo_obj.user_id == current_user.id: # El que lo subió
-        puede_acceder = True
-    else:
-        ticket_id_asociado = archivo_obj.municipio_ticket_id or archivo_obj.pyme_ticket_id
-        tipo_ticket_asociado = "municipio" if archivo_obj.municipio_ticket_id else "pyme"
-        
-        if ticket_id_asociado:
-            TicketModel = MunicipioTicket if tipo_ticket_asociado == "municipio" else PymeTicket
-            ticket_asociado = db.session.get(TicketModel, ticket_id_asociado)
-            if ticket_asociado:
-                if ticket_asociado.user_id == current_user.id: # Dueño del ticket
-                    puede_acceder = True
-                elif tipo_ticket_asociado == "municipio" and current_user.tipo_chat == "municipio" and ticket_asociado.municipio_id == current_user.municipio_id:
-                    puede_acceder = True
-                elif tipo_ticket_asociado == "pyme" and \
-                     current_user.rubro_id and ticket_asociado.rubro_id == current_user.rubro_id: # Admin/empleado de la pyme
-                    puede_acceder = True
-    
-    if not puede_acceder:
-        return jsonify({"error": "No tienes permiso para acceder a este archivo."}), 403
-
-    file_path = os.path.join(TICKET_ATTACHMENT_FOLDER, safe_filename)
-    if not os.path.exists(file_path):
-        current_app.logger.error(f"El archivo {safe_filename} no existe en el filesystem aunque sí en DB.")
-        return jsonify({"error": "Archivo no encontrado en el servidor."}), 404
-    
-    return send_from_directory(TICKET_ATTACHMENT_FOLDER, safe_filename, as_attachment=False) # as_attachment=True para forzar descarga
+# @ticket_bp.route('/tickets/archivos/<filename>', methods=['GET'])
+# @login_required
+# def get_ticket_adjunto(filename):
+#     # This logic is now obsolete. Access control should be handled by the main
+#     # /archivos/<filename> route if a centralized download point is needed,
+#     # or by ensuring GCS URLs are not easily guessable if direct access is allowed.
+#     # For simplicity, we rely on the main /archivos endpoint.
+#     return jsonify({"error": "This endpoint is deprecated."}), 410
 
 @ticket_bp.route('/tickets/panel', methods=['GET'])
 @token_requerido

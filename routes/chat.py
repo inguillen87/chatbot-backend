@@ -57,19 +57,12 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         contexto_previo = data.get("contexto_previo")
         rubro_id = data.get("rubro_id")
         rubro_clave = data.get("rubro_clave")
-        uploaded_file_info = data.get("uploaded_file_info")
-        archivo_adjunto_id = data.get("archivo_adjunto_id")
+        attachment_info = data.get("attachment_info")
         location = data.get("location")
 
-        if uploaded_file_info and not (
-            isinstance(uploaded_file_info, dict) and
-            "url" in uploaded_file_info and
-            "name" in uploaded_file_info
-        ):
-            raise ValueError("El campo 'uploaded_file_info' es inválido.")
-
-        if archivo_adjunto_id and not isinstance(archivo_adjunto_id, int):
-            raise ValueError("El campo 'archivo_adjunto_id' debe ser un entero.")
+        if attachment_info:
+            if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url', 'name', 'mimeType', 'size']):
+                raise ValueError("El campo 'attachment_info' es inválido o le faltan campos requeridos.")
 
         if location and not (
             isinstance(location, dict) and
@@ -78,18 +71,18 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         ):
             raise ValueError("El campo 'location' es inválido.")
 
-        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, uploaded_file_info, archivo_adjunto_id, location, None
+        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, attachment_info, location, None
 
     except (TypeError, ValueError) as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None,
             jsonify({"error": str(e)}),
         )
     except Exception as e:
         current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None,
             jsonify({"error": "Formato JSON inválido"}),
         )
 
@@ -167,8 +160,7 @@ def _procesar_chat(
                 tipo_chat,
                 rubro_id,
                 rubro_clave,
-                uploaded_file_info,
-                archivo_adjunto_id,
+                attachment_info,
                 location,
                 error_response,
             ) = _parse_request(tipo_chat_fijo)
@@ -277,32 +269,9 @@ def _procesar_chat(
                     "error": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."
                 }), 403
 
+        # The logic for file analysis has been moved to the upload endpoint.
+        # The chat endpoint is only responsible for passing the attachment_info.
         analisis_archivo_resultado = None
-        if uploaded_file_info and archivo_adjunto_id:
-            from models import ArchivoAdjunto
-            from services.analisis_archivo_service import tarea_analizar_contenido_archivo
-            from services.image_processing_service import get_image_processing_service
-            import requests
-
-            archivo_obj = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
-            if archivo_obj:
-                current_app.logger.info(f"Iniciando análisis de archivo adjunto ID: {archivo_adjunto_id} para chat tipo: {tipo_chat}")
-
-                if uploaded_file_info.get("mime_type", "").startswith("image/"):
-                    try:
-                        response = requests.get(uploaded_file_info["url"])
-                        response.raise_for_status()
-                        image_content = response.content
-                        image_processing_service = get_image_processing_service()
-                        analisis_archivo_resultado = image_processing_service.analyze_image(image_content)
-                    except Exception as e:
-                        current_app.logger.error(f"Error al procesar la imagen: {e}", exc_info=True)
-                else:
-                    # Llamar a la tarea de Celery de forma asíncrona para otros tipos de archivo
-                    tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)
-                    current_app.logger.info(f"Tarea de análisis para archivo {archivo_adjunto_id} encolada.")
-            else:
-                current_app.logger.error(f"No se encontró ArchivoAdjunto con ID {archivo_adjunto_id} en la DB.")
 
         # Leer el X-Chat-Session-Id del header
         chat_session_id_header = request.headers.get("X-Chat-Session-Id")
@@ -378,8 +347,7 @@ def _procesar_chat(
             chat_session_uuid=chat_session_id_header, # El ID de sesión único, ahora desde el header
             chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
             channel="web", # Set channel to web
-            uploaded_file_info=uploaded_file_info,
-            interpretacion_imagen_data=analisis_archivo_resultado,
+            attachment_info=attachment_info,
             location=location,
             user_data={
                 "name": actor_principal.name,
