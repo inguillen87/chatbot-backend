@@ -81,12 +81,9 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
             server.starttls()
 
         if smtp_user and smtp_password:
-            try:
-                server.login(smtp_user, smtp_password)
-            except UnicodeEncodeError:
-                logger.warning("[EMAIL] UnicodeEncodeError on login, retrying with UTF-8 encoded credentials.")
-                # The smtplib login method is overloaded and can handle bytes, which avoids the ascii encoding issue.
-                server.login(smtp_user.encode('utf-8'), smtp_password.encode('utf-8'))
+            # Pass credentials as strings. smtplib handles UTF-8 if the server supports AUTH PLAIN.
+            # The previous manual encoding was causing errors.
+            server.login(smtp_user, smtp_password)
 
         server.send_message(msg)
         server.quit()
@@ -149,11 +146,9 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
         if use_tls and not use_ssl:
             server.starttls()
         if smtp_user and smtp_password:
-            try:
-                server.login(smtp_user, smtp_password)
-            except UnicodeEncodeError:
-                logger.warning("[EMAIL_ADJ] UnicodeEncodeError on login, retrying with UTF-8 encoded credentials.")
-                server.login(smtp_user.encode('utf-8'), smtp_password.encode('utf-8'))
+            # Pass credentials as strings. smtplib handles UTF-8 if the server supports AUTH PLAIN.
+            # The previous manual encoding was causing errors.
+            server.login(smtp_user, smtp_password)
         server.send_message(msg) # send_message es mejor para MIME
         server.quit()
         logger.info(f"[EMAIL_ADJ] Enviado a {destino} con adjunto {nombre_archivo}")
