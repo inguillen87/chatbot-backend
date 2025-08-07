@@ -275,5 +275,61 @@ class TestAccionesMunicipio(unittest.TestCase):
         resultado = direccion_es_valida("don bosco 55 esquina sarmiento junin mendoza")
         self.assertTrue(resultado)
 
+    @patch('services.municipio_responder.google_search')
+    def test_news_handler(self, mock_google_search):
+        mock_google_search.return_value = [
+            {"title": "Test News 1", "link": "http://example.com/news1"},
+            {"title": "Test News 2", "link": "http://example.com/news2"},
+        ]
+
+        from services.municipio_responder import handle_main_menu_action
+        response = handle_main_menu_action("novedades")
+
+        self.assertIn("Aquí están las últimas noticias", response["message_body"])
+        self.assertIn("Test News 1", response["message_body"])
+        self.assertIn("http://example.com/news1", response["message_body"])
+        self.assertEqual(response["fuente"], "news_handler_with_results")
+
+    @patch('services.municipio_responder.google_search')
+    def test_points_of_interest_handler_with_location(self, mock_google_search):
+        mock_google_search.return_value = [
+            {"title": "Farmacia Central", "snippet": "Abierto 24hs", "link": "http://example.com/farmacia"}
+        ]
+
+        from services.municipio_responder import responder_municipio
+        with self.app.test_request_context():
+            with self.client.session_transaction() as sess:
+                sess['user_location'] = {"formatted_address": "Mendoza, Argentina"}
+
+            response = responder_municipio("farmacias de turno", None, None, chat_db_context=MagicMock())
+
+            self.assertIn("Farmacia Central", response["message_body"])
+            mock_google_search.assert_called_with("farmacias de turno cerca de Mendoza, Argentina")
+
+    @patch('services.municipio_responder.google_search')
+    def test_points_of_interest_handler_without_location(self, mock_google_search):
+        from services.municipio_responder import responder_municipio
+        with self.app.test_request_context():
+            response = responder_municipio("farmacias de turno", None, None, chat_db_context=MagicMock())
+
+            self.assertIn("necesito tu ubicación", response["message_body"])
+            self.assertEqual(response["fuente"], "solicitar_ubicacion")
+            mock_google_search.assert_not_called()
+
+    @patch('services.municipio_responder.google_search')
+    def test_fallback_handler(self, mock_google_search):
+        mock_google_search.return_value = [
+            {"title": "Test Search Result", "link": "http://example.com/search", "snippet": "This is a test search result."}
+        ]
+
+        from services.municipio_responder import responder_municipio
+        with self.app.test_request_context():
+            response = responder_municipio("unhandled query", None, None, chat_db_context=MagicMock())
+
+            self.assertIn("encontré esto en la web", response["message_body"])
+            self.assertIn("Test Search Result", response["message_body"])
+            self.assertEqual(response["fuente"], "municipio_fallback_google_search")
+            mock_google_search.assert_called_with("unhandled query")
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

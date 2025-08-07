@@ -398,6 +398,8 @@ class BaseMunicipioHandler:
     def handle(self, payload: dict) -> dict | None:
         raise NotImplementedError
 
+from services.google_search import google_search
+
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         # As per the new specification from the user/frontend team.
@@ -440,6 +442,69 @@ class GreetingHandler(BaseMunicipioHandler):
             "fuente": "greeting_handler_categorized_v1"
         }
 
+class NewsHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        query = f"noticias {self.context.get('municipio_config_actual', {}).get('nombre_display', 'del municipio')}"
+        search_results = google_search(query)
+
+        if not search_results:
+            return {
+                "message_body": "No se encontraron noticias recientes.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "news_handler_no_results"
+            }
+
+        news_items = []
+        for result in search_results[:3]:
+            news_items.append(f"- [{result.get('title')}]({result.get('link')})")
+
+        return {
+            "message_body": "Aquí están las últimas noticias:\n" + "\n".join(news_items),
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "news_handler_with_results"
+        }
+
+class PointsOfInterestHandler(BaseMunicipioHandler):
+    def handle(self, payload: dict) -> dict | None:
+        query = payload.get("pregunta", "")
+        location = payload.get("location")
+
+        if not query:
+            return {
+                "message_body": "Por favor, decime qué punto de interés estás buscando.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "poi_handler_no_query"
+            }
+
+        if location:
+            search_query = f"{query} cerca de {location}"
+        else:
+            search_query = f"{query} en {self.context.get('municipio_config_actual', {}).get('nombre_display', 'el municipio')}"
+
+        search_results = google_search(search_query)
+
+        if not search_results:
+            return {
+                "message_body": f"No se encontraron resultados para '{query}'.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "poi_handler_no_results"
+            }
+
+        poi_items = []
+        for result in search_results[:3]:
+            poi_items.append(f"- {result.get('title')}\n{result.get('snippet')}\n[Ver más]({result.get('link')})")
+
+        return {
+            "message_body": f"Aquí hay algunos resultados para '{query}':\n" + "\n\n".join(poi_items),
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "poi_handler_with_results"
+        }
+
 def handle_main_menu_action(action_id: str) -> dict:
     """
     Handles actions from the new categorized main menu.
@@ -463,9 +528,12 @@ def handle_main_menu_action(action_id: str) -> dict:
         }
 
     # Placeholder for actions without a defined response yet
+    if action_id == "novedades":
+        return NewsHandler(context={}).handle({})
+
     unimplemented_actions = [
         "consultar_otros_tramites", "denuncias", "solicitar_turnos",
-        "agenda_cultural_y_turistica", "novedades"
+        "agenda_cultural_y_turistica"
     ]
     if action_id in unimplemented_actions:
         return {
@@ -1033,6 +1101,20 @@ def responder_municipio(
             "fuente": "info_perdida_agua"
         }
 
+    if es_consulta_general(pregunta_original):
+        location = flask_session.get("user_location")
+        if location:
+            return PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": location.get("formatted_address")})
+        else:
+            contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_PANICO.name
+            return {
+                "message_body": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
+                "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "No, gracias", "action": "cancelar"}],
+                "message_type": "interactive_buttons",
+                "fuente": "solicitar_ubicacion"
+            }
+
     reclamo_categories = {
         "reclamo_luminaria": "Luminaria",
         "reclamo_arbolado": "Arbolado",
@@ -1478,6 +1560,20 @@ def responder_municipio(
         except Exception as e_conv_muni_final:
             logger_actual.error(f"Error guardando Conversacion final (municipio): {e_conv_muni_final}", exc_info=True)
             db.session.rollback()
+
+    if not respuesta_manejada_por_llm:
+        search_results = google_search(pregunta_str)
+        if search_results:
+            search_items = []
+            for result in search_results[:3]:
+                search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
+
+            final_response_dict = {
+                "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "municipio_fallback_google_search"
+            }
 
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
