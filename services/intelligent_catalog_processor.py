@@ -2,6 +2,7 @@ import os
 import logging
 from typing import Dict, Any, List
 from werkzeug.utils import secure_filename
+from services.google_search import google_search
 
 from models import db, CatalogoItem, ArchivoAdjunto, AnalisisArchivo
 from services.procesar_catalogo_excel import procesar_catalogo_excel
@@ -172,23 +173,55 @@ class IntelligentCatalogProcessor:
             normalized.append(norm_item)
         return normalized
 
+    def _enrich_item_data(self, item_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Enriches a single catalog item with an image URL and description if they are missing."""
+        if not item_data.get('imagen_url'):
+            try:
+                query = f"{item_data.get('nombre', '')} {item_data.get('marca', '')}"
+                search_results = google_search(query)
+                # A simple strategy: take the first image result.
+                # This could be improved with more sophisticated logic.
+                if search_results and isinstance(search_results, list):
+                    for result in search_results:
+                        if result.get('pagemap') and result['pagemap'].get('cse_image'):
+                            item_data['imagen_url'] = result['pagemap']['cse_image'][0]['src']
+                            break
+                elif search_results is None:
+                    logger.warning("Google search returned None. Check API keys and CSE ID.")
+            except Exception as e:
+                logger.error(f"Error searching for image for item {item_data.get('nombre')}: {e}")
+
+        if not item_data.get('descripcion'):
+            try:
+                # We can use the LLM to generate a description based on the item's name and brand.
+                system_prompt = "Eres un asistente de marketing. Tu tarea es generar una descripción de producto concisa y atractiva."
+                user_prompt = f"Genera una descripción para el producto '{item_data.get('nombre')}' de la marca '{item_data.get('marca')}'. Sé breve y destaca sus características principales."
+                description = llamar_llm_para_json_estructurado(system_prompt=system_prompt, user_prompt=user_prompt)
+                if description and isinstance(description, str):
+                    item_data['descripcion'] = description
+            except Exception as e:
+                logger.error(f"Error generating description for item {item_data.get('nombre')}: {e}")
+
+        return item_data
+
     def _save_catalog_items(self, items: List[Dict[str, Any]]):
-        """Deletes the old catalog and saves the new items to the database."""
+        """Deletes the old catalog, enriches the new items, and saves them to the database."""
         # Delete old catalog items for the user
         CatalogoItem.query.filter_by(user_id=self.user_id).delete()
 
         for item_data in items:
+            enriched_item_data = self._enrich_item_data(item_data)
             item = CatalogoItem(
                 user_id=self.user_id,
-                nombre=item_data.get('nombre'),
-                descripcion=item_data.get('descripcion'),
-                precio=str(item_data.get('precio', '')),
-                cantidad=str(item_data.get('cantidad', '')),
-                sku=item_data.get('sku'),
-                marca=item_data.get('marca'),
-                categoria=item_data.get('categoria'),
-                unidad=item_data.get('unidad'),
-                imagen_url=item_data.get('imagen_url')
+                nombre=enriched_item_data.get('nombre'),
+                descripcion=enriched_item_data.get('descripcion'),
+                precio=str(enriched_item_data.get('precio', '')),
+                cantidad=str(enriched_item_data.get('cantidad', '')),
+                sku=enriched_item_data.get('sku'),
+                marca=enriched_item_data.get('marca'),
+                categoria=enriched_item_data.get('categoria'),
+                unidad=enriched_item_data.get('unidad'),
+                imagen_url=enriched_item_data.get('imagen_url')
             )
             db.session.add(item)
 
