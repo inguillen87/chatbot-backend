@@ -10,7 +10,7 @@ from models import (
 )
 from extensions import db
 from sqlalchemy import or_
-from routes.auth import token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from sqlalchemy import or_
 from datetime import datetime, timedelta # Añadido timedelta
 

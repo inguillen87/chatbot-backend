@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, current_app
 from models import User, Recordatorio, db
-from routes.auth import token_requerido, admin_o_empleado_requerido # Changed decorator
+from utils.auth_helpers import token_requerido, admin_o_empleado_requerido # Changed decorator
 from datetime import datetime, date # Import date
 
 recordatorios_bp = Blueprint('recordatorios_bp', __name__, url_prefix='/recordatorios') # Renamed blueprint for consistency
