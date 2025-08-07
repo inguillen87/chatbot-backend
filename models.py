@@ -178,7 +178,7 @@ class PymeTicket(db.Model):
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime, default=get_local_now)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
-    archivo_url = db.Column(db.String(255), nullable=True)
+    # archivo_url = db.Column(db.String(255), nullable=True) # Replaced by relationship
     telefono = db.Column(db.String(30), nullable=True)
     email = db.Column(db.String(120), nullable=True)
     dni = db.Column(db.String(20), nullable=True)
@@ -187,6 +187,13 @@ class PymeTicket(db.Model):
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
     comentarios = db.relationship('TicketComentario', back_populates='pyme_ticket', lazy='dynamic')
+    archivos = db.relationship(
+        'ArchivoAdjunto',
+        foreign_keys='[ArchivoAdjunto.pyme_ticket_id]',
+        backref='pyme_ticket_ref',
+        lazy='dynamic',
+        cascade="all, delete-orphan"
+    )
 
 class PymePedido(db.Model):
     __tablename__ = "pyme_pedido"
@@ -311,11 +318,16 @@ class TicketComentario(db.Model):
     user_id = db.Column(db.Integer, nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     es_admin = db.Column(db.Boolean, default=False)
+
+    # New field to link a comment directly to an attachment
+    archivo_adjunto_id = db.Column(db.Integer, db.ForeignKey('archivo_adjunto.id'), nullable=True)
+    archivo_adjunto = db.relationship('ArchivoAdjunto', backref=db.backref('comentario_asociado', uselist=False))
+
     pyme_ticket = db.relationship('PymeTicket', back_populates='comentarios')
     municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
 
     def to_dict(self):
-        return {
+        data = {
             "id": self.id,
             "pyme_ticket_id": self.pyme_ticket_id,
             "municipio_ticket_id": self.municipio_ticket_id,
@@ -325,6 +337,15 @@ class TicketComentario(db.Model):
             "anon_id": self.anon_id,
             "es_admin": self.es_admin
         }
+        if self.archivo_adjunto:
+            data['attachment_info'] = {
+                "id": self.archivo_adjunto.id,
+                "url": self.archivo_adjunto.url,
+                "name": self.archivo_adjunto.nombre_original,
+                "mimeType": self.archivo_adjunto.mime,
+                "size": self.archivo_adjunto.tamano
+            }
+        return data
 
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)

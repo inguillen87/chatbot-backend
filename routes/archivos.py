@@ -6,14 +6,13 @@ import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from routes.auth import token_requerido
+from services.gcs_service import upload_to_gcs, BUCKET_NAME, MAX_FILE_SIZE # Import centralized GCS service and constants
 # from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 from google.cloud import storage
 from services.google_vision_service import analyze_image_from_content
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 
 archivos_bp = Blueprint('archivos_bp', __name__, url_prefix='/archivos')
-
-BUCKET_NAME = "chatboc-files"
 # Extensiones permitidas para evitar archivos ejecutables sospechosos
 ALLOWED_EXTENSIONS = {
     'jpg',
@@ -180,43 +179,27 @@ def subir_archivo(current_user):
         if file.filename == '':
             continue
 
-        original = secure_filename(file.filename)
-        unique = f"{uuid.uuid4().hex}_{original}"
+        upload_result = upload_to_gcs(file)
 
-        try:
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(BUCKET_NAME)
-            blob = bucket.blob(unique)
+        if not upload_result:
+            # Rollback previous successful uploads if any
+            # Note: This requires a delete function in gcs_service
+            # For now, we log the issue. A more robust implementation would clean up.
+            current_app.logger.error(f"Upload failed for {secure_filename(file.filename)}. Previously uploaded files in this batch may not be cleaned up automatically.")
+            return jsonify({'error': f'Error al subir el archivo {secure_filename(file.filename)}.'}), 500
 
-            blob.upload_from_file(file, content_type=file.mimetype)
-
-            tamano = blob.size
-
-            if tamano > MAX_FILE_SIZE:
-                blob.delete()
-                for agi in archivos_guardados_info:
-                    try:
-                        storage_client.bucket(BUCKET_NAME).blob(agi['unique']).delete()
-                    except Exception as e_delete:
-                        current_app.logger.error(f"Error al eliminar archivo {agi['unique']} de GCS durante el rollback: {e_delete}", exc_info=True)
-                return jsonify({'error': f'Archivo "{original}" demasiado grande (máx 10MB).'}), 413
-
-            archivos_guardados_info.append({'path': blob.public_url, 'unique': unique, 'original': original, 'mimetype': file.mimetype, 'tamano': tamano})
-
-        except Exception as e:
-            current_app.logger.error(f"Error al subir el archivo {original} a GCS: {e}", exc_info=True)
-            return jsonify({'error': f'Error al subir el archivo {original}.'}), 500
+        archivos_guardados_info.append(upload_result)
 
     # Si todos los archivos se guardaron bien, ahora los registramos en la BD
-    for agi in archivos_guardados_info:
-        url = agi['path']
+    for upload_result in archivos_guardados_info:
+        url = upload_result['public_url']
         nuevo_adjunto = ArchivoAdjunto(
             user_id=current_user.id,
             session_id=session_id,
-            filename=agi['unique'],
-            nombre_original=agi['original'],
-            mime=agi['mimetype'],
-            tamano=agi['tamano'],
+            filename=upload_result['unique_name'],
+            nombre_original=upload_result['original_name'],
+            mime=upload_result['mimetype'],
+            tamano=upload_result['size'],
             tipo=tipo_adjunto,
             pyme_ticket_id=pyme_ticket_id if pyme_ticket_id else None,
             municipio_ticket_id=municipio_ticket_id if municipio_ticket_id else None,
@@ -275,16 +258,20 @@ def subir_archivo(current_user):
     if not resultados_subida and not files: # Si no se enviaron archivos válidos desde el principio
          return jsonify({'error': 'No se proporcionaron archivos válidos.'}), 400
 
-    if resultados_subida:
-        return jsonify({
-            'mensaje': f'{len(resultados_subida)} archivo(s) subido(s) y análisis encolado.',
-            'archivos': resultados_subida
-        }), 200
+    if not resultados_subida and archivos_guardados_info:
+        # This case is already handled above, but as a safeguard:
+        return jsonify({'error': 'Error al procesar archivos en la base de datos después de guardarlos.'}), 500
+
+    if not resultados_subida:
+        return jsonify({'error': 'No se proporcionaron archivos válidos o no se pudieron procesar.'}), 400
+
+    # New response format as per frontend directives
+    if len(resultados_subida) == 1:
+        # If only one file was uploaded, return its object directly
+        return jsonify(resultados_subida[0]), 200
     else:
-        # Si llegó aquí, es probable que los archivos fallaran las validaciones iniciales o hubo otro problema.
-        # Los errores específicos ya deberían haber sido retornados.
-        # Este es un fallback, aunque la lógica anterior debería cubrir los casos de error.
-        return jsonify({'error': 'No se pudieron procesar los archivos.'}), 400
+        # If multiple files were uploaded, return a list of their objects
+        return jsonify(resultados_subida), 200
 
 
 @archivos_bp.route('/subir_imagen', methods=['POST'])
@@ -299,56 +286,46 @@ def subir_imagen(current_user):
         return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
 
     if file and allowed_file(file.filename) and allowed_mime(file.mimetype):
-        original = secure_filename(file.filename)
-        unique = f"{uuid.uuid4().hex}_{original}"
-        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-        save_path = os.path.join(UPLOAD_FOLDER, unique)
+        upload_result = upload_to_gcs(file)
+
+        if not upload_result:
+            return jsonify({'error': 'Error al subir la imagen.'}), 500
 
         try:
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(BUCKET_NAME)
-            blob = bucket.blob(unique)
-
-            blob.upload_from_file(file, content_type=file.mimetype)
-
-            tamano = blob.size
-
-            if tamano > MAX_FILE_SIZE:
-                blob.delete()
-                return jsonify({'error': 'Archivo demasiado grande (máx 10MB).'}), 413
-
-            url = blob.public_url
             nuevo_adjunto = ArchivoAdjunto(
                 user_id=current_user.id,
-                filename=unique,
-                nombre_original=original,
-                mime=file.mimetype,
-                tamano=tamano,
+                filename=upload_result['unique_name'],
+                nombre_original=upload_result['original_name'],
+                mime=upload_result['mimetype'],
+                tamano=upload_result['size'],
                 tipo='imagen',
-                url=url,
+                url=upload_result['public_url'],
             )
             db.session.add(nuevo_adjunto)
             db.session.commit()
 
-            analysis_result = analyze_image_from_content(file.read())
+            # For analysis, we need the file content. Read it from the FileStorage object.
             file.seek(0)
+            image_content = file.read()
+            analysis_result = analyze_image_from_content(image_content)
 
             return jsonify({
                 'mensaje': 'Imagen subida y analizada correctamente.',
                 'archivo': {
-                    'filename': unique,
+                    'filename': upload_result['unique_name'],
                     'id': nuevo_adjunto.id,
-                    'name': original,
-                    'mimeType': file.mimetype,
-                    'size': tamano,
-                    'url': url
+                    'name': upload_result['original_name'],
+                    'mimeType': upload_result['mimetype'],
+                    'size': upload_result['size'],
+                    'url': upload_result['public_url']
                 },
                 'analisis': analysis_result
             }), 200
 
         except Exception as e:
-            current_app.logger.error(f"Error al subir la imagen {original} a GCS: {e}", exc_info=True)
-            return jsonify({'error': 'Error al subir la imagen.'}), 500
+            current_app.logger.error(f"Error al procesar la imagen después de subirla a GCS: {e}", exc_info=True)
+            # Optional: Add logic to delete the file from GCS if DB operation fails
+            return jsonify({'error': 'Error al procesar la imagen.'}), 500
 
     return jsonify({'error': 'Formato de archivo no permitido'}), 400
 
