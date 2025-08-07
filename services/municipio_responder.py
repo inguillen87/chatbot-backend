@@ -455,14 +455,19 @@ class NewsHandler(BaseMunicipioHandler):
                 "fuente": "news_handler_no_results"
             }
 
-        news_items = []
-        for result in search_results[:3]:
-            news_items.append(f"- [{result.get('title')}]({result.get('link')})")
+        options = []
+        for result in search_results[:5]:
+            options.append({
+                "id": f"news_{result.get('link')}",
+                "texto": result.get('title'),
+                "url": result.get('link'),
+                "type": "url"
+            })
 
         return {
-            "message_body": "Aquí están las últimas noticias:\n" + "\n".join(news_items),
-            "options_list": [],
-            "message_type": "text",
+            "message_body": "Aquí están las últimas noticias:",
+            "options_list": options,
+            "message_type": "interactive_list",
             "fuente": "news_handler_with_results"
         }
 
