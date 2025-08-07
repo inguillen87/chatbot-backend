@@ -774,6 +774,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     request_id = str(uuid.uuid4())
     logger_actual = current_app.logger if current_app else logger
 
+    if chat_db_context is None:
+        chat_db_context = models.ChatSessionContext()
+        chat_db_context.context_data = {}
+
     # --- 1. Procesamiento de Entrada y Carga de Contexto (simplificado) ---
     received_payload = {}
     pregunta_str = ""
@@ -785,11 +789,14 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         received_payload["pregunta"] = pregunta_original
     if kwargs: received_payload.update(kwargs)
 
-    if chat_db_context and chat_db_context.context_data is None: chat_db_context.context_data = {}
-    if chat_db_context and "mensajes_previos_gemini_formato" not in chat_db_context.context_data:
+    if chat_db_context.context_data is None:
+        chat_db_context.context_data = {}
+
+    if "mensajes_previos_gemini_formato" not in chat_db_context.context_data:
         chat_db_context.context_data["mensajes_previos_gemini_formato"] = []
-    pyme_ctx_actual = chat_db_context.context_data.get(CONTEXTO_PYME, {}) if chat_db_context else {}
-    historial_chat_para_gemini = chat_db_context.context_data.get("mensajes_previos_gemini_formato", []) if chat_db_context else []
+
+    pyme_ctx_actual = chat_db_context.context_data.get(CONTEXTO_PYME, {})
+    historial_chat_para_gemini = chat_db_context.context_data.get("mensajes_previos_gemini_formato", [])
 
     # --- 2. Construir Información de Usuario para Gemini ---
     nombre_pyme_display = getattr(owner_user, "nombre_empresa", "la tienda") if owner_user else "la tienda"

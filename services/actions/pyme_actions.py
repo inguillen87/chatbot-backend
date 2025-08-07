@@ -246,7 +246,66 @@ class ConsultarInfoPymeActionHandler(BaseActionHandler):
         }
 
 # This handler is now centralized in common_actions.py
-# class DerivarHumanoActionHandlerPyme(BaseActionHandler): ...
+class DerivarHumanoActionHandlerPyme(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Crea un ticket real de chat en vivo y devuelve su identificador."""
+        logger.info(f"Executing DerivarHumanoActionHandlerPyme with data: {action_data}")
+
+        try:
+            viewer_user = self.context.get("viewer_user_obj")
+            owner_user = self.context.get("user_obj")
+            pregunta_original = self.context.get("pregunta_actual_usuario", "")
+
+            nombre = (getattr(viewer_user, "name", None) or action_data.get("nombre"))
+            telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
+            email = (getattr(viewer_user, "email", None) or action_data.get("email"))
+
+            ticket_data = {
+                "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Usuario'}",
+                "categoria": "Atención en Vivo",
+                "pregunta": pregunta_original,
+                "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
+                "user_id": self.context.get("cliente_id"),
+                "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                "estado": "esperando_agente_en_vivo",
+                "nombre_cliente": nombre,
+                "telefono_cliente": telefono,
+                "email_cliente": email,
+                "pyme_id": getattr(owner_user, "id", None)
+            }
+
+            ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+
+            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_cleaned)
+            if not sala:
+                raise Exception("crear_nuevo_ticket devolvió None")
+
+            servicio_tickets.crear_comentario(
+                ticket_id=sala.id,
+                tipo_ticket="pyme",
+                comentario_data={
+                    "comentario": pregunta_original,
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id"),
+                    "es_admin": False,
+                },
+            )
+
+            chat_id = f"P-{sala.nro_ticket}"
+
+            user_message = f"En breve un representante se pondrá en contacto contigo. Tu número de chat es {chat_id}."
+            return {
+                "success": True,
+                "message_to_user": user_message,
+                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+            }
+        except Exception as e:
+            logger.error(f"Error en DerivarHumanoActionHandlerPyme: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
+                "error_details": str(e),
+            }
 
 class HacerSugerenciaActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:

@@ -32,6 +32,7 @@ else:
 @webhook_bp.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     print("Whatsapp webhook called!")
+    print(f"Request form: {request.form}")
     if not validator:
         print("Error: Twilio RequestValidator not initialized. Ensure TWILIO_AUTH_TOKEN is set.")
         abort(500, "Twilio validator not configured")
@@ -73,7 +74,8 @@ def whatsapp_webhook():
         initial_session_data = {
             "historial_chat": [], "estado_conversacion": "inicio",
             "user_id_empresa": empresa_id, "telefono_usuario": from_number_cleaned,
-            "canal_origen": "whatsapp"
+            "canal_origen": "whatsapp",
+            "mensajes_previos_gemini_formato": []
         }
         session_context_db_entry = ChatSessionContext(
             chat_session_id=chat_session_id_internal, user_id=empresa_id,

@@ -49,10 +49,83 @@ def obtener_metricas(usuario_actual):
         return jsonify({"error": f"Error al obtener métricas: {str(e)}"}), 500
 
 
-@metricas_bp.route("/pyme/metrics", methods=["GET"])
+from services.metricas_service import MetricasService
+
+@metricas_bp.route('/api/metrics/summary', methods=['GET'])
 @token_requerido
-def obtener_metricas_pyme(usuario_actual):
-    try:
-        return jsonify(_compilar_metricas(usuario_actual))
-    except Exception as e:  # pragma: no cover - defensive
-        return jsonify({"error": f"Error al obtener métricas: {str(e)}"}), 500
+def get_metrics_summary(usuario_actual):
+    """
+    Endpoint de API para obtener un resumen de las métricas.
+    """
+    if not usuario_actual.is_authenticated or not hasattr(usuario_actual, 'pyme_id') or not usuario_actual.pyme_id:
+        return jsonify({"error": "No autorizado"}), 403
+
+    service = MetricasService(pyme_id=usuario_actual.pyme_id)
+
+    summary = {
+        "total_sales": service.get_total_ingresos(),
+        "total_orders": service.get_total_pedidos(),
+        "new_customers": 0, # Placeholder
+        "conversion_rate": 0 # Placeholder
+    }
+    return jsonify(summary)
+
+from services.metricas_service import MetricasService
+
+@metricas_bp.route('/api/metrics/kpis', methods=['GET'])
+@token_requerido
+def get_metrics_kpis(usuario_actual):
+    """
+    Endpoint de API para obtener los KPIs.
+    """
+    if not usuario_actual.is_authenticated or not hasattr(usuario_actual, 'pyme_id') or not usuario_actual.pyme_id:
+        return jsonify({"error": "No autorizado"}), 403
+
+    service = MetricasService(pyme_id=usuario_actual.pyme_id)
+    kpis = service.get_kpis()
+    return jsonify(kpis)
+
+from services.metricas_service import MetricasService
+
+@metricas_bp.route('/api/metrics/sales-over-time', methods=['GET'])
+@token_requerido
+def get_sales_over_time(usuario_actual):
+    """
+    Endpoint de API para obtener las ventas a lo largo del tiempo.
+    """
+    if not usuario_actual.is_authenticated or not hasattr(usuario_actual, 'pyme_id') or not usuario_actual.pyme_id:
+        return jsonify({"error": "No autorizado"}), 403
+
+    service = MetricasService(pyme_id=usuario_actual.pyme_id)
+    sales_over_time = service.get_sales_over_time()
+    return jsonify(sales_over_time)
+
+from services.metricas_service import MetricasService
+
+@metricas_bp.route('/api/metrics/top-products', methods=['GET'])
+@token_requerido
+def get_top_products(usuario_actual):
+    """
+    Endpoint de API para obtener los productos más vendidos.
+    """
+    if not usuario_actual.is_authenticated or not hasattr(usuario_actual, 'pyme_id') or not usuario_actual.pyme_id:
+        return jsonify({"error": "No autorizado"}), 403
+
+    service = MetricasService(pyme_id=usuario_actual.pyme_id)
+    top_products = service.get_top_products()
+    return jsonify(top_products)
+
+from services.metricas_service import MetricasService
+
+@metricas_bp.route('/api/metrics/sales-by-region', methods=['GET'])
+@token_requerido
+def get_sales_by_region(usuario_actual):
+    """
+    Endpoint de API para obtener las ventas por región.
+    """
+    if not usuario_actual.is_authenticated or not hasattr(usuario_actual, 'pyme_id') or not usuario_actual.pyme_id:
+        return jsonify({"error": "No autorizado"}), 403
+
+    service = MetricasService(pyme_id=usuario_actual.pyme_id)
+    sales_by_region = service.get_sales_by_region()
+    return jsonify(sales_by_region)
