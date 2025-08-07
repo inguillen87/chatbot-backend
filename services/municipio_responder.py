@@ -429,10 +429,10 @@ class GreetingHandler(BaseMunicipioHandler):
                     ]
                 },
                 {
-                    "titulo": "Información General",
+                    "titulo": "Información y Novedades",
                     "botones": [
                         {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                        {"texto": "Novedades", "action_id": "novedades"},
+                        {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
                         {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
                     ]
                 }
@@ -444,8 +444,16 @@ class GreetingHandler(BaseMunicipioHandler):
 
 class NewsHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        query = f"noticias {self.context.get('municipio_config_actual', {}).get('nombre_display', 'del municipio')}"
-        search_results = google_search(query)
+        municipio_config = self.context.get('municipio_config_actual', {})
+        municipio_name = municipio_config.get('nombre_display', 'del municipio')
+        municipio_website = municipio_config.get('website')
+
+        if municipio_website:
+            query = f"site:{municipio_website} noticias de {municipio_name}"
+        else:
+            query = f"noticias de {municipio_name}"
+
+        search_results = google_search(query, days=1)
 
         if not search_results:
             return {
@@ -533,7 +541,7 @@ def handle_main_menu_action(action_id: str) -> dict:
         }
 
     # Placeholder for actions without a defined response yet
-    if action_id == "novedades":
+    if action_id == "ultimas_novedades":
         return NewsHandler(context={}).handle({})
 
     unimplemented_actions = [

@@ -7,13 +7,14 @@ from cachetools import TTLCache
 logger = logging.getLogger(__name__)
 cache = TTLCache(maxsize=100, ttl=86400)
 
-def google_search(query: str):
+def google_search(query: str, days=None):
     """
     Performs a Google search using the Custom Search JSON API, with caching.
     """
-    if query in cache:
+    cache_key = f"{query}_{days}"
+    if cache_key in cache:
         logger.info(f"Returning cached results for query: {query}")
-        return cache[query]
+        return cache[cache_key]
 
     api_key = os.environ.get("GOOGLE_API_KEY")
     cse_id = os.environ.get("GOOGLE_CSE_ID")
@@ -29,6 +30,8 @@ def google_search(query: str):
         "searchType": "image",
         "num": 1
     }
+    if days:
+        params["dateRestrict"] = f"d[{days}]"
 
     try:
         response = requests.get(url, params=params)
