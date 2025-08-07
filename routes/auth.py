@@ -14,7 +14,7 @@ from datetime import datetime
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
-auth_bp = Blueprint('auth', __name__)
+auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
@@ -86,9 +86,8 @@ from flask_login import current_user
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Handle CORS preflight requests
         if request.method == 'OPTIONS':
-            return make_response()
+            return '', 200
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
