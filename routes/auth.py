@@ -652,53 +652,84 @@ def dashboard_info(user: User):
         # }
     })
 
-@auth_bp.route('/me', methods=['PUT', 'OPTIONS'])
-@auth_bp.route('/perfil', methods=['PUT', 'OPTIONS'])
+@auth_bp.route('/me', methods=['GET', 'PUT', 'OPTIONS'])
+@auth_bp.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
 @token_requerido
-def actualizar_me(user):
-    """Permite que el usuario modifique sus datos personales."""
-    data = request.get_json(silent=True) or {}
-    if not data:
-        return jsonify({"error": "No se recibieron datos."}), 400
+def me_perfil(user):
+    """
+    Obtiene (GET) o actualiza (PUT) el perfil del usuario.
+    """
+    if request.method == 'GET':
+        rubro_nombre = user.rubro.nombre if user.rubro else "General"
+        tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
 
-    for key, value in data.items():
-        if key in {"tags", "acepta_marketing", "rol", "role", "empresa_id"}:
-            # Evitar cambios críticos que permitirían escalar privilegios
-            continue
-        elif hasattr(user, key):
-            if key == "horario_json":
-                setattr(user, "horario", value)
-            else:
-                if key == "plan" and isinstance(value, str):
-                    value = value.lower()
-                setattr(user, key, value)
-                if key == "plan":
-                    if value == "pro":
-                        user.limite_preguntas = 200
-                    elif value == "full":
-                        user.limite_preguntas = None
+        # Construir el perfil del usuario a partir del objeto User
+        profile_data = {
+            "id": user.id,
+            "token": user.token,
+            "name": user.name,
+            "email": user.email,
+            "rol": user.rol,
+            "empresa_id": user.empresa_id,
+            "rubro": rubro_nombre,
+            "tipo_chat": tipo_chat,
+            "categorias": user.ticket_categorias or "",
+            "nombre_empresa": user.nombre_empresa,
+            "badge_tipo": user.badge_tipo,
+            "catalogo_label": user.catalogo_label,
+            "ciudad": user.ciudad,
+            "color_primario": user.color_primario,
+            "plan": user.plan,
+            "limite_preguntas": user.limite_preguntas,
+            "acepta_marketing": user.acepta_marketing,
+            "tags": user.tags,
+            "horario": user.horario,
+            # Asegurarse de no exponer datos sensibles como el hash de la contraseña
+        }
+        return jsonify(profile_data)
 
-    if "tags" in data:
-        tags = data.get("tags")
-        if isinstance(tags, list):
-            user.tags = ",".join(tags)
-        elif isinstance(tags, str):
-            user.tags = tags
+    elif request.method == 'PUT':
+        data = request.get_json(silent=True) or {}
+        if not data:
+            return jsonify({"error": "No se recibieron datos."}), 400
 
-    if "acepta_marketing" in data:
-        nueva = bool(data.get("acepta_marketing"))
-        if nueva and not user.acepta_marketing:
-            user.fecha_aceptacion_marketing = datetime.utcnow()
-        user.acepta_marketing = nueva
+        for key, value in data.items():
+            if key in {"tags", "acepta_marketing", "rol", "role", "empresa_id", "token", "id", "email"}:
+                # Evitar cambios críticos que permitirían escalar privilegios o cambiar identificadores
+                continue
+            elif hasattr(user, key):
+                if key == "horario_json":
+                    setattr(user, "horario", value)
+                else:
+                    if key == "plan" and isinstance(value, str):
+                        value = value.lower()
+                    setattr(user, key, value)
+                    if key == "plan":
+                        if value == "pro":
+                            user.limite_preguntas = 200
+                        elif value == "full":
+                            user.limite_preguntas = None
 
-    try:
-        db.session.commit()
-        return jsonify({"mensaje": "Perfil actualizado correctamente."})
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(
-            f"Error al actualizar perfil para {user.email}: {e}", exc_info=True
-        )
-        return jsonify({"error": "Error interno al guardar el perfil."}), 500
-    
+        if "tags" in data:
+            tags = data.get("tags")
+            if isinstance(tags, list):
+                user.tags = ",".join(tags)
+            elif isinstance(tags, str):
+                user.tags = tags
+
+        if "acepta_marketing" in data:
+            nueva = bool(data.get("acepta_marketing"))
+            if nueva and not user.acepta_marketing:
+                user.fecha_aceptacion_marketing = datetime.utcnow()
+            user.acepta_marketing = nueva
+
+        try:
+            db.session.commit()
+            return jsonify({"mensaje": "Perfil actualizado correctamente."})
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(
+                f"Error al actualizar perfil para {user.email}: {e}", exc_info=True
+            )
+            return jsonify({"error": "Error interno al guardar el perfil."}), 500
 
