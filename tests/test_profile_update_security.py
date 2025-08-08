@@ -5,7 +5,7 @@ from app import create_app, db
 from config import Config
 from models import User
 
-from routes.auth import actualizar_me
+from routes.auth import me_perfil
 
 class TestConfig(Config):
     TESTING = True

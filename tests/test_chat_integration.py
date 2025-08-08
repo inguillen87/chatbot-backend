@@ -124,34 +124,28 @@ class TestChatIntegration(unittest.TestCase):
         """
         Tests that an anonymous request to /ask/municipio
         successfully loads a default owner user and returns a valid response.
+        This test now also verifies the new keyword-based GreetingHandler.
         """
-        with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-            # Mock the response from the LLM to simulate a simple greeting
-            mock_llamar_gemini.return_value = {
-                "respuesta_usuario": "¡Hola! Soy tu asistente virtual. ¿Cómo puedo ayudarte?",
-                "accion_backend": "responder_directamente",
-                "datos_estructura": {},
-                "pedir_info": None,
-                "botones": []
-            }
+        chat_payload = {
+            "pregunta": "Hola",
+            "tipo_chat": "municipio",
+        }
 
-            chat_payload = {
-                "pregunta": "Hola",
-                "tipo_chat": "municipio",
-            }
+        # Note: No auth headers are sent. The new logic should catch "Hola"
+        # and trigger the GreetingHandler directly, bypassing the LLM.
+        response = self.client.post('/ask/municipio', json=chat_payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
 
-            # Note: No auth headers are sent
-            response = self.client.post('/ask/municipio', json=chat_payload)
+        # Check that we don't get a JSON error response.
+        self.assertNotIn("error", data)
 
-            self.assertEqual(response.status_code, 200)
-            data = response.get_json()
-
-            # Check that we don't get a "could not determine owner" error in the logs (implicitly tested by getting a 200)
-            # and that we don't get a JSON error response.
-            self.assertNotIn("error", data)
-
-            # Check that we get a meaningful response from the bot, as mocked
-            self.assertIn("¡Hola! Soy tu asistente virtual.", data.get("respuesta", ""))
+        # Check for the new, enhanced welcome message from GreetingHandler.
+        # The response format from responder_municipio wraps the handler's response.
+        # The key for the text is 'respuesta_usuario' inside the handler's dict.
+        self.assertIn("Soy JUNI, tu Asistente Virtual", data.get("respuesta_usuario", ""))
+        self.assertIn("Mandar una foto", data.get("respuesta_usuario", "")) # Check for feature explanation
+        self.assertIsNotNone(data.get("categorias")) # Check for the new categorized buttons
 
 if __name__ == '__main__':
     unittest.main()
