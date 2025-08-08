@@ -235,7 +235,16 @@ def responder_chatboc(
         response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
 
     # --- Audio Response Generation ---
+    generate_audio = False
+    # Check if the original input was audio
     if chat_db_context and chat_db_context.context_data and chat_db_context.context_data.get('source_is_audio'):
+        generate_audio = True
+
+    # Check if the handler specifically requested audio generation (e.g., for welcome message)
+    if response_data and response_data.get('generar_audio_bienvenida'):
+        generate_audio = True
+
+    if generate_audio:
         text_to_speak = response_data.get('message_body')
         if text_to_speak:
             from services.google_text_to_speech import TextToSpeechService
@@ -245,7 +254,10 @@ def responder_chatboc(
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")
 
-        # Clean up the flag after processing to avoid responding with audio to a text message
-        chat_db_context.context_data.pop('source_is_audio', None)
+        # Clean up flags after processing to avoid unwanted audio responses in subsequent turns
+        if chat_db_context and chat_db_context.context_data:
+            chat_db_context.context_data.pop('source_is_audio', None)
+        if response_data:
+            response_data.pop('generar_audio_bienvenida', None)
 
     return response_data
