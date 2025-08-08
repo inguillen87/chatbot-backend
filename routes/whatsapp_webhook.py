@@ -339,17 +339,22 @@ def whatsapp_webhook():
     # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            # The formatter for whatsapp now returns a single text body with options formatted as a numbered list.
-            # We use this as the primary body for the message.
+            # First, send the main text message with the interactive options.
             final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
                          bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
 
-            message_params = {
+            text_message_params = {
                 'from_': to_number_raw,
                 'to': from_number_raw,
                 'body': final_body,
             }
 
+            # For approved templates (if ever needed again), we would add 'persistent_action' here.
+            # For now, all responses are sent as plain text or media messages.
+            text_message = twilio_client.messages.create(**text_message_params)
+            print(f"Mensaje de texto enviado a {from_number_raw}, SID: {text_message.sid}")
+
+            # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')
             if audio_url:
                 # Ensure the URL is absolute
@@ -358,13 +363,15 @@ def whatsapp_webhook():
                     absolute_audio_url = f"{base_url}{audio_url}"
                 else:
                     absolute_audio_url = audio_url
-                message_params['media_url'] = [absolute_audio_url]
 
-            # For approved templates (if ever needed again), we would add 'persistent_action' here.
-            # For now, all responses are sent as plain text or media messages.
+                audio_message_params = {
+                    'from_': to_number_raw,
+                    'to': from_number_raw,
+                    'media_url': [absolute_audio_url]
+                }
+                audio_message = twilio_client.messages.create(**audio_message_params)
+                print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
 
-            message = twilio_client.messages.create(**message_params)
-            print(f"Mensaje de respuesta enviado a {from_number_raw}, SID: {message.sid}")
         except Exception as e:
             print(f"Error al enviar mensaje de Twilio: {e}")
             import traceback
