@@ -306,6 +306,7 @@ class ConversationState(Enum):
     ESPERANDO_CONFIRMACION_UBICACION = auto()
     ESPERANDO_CONSULTA_GENERAL = auto()
     ESPERANDO_SELECCION_MENU_PRINCIPAL = auto()
+    ESPERANDO_SELECCION_MENU_RECLAMOS = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -435,27 +436,27 @@ class GreetingHandler(BaseMunicipioHandler):
             "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
             "reclamos, turnos, noticias y mucho más. Para empezar, podés escribirme, enviarme un audio, "
             "una foto de un problema o compartir tu ubicación.\n\n"
-            "¿Cómo te puedo ayudar hoy? Respondé con el número, la primera letra o una palabra clave de la opción que necesites:"
+            "¿Cómo te puedo ayudar hoy? Elegí una opción o respondé con el número, la primera letra o una palabra clave:"
         )
 
         categorias = [
             {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
-                {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
+                {"texto": "1️⃣ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "2️⃣ Realizar una Denuncia", "action_id": "denuncias"}
             ]},
             {"titulo": "Trámites y Consultas 📄", "botones": [
-                {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+                {"texto": "3️⃣ Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "4️⃣ Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+                {"texto": "5️⃣ Consultar otros trámites", "action_id": "consultar_otros_tramites"}
             ]},
             {"titulo": "Servicios y Turnos 📅", "botones": [
-                {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
+                {"texto": "6️⃣ Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+                {"texto": "7️⃣ Solicitar Turnos", "action_id": "solicitar_turnos"}
             ]},
             {"titulo": "Información y Novedades 📰", "botones": [
-                {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
-                {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+                {"texto": "8️⃣ Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+                {"texto": "9️⃣ Últimas Novedades", "action_id": "ultimas_novedades"},
+                {"texto": "🔟 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
             ]}
         ]
 
@@ -1137,6 +1138,46 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
 
     return None
 
+RECLAMO_KEYWORDS = {
+    "Luminaria": ["luminaria", "luz", "poste", "foco"],
+    "Arbolado": ["arbolado", "arbol", "arboles", "rama", "ramas"],
+    "Limpieza y riego": ["limpieza", "riego", "basura", "basural", "contenedor"],
+    "Arreglo de calle": ["calle", "bache", "pozo", "asfalto", "vereda"],
+    "Pérdida de agua": ["agua", "perdida", "caño", "cañeria"],
+    "Otros": ["otros", "otro", "varios"]
+}
+
+def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> str | None:
+    """
+    Finds a reclamo category based on user input, checking for number, first letter, or keywords.
+    """
+    if not user_input or not reclamo_options:
+        return None
+
+    normalized_input = normalizar_texto(user_input.strip())
+
+    # 1. Check for numeric selection
+    try:
+        selection_index = int(normalized_input) - 1
+        if 0 <= selection_index < len(reclamo_options):
+            return reclamo_options[selection_index].get('texto')
+    except (ValueError, IndexError):
+        pass
+
+    # 2. Check for first letter match
+    if len(normalized_input) == 1:
+        for option in reclamo_options:
+            if normalizar_texto(option.get("texto", "")).startswith(normalized_input):
+                return option.get("texto")
+
+    # 3. Check for keyword match
+    for category, keywords in RECLAMO_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in normalized_input:
+                return category
+
+    return None
+
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado."""
     return {
@@ -1185,7 +1226,13 @@ def responder_municipio(
     action = received_payload.get("action")
 
     # New main menu handler
-    if action:
+    if action == "mostrar_menu_reclamos":
+        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _get_reclamos_menu()
+    elif action:
         response = handle_main_menu_action(action)
         if response:
             return response
@@ -1314,6 +1361,43 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = None # Clear state to avoid getting stuck
             if chat_db_context: flag_modified(chat_db_context, "context_data")
     # --- FIN: Manejo de selección de menú principal ---
+
+    # --- INICIO: Manejo de selección de menú de reclamos ---
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name:
+        pregunta_str_reclamo = ""
+        if isinstance(pregunta_original, str):
+            pregunta_str_reclamo = pregunta_original
+        elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+            pregunta_str_reclamo = pregunta_original["pregunta"]
+
+        logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}'")
+
+        reclamo_options = _get_reclamos_menu().get("options_list", [])
+        selected_category = find_reclamo_category_by_input(pregunta_str_reclamo, reclamo_options)
+
+        if selected_category:
+            if selected_category == "Pérdida de agua":
+                contexto_municipio_actual['estado_conversacion'] = None # Clear state
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return {
+                    "message_body": "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/",
+                    "options_list": [], "message_type": "text", "fuente": "info_perdida_agua"
+                }
+
+            logger_actual.info(f"User input '{pregunta_str_reclamo}' matched to reclamo category: '{selected_category}'")
+            contexto_municipio_actual['categoria_reclamo'] = selected_category
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+            return {
+                "message_body": f"Entendido, iniciaste un reclamo por **{selected_category}**. Por favor, describí la incidencia.",
+                "options_list": [], "message_type": "text", "fuente": "inicio_flujo_reclamo_categorizado"
+            }
+        else:
+            logger_actual.warning(f"Input '{pregunta_str_reclamo}' did not match any reclamo category. Passing to LLM.")
+            contexto_municipio_actual['estado_conversacion'] = None # Reset state to avoid getting stuck
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+    # --- FIN: Manejo de selección de menú de reclamos ---
 
     # Initialize the context if it's empty
     # This dictionary is passed to handlers and used throughout this function.
