@@ -318,6 +318,35 @@ def es_consulta_general(texto: str) -> bool:
     texto_norm = normalizar_texto(texto or "")
     return any(k in texto_norm for k in GENERAL_QUERY_KEYWORDS)
 
+PALABRAS_CLAVE_REINICIO = {
+    "reclamo", "reclamar", "denuncia", "denunciar",
+    "menu", "menú", "inicio", "empezar", "ayuda",
+    "quiero hacer un reclamo", "iniciar reclamo",
+    "consultar tramite", "ver tramites", "otro tramite",
+    "empezar de nuevo", "volver al inicio"
+}
+
+def detectar_intencion_de_reinicio(texto: str) -> bool:
+    """Detecta si el texto del usuario indica una intención de reiniciar la conversación."""
+    if not texto:
+        return False
+
+    texto_norm = normalizar_texto(texto.strip())
+
+    # Check for exact matches of longer phrases first
+    for frase in sorted([k for k in PALABRAS_CLAVE_REINICIO if " " in k], key=len, reverse=True):
+        if frase in texto_norm:
+            return True
+
+    # Check for single keywords in short sentences (e.g., <= 3 words)
+    palabras = texto_norm.split()
+    if len(palabras) <= 3:
+        for palabra in palabras:
+            if palabra in PALABRAS_CLAVE_REINICIO:
+                return True
+
+    return False
+
 # --- Mapping pedir_info -> ConversationState ---
 def normalizar_str(s: str) -> str:
     """Normaliza cadenas a minusculas sin tildes ni espacios extra."""
@@ -1003,18 +1032,28 @@ def responder_municipio(
     )
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto DB para {CONTEXTO_MUNICIPIO}: {contexto_municipio_data_from_db}")
 
-    # --- Greeting and Reset Logic ---
-    pregunta_str_lower = pregunta_str.strip().lower()
-    pregunta_words = set(pregunta_str_lower.split())
-    reset_keywords = {"termino", "gracias", "empezar de nuevo", "menu", "opciones"}
+    # --- Enhanced Greeting and Reset Logic ---
+    estado_conversacion_actual = contexto_municipio_actual.get("estado_conversacion")
+    if isinstance(estado_conversacion_actual, Enum):
+        estado_conversacion_actual = estado_conversacion_actual.name
 
-    if GREETING_KEYWORDS.intersection(pregunta_words) or reset_keywords.intersection(pregunta_words):
-        if GREETING_KEYWORDS.intersection(pregunta_words):
-             logger_actual.info("Greeting detected. Resetting context and showing welcome menu.")
+    is_in_flow = estado_conversacion_actual not in [None, ConversationState.CONVERSACION_GENERAL_LLM.name]
+    is_greeting = GREETING_KEYWORDS.intersection(pregunta_str.lower().split())
+    is_reset_intent = detectar_intencion_de_reinicio(pregunta_str)
+
+    if is_greeting or (is_in_flow and is_reset_intent):
+        if is_greeting:
+            logger_actual.info("Greeting detected. Resetting context and showing welcome menu.")
         else:
-             logger_actual.info("Reset keyword detected. Resetting context and showing welcome menu.")
+            logger_actual.info(f"Reset intent detected ('{pregunta_str}'). Resetting context and showing welcome menu.")
+
         contexto_municipio_actual.clear()
-        handler = GreetingHandler(context)
+        if chat_db_context and hasattr(chat_db_context, 'context_data'):
+            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = {}
+            flag_modified(chat_db_context, "context_data")
+
+        handler_context = {"user_obj": owner_user, "viewer_user_obj": viewer_user}
+        handler = GreetingHandler(handler_context)
         return handler.handle(received_payload)
 
     # --- Simple Router for Main Menu Options ---
