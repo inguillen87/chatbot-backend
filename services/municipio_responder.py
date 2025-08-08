@@ -441,22 +441,22 @@ class GreetingHandler(BaseMunicipioHandler):
 
         categorias = [
             {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
-                {"texto": "1️⃣ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "2️⃣ Realizar una Denuncia", "action_id": "denuncias"}
+                {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
             ]},
             {"titulo": "Trámites y Consultas 📄", "botones": [
-                {"texto": "3️⃣ Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                {"texto": "4️⃣ Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                {"texto": "5️⃣ Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+                {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+                {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
             ]},
             {"titulo": "Servicios y Turnos 📅", "botones": [
-                {"texto": "6️⃣ Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                {"texto": "7️⃣ Solicitar Turnos", "action_id": "solicitar_turnos"}
+                {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+                {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
             ]},
             {"titulo": "Información y Novedades 📰", "botones": [
-                {"texto": "8️⃣ Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                {"texto": "9️⃣ Últimas Novedades", "action_id": "ultimas_novedades"},
-                {"texto": "🔟 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+                {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+                {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
+                {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
             ]}
         ]
 
@@ -1351,14 +1351,23 @@ def responder_municipio(
 
         if selected_action:
             logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
-            contexto_municipio_actual['estado_conversacion'] = None # Clear state
+
+            # Special handling for actions that lead to a sub-menu
+            if selected_action == "mostrar_menu_reclamos":
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _get_reclamos_menu()
+
+            # For all other actions, clear state and handle them
+            contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
             response = handle_main_menu_action(selected_action)
             if response:
                 return response
         else:
+            # If no match, clear state and let LLM handle it
             logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Passing to LLM.")
-            contexto_municipio_actual['estado_conversacion'] = None # Clear state to avoid getting stuck
+            contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
     # --- FIN: Manejo de selección de menú principal ---
 
