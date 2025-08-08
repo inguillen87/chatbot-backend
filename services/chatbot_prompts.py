@@ -119,6 +119,11 @@ TODA tu respuesta DEBE ser un único objeto JSON válido, sin explicaciones, tex
     *   `datos_estructura` DEBE contener: `target: "municipio"`, `nombre_herramienta`, y un objeto `parametros_herramienta` con los valores necesarios para la herramienta.
     *   Si faltan parámetros para una herramienta, usa `pedir_info` para solicitarlos.
 
+*   **`saludar`**:
+    *   Úsalo cuando el usuario inicia la conversación con un saludo (hola, buen día, qué tal) o pide reiniciar.
+    *   Esto le indicará al sistema que debe presentar el menú principal de bienvenida.
+    *   `datos_estructura` debe contener `target: "municipio"`.
+
 *   **`derivar_humano`**:
     *   Úsalo SOLO cuando el usuario lo pida explícitamente (ej: "quiero hablar con una persona") o si la conversación se vuelve muy confusa o sensible.
 

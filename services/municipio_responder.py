@@ -1117,27 +1117,8 @@ def responder_municipio(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
 
-    # --- INICIO: Manejo de reseteo por palabra clave ---
-    # Normaliza la pregunta si es un string para la comparación.
-    pregunta_str_check = ""
-    if isinstance(pregunta_original, str):
-        pregunta_str_check = normalizar_texto(pregunta_original)
-    elif isinstance(pregunta_original, dict) and isinstance(pregunta_original.get("pregunta"), str):
-        pregunta_str_check = normalizar_texto(pregunta_original.get("pregunta"))
-
-    RESET_KEYWORDS = {'hola', 'menu', 'inicio', 'empezar', 'ayuda', 'start', 'reset', 'buenos dias', 'buenas tardes', 'buenas noches'}
-    if pregunta_str_check in RESET_KEYWORDS:
-        logger_actual.info(f"Palabra clave de reseteo detectada: '{pregunta_str_check}'. Invocando GreetingHandler.")
-        context_for_handler = {
-            CONTEXTO_MUNICIPIO: chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {}),
-            "chat_db_context_data": chat_db_context.context_data
-        }
-        handler = GreetingHandler(context_for_handler)
-        response = handler.handle({})
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return response
-    # --- FIN: Manejo de reseteo por palabra clave ---
+    # El manejo de reseteo por palabra clave ahora es manejado por el LLM
+    # que debe devolver accion_backend: "saludar".
 
     received_payload = {}
     if isinstance(pregunta_original, dict):
@@ -1490,6 +1471,17 @@ def responder_municipio(
             usuario=usuario_info_for_gemini,
             historial=historial_chat_para_gemini
         )
+        if llm_response_structured.get("accion_backend") == "saludar":
+            logger_actual.info("LLM detectó un saludo. Invocando GreetingHandler.")
+            context_for_handler = {
+                CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+                "chat_db_context_data": chat_db_context_live_data
+            }
+            handler = GreetingHandler(context_for_handler)
+            response = handler.handle({})
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return response
     except Exception as e:
         logger_actual.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
         # Fallback a una respuesta de error segura si la llamada a LLM falla
