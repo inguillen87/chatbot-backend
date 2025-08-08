@@ -76,6 +76,7 @@ class User(db.Model, UserMixin):
     color_primario = db.Column(db.String(20), nullable=True)
     color_secundario = db.Column(db.String(20), nullable=True)
     badge_tipo = db.Column(db.String(20), nullable=True)
+    catalogo_label = db.Column(db.String(100), nullable=True)
     acepto_terminos = db.Column(Boolean, default=False)
     fecha_aceptacion_terminos = db.Column(DateTime, nullable=True)
     acepta_marketing = db.Column(Boolean, default=False)
