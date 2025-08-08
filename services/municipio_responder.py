@@ -431,12 +431,11 @@ class GreetingHandler(BaseMunicipioHandler):
 
 
         welcome_message = (
-            "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "Estoy aquí para ayudarte de una forma más inteligente. Podés escribirme, pero también podés:\n"
-            "🗣️ *Enviarme un audio* con tu consulta.\n"
-            "📸 *Mandar una foto* de un problema (un bache, una luminaria rota, etc.).\n"
-            "📍 *Compartir tu ubicación* para reclamos o para encontrar puntos de interés.\n\n"
-            "¿Cómo te puedo ayudar hoy? Elegí una de las siguientes opciones:"
+            "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
+            "reclamos, turnos, noticias y mucho más. Para empezar, podés escribirme, enviarme un audio, "
+            "una foto de un problema o compartir tu ubicación.\n\n"
+            "¿Cómo te puedo ayudar hoy? Respondé con el número, la primera letra o una palabra clave de la opción que necesites:"
         )
 
         categorias = [
@@ -1091,6 +1090,53 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 contexto_municipio_actual.pop(k, None)
         return None, contexto_municipio_actual
 
+MENU_KEYWORDS = {
+    "mostrar_menu_reclamos": ["reclamo", "reclamos", "iniciar", "problema"],
+    "denuncias": ["denuncia", "denuncias"],
+    "licencia_de_conducir": ["licencia", "conducir", "licencias", "carnet"],
+    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "boletas"],
+    "consultar_otros_tramites": ["consultar", "consulta", "tramites", "tramite", "otros"],
+    "veterinaria_y_bromatologia": ["veterinaria", "animales", "perro", "gato", "mascotas", "bromatologia"],
+    "solicitar_turnos": ["turnos", "turno", "solicitar"],
+    "agenda_cultural_y_turistica": ["agenda", "cultural", "turistica", "turismo", "eventos"],
+    "ultimas_novedades": ["novedades", "noticias", "ultimas"],
+    "defensa_del_consumidor": ["consumidor", "defensa"]
+}
+
+def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None:
+    """
+    Finds a menu action based on user input, checking for number, first letter, or keywords.
+    """
+    if not user_input or not menu_buttons:
+        return None
+
+    normalized_input = normalizar_texto(user_input.strip())
+
+    # 1. Check for numeric selection
+    try:
+        selection_index = int(normalized_input) - 1
+        if 0 <= selection_index < len(menu_buttons):
+            return menu_buttons[selection_index].get('action_id')
+    except (ValueError, IndexError):
+        pass  # Not a valid number or index, proceed to other checks
+
+    # 2. Check for first letter match (only if input is a single character)
+    if len(normalized_input) == 1:
+        for button in menu_buttons:
+            button_text_norm = normalizar_texto(button.get("texto", ""))
+            if button_text_norm.startswith(normalized_input):
+                return button.get("action_id")
+
+    # 3. Check for keyword match
+    for action_id, keywords in MENU_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in normalized_input:
+                # Ensure this action_id is actually in the current menu to avoid ambiguity
+                if any(btn.get('action_id') == action_id for btn in menu_buttons):
+                    return action_id
+
+    return None
+
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado."""
     return {
@@ -1235,7 +1281,7 @@ def responder_municipio(
     # This ensures that modifications are made to the original object.
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
-    # --- INICIO: Manejo de selección de menú principal por número ---
+    # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
     if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
         pregunta_str_menu = ""
         if isinstance(pregunta_original, str):
@@ -1244,36 +1290,28 @@ def responder_municipio(
             pregunta_str_menu = pregunta_original["pregunta"]
 
         logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}'")
-        try:
-            selection_index = int(pregunta_str_menu.strip()) - 1
 
-            # Reconstruct the button list to map the index to an action_id
-            categorias_menu = [
-                {"titulo": "Reclamos y Denuncias 🛠️", "botones": [{"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}, {"texto": "Realizar una Denuncia", "action_id": "denuncias"}]},
-                {"titulo": "Trámites y Consultas 📄", "botones": [{"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"}, {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"}, {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}]},
-                {"titulo": "Servicios y Turnos 📅", "botones": [{"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"}, {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}]},
-                {"titulo": "Información y Novedades 📰", "botones": [{"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"}, {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"}, {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}]}
-            ]
-            flat_buttons = [boton for categoria in categorias_menu for boton in categoria.get('botones', [])]
+        # Reconstruct the button list to be used for matching
+        categorias_menu = [
+            {"titulo": "Reclamos y Denuncias 🛠️", "botones": [{"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}, {"texto": "Realizar una Denuncia", "action_id": "denuncias"}]},
+            {"titulo": "Trámites y Consultas 📄", "botones": [{"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"}, {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"}, {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}]},
+            {"titulo": "Servicios y Turnos 📅", "botones": [{"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"}, {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}]},
+            {"titulo": "Información y Novedades 📰", "botones": [{"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"}, {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"}, {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}]}
+        ]
+        flat_buttons = [boton for categoria in categorias_menu for boton in categoria.get('botones', [])]
 
-            if 0 <= selection_index < len(flat_buttons):
-                selected_action = flat_buttons[selection_index].get('action_id')
-                logger_actual.info(f"User selected option {selection_index + 1}, mapped to action: '{selected_action}'")
+        selected_action = find_menu_action_by_input(pregunta_str_menu, flat_buttons)
 
-                contexto_municipio_actual['estado_conversacion'] = None # Clear state
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
-
-                response = handle_main_menu_action(selected_action)
-                if response:
-                    return response
-            else:
-                logger_actual.warning(f"User sent out-of-range selection: {selection_index + 1}. Passing to LLM.")
-                contexto_municipio_actual['estado_conversacion'] = None # Reset state to avoid getting stuck
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
-
-        except (ValueError, IndexError):
-            logger_actual.info(f"Input '{pregunta_str_menu}' is not a valid integer selection. Passing to LLM.")
-            contexto_municipio_actual['estado_conversacion'] = None # Clear state to avoid getting stuck on next non-numeric input
+        if selected_action:
+            logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
+            contexto_municipio_actual['estado_conversacion'] = None # Clear state
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(selected_action)
+            if response:
+                return response
+        else:
+            logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Passing to LLM.")
+            contexto_municipio_actual['estado_conversacion'] = None # Clear state to avoid getting stuck
             if chat_db_context: flag_modified(chat_db_context, "context_data")
     # --- FIN: Manejo de selección de menú principal ---
 
