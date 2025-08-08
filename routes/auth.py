@@ -654,6 +654,7 @@ def dashboard_info(user: User):
 
 @auth_bp.route('/me', methods=['GET', 'PUT', 'OPTIONS'])
 @auth_bp.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
+@auth_bp.route('/profile', methods=['GET', 'PUT', 'OPTIONS'])
 @token_requerido
 def me_perfil(user):
     """

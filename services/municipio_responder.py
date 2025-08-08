@@ -402,34 +402,76 @@ from services.google_search import google_search
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        # As per the new specification from the user/frontend team.
+        # When a greeting is triggered, we perform a full reset of the conversation context.
+        contexto_municipio_actual = self.context.get(CONTEXTO_MUNICIPIO, {})
+
+        keys_to_clear = [
+            "historial_llm_reclamo",
+            "datos_parciales_llm_reclamo",
+            "esperando_info_llm_reclamo",
+            "estado_conversacion",
+            "accion_pendiente_post_login",
+            "estado_conversacion_pre_login",
+            "last_search",
+            "last_search_page",
+            "mensaje_previo_llm_para_escalamiento"
+        ]
+
+        for key in keys_to_clear:
+            if key in contexto_municipio_actual:
+                del contexto_municipio_actual[key]
+
+        # Also reset the general LLM history for a truly fresh start
+        if self.context.get("chat_db_context_data"):
+            # Clear the specific municipio context within the main context dict
+            if CONTEXTO_MUNICIPIO in self.context["chat_db_context_data"]:
+                # Preserve user-related info if it exists
+                user_info = self.context["chat_db_context_data"][CONTEXTO_MUNICIPIO].get('user', {})
+                self.context["chat_db_context_data"][CONTEXTO_MUNICIPIO] = {'user': user_info} if user_info else {}
+
+            # Clear general conversation history if it exists at the top level of context_data
+            if "historial_conversacion_general_llm" in self.context["chat_db_context_data"]:
+                 del self.context["chat_db_context_data"]["historial_conversacion_general_llm"]
+
+
+        logger.info("[GreetingHandler] Conversation context has been reset.")
+
+        welcome_message = (
+            "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "Estoy aquí para ayudarte de una forma más inteligente. Podés escribirme, pero también podés:\n"
+            "🗣️ **Enviarme un audio** con tu consulta.\n"
+            "📸 **Mandar una foto** de un problema (un bache, una luminaria rota, etc.).\n"
+            "📍 **Compartir tu ubicación** para reclamos o para encontrar puntos de interés.\n\n"
+            "¿Cómo te puedo ayudar hoy? Elegí una opción:"
+        )
+
         return {
-            "respuesta_usuario": "¡Hola! Soy JUNI, el asistente virtual de la Municipalidad de Junín.\nEstas son las cosas que puedo hacer por vos:",
+            "respuesta_usuario": welcome_message,
             "categorias": [
                 {
-                    "titulo": "Trámites y Consultas",
-                    "botones": [
-                        {"texto": "Licencia de Conducir", "action_id": "licencia_conducir"},
-                        {"texto": "Pagar Tasas", "action_id": "pago_tasas_vigentes"},
-                        {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
-                    ]
-                },
-                {
-                    "titulo": "Reclamos y Denuncias",
+                    "titulo": "Reclamos y Denuncias 🛠️",
                     "botones": [
                         {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
                         {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
                     ]
                 },
                 {
-                    "titulo": "Servicios y Turnos",
+                    "titulo": "Trámites y Consultas 📄",
+                    "botones": [
+                        {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                        {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+                        {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+                    ]
+                },
+                {
+                    "titulo": "Servicios y Turnos 📅",
                     "botones": [
                         {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
                         {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
                     ]
                 },
                 {
-                    "titulo": "Información y Novedades",
+                    "titulo": "Información y Novedades 📰",
                     "botones": [
                         {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
                         {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
@@ -439,7 +481,7 @@ class GreetingHandler(BaseMunicipioHandler):
             ],
             "botones": [],
             "accion_backend": "responder_directamente",
-            "fuente": "greeting_handler_categorized_v1"
+            "fuente": "greeting_handler_enhanced_v3"
         }
 
 class NewsHandler(BaseMunicipioHandler):
@@ -921,44 +963,35 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         elif accion_backend_llm == "ejecutar_herramienta":
             nombre_herramienta = datos_estructura_llm.get("nombre_herramienta")
             parametros_herramienta = datos_estructura_llm.get("parametros_herramienta", {})
-            parametros_faltantes = datos_estructura_llm.get("faltan_parametros_herramienta", [])
+
+            # Unificado: chequear si el LLM está pidiendo más información.
+            info_faltante = pedir_info_llm or datos_estructura_llm.get("faltan_parametros_herramienta")
 
             if nombre_herramienta and nombre_herramienta in TOOL_REGISTRY:
-                if parametros_faltantes:
-                    # Guardar el estado actual y pedir al usuario la información que falta
+                # Si se necesita más información, no ejecutar la herramienta.
+                # Simplemente preguntar al usuario y guardar el estado para el próximo turno.
+                if info_faltante:
+                    logger.info(f"[HERRAMIENTA] LLM pide más información ('{info_faltante}') antes de ejecutar '{nombre_herramienta}'. No se ejecutará la herramienta.")
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                    contexto_municipio_actual["esperando_info_llm_reclamo"] = parametros_faltantes[0] # Pedir un parámetro a la vez
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = info_faltante[0] if isinstance(info_faltante, list) else info_faltante
                     contexto_municipio_actual["datos_parciales_llm_reclamo"] = {
                         "nombre_herramienta": nombre_herramienta,
                         "parametros_herramienta": parametros_herramienta
                     }
-                    return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "text", "fuente": "llm_pide_info_herramienta"}, contexto_municipio_actual
+                    # Devolver la pregunta del LLM al usuario
+                    return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_herramienta"}, contexto_municipio_actual
 
+                # Si no falta información, proceder a ejecutar la herramienta.
                 herramienta = TOOL_REGISTRY[nombre_herramienta]
                 funcion_herramienta = herramienta["funcion"]
 
                 try:
                     logger.info(f"[HERRAMIENTA] Intentando ejecutar: {nombre_herramienta} con params: {parametros_herramienta}")
                     resultado_herramienta = funcion_herramienta(**parametros_herramienta)
-                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {resultado_herramienta[:200]}...")
+                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {str(resultado_herramienta)[:200]}...")
 
-                    # --- INICIO FIX: Manejo inteligente de la respuesta de la herramienta ---
-                    info_needed_prefixes = [
-                        "No tengo la localidad para buscar",
-                        "Por favor, decime la localidad",
-                        "Por favor, decime qué tipo de lugar o comercio estás buscando",
-                        "No pude encontrar la localidad"
-                    ]
-
-                    is_info_needed = any(str(resultado_herramienta).strip().startswith(prefix) for prefix in info_needed_prefixes)
-
-                    if is_info_needed:
-                        # Si la herramienta pide más datos, su respuesta es la única que debe ir.
-                        respuesta_final = resultado_herramienta
-                    else:
-                        # Si la herramienta da un resultado, lo combinamos con la respuesta del LLM.
-                        respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
-                    # --- FIN FIX ---
+                    # Combinar la respuesta del LLM con el resultado de la herramienta
+                    respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
 
                     contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append({
                         "pregunta_usuario": pregunta_str,
@@ -981,6 +1014,8 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                         "fuente": "error_herramienta"
                     }, contexto_municipio_actual
             else:
+                # Este caso se da si el LLM pide ejecutar una herramienta que no existe en TOOL_REGISTRY
+                logger.warning(f"Se intentó ejecutar una herramienta no registrada: '{nombre_herramienta}'")
                 return {
                     "message_body": "No se encontró la herramienta solicitada. Por favor, reformula tu pregunta.",
                     "options_list": [],
@@ -1088,6 +1123,32 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
+
+    # --- INICIO: Manejo de reseteo por palabra clave ---
+    # Normaliza la pregunta si es un string para la comparación.
+    pregunta_str_check = ""
+    if isinstance(pregunta_original, str):
+        pregunta_str_check = normalizar_texto(pregunta_original)
+    elif isinstance(pregunta_original, dict) and isinstance(pregunta_original.get("pregunta"), str):
+        pregunta_str_check = normalizar_texto(pregunta_original.get("pregunta"))
+
+    RESET_KEYWORDS = {'hola', 'menu', 'inicio', 'empezar', 'ayuda', 'start', 'reset', 'buenos dias', 'buenas tardes', 'buenas noches'}
+    if pregunta_str_check in RESET_KEYWORDS:
+        logger_actual.info(f"Palabra clave de reseteo detectada: '{pregunta_str_check}'. Invocando GreetingHandler.")
+        # Construir el contexto mínimo necesario para que el GreetingHandler funcione
+        # El handler necesita acceder al `context_data` del chat para poder limpiarlo.
+        context_for_handler = {
+            CONTEXTO_MUNICIPIO: chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {}),
+            "chat_db_context_data": chat_db_context.context_data
+        }
+        handler = GreetingHandler(context_for_handler)
+        # El payload para handle() puede ser un diccionario vacío en este caso.
+        response = handler.handle({})
+        # Marcar el contexto como modificado después de que el handler lo limpió.
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response
+    # --- FIN: Manejo de reseteo por palabra clave ---
 
     received_payload = {}
     if isinstance(pregunta_original, dict):
