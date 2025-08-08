@@ -81,8 +81,6 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
             server.starttls()
 
         if smtp_user and smtp_password:
-            # Pass credentials as strings. smtplib handles UTF-8 if the server supports AUTH PLAIN.
-            # The previous manual encoding was causing errors.
             server.login(smtp_user, smtp_password)
 
         server.send_message(msg)
@@ -146,8 +144,6 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
         if use_tls and not use_ssl:
             server.starttls()
         if smtp_user and smtp_password:
-            # Pass credentials as strings. smtplib handles UTF-8 if the server supports AUTH PLAIN.
-            # The previous manual encoding was causing errors.
             server.login(smtp_user, smtp_password)
         server.send_message(msg) # send_message es mejor para MIME
         server.quit()

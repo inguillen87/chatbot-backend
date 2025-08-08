@@ -38,7 +38,13 @@ def test_reclamo_handler_categoria_buttons(client):
             channel="whatsapp"
         )
         assert response is not None
-        assert response["message_body"] == "Por favor, elegí una de las siguientes categorías:\n\n1. Alumbrado Público\n2. Bacheo\n3. Recolección de Residuos"
+        from services.response_formatter import build_interactive_response
+        formatted_response = build_interactive_response(
+            options=response.get('botones', []),
+            body_text=response.get('message_body'),
+            channel='whatsapp',
+        )
+        assert formatted_response["text"]["body"] == "Por favor, elegí una de las siguientes categorías:\n\n*1*. Alumbrado Público\n*2*. Bacheo\n*3*. Recolección de Residuos"
 
 
 def test_reclamo_handler_share_location_button(client):
@@ -68,7 +74,13 @@ def test_reclamo_handler_share_location_button(client):
             channel="whatsapp"
         )
         assert response is not None
-        assert response["message_body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo."
+        from services.response_formatter import build_interactive_response
+        formatted_response = build_interactive_response(
+            options=response.get('botones', []),
+            body_text=response.get('message_body'),
+            channel='whatsapp',
+        )
+        assert formatted_response["text"]["body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo.\n\n*1*. Compartir ubicación"
 
 
 def test_ticket_status_handler_ticket_number_shortcut(client):

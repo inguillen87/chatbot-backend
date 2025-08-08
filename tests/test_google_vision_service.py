@@ -80,7 +80,9 @@ class TestAnalyzeImageFromContentFunction(unittest.TestCase):
 
         mock_response = MagicMock()
         mock_response.label_annotations = [MagicMock(description="car")]
-        mock_response.localized_object_annotations = [MagicMock(name="sedan")]
+        mock_sedan = MagicMock()
+        mock_sedan.name = "sedan"
+        mock_response.localized_object_annotations = [mock_sedan]
         mock_response.text_annotations = [MagicMock(description="This is a car")]
         mock_service_instance.analyze_image.return_value = mock_response
 

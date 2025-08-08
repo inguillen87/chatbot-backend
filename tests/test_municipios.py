@@ -37,11 +37,12 @@ def test_greeting_handler(client):
 
 
 def test_reclamo_handler_inicio(client):
-    with patch('services.municipio_responder.ReclamoHandler') as mock_reclamo_handler:
-        mock_handler_instance = mock_reclamo_handler.return_value
-        mock_handler_instance.handle.return_value = {
-            "message_body": "Iniciando reclamo de test.",
-            "fuente": "mocked_reclamo"
+    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "Entendido, iniciando reclamo. ¿Sobre qué es?",
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {"target": "municipio"},
+            "pedir_info": "descripcion"
         }
 
         # Simular una solicitud para iniciar un reclamo
@@ -49,37 +50,75 @@ def test_reclamo_handler_inicio(client):
             pregunta_original="reclamo",
             owner_user=MagicMock(),
             viewer_user=MagicMock(),
-            chat_db_context=MagicMock(),
+            chat_db_context=MagicMock(context_data={}),
             rubro_obj=MagicMock(nombre='municipio')
         )
 
-        mock_reclamo_handler.assert_called_once()
-        mock_handler_instance.handle.assert_called_once()
+        mock_llamar_gemini.assert_called_once()
+        assert response["message_body"] == "Entendido, iniciando reclamo. ¿Sobre qué es?"
 
-        assert response["message_body"] == "Iniciando reclamo de test."
-        assert response["fuente"] == "mocked_reclamo"
+@patch('services.municipio_responder.llamar_gemini')
+def test_responder_municipio_imagen(mock_llamar_gemini, client):
+    mock_llamar_gemini.return_value = {
+        "respuesta_usuario": "Gracias por la imagen. Parece un reclamo sobre Bacheo. ¿Es correcto?",
+        "accion_backend": "confirmar_reclamo_auto",
+        "datos_estructura": {"categoria": "Bacheo", "descripcion": "Parece ser un bache."}
+    }
 
-def test_responder_municipio_imagen(client):
-    with patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat') as mock_interpretar:
-        mock_interpretar.return_value = {
-            "es_reclamo": True,
-            "categoria_sugerida": "Bacheo",
-            "descripcion_sugerida": "Parece ser un bache."
+    datos_interpretados = {
+        "es_reclamo": True,
+        "categoria_sugerida": "Bacheo",
+        "descripcion_sugerida": "Parece ser un bache."
+    }
+
+    response = responder_municipio(
+        pregunta_original="Mira esta foto",
+        owner_user=MagicMock(),
+        viewer_user=MagicMock(),
+        chat_db_context=MagicMock(context_data={}),
+        rubro_obj=MagicMock(nombre='municipio'),
+        datos_interpretados_archivo=datos_interpretados
+    )
+
+    assert "Gracias por la imagen" in response["message_body"]
+    assert "Bacheo" in response["message_body"]
+
+def test_button_click_sets_category_and_advances_flow(client):
+    """
+    Tests that clicking a sub-category button correctly sets the category
+    in the context and advances the conversation to the next step.
+    """
+    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
+        mock_llamar_gemini.return_value = {
+            "respuesta_usuario": "Entendido. Para el reclamo de Luminaria, por favor decime la descripción del problema y la dirección.",
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {"target": "municipio"},
+            "pedir_info": "descripcion_y_ubicacion"
         }
 
+        chat_db_context = MagicMock(context_data={})
+
+        # Simulate the user clicking the "Luminaria" button
         response = responder_municipio(
-            pregunta_original="Mira esta foto",
-            owner_user=MagicMock(),
-            viewer_user=MagicMock(),
-            chat_db_context=MagicMock(),
+            pregunta_original="reclamoluminaria",
+            owner_user=MagicMock(id=1),
+            viewer_user=None,
+            chat_db_context=chat_db_context,
             rubro_obj=MagicMock(nombre='municipio'),
-            # Simular datos de imagen adjunta
-            attachment_info={'url': 'http://example.com/img.png', 'mime_type': 'image/png'}
+            channel="web",
+            action="reclamoluminaria" # This is what the frontend sends
         )
 
-        mock_interpretar.assert_called_once()
-        assert "categoria_sugerida" in response
-        assert response["categoria_sugerida"] == "Bacheo"
+        # 1. Assert the bot's response asks for the next piece of info
+        assert "decime la descripción del problema y la dirección" in response["message_body"]
+
+        # 2. Assert that the context was updated correctly
+        contexto_guardado = chat_db_context.context_data.get("contexto_municipio_v2", {})
+        datos_reclamo = contexto_guardado.get("datos_parciales_llm_reclamo", {})
+
+        assert datos_reclamo.get("categoria") == "Luminaria"
+        assert contexto_guardado.get("estado_conversacion") == "ESPERANDO_INFO_RECLAMO_LLM"
+        assert contexto_guardado.get("esperando_info_llm_reclamo") == "descripcion_y_ubicacion"
 
 if __name__ == '__main__':
     unittest.main()

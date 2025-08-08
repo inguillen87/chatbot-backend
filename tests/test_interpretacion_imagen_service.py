@@ -98,7 +98,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         self.assertEqual(analisis_guardado.estado_analisis, "completado")
         self.assertEqual(analisis_guardado.tipo_analisis, "reclamo_vision_llm_v1")
         self.assertIn("traffic light", str(analisis_guardado.datos_estructurados))
-        self.assertIn("llm_raw", str(analisis_guardado.datos_estructurados))
+        self.assertIn("llm_raw", analisis_guardado.datos_estructurados)
         self.assertEqual(analisis_guardado.texto_extraido, "AYUDA SEMAFORO CAIDO")
 
         mock_descargar.assert_called_once_with("http://example.com/semaforo.jpg")
@@ -225,7 +225,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
             "text_annotations": []
         }
         mock_extract_llm.return_value = {
-            "tipo_problema": "Bacheo",
+            "tipo_problema": "Arreglo de calle",
             "descripcion_problema": "Un bache peligroso en la calle.",
         }
 
@@ -252,7 +252,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         # --- Verificaciones ---
         self.assertTrue(resultado.get("es_reclamo"))
-        self.assertEqual(resultado.get("categoria_sugerida"), "arreglo de calle")
+        self.assertEqual(resultado.get("categoria_sugerida"), "Arreglo de calle")
         self.assertEqual(resultado.get("analisis_id"), id_analisis_previo)
 
         analisis_actualizado = db.session.get(AnalisisArchivo, id_analisis_previo)

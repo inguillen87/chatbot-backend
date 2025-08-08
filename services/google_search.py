@@ -37,7 +37,7 @@ def google_search(query: str, days=None):
         response = requests.get(url, params=params)
         response.raise_for_status()
         results = response.json().get("items", [])
-        cache[query] = results
+        cache[cache_key] = results
         return results
     except requests.exceptions.RequestException as e:
         logger.error(f"Error performing Google search: {e}")

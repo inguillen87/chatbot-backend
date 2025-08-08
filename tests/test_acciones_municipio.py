@@ -311,25 +311,23 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         from services.municipio_responder import responder_municipio
         with self.app.test_request_context():
-            with self.client.session_transaction() as sess:
-                sess['user_location'] = {"formatted_address": "Mendoza, Argentina"}
+            owner_user = MagicMock(spec=User, id=1, municipio_id='test_muni')
+            owner_user.rubro = MagicMock(clave='municipio')
+            chat_context = MagicMock()
+            chat_context.context_data = {}
 
-                owner_user = MagicMock(spec=User, id=1, municipio_id='test_muni')
-                owner_user.rubro = MagicMock(clave='municipio')
-                chat_context = MagicMock()
-                chat_context.context_data = {}
+            response = responder_municipio(
+                pregunta_original="farmacias de turno",
+                owner_user=owner_user,
+                viewer_user=None,
+                anon_id="test_anon_123",
+                chat_db_context=chat_context,
+                rubro_obj=owner_user.rubro,
+                location={"formatted_address": "Mendoza, Argentina"}
+            )
 
-                response = responder_municipio(
-                    pregunta_original="farmacias de turno",
-                    owner_user=owner_user,
-                    viewer_user=None,
-                    anon_id="test_anon_123",
-                    chat_db_context=chat_context,
-                    rubro_obj=owner_user.rubro
-                )
-
-                self.assertIn("Farmacia Central", response["message_body"])
-                mock_google_search.assert_called_with("farmacias de turno cerca de Mendoza, Argentina")
+            self.assertIn("Farmacia Central", response["message_body"])
+            mock_google_search.assert_called_with("farmacias de turno cerca de Mendoza, Argentina")
 
     @patch('services.municipio_responder.google_search')
     def test_points_of_interest_handler_without_location(self, mock_google_search):

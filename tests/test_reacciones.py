@@ -27,6 +27,7 @@ class ReaccionesEndpointTests(unittest.TestCase):
             db.create_all()
             # Create a user with the token 'tok'
             user = User(email="reacciones@test.com", name="Test User", token="tok")
+            user.set_password("password")
             db.session.add(user)
             conv = Conversacion(pregunta="p", respuesta="r", fuente="bot", user_id=user.id)
             db.session.add(conv)

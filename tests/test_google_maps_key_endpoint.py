@@ -6,8 +6,8 @@ from config import TestConfig
 
 class GoogleMapsKeyEndpointTest(unittest.TestCase):
     def setUp(self):
-        os.environ['GOOGLE_MAPS_API_KEY'] = 'abc123'
         self.app = create_app(TestConfig)
+        self.app.config['GOOGLE_MAPS_API_KEY'] = 'abc123'
         self.client = self.app.test_client()
 
     def test_key_returned(self):

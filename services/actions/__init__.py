@@ -48,4 +48,5 @@ ACTION_HANDLER_MAP = {
 
     # Saludos (pueden tener lógica específica por_entidad si es necesario)
     "saludar": "services.actions.pyme_actions.SaludoHandler", # O un SaludoHandler genérico
+    "fallback": "services.pymes.FallbackHandler",
 }

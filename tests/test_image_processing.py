@@ -11,7 +11,9 @@ class TestImageProcessingService(unittest.TestCase):
         mock_response.error.message = ''
         mock_response.label_annotations = [MagicMock(description='test label')]
         mock_response.text_annotations = [MagicMock(description='test text')]
-        mock_response.localized_object_annotations = [MagicMock(name='test object')]
+        mock_object = MagicMock()
+        mock_object.name = 'test object'
+        mock_response.localized_object_annotations = [mock_object]
 
         mock_vision_client.return_value.annotate_image.return_value = mock_response
 
