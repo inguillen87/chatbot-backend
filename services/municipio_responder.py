@@ -432,11 +432,11 @@ class GreetingHandler(BaseMunicipioHandler):
 
         welcome_message = (
             "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "Estoy aquí para ayudarte con tus trámites y consultas de forma rápida e inteligente. Podés escribirme, o también podés:\n"
-            "🗣️ **Enviarme un audio** con tu consulta.\n"
-            "📸 **Mandar una foto** de un problema (un bache, una luminaria, etc.).\n"
-            "📍 **Compartir tu ubicación** para reclamos o para encontrar puntos de interés.\n\n"
-            "A continuación, te presento las opciones principales. Por favor, respondé con el número de la que necesites:"
+            "Estoy aquí para ayudarte de una forma más inteligente. Podés escribirme, pero también podés:\n"
+            "🗣️ *Enviarme un audio* con tu consulta.\n"
+            "📸 *Mandar una foto* de un problema (un bache, una luminaria rota, etc.).\n"
+            "📍 *Compartir tu ubicación* para reclamos o para encontrar puntos de interés.\n\n"
+            "¿Cómo te puedo ayudar hoy? Elegí una de las siguientes opciones:"
         )
 
         categorias = [
@@ -893,6 +893,16 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             return None, None
 
         nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
+
+        if accion_backend_llm == "saludar":
+            logger.info("LLM detectó un saludo. Invocando GreetingHandler.")
+            # The 'context' dict passed to handle_llm_interaction has the necessary nested structure.
+            handler = GreetingHandler(context)
+            response = handler.handle({})  # Pass empty payload
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            # The handler's response is the full dict ready to be returned by responder_municipio
+            return response, contexto_municipio_actual
 
         if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             # Si es el inicio de un nuevo reclamo, limpiar el contexto anterior
