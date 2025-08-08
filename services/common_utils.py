@@ -571,6 +571,44 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
 
+def clean_text_for_tts(text: str) -> str:
+    """
+    Cleans text for Text-to-Speech by removing markdown, emojis, and other symbols.
+    """
+    if not isinstance(text, str):
+        return ""
+
+    # Remove markdown characters (bold, italics)
+    text = re.sub(r'(\*\*|__|\*|_|~)', '', text)
+
+    # Remove emojis
+    # This regex is a common pattern for emojis.
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F700-\U0001F77F"  # alchemical symbols
+        "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
+        "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
+        "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+        "\U0001FA00-\U0001FA6F"  # Chess Symbols
+        "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+        "\U00002702-\U000027B0"  # Dingbats
+        "\U000024C2-\U0001F251"
+        "]+",
+        flags=re.UNICODE,
+    )
+    text = emoji_pattern.sub(r'', text)
+
+    # Remove other special characters that might be read aloud, like the hand wave emoji not caught by the range
+    text = text.replace('👋', '').replace('🛠️', '').replace('📄', '').replace('📅', '').replace('📰', '').replace('🗣️', '').replace('📸', '').replace('📍', '')
+
+    # Replace multiple newlines and spaces with a single space
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
 def parse_cantidad_flexible(cantidad_str: Any) -> Optional[int]:
     """
     PLACEHOLDER: Parses a flexible quantity string (e.g., "6 units", "12", "1 dozen") into an integer.

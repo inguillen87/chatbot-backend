@@ -49,6 +49,7 @@ def es_rubro_publico(rubro) -> bool:
 from services.llm_utils import clasificar_entidad_con_llm
 from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
+from services.common_utils import clean_text_for_tts
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
@@ -247,9 +248,10 @@ def responder_chatboc(
     if generate_audio:
         text_to_speak = response_data.get('message_body')
         if text_to_speak:
+            cleaned_text = clean_text_for_tts(text_to_speak)
             from services.google_text_to_speech import TextToSpeechService
             tts_service = TextToSpeechService()
-            audio_url = tts_service.synthesize_speech(text_to_speak)
+            audio_url = tts_service.synthesize_speech(cleaned_text)
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")
