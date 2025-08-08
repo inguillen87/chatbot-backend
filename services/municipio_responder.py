@@ -406,33 +406,21 @@ class GreetingHandler(BaseMunicipioHandler):
         contexto_municipio_actual = self.context.get(CONTEXTO_MUNICIPIO, {})
 
         keys_to_clear = [
-            "historial_llm_reclamo",
-            "datos_parciales_llm_reclamo",
-            "esperando_info_llm_reclamo",
-            "estado_conversacion",
-            "accion_pendiente_post_login",
-            "estado_conversacion_pre_login",
-            "last_search",
-            "last_search_page",
-            "mensaje_previo_llm_para_escalamiento"
+            "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
+            "estado_conversacion", "accion_pendiente_post_login", "estado_conversacion_pre_login",
+            "last_search", "last_search_page", "mensaje_previo_llm_para_escalamiento"
         ]
 
         for key in keys_to_clear:
             if key in contexto_municipio_actual:
                 del contexto_municipio_actual[key]
 
-        # Also reset the general LLM history for a truly fresh start
         if self.context.get("chat_db_context_data"):
-            # Clear the specific municipio context within the main context dict
             if CONTEXTO_MUNICIPIO in self.context["chat_db_context_data"]:
-                # Preserve user-related info if it exists
                 user_info = self.context["chat_db_context_data"][CONTEXTO_MUNICIPIO].get('user', {})
                 self.context["chat_db_context_data"][CONTEXTO_MUNICIPIO] = {'user': user_info} if user_info else {}
-
-            # Clear general conversation history if it exists at the top level of context_data
             if "historial_conversacion_general_llm" in self.context["chat_db_context_data"]:
                  del self.context["chat_db_context_data"]["historial_conversacion_general_llm"]
-
 
         logger.info("[GreetingHandler] Conversation context has been reset.")
 
@@ -445,43 +433,41 @@ class GreetingHandler(BaseMunicipioHandler):
             "¿Cómo te puedo ayudar hoy? Elegí una opción:"
         )
 
+        categorias = [
+            {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
+                {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
+            ]},
+            {"titulo": "Trámites y Consultas 📄", "botones": [
+                {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+                {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+            ]},
+            {"titulo": "Servicios y Turnos 📅", "botones": [
+                {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+                {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
+            ]},
+            {"titulo": "Información y Novedades 📰", "botones": [
+                {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+                {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
+                {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+            ]}
+        ]
+
+        flat_buttons = []
+        for categoria in categorias:
+            for boton in categoria.get('botones', []):
+                new_boton = boton.copy()
+                new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+                flat_buttons.append(new_boton)
+
         return {
-            "respuesta_usuario": welcome_message,
-            "categorias": [
-                {
-                    "titulo": "Reclamos y Denuncias 🛠️",
-                    "botones": [
-                        {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                        {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
-                    ]
-                },
-                {
-                    "titulo": "Trámites y Consultas 📄",
-                    "botones": [
-                        {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                        {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                        {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
-                    ]
-                },
-                {
-                    "titulo": "Servicios y Turnos 📅",
-                    "botones": [
-                        {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                        {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
-                    ]
-                },
-                {
-                    "titulo": "Información y Novedades 📰",
-                    "botones": [
-                        {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                        {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
-                        {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
-                    ]
-                }
-            ],
-            "botones": [],
+            "message_body": welcome_message,
+            "options_list": flat_buttons,
+            "message_type": "interactive_list",
             "accion_backend": "responder_directamente",
-            "fuente": "greeting_handler_enhanced_v3"
+            "fuente": "greeting_handler_universal_v4",
+            "categorias": categorias # Keep original structure for channels that might support it
         }
 
 class NewsHandler(BaseMunicipioHandler):
@@ -1141,51 +1127,9 @@ def responder_municipio(
         }
         handler = GreetingHandler(context_for_handler)
         response = handler.handle({})
-
-        # ADAPTACIÓN PARA EL CANAL WEB:
-        # El widget web espera una lista plana de botones, no la estructura de 'categorias'.
-        # Aplanamos la estructura aquí para asegurar la compatibilidad.
-        if channel == 'web' and 'categorias' in response:
-            logger_actual.info("Adaptando respuesta de GreetingHandler para el canal web.")
-            opciones_finales = []
-            for categoria in response.get('categorias', []):
-                titulo = categoria.get('titulo', '').replace('🛠️', '').replace('📄', '').replace('📅', '').replace('📰', '').strip()
-                for boton in categoria.get('botones', []):
-                    new_boton = boton.copy()
-                    # El frontend web espera 'texto' y 'id' para el botón.
-                    new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
-                    new_boton['texto'] = f"{titulo}: {new_boton['texto']}"
-                    opciones_finales.append(new_boton)
-
-            # Construimos el diccionario final que espera el frontend.
-            final_response_dict = {
-                "message_body": response.get('respuesta_usuario'),
-                "options_list": opciones_finales,
-                "message_type": "interactive_list", # El widget web puede manejar listas largas de botones.
-                "fuente": response.get("fuente", "greeting_handler_manual_web")
-            }
-        else:
-            # Para otros canales (ej. WhatsApp), la estructura con 'categorias' es preferible.
-            # Se asume que el `chat_router` o el manejador de canal específico lo procesará.
-            # Por ahora, devolvemos el formato compatible con el web widget para todos los casos
-            # para asegurar que funcione, ya que el router actual no parece diferenciar.
-            opciones_finales = []
-            for categoria in response.get('categorias', []):
-                for boton in categoria.get('botones', []):
-                    opciones_finales.append(boton)
-
-            final_response_dict = {
-                "message_body": response.get('respuesta_usuario'),
-                "options_list": opciones_finales,
-                "message_type": "interactive_list",
-                "fuente": response.get("fuente", "greeting_handler_manual_other")
-            }
-
-
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-
-        return final_response_dict
+        return response
     # --- FIN: Manejo de reseteo por palabra clave ---
 
     received_payload = {}
