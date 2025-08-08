@@ -305,6 +305,7 @@ class ConversationState(Enum):
     ESPERANDO_CREACION_TICKET = auto()
     ESPERANDO_CONFIRMACION_UBICACION = auto()
     ESPERANDO_CONSULTA_GENERAL = auto()
+    ESPERANDO_SELECCION_MENU_PRINCIPAL = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -424,13 +425,18 @@ class GreetingHandler(BaseMunicipioHandler):
 
         logger.info("[GreetingHandler] Conversation context has been reset.")
 
+        # Set the state to wait for a menu selection
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        logger.info(f"[GreetingHandler] Set estado_conversacion to {contexto_municipio_actual['estado_conversacion']}")
+
+
         welcome_message = (
             "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "Estoy aquí para ayudarte de una forma más inteligente. Podés escribirme, pero también podés:\n"
+            "Estoy aquí para ayudarte con tus trámites y consultas de forma rápida e inteligente. Podés escribirme, o también podés:\n"
             "🗣️ **Enviarme un audio** con tu consulta.\n"
-            "📸 **Mandar una foto** de un problema (un bache, una luminaria rota, etc.).\n"
+            "📸 **Mandar una foto** de un problema (un bache, una luminaria, etc.).\n"
             "📍 **Compartir tu ubicación** para reclamos o para encontrar puntos de interés.\n\n"
-            "¿Cómo te puedo ayudar hoy? Elegí una opción:"
+            "A continuación, te presento las opciones principales. Por favor, respondé con el número de la que necesites:"
         )
 
         categorias = [
@@ -466,8 +472,9 @@ class GreetingHandler(BaseMunicipioHandler):
             "options_list": flat_buttons,
             "message_type": "interactive_list",
             "accion_backend": "responder_directamente",
-            "fuente": "greeting_handler_universal_v4",
-            "categorias": categorias # Keep original structure for channels that might support it
+            "fuente": "greeting_handler_universal_v5",
+            "categorias": categorias, # Keep original structure for channels that might support it
+            "generar_audio_bienvenida": True
         }
 
 class NewsHandler(BaseMunicipioHandler):
@@ -554,7 +561,7 @@ def handle_main_menu_action(action_id: str) -> dict:
         return _get_reclamos_menu()
 
     action_responses = {
-        "licencia_conducir": "Para requisitos y turnos de licencia de conducir visitá:\nhttps://www.juninmendoza.gov.ar/licencia-de-conducir-junin/",
+        "licencia_de_conducir": "Para requisitos y turnos de licencia de conducir visitá:\nhttps://www.juninmendoza.gov.ar/licencia-de-conducir-junin/",
         "pago_tasas_vigentes": "Para pagar o descargar boletos vigentes, dirigite a:\nhttps://epagos.juninmendoza.gov.ar/jrentas/",
         "defensa_del_consumidor": "Para asesoramiento, escribí a:\ndefensadelconsumidorjuninmza@gmail.com",
         "veterinaria_y_bromatologia": "Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp:\n+54 9 2634 52-1563",
@@ -1236,6 +1243,48 @@ def responder_municipio(
     # Directly use the dictionary from the live context data.
     # This ensures that modifications are made to the original object.
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    # --- INICIO: Manejo de selección de menú principal por número ---
+    if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
+        pregunta_str_menu = ""
+        if isinstance(pregunta_original, str):
+            pregunta_str_menu = pregunta_original
+        elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+            pregunta_str_menu = pregunta_original["pregunta"]
+
+        logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}'")
+        try:
+            selection_index = int(pregunta_str_menu.strip()) - 1
+
+            # Reconstruct the button list to map the index to an action_id
+            categorias_menu = [
+                {"titulo": "Reclamos y Denuncias 🛠️", "botones": [{"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}, {"texto": "Realizar una Denuncia", "action_id": "denuncias"}]},
+                {"titulo": "Trámites y Consultas 📄", "botones": [{"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"}, {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"}, {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}]},
+                {"titulo": "Servicios y Turnos 📅", "botones": [{"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"}, {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}]},
+                {"titulo": "Información y Novedades 📰", "botones": [{"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"}, {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"}, {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}]}
+            ]
+            flat_buttons = [boton for categoria in categorias_menu for boton in categoria.get('botones', [])]
+
+            if 0 <= selection_index < len(flat_buttons):
+                selected_action = flat_buttons[selection_index].get('action_id')
+                logger_actual.info(f"User selected option {selection_index + 1}, mapped to action: '{selected_action}'")
+
+                contexto_municipio_actual['estado_conversacion'] = None # Clear state
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+                response = handle_main_menu_action(selected_action)
+                if response:
+                    return response
+            else:
+                logger_actual.warning(f"User sent out-of-range selection: {selection_index + 1}. Passing to LLM.")
+                contexto_municipio_actual['estado_conversacion'] = None # Reset state to avoid getting stuck
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+        except (ValueError, IndexError):
+            logger_actual.info(f"Input '{pregunta_str_menu}' is not a valid integer selection. Passing to LLM.")
+            contexto_municipio_actual['estado_conversacion'] = None # Clear state to avoid getting stuck on next non-numeric input
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+    # --- FIN: Manejo de selección de menú principal ---
 
     # Initialize the context if it's empty
     # This dictionary is passed to handlers and used throughout this function.
