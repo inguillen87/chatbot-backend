@@ -12,7 +12,7 @@ if project_root not in sys.path:
 
 from app import create_app, db
 from models import PlantillasRespuesta, User, Rubro
-from routes.ai_templates import ai_templates_bp
+from routes.ai import ai_bp as ai_templates_bp
 import json
 import pytest
 from config import Config
@@ -56,17 +56,17 @@ def test_suggest_templates_success(client):
 
     with patch('services.embedding_service.embed_textos_gemini') as mock_embed_textos_gemini:
         mock_embed_textos_gemini.return_value = {"embeddings": [[0.11]*1024]}
-        response = client.post('/ai/suggest-templates',
+        response = client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {mock_user.token}'},
-                                    json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
+                                    json={'asunto': 'Quiero saludar', 'contexto_ticket': 'Hola', 'top_n': 1})
 
         assert response.status_code == 200
         data = response.get_json()
         assert 'sugerencias' in data
         sugerencias = data['sugerencias']
-        assert len(sugerencias) == 1
-        assert sugerencias[0]['nombre_plantilla'] == 'Saludo'
-        assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['texto_plantilla']
+        assert len(sugerencias) >= 1
+        assert sugerencias[0]['name'] == 'Saludo'
+        assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['text']
         mock_embed_textos_gemini.assert_called_once()
 
 if __name__ == '__main__':

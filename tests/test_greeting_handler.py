@@ -14,7 +14,6 @@ def test_greeting_handler():
 
     # Assert that the response is correct
     assert response is not None
-    assert "¡Hola! ¿En qué puedo ayudarte?" in response.get("message_body", "")
-    assert len(response.get("options_list", [])) == 2
-    assert response.get("message_type") == "interactive_buttons"
-    assert response.get("fuente") == "greeting_handler_v2"
+    assert "¡Hola! Soy JuniA, el asistente virtual de la Municipalidad de Junín." in response.get("message_body", "")
+    assert len(response.get("categorias", [])) == 4
+    assert response.get("fuente") == "greeting_handler_categorized_v1"

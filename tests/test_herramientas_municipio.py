@@ -61,7 +61,7 @@ def test_generar_respuesta_audio_in_tool_registry():
     assert "funcion" in tool_info
     assert "descripcion" in tool_info
     assert "parametros" in tool_info
-    assert "texto_para_audio" in tool_info["parametros"]
+    assert "text" in tool_info["parametros"]
 
 @patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')

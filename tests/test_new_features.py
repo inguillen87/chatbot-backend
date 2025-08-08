@@ -40,8 +40,9 @@ class TestNewFeatures(unittest.TestCase):
         respuesta = formatear_ticket_respuesta(
             "reclamo", "Marcelo", "Bache en la calle", "Bacheo", "M-12345", contacto
         )
-        self.assertIn("Juan Obras", respuesta)
-        self.assertIn("[+5491122334455](https://wa.me/5491122334455", respuesta)
+        message_body, buttons = respuesta
+        self.assertIn("Juan Obras", message_body)
+        self.assertIn("https://wa.me/5491122334455", buttons[0]['url'])
 
     def test_greeting_handler_enhanced_message(self):
         """

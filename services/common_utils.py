@@ -617,8 +617,23 @@ def formatear_telefono_e164(telefono: str, cod_pais: str = "54") -> str:
         return ""
     solo_numeros = re.sub(r"\D", "", telefono)
     if solo_numeros.startswith(cod_pais):
+        # El número ya incluye el código de país. No se modifica.
         return f"+{solo_numeros}"
-    return f"+{cod_pais}{solo_numeros.lstrip('0')}"
+
+    # Lógica específica para Argentina para añadir el '9' a móviles
+    if cod_pais == "54":
+        # Quitar '0' y '15' si están al principio
+        if solo_numeros.startswith('0'):
+            solo_numeros = solo_numeros[1:]
+        if solo_numeros.startswith('15'):
+            solo_numeros = solo_numeros[2:]
+
+        # Si después de limpiar, el número tiene 10 dígitos, es un móvil.
+        if len(solo_numeros) == 10:
+            return f"+{cod_pais}9{solo_numeros}"
+
+    # Para otros países o números fijos de Argentina
+    return f"+{cod_pais}{solo_numeros}"
 
 def calcular_precio_por_unidad(precio_total: float, cantidad: int) -> float:
     """Devuelve el precio por unidad dado un total y la cantidad."""

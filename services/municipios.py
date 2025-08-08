@@ -577,9 +577,9 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     datos_reclamo.update(datos_estructura_llm)
 
     # Validar datos
-    nombre = datos_reclamo.get("nombre_usuario_detectado")
-    telefono = datos_reclamo.get("telefono_detectado")
-    email = datos_reclamo.get("email_detectado")
+    nombre = datos_reclamo.get("nombre_usuario_detectado") or datos_reclamo.get("usuario")
+    telefono = datos_reclamo.get("telefono_detectado") or datos_reclamo.get("telefono")
+    email = datos_reclamo.get("email_detectado") or datos_reclamo.get("email")
     ubicacion = datos_reclamo.get("ubicacion")
 
     if not all([nombre, telefono, email, ubicacion]):

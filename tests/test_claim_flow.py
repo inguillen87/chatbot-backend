@@ -90,7 +90,8 @@ def test_full_claim_in_one_go(test_client, mock_llm):
             anon_id="123456789"
         )
 
-        assert "registrado con el número M-12345" in respuesta["message_body"]
+        assert "M-12345" in respuesta["message_body"]
+        assert "Reclamo recibido" in respuesta["message_body"]
         mock_crear_ticket.assert_called_once()
         args, kwargs = mock_crear_ticket.call_args
         assert kwargs['ticket_data']['categoria'] == "Semáforos"
@@ -161,7 +162,8 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
             anon_id="987654321"
         )
 
-        assert "registrado con el número M-54321" in respuesta["message_body"]
+        assert "M-54321" in respuesta["message_body"]
+        assert "Reclamo recibido" in respuesta["message_body"]
         mock_crear_ticket.assert_called_once()
         args, kwargs = mock_crear_ticket.call_args
         assert kwargs['ticket_data']['detalles'] == "semáforo roto"

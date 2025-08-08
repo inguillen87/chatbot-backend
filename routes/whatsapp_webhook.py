@@ -303,62 +303,51 @@ def whatsapp_webhook():
     respuesta_del_bot_text = bot_response_dict.get('message_body', "Error: message_body no encontrado en la respuesta del bot.")
     print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 
-    # --- Save Updated Session ---
+    # --- Format Response and Save Session ---
+    formatted_whatsapp_payload = {}
     try:
+        from services.response_formatter import build_interactive_response
+
+        # This call will modify bot_response_dict to include context for the numeric menu
+        formatted_whatsapp_payload = build_interactive_response(
+            options=bot_response_dict.get('options_list', []),
+            body_text=bot_response_dict.get('message_body', "Error de formato."),
+            channel='whatsapp',
+            message_type=bot_response_dict.get('message_type', 'text'),
+            original_bot_response=bot_response_dict,
+            header_text=bot_response_dict.get('header_text'),
+            footer_text=bot_response_dict.get('footer_text'),
+            audio_url=bot_response_dict.get('audio_url')
+        )
+
+        # After formatting, the context might be updated (e.g., with last_options_sent).
+        # We need to merge this updated context back into our main session object before saving.
+        updated_context = bot_response_dict.get('contexto_actualizado')
+        if updated_context:
+            session_context_db_entry.context_data.update(updated_context)
+
         session_context_db_entry.last_updated = db.func.now()
         db.session.commit()
         print(f"Session saved for {chat_session_id_internal}.")
+
     except Exception as e:
         db.session.rollback()
-        print(f"Error saving session for {chat_session_id_internal}: {e}")
+        print(f"Error formatting response or saving session for {chat_session_id_internal}: {e}")
         import traceback
         traceback.print_exc()
 
     # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            from services.response_formatter import build_interactive_response
-            import json
-            import logging
-            logger = logging.getLogger(__name__)
+            # The formatter for whatsapp now returns a single text body with options formatted as a numbered list.
+            # We use this as the primary body for the message.
+            final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
+                         bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
 
-            # --- Force Text Buttons Fallback ---
-            # If the context has a flag to force text-based buttons for accessibility
-            if session_context_db_entry.context_data.get('force_text_buttons') and bot_response_dict.get('options_list'):
-                # Move the interactive options to the 'botones' key which the formatter
-                # already knows how to handle as a text list.
-                bot_response_dict['botones'] = bot_response_dict.pop('options_list', [])
-                # Ensure the message type is 'text' to prevent attempts to create interactive messages.
-                bot_response_dict['message_type'] = 'text'
-                logger.info("Forcing text-based button fallback due to context flag.")
-
-            # Use new structured keys from bot_response_dict
-            body_for_formatter = bot_response_dict.get('message_body', respuesta_del_bot_text) # Fallback to old 'respuesta' if new key not present
-            options_for_formatter = bot_response_dict.get('options_list', [])
-            message_type_for_formatter = bot_response_dict.get('message_type', 'text')
-            header_for_formatter = bot_response_dict.get('header_text')
-            footer_for_formatter = bot_response_dict.get('footer_text')
-
-            # Ensure respuesta_del_bot_text (used for logging) is also from the new key if available
-            respuesta_del_bot_text = body_for_formatter
-
-            # The formatter now returns the direct payload for the WhatsApp API.
-            # No need to look for 'main_body' or 'interactive_object'.
-            formatted_whatsapp_payload = build_interactive_response(
-                options=options_for_formatter,
-                body_text=body_for_formatter,
-                channel='whatsapp',
-                message_type=message_type_for_formatter,
-                original_bot_response=bot_response_dict,
-                header_text=header_for_formatter,
-                footer_text=footer_for_formatter
-            )
-
-            # The `body` is the main text, used as fallback by Twilio if the rich message can't be delivered.
             message_params = {
                 'from_': to_number_raw,
                 'to': from_number_raw,
-                'body': body_for_formatter,  # Fallback text
+                'body': final_body,
             }
 
             audio_url = bot_response_dict.get('audio_url')
@@ -371,27 +360,8 @@ def whatsapp_webhook():
                     absolute_audio_url = audio_url
                 message_params['media_url'] = [absolute_audio_url]
 
-
-            # For interactive messages, the actual content is sent via 'PersistentAction'
-            # The payload for PersistentAction should be a JSON string of the interactive object.
-            # The formatter now returns the full object including the "type": "interactive" wrapper.
-            if formatted_whatsapp_payload.get("type") == "interactive" and bot_response_dict.get("template_sid"):
-                # --- Professional Template-Based Approach ---
-                # The user wants to use approved templates. The bot's response should include
-                # a 'template_sid' key. We use this with a 'persistent_action'.
-                persistent_action_payload = f"wa:template:{bot_response_dict['template_sid']}"
-                message_params['persistent_action'] = [persistent_action_payload]
-                # The 'body' parameter serves as a fallback if the template fails.
-                print(f"Preparing to send WhatsApp message with PersistentAction Template SID: {bot_response_dict['template_sid']}")
-
-            elif formatted_whatsapp_payload.get("type") == "text":
-                # For plain text, the body is already set and no PersistentAction is needed.
-                # We just update the body to be sure it's from the formatted payload.
-                message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", body_for_formatter)
-            else:
-                # Fallback for any other message type, just send the plain text body.
-                print(f"Formatted payload type is not 'interactive' or 'text', sending as plain text. Type: {formatted_whatsapp_payload.get('type')}")
-
+            # For approved templates (if ever needed again), we would add 'persistent_action' here.
+            # For now, all responses are sent as plain text or media messages.
 
             message = twilio_client.messages.create(**message_params)
             print(f"Mensaje de respuesta enviado a {from_number_raw}, SID: {message.sid}")

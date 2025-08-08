@@ -30,6 +30,7 @@ def make_user():
 class ProfileUpdateSecurityTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)
+        self.client = self.app.test_client()
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -50,8 +51,18 @@ class ProfileUpdateSecurityTests(unittest.TestCase):
             'empresa_id': 123,
             'name': 'Nuevo'
         }
-        with self.app.test_request_context(json=data, method='POST'), patch('routes.auth.db', SimpleNamespace(session=db.session)):
-            resp = actualizar_me(user)
+        from functools import wraps
+        def token_passthrough(f):
+            @wraps(f)
+            def decorated_function(*args, **kwargs):
+                # The decorated function expects the user object as its first argument
+                return f(user, *args, **kwargs)
+            return decorated_function
+
+        with patch('routes.auth.token_requerido', token_passthrough):
+            resp = self.client.put('/auth/me', json=data)
+
+        self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json()["mensaje"], "Perfil actualizado correctamente.")
         self.assertEqual(user.rol, 'usuario')
         self.assertEqual(user.empresa_id, None)

@@ -25,7 +25,9 @@ class MetricasTestCase(unittest.TestCase):
         # Create a test order
         self.order = PymePedido(
             pyme_id=1,
-            monto_total=100
+            monto_total=100,
+            asunto="Test Order",
+            detalles="{}"
         )
         db.session.add(self.order)
         db.session.commit()
@@ -44,7 +46,7 @@ class MetricasTestCase(unittest.TestCase):
     def test_get_metrics_summary(self):
         response = self._login()
         self.assertEqual(response.status_code, 200)
-        token = response.json['access_token']
+        token = response.json['token']
 
         response = self.client.get(
             '/api/metrics/summary',
@@ -57,7 +59,7 @@ class MetricasTestCase(unittest.TestCase):
     def test_get_metrics_kpis(self):
         response = self._login()
         self.assertEqual(response.status_code, 200)
-        token = response.json['access_token']
+        token = response.json['token']
 
         response = self.client.get(
             '/api/metrics/kpis',
@@ -69,7 +71,7 @@ class MetricasTestCase(unittest.TestCase):
     def test_get_sales_over_time(self):
         response = self._login()
         self.assertEqual(response.status_code, 200)
-        token = response.json['access_token']
+        token = response.json['token']
 
         response = self.client.get(
             '/api/metrics/sales-over-time',
@@ -81,7 +83,7 @@ class MetricasTestCase(unittest.TestCase):
     def test_get_top_products(self):
         response = self._login()
         self.assertEqual(response.status_code, 200)
-        token = response.json['access_token']
+        token = response.json['token']
 
         response = self.client.get(
             '/api/metrics/top-products',
@@ -93,7 +95,7 @@ class MetricasTestCase(unittest.TestCase):
     def test_get_sales_by_region(self):
         response = self._login()
         self.assertEqual(response.status_code, 200)
-        token = response.json['access_token']
+        token = response.json['token']
 
         response = self.client.get(
             '/api/metrics/sales-by-region',

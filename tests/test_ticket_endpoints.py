@@ -92,8 +92,8 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertNotIn('Arbol caido', asuntos)
 
         # Check for new fields
-        self.assertIn('id_ticket', tickets[0])
-        self.assertIn('nro_ticket_original', tickets[0])
+        self.assertIn('id', tickets[0])
+        self.assertIn('nro_ticket', tickets[0])
 
 if __name__ == '__main__':
     unittest.main()

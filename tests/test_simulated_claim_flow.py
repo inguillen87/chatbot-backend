@@ -119,7 +119,7 @@ class TestSimulatedClaimFlow(unittest.TestCase):
              patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
             mock_ticket = MagicMock()
             mock_ticket.id = 123
-            mock_ticket.nro_ticket = "M-12345"
+            mock_ticket.nro_ticket = "12345"
             mock_crear_ticket.return_value = mock_ticket
 
             mock_llamar_gemini.return_value = {
@@ -151,9 +151,9 @@ class TestSimulatedClaimFlow(unittest.TestCase):
             )
 
             self.assertIn("¡Reclamo recibido, Juan Perez!", response['message_body'])
-            self.assertIn("M-M-12345", response['message_body'])
+            self.assertIn("M-12345", response['message_body'])
             # The context is now cleared by the action handler, so we expect it to be gone
-            self.assertNotIn(CONTEXTO_MUNICIPIO, self.chat_db_context.context_data)
+            self.assertEqual(self.chat_db_context.context_data.get(CONTEXTO_MUNICIPIO), {})
             mock_crear_ticket.assert_called_once()
             # Get the actual call arguments
             call_args, call_kwargs = mock_crear_ticket.call_args

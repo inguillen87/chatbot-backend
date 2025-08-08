@@ -4,6 +4,7 @@ from app import create_app, db
 from models import User
 from unittest.mock import patch
 import json
+from functools import wraps
 
 from config import TestConfig
 
@@ -20,7 +21,6 @@ def app():
 def client(app):
     return app.test_client()
 
-@patch('routes.auth.token_requerido', lambda x: x)
 def test_get_user_locations(client):
     # Create test users
     user1 = User(id=2, name='Test User 1', municipio_id=1, latitud=10.0, longitud=20.0, email='test1@test.com', password_hash='test')
@@ -28,8 +28,24 @@ def test_get_user_locations(client):
     db.session.add_all([user1, user2])
     db.session.commit()
 
-    with patch('routes.estadisticas.get_user_from_token') as mock_get_user:
-        mock_get_user.return_value = User(id=1, rol='admin', municipio_id=1, rubro_id=None, name='Admin User', email='admin@test.com', password_hash='test')
+    mock_user = User(id=1, rol='admin', municipio_id=1, name='Admin User', email='admin@test.com', password_hash='test')
+    mock_user.rubro = None
+
+    def token_passthrough(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            return f(mock_user, *args, **kwargs)
+        return decorated_function
+
+    def admin_passthrough(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            return f(*args, **kwargs)
+        return decorated_function
+
+    with patch('routes.estadisticas.token_requerido', token_passthrough), \
+         patch('routes.estadisticas.admin_o_empleado_requerido', admin_passthrough):
+
         response = client.get(url_for('estadisticas.get_user_locations'))
         assert response.status_code == 200
         data = json.loads(response.data)

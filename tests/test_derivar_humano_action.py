@@ -72,7 +72,7 @@ class DerivarHumanoActionHandlerTests(unittest.TestCase):
         self.assertTrue(result['success'])
         self.assertIn('P-', result['data']['chat_id'])
 
-    @patch('services.actions.common_actions.servicio_tickets')
+    @patch('services.actions.pyme_actions.servicio_tickets')
     def test_orchestrator_routes_to_pyme_handler(self, mock_service):
         mock_service.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket=333333)
         mock_service.crear_comentario.return_value = None
@@ -86,7 +86,7 @@ class DerivarHumanoActionHandlerTests(unittest.TestCase):
         orchestrator = ChatOrchestrator(global_context=context)
         result = orchestrator.execute_action({'accion_backend': 'derivar_humano', 'datos_estructura': {'motivo_derivacion': 'test'}})
         mock_service.crear_nuevo_ticket.assert_called_once()
-        self.assertEqual(result['executed_action_handler'], 'DerivarHumanoAction')
+        self.assertEqual(result['executed_action_handler'], 'DerivarHumanoActionHandlerPyme')
         self.assertTrue(result['success'])
         self.assertIn('P-', result['data']['chat_id'])
 
