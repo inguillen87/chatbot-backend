@@ -1135,19 +1135,57 @@ def responder_municipio(
     RESET_KEYWORDS = {'hola', 'menu', 'inicio', 'empezar', 'ayuda', 'start', 'reset', 'buenos dias', 'buenas tardes', 'buenas noches'}
     if pregunta_str_check in RESET_KEYWORDS:
         logger_actual.info(f"Palabra clave de reseteo detectada: '{pregunta_str_check}'. Invocando GreetingHandler.")
-        # Construir el contexto mínimo necesario para que el GreetingHandler funcione
-        # El handler necesita acceder al `context_data` del chat para poder limpiarlo.
         context_for_handler = {
             CONTEXTO_MUNICIPIO: chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {}),
             "chat_db_context_data": chat_db_context.context_data
         }
         handler = GreetingHandler(context_for_handler)
-        # El payload para handle() puede ser un diccionario vacío en este caso.
         response = handler.handle({})
-        # Marcar el contexto como modificado después de que el handler lo limpió.
+
+        # ADAPTACIÓN PARA EL CANAL WEB:
+        # El widget web espera una lista plana de botones, no la estructura de 'categorias'.
+        # Aplanamos la estructura aquí para asegurar la compatibilidad.
+        if channel == 'web' and 'categorias' in response:
+            logger_actual.info("Adaptando respuesta de GreetingHandler para el canal web.")
+            opciones_finales = []
+            for categoria in response.get('categorias', []):
+                titulo = categoria.get('titulo', '').replace('🛠️', '').replace('📄', '').replace('📅', '').replace('📰', '').strip()
+                for boton in categoria.get('botones', []):
+                    new_boton = boton.copy()
+                    # El frontend web espera 'texto' y 'id' para el botón.
+                    new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+                    new_boton['texto'] = f"{titulo}: {new_boton['texto']}"
+                    opciones_finales.append(new_boton)
+
+            # Construimos el diccionario final que espera el frontend.
+            final_response_dict = {
+                "message_body": response.get('respuesta_usuario'),
+                "options_list": opciones_finales,
+                "message_type": "interactive_list", # El widget web puede manejar listas largas de botones.
+                "fuente": response.get("fuente", "greeting_handler_manual_web")
+            }
+        else:
+            # Para otros canales (ej. WhatsApp), la estructura con 'categorias' es preferible.
+            # Se asume que el `chat_router` o el manejador de canal específico lo procesará.
+            # Por ahora, devolvemos el formato compatible con el web widget para todos los casos
+            # para asegurar que funcione, ya que el router actual no parece diferenciar.
+            opciones_finales = []
+            for categoria in response.get('categorias', []):
+                for boton in categoria.get('botones', []):
+                    opciones_finales.append(boton)
+
+            final_response_dict = {
+                "message_body": response.get('respuesta_usuario'),
+                "options_list": opciones_finales,
+                "message_type": "interactive_list",
+                "fuente": response.get("fuente", "greeting_handler_manual_other")
+            }
+
+
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-        return response
+
+        return final_response_dict
     # --- FIN: Manejo de reseteo por palabra clave ---
 
     received_payload = {}
