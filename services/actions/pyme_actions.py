@@ -16,31 +16,24 @@ logger = logging.getLogger(__name__)
 
 class SaludoHandler(BasePymeHandler):
     def execute(self, action_data):
-        from services import cart as cart_service
         nombre = self.context.get("nombre_pyme", "la empresa")
-        body = f"¡Hola! Soy tu asistente para {nombre}. ¿En qué puedo ayudarte hoy?"
+        body = f"¡Hola! Soy tu asistente para {nombre}. Por favor elige una de las siguientes opciones:"
         options = [
-            {"id": "ver_catalogo_pyme", "texto": "Ver catálogo"},
-            {"id": "ver_ofertas_pyme", "texto": "Ver ofertas"}
+            {"id": "pyme_productos_stock", "texto": "Productos y stock 👟"},
+            {"id": "pyme_promociones", "texto": "Promociones 🔥"},
+            {"id": "pyme_estado_pedido", "texto": "Estado de mi pedido"},
+            {"id": "pyme_hacer_pedido", "texto": "Hacer un pedido"},
+            {"id": "pyme_hablar_agente", "texto": "Hablar con un agente"},
+            {"id": "pyme_otras_consultas", "texto": "Otras consultas"}
         ]
 
-        if self.pyme_id_actual:
-            resumen_carrito_existente = cart_service.get_cart_summary(self.pyme_carts_data, self.pyme_id_actual, self.cliente_id_actual)
-            if resumen_carrito_existente and resumen_carrito_existente.get("items_detalle"):
-                body += "\n\nVeo que tienes algunos productos en tu carrito. ¿Quieres continuar con ese pedido o empezar uno nuevo?"
-                options = [
-                    {"id": "ver_carrito_pyme", "texto": "Continuar pedido"},
-                    {"id": "limpiar_y_nuevo_pedido_saludo_pyme", "texto": "Nuevo pedido"},
-                    {"id": "ver_catalogo_pyme_con_carrito", "texto": "Ver catálogo"}
-                ]
-
-        message_type = 'interactive_buttons'
+        message_type = 'interactive_list'
 
         return {
             "message_body": body,
             "options_list": options,
             "message_type": message_type,
-            "fuente": "pyme_saludo_interactivo_v2"
+            "fuente": "pyme_saludo_menu_principal_v3"
         }
 
 class CatalogoHandler(BasePymeHandler):
@@ -302,3 +295,33 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
                 "error_details": str(e),
             }
+
+class OtrasConsultasHandler(BasePymeHandler):
+    def execute(self, action_data):
+        body = "¿Con cuál de estas opciones puedo ayudarte?"
+        options = [
+            {"id": "pyme_factura", "texto": "Factura"},
+            {"id": "pyme_trabajar", "texto": "Trabajar en la empresa"}
+        ]
+        message_type = 'interactive_list'
+        return {
+            "message_body": body,
+            "options_list": options,
+            "message_type": message_type,
+            "fuente": "pyme_otras_consultas_submenu_v1"
+        }
+
+class FacturaHandler(BasePymeHandler):
+    def execute(self, action_data):
+        body = "Por el momento no emitimos Factura A"
+        options = [
+            {"id": "pyme_no_recibi_factura", "texto": "No recibi mi factura"},
+            {"id": "pyme_error_detalle_boleta", "texto": "Error en el detalle de la boleta"}
+        ]
+        message_type = 'interactive_list'
+        return {
+            "message_body": body,
+            "options_list": options,
+            "message_type": message_type,
+            "fuente": "pyme_factura_submenu_v1"
+        }
