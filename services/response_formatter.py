@@ -54,9 +54,9 @@ def build_interactive_response(options: list,
             ]
         elif 4 <= num_options <= 10:
             interactive_data["type"] = "list"
-            interactive_data["action"]["button"] = "Ver opciones"
+            interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
             interactive_data["action"]["sections"] = [{
-                "title": "Opciones",
+                "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
                 "rows": [
                     {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")[:24], "description": o.get("description", "")[:72]}
                     for i, o in enumerate(options)

@@ -34,7 +34,7 @@ class TestLocationService(unittest.TestCase):
             }),
             content_type="application/json"
         ):
-            pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, attachment_info, location, error_response = _parse_request()
+            pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, attachment_info, location, ticket_id, tipo_ticket, error_response = _parse_request()
             self.assertIsNone(error_response)
             self.assertEqual(location, {"lat": 12.34, "lon": 56.78})
 

@@ -96,7 +96,10 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Homero Simpson")
         self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5491122334455")
         self.assertEqual(kwargs['ticket_data']['email_vecino'], "homero@example.com")
-        mock_enviar_whatsapp.assert_called_once_with("+5491122334455", "Homero Simpson", "12345", "Alumbrado")
+        # The call is positional, so the assertion should be positional
+        mock_enviar_whatsapp.assert_called_once_with(
+            "+5491122334455", "Homero Simpson", "12345", "Alumbrado"
+        )
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
@@ -225,6 +228,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(kwargs['ticket_data']['email_vecino'], "perfil_valido@example.com") # Tomado del perfil
         self.assertEqual(kwargs['ticket_data']['pregunta'], "mi pregunta de prueba")
 
+        # The call is positional, so the assertion should be positional
         mock_enviar_whatsapp.assert_called_once_with(
             "+549876543210", "Usuario LLM", "67890", "Varios"
         )

@@ -59,6 +59,9 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         rubro_clave = data.get("rubro_clave")
         attachment_info = data.get("attachment_info")
         location = data.get("location")
+        ticket_id = data.get("ticket_id")
+        tipo_ticket = data.get("tipo_ticket")
+
 
         if attachment_info:
             if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url', 'name', 'mimeType', 'size']):
@@ -71,18 +74,18 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         ):
             raise ValueError("El campo 'location' es inválido.")
 
-        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, attachment_info, location, None
+        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, attachment_info, location, ticket_id, tipo_ticket, None
 
     except (TypeError, ValueError) as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None,
             jsonify({"error": str(e)}),
         )
     except Exception as e:
         current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None,
             jsonify({"error": "Formato JSON inválido"}),
         )
 
@@ -162,12 +165,59 @@ def _procesar_chat(
                 rubro_clave,
                 attachment_info,
                 location,
+                ticket_id,
+                tipo_ticket,
                 error_response,
             ) = _parse_request(tipo_chat_fijo)
             if error_response:
                 return error_response, 400
         except Exception as e:
             return jsonify({"error": f"Invalid request format: {e}"}), 400
+
+    # --- Intercept messages for active live chats ---
+    if ticket_id and tipo_ticket and pregunta:
+        from models import MunicipioTicket, PymeTicket
+        from services.ticket_service import servicio_tickets
+        from socket_service import socketio
+
+        TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
+        # Use with_for_update to lock the row during the check and update
+        ticket = db.session.query(TicketModel).filter_by(id=ticket_id).with_for_update().first()
+
+        if ticket and ticket.estado in ["esperando_agente_en_vivo", "en_proceso", "en_vivo"]:
+            comentario_data = {
+                "comentario": pregunta,
+                "user_id": getattr(current_user, "id", None),
+                "anon_id": anon_id if not current_user else None,
+                "es_admin": False
+            }
+
+            if attachment_info:
+                archivo_id = attachment_info.get('id')
+                comentario_data['archivo_adjunto_id'] = archivo_id
+                if not pregunta.strip():
+                    comentario_data['comentario'] = f"[Archivo adjunto: {attachment_info.get('name', 'archivo')}]"
+                else:
+                    comentario_data['comentario'] += f" [Archivo: {attachment_info.get('name', 'archivo')}]"
+
+            nuevo_comentario = servicio_tickets.crear_comentario(
+                ticket_id=ticket_id,
+                tipo_ticket=tipo_ticket,
+                comentario_data=comentario_data
+            )
+
+            if nuevo_comentario:
+                db.session.commit() # Commit the new comment
+                room_name = f"ticket_{tipo_ticket}_{ticket_id}"
+                socketio.emit('new_chat_message', {
+                    'ticket_id': ticket_id,
+                    'message': nuevo_comentario.to_dict()
+                }, room=room_name)
+                current_app.logger.info(f"User message for active ticket {ticket_id} sent to room {room_name}")
+                return jsonify({"status": "message_sent_to_live_chat"}), 200
+            else:
+                db.session.rollback()
+                return jsonify({"error": "Failed to save user message for live chat"}), 500
 
     try:
         # --- User and Role Determination ---
