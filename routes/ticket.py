@@ -106,14 +106,14 @@ def serialize_ticket_to_json(ticket, ticket_type):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
     específico requerido por el frontend del panel de CRM.
+    Incluye el historial de comentarios completo.
     """
-    # Obtener el último comentario para usarlo como 'lastMessage'
-    last_comment = None
+    # Serializar todos los comentarios del ticket
+    comentarios_serializados = []
     if ticket.comentarios:
-        # La relación está configurada como 'dynamic', por lo que se puede ordenar y limitar
-        last_comment = ticket.comentarios.order_by(TicketComentario.fecha.desc()).first()
-
-    last_message_text = last_comment.comentario if last_comment else ""
+        # Ordenar por fecha ascendente para mostrar el historial cronológicamente
+        lista_comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+        comentarios_serializados = [c.to_dict() for c in lista_comentarios]
 
     # Reutilizar la lógica existente para obtener la información de contacto unificada
     # Esta función necesita el modelo User, que ya está importado en este archivo.
@@ -141,7 +141,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "telefono": user_data.get("telefono", "No especificado"),
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
-        "lastMessage": last_message_text,
+        "comentarios": comentarios_serializados,
     }
     return serialized_data
 
@@ -201,7 +201,7 @@ def get_tickets_del_usuario_logic(current_user: User):
         all_tickets_for_summary_calculation = query_base.all()
 
         summary_by_status = defaultdict(int)
-        defined_statuses = ["nuevo", "en_proceso", "cerrado"]
+        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
 
         for t_sum in all_tickets_for_summary_calculation:
             # El filtro de categoría de empleado ya se aplicó en la query_base
@@ -1024,7 +1024,7 @@ def get_panel_por_categoria(current_user: User):
             tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
 
         final_panel_data = {}
-        defined_statuses = ["nuevo", "en_proceso", "cerrado"]
+        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
 
         for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
             summary_by_status_for_cat = defaultdict(int)
@@ -1105,7 +1105,7 @@ def get_panel_pyme(current_user: User):
             tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
 
         final_panel_data = {}
-        defined_statuses = ["nuevo", "en_proceso", "cerrado"]
+        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
 
         for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
             summary_by_status_for_cat = defaultdict(int)

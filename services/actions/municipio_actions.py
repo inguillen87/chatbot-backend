@@ -22,24 +22,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
         viewer_user = self.context.get("viewer_user_obj")
 
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
-        categoria = action_data.get("categoria") or contexto_reclamo.get("categoria_reclamo")
-        descripcion = action_data.get("descripcion") or contexto_reclamo.get("descripcion_reclamo")
-        ubicacion_llm = action_data.get("ubicacion") or contexto_reclamo.get("direccion_reclamo")
-        distrito_llm = action_data.get("distrito") or contexto_reclamo.get("distrito_reclamo")
-        coordenadas_llm = action_data.get("coordenadas") or contexto_reclamo.get("coordenadas_reclamo")
-        foto_url_llm = action_data.get("foto_url_adjunta") or contexto_reclamo.get("foto_url")
+        datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
+        categoria = action_data.get("categoria") or datos_parciales.get("categoria")
+        descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
+        ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
+        distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
+        coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
+        foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        nombre_vecino_final = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or contexto_reclamo.get("nombre_vecino") or getattr(viewer_user, "nombre", None)
+        nombre_vecino_final = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado") or getattr(viewer_user, "nombre", None)
 
-        telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado")
+        telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None
         if telefono_from_llm and validar_telefono(telefono_from_llm):
             telefono_final = formatear_telefono_e164(telefono_from_llm)
         elif viewer_user and getattr(viewer_user, "telefono", None) and validar_telefono(viewer_user.telefono):
             telefono_final = formatear_telefono_e164(viewer_user.telefono)
 
-        email_from_llm = action_data.get("email") or action_data.get("email_detectado")
+        email_from_llm = action_data.get("email") or action_data.get("email_detectado") or datos_parciales.get("email_detectado")
         email_final = None
         if email_from_llm and validar_email(email_from_llm):
             email_final = email_from_llm.lower()
@@ -156,10 +157,22 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Notificaciones
             if ticket_data_cleaned.get("telefono_vecino"):
                 try:
-                    enviar_notificacion_whatsapp_con_plantilla(ticket_data_cleaned["telefono_vecino"], ticket_data_cleaned["nombre_vecino"], str(ticket_creado.nro_ticket), ticket_data_cleaned["categoria"])
-                    enviar_notificacion_sms(ticket_data_cleaned["telefono_vecino"], f"Hola {ticket_data_cleaned['nombre_vecino']}! Tu reclamo M-{ticket_creado.nro_ticket} ({ticket_data_cleaned['categoria']}) fue generado.")
-                except Exception as e_notify:
-                    logger.error(f"Error enviando notificaciones para {nro_ticket_str}: {e_notify}")
+                    enviar_notificacion_whatsapp_con_plantilla(
+                        ticket_data_cleaned["telefono_vecino"],
+                        ticket_data_cleaned.get("nombre_vecino", "Vecino"),
+                        str(ticket_creado.nro_ticket),
+                        ticket_data_cleaned.get("categoria", "Varios")
+                    )
+                except Exception as e_whatsapp:
+                    logger.error(f"Error enviando notificación de WhatsApp para {nro_ticket_str}: {e_whatsapp}")
+
+                try:
+                    enviar_notificacion_sms(
+                        ticket_data_cleaned["telefono_vecino"],
+                        f"Hola {ticket_data_cleaned.get('nombre_vecino', 'Vecino')}! Tu reclamo M-{ticket_creado.nro_ticket} ({ticket_data_cleaned.get('categoria', 'Varios')}) fue generado."
+                    )
+                except Exception as e_sms:
+                    logger.error(f"Error enviando notificación por SMS para {nro_ticket_str}: {e_sms}")
 
             # Formatear respuesta y obtener el botón de contacto
             mensaje_respuesta, boton_contacto = formatear_ticket_respuesta(
@@ -352,6 +365,9 @@ class ActivarPanicoActionHandler(BaseActionHandler):
             "data": {"alerta_status": "enviada"}
         }
 
+from socket_service import socketio
+from routes.ticket import serialize_ticket_to_json
+
 class DerivarHumanoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Crea un ticket real de chat en vivo y devuelve su identificador."""
@@ -397,6 +413,16 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                     "es_admin": False,
                 },
             )
+
+            # Emitir evento de socket para notificar al panel de administración
+            try:
+                ticket_json = serialize_ticket_to_json(sala, ticket_type)
+                room_name = f"municipio_{sala.municipio_id}"
+                socketio.emit('live_chat_request', ticket_json, room=room_name)
+                logger.info(f"Socket event 'live_chat_request' emitted to room '{room_name}' for ticket {sala.id}")
+            except Exception as e_socket:
+                logger.error(f"Failed to emit socket event for new live chat ticket {sala.id}: {e_socket}", exc_info=True)
+
 
             chat_id = f"M-{sala.nro_ticket}"
 

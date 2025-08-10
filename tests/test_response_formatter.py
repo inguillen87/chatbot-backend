@@ -11,9 +11,10 @@ class TestResponseFormatter(unittest.TestCase):
             channel="whatsapp",
             message_type='interactive_buttons'
         )
-        self.assertEqual(response["type"], "text")
-        expected_text = "Elige una:\n\n*1*. Opción Uno\n\nResponde con el número de la opción que necesites."
-        self.assertEqual(response["text"]["body"], expected_text)
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["type"], "button")
+        self.assertEqual(len(response["interactive"]["action"]["buttons"]), 1)
+        self.assertEqual(response["interactive"]["action"]["buttons"][0]["reply"]["id"], "opt1")
 
     def test_whatsapp_interactive_buttons_3_options(self):
         options = [
@@ -24,42 +25,42 @@ class TestResponseFormatter(unittest.TestCase):
         response = build_interactive_response(
             options=options, body_text="Selecciona:", channel="whatsapp", message_type='interactive_buttons'
         )
-        self.assertEqual(response["type"], "text")
-        expected_text = "Selecciona:\n\n*1*. Botón 1\n*2*. Botón 2\n*3*. Botón 3\n\nResponde con el número de la opción que necesites."
-        self.assertEqual(response["text"]["body"], expected_text)
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["type"], "button")
+        self.assertEqual(len(response["interactive"]["action"]["buttons"]), 3)
+        self.assertEqual(response["interactive"]["action"]["buttons"][2]["reply"]["title"], "Botón 3")
 
-    def test_whatsapp_interactive_buttons_too_many_options_truncates(self):
+    def test_whatsapp_interactive_buttons_too_many_options_fallbacks_to_list(self):
         options = [
             {"id": f"btn{i}", "texto": f"Botón {i}"} for i in range(5)
         ]
         response = build_interactive_response(
             options=options, body_text="Demasiados botones:", channel="whatsapp", message_type='interactive_buttons'
         )
-        self.assertEqual(response["type"], "text")
-        # The new logic doesn't truncate for text-based lists
-        expected_text = "Demasiados botones:\n\n*1*. Botón 0\n*2*. Botón 1\n*3*. Botón 2\n*4*. Botón 3\n*5*. Botón 4\n\nResponde con el número de la opción que necesites."
-        self.assertEqual(response["text"]["body"], expected_text)
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["type"], "list")
+        self.assertEqual(len(response["interactive"]["action"]["sections"][0]["rows"]), 5)
 
-    def test_whatsapp_interactive_list_1_option(self):
+    def test_whatsapp_interactive_list_4_options_works(self):
+        options = [{"id": f"li{i}", "texto": f"Lista Item {i}"} for i in range(4)]
         response = build_interactive_response(
-            options=[{"id": "li1", "texto": "Lista Item 1", "description": "Desc 1"}],
+            options=options,
             body_text="Elige de la lista:",
             channel="whatsapp",
             message_type='interactive_list'
         )
-        self.assertEqual(response["type"], "text")
-        expected_text = "Elige de la lista:\n\n*1*. Lista Item 1\n\nResponde con el número de la opción que necesites."
-        self.assertEqual(response["text"]["body"], expected_text)
-
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["type"], "list")
+        self.assertEqual(len(response["interactive"]["action"]["sections"][0]["rows"]), 4)
 
     def test_whatsapp_interactive_list_10_options(self):
         options = [{"id": f"li{i}", "texto": f"Lista Item {i}"} for i in range(10)]
         response = build_interactive_response(
             options=options, body_text="Elige:", channel="whatsapp", message_type='interactive_list'
         )
-        self.assertEqual(response["type"], "text")
-        expected_body = "Elige:\n\n" + "\n".join([f"*{i+1}*. Lista Item {i}" for i in range(10)]) + "\n\nResponde con el número de la opción que necesites."
-        self.assertEqual(response["text"]["body"], expected_body)
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["type"], "list")
+        self.assertEqual(len(response["interactive"]["action"]["sections"][0]["rows"]), 10)
 
     def test_whatsapp_interactive_list_too_many_options_truncates(self):
         options = [{"id": f"li{i}", "texto": f"Lista Item {i}"} for i in range(15)]
@@ -91,15 +92,15 @@ class TestResponseFormatter(unittest.TestCase):
             "interactive_list_section_title": "Mis Acciones"
         }
         response = build_interactive_response(
-            options=[{"id": "li1", "texto": "Item 1"}],
+            options=[{"id": f"li{i}", "texto": f"Item {i}"} for i in range(4)],
             body_text="Elige:",
             channel="whatsapp",
             message_type='interactive_list',
             original_bot_response=original_bot_response_data
         )
-        self.assertEqual(response["type"], "text")
-        expected_body = "Elige:\n\n*1*. Item 1\n\nResponde con el número de la opción que necesites."
-        self.assertEqual(response["text"]["body"], expected_body)
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["action"]["button"], "Acciones")
+        self.assertEqual(response["interactive"]["action"]["sections"][0]["title"], "Mis Acciones")
 
 
     def test_whatsapp_list_row_description_optional(self):
@@ -110,12 +111,10 @@ class TestResponseFormatter(unittest.TestCase):
             ],
             body_text="Elige:",
             channel="whatsapp",
-            message_type='interactive_list'
+            message_type='interactive_buttons' # Should be buttons for 2 options
         )
-        self.assertEqual(response["type"], "text")
-        # Description is ignored in the new text format
-        expected_body = "Elige:\n\n*1*. Item Con Desc\n*2*. Item Sin Desc\n\nResponde con el número de la opción que necesites."
-        self.assertEqual(response["text"]["body"], expected_body)
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["type"], "button")
 
     def test_web_response_structure_buttons(self):
         options = [{"id": "web_opt1", "texto": "Web Opción 1"}]

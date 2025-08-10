@@ -63,7 +63,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         mock_analyze_vision.return_value = {
             "objects": [{"name": "traffic light", "confidence": 0.9}],
             "labels": [{"description": "street", "confidence": 0.8}],
-            "text_annotations": [{"description": "AYUDA SEMAFORO CAIDO", "locale": "es"}]
+            "full_text_annotation": {"description": "AYUDA SEMAFORO CAIDO"}
         }
 
         mock_extract_llm.return_value = {

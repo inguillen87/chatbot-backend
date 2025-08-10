@@ -86,27 +86,35 @@ class TestClaimCreationFlow(unittest.TestCase):
             db.session.commit()
 
             # 3. El usuario proporciona el nombre y se crea el ticket
-            with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+            with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket, \
+                 patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla') as mock_whatsapp, \
+                 patch('services.actions.municipio_actions.enviar_notificacion_sms') as mock_sms:
+
                 mock_ticket = MagicMock()
+                mock_ticket.id = 55
                 mock_ticket.nro_ticket = "12345"
                 mock_crear_ticket.return_value = mock_ticket
 
-                # The LLM now also extracts the missing email and phone from the user profile
+                # El LLM ahora también extrae el email y teléfono que faltan del perfil del usuario
                 mock_llamar_gemini.return_value = {
                     "accion_backend": "crear_reclamo",
                     "datos_estructura": {
                         "nombre_usuario_detectado": "Juan Perez",
                         "telefono_detectado": self.viewer_user.telefono,
-                        "email_detectado": self.viewer_user.email
+                        "email_detectado": "vecino@test.com" # Simula un email detectado
                     },
                     "pedir_info": None
                 }
 
                 respuesta = self.responder_municipio_test(pregunta_original="Soy Juan Perez")
 
+            self.assertIn("¡Tu reclamo fue generado con éxito, Juan Perez!", respuesta['message_body'])
             self.assertIn("N° de Ticket: M-12345", respuesta['message_body'])
             contexto_municipio = self.chat_session.context_data[CONTEXTO_MUNICIPIO]
             self.assertEqual(contexto_municipio.get('estado_conversacion'), 'CONVERSACION_GENERAL_LLM')
+            mock_crear_ticket.assert_called_once()
+            # Verifica que el email del viewer_user (que no tenía) se haya actualizado
+            self.assertEqual(self.viewer_user.email, "vecino@test.com")
 
     @patch('services.municipio_responder.llamar_gemini')
     def test_claim_creation_with_google_maps_link(self, mock_llamar_gemini):
