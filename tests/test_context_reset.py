@@ -55,7 +55,7 @@ class TestContextReset(unittest.TestCase):
             db.session.commit()
 
             mock_llm.return_value = {
-                'respuesta_usuario': 'Buscando...',
+                'message_body': 'Buscando...',
                 'accion_backend': 'ejecutar_herramienta',
                 'datos_estructura': {
                     'target': 'municipio',

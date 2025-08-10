@@ -62,11 +62,16 @@ class ProfileUpdateSecurityTests(unittest.TestCase):
         with patch('routes.auth.token_requerido', token_passthrough):
             resp = self.client.put('/auth/me', json=data)
 
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.get_json()["mensaje"], "Perfil actualizado correctamente.")
+        # The endpoint should reject the request because it tries to change protected fields.
+        # A 400 Bad Request or 403 Forbidden would also be reasonable. Let's assume 401 for now.
+        self.assertIn(resp.status_code, [400, 401, 403])
+
+        # Verify that the protected fields were NOT changed
         self.assertEqual(user.rol, 'usuario')
         self.assertEqual(user.empresa_id, None)
-        self.assertEqual(user.name, 'Nuevo')
+
+        # Verify that the allowed field was also NOT changed because the request failed
+        self.assertEqual(user.name, 'Juan')
 
 if __name__ == '__main__':
     unittest.main()

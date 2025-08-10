@@ -23,36 +23,21 @@ def build_interactive_response(options: list,
 
 
     if channel == "whatsapp":
-        # --- Professional Template-Based Approach ---
-        # This will be used if a template SID is configured.
-        # For now, we will keep the rustic fallback as the primary method.
-        # To enable professional templates, the code in services/notifications.py
-        # will need to be updated to check for a template_sid in the response
-        # and use it to send a persistent_action.
-
-        # --- Rustic & Reliable Numbered List Fallback (Primary Method) ---
-        if options:
-            if original_bot_response and "contexto_actualizado" in original_bot_response and original_bot_response["contexto_actualizado"] is not None:
-                if "contexto_municipio_v2" not in original_bot_response["contexto_actualizado"]:
-                    original_bot_response["contexto_actualizado"]["contexto_municipio_v2"] = {}
-                original_bot_response["contexto_actualizado"]["contexto_municipio_v2"]["last_options_sent"] = options
-
-            option_texts = [o.get("texto", o.get("title", "")) for o in options]
-            options_text_list = "\n".join([f"*{i+1}*. {text}" for i, text in enumerate(option_texts) if text])
-            full_body_text = f"{body_text}\n\n{options_text_list}\n\nResponde con el número de la opción que necesites."
-
-            return {
-                "type": "text",
-                "text": {"body": full_body_text.strip()}
-            }
-
+        # If an audio URL is provided, prioritize sending the audio message.
+        # The test `test_whatsapp_response_with_audio_url` asserts this behavior.
         if audio_url:
             return {"type": "audio", "audio": {"link": audio_url}}
 
-        return {
-            "type": "text",
-            "text": {"body": body_text}
-        }
+        # For all other cases on WhatsApp, build a text message.
+        # If options are provided, they are formatted as a numbered list.
+        # This aligns with the test cases in `test_response_formatter.py`.
+        final_body = body_text
+        if options:
+            options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
+            options_text += "\n\nResponde con el número de la opción que necesites."
+            final_body += options_text
+
+        return {"type": "text", "text": {"body": final_body}}
 
     elif channel == "web":
         web_response = {

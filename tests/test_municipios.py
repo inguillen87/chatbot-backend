@@ -39,7 +39,7 @@ def test_greeting_handler(client):
 def test_reclamo_handler_inicio(client):
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Entendido, iniciando reclamo. ¿Sobre qué es?",
+            "message_body": "Entendido, iniciando reclamo. ¿Sobre qué es?",
             "accion_backend": "crear_reclamo",
             "datos_estructura": {"target": "municipio"},
             "pedir_info": "descripcion"
@@ -60,7 +60,7 @@ def test_reclamo_handler_inicio(client):
 @patch('services.municipio_responder.llamar_gemini')
 def test_responder_municipio_imagen(mock_llamar_gemini, client):
     mock_llamar_gemini.return_value = {
-        "respuesta_usuario": "Gracias por la imagen. Parece un reclamo sobre Bacheo. ¿Es correcto?",
+        "message_body": "Gracias por la imagen. Parece un reclamo sobre Bacheo. ¿Es correcto?",
         "accion_backend": "confirmar_reclamo_auto",
         "datos_estructura": {"categoria": "Bacheo", "descripcion": "Parece ser un bache."}
     }
@@ -90,7 +90,7 @@ def test_button_click_sets_category_and_advances_flow(client):
     """
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Entendido. Para el reclamo de Luminaria, por favor decime la descripción del problema y la dirección.",
+            "message_body": "Entendido. Para el reclamo de Luminaria, por favor decime la descripción del problema y la dirección.",
             "accion_backend": "crear_reclamo",
             "datos_estructura": {"target": "municipio"},
             "pedir_info": "descripcion_y_ubicacion"

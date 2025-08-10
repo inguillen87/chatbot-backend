@@ -67,8 +67,8 @@ class ChatOrchestrator:
                     "executed_action_handler": "SkipInfoRequest"
                 }
 
-        if "respuesta_usuario" in llm_output:
-            action_data["respuesta_usuario_original_llm"] = llm_output["respuesta_usuario"]
+        if "message_body" in llm_output:
+            action_data["message_body_original_llm"] = llm_output["message_body"]
 
         if action_name == "solicitar_ubicacion":
             return {
@@ -83,7 +83,7 @@ class ChatOrchestrator:
             # sin necesidad de un handler específico.
             return {
                 "success": True,
-                "message_to_user": llm_output.get("respuesta_usuario", "Entendido."),
+                "message_to_user": llm_output.get("message_body", "Entendido."),
                 "data": {"action_performed": action_name or "none"},
                 "executed_action_handler": "GenericResponseHandler" # Identificador para logging
             }

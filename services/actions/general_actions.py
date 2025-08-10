@@ -15,7 +15,7 @@ class NoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing NoActionHandler with data: {action_data}")
         # This handler typically does nothing on the backend but acknowledges the LLM's decision.
-        # The LLM should have already provided a suitable "respuesta_usuario".
+        # The LLM should have already provided a suitable "message_body".
         return {
             "success": True,
             "message_to_user": action_data.get("respuesta_usuario_original_llm", "Entendido."), # Fallback message
@@ -29,7 +29,7 @@ class SmallTalkActionHandler(BaseActionHandler):
         # This handler might log the small talk or perform other minor backend tasks if needed.
         return {
             "success": True,
-            "message_to_user": action_data.get("respuesta_usuario_original_llm", "¡Entendido! ¿En qué más puedo ayudarte?"), # Fallback
+            "message_to_user": action_data.get("message_body_original_llm", "¡Entendido! ¿En qué más puedo ayudarte?"), # Fallback
             "data": {"action_taken": "small_talk_acknowledged"}
         }
 
@@ -38,7 +38,7 @@ class ErrorActionHandler(BaseActionHandler):
         """Handle error actions returned by the LLM."""
         logger.error(f"Executing ErrorActionHandler with data: {action_data}")
         message = action_data.get(
-            "respuesta_usuario_original_llm",
+            "message_body_original_llm",
             "No pude procesar tu solicitud"
         )
         return {
@@ -169,6 +169,39 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
 
 # More general handlers can be added here if they are truly common across municipio and pyme.
 # Otherwise, they should go into their specific action files.
+
+class FinalizarTramiteActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing FinalizarTramiteActionHandler with data: {action_data}")
+
+        CONTEXTO_MUNICIPIO = 'contexto_municipio_v2'
+
+        # The context passed to the handler is the global_context dictionary.
+        # The actual session data is in the 'chat_db_context_data' key.
+        if self.context and 'chat_db_context_data' in self.context:
+            chat_session_data = self.context['chat_db_context_data']
+            if CONTEXTO_MUNICIPIO in chat_session_data:
+                municipio_context = chat_session_data[CONTEXTO_MUNICIPIO]
+
+                # Reset claim-specific data
+                municipio_context['datos_parciales_llm_reclamo'] = {}
+                municipio_context['historial_llm_reclamo'] = []
+                municipio_context.pop('esperando_info_llm_reclamo', None)
+
+                # Reset conversation state to general
+                municipio_context['estado_conversacion'] = 'CONVERSACION_GENERAL_LLM'
+
+                # The calling function (responder_municipio) is responsible for
+                # calling flag_modified on the ChatSessionContext object.
+
+        message_to_user = action_data.get("respuesta_usuario_original_llm", "De nada. ¡Hasta luego!")
+
+        return {
+            "success": True,
+            "message_to_user": message_to_user,
+            "data": {"action_taken": "finalizar_tramite"}
+        }
+
 
 class MenuPrincipalActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:

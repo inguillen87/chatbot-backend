@@ -134,7 +134,7 @@ class InformarUsuarioAction(BaseActionHandler):
 
         return {
             "success": True,
-            "message_to_user": message, # This message comes directly from LLM's "respuesta_usuario" for this action
+            "message_to_user": message, # This message comes directly from LLM's "message_body" for this action
             "data": {}
         }
 

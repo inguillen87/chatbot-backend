@@ -604,7 +604,7 @@ class FinalizarPedidoHandler(BaseHandler):
             logger.error(f"Error al crear pedido final desde carrito para pyme {self.pyme_id_actual}: {e}", exc_info=True)
             return {
                 "success": False,
-                "message_to_user": "Hubo un error al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
+                "message_to_user": "Hubo un problema al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
                 "fuente": "pyme_pedido_finalizado_error"
             }
 
@@ -618,7 +618,7 @@ class FallbackHandler(BaseHandler):
         search_results = google_search(pregunta)
 
         if not search_results:
-            return UnclearHandler(self.context).handle(pregunta)
+            return UnclearHandler(self.context).execute({"pregunta": pregunta})
 
         search_items = []
         for result in search_results[:3]:
@@ -874,7 +874,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     # --- 6. Procesar Resultado del Action Handler y Formatear Respuesta ---
     respuesta_final_texto = action_handler_result.get("message_to_user")
     if not respuesta_final_texto:
-        respuesta_final_texto = llm_response_structured.get("respuesta_usuario", "No estoy seguro de cómo proceder. ¿Podrías intentarlo de nuevo?")
+        respuesta_final_texto = llm_response_structured.get("message_body", "No estoy seguro de cómo proceder. ¿Podrías intentarlo de nuevo?")
 
     opciones_finales = llm_response_structured.get("botones", [])
     pedir_info_final = action_handler_result.get("pedir_info") or llm_response_structured.get("pedir_info")

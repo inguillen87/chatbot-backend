@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from models import User, Rubro, ChatSessionContext
-from services.municipios import responder_municipio
+from services.municipio_responder import responder_municipio
 
 @pytest.fixture(scope='module')
 def test_client():
@@ -49,7 +49,7 @@ def test_client():
 @pytest.fixture
 def mock_llm():
     """Mock para la función llamar_gemini."""
-    with patch('services.municipios.llamar_gemini') as mock:
+    with patch('services.municipio_responder.llamar_gemini') as mock:
         yield mock
 
 def test_full_claim_in_one_go(test_client, mock_llm):
@@ -72,7 +72,7 @@ def test_full_claim_in_one_go(test_client, mock_llm):
             "telefono": "2613168608",
             "email": "marcelo.guillen@example.com"
         },
-        "respuesta_usuario": "Gracias, he registrado tu reclamo."
+        "message_body": "Gracias, he registrado tu reclamo."
     }
 
     pregunta = "Quiero reportar un semáforo roto en Av. Siempre Viva 123. Mi nombre es Marcelo Guillen, mi teléfono es 2613168608 y mi email es marcelo.guillen@example.com."
@@ -109,7 +109,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     mock_llm.return_value = {
         "accion_backend": "crear_reclamo",
         "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto"},
-        "respuesta_usuario": "Entendido, ¿dónde es el problema?",
+        "message_body": "Entendido, ¿dónde es el problema?",
         "pedir_info": "ubicacion"
     }
     respuesta = responder_municipio(
@@ -125,7 +125,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     mock_llm.return_value = {
         "accion_backend": "crear_reclamo",
         "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
-        "respuesta_usuario": "Perfecto. ¿Tu nombre?",
+        "message_body": "Perfecto. ¿Tu nombre?",
         "pedir_info": "nombre_completo"
     }
     respuesta = responder_municipio(
@@ -146,7 +146,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
             "telefono": "555-1234",
             "email": "lisa.simpson@example.com"
         },
-        "respuesta_usuario": "Gracias, he registrado tu reclamo."
+        "message_body": "Gracias, he registrado tu reclamo."
     }
 
     with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:

@@ -19,21 +19,26 @@ except Exception:
 @unittest.skipIf(create_app is None or Conversacion is None or db is None, "Flask or Models not available")
 class ReaccionesEndpointTests(unittest.TestCase):
     def setUp(self):
-        app = create_app()
-        app.config["TESTING"] = True
-        self.client = app.test_client()
-        with app.app_context():
-            from models import User
-            db.create_all()
-            # Create a user with the token 'tok'
-            user = User(email="reacciones@test.com", name="Test User", token="tok")
-            user.set_password("password")
-            db.session.add(user)
-            conv = Conversacion(pregunta="p", respuesta="r", fuente="bot", user_id=user.id)
-            db.session.add(conv)
-            db.session.commit()
-            self.conv_id = conv.id
-            self.user_id = user.id
+        self.app = create_app('config.TestingConfig')
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        self.client = self.app.test_client()
+        db.create_all()
+        from models import User
+        # Create a user with the token 'tok'
+        user = User(email="reacciones@test.com", name="Test User", token="tok")
+        user.set_password("password")
+        db.session.add(user)
+        conv = Conversacion(pregunta="p", respuesta="r", fuente="bot", user_id=user.id)
+        db.session.add(conv)
+        db.session.commit()
+        self.conv_id = conv.id
+        self.user_id = user.id
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
 
     def test_options(self):
         resp = self.client.options(

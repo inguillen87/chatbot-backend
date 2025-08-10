@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from services.logic import responder_chatboc
 from services.pymes import responder_pyme
-from services.municipios import responder_municipio
+from services.municipio_responder import responder_municipio
 from models import User, Rubro, ChatSessionContext
 
 @pytest.fixture
@@ -71,7 +71,7 @@ def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_sess
     assert "municipio_crear_reclamo_v2" in response.get("fuente", "")
     assert "¿Cuál es la dirección del problema?" in response.get("message_body", "")
 
-@patch('services.municipios.llamar_gemini')
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
 def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_gemini, mock_db_session):
     mock_interpretar_imagen.return_value = {
@@ -80,7 +80,7 @@ def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_g
         "descripcion_sugerida": "Bache en la calle"
     }
     mock_llamar_gemini.return_value = {
-        "respuesta_usuario": "Gracias por la imagen. Parece un reclamo sobre 'Arreglo de calle'. Para continuar, por favor decime la dirección.",
+        "message_body": "Gracias por la imagen. Parece un reclamo sobre 'Arreglo de calle'. Para continuar, por favor decime la dirección.",
         "accion_backend": "crear_reclamo",
         "datos_estructura": {
             "categoria": "Arreglo de calle",
@@ -111,11 +111,11 @@ def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_g
 def test_document_processing_pedido_pyme(mock_db_session):
     pass
 
-@patch('services.municipios.llamar_gemini')
+@patch('services.municipio_responder.llamar_gemini')
 def test_information_gathering_reclamo_municipio(mock_llamar_gemini, mock_db_session):
     # 1. Initial request to create a reclamo
     mock_llamar_gemini.return_value = {
-        "respuesta_usuario": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
+        "message_body": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
         "accion_backend": "crear_reclamo",
         "datos_estructura": {"target": "municipio"},
         "pedir_info": "ubicacion",
@@ -142,7 +142,7 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, mock_db_ses
 
     # 2. User provides the location
     mock_llamar_gemini.return_value = {
-        "respuesta_usuario": "Gracias. Ahora necesito tu nombre completo.",
+        "message_body": "Gracias. Ahora necesito tu nombre completo.",
         "accion_backend": "crear_reclamo",
         "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
         "pedir_info": "nombre_completo",

@@ -372,6 +372,13 @@ def _procesar_interpretacion_reclamo(
     datos_internos_analisis['llm_raw'] = detalles_llm
     datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
 
+    if analisis_db_record:
+        # Forzar la actualización de JSONB en SQLAlchemy
+        current_datos_db = analisis_db_record.datos_estructurados or {}
+        current_datos_db.update(datos_internos_analisis)
+        analisis_db_record.datos_estructurados = dict(current_datos_db)
+
+
     llm_tipo_problema = detalles_llm.get("tipo_problema","").strip()
     llm_descripcion = detalles_llm.get("descripcion_problema", "").strip()
 

@@ -16,6 +16,7 @@ ACTION_HANDLER_MAP = {
     "error": "services.actions.general_actions.ErrorActionHandler",
     "registrar_usuario": "services.actions.general_actions.RegistrarUsuarioActionHandler",
     "menu_principal": "services.actions.general_actions.MenuPrincipalActionHandler",
+    "finalizar_tramite": "services.actions.general_actions.FinalizarTramiteActionHandler",
 
     # Acciones de Municipio
     "crear_reclamo": "services.actions.municipio_actions.CrearReclamoActionHandler",

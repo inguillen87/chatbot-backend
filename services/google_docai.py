@@ -128,7 +128,7 @@ def _consolidar_filas(df: pd.DataFrame) -> pd.DataFrame:
 
         # Si la fila actual está vacía (inicio o después de consolidar una completa)
         # o si la nueva fila tiene suficientes celdas llenas para ser considerada nueva.
-        if sum(1 for c_act in fila_actual if c_act) == 0 or celdas_llenas_count >= umbral_celdas_llenas_continuacion :
+        if sum(1 for c_act in fila_actual if c_act) == 0 or celdas_llenas_count > umbral_celdas_llenas_continuacion :
             if sum(1 for c_act in fila_actual if c_act) > 0: # Si había algo en fila_actual, guardarla
                 filas_consolidadas.append(list(fila_actual)) # Guardar una copia
             fila_actual = list(celdas) # Iniciar nueva fila_actual

@@ -307,6 +307,7 @@ class ConversationState(Enum):
     ESPERANDO_CONSULTA_GENERAL = auto()
     ESPERANDO_SELECCION_MENU_PRINCIPAL = auto()
     ESPERANDO_SELECCION_MENU_RECLAMOS = auto()
+    ESPERANDO_UBICACION_GENERAL = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -418,11 +419,16 @@ class GreetingHandler(BaseMunicipioHandler):
                 del contexto_municipio_actual[key]
 
         if self.context.get("chat_db_context_data"):
-            if CONTEXTO_MUNICIPIO in self.context["chat_db_context_data"]:
-                user_info = self.context["chat_db_context_data"][CONTEXTO_MUNICIPIO].get('user', {})
-                self.context["chat_db_context_data"][CONTEXTO_MUNICIPIO] = {'user': user_info} if user_info else {}
-            if "historial_conversacion_general_llm" in self.context["chat_db_context_data"]:
-                 del self.context["chat_db_context_data"]["historial_conversacion_general_llm"]
+            chat_context_data = self.context["chat_db_context_data"]
+            if CONTEXTO_MUNICIPIO in chat_context_data:
+                user_info = chat_context_data[CONTEXTO_MUNICIPIO].get('user', {})
+                # Clear the dictionary in-place to preserve the reference
+                chat_context_data[CONTEXTO_MUNICIPIO].clear()
+                if user_info:
+                    chat_context_data[CONTEXTO_MUNICIPIO]['user'] = user_info
+
+            # Use pop with a default to avoid KeyError if the key doesn't exist
+            chat_context_data.pop("historial_conversacion_general_llm", None)
 
         logger.info("[GreetingHandler] Conversation context has been reset.")
 
@@ -705,26 +711,8 @@ from services.gemini_bridge import llamar_gemini # Asegurar import
 
 def accion_crear_reclamo_municipio(datos_reclamo, context):
     """Wrapper que delega la creación de reclamos al ActionHandler dedicado."""
-
     handler = CrearReclamoActionHandler(context=context)
-    resultado = handler.execute(datos_reclamo)
-
-    if resultado.get("success"):
-        return {
-            "message_body": resultado.get("message_to_user", "Reclamo generado."),
-            "options_list": resultado.get("botones", []),
-            "fuente": "accion_crear_reclamo_llm_exito",
-            "ticket_id": resultado.get("data", {}).get("ticket_id"),
-        }
-
-    return {
-        "message_body": resultado.get(
-            "message_to_user",
-            "Hubo un problema al intentar registrar tu reclamo. Por favor, intenta de nuevo.",
-        ),
-        "options_list": [],
-        "fuente": "accion_crear_reclamo_llm_error",
-    }
+    return handler.execute(datos_reclamo)
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
     Handles the ticket creation process.
@@ -883,14 +871,15 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 "fuente": "error"
             }, contexto_municipio_actual
 
-        respuesta_usuario_llm = respuesta_llm_dict.get("respuesta_usuario")
+        respuesta_usuario_llm = respuesta_llm_dict.get("message_body")
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
         datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
         botones_llm = respuesta_llm_dict.get("botones", [])
 
-        if not respuesta_usuario_llm:
-            return None, None
+        if not respuesta_usuario_llm and accion_backend_llm not in ["crear_reclamo"]:
+             logger_actual.warning("[HANDLE_LLM] LLM response did not contain a 'message_body' and was not a parameterless action. Returning None to trigger fallback.")
+             return None, contexto_municipio_actual
 
         nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
 
@@ -904,11 +893,14 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             # The handler's response is the full dict ready to be returned by responder_municipio
             return response, contexto_municipio_actual
 
-        if accion_backend_llm == "crear_reclamo" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
+        if accion_backend_llm in ["crear_reclamo", "iniciar_reclamo"] and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             # Si es el inicio de un nuevo reclamo, limpiar el contexto anterior
             if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
                 contexto_municipio_actual["historial_llm_reclamo"] = []
+
+            # Asegurarse de que datos_parciales_llm_reclamo exista si no fue creado arriba
+            contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
 
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
 
@@ -1040,7 +1032,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             # Devolvemos un diccionario que se asemeja más a la respuesta original del LLM
             # para que el frontend pueda procesarlo directamente.
             return {
-                "respuesta_usuario": respuesta_usuario_llm,
+                "message_body": respuesta_usuario_llm,
                 "botones": botones_llm,
                 "accion_backend": accion_backend_llm,
                 "datos_estructura": datos_estructura_llm,
@@ -1183,12 +1175,12 @@ def _get_reclamos_menu():
     return {
         "message_body": "Seleccioná el tipo de reclamo:",
         "options_list": [
-            {"id": "reclamo_luminaria", "texto": "Luminaria"},
-            {"id": "reclamo_arbolado", "texto": "Arbolado"},
-            {"id": "reclamo_limpieza_riego", "texto": "Limpieza y riego"},
-            {"id": "reclamo_arreglo_calle", "texto": "Arreglo de calle"},
-            {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
-            {"id": "reclamo_otros", "texto": "Otros"},
+            {"id": "reclamo_luminaria", "texto": "💡 Luminaria"},
+            {"id": "reclamo_arbolado", "texto": "🌳 Arbolado"},
+            {"id": "reclamo_limpieza_riego", "texto": "🧹 Limpieza y riego"},
+            {"id": "reclamo_arreglo_calle", "texto": "🚧 Arreglo de calle"},
+            {"id": "reclamo_perdida_agua", "texto": "💧 Pérdida de agua"},
+            {"id": "reclamo_otros", "texto": "📋 Otros"},
         ],
         "message_type": "interactive_list",
         "fuente": "submenu_reclamos_estandar"
@@ -1248,13 +1240,23 @@ def responder_municipio(
             "fuente": "info_perdida_agua"
         }
 
-    if es_consulta_general(pregunta_original):
-        location = flask_session.get("user_location")
-        if location:
-            return PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": location.get("formatted_address")})
+    pregunta_str_for_check = ""
+    if isinstance(pregunta_original, str):
+        pregunta_str_for_check = pregunta_original
+    elif isinstance(pregunta_original, dict):
+        pregunta_str_for_check = pregunta_original.get("pregunta", "")
+
+    if es_consulta_general(pregunta_str_for_check):
+        current_location = location or flask_session.get("user_location")
+        if current_location:
+            # The location object might be a dict from session or a direct payload
+            address = current_location.get("formatted_address") or current_location.get("address")
+            return PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": address})
         else:
             contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_PANICO.name
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
+            contexto_municipio_actual['consulta_pendiente_ubicacion'] = pregunta_original # Save the original query
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
             return {
                 "message_body": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
                 "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "No, gracias", "action": "cancelar"}],
@@ -1408,6 +1410,26 @@ def responder_municipio(
             if chat_db_context: flag_modified(chat_db_context, "context_data")
     # --- FIN: Manejo de selección de menú de reclamos ---
 
+    # --- INICIO: Manejo de recepción de ubicación para consulta general ---
+    elif estado_conversacion == ConversationState.ESPERANDO_UBICACION_GENERAL.name:
+        if location:
+            consulta_guardada = contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
+            contexto_municipio_actual['estado_conversacion'] = None # Clear state
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+            if consulta_guardada:
+                logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
+                return PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location.get("address")})
+            else:
+                logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
+                return {"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"}
+        else:
+            # User sent something other than a location
+            contexto_municipio_actual['estado_conversacion'] = None # Reset state
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return {"message_body": "No recibí una ubicación. Si cambiaste de opinión, no hay problema. ¿En qué te puedo ayudar?", "options_list": [], "message_type": "text", "fuente": "no_location_received"}
+    # --- FIN: Manejo de recepción de ubicación ---
+
     # Initialize the context if it's empty
     # This dictionary is passed to handlers and used throughout this function.
     context = {
@@ -1523,7 +1545,7 @@ def responder_municipio(
 
 
         logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
-        respuesta_manejada_por_llm, _ = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
+        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
         logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         if respuesta_manejada_por_llm:
             return respuesta_manejada_por_llm
@@ -1764,7 +1786,12 @@ def responder_municipio(
         contexto_municipio_actual.pop("estado_conversacion", None)
 
     if chat_db_context:
+        # Explicitly re-assign the dictionary to ensure SQLAlchemy detects the change.
+        # This is a more robust way to handle mutable JSONB fields.
+        chat_db_context.context_data = chat_db_context_live_data
         flag_modified(chat_db_context, "context_data")
+        logger_actual.info(f"[CONTEXT_SAVE_FINAL] Final context data being flagged for save: {chat_db_context.context_data}")
+
 
     # --- Formatear respuesta final ---
     message_type_final = "text"

@@ -40,7 +40,7 @@ class PymesTestCase(unittest.TestCase):
         owner_user.id = 1
         owner_user.rubro.nombre = "general"
 
-        response = responder_pyme("unhandled query", owner_user, None, chat_db_context=MagicMock())
+        response = responder_pyme(pregunta_original="unhandled query", owner_user=owner_user, rubro_obj=owner_user.rubro, viewer_user=None, chat_db_context=MagicMock())
 
         self.assertIn("encontré esto en la web", response["message_body"])
         self.assertIn("Test Search Result", response["message_body"])

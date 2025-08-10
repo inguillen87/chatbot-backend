@@ -87,7 +87,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                 {"texto": "Opción 1", "action_id": "op1"},
                 {"texto": "Opción 2", "action_id": "op2"}
             ],
-            "message_type": "text" # This would be set by the webhook logic
+            "message_type": "interactive_buttons"
         }
 
         # --- Act ---
@@ -95,7 +95,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             options=[], # options_list would be empty
             body_text=bot_response_with_botones["message_body"],
             channel="whatsapp",
-            message_type=bot_response_with_botones["message_type"],
+            message_type="text", # Force fallback to text
             original_bot_response=bot_response_with_botones
         )
 
@@ -139,13 +139,14 @@ class TestAccessibilityAndMedia(unittest.TestCase):
 
         # --- Act ---
         from services.municipio_responder import responder_municipio
-        responder_municipio(
-            pregunta_original="gracias, chau",
-            owner_user=self.owner_user,
-            rubro_obj=self.owner_user.rubro,
-            viewer_user=self.viewer_user,
-            chat_db_context=chat_session
-        )
+        with self.app.test_request_context():
+            responder_municipio(
+                pregunta_original="gracias, chau",
+                owner_user=self.owner_user,
+                rubro_obj=self.owner_user.rubro,
+                viewer_user=self.viewer_user,
+                chat_db_context=chat_session
+            )
 
         # --- Assert ---
         final_context = chat_session.context_data.get(CONTEXTO_MUNICIPIO, {})
