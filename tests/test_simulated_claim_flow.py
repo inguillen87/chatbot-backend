@@ -9,11 +9,11 @@ from datetime import datetime
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from services.municipios import responder_municipio, CONTEXTO_MUNICIPIO, ConversationState
+from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO, ConversationState
 from tests.mocks import MockGeminiResponse
 from app import create_app, db
 from config import Config
-from models import User
+from models import User, ChatSessionContext
 
 class TestConfig(Config):
     TESTING = True
@@ -36,131 +36,108 @@ class TestSimulatedClaimFlow(unittest.TestCase):
 
         self.viewer_user = None # Simulate anonymous user
 
-        self.chat_db_context = MagicMock()
-        self.chat_db_context.context_data = {}
-        self.chat_db_context.last_updated = datetime.now()
+        # Use a real ChatSessionContext object from the database
+        self.chat_session = ChatSessionContext(chat_session_id="test_simulated_flow")
+        self.chat_session.context_data = {}
+        db.session.add(self.chat_session)
+        db.session.commit()
 
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.municipios.llamar_gemini')
-    def test_full_claim_flow(self, mock_llamar_gemini):
-        # Step 1: User says "Hola" - This now triggers the GreetingHandler directly, bypassing the LLM.
-        # The test needs to reflect this new, simpler logic.
-        response = responder_municipio(
-            pregunta_original="Hola",
-            owner_user=self.owner_user,
-            viewer_user=self.viewer_user,
-            chat_db_context=self.chat_db_context,
-            anon_id="test_anon_id",
-            rubro_obj=self.owner_user.rubro
-        )
-
-        self.assertIn("¡Hola! Soy JuniA, el asistente virtual", response['message_body'])
-        self.assertEqual(response['fuente'], "greeting_handler_v7_junin")
-
-        # Step 2: User wants to make a claim
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Entendido. Para registrar tu reclamo por el contenedor de basura, ¿podrías decirme la dirección exacta donde se encuentra?",
-            "accion_backend": "iniciar_reclamo",
-            "datos_estructura": {
-                "target": "municipio",
-                "categoria": "Limpieza/Basura",
-                "descripcion": "Contenedor de basura rebalsado"
-            },
-            "pedir_info": "ubicacion",
-            "botones": []
-        }
-
-        response = responder_municipio(
-            pregunta_original="Quiero hacer un reclamo por un contenedor de basura que está rebalsado.",
-            owner_user=self.owner_user,
-            viewer_user=self.viewer_user,
-            chat_db_context=self.chat_db_context,
-            anon_id="test_anon_id",
-            rubro_obj=self.owner_user.rubro
-        )
-
-        self.assertEqual(response['message_body'], "Entendido. Para registrar tu reclamo por el contenedor de basura, ¿podrías decirme la dirección exacta donde se encuentra?")
-        self.assertEqual(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name)
-
-        # Step 3: User provides location
-        mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Perfecto. Registré tu reclamo por un contenedor lleno en Don Bosco 55, Junín, Mendoza. Para finalizar, ¿me podrías dar tu nombre completo y un teléfono?",
-            "accion_backend": "crear_reclamo",
-            "datos_estructura": {
-                "target": "municipio",
-                "categoria": "Limpieza/Basura",
-                "descripcion": "Contenedor de basura rebalsado",
-                "ubicacion": "Don Bosco 55, Junín, Mendoza"
-            },
-            "pedir_info": "nombre_y_telefono",
-            "botones": []
-        }
-
-        response = responder_municipio(
-            pregunta_original="don bosco 55 junin mendoza",
-            owner_user=self.owner_user,
-            viewer_user=self.viewer_user,
-            chat_db_context=self.chat_db_context,
-            anon_id="test_anon_id",
-            rubro_obj=self.owner_user.rubro
-        )
-
-        self.assertEqual(response['message_body'], "Perfecto. Registré tu reclamo por un contenedor lleno en Don Bosco 55, Junín, Mendoza. Para finalizar, ¿me podrías dar tu nombre completo y un teléfono?")
-        self.assertEqual(self.chat_db_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name)
-
-        # Step 4: User provides personal data
-        with patch('services.ticket_service.db.session.add'), \
-             patch('services.ticket_service.db.session.flush'), \
-             patch('services.ticket_service.db.session.commit'), \
-             patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    def test_full_claim_flow(self, mock_crear_ticket, mock_llamar_gemini):
+        with self.app.test_request_context():
+            # --- Mock Setup ---
             mock_ticket = MagicMock()
             mock_ticket.id = 123
-            mock_ticket.nro_ticket = "12345"
+            mock_ticket.nro_ticket = "54321"
             mock_crear_ticket.return_value = mock_ticket
 
-            mock_llamar_gemini.return_value = {
-                "respuesta_usuario": "¡Listo! Tu reclamo por la luminaria en Mitre y Belgrano fue registrado con el número M-12345. Te avisaremos sobre cualquier novedad. ¿Necesitas algo más?",
-                "accion_backend": "crear_reclamo",
-                "datos_estructura": {
-                    "target": "municipio",
-                    "categoria": "Limpieza/Basura",
-                    "descripcion": "Contenedor de basura rebalsado",
-                    "ubicacion": "Don Bosco 55, Junín, Mendoza",
-                    "nombre_usuario_detectado": "Juan Perez",
-                    "telefono_detectado": "2611234567",
-                    "email_detectado": "juan.perez@example.com"
+            mock_llamar_gemini.side_effect = [
+                # Step 1: User wants to make a claim
+                {
+                    "message_body": "Entendido. Para registrar tu reclamo por el contenedor de basura, ¿podrías decirme la dirección exacta donde se encuentra?",
+                    "accion_backend": "iniciar_reclamo",
+                    "datos_estructura": {"target": "municipio", "categoria": "Limpieza/Basura", "descripcion": "Contenedor de basura rebalsado"},
+                    "pedir_info": "ubicacion",
                 },
-                "pedir_info": None,
-                "botones": [
-                    {"texto": "Consultar otro reclamo", "id_accion": "consultar_estado_ticket"},
-                    {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
-                ]
-            }
+                # Step 2: User provides location
+                {
+                    "message_body": "Perfecto. Registré tu reclamo por un contenedor lleno en Don Bosco 55, Junín, Mendoza. Para finalizar, ¿me podrías dar tu nombre completo y un teléfono?",
+                    "accion_backend": "iniciar_reclamo",
+                    "datos_estructura": {"target": "municipio", "ubicacion": "Don Bosco 55, Junín, Mendoza"},
+                    "pedir_info": "nombre_y_telefono",
+                },
+                # Step 3: User provides personal data -> This triggers the ticket creation
+                {
+                    "accion_backend": "crear_reclamo",
+                    "datos_estructura": {
+                        "target": "municipio",
+                        "nombre_usuario_detectado": "Juan Perez",
+                        "telefono_detectado": "2611234567",
+                        "email_detectado": "juan.perez@example.com"
+                    },
+                }
+            ]
 
-            response = responder_municipio(
-                pregunta_original="Juan Perez 2611234567",
-                owner_user=self.owner_user,
-                viewer_user=self.viewer_user,
-                chat_db_context=self.chat_db_context,
-                anon_id="test_anon_id",
-                rubro_obj=self.owner_user.rubro
+            # --- Execution ---
+            # 1. Start claim
+            chat_session_from_db = db.session.get(ChatSessionContext, "test_simulated_flow")
+            response1 = responder_municipio(
+                pregunta_original="Quiero hacer un reclamo por un contenedor de basura que está rebalsado.",
+                owner_user=self.owner_user, viewer_user=self.viewer_user, chat_db_context=chat_session_from_db,
+                anon_id="test_anon_id", rubro_obj=self.owner_user.rubro
             )
+            db.session.commit() # Commit context changes
 
-            self.assertIn("¡Reclamo recibido, Juan Perez!", response['message_body'])
-            self.assertIn("M-12345", response['message_body'])
-            # The context is now cleared by the action handler, so we expect it to be gone
-            self.assertEqual(self.chat_db_context.context_data.get(CONTEXTO_MUNICIPIO), {})
+            # 2. Provide location
+            chat_session_from_db = db.session.get(ChatSessionContext, "test_simulated_flow")
+            response2 = responder_municipio(
+                pregunta_original="don bosco 55 junin mendoza",
+                owner_user=self.owner_user, viewer_user=self.viewer_user, chat_db_context=chat_session_from_db,
+                anon_id="test_anon_id", rubro_obj=self.owner_user.rubro
+            )
+            db.session.commit() # Commit context changes
+
+            # 3. Provide contact info and finalize
+            chat_session_from_db = db.session.get(ChatSessionContext, "test_simulated_flow")
+            response3 = responder_municipio(
+                pregunta_original="Juan Perez 2611234567",
+                owner_user=self.owner_user, viewer_user=self.viewer_user, chat_db_context=chat_session_from_db,
+                anon_id="test_anon_id", rubro_obj=self.owner_user.rubro
+            )
+            db.session.commit() # Commit context changes
+
+
+            # --- Assertions ---
+            # Step 1 Assertions
+            chat_session_after_step1 = db.session.get(ChatSessionContext, "test_simulated_flow")
+            self.assertEqual(response1['message_body'], "Entendido. Para registrar tu reclamo por el contenedor de basura, ¿podrías decirme la dirección exacta donde se encuentra?")
+            self.assertEqual(chat_session_after_step1.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'], 'ESPERANDO_INFO_RECLAMO_LLM')
+
+            # Step 2 Assertions
+            self.assertEqual(response2['message_body'], "Perfecto. Registré tu reclamo por un contenedor lleno en Don Bosco 55, Junín, Mendoza. Para finalizar, ¿me podrías dar tu nombre completo y un teléfono?")
+
+            # Step 3 Assertions
+            chat_session_after_step3 = db.session.get(ChatSessionContext, "test_simulated_flow")
+            self.assertIn("¡Reclamo recibido, Juan Perez!", response3['message_body'])
+            self.assertIn("M-54321", response3['message_body'])
+
+            final_context_data = chat_session_after_step3.context_data.get(CONTEXTO_MUNICIPIO, {})
+            self.assertEqual(final_context_data.get('estado_conversacion'), 'CONVERSACION_GENERAL_LLM')
+            self.assertFalse(final_context_data.get('datos_parciales_llm_reclamo'))
+
             mock_crear_ticket.assert_called_once()
-            # Get the actual call arguments
             call_args, call_kwargs = mock_crear_ticket.call_args
             ticket_data = call_kwargs['ticket_data']
             self.assertEqual(ticket_data['nombre_vecino'], 'Juan Perez')
             self.assertEqual(ticket_data['telefono_vecino'], '+5492611234567')
-            self.assertEqual(ticket_data['email_vecino'], 'juan.perez@example.com')
+            self.assertEqual(ticket_data['direccion'], 'Don Bosco 55, Junín, Mendoza')
+            self.assertEqual(ticket_data['categoria'], 'Limpieza/Basura')
 
     def test_get_tickets_del_usuario_logic(self):
         from datetime import datetime

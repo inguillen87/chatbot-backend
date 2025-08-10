@@ -144,10 +144,14 @@ class CrearReclamoActionHandler(BaseActionHandler):
             contacto_especializado = contactos.get(categoria, contactos.get("default"))
 
             # Limpiar contexto de reclamo después de la creación exitosa
-            keys_to_clear = [k for k in contexto_reclamo if k.endswith("_reclamo") or k.startswith("nombre_vecino") or k.startswith("telefono_vecino") or k.startswith("email_vecino") or k.startswith("foto_url")]
-            for key in keys_to_clear:
-                contexto_reclamo.pop(key, None)
-            self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+            user_info = contexto_reclamo.get('user', {})
+            contexto_reclamo.clear()
+            if user_info:
+                contexto_reclamo['user'] = user_info
+
+            # Set the state back to general conversation to avoid getting stuck
+            from services.municipio_responder import ConversationState
+            contexto_reclamo['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
 
             # Notificaciones
             if ticket_data_cleaned.get("telefono_vecino"):
@@ -308,14 +312,18 @@ class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
         if not tipo_de_comercio:
             return {"success": False, "message_to_user": "No especificaste qué tipo de comercio buscar."}
 
-        # La ubicación se obtiene del perfil del usuario o se usa una por defecto si no está disponible.
-        # Esto debería ser mejorado para obtener la ubicación del contexto de la conversación si es posible.
-        ubicacion = self.context.get("ubicacion_usuario")
+        # La ubicación se obtiene de los datos de la acción (si se proporcionó en el mensaje actual)
+        # o del contexto de la conversación como fallback.
+        ubicacion = action_data.get("ubicacion") or self.context.get("ubicacion_usuario")
         if not ubicacion:
-            # Si no hay ubicación en el contexto, se la pedimos al usuario.
+            # Si no hay ubicación en ningún lado, se la pedimos al usuario.
+            self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = "ESPERANDO_UBICACION_GENERAL"
+            self.context[CONTEXTO_MUNICIPIO]["accion_pendiente_tras_ubicacion"] = "consultar_puntos_de_interes"
+            self.context[CONTEXTO_MUNICIPIO]["datos_pendientes"] = {"tipo_comercio": tipo_de_comercio}
+
             return {
                 "success": False,
-                "message_to_user": "Para poder ayudarte a encontrar lo que buscas, necesito que me digas tu ubicación. Por favor, compártela o decime en qué zona estás.",
+                "message_to_user": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
                 "pedir_info": "ubicacion"
             }
 

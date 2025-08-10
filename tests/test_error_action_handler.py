@@ -6,7 +6,7 @@ class TestErrorActionHandler(unittest.TestCase):
         orchestrator = ChatOrchestrator(global_context={})
         llm_output = {
             'accion_backend': 'error',
-            'respuesta_usuario': 'No pude procesar tu solicitud',
+            'message_body': 'No pude procesar tu solicitud',
             'datos_estructura': {}
         }
         result = orchestrator.execute_action(llm_output)

@@ -65,7 +65,7 @@ class TestMunicipioImprovements(unittest.TestCase):
             # Mock the Gemini call to return a response that includes a list in 'pedir_info'
             with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
                 mock_llamar_gemini.return_value = {
-                    "respuesta_usuario": "Some response",
+                    "message_body": "Some response",
                     "accion_backend": "iniciar_reclamo",
                     "datos_estructura": {},
                     "pedir_info": ["una descripción del problema", "tu nombre"],

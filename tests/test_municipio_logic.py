@@ -48,7 +48,7 @@ sys.modules.setdefault('cohere', ModuleType('cohere'))
 # sys.modules.setdefault('sqlalchemy.exc', sqlalchemy_exc_stub) # Removed stubbing
 sys.modules.setdefault('requests', ModuleType('requests'))
 
-from services import municipios
+from services.municipio_responder import responder_municipio
 
 class DummyTicket:
     def __init__(self, id=1, nro_ticket=123456):
@@ -85,11 +85,11 @@ class MunicipioLogicTests(unittest.TestCase):
     def tearDown(self):
         self.app_context.pop()
 
-    @patch('services.municipios.servicio_tickets')
-    @patch('services.municipios.llamar_gemini')
+    @patch('services.municipio_responder.servicio_tickets')
+    @patch('services.municipio_responder.llamar_gemini')
     def test_human_escalation(self, mock_llamar_gemini, mock_servicio_tickets):
         mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Te estoy derivando con un agente.",
+            "message_body": "Te estoy derivando con un agente.",
             "accion_backend": "derivar_humano",
             "datos_estructura": {},
             "pedir_info": None,
@@ -97,10 +97,13 @@ class MunicipioLogicTests(unittest.TestCase):
         }
         mock_servicio_tickets.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket="M-123456")
 
-        chat_context = SimpleNamespace(context_data={})
+        from models import ChatSessionContext, db
+        chat_context = ChatSessionContext(chat_session_id="test_session_escalation", context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
 
-        resp = municipios.responder_municipio(
-            pregunta_original={'pregunta': 'Hablar con un agente'},
+        resp = responder_municipio(
+            pregunta_original='Hablar con un agente',
             owner_user=self.owner_user,
             rubro_obj=self.owner_user.rubro,
             viewer_user=self.viewer_user,

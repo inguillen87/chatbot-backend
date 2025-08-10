@@ -82,7 +82,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         except ValueError as e:
             logger.error(f"Error al inicializar Vertex AI: {e}")
             return {
-                "respuesta_usuario": "Error de configuración del servicio de IA (región no soportada). Por favor, contacta al administrador.",
+                "message_body": "Error de configuración del servicio de IA (región no soportada). Por favor, contacta al administrador.",
                 "accion_backend": "derivar_humano",
                 "datos_estructura": {"error_detalle": str(e), "mensaje_original": mensaje_usuario},
                 "pedir_info": None, "botones": []
@@ -153,12 +153,12 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             logger.info(f"Respuesta de Gemini (crudo): {respuesta_texto_crudo}")
         else:
             logger.error("Gemini no devolvió contenido en el primer candidato.")
-            respuesta_texto_crudo = '{"respuesta_usuario": "No pude procesar tu solicitud en este momento. Por favor, intenta de nuevo más tarde.", "accion_backend": "error"}'
+            respuesta_texto_crudo = '{"message_body": "No pude procesar tu solicitud en este momento. Por favor, intenta de nuevo más tarde.", "accion_backend": "error"}'
 
     except ImportError as ie:
         logger.error(f"Error importando librería google.generativeai: {ie}. Asegúrate que google-genai está instalado.")
         return {
-            "respuesta_usuario": "Error de configuración del servicio de IA. Por favor, contacta al administrador.",
+            "message_body": "Error de configuración del servicio de IA. Por favor, contacta al administrador.",
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": f"Fallo de importación google.generativeai: {str(ie)}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
@@ -166,7 +166,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
     except EnvironmentError as ee:
         logger.error(f"Error de entorno para google.generativeai: {ee}")
         return {
-            "respuesta_usuario": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
+            "message_body": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": str(ee), "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
@@ -179,7 +179,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         except: pass
 
         return {
-            "respuesta_usuario": "Lo siento, no pude procesar tu solicitud en este momento debido a un error con el asistente IA. Intenta de nuevo más tarde.",
+            "message_body": "Lo siento, no pude procesar tu solicitud en este momento debido a un error con el asistente IA. Intenta de nuevo más tarde.",
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": f"Error API Gemini: {error_detail_from_api}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
@@ -206,7 +206,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         except Exception as e_repair:
             logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")
             return {
-                "respuesta_usuario": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
+                "message_body": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
                 "accion_backend": "derivar_humano",
                 "datos_estructura": {
                     "error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}",
@@ -219,7 +219,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
     except Exception as e_parse:
         logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
         return {
-            "respuesta_usuario": "Lo siento, hubo un error técnico al procesar la respuesta del asistente IA. Un humano revisará tu caso.",
+            "message_body": "Lo siento, hubo un error técnico al procesar la respuesta del asistente IA. Un humano revisará tu caso.",
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": f"Fallo general post-LLM: {str(e_parse)}", "mensaje_original": mensaje_usuario},
             "pedir_info": None, "botones": []
@@ -286,7 +286,7 @@ def llamar_gemini(
         except TimeoutError:
             logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
             return {
-                "respuesta_usuario": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
+                "message_body": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
                 "accion_backend": "no_accion",
                 "datos_estructura": {"error_detalle": "timeout"},
                 "pedir_info": None,
@@ -295,8 +295,8 @@ def llamar_gemini(
 
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
-    # if elapsed > delay_warning_seconds and isinstance(respuesta, dict) and respuesta.get("respuesta_usuario"):
-    #     respuesta["respuesta_usuario"] = "Sigo buscando la mejor respuesta, dame unos segundos más… " + respuesta["respuesta_usuario"]
+    # if elapsed > delay_warning_seconds and isinstance(respuesta, dict) and respuesta.get("message_body"):
+    #     respuesta["message_body"] = "Sigo buscando la mejor respuesta, dame unos segundos más… " + respuesta["message_body"]
 
     return respuesta
 

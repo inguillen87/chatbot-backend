@@ -120,12 +120,18 @@ class TestChatIntegration(unittest.TestCase):
     #     self.assertEqual(contexto_actualizado.get("tipo_sugerido_imagen"), "Alumbrado Público")
     #     self.assertEqual(contexto_actualizado.get("archivo_id_reclamo_actual"), archivo_id)
 
-    def test_anonymous_chat_municipio_loads_default_owner(self):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_anonymous_chat_municipio_loads_default_owner(self, mock_llamar_gemini):
         """
         Tests that an anonymous request to /ask/municipio
         successfully loads a default owner user and returns a valid response.
         This test now also verifies the new keyword-based GreetingHandler.
         """
+        mock_llamar_gemini.return_value = {
+            "accion_backend": "saludar",
+            "message_body": "¡Hola! ...", # Mock message, will be replaced by handler
+        }
+
         chat_payload = {
             "pregunta": "Hola",
             "tipo_chat": "municipio",
@@ -140,12 +146,10 @@ class TestChatIntegration(unittest.TestCase):
         # Check that we don't get a JSON error response.
         self.assertNotIn("error", data)
 
-        # Check for the new, enhanced welcome message from GreetingHandler.
-        # The response format from responder_municipio wraps the handler's response.
-        # The key for the text is 'respuesta_usuario' inside the handler's dict.
-        self.assertIn("Soy JUNI, tu Asistente Virtual", data.get("respuesta_usuario", ""))
-        self.assertIn("Mandar una foto", data.get("respuesta_usuario", "")) # Check for feature explanation
-        self.assertIsNotNone(data.get("categorias")) # Check for the new categorized buttons
+        # The response from the endpoint is a dictionary, and the welcome message is in 'message_body'.
+        self.assertIn("Soy JUNI, tu Asistente Virtual", data.get("message_body", ""))
+        self.assertIn("enviarme un audio", data.get("message_body", "")) # Check for feature explanation
+        self.assertIsNotNone(data.get("options_list")) # The new format uses 'options_list' for buttons/menu items.
 
 if __name__ == '__main__':
     unittest.main()

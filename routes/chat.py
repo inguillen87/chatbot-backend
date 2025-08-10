@@ -427,7 +427,7 @@ def _procesar_chat(
         if not isinstance(resultado, dict):
             # Fallback for unexpected response types
             current_app.logger.error(f"Unexpected response type from responder_chatboc: {type(resultado)}")
-            resultado = {"respuesta_usuario": "Ocurrió un error inesperado en el servidor."}
+            resultado = {"message_body": "Ocurrió un error inesperado en el servidor."}
 
 
         # Add metadata to the response

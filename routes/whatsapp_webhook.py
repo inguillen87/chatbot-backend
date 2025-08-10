@@ -326,9 +326,11 @@ def whatsapp_webhook():
         if updated_context:
             session_context_db_entry.context_data.update(updated_context)
 
-        session_context_db_entry.last_updated = db.func.now()
+        # Explicitly re-assign the dictionary to ensure SQLAlchemy detects the change.
+        session_context_db_entry.context_data = session_context_db_entry.context_data
+        db.session.add(session_context_db_entry)
         db.session.commit()
-        print(f"Session saved for {chat_session_id_internal}.")
+        print(f"Session saved for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
 
     except Exception as e:
         db.session.rollback()
@@ -339,20 +341,25 @@ def whatsapp_webhook():
     # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            # First, send the main text message with the interactive options.
-            final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
-                         bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
+            # The formatter now returns a structured payload. We check its type.
+            if formatted_whatsapp_payload.get("type") == "interactive":
+                message_params = {
+                    'from_': to_number_raw,
+                    'to': from_number_raw,
+                    'interactive': formatted_whatsapp_payload.get("interactive")
+                }
+            else: # Fallback to text message
+                final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
+                             bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
+                message_params = {
+                    'from_': to_number_raw,
+                    'to': from_number_raw,
+                    'body': final_body,
+                }
 
-            text_message_params = {
-                'from_': to_number_raw,
-                'to': from_number_raw,
-                'body': final_body,
-            }
-
-            # For approved templates (if ever needed again), we would add 'persistent_action' here.
-            # For now, all responses are sent as plain text or media messages.
-            text_message = twilio_client.messages.create(**text_message_params)
-            print(f"Mensaje de texto enviado a {from_number_raw}, SID: {text_message.sid}")
+            # Send the main message (text or interactive)
+            main_message = twilio_client.messages.create(**message_params)
+            print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
 
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')

@@ -12,7 +12,7 @@ from services.municipio_responder import responder_municipio
 def test_reclamo_handler_categoria_buttons(client):
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Por favor, elegí una de las siguientes categorías:",
+            "message_body": "Por favor, elegí una de las siguientes categorías:",
             "accion_backend": "iniciar_reclamo",
             "datos_estructura": {},
             "pedir_info": "categoria",
@@ -50,7 +50,7 @@ def test_reclamo_handler_categoria_buttons(client):
 def test_reclamo_handler_share_location_button(client):
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
+            "message_body": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
             "accion_backend": "iniciar_reclamo",
             "datos_estructura": {},
             "pedir_info": "ubicacion",
@@ -86,7 +86,7 @@ def test_reclamo_handler_share_location_button(client):
 def test_ticket_status_handler_ticket_number_shortcut(client):
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
-            "respuesta_usuario": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
+            "message_body": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
             "accion_backend": "consultar_estado_ticket",
             "datos_estructura": {
                 "id_ticket_mencionado": "12345"

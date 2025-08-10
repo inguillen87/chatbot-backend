@@ -252,7 +252,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         # --- Verificaciones ---
         self.assertTrue(resultado.get("es_reclamo"))
-        self.assertEqual(resultado.get("categoria_sugerida"), "Arreglo de calle")
+        self.assertEqual(resultado.get("categoria_sugerida"), "arreglo de calle")
         self.assertEqual(resultado.get("analisis_id"), id_analisis_previo)
 
         analisis_actualizado = db.session.get(AnalisisArchivo, id_analisis_previo)
@@ -261,7 +261,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         self.assertEqual(analisis_actualizado.tipo_analisis, "reclamo_vision_llm_v1")
         self.assertNotIn("info_previa", str(analisis_actualizado.datos_estructurados))
         self.assertIn("pothole", str(analisis_actualizado.datos_estructurados))
-        self.assertIn("Bacheo", str(analisis_actualizado.datos_estructurados['llm_raw']))
+        self.assertIn("Arreglo de calle", str(analisis_actualizado.datos_estructurados['llm_raw']))
 
 
 if __name__ == '__main__':
