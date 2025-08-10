@@ -16,10 +16,18 @@ def build_interactive_response(options: list,
         original_bot_response = {}
 
     # Prioritize options from original_bot_response if available
-    if original_bot_response.get('botones'):
+    if original_bot_response.get('botones') is not None:
         options = original_bot_response['botones']
-    elif original_bot_response.get('options_list'):
+    elif original_bot_response.get('options_list') is not None:
         options = original_bot_response['options_list']
+
+    # Defensive check to ensure options is a list, if it was overwritten by a non-list
+    if not isinstance(options, list):
+        options = []
+
+    # Flatten the list if it's nested (e.g., [[...]]) to handle inconsistent data structures
+    if options and all(isinstance(o, list) for o in options):
+        options = [item for sublist in options for item in sublist]
 
 
     if channel == "whatsapp":
