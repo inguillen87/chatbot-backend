@@ -343,10 +343,44 @@ def whatsapp_webhook():
         try:
             # The formatter now returns a structured payload. We check its type.
             if formatted_whatsapp_payload.get("type") == "interactive":
+                # The 'interactive' keyword is not supported in this version of the Twilio library.
+                # We will format the interactive message as a text-based list as a fallback.
+                interactive_data = formatted_whatsapp_payload.get("interactive", {})
+                body = interactive_data.get("body", {}).get("text", "")
+                header = interactive_data.get("header", {}).get("text", "")
+                footer = interactive_data.get("footer", {}).get("text", "")
+
+                parts = []
+                if header:
+                    parts.append(f"*{header}*")
+
+                parts.append(body)
+
+                buttons = interactive_data.get("action", {}).get("buttons", [])
+                if buttons:
+                    button_texts = [f"*{i+1}*. {button.get('reply', {}).get('title', '')}" for i, button in enumerate(buttons)]
+                    parts.append("\n".join(button_texts))
+
+                sections = interactive_data.get("action", {}).get("sections", [])
+                if sections:
+                    for section in sections:
+                        if section.get("title"):
+                            parts.append(f"\n*{section.get('title')}*")
+                        rows = [f"*{i+1}*. {row.get('title', '')}" for i, row in enumerate(section.get("rows", []))]
+                        parts.append("\n".join(rows))
+
+                if buttons or sections:
+                    parts.append("Responde con el número de la opción que necesites.")
+
+                if footer:
+                    parts.append(f"_{footer}_")
+
+                final_body = "\n\n".join(parts)
+
                 message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
-                    'interactive': formatted_whatsapp_payload.get("interactive")
+                    'body': final_body
                 }
             else: # Fallback to text message
                 final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
