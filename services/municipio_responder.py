@@ -1557,6 +1557,21 @@ def responder_municipio(
             # Establecer el estado para que el LLM sepa que está en un flujo de reclamo
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
 
+            # >>> INICIO FIX: Si la pregunta está vacía pero la imagen se interpretó como reclamo, crear una pregunta para el LLM
+            if not pregunta_str.strip() and datos_interpretados.get("es_reclamo"):
+                categoria = datos_interpretados.get("categoria_sugerida", "No especificada")
+                descripcion = datos_interpretados.get("descripcion_sugerida", "No especificada")
+
+                pregunta_str = (
+                    f"El usuario ha enviado una imagen para iniciar un reclamo. "
+                    f"El análisis automático de la imagen sugiere la siguiente información: "
+                    f"Categoría: '{categoria}', Descripción: '{descripcion}'. "
+                    f"Por favor, inicia el proceso de reclamo confirmando estos datos con el usuario y "
+                    f"solicita la información que falte, como la ubicación."
+                )
+                logger_actual.info(f"Pregunta generada a partir de imagen: '{pregunta_str}'")
+            # <<< FIN FIX
+
 
         logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
