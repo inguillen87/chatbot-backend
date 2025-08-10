@@ -1317,6 +1317,23 @@ def responder_municipio(
         for key, value in kwargs.items():
             received_payload[key] = value
 
+    # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
+    if not pregunta_str.strip() and location:
+        lat = location.get('latitude')
+        lon = location.get('longitude')
+        address = location.get('address', f"coordenadas {lat}, {lon}")
+
+        pregunta_str = (
+            f"El usuario ha compartido una ubicación sin texto adicional. "
+            f"La ubicación es: {address}. "
+            f"Es muy probable que quiera reportar un problema en este lugar. "
+            f"Por favor, actúa proactivamente: confirma la ubicación con el usuario y pregúntale "
+            f"directamente qué problema o reclamo quiere reportar en esa dirección."
+        )
+        received_payload['pregunta'] = pregunta_str
+        logger_actual.info(f"Pregunta generada a partir de ubicación: '{pregunta_str}'")
+    # <<< FIN FIX
+
     contexto_municipio_data_from_db = {}
     chat_db_context_live_data = {}
 
