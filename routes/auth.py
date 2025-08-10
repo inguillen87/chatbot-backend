@@ -664,6 +664,11 @@ def me_perfil(user):
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
         tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
 
+        if tipo_chat == 'municipio':
+            catalogo_label = 'Cargar Catálogo de Trámites'
+        else:
+            catalogo_label = 'Cargar Catálogo de Productos'
+
         # Construir el perfil del usuario a partir del objeto User
         profile_data = {
             "id": user.id,
@@ -677,7 +682,7 @@ def me_perfil(user):
             "categorias": user.ticket_categorias or "",
             "nombre_empresa": user.nombre_empresa,
             "badge_tipo": user.badge_tipo,
-            "catalogo_label": user.catalogo_label,
+            "catalogo_label": catalogo_label,
             "ciudad": user.ciudad,
             "color_primario": user.color_primario,
             "plan": user.plan,

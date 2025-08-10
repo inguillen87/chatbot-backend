@@ -62,31 +62,33 @@ class CatalogoLabelTests(unittest.TestCase):
     def test_pyme_label(self):
         user = self._base_user()
         user.token = 'test-token-pyme'
+        user.tipo_chat = 'pyme'
         db.session.add(user)
         db.session.commit()
-        with self.app.test_request_context():
-            with patch('utils.plan_limits.limite_para_usuario', lambda u: 5):
-                with patch('models.User.query') as mock_query:
-                    mock_query.filter_by.return_value.first.return_value = user
-                    resp = self.client.get('/perfil', headers={'Authorization': f'Bearer {user.token}'})
-                    data = resp.get_json()
-                    self.assertEqual(data['catalogo_label'], 'Cargar Catálogo de Productos')
-                    self.assertEqual(data['tipo_chat'], 'pyme')
+
+        resp = self.client.get('/auth/profile', headers={'Authorization': f'Bearer {user.token}'})
+        data = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(data['catalogo_label'], 'Cargar Catálogo de Productos')
+        self.assertEqual(data['tipo_chat'], 'pyme')
 
     def test_municipio_label(self):
         user = self._base_user()
         user.token = 'test-token-muni'
-        user.rubro = Rubro(nombre='municipio', clave='municipio')
+        # Associate a rubro that is considered public
+        public_rubro = Rubro(nombre='municipios', clave='municipios', es_publico=True)
+        user.rubro = public_rubro
+        user.tipo_chat = 'municipio'
         db.session.add(user)
         db.session.commit()
-        with self.app.test_request_context():
-            with patch('utils.plan_limits.limite_para_usuario', lambda u: 5):
-                with patch('models.User.query') as mock_query:
-                    mock_query.filter_by.return_value.first.return_value = user
-                    resp = self.client.get('/perfil', headers={'Authorization': f'Bearer {user.token}'})
-                    data = resp.get_json()
-                    self.assertEqual(data['catalogo_label'], 'Cargar Catálogo de Trámites')
-                    self.assertEqual(data['tipo_chat'], 'municipio')
+
+        resp = self.client.get('/auth/profile', headers={'Authorization': f'Bearer {user.token}'})
+        data = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(data['catalogo_label'], 'Cargar Catálogo de Trámites')
+        self.assertEqual(data['tipo_chat'], 'municipio')
 
 if __name__ == '__main__':
     unittest.main()
