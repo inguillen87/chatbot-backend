@@ -21,28 +21,20 @@ def build_interactive_response(options: list,
     elif original_bot_response.get('options_list'):
         options = original_bot_response['options_list']
 
-    # Ensure options is a list and handle nesting
-    if options is None:
-        options = []
-    if options and isinstance(options[0], list):
-        # Flatten the list if it's nested (e.g., [[...]])
-        options = [item for sublist in options for item in sublist]
-
 
     if channel == "whatsapp":
         if audio_url:
             return {"type": "audio", "audio": {"link": audio_url}}
 
         num_options = len(options)
-        # Force text-based menus for now, as requested by the user.
-        is_interactive = False
+        is_interactive = message_type in ['interactive_buttons', 'interactive_list'] and options
 
         if not is_interactive:
             # Fallback to simple text message
             final_body = body_text
             if options:
                 options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
-                options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
+                options_text += "\n\nResponde con el número de la opción que necesites."
                 final_body += options_text
             return {"type": "text", "text": {"body": final_body}}
 

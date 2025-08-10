@@ -307,68 +307,58 @@ def whatsapp_webhook():
     respuesta_del_bot_text = bot_response_dict.get('message_body', "Error: message_body no encontrado en la respuesta del bot.")
     print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 
-    # --- Format Response and Save Session ---
-    formatted_whatsapp_payload = {}
+    # --- Save Session Context ---
     try:
-        from services.response_formatter import build_interactive_response
-
-        # This call will modify bot_response_dict to include context for the numeric menu
-        formatted_whatsapp_payload = build_interactive_response(
-            options=bot_response_dict.get('options_list', []),
-            body_text=bot_response_dict.get('message_body', "Error de formato."),
-            channel='whatsapp',
-            message_type=bot_response_dict.get('message_type', 'text'),
-            original_bot_response=bot_response_dict,
-            header_text=bot_response_dict.get('header_text'),
-            footer_text=bot_response_dict.get('footer_text'),
-            audio_url=bot_response_dict.get('audio_url')
-        )
-
-        # After formatting, the context might be updated (e.g., with last_options_sent).
-        # We need to merge this updated context back into our main session object before saving.
-        updated_context = bot_response_dict.get('contexto_actualizado')
-        if updated_context:
-            session_context_db_entry.context_data.update(updated_context)
-
         # Explicitly re-assign the dictionary to ensure SQLAlchemy detects the change.
+        # This is crucial because we are modifying a mutable JSONB field.
         session_context_db_entry.context_data = session_context_db_entry.context_data
         db.session.add(session_context_db_entry)
         db.session.commit()
-        print(f"Session saved for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
-
+        print(f"Session saved for {chat_session_id_internal}.")
     except Exception as e:
         db.session.rollback()
-        print(f"Error formatting response or saving session for {chat_session_id_internal}: {e}")
+        print(f"Error saving session for {chat_session_id_internal}: {e}")
         import traceback
         traceback.print_exc()
 
     # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            # The formatter now returns a structured payload. We check its type.
-            if formatted_whatsapp_payload.get("type") == "interactive":
+            # The bot_response_dict contains the message_body to be sent.
+            # This will be used as the {{1}} variable in the template.
+            message_body_for_template = bot_response_dict.get('message_body', ' ') # Default to space to avoid errors
+
+            # The new implementation uses a pre-approved template with buttons.
+            # All we need to send is the Content SID and the variables.
+            # The `responder_chatboc` logic is now responsible for creating the full text
+            # that will be injected into the template's {{1}} variable.
+
+            # Check if a content_sid is provided in the bot's response, otherwise use the default one.
+            content_sid = bot_response_dict.get('content_sid') or os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
+
+            if content_sid:
                 message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
-                    'interactive': formatted_whatsapp_payload.get("interactive")
+                    'content_sid': content_sid,
+                    'content_variables': json.dumps({"1": message_body_for_template}),
                 }
-            else: # Fallback to text message
-                final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
-                             bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
+                main_message = twilio_client.messages.create(**message_params)
+                print(f"Mensaje de plantilla enviado a {from_number_raw}, SID: {main_message.sid}")
+            else:
+                # Fallback to a simple text message if no content_sid is available
+                print("Warning: No Content SID found. Sending a simple text message instead.")
                 message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
-                    'body': final_body,
+                    'body': message_body_for_template,
                 }
+                main_message = twilio_client.messages.create(**message_params)
+                print(f"Mensaje de texto (fallback) enviado a {from_number_raw}, SID: {main_message.sid}")
 
-            # Send the main message (text or interactive)
-            main_message = twilio_client.messages.create(**message_params)
-            print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
-
-            # Second, if there is an audio URL, send it as a separate media message.
+            # Audio can still be sent as a separate message if needed
             audio_url = bot_response_dict.get('audio_url')
             if audio_url:
-                # Ensure the URL is absolute
                 if audio_url.startswith('/'):
                     base_url = request.url_root.rstrip('/')
                     absolute_audio_url = f"{base_url}{audio_url}"
