@@ -50,4 +50,13 @@ ACTION_HANDLER_MAP = {
     # Saludos (pueden tener lógica específica por_entidad si es necesario)
     "saludar": "services.actions.pyme_actions.SaludoHandler", # O un SaludoHandler genérico
     "fallback": "services.pymes.FallbackHandler",
+
+    # Handlers for PYME interactive menu
+    "pyme_productos_stock": "services.actions.pyme_actions.CatalogoHandler",
+    "pyme_promociones": "services.actions.pyme_actions.OfertasHandler",
+    "pyme_estado_pedido": "services.actions.pyme_actions.ConsultarEstadoPedidoActionHandler",
+    "pyme_hacer_pedido": "services.actions.pyme_order_actions.CrearPedidoAction",
+    "pyme_hablar_agente": "services.actions.pyme_actions.HumanHandler",
+    "pyme_otras_consultas": "services.actions.pyme_actions.OtrasConsultasHandler",
+    "pyme_factura": "services.actions.pyme_actions.FacturaHandler",
 }
