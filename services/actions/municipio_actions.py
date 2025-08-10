@@ -100,7 +100,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 viewer_user.email = email_final
                 updated = True
             if updated:
+                from models import db
                 db.session.add(viewer_user)
+                db.session.commit()
                 logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
         ticket_data = {

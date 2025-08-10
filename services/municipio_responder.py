@@ -436,33 +436,44 @@ class GreetingHandler(BaseMunicipioHandler):
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
         logger.info(f"[GreetingHandler] Set estado_conversacion to {contexto_municipio_actual['estado_conversacion']}")
 
+        viewer_user = self.context.get("viewer_user_obj")
+        profile_name = self.context.get("profile_name")
+        user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None) or profile_name
 
-        welcome_message = (
-            "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
-            "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
-            "reclamos, turnos, noticias y mucho más. Para empezar, podés escribirme, enviarme un audio, "
-            "una foto de un problema o compartir tu ubicación.\n\n"
-            "¿Cómo te puedo ayudar hoy? Elegí una opción o respondé con el número, la primera letra o una palabra clave:"
-        )
+        if user_name:
+            welcome_message = (
+                f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+                "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
+                "reclamos, turnos, noticias y mucho más.\n\n"
+                "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+            )
+        else:
+            welcome_message = (
+                "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+                "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
+                "reclamos, turnos, noticias y mucho más. Para empezar, podés escribirme, enviarme un audio, "
+                "una foto de un problema o compartir tu ubicación.\n\n"
+                "¿Cómo te puedo ayudar hoy? Elegí una opción o respondé con el número, la primera letra o una palabra clave:"
+            )
 
         categorias = [
             {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
-                {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
+                {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias"}
             ]},
             {"titulo": "Trámites y Consultas 📄", "botones": [
-                {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+                {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"}
             ]},
             {"titulo": "Servicios y Turnos 📅", "botones": [
-                {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
+                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+                {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"}
             ]},
             {"titulo": "Información y Novedades 📰", "botones": [
-                {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
-                {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+                {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+                {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
+                {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
             ]}
         ]
 
@@ -724,8 +735,14 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     # Llama a la acción para crear el reclamo
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
 
-    # Limpia el contexto del reclamo en el municipio
-    contexto_municipio_actual.clear()
+    # Limpia el contexto del reclamo en el municipio, preservando datos del usuario
+    keys_to_clear_after_claim = [
+        "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
+        "estado_conversacion", "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo",
+        "coordenadas_reclamo", "foto_url", "mensaje_previo_llm_para_escalamiento"
+    ]
+    for key in keys_to_clear_after_claim:
+        contexto_municipio_actual.pop(key, None)
 
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("success"):
@@ -1164,6 +1181,8 @@ def _get_reclamos_menu():
     }
 
 
+SIMPLE_GREETINGS = {"hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "hi", "hello", "menu", "menú"}
+
 def responder_municipio(
     pregunta_original,
     owner_user,
@@ -1182,6 +1201,24 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
+
+    pregunta_str_for_check = ""
+    if isinstance(pregunta_original, str):
+        pregunta_str_for_check = pregunta_original
+    elif isinstance(pregunta_original, dict):
+        pregunta_str_for_check = pregunta_original.get("pregunta", "")
+
+    # For simple greetings, bypass LLM and show the main menu directly.
+    if normalizar_texto(pregunta_str_for_check) in SIMPLE_GREETINGS:
+        logger_actual.info(f"Simple greeting '{pregunta_str_for_check}' detected. Bypassing LLM and showing main menu.")
+        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+        # Pass the context to the handler, which will perform a full reset.
+        handler = GreetingHandler({"chat_db_context_data": chat_db_context.context_data})
+        response = handler.handle({})
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response
+
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
     # que debe devolver accion_backend: "saludar".
