@@ -23,21 +23,58 @@ def build_interactive_response(options: list,
 
 
     if channel == "whatsapp":
-        # If an audio URL is provided, prioritize sending the audio message.
-        # The test `test_whatsapp_response_with_audio_url` asserts this behavior.
         if audio_url:
             return {"type": "audio", "audio": {"link": audio_url}}
 
-        # For all other cases on WhatsApp, build a text message.
-        # If options are provided, they are formatted as a numbered list.
-        # This aligns with the test cases in `test_response_formatter.py`.
-        final_body = body_text
-        if options:
+        num_options = len(options)
+        is_interactive = message_type in ['interactive_buttons', 'interactive_list'] and options
+
+        if not is_interactive:
+            # Fallback to simple text message
+            final_body = body_text
+            if options:
+                options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
+                options_text += "\n\nResponde con el número de la opción que necesites."
+                final_body += options_text
+            return {"type": "text", "text": {"body": final_body}}
+
+        interactive_data = {
+            "header": {"type": "text", "text": header_text or "Menú"} if header_text else None,
+            "body": {"text": body_text},
+            "footer": {"text": footer_text} if footer_text else None,
+            "action": {}
+        }
+
+        # Automatically decide between button and list based on number of options
+        if 1 <= num_options <= 3:
+            interactive_data["type"] = "button"
+            interactive_data["action"]["buttons"] = [
+                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")[:20]}}
+                for i, o in enumerate(options)
+            ]
+        elif 4 <= num_options <= 10:
+            interactive_data["type"] = "list"
+            interactive_data["action"]["button"] = "Ver opciones"
+            interactive_data["action"]["sections"] = [{
+                "title": "Opciones",
+                "rows": [
+                    {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")[:24], "description": o.get("description", "")[:72]}
+                    for i, o in enumerate(options)
+                ]
+            }]
+        else:
+            # Fallback for 0 or >10 options, format as text
+            final_body = body_text
             options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
             options_text += "\n\nResponde con el número de la opción que necesites."
             final_body += options_text
+            return {"type": "text", "text": {"body": final_body}}
 
-        return {"type": "text", "text": {"body": final_body}}
+        # Clean None values from header/footer
+        if not interactive_data["header"]: del interactive_data["header"]
+        if not interactive_data["footer"]: del interactive_data["footer"]
+
+        return {"type": "interactive", "interactive": interactive_data}
 
     elif channel == "web":
         web_response = {

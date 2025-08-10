@@ -27,7 +27,6 @@ def google_search(query: str, days=None):
         "key": api_key,
         "cx": cse_id,
         "q": query,
-        "searchType": "image",
         "num": 1
     }
     if days:
