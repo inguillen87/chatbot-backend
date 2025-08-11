@@ -406,33 +406,33 @@ from services.google_search import google_search
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         # When a greeting is triggered, we perform a full reset of the conversation context.
-        contexto_municipio_actual = self.context.get(CONTEXTO_MUNICIPIO, {})
+        chat_db_context_data = self.context.get("chat_db_context_data")
 
-        keys_to_clear = [
-            "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
-            "estado_conversacion", "accion_pendiente_post_login", "estado_conversacion_pre_login",
-            "last_search", "last_search_page", "mensaje_previo_llm_para_escalamiento"
-        ]
+        if not chat_db_context_data:
+            logger.warning("[GreetingHandler] chat_db_context_data not found in context. Cannot perform a full reset.")
+            contexto_municipio_actual = {}
+        else:
+            # Preserve essential user info if it exists from the old context
+            user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
 
-        for key in keys_to_clear:
-            if key in contexto_municipio_actual:
-                del contexto_municipio_actual[key]
+            # Create a completely new, clean context dictionary
+            contexto_municipio_nuevo = {}
 
-        if self.context.get("chat_db_context_data"):
-            chat_context_data = self.context["chat_db_context_data"]
-            if CONTEXTO_MUNICIPIO in chat_context_data:
-                user_info = chat_context_data[CONTEXTO_MUNICIPIO].get('user', {})
-                # Clear the dictionary in-place to preserve the reference
-                chat_context_data[CONTEXTO_MUNICIPIO].clear()
-                if user_info:
-                    chat_context_data[CONTEXTO_MUNICIPIO]['user'] = user_info
+            # Restore essential info if it existed
+            if user_info:
+                contexto_municipio_nuevo['user'] = user_info
 
-            # Use pop with a default to avoid KeyError if the key doesn't exist
-            chat_context_data.pop("historial_conversacion_general_llm", None)
+            # Replace the old context dictionary with the new one
+            chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
+
+            # Also clear any other top-level keys that should not persist across sessions
+            chat_db_context_data.pop("historial_conversacion_general_llm", None)
+
+            contexto_municipio_actual = contexto_municipio_nuevo
 
         logger.info("[GreetingHandler] Conversation context has been reset.")
 
-        # Set the state to wait for a menu selection
+        # Set the state to wait for a menu selection in the new context
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
         logger.info(f"[GreetingHandler] Set estado_conversacion to {contexto_municipio_actual['estado_conversacion']}")
 
@@ -744,8 +744,6 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     for key in keys_to_clear_after_claim:
         contexto_municipio_actual.pop(key, None)
 
-    contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("success"):
         logger.info(f"Ticket creado con ID: {respuesta_accion.get('data', {}).get('ticket_id')}")
@@ -911,16 +909,43 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
             if not pedir_info_llm:
-                # _handle_ticket_creation returns the tuple (response, context), which is what this function should return.
-                return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
+                # LLM thinks it's done. Let's verify we have all required data.
+                campos_faltantes_manual = []
+                if not datos_actuales.get("descripcion"): campos_faltantes_manual.append("descripción")
+                if not datos_actuales.get("ubicacion"): campos_faltantes_manual.append("ubicación")
+
+                # Check for contact info if user is not fully identified
+                is_viewer_user_valid = viewer_user and viewer_user.is_authenticated
+                if not is_viewer_user_valid:
+                    if not (datos_actuales.get("nombre_usuario_detectado") or context.get("profile_name")):
+                        campos_faltantes_manual.append("nombre")
+
+                if campos_faltantes_manual:
+                    # We are missing data. Ask for the first missing piece.
+                    campo_a_pedir = campos_faltantes_manual[0]
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_a_pedir
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+                    return {
+                        "message_body": f"Ya casi terminamos. Para finalizar, por favor decime tu {campo_a_pedir.replace('_', ' ')}.",
+                        "options_list": [], "message_type": "text", "fuente": "llm_pide_info_faltante_v2"
+                    }, contexto_municipio_actual
+                else:
+                    # All data is present, proceed to ticket creation.
+                    return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
             else:
+                # LLM is already asking for more info, so we continue that flow.
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-                # Update the context that will be passed to the next turn
-                if chat_db_context and hasattr(chat_db_context, 'context_data'):
-                    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                    flag_modified(chat_db_context, "context_data")
-                return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+                return {
+                    "message_body": respuesta_usuario_llm,
+                    "options_list": botones_llm,
+                    "message_type": "interactive_buttons" if botones_llm else "text",
+                    "fuente": "llm_pide_info_reclamo"
+                }, contexto_municipio_actual
         elif accion_backend_llm == "mostrar_menu_reclamos":
             logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú de reclamos.")
             # Setear estado y menú para que el siguiente click se procese como selección
@@ -1261,19 +1286,63 @@ def responder_municipio(
         "action": received_payload.get("action"),
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        "profile_name": kwargs.get("profile_name"), # <<< AÑADIDO
     }
     # --- FIN REFACTOR ---
 
     pregunta_str_for_check = pregunta_str
 
+    # --- CONTEXT INITIALIZATION ---
+    # This is now at the top to ensure all parts of the function have access to the full context.
+    final_municipio_config = CONFIG_MUNICIPIO
+    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
+        owner_user_municipio_id_str = str(owner_user.municipio_id)
+        loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+        if loaded_specific_config:
+            final_municipio_config = loaded_specific_config
+
+    received_payload = {}
+    pregunta_str = ""
+    if isinstance(pregunta_original, dict):
+        received_payload = pregunta_original
+        pregunta_str = received_payload.get("pregunta", "")
+    elif isinstance(pregunta_original, str):
+        pregunta_str = pregunta_original
+        received_payload["pregunta"] = pregunta_original
+    else:
+        pregunta_str = ""
+        received_payload["pregunta"] = ""
+
+    if kwargs:
+        received_payload.update(kwargs)
+
+    chat_db_context_live_data = {}
+    if chat_db_context and chat_db_context.context_data is not None:
+        chat_db_context_live_data = chat_db_context.context_data
+
+    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    context = {
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+        "user_obj": owner_user,
+        "viewer_user_obj": viewer_user,
+        "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
+        "rubro_obj": rubro_obj,
+        "channel": channel,
+        "municipio_config_actual": final_municipio_config,
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "chat_db_context_data": chat_db_context_live_data,
+        "profile_name": kwargs.get("profile_name"),
+        # Other kwargs will be in received_payload
+    }
+    # --- END CONTEXT INITIALIZATION ---
+
     # For simple greetings, bypass LLM and show the main menu directly.
-    if normalizar_texto(pregunta_str_for_check) in SIMPLE_GREETINGS:
-        logger_actual.info(f"Simple greeting '{pregunta_str_for_check}' detected. Bypassing LLM and showing main menu.")
-        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-        # Pass the context to the handler, which will perform a full reset.
+    if normalizar_texto(pregunta_str) in SIMPLE_GREETINGS:
+        logger_actual.info(f"Simple greeting '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
+        # Pass the full context to the handler
         handler = GreetingHandler(context)
-        response = handler.handle({})
+        response = handler.handle(received_payload)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return response

@@ -346,13 +346,37 @@ def whatsapp_webhook():
     if twilio_client:
         try:
             # The formatter now returns a structured payload. We check its type.
-            if formatted_whatsapp_payload.get("type") == "interactive":
+            interactive_payload = formatted_whatsapp_payload.get("interactive")
+            if interactive_payload:
+                # This is a workaround to handle the "interactive" type from the formatter.
+                # The Twilio API doesn't take this dict directly. We will send it as plain text.
+                body_text = interactive_payload.get("body", {}).get("text", "Por favor, elige una opción.")
+
+                buttons = interactive_payload.get("action", {}).get("buttons", [])
+                rows = []
+                sections = interactive_payload.get("action", {}).get("sections", [])
+                if sections:
+                    for section in sections:
+                        rows.extend(section.get("rows", []))
+
+                options_text = ""
+                # For buttons
+                if buttons:
+                    options_text = "\n\n" + "\n".join([f"*{i+1}*. {btn['reply']['title']}" for i, btn in enumerate(buttons)])
+                # For lists
+                elif rows:
+                    options_text = "\n\n" + "\n".join([f"*{i+1}*. {row['title']}" for i, row in enumerate(rows)])
+
+                if options_text:
+                     options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
+
+                final_body = body_text + options_text
                 message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
-                    'interactive': formatted_whatsapp_payload.get("interactive")
+                    'body': final_body,
                 }
-            else: # Fallback to text message
+            else: # Standard text message
                 final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
                              bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
                 message_params = {
