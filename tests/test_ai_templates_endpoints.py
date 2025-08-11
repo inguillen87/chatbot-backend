@@ -12,7 +12,7 @@ if project_root not in sys.path:
 
 from app import create_app, db
 from models import PlantillasRespuesta, User, Rubro
-from routes.ai import ai_bp as ai_templates_bp
+from routes.ai_templates import ai_templates_bp
 import json
 import pytest
 from config import Config
