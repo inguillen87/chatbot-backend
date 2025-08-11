@@ -43,6 +43,7 @@ class MunicipioTicketCreator(TicketCreator):
             detalles=ticket_data.get("detalles", ""),    # Dirección, nombre, tel, etc.
             nro_ticket=ticket_data.get("nro_ticket"),
             direccion=ticket_data.get("direccion"),
+            distrito=ticket_data.get("distrito"),
             latitud=lat,
             longitud=lon,
             # Campos adicionales para información del vecino/contacto

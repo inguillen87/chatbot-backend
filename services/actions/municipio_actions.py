@@ -27,11 +27,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
         ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
+
+        # Normalización del distrito
+        if distrito_llm and "junin" in distrito_llm.lower():
+            distrito_llm = "Junín"
+
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        nombre_vecino_final = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado") or getattr(viewer_user, "nombre", None)
+        nombre_vecino_final = (action_data.get("usuario") or
+                               self.context.get("profile_name") or
+                               action_data.get("nombre_usuario_detectado") or
+                               datos_parciales.get("nombre_usuario_detectado") or
+                               getattr(viewer_user, "name", None) or
+                               "Vecino/a")
 
         telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None
