@@ -1211,11 +1211,58 @@ def responder_municipio(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
 
-    pregunta_str_for_check = ""
-    if isinstance(pregunta_original, str):
-        pregunta_str_for_check = pregunta_original
-    elif isinstance(pregunta_original, dict):
-        pregunta_str_for_check = pregunta_original.get("pregunta", "")
+    # --- INICIO REFACTOR: Inicialización de 'context' y 'received_payload' al principio ---
+    # Cargar config específica del municipio (si existe)
+    final_municipio_config = CONFIG_MUNICIPIO # Default global
+    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
+        owner_user_municipio_id_str = str(owner_user.municipio_id)
+        loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+        if loaded_specific_config:
+            final_municipio_config = loaded_specific_config
+
+    # Poblar el payload con los datos de la solicitud
+    received_payload = {}
+    pregunta_str = ""
+    if isinstance(pregunta_original, dict):
+        received_payload = pregunta_original
+        pregunta_str = received_payload.get("pregunta", "")
+    elif isinstance(pregunta_original, str):
+        pregunta_str = pregunta_original
+        received_payload["pregunta"] = pregunta_original
+    else:
+        logger_actual.warning(
+            f"Tipo inesperado para pregunta_original: {type(pregunta_original)}. Contenido: {pregunta_original}"
+        )
+        pregunta_str = ""
+        received_payload["pregunta"] = ""
+
+    if kwargs:
+        for key, value in kwargs.items():
+            received_payload[key] = value
+
+    # Crear el diccionario de contexto principal una sola vez
+    context = {
+        "user_obj": owner_user,
+        "viewer_user_obj": viewer_user,
+        "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
+        "rubro_obj": rubro_obj,
+        "channel": channel,
+        "municipio_config_actual": final_municipio_config,
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "chat_db_context_data": {}, # Se poblará después de cargar desde la DB
+        "intencion": kwargs.get("intencion"),
+        "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
+        "es_foto": False, "foto_url": None,
+        "es_ubicacion": received_payload.get("es_ubicacion", False),
+        "es_archivo": received_payload.get("es_archivo", False),
+        "action": received_payload.get("action"),
+        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+    }
+    # --- FIN REFACTOR ---
+
+    pregunta_str_for_check = pregunta_str
 
     # For simple greetings, bypass LLM and show the main menu directly.
     if normalizar_texto(pregunta_str_for_check) in SIMPLE_GREETINGS:
@@ -1231,12 +1278,6 @@ def responder_municipio(
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
     # que debe devolver accion_backend: "saludar".
-
-    received_payload = {}
-    if isinstance(pregunta_original, dict):
-        received_payload = pregunta_original
-    elif isinstance(pregunta_original, str):
-        received_payload['pregunta'] = pregunta_original
 
     action = received_payload.get("action")
 
@@ -1262,12 +1303,6 @@ def responder_municipio(
             "message_type": "text",
             "fuente": "info_perdida_agua"
         }
-
-    pregunta_str_for_check = ""
-    if isinstance(pregunta_original, str):
-        pregunta_str_for_check = pregunta_original
-    elif isinstance(pregunta_original, dict):
-        pregunta_str_for_check = pregunta_original.get("pregunta", "")
 
     if es_consulta_general(pregunta_str_for_check):
         current_location = location or flask_session.get("user_location")
@@ -1308,24 +1343,6 @@ def responder_municipio(
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
 
-    received_payload = {}
-    pregunta_str = ""
-    if isinstance(pregunta_original, dict):
-        received_payload = pregunta_original
-        pregunta_str = received_payload.get("pregunta", "")
-    elif isinstance(pregunta_original, str):
-        pregunta_str = pregunta_original
-        received_payload["pregunta"] = pregunta_original
-    else:
-        logger_actual.warning(
-            f"Tipo inesperado para pregunta_original: {type(pregunta_original)}. Contenido: {pregunta_original}"
-        )
-        pregunta_str = ""
-        received_payload["pregunta"] = ""
-    if kwargs:
-        for key, value in kwargs.items():
-            received_payload[key] = value
-
     # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
     if not pregunta_str.strip() and location:
         lat = location.get('latitude')
@@ -1350,6 +1367,7 @@ def responder_municipio(
         if chat_db_context.context_data is None:
             chat_db_context.context_data = {}
         chat_db_context_live_data = chat_db_context.context_data # Reference to the live dict
+        context["chat_db_context_data"] = chat_db_context_live_data # Update main context with live data
         contexto_municipio_data_from_db = chat_db_context_live_data.get(
             CONTEXTO_MUNICIPIO, {}
         )
@@ -1369,6 +1387,7 @@ def responder_municipio(
     # Directly use the dictionary from the live context data.
     # This ensures that modifications are made to the original object.
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+    context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Ensure main context points to this sub-context
 
     # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
     if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
@@ -1460,30 +1479,13 @@ def responder_municipio(
             contexto_municipio_actual.pop("current_menu", None)
             contexto_municipio_actual.pop("menu_page", None)
 
-            context = {
-                CONTEXTO_MUNICIPIO: contexto_municipio_actual,
-                "user_obj": owner_user,
-                "viewer_user_obj": viewer_user,
-                "cliente_id": getattr(viewer_user, "id", None),
-                "anon_id": anon_id,
-                "rubro_obj": rubro_obj,
-                "channel": channel,
-                "municipio_config_actual": CONFIG_MUNICIPIO,
-                "chat_session_uuid": kwargs.get("chat_session_uuid"),
-                "chat_db_context_data": chat_db_context.context_data if chat_db_context else {},
-                "intencion": kwargs.get("intencion"),
-                "ubicacion_usuario": location,
-                "es_foto": False,
-                "foto_url": None,
-                "es_ubicacion": False,
-                "es_archivo": False,
-                "action": "text_input",
-                "datos_interpretados_archivo": None,
-                "archivo_id_para_asociar": None,
-            }
+            # --- INICIO REFACTOR: Usar el 'context' principal en lugar de crear uno nuevo ---
+            # El diccionario 'context' ya se inicializó al principio de la función
+            # y contiene toda la información necesaria.
             response_dict, _ = handle_llm_interaction(
                 constructed_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
             )
+            # --- FIN REFACTOR ---
 
             if response_dict is None:
                 return {"message_body": "No pude procesar la selección. Probá de nuevo.",
