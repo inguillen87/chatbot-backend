@@ -1259,6 +1259,7 @@ def responder_municipio(
         "action": received_payload.get("action"),
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "profile_name": kwargs.get("profile_name"), # <<< AÑADIDO
     }
     # --- FIN REFACTOR ---
 
