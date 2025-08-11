@@ -751,7 +751,7 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
         message_body = respuesta_accion.get("message_to_user")
 
         # Opcional: añadir botones si el handler no los proveyó
-        options_list = respuesta_accion.get("options_list", [])
+        options_list = (respuesta_accion.get("options_list") or [])
         logger.info(f"Options list from action handler: {options_list}")
         if not options_list:
             logger.info("Action handler did not provide options, adding default buttons.")
@@ -921,8 +921,15 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
         elif accion_backend_llm == "mostrar_menu_reclamos":
             logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú de reclamos.")
-            # La función _get_reclamos_menu ya devuelve el diccionario de respuesta formateado.
-            # Lo devolvemos junto con el contexto actual.
+            # Setear estado y menú para que el siguiente click se procese como selección
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+            contexto_municipio_actual["current_menu"] = "reclamos"
+            contexto_municipio_actual["menu_page"] = 1
+            if chat_db_context and hasattr(chat_db_context, "context_data"):
+                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                flag_modified(chat_db_context, "context_data")
+
+            # Devolver menú con botones
             return _get_reclamos_menu(), contexto_municipio_actual
         elif accion_backend_llm == "derivar_humano":
             context["intencion"] = "hablar_con_agente"
@@ -990,7 +997,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     return {
                         "message_body": respuesta_final,
                         "options_list": botones_llm,
-                        "message_type": "text",
+                        "message_type": "interactive_buttons" if botones_llm else "text",
                         "fuente": f"herramienta_{nombre_herramienta}"
                     }, contexto_municipio_actual
 
@@ -1027,7 +1034,8 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             # para que el frontend pueda procesarlo directamente.
             return {
                 "message_body": respuesta_usuario_llm,
-                "botones": botones_llm,
+                "options_list": botones_llm,
+                "message_type": "interactive_buttons" if botones_llm else "text",
                 "accion_backend": accion_backend_llm,
                 "datos_estructura": datos_estructura_llm,
                 "pedir_info": pedir_info_llm,
@@ -1166,18 +1174,19 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
 
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado."""
+    opciones = [
+        {"texto": "1. 💡 Luminaria",        "id_accion": "1"},
+        {"texto": "2. 🌳 Arbolado",         "id_accion": "2"},
+        {"texto": "3. 🧹 Limpieza y riego", "id_accion": "3"},
+        {"texto": "4. 🚧 Arreglo de calle", "id_accion": "4"},
+        {"texto": "5. 💧 Pérdida de agua",  "id_accion": "5"},
+        {"texto": "6. 📋 Otros",            "id_accion": "6"},
+    ]
     return {
-        "message_body": "Seleccioná el tipo de reclamo:",
-        "options_list": [
-            {"id": "reclamo_luminaria", "texto": "💡 Luminaria"},
-            {"id": "reclamo_arbolado", "texto": "🌳 Arbolado"},
-            {"id": "reclamo_limpieza_riego", "texto": "🧹 Limpieza y riego"},
-            {"id": "reclamo_arreglo_calle", "texto": "🚧 Arreglo de calle"},
-            {"id": "reclamo_perdida_agua", "texto": "💧 Pérdida de agua"},
-            {"id": "reclamo_otros", "texto": "📋 Otros"},
-        ],
-        "message_type": "interactive_list",
-        "fuente": "submenu_reclamos_estandar"
+        "message_body": "Elegí una opción para tu reclamo:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_reclamos_estandar_v2"
     }
 
 
@@ -1414,31 +1423,78 @@ def responder_municipio(
 
         logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}'")
 
+        # El menú ahora tiene id_accion numéricos.
+        # Primero, intentar matchear el input numérico con el id_accion.
         reclamo_options = _get_reclamos_menu().get("options_list", [])
-        selected_category = find_reclamo_category_by_input(pregunta_str_reclamo, reclamo_options)
+        selected_category_name = None
 
-        if selected_category:
-            if selected_category == "Pérdida de agua":
-                contexto_municipio_actual['estado_conversacion'] = None # Clear state
+        if pregunta_str_reclamo.isdigit():
+            for option in reclamo_options:
+                if option.get("id_accion") == pregunta_str_reclamo:
+                    # Extraer el nombre de la categoría del texto del botón, ej "💡 Luminaria" -> "Luminaria"
+                    selected_category_name = re.sub(r'^\d+\.\s*💡?\s*', '', option.get("texto", "")).strip()
+                    break
+
+        # Si no es un número, o el número no corresponde a una opción, intentar matchear por texto.
+        if not selected_category_name:
+            # Usar la función existente que busca por keywords.
+            # Le pasamos una lista de dicts con la clave "texto" que espera.
+            plain_text_options = [{"texto": re.sub(r'^\d+\.\s*💡?\s*', '', opt.get("texto", "")).strip()} for opt in reclamo_options]
+            selected_category_name = find_reclamo_category_by_input(pregunta_str_reclamo, plain_text_options)
+
+        if selected_category_name:
+            if selected_category_name == "Pérdida de agua":
+                contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return {
                     "message_body": "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/",
                     "options_list": [], "message_type": "text", "fuente": "info_perdida_agua"
                 }
 
-            logger_actual.info(f"User input '{pregunta_str_reclamo}' matched to reclamo category: '{selected_category}'")
-            contexto_municipio_actual['categoria_reclamo'] = selected_category
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            logger_actual.info(f"Categoría de reclamo seleccionada: '{selected_category_name}'")
+            constructed_prompt = f"Quiero iniciar un reclamo de {selected_category_name}"
 
-            return {
-                "message_body": f"Entendido, iniciaste un reclamo por **{selected_category}**. Por favor, describí la incidencia.",
-                "options_list": [], "message_type": "text", "fuente": "inicio_flujo_reclamo_categorizado"
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {"categoria": selected_category_name}
+            contexto_municipio_actual["historial_llm_reclamo"] = []
+            contexto_municipio_actual.pop("current_menu", None)
+            contexto_municipio_actual.pop("menu_page", None)
+
+            context = {
+                CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+                "user_obj": owner_user,
+                "viewer_user_obj": viewer_user,
+                "cliente_id": getattr(viewer_user, "id", None),
+                "anon_id": anon_id,
+                "rubro_obj": rubro_obj,
+                "channel": channel,
+                "municipio_config_actual": CONFIG_MUNICIPIO,
+                "chat_session_uuid": kwargs.get("chat_session_uuid"),
+                "chat_db_context_data": chat_db_context.context_data if chat_db_context else {},
+                "intencion": kwargs.get("intencion"),
+                "ubicacion_usuario": location,
+                "es_foto": False,
+                "foto_url": None,
+                "es_ubicacion": False,
+                "es_archivo": False,
+                "action": "text_input",
+                "datos_interpretados_archivo": None,
+                "archivo_id_para_asociar": None,
             }
+            response_dict, _ = handle_llm_interaction(
+                constructed_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
+            )
+
+            if response_dict is None:
+                return {"message_body": "No pude procesar la selección. Probá de nuevo.",
+                        "message_type": "text", "options_list": [], "fuente": "error_category_selection"}
+
+            response_dict.setdefault("message_type", "text")
+            response_dict.setdefault("options_list", [])
+            return response_dict
         else:
-            logger_actual.warning(f"Input '{pregunta_str_reclamo}' did not match any reclamo category. Passing to LLM.")
-            contexto_municipio_actual['estado_conversacion'] = None # Reset state to avoid getting stuck
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            logger_actual.warning(f"Input '{pregunta_str_reclamo}' no coincide con ninguna categoría. Mostrando menú de nuevo.")
+            return _get_reclamos_menu()
     # --- FIN: Manejo de selección de menú de reclamos ---
 
     # --- INICIO: Manejo de recepción de ubicación para consulta general ---
@@ -1594,6 +1650,10 @@ def responder_municipio(
         respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
         logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         if respuesta_manejada_por_llm:
+            if not isinstance(respuesta_manejada_por_llm, dict):
+                respuesta_manejada_por_llm = {"message_body": str(respuesta_manejada_por_llm)}
+            respuesta_manejada_por_llm.setdefault("message_type", "text")
+            respuesta_manejada_por_llm.setdefault("options_list", [])
             return respuesta_manejada_por_llm
 
         # Si la intención se estableció en derivar a un agente, significa que el flujo del LLM
@@ -1853,11 +1913,29 @@ def responder_municipio(
         "message_body": respuesta_final_texto,
         "options_list": opciones_finales,
         "message_type": message_type_final,
+        "estado": contexto_municipio_serializado_para_db.get("estado_conversacion"),
         "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio_serializado_para_db},
         "ticket_id": action_handler_result.get("data", {}).get("ticket_id") or action_handler_result.get("data", {}).get("sugerencia_id"), # Tomar de data si existe
         "fuente": action_handler_result.get("fuente") or llm_response_structured.get("accion_backend", "municipio_general_v4"),
         # Otros campos como media_url, location_data, adjuntos se manejarían si son parte de la respuesta
     }
+
+    # --- Google Search Fallback ---
+    generic_fuentes = ["municipio_general_v4", "fallback_final", "llm_respuesta_general_v2"]
+    if final_response_dict.get("fuente") in generic_fuentes and not final_response_dict.get("options_list"):
+        logger_actual.info(f"Respuesta genérica (fuente: {final_response_dict.get('fuente')}). Intentando fallback con Google Search.")
+        search_results = google_search(pregunta_str)
+        if search_results:
+            search_items = []
+            for result in search_results[:3]:
+                search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
+
+            final_response_dict = {
+                "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "municipio_fallback_google_search"
+            }
 
     # Log de conversación para anónimos
     if anon_id and not viewer_user:
@@ -1872,19 +1950,5 @@ def responder_municipio(
             logger_actual.error(f"Error guardando Conversacion final (municipio): {e_conv_muni_final}", exc_info=True)
             db.session.rollback()
 
-    if not respuesta_manejada_por_llm:
-        search_results = google_search(pregunta_str)
-        if search_results:
-            search_items = []
-            for result in search_results[:3]:
-                search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
-
-            final_response_dict = {
-                "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "municipio_fallback_google_search"
-            }
-
-    logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
+    logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict.get('message_body', '')[:100]}...', Fuente: {final_response_dict.get('fuente', 'N/A')}")
     return final_response_dict
