@@ -909,43 +909,16 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
             if not pedir_info_llm:
-                # LLM thinks it's done. Let's verify we have all required data.
-                campos_faltantes_manual = []
-                if not datos_actuales.get("descripcion"): campos_faltantes_manual.append("descripción")
-                if not datos_actuales.get("ubicacion"): campos_faltantes_manual.append("ubicación")
-
-                # Check for contact info if user is not fully identified
-                is_viewer_user_valid = viewer_user and viewer_user.is_authenticated
-                if not is_viewer_user_valid:
-                    if not (datos_actuales.get("nombre_usuario_detectado") or context.get("profile_name")):
-                        campos_faltantes_manual.append("nombre")
-
-                if campos_faltantes_manual:
-                    # We are missing data. Ask for the first missing piece.
-                    campo_a_pedir = campos_faltantes_manual[0]
-                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                    contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_a_pedir
-                    if chat_db_context: flag_modified(chat_db_context, "context_data")
-
-                    return {
-                        "message_body": f"Ya casi terminamos. Para finalizar, por favor decime tu {campo_a_pedir.replace('_', ' ')}.",
-                        "options_list": [], "message_type": "text", "fuente": "llm_pide_info_faltante_v2"
-                    }, contexto_municipio_actual
-                else:
-                    # All data is present, proceed to ticket creation.
-                    return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
+                # _handle_ticket_creation returns the tuple (response, context), which is what this function should return.
+                return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
             else:
-                # LLM is already asking for more info, so we continue that flow.
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
-
-                return {
-                    "message_body": respuesta_usuario_llm,
-                    "options_list": botones_llm,
-                    "message_type": "interactive_buttons" if botones_llm else "text",
-                    "fuente": "llm_pide_info_reclamo"
-                }, contexto_municipio_actual
+                # Update the context that will be passed to the next turn
+                if chat_db_context and hasattr(chat_db_context, 'context_data'):
+                    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                    flag_modified(chat_db_context, "context_data")
+                return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
         elif accion_backend_llm == "mostrar_menu_reclamos":
             logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú de reclamos.")
             # Setear estado y menú para que el siguiente click se procese como selección
