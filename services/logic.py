@@ -41,6 +41,8 @@ def normalizar_rubro(rubro) -> str:
     return str(rubro).strip().lower()
 
 
+from .herramientas_municipio import normalizar_texto
+
 def es_rubro_publico(rubro) -> bool:
     """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
     return normalizar_rubro(rubro) in RUBROS_PUBLICOS
@@ -124,6 +126,27 @@ def responder_chatboc(
         tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
     elif tipo_chat not in ("municipio", "pyme"):
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
+
+    # --- INICIO: Manejo de confusión Pyme/Municipio ---
+    if tipo_chat == "pyme":
+        from services.municipio_responder import MENU_KEYWORDS as MUNICIPIO_MENU_KEYWORDS
+        pregunta_norm = normalizar_texto(pregunta)
+        # Check for municipal keywords in the user's query
+        for action, keywords in MUNICIPIO_MENU_KEYWORDS.items():
+            if any(keyword in pregunta_norm for keyword in keywords):
+                pyme_name = getattr(effective_owner_user, "nombre_empresa", "este comercio")
+                return {
+                    "message_body": f"Parece que estás consultando sobre un trámite municipal, pero te encuentras en el chat de {pyme_name}. ¿Querés que te dirija al asistente del municipio?",
+                    "options_list": [
+                        # This would need frontend logic to handle a redirection.
+                        # For now, we just guide the user.
+                        {"texto": "Ir al Chat del Municipio", "action_id": "redirect_municipio"},
+                        {"texto": "Quedarme aquí", "action_id": "stay_pyme"}
+                    ],
+                    "message_type": "interactive_buttons",
+                    "fuente": "pyme_municipio_confusion_handler"
+                }
+    # --- FIN: Manejo de confusión ---
 
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")

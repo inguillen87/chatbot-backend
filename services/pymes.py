@@ -790,6 +790,15 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     request_id = str(uuid.uuid4())
     logger_actual = current_app.logger if current_app else logger
 
+    if not owner_user:
+        logger.error("[responder_pyme] Critical error: owner_user is None. Cannot proceed.")
+        return {
+            "message_body": "Error de configuración: No se pudo identificar la empresa. Por favor, contacte al administrador.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "error_no_owner_user"
+        }
+
     if chat_db_context is None:
         chat_db_context = models.ChatSessionContext()
         chat_db_context.context_data = {}

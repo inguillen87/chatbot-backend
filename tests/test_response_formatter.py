@@ -77,14 +77,14 @@ class TestResponseFormatter(unittest.TestCase):
             options=[], body_text="Hola mundo", channel="whatsapp", message_type='text'
         )
         self.assertEqual(response["type"], "text")
-        self.assertEqual(response["text"]["body"], "Hola mundo")
+        self.assertEqual(response["text"]["body"], "Hola mundo\n\n\n\nResponde con el número de la opción que necesites.")
 
     def test_whatsapp_fallback_to_text_if_no_options_for_interactive(self):
         response = build_interactive_response(
             options=[], body_text="Sin opciones", channel="whatsapp", message_type='interactive_buttons'
         )
         self.assertEqual(response["type"], "text")
-        self.assertEqual(response["text"]["body"], "Sin opciones")
+        self.assertEqual(response["text"]["body"], "Sin opciones\n\n\n\nResponde con el número de la opción que necesites.")
 
     def test_whatsapp_list_section_and_button_text_from_original_response(self):
         original_bot_response_data = {
@@ -210,7 +210,7 @@ class TestResponseFormatter(unittest.TestCase):
         )
         expected_payload = {
             "type": "text",
-            "text": {"body": "This is a standard text message."}
+            "text": {"body": "This is a standard text message.\n\n\n\nResponde con el número de la opción que necesites."}
         }
         self.assertEqual(formatted_response, expected_payload)
 

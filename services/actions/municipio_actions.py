@@ -31,12 +31,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        nombre_vecino_final = (action_data.get("usuario") or
-                               action_data.get("nombre_usuario_detectado") or
-                               datos_parciales.get("nombre_usuario_detectado") or
-                               getattr(viewer_user, "nombre", None) or
-                               self.context.get("profile_name") or
-                               "Vecino/a")
+        nombre_vecino_final = action_data.get("usuario") or \
+                              action_data.get("nombre_usuario_detectado") or \
+                              datos_parciales.get("nombre_usuario_detectado") or \
+                              getattr(viewer_user, "nombre", None) or \
+                              self.context.get("profile_name")
 
         telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None
