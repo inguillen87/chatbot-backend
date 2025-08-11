@@ -157,14 +157,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
             contacto_especializado = contactos.get(categoria, contactos.get("default"))
 
             # Limpiar contexto de reclamo después de la creación exitosa
-            user_info = contexto_reclamo.get('user', {})
-            contexto_reclamo.clear()
-            if user_info:
-                contexto_reclamo['user'] = user_info
+            # Get the live context dictionary to modify it in place
+            if self.context.get(CONTEXTO_MUNICIPIO):
+                contexto_a_limpiar = self.context[CONTEXTO_MUNICIPIO]
+                keys_to_clear_after_claim = [
+                    "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
+                    "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo",
+                    "coordenadas_reclamo", "foto_url", "mensaje_previo_llm_para_escalamiento"
+                ]
+                for key in keys_to_clear_after_claim:
+                    contexto_a_limpiar.pop(key, None)
 
-            # Set the state back to general conversation to avoid getting stuck
-            from services.municipio_responder import ConversationState
-            contexto_reclamo['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                # Set the state back to general conversation to avoid getting stuck
+                from services.municipio_responder import ConversationState
+                contexto_a_limpiar['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {contexto_a_limpiar['estado_conversacion']}")
 
             # Notificaciones
             if ticket_data_cleaned.get("telefono_vecino"):

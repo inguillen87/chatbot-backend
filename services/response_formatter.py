@@ -3,6 +3,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _format_interactive_text_fallback(body_text, options):
+    """Formats a text-based fallback for interactive messages."""
+    final_body = body_text
+    if options:
+        options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
+        # The prompt is now consistent and without asterisks or arrows.
+        options_text += "\n\nResponde con el número de la opción que necesites."
+        final_body += options_text
+    return {"type": "text", "text": {"body": final_body}}
+
+
 def build_interactive_response(options: list,
                                body_text: str,
                                channel: str,
@@ -34,17 +46,11 @@ def build_interactive_response(options: list,
             return {"type": "audio", "audio": {"link": audio_url}}
 
         num_options = len(options)
-        # Force text-based menus for now, as requested by the user.
-        is_interactive = False
+        is_interactive = True # Re-enable interactive messages
 
-        if not is_interactive:
+        if not is_interactive or message_type not in ['interactive_buttons', 'interactive_list']:
             # Fallback to simple text message
-            final_body = body_text
-            if options:
-                options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
-                options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
-                final_body += options_text
-            return {"type": "text", "text": {"body": final_body}}
+            return _format_interactive_text_fallback(body_text, options)
 
         interactive_data = {
             "header": {"type": "text", "text": header_text or "Menú"} if header_text else None,
@@ -72,11 +78,7 @@ def build_interactive_response(options: list,
             }]
         else:
             # Fallback for 0 or >10 options, format as text
-            final_body = body_text
-            options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
-            options_text += "\n\nResponde con el número de la opción que necesites."
-            final_body += options_text
-            return {"type": "text", "text": {"body": final_body}}
+            return _format_interactive_text_fallback(body_text, options)
 
         # Clean None values from header/footer
         if not interactive_data["header"]: del interactive_data["header"]

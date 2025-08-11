@@ -744,6 +744,8 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     for key in keys_to_clear_after_claim:
         contexto_municipio_actual.pop(key, None)
 
+    contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("success"):
         logger.info(f"Ticket creado con ID: {respuesta_accion.get('data', {}).get('ticket_id')}")
@@ -1270,7 +1272,7 @@ def responder_municipio(
         logger_actual.info(f"Simple greeting '{pregunta_str_for_check}' detected. Bypassing LLM and showing main menu.")
         contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
         # Pass the context to the handler, which will perform a full reset.
-        handler = GreetingHandler({"chat_db_context_data": chat_db_context.context_data})
+        handler = GreetingHandler(context)
         response = handler.handle({})
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
