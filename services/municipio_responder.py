@@ -868,13 +868,19 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
             logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as e:
-            logger.error(f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}", exc_info=True)
-            return {
-                "message_body": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "error"
-            }, contexto_municipio_actual
+            logger.error(
+                f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}",
+                exc_info=True,
+            )
+            return (
+                {
+                    "message_body": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "error",
+                },
+                contexto_municipio_actual,
+            )
 
         respuesta_usuario_llm = respuesta_llm_dict.get("message_body")
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
@@ -1849,12 +1855,12 @@ def responder_municipio(
         }
     if llm_response_structured.get("accion_backend") == "error":
         return {
-                "message_body": "Hubo un problema al procesar tu solicitud (acción desconocida).",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "error"
-            }
-
+            "message_body": "Hubo un problema al procesar tu solicitud (acción desconocida).",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "error",
+        }
+    
     # Actualizar el historial de chat_db_context con este turno (pregunta y respuesta_usuario del LLM)
     # Esto es para que la próxima llamada a Gemini tenga este contexto.
     # (Asegurarse que el formato sea el esperado por llamar_gemini)
