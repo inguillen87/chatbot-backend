@@ -181,7 +181,7 @@ def create_app(config_class=Config):
         return resp
 
     # --- Registro de Blueprints (Rutas) ---
-    app.register_blueprint(auth_bp, url_prefix='/auth')
+    app.register_blueprint(auth_bp)
     app.register_blueprint(legacy_auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
