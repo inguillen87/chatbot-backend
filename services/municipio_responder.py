@@ -1343,8 +1343,6 @@ def responder_municipio(
     # que debe devolver accion_backend: "saludar".
 
     # Obtener el estado actual de la conversación antes de evaluar acciones
-    estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
-
     action = received_payload.get("action")
 
     # New main menu handler
@@ -1360,7 +1358,7 @@ def responder_municipio(
             return response
 
     # --- INICIO: Manejo de selección de lista dinámica (Noticias, etc.) ---
-    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_DE_LISTA.name:
+    elif contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_SELECCION_DE_LISTA.name:
         opciones_guardadas = contexto_municipio_actual.get('opciones_en_pantalla', [])
         seleccion = None
         if pregunta_str.isdigit():
@@ -1474,9 +1472,11 @@ def responder_municipio(
         f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}"
     )
 
-    # Log the current state of the conversation
-    estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
-    logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {estado_conversacion}")
+    # Log the current state of the conversation, using the 'contexto_municipio_actual' dictionary
+    # which is the single source of truth for the current state.
+    # The following reassignment was the cause of the UnboundLocalError.
+    # estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {contexto_municipio_actual.get('estado_conversacion')}")
 
     # Directly use the dictionary from the live context data.
     # This ensures that modifications are made to the original object.
@@ -1484,7 +1484,7 @@ def responder_municipio(
     context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Ensure main context points to this sub-context
 
     # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
-    if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
+    if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
         pregunta_str_menu = ""
         if isinstance(pregunta_original, str):
             pregunta_str_menu = pregunta_original
@@ -1527,7 +1527,7 @@ def responder_municipio(
     # --- FIN: Manejo de selección de menú principal ---
 
     # --- INICIO: Manejo de selección de menú de reclamos ---
-    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name:
+    elif contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name:
         pregunta_str_reclamo = ""
         if isinstance(pregunta_original, str):
             pregunta_str_reclamo = pregunta_original
@@ -1594,7 +1594,7 @@ def responder_municipio(
     # --- FIN: Manejo de selección de menú de reclamos ---
 
     # --- INICIO: Manejo de recepción de ubicación para consulta general ---
-    elif estado_conversacion == ConversationState.ESPERANDO_UBICACION_GENERAL.name:
+    elif contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_UBICACION_GENERAL.name:
         if location:
             consulta_guardada = contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
             contexto_municipio_actual['estado_conversacion'] = None # Clear state

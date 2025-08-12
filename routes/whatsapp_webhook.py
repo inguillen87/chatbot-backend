@@ -4,6 +4,7 @@ from twilio.rest import Client # For sending messages via Twilio
 import os # For accessing environment variables
 import requests
 import io
+import json
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto # Import necessary models
 from extensions import db # Import db instance for database operations
@@ -367,8 +368,30 @@ def whatsapp_webhook():
                 }
 
             # Send the main message (text or interactive)
-            main_message = twilio_client.messages.create(**message_params)
-            print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
+            # Bypassing the helper library to construct the request manually,
+            # as the library seems to have an issue with the 'interactive' parameter.
+            api_url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+
+            data_payload = {
+                'To': message_params.get('to'),
+                'From': message_params.get('from_')
+            }
+            if 'interactive' in message_params:
+                data_payload['Interactive'] = json.dumps(message_params['interactive'])
+            else:
+                data_payload['Body'] = message_params.get('body')
+
+            response = requests.post(
+                api_url,
+                data=data_payload,
+                auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            )
+
+            if response.status_code >= 300:
+                print(f"Error al enviar mensaje de Twilio (direct request): {response.status_code} {response.text}")
+            else:
+                main_message_sid = response.json().get("sid")
+                print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message_sid}")
 
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')

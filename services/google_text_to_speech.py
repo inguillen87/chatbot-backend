@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 from google.cloud import texttospeech
+from google.api_core import exceptions as google_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +82,11 @@ class TextToSpeechService:
 
             return public_url_path
 
+        except google_exceptions.GoogleAPICallError as e:
+            logger.error(f"A Google API error occurred during speech synthesis: {e}", exc_info=False)
+            return None
         except Exception as e:
-            logger.error(f"An unexpected error occurred during speech synthesis: {e}", exc_info=True)
+            logger.error(f"An unexpected generic error occurred during speech synthesis: {e}", exc_info=True)
             return None
 
 if __name__ == '__main__':
