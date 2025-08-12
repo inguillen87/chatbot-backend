@@ -439,6 +439,7 @@ class GreetingHandler(BaseMunicipioHandler):
 
         viewer_user = self.context.get("viewer_user_obj")
         profile_name = self.context.get("profile_name")
+        logger.info(f"[GreetingHandler] Received profile_name: '{profile_name}'")
         user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None) or profile_name
 
         if user_name:
@@ -459,22 +460,22 @@ class GreetingHandler(BaseMunicipioHandler):
 
         categorias = [
             {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
-                {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
+                {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias"}
             ]},
             {"titulo": "Trámites y Consultas 📄", "botones": [
-                {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+                {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"}
             ]},
             {"titulo": "Servicios y Turnos 📅", "botones": [
-                {"texto": "Veterinaria", "action_id": "veterinaria_y_bromatologia"},
-                {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
+                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+                {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"}
             ]},
             {"titulo": "Información y Novedades 📰", "botones": [
-                {"texto": "Agenda Cultural", "action_id": "agenda_cultural_y_turistica"},
-                {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
-                {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+                {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+                {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
+                {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
             ]}
         ]
 
@@ -1160,7 +1161,7 @@ RECLAMO_KEYWORDS = {
 
 def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> str | None:
     """
-    Finds a reclamo category based on user input, checking for number or keywords.
+    Finds a reclamo category based on user input, checking for number, first letter, or keywords.
     """
     if not user_input or not reclamo_options:
         return None
@@ -1168,22 +1169,21 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     normalized_input = normalizar_texto(user_input.strip())
 
     # 1. Check for numeric selection
-    if normalized_input.isdigit():
-        try:
-            selection_index = int(normalized_input) - 1
-            if 0 <= selection_index < len(reclamo_options):
-                # Extraer el nombre de la categoría del texto del botón, ej "1. 💡 Luminaria" -> "Luminaria"
-                category_text = reclamo_options[selection_index].get('texto', '')
-                return re.sub(r'^\d+\.\s*💡?\s*🌳?\s*🧹?\s*🚧?\s*💧?\s*📋?\s*', '', category_text).strip()
-        except (ValueError, IndexError):
-            pass  # Not a valid number or index, proceed to other checks
+    try:
+        selection_index = int(normalized_input) - 1
+        if 0 <= selection_index < len(reclamo_options):
+            return reclamo_options[selection_index].get('texto')
+    except (ValueError, IndexError):
+        pass
 
-    # 2. Check for keyword match
+    # 2. Check for first letter match
+    if len(normalized_input) == 1:
+        for option in reclamo_options:
+            if normalizar_texto(option.get("texto", "")).startswith(normalized_input):
+                return option.get("texto")
+
+    # 3. Check for keyword match
     for category, keywords in RECLAMO_KEYWORDS.items():
-        # Check for exact category match first
-        if normalizar_texto(category) == normalized_input:
-            return category
-        # Then check for keywords
         for keyword in keywords:
             if keyword in normalized_input:
                 return category
@@ -1328,17 +1328,6 @@ def responder_municipio(
     }
     # --- END CONTEXT INITIALIZATION ---
 
-    # For simple greetings, bypass LLM and show the main menu directly.
-    if normalizar_texto(pregunta_str) in SIMPLE_GREETINGS:
-        logger_actual.info(f"Simple greeting '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
-        # Pass the full context to the handler
-        handler = GreetingHandler(context)
-        response = handler.handle(received_payload)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return response
-
-
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
     # que debe devolver accion_backend: "saludar".
 
@@ -1472,11 +1461,8 @@ def responder_municipio(
         f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}"
     )
 
-    # Log the current state of the conversation, using the 'contexto_municipio_actual' dictionary
-    # which is the single source of truth for the current state.
-    # The following reassignment was the cause of the UnboundLocalError.
-    # estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
-    logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {contexto_municipio_actual.get('estado_conversacion')}")
+    # Log the current state of the conversation
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {contexto_municipio_data_from_db.get('estado_conversacion')}")
 
     # Directly use the dictionary from the live context data.
     # This ensures that modifications are made to the original object.
@@ -1516,7 +1502,7 @@ def responder_municipio(
             # For all other actions, clear state and handle them
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(selected_action)
+            response = handle_main_menu_action(selected_action, context)
             if response:
                 return response
         else:

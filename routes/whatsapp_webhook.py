@@ -4,7 +4,6 @@ from twilio.rest import Client # For sending messages via Twilio
 import os # For accessing environment variables
 import requests
 import io
-import json
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto # Import necessary models
 from extensions import db # Import db instance for database operations
@@ -113,13 +112,11 @@ def whatsapp_webhook():
         if media_content_type.startswith("audio/"):
             session_context_db_entry.context_data['source_is_audio'] = True
             from services.audio_transcription_service import transcribe_audio_from_url
-            current_app.logger.info(f"Iniciando transcripción de audio desde URL: {media_url}")
             transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             if transcribed_text:
                 message_body = transcribed_text
-                current_app.logger.info(f"Audio transcrito exitosamente. Texto: '{transcribed_text[:100]}...'")
             else:
-                current_app.logger.warning("La transcripción de audio falló o devolvió un texto vacío.")
+                print("Audio transcription failed or returned empty.")
         else:
             session_context_db_entry.context_data.pop('source_is_audio', None)
 
@@ -348,71 +345,88 @@ def whatsapp_webhook():
     # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            # The formatter now returns a structured payload. We check its type.
             interactive_payload = formatted_whatsapp_payload.get("interactive")
+            # Default to the message_body from the bot's response dict.
+            text_body = bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
+
+            # Always generate a text fallback if there are options, enriching the main body.
             if interactive_payload:
-                # Send a real interactive message by passing the 'interactive' object.
-                # The `twilio-python` library will serialize this into the correct API call.
-                message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'interactive': interactive_payload
-                }
-            else:  # Standard text message
-                final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
-                             bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
-                message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'body': final_body,
-                }
+                body_text = interactive_payload.get("body", {}).get("text", text_body)
 
-            # Send the main message (text or interactive)
-            # Bypassing the helper library to construct the request manually,
-            # as the library seems to have an issue with the 'interactive' parameter.
-            api_url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+                buttons = interactive_payload.get("action", {}).get("buttons", [])
+                rows = []
+                sections = interactive_payload.get("action", {}).get("sections", [])
+                if sections:
+                    for section in sections:
+                        rows.extend(section.get("rows", []))
 
+                options_text_parts = []
+                emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
+                if buttons:
+                    for i, btn in enumerate(buttons):
+                        emoji = emojis[i] if i < len(emojis) else f"*{i+1}*."
+                        title = btn.get('reply', {}).get('title', '')
+                        options_text_parts.append(f"{emoji} {title}")
+                elif rows:
+                    for i, row in enumerate(rows):
+                        emoji = emojis[i] if i < len(emojis) else f"*{i+1}*."
+                        title = row.get('title', '')
+                        options_text_parts.append(f"{emoji} {title}")
+
+                if options_text_parts:
+                    options_text = "\n\n" + "\n".join(options_text_parts)
+                    options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
+                    text_body = body_text + options_text
+                else:
+                    text_body = body_text
+
+            # Prepare the data payload for Twilio API
             data_payload = {
-                'To': message_params.get('to'),
-                'From': message_params.get('from_')
+                'To': from_number_raw,
+                'From': to_number_raw,
+                'Body': text_body  # The text body is ALWAYS present now.
             }
-            if 'interactive' in message_params:
-                data_payload['Interactive'] = json.dumps(message_params['interactive'])
-            else:
-                data_payload['Body'] = message_params.get('body')
 
+            # If a valid interactive payload exists, add it as a JSON string.
+            # Twilio will use this and fallback to Body if the device doesn't support it.
+            if interactive_payload:
+                import json
+                data_payload['Interactive'] = json.dumps(interactive_payload)
+
+            # Use requests to send the message for better control and to avoid library issues.
+            api_url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
             response = requests.post(
                 api_url,
                 data=data_payload,
                 auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             )
 
-            if response.status_code >= 300:
-                print(f"Error al enviar mensaje de Twilio (direct request): {response.status_code} {response.text}")
+            if response.status_code >= 400:
+                 current_app.logger.error(f"Error sending Twilio message: {response.status_code} {response.text}")
             else:
                 main_message_sid = response.json().get("sid")
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message_sid}")
 
-            # Second, if there is an audio URL, send it as a separate media message.
+
+            # If there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')
             if audio_url:
-                # Ensure the URL is absolute
                 if audio_url.startswith('/'):
                     base_url = request.url_root.rstrip('/')
                     absolute_audio_url = f"{base_url}{audio_url}"
                 else:
                     absolute_audio_url = audio_url
 
-                audio_message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'media_url': [absolute_audio_url]
-                }
-                audio_message = twilio_client.messages.create(**audio_message_params)
+                audio_message = twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    media_url=[absolute_audio_url]
+                )
                 print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
 
         except Exception as e:
-            print(f"Error al enviar mensaje de Twilio: {e}")
+            print(f"Error al enviar mensaje de Twilio (direct request): {e}")
             import traceback
             traceback.print_exc()
     else:
