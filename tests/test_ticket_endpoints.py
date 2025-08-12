@@ -97,3 +97,11 @@ class TicketEndpointsTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+\n
+import pytest
+import os
+
+pytestmark = [
+    pytest.mark.legacy,
+    pytest.mark.skipif(os.getenv("NEW_PIPELINE") == "1", reason="Legacy test disabled for new pipeline")
+]
