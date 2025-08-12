@@ -27,21 +27,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
         ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
-
-        # Normalización del distrito
-        if distrito_llm and "junin" in distrito_llm.lower():
-            distrito_llm = "Junín"
-
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        nombre_vecino_final = (action_data.get("usuario") or
-                               self.context.get("profile_name") or
-                               action_data.get("nombre_usuario_detectado") or
-                               datos_parciales.get("nombre_usuario_detectado") or
-                               getattr(viewer_user, "name", None) or
-                               "Vecino/a")
+        nombre_vecino_final = action_data.get("usuario") or \
+                              action_data.get("nombre_usuario_detectado") or \
+                              datos_parciales.get("nombre_usuario_detectado") or \
+                              getattr(viewer_user, "nombre", None) or \
+                              self.context.get("profile_name")
 
         telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None
@@ -157,21 +151,14 @@ class CrearReclamoActionHandler(BaseActionHandler):
             contacto_especializado = contactos.get(categoria, contactos.get("default"))
 
             # Limpiar contexto de reclamo después de la creación exitosa
-            # Get the live context dictionary to modify it in place
-            if self.context.get(CONTEXTO_MUNICIPIO):
-                contexto_a_limpiar = self.context[CONTEXTO_MUNICIPIO]
-                keys_to_clear_after_claim = [
-                    "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
-                    "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo",
-                    "coordenadas_reclamo", "foto_url", "mensaje_previo_llm_para_escalamiento"
-                ]
-                for key in keys_to_clear_after_claim:
-                    contexto_a_limpiar.pop(key, None)
+            user_info = contexto_reclamo.get('user', {})
+            contexto_reclamo.clear()
+            if user_info:
+                contexto_reclamo['user'] = user_info
 
-                # Set the state back to general conversation to avoid getting stuck
-                from services.municipio_responder import ConversationState
-                contexto_a_limpiar['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {contexto_a_limpiar['estado_conversacion']}")
+            # Set the state back to general conversation to avoid getting stuck
+            from services.municipio_responder import ConversationState
+            contexto_reclamo['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
 
             # Notificaciones
             if ticket_data_cleaned.get("telefono_vecino"):

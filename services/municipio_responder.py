@@ -307,6 +307,7 @@ class ConversationState(Enum):
     ESPERANDO_CONSULTA_GENERAL = auto()
     ESPERANDO_SELECCION_MENU_PRINCIPAL = auto()
     ESPERANDO_SELECCION_MENU_RECLAMOS = auto()
+    ESPERANDO_SELECCION_DE_LISTA = auto()
     ESPERANDO_UBICACION_GENERAL = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
@@ -406,33 +407,33 @@ from services.google_search import google_search
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         # When a greeting is triggered, we perform a full reset of the conversation context.
-        contexto_municipio_actual = self.context.get(CONTEXTO_MUNICIPIO, {})
+        chat_db_context_data = self.context.get("chat_db_context_data")
 
-        keys_to_clear = [
-            "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
-            "estado_conversacion", "accion_pendiente_post_login", "estado_conversacion_pre_login",
-            "last_search", "last_search_page", "mensaje_previo_llm_para_escalamiento"
-        ]
-
-        for key in keys_to_clear:
-            if key in contexto_municipio_actual:
-                del contexto_municipio_actual[key]
-
-        if self.context.get("chat_db_context_data"):
-            chat_context_data = self.context["chat_db_context_data"]
-            if CONTEXTO_MUNICIPIO in chat_context_data:
-                user_info = chat_context_data[CONTEXTO_MUNICIPIO].get('user', {})
-                # Clear the dictionary in-place to preserve the reference
-                chat_context_data[CONTEXTO_MUNICIPIO].clear()
-                if user_info:
-                    chat_context_data[CONTEXTO_MUNICIPIO]['user'] = user_info
-
-            # Use pop with a default to avoid KeyError if the key doesn't exist
-            chat_context_data.pop("historial_conversacion_general_llm", None)
+        if not chat_db_context_data:
+            logger.warning("[GreetingHandler] chat_db_context_data not found in context. Cannot perform a full reset.")
+            contexto_municipio_actual = {}
+        else:
+            # Preserve essential user info if it exists from the old context
+            user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
+            
+            # Create a completely new, clean context dictionary
+            contexto_municipio_nuevo = {}
+            
+            # Restore essential info if it existed
+            if user_info:
+                contexto_municipio_nuevo['user'] = user_info
+            
+            # Replace the old context dictionary with the new one
+            chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
+            
+            # Also clear any other top-level keys that should not persist across sessions
+            chat_db_context_data.pop("historial_conversacion_general_llm", None)
+            
+            contexto_municipio_actual = contexto_municipio_nuevo
 
         logger.info("[GreetingHandler] Conversation context has been reset.")
 
-        # Set the state to wait for a menu selection
+        # Set the state to wait for a menu selection in the new context
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
         logger.info(f"[GreetingHandler] Set estado_conversacion to {contexto_municipio_actual['estado_conversacion']}")
 
@@ -496,6 +497,7 @@ class GreetingHandler(BaseMunicipioHandler):
 
 class NewsHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
+        contexto_municipio_actual = self.context.get(CONTEXTO_MUNICIPIO, {})
         municipio_config = self.context.get('municipio_config_actual', {})
         municipio_name = municipio_config.get('nombre_display', 'del municipio')
         municipio_website = municipio_config.get('website')
@@ -523,6 +525,11 @@ class NewsHandler(BaseMunicipioHandler):
                 "url": result.get('link'),
                 "type": "url"
             })
+        
+        # Set context for the next turn
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual['opciones_en_pantalla'] = options
+
 
         return {
             "message_body": "Aquí están las últimas noticias:",
@@ -570,7 +577,7 @@ class PointsOfInterestHandler(BaseMunicipioHandler):
             "fuente": "poi_handler_with_results"
         }
 
-def handle_main_menu_action(action_id: str) -> dict:
+def handle_main_menu_action(action_id: str, context: dict) -> dict:
     """
     Handles actions from the new categorized main menu.
     """
@@ -594,10 +601,14 @@ def handle_main_menu_action(action_id: str) -> dict:
 
     # Placeholder for actions without a defined response yet
     if action_id == "ultimas_novedades":
-        return NewsHandler(context={}).handle({})
+        return NewsHandler(context=context).handle({})
+    
+    if action_id == "consultar_otros_tramites":
+        from .actions.municipio_actions import ConsultarInfoTramiteActionHandler
+        return ConsultarInfoTramiteActionHandler(context).execute({})
 
     unimplemented_actions = [
-        "consultar_otros_tramites", "denuncias", "solicitar_turnos",
+        "denuncias", "solicitar_turnos",
         "agenda_cultural_y_turistica"
     ]
     if action_id in unimplemented_actions:
@@ -743,8 +754,6 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     ]
     for key in keys_to_clear_after_claim:
         contexto_municipio_actual.pop(key, None)
-
-    contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
 
     # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("success"):
@@ -1261,19 +1270,63 @@ def responder_municipio(
         "action": received_payload.get("action"),
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-        "profile_name": kwargs.get("profile_name"), # <<< AÑADIDO
     }
     # --- FIN REFACTOR ---
 
     pregunta_str_for_check = pregunta_str
 
+    # --- CONTEXT INITIALIZATION ---
+    # This is now at the top to ensure all parts of the function have access to the full context.
+    final_municipio_config = CONFIG_MUNICIPIO
+    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
+        owner_user_municipio_id_str = str(owner_user.municipio_id)
+        loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+        if loaded_specific_config:
+            final_municipio_config = loaded_specific_config
+
+    received_payload = {}
+    pregunta_str = ""
+    if isinstance(pregunta_original, dict):
+        received_payload = pregunta_original
+        pregunta_str = received_payload.get("pregunta", "")
+    elif isinstance(pregunta_original, str):
+        pregunta_str = pregunta_original
+        received_payload["pregunta"] = pregunta_original
+    else:
+        pregunta_str = ""
+        received_payload["pregunta"] = ""
+
+    if kwargs:
+        received_payload.update(kwargs)
+
+    chat_db_context_live_data = {}
+    if chat_db_context and chat_db_context.context_data is not None:
+        chat_db_context_live_data = chat_db_context.context_data
+    
+    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    context = {
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual,
+        "user_obj": owner_user,
+        "viewer_user_obj": viewer_user,
+        "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
+        "rubro_obj": rubro_obj,
+        "channel": channel,
+        "municipio_config_actual": final_municipio_config,
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "chat_db_context_data": chat_db_context_live_data,
+        "profile_name": kwargs.get("profile_name"),
+        # Other kwargs will be in received_payload
+    }
+    # --- END CONTEXT INITIALIZATION ---
+
     # For simple greetings, bypass LLM and show the main menu directly.
-    if normalizar_texto(pregunta_str_for_check) in SIMPLE_GREETINGS:
-        logger_actual.info(f"Simple greeting '{pregunta_str_for_check}' detected. Bypassing LLM and showing main menu.")
-        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-        # Pass the context to the handler, which will perform a full reset.
+    if normalizar_texto(pregunta_str) in SIMPLE_GREETINGS:
+        logger_actual.info(f"Simple greeting '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
+        # Pass the full context to the handler
         handler = GreetingHandler(context)
-        response = handler.handle({})
+        response = handler.handle(received_payload)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return response
@@ -1292,9 +1345,37 @@ def responder_municipio(
             flag_modified(chat_db_context, "context_data")
         return _get_reclamos_menu()
     elif action:
-        response = handle_main_menu_action(action)
+        response = handle_main_menu_action(action, context)
         if response:
             return response
+
+    # --- INICIO: Manejo de selección de lista dinámica (Noticias, etc.) ---
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_DE_LISTA.name:
+        opciones_guardadas = contexto_municipio_actual.get('opciones_en_pantalla', [])
+        seleccion = None
+        if pregunta_str.isdigit():
+            try:
+                indice = int(pregunta_str) - 1
+                if 0 <= indice < len(opciones_guardadas):
+                    seleccion = opciones_guardadas[indice]
+            except (ValueError, IndexError):
+                pass
+        
+        # Limpiar contexto para el siguiente turno
+        contexto_municipio_actual['estado_conversacion'] = None
+        contexto_municipio_actual.pop('opciones_en_pantalla', None)
+
+        if seleccion and seleccion.get('url'):
+            return {
+                "message_body": f"Aquí tienes el enlace que pediste: {seleccion.get('url')}",
+                "options_list": [{"texto": "Menú Principal", "action_id": "saludar"}],
+                "message_type": "interactive_buttons",
+                "fuente": "seleccion_lista_dinamica"
+            }
+        else:
+            # Si no se pudo procesar la selección, volver al menú principal
+            return GreetingHandler(context).handle({})
+
 
     if action == "iniciar_reclamo": # Kept for backward compatibility or other flows
         return _get_reclamos_menu()
