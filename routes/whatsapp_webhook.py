@@ -112,11 +112,13 @@ def whatsapp_webhook():
         if media_content_type.startswith("audio/"):
             session_context_db_entry.context_data['source_is_audio'] = True
             from services.audio_transcription_service import transcribe_audio_from_url
+            current_app.logger.info(f"Iniciando transcripción de audio desde URL: {media_url}")
             transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             if transcribed_text:
                 message_body = transcribed_text
+                current_app.logger.info(f"Audio transcrito exitosamente. Texto: '{transcribed_text[:100]}...'")
             else:
-                print("Audio transcription failed or returned empty.")
+                current_app.logger.warning("La transcripción de audio falló o devolvió un texto vacío.")
         else:
             session_context_db_entry.context_data.pop('source_is_audio', None)
 
@@ -348,44 +350,14 @@ def whatsapp_webhook():
             # The formatter now returns a structured payload. We check its type.
             interactive_payload = formatted_whatsapp_payload.get("interactive")
             if interactive_payload:
-                # This is a workaround to handle the "interactive" type from the formatter.
-                # The Twilio API doesn't take this dict directly. We will send it as plain text.
-                body_text = interactive_payload.get("body", {}).get("text", "Por favor, elige una opción.")
-                
-                buttons = interactive_payload.get("action", {}).get("buttons", [])
-                rows = []
-                sections = interactive_payload.get("action", {}).get("sections", [])
-                if sections:
-                    for section in sections:
-                        rows.extend(section.get("rows", []))
-
-                options_text = ""
-                # For buttons
-                if buttons:
-                    options_text = "\n\n" + "\n".join([f"*{i+1}*. {btn['reply']['title']}" for i, btn in enumerate(buttons)])
-                # For lists
-                elif rows:
-                    options_list = []
-                    for i, row in enumerate(rows):
-                        title = row.get('title', '')
-                        # The description now contains the URL, if present.
-                        description = row.get('description', '')
-                        if description and 'https://' in description:
-                             options_list.append(f"*{i+1}*. {title} ({description})")
-                        else:
-                             options_list.append(f"*{i+1}*. {title}")
-                    options_text = "\n\n" + "\n".join(options_list)
-
-                if options_text:
-                     options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
-
-                final_body = body_text + options_text
+                # Send a real interactive message by passing the 'interactive' object.
+                # The `twilio-python` library will serialize this into the correct API call.
                 message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
-                    'body': final_body,
+                    'interactive': interactive_payload
                 }
-            else: # Standard text message
+            else:  # Standard text message
                 final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
                              bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
                 message_params = {
