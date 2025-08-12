@@ -1341,6 +1341,9 @@ def responder_municipio(
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
     # que debe devolver accion_backend: "saludar".
 
+    # Obtener el estado actual de la conversación antes de evaluar acciones
+    estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
+
     action = received_payload.get("action")
 
     # New main menu handler
