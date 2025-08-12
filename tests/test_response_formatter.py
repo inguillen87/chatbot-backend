@@ -69,7 +69,25 @@ class TestResponseFormatter(unittest.TestCase):
         )
         self.assertEqual(response["type"], "text")
         # The new logic doesn't truncate for text-based lists
-        expected_body = "Demasiadas opciones de lista:\n\n" + "\n".join([f"*{i+1}*. Lista Item {i}" for i in range(15)]) + "\n\nResponde con el número de la opción que necesites."
+        expected_body = """Demasiadas opciones de lista:
+
+*1*. Lista Item 0
+*2*. Lista Item 1
+*3*. Lista Item 2
+*4*. Lista Item 3
+*5*. Lista Item 4
+*6*. Lista Item 5
+*7*. Lista Item 6
+*8*. Lista Item 7
+*9*. Lista Item 8
+*10*. Lista Item 9
+*11*. Lista Item 10
+*12*. Lista Item 11
+*13*. Lista Item 12
+*14*. Lista Item 13
+*15*. Lista Item 14
+
+Responde con el número de la opción que necesites."""
         self.assertEqual(response["text"]["body"], expected_body)
 
     def test_whatsapp_text_message(self):

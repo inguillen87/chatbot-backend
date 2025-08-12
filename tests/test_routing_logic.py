@@ -1,83 +1,79 @@
 import unittest
-from unittest.mock import patch
-from types import SimpleNamespace
-import os
-import sys
+from unittest.mock import patch, MagicMock
+from services.routing_logic import route_action
+from services.actions.base_action import BaseAction
 
-# Add project root to sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+class MockAction(BaseAction):
+    def __init__(self, can_handle_response, execute_response):
+        self._can_handle_response = can_handle_response
+        self._execute_response = execute_response
 
-from app import create_app
-from config import TestConfig
-from services.logic import responder_chatboc, es_rubro_publico
+    def can_handle(self, context, **kwargs):
+        return self._can_handle_response
 
-class RoutingLogicTests(unittest.TestCase):
-    def setUp(self):
-        self.app = create_app(TestConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        # Mock context object that the responders expect
-        self.mock_chat_db_context = SimpleNamespace(context_data={})
+    def execute(self, **kwargs):
+        return self._execute_response
 
-    def tearDown(self):
-        self.app_context.pop()
+class TestRoutingLogic(unittest.TestCase):
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
-    def test_municipio_routing(self, mock_responder_pyme, mock_responder_municipio):
-        """Test that 'municipio' type chats are routed to the municipio responder."""
-        rubro_obj = SimpleNamespace(nombre="municipio")
-        responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj, chat_db_context=self.mock_chat_db_context)
-        mock_responder_municipio.assert_called_once()
-        mock_responder_pyme.assert_not_called()
+    def test_route_action_no_handler(self):
+        """
+        Tests that if no action handler can handle the context, a default response is returned.
+        """
+        action_handlers = [MockAction(False, {})]
+        context = {"some_key": "some_value"}
+        result = route_action(context, action_handlers)
+        self.assertIn("error", result)
+        self.assertEqual(result["error"], "No action handler found for the given context.")
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
-    def test_pyme_routing(self, mock_responder_pyme, mock_responder_municipio):
-        """Test that 'pyme' type chats are routed to the pyme responder."""
-        rubro_obj = SimpleNamespace(nombre="pyme")
-        responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj, chat_db_context=self.mock_chat_db_context)
-        mock_responder_pyme.assert_called_once()
-        mock_responder_municipio.assert_not_called()
+    def test_route_action_first_handler_handles(self):
+        """
+        Tests that the first handler that can handle the context is executed.
+        """
+        handler1 = MockAction(True, {"result": "handler1"})
+        handler2 = MockAction(True, {"result": "handler2"})
+        action_handlers = [handler1, handler2]
+        context = {"some_key": "some_value"}
+        result = route_action(context, action_handlers)
+        self.assertEqual(result, {"result": "handler1"})
 
-    def test_tipo_chat_required(self):
-        """Test that an error is raised if tipo_chat is invalid."""
-        with self.assertRaises(ValueError):
-            responder_chatboc('hola', tipo_chat='invalido', chat_db_context=self.mock_chat_db_context)
+    def test_route_action_second_handler_handles(self):
+        """
+        Tests that if the first handler cannot handle, the second one is tried and executed.
+        """
+        handler1 = MockAction(False, {})
+        handler2 = MockAction(True, {"result": "handler2"})
+        action_handlers = [handler1, handler2]
+        context = {"some_key": "some_value"}
+        result = route_action(context, action_handlers)
+        self.assertEqual(result, {"result": "handler2"})
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
-    def test_rubro_overrides_tipo_chat_to_pyme(self, mock_responder_pyme, mock_responder_municipio):
-        """Tests that if a rubro is 'pyme', it routes to pyme_responder even if tipo_chat says 'municipio'."""
-        rubro_obj = SimpleNamespace(nombre="pyme")
-        responder_chatboc('hola', tipo_chat='municipio', rubro_obj=rubro_obj, chat_db_context=self.mock_chat_db_context)
-        mock_responder_pyme.assert_called_once()
-        mock_responder_municipio.assert_not_called()
+    def test_route_action_with_kwargs(self):
+        """
+        Tests that kwargs are passed correctly to the can_handle and execute methods.
+        """
+        # Using MagicMock to inspect calls
+        handler = MagicMock(spec=BaseAction)
+        handler.can_handle.return_value = True
+        handler.execute.return_value = {"status": "ok"}
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
-    def test_rubro_overrides_tipo_chat_to_municipio(self, mock_responder_pyme, mock_responder_municipio):
-        """Tests that if a rubro is public, it routes to municipio_responder even if tipo_chat says 'pyme'."""
-        rubro_obj = SimpleNamespace(nombre="gobierno") # 'gobierno' is in RUBROS_PUBLICOS
-        responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj, chat_db_context=self.mock_chat_db_context)
-        mock_responder_municipio.assert_called_once()
-        mock_responder_pyme.assert_not_called()
+        action_handlers = [handler]
+        context = {"user_id": 1}
+        kwargs = {"pregunta": "hola", "chat_session_id": "xyz"}
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
-    def test_rubro_sin_nombre_usa_clave(self, mock_responder_pyme, mock_responder_municipio):
-        """Debe usar la clave del rubro cuando no hay nombre."""
-        rubro_obj = SimpleNamespace(nombre=None, clave="municipio")
-        responder_chatboc('hola', tipo_chat='pyme', rubro_obj=rubro_obj, chat_db_context=self.mock_chat_db_context)
-        mock_responder_municipio.assert_called_once()
-        mock_responder_pyme.assert_not_called()
+        route_action(context, action_handlers, **kwargs)
 
-    def test_es_rubro_publico_normaliza(self):
-        self.assertTrue(es_rubro_publico("  Municipio  "))
-        self.assertTrue(es_rubro_publico("GOBIERNO"))
-        self.assertFalse(es_rubro_publico("  Pyme  "))
+        handler.can_handle.assert_called_once_with(context, **kwargs)
+        handler.execute.assert_called_once_with(**kwargs)
+
+    def test_route_action_empty_handlers_list(self):
+        """
+        Tests that an empty list of handlers returns the default error.
+        """
+        action_handlers = []
+        context = {"some_key": "some_value"}
+        result = route_action(context, action_handlers)
+        self.assertIn("error", result)
 
 if __name__ == '__main__':
     unittest.main()
