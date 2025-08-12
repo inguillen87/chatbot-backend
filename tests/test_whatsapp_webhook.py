@@ -232,7 +232,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.mock_twilio_create.assert_called_once_with(
                 from_=f"whatsapp:{self.test_whatsapp_number_str}",
                 to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
+                body="Ok\n\n\n\nResponde con el número de la opción que necesites."
             )
             self.mock_welcome.assert_called_once()
 
@@ -283,7 +283,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.mock_twilio_create.assert_called_once_with(
                 from_=f"whatsapp:{self.test_whatsapp_number_str}",
                 to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
+                body="Ok\n\n\n\nResponde con el número de la opción que necesites."
             )
             self.mock_welcome.assert_called_once()
 
@@ -334,7 +334,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.mock_twilio_create.assert_called_once_with(
                 from_=f"whatsapp:{self.test_whatsapp_number_str}",
                 to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
+                body="Ok\n\n\n\nResponde con el número de la opción que necesites."
             )
             self.mock_welcome.assert_called_once()
 

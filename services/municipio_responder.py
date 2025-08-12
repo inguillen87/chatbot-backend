@@ -430,6 +430,29 @@ class GreetingHandler(BaseMunicipioHandler):
             chat_db_context_data.pop("historial_conversacion_general_llm", None)
             
             contexto_municipio_actual = contexto_municipio_nuevo
+        chat_db_context_data = self.context.get("chat_db_context_data")
+
+        if not chat_db_context_data:
+            logger.warning("[GreetingHandler] chat_db_context_data not found in context. Cannot perform a full reset.")
+            contexto_municipio_actual = {}
+        else:
+            # Preserve essential user info if it exists from the old context
+            user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
+
+            # Create a completely new, clean context dictionary
+            contexto_municipio_nuevo = {}
+
+            # Restore essential info if it existed
+            if user_info:
+                contexto_municipio_nuevo['user'] = user_info
+
+            # Replace the old context dictionary with the new one
+            chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
+
+            # Also clear any other top-level keys that should not persist across sessions
+            chat_db_context_data.pop("historial_conversacion_general_llm", None)
+
+            contexto_municipio_actual = contexto_municipio_nuevo
 
         logger.info("[GreetingHandler] Conversation context has been reset.")
 
@@ -1853,7 +1876,7 @@ def responder_municipio(
                 "options_list": [],
                 "message_type": "text",
                 "fuente": "error"
-            }
+   sssssssssssssssss         }
 
     # Actualizar el historial de chat_db_context con este turno (pregunta y respuesta_usuario del LLM)
     # Esto es para que la próxima llamada a Gemini tenga este contexto.

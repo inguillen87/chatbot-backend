@@ -44,7 +44,7 @@ def test_reclamo_handler_categoria_buttons(client):
             body_text=response.get('message_body'),
             channel='whatsapp',
         )
-        assert formatted_response["text"]["body"] == "Por favor, elegí una de las siguientes categorías:\n\n*1*. Alumbrado Público\n*2*. Bacheo\n*3*. Recolección de Residuos"
+        assert formatted_response["text"]["body"] == "Por favor, elegí una de las siguientes categorías:\n\n*1*. Alumbrado Público\n*2*. Bacheo\n*3*. Recolección de Residuos\n\n\n\nResponde con el número de la opción que necesites."
 
 
 def test_reclamo_handler_share_location_button(client):
@@ -80,7 +80,7 @@ def test_reclamo_handler_share_location_button(client):
             body_text=response.get('message_body'),
             channel='whatsapp',
         )
-        assert formatted_response["text"]["body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo.\n\n*1*. Compartir ubicación"
+        assert formatted_response["text"]["body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo.\n\n*1*. Compartir ubicación\n\n\n\nResponde con el número de la opción que necesites."
 
 
 def test_ticket_status_handler_ticket_number_shortcut(client):
