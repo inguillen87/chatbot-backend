@@ -174,16 +174,12 @@ def responder_chatboc(
                 file_content = response.content
 
                 if media_content_type.startswith("image/"):
-                    current_app.logger.info(f"Iniciando interpretación de imagen (Vision API) para media_url: {media_url}")
                     datos_interpretados_de_archivo = interpretar_imagen_para_chat(
                         archivo_adjunto=uploaded_file_info,
                         tipo_interpretacion="reclamo_auto_descripcion_categoria"
                     )
-                    current_app.logger.info(f"Resultado de Vision API: {datos_interpretados_de_archivo}")
                 else:
-                    current_app.logger.info(f"Iniciando procesamiento de documento (Document AI) para media_url: {media_url}")
                     doc_ai_result = document_processing_service.process_document(file_content, media_content_type)
-                    current_app.logger.info(f"Resultado de Document AI: {doc_ai_result}")
                     if doc_ai_result:
                         # Aquí puedes procesar el resultado de Document AI
                         # Por ahora, solo extraemos el texto
@@ -264,17 +260,13 @@ def responder_chatboc(
 
     # --- Audio Response Generation ---
     generate_audio = False
-    # Per user request, generate audio for all text responses to improve accessibility.
-    if response_data and response_data.get('message_type', 'text') == 'text':
+    # Check if the original input was audio
+    if chat_db_context and chat_db_context.context_data and chat_db_context.context_data.get('source_is_audio'):
         generate_audio = True
 
-    # Also generate for the welcome message if requested, even if it's a list.
+    # Check if the handler specifically requested audio generation (e.g., for welcome message)
     if response_data and response_data.get('generar_audio_bienvenida'):
         generate_audio = True
-
-    # But don't generate if the response is just an error fallback.
-    if response_data and response_data.get('fuente', '').startswith('error_handler'):
-        generate_audio = False
 
     if generate_audio:
         text_to_speak = response_data.get('message_body')
