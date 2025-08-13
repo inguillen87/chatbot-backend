@@ -127,25 +127,11 @@ def responder_chatboc(
     elif tipo_chat not in ("municipio", "pyme"):
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
-    # --- INICIO: Manejo de confusión Pyme/Municipio ---
-    if tipo_chat == "pyme":
-        from services.municipio_responder import MENU_KEYWORDS as MUNICIPIO_MENU_KEYWORDS
-        pregunta_norm = normalizar_texto(pregunta)
-        # Check for municipal keywords in the user's query
-        for action, keywords in MUNICIPIO_MENU_KEYWORDS.items():
-            if any(keyword in pregunta_norm for keyword in keywords):
-                pyme_name = getattr(effective_owner_user, "nombre_empresa", "este comercio")
-                return {
-                    "message_body": f"Parece que estás consultando sobre un trámite municipal, pero te encuentras en el chat de {pyme_name}. ¿Querés que te dirija al asistente del municipio?",
-                    "options_list": [
-                        # This would need frontend logic to handle a redirection.
-                        # For now, we just guide the user.
-                        {"texto": "Ir al Chat del Municipio", "action_id": "redirect_municipio"},
-                        {"texto": "Quedarme aquí", "action_id": "stay_pyme"}
-                    ],
-                    "message_type": "interactive_buttons",
-                    "fuente": "pyme_municipio_confusion_handler"
-                }
+    # --- INICIO: Manejo de confusión Pyme/Municipio (OBSOLETO Y ELIMINADO) ---
+    # El siguiente bloque fue eliminado porque causaba un `ImportError` al intentar
+    # importar `MENU_KEYWORDS` desde `municipio_responder.py`, que fue refactorizado.
+    # La lógica de detección de confusión entre pyme/municipio debe ser manejada
+    # por el LLM principal como parte del nuevo flujo de arquitectura.
     # --- FIN: Manejo de confusión ---
 
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
