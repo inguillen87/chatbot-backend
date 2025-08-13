@@ -1,48 +1,8 @@
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify
 from utils.auth_helpers import token_requerido
 from services.logic import es_rubro_publico
-from models import User
 
 legacy_auth_bp = Blueprint('legacy_auth', __name__)
-
-@legacy_auth_bp.route('/login', methods=['POST', 'OPTIONS'])
-def login():
-    if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'}), 200
-    if not request.is_json:
-        return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
-    data = request.get_json()
-    if not data or not data.get('email') or not data.get('password'):
-        return jsonify({"error": "Email y contraseña requeridos."}), 400
-
-    user = User.query.filter_by(email=data.get("email").strip().lower()).first()
-
-    if not user or not user.check_password(data.get("password")):
-        current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
-        return jsonify({"error": "Email o contraseña incorrectos."}), 401
-
-    current_app.logger.info(f"Login exitoso para: {user.email}")
-
-    rubro_nombre = user.rubro.nombre if user.rubro else "General"
-    tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
-
-    # Integrar Flask-Login
-    from flask_login import login_user
-    login_user(user) # Establecer la sesión para el usuario
-    current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
-
-    return jsonify({
-        "mensaje": "Login exitoso",
-        "id": user.id,
-        "token": user.token,
-        "email": user.email,
-        "name": user.name,
-        "rol": user.rol,
-        "empresa_id": user.empresa_id,
-        "rubro": rubro_nombre,
-        "tipo_chat": tipo_chat,
-        "categorias": user.ticket_categorias or "",
-    })
 
 @legacy_auth_bp.route('/me', methods=['GET', 'OPTIONS'])
 @legacy_auth_bp.route('/perfil', methods=['GET', 'OPTIONS'])

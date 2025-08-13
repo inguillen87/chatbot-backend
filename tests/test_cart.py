@@ -1,10 +1,8 @@
-import pytest
 import unittest
 from app import create_app, db
 from services import cart as cart_service
 from config import Config
 
-@pytest.mark.legacy
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"

@@ -84,7 +84,6 @@ class User(db.Model, UserMixin):
     ticket_categorias = db.Column(db.String(255), nullable=True)
     horario = db.Column(db.String(100), nullable=True)
     plan = db.Column(db.String(20), default="gratis")
-    prefers_audio = db.Column(db.Boolean, default=False)
     preguntas_usadas = db.Column(db.Integer, default=0)
     limite_preguntas = db.Column(db.Integer, default=50)
     last_reset = db.Column(db.DateTime, default=datetime.utcnow)

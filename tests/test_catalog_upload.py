@@ -1,4 +1,3 @@
-import pytest
 import unittest
 import os
 import pandas as pd
@@ -7,7 +6,6 @@ from services.catalog_upload_service import CatalogUploadService
 from models import db, CatalogoItem, User
 from app import create_app
 
-@pytest.mark.legacy
 class TestCatalogUploadService(unittest.TestCase):
 
     def setUp(self):

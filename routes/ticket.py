@@ -102,29 +102,6 @@ def _generate_friendly_ticket_id(ticket, ticket_type_str):
     return f"{prefix}-{ticket_number}"
 
 
-def compute_display_name(t):
-    def from_email(e):
-        if not e: return None
-        return e.split("@",1)[0].replace(".", " ").title()
-
-    nombre_vecino = getattr(t, 'nombre_vecino', None)
-    telefono_vecino = getattr(t, 'telefono_vecino', None) or getattr(t, 'telefono', None)
-    nombre_display_whatsapp = getattr(t, 'nombre_display_whatsapp', None)
-    email = getattr(t, 'email_vecino', None) or getattr(t, 'email', None)
-
-    # Prioritize nombre_vecino if it's not just a copy of the phone number
-    nombre_final = None
-    if nombre_vecino and nombre_vecino != telefono_vecino:
-        nombre_final = nombre_vecino.strip()
-
-    return (
-        nombre_final
-        or (nombre_display_whatsapp or "").strip()
-        or from_email(email)
-        or (f"Vecino/a ({telefono_vecino})" if telefono_vecino else None)
-        or f"Usuario {t.id}"
-    )
-
 def serialize_ticket_to_json(ticket, ticket_type):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
@@ -149,7 +126,6 @@ def serialize_ticket_to_json(ticket, ticket_type):
     # Construir el diccionario con la estructura deseada
     serialized_data = {
         "id": ticket.id,
-        "display_name": compute_display_name(ticket),
         "tipo": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),

@@ -9,7 +9,6 @@ from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.gemini_bridge import llamar_gemini
 from services.config_loader import cargar_configuracion_municipio
-from services.geo import reverse as geo_reverse
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +31,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        profile_name = self.context.get("profile_name")
-        nombre_existente = (action_data.get("usuario") or
-                            action_data.get("nombre_usuario_detectado") or
-                            datos_parciales.get("nombre_usuario_detectado") or
-                            getattr(viewer_user, "nombre", None))
-
-        nombre_vecino_final = profile_name or nombre_existente or None
+        nombre_vecino_final = action_data.get("usuario") or \
+                              action_data.get("nombre_usuario_detectado") or \
+                              datos_parciales.get("nombre_usuario_detectado") or \
+                              getattr(viewer_user, "nombre", None) or \
+                              self.context.get("profile_name")
 
         telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None
@@ -72,12 +69,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not viewer_user and not all([nombre_vecino_final, telefono_final, email_final]):
              campos_faltantes.extend(["nombre", "telefono", "email"])
 
-        # Reverse geocode to find distrito if missing
-        if coordenadas_llm and not distrito_llm:
-            geo_info = geo_reverse.reverse(coordenadas_llm['lat'], coordenadas_llm['lon'])
-            if geo_info and geo_info.get('distrito'):
-                distrito_llm = geo_info['distrito']
-                logger.info(f"Distrito '{distrito_llm}' obtained from reverse geocoding.")
 
         if campos_faltantes:
             # Eliminar duplicados
@@ -126,7 +117,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "direccion": ubicacion_llm,
             "distrito": distrito_llm,
             "nombre_vecino": nombre_vecino_final,
-            "nombre_display_whatsapp": profile_name or None,
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,
             "estado": "nuevo",
@@ -193,7 +183,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Formatear respuesta y obtener el botón de contacto
             mensaje_respuesta, boton_contacto = formatear_ticket_respuesta(
                 "reclamo",
-                ticket_data_cleaned.get("nombre_vecino", "Vecino"),
+                ticket_data_cleaned["nombre_vecino"],
                 descripcion,
                 categoria,
                 nro_ticket_str,

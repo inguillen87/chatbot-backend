@@ -1,4 +1,3 @@
-import pytest
 import unittest
 import os
 from app import create_app

@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import sys
-import pytest
 
 # Asegúrate de que el directorio raíz del proyecto esté en el sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -14,8 +13,6 @@ from models import User, Rubro, ChatSessionContext as ChatSession, db
 from config import TestConfig
 from app import create_app
 
-@pytest.mark.legacy
-@patch('services.google_text_to_speech.TextToSpeechService')
 class TestClaimCreationFlow(unittest.TestCase):
 
     def setUp(self):
@@ -48,9 +45,8 @@ class TestClaimCreationFlow(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.google_text_to_speech.TextToSpeechService')
-    @patch('services.llm_utils.llamar_llm_para_json_estructurado')
-    def test_full_claim_creation_flow(self, mock_llamar_gemini, mock_tts_service, mock_class_tts_service):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_full_claim_creation_flow(self, mock_llamar_gemini):
         """
         Simula un flujo completo de creación de reclamos, verificando que el contexto se mantiene
         y que la información se recopila correctamente a través de varios mensajes.
@@ -120,9 +116,8 @@ class TestClaimCreationFlow(unittest.TestCase):
             # Verifica que el email del viewer_user (que no tenía) se haya actualizado
             self.assertEqual(self.viewer_user.email, "vecino@test.com")
 
-    @patch('services.google_text_to_speech.TextToSpeechService')
-    @patch('services.llm_utils.llamar_llm_para_json_estructurado')
-    def test_claim_creation_with_google_maps_link(self, mock_llamar_gemini, mock_tts_service, mock_class_tts_service):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_claim_creation_with_google_maps_link(self, mock_llamar_gemini):
         """
         Verifica que el bot puede extraer una dirección de un link de Google Maps.
         """

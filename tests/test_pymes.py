@@ -1,5 +1,4 @@
 import unittest
-import pytest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from config import TestConfig
@@ -29,23 +28,16 @@ class PymesTestCase(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @pytest.mark.legacy
-    @patch('services.google_text_to_speech.TextToSpeechService')
     @patch('services.google_search.google_search')
-    @patch('services.llm_utils.llamar_llm_para_json_estructurado')
-    def test_fallback_handler(self, mock_llamar_gemini, mock_google_search, mock_tts_service):
+    @patch('services.pymes.llamar_gemini')
+    def test_fallback_handler(self, mock_llamar_gemini, mock_google_search):
         mock_llamar_gemini.return_value = {"accion_backend": "fallback", "datos_estructura": {"pregunta": "unhandled query"}}
         mock_google_search.return_value = [
             {"title": "Test Search Result", "link": "http://example.com/search", "snippet": "This is a test search result."}
         ]
 
-        owner_user = User(
-            id=1,
-            name="Test Owner",
-            email="owner@example.com",
-            pyme_id=1
-        )
-        owner_user.rubro = MagicMock()
+        owner_user = MagicMock()
+        owner_user.id = 1
         owner_user.rubro.nombre = "general"
 
         chat_db_context = MagicMock()

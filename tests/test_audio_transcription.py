@@ -1,9 +1,7 @@
-import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 from services.audio_transcription_service import transcribe_audio_from_url
 
-@pytest.mark.legacy
 class TestAudioTranscriptionService(unittest.TestCase):
 
     @patch('services.audio_transcription_service.requests.get')

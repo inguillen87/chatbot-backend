@@ -231,14 +231,11 @@ def enviar_email_ticket_cliente(ticket) -> bool:
 
 def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
     """Notifica al cliente que su ticket tiene una novedad con una plantilla HTML mejorada."""
-    # Check for email in different possible fields for flexibility
-    destino = getattr(ticket, "email", None) or getattr(ticket, "email_vecino", None)
-
+    destino = getattr(ticket, "email", None)
     if not destino and getattr(ticket, "user_id", None):
         from models import User # Importar User aquí para evitar importación circular a nivel de módulo
         usuario = User.query.get(ticket.user_id)
-        if usuario:
-            destino = getattr(usuario, "email", None)
+        destino = getattr(usuario, "email", None)
     if not destino:
         logger.warning("[EMAIL] Ticket sin email para notificar novedad.")
         return False
@@ -246,12 +243,6 @@ def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
     asunto = f"Actualización en tu ticket {ticket.nro_ticket}"
 
     # --- Plantilla HTML Mejorada ---
-    # --- Plantilla HTML Mejorada ---
-    # Extraer el nombre del municipio del objeto owner del ticket, con un fallback.
-    municipio_nombre = "Tu Municipio"
-    if hasattr(ticket, 'municipio') and ticket.municipio and hasattr(ticket.municipio, 'nombre_empresa'):
-        municipio_nombre = ticket.municipio.nombre_empresa
-
     cuerpo_html_novedad = f"""\
 <!DOCTYPE html>
 <html lang="es">
@@ -261,34 +252,30 @@ def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
     <title>{asunto}</title>
 </head>
 <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f7;">
-    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); border: 1px solid #e0e0e0;">
+    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
         <tr>
-            <td style="padding: 20px 40px; text-align: center; background-color: #007bff; color: #ffffff; border-radius: 8px 8px 0 0;">
-                <!-- Se puede agregar un logo aquí: <img src="URL_DEL_LOGO" alt="Logo" style="max-width: 150px; margin-bottom: 10px;"><br> -->
-                <h1 style="margin: 0; font-size: 26px; font-weight: 600;">{municipio_nombre}</h1>
+            <td style="padding: 30px 40px; border-bottom: 1px solid #eeeeee;">
+                <h1 style="margin: 0; color: #1a1a1a; font-size: 24px; font-weight: 600;">Actualización de tu Ticket</h1>
             </td>
         </tr>
         <tr>
             <td style="padding: 30px 40px;">
-                <h2 style="color: #333333; margin-top: 0;">Actualización de tu Ticket #{ticket.nro_ticket}</h2>
+                <p style="margin: 0 0 15px; color: #444444; font-size: 16px; line-height: 1.6;">Hola,</p>
                 <p style="margin: 0 0 20px; color: #444444; font-size: 16px; line-height: 1.6;">
-                    Hola {getattr(ticket, 'nombre_vecino', 'vecino/a')}, se registró una nueva actividad en tu ticket:
+                    Se registró una nueva actividad en tu ticket <strong>#{ticket.nro_ticket}</strong>.
                 </p>
-                <div style="background-color: #f9f9f9; border-left: 4px solid #007bff; padding: 15px 20px; margin-bottom: 25px;">
+                <div style="background-color: #f9f9f9; border-left: 4px solid #007bff; padding: 15px 20px; margin-bottom: 20px;">
                     <p style="margin: 0; color: #333333; font-size: 16px; font-style: italic;">"{mensaje}"</p>
                 </div>
-                <div style="text-align: center;">
-                    <a href="https://www.chatboc.ar/tickets/{ticket.id}" target="_blank" style="background-color: #007bff; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">
-                        Ver mi Ticket
-                    </a>
-                </div>
+                <p style="margin: 0; color: #444444; font-size: 16px; line-height: 1.6;">
+                    Puedes ver el estado de tu ticket y responder ingresando a nuestro portal.
+                </p>
             </td>
         </tr>
         <tr>
             <td style="padding: 20px 40px; text-align: center; background-color: #f9f9f9; border-top: 1px solid #eeeeee; border-radius: 0 0 8px 8px;">
                 <p style="margin: 0; color: #888888; font-size: 12px;">
-                    Si tenés alguna consulta, no dudes en contactarnos.<br>
-                    Este es un mensaje automático, por favor no respondas a este correo.
+                    Este es un mensaje automático. Por favor, no respondas a este correo.
                 </p>
             </td>
         </tr>

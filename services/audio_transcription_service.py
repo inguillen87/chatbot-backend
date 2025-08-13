@@ -1,34 +1,33 @@
 import requests
 from google.cloud import speech
 
-def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> dict | None:
+def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> str | None:
     """
     Downloads an audio file from a URL and transcribes it using Google Speech-to-Text.
-    Returns a dictionary with 'transcript' and 'confidence'.
     """
     try:
+        # Download the audio file using Twilio credentials for authentication
         audio_response = requests.get(url, auth=(account_sid, auth_token))
         audio_response.raise_for_status()
         audio_content = audio_response.content
 
+        # Initialize the Speech-to-Text client
         client = speech.SpeechClient()
 
+        # Prepare the audio and recognition config
         audio = speech.RecognitionAudio(content=audio_content)
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.OGG_OPUS,
             sample_rate_hertz=16000,
-            language_code="es-ES",
-            enable_automatic_punctuation=True,
+            language_code="es-ES",  # Spanish
         )
 
+        # Perform the transcription
         response = client.recognize(config=config, audio=audio)
 
-        if response.results and response.results[0].alternatives:
-            best_alternative = response.results[0].alternatives[0]
-            return {
-                "transcript": best_alternative.transcript,
-                "confidence": best_alternative.confidence
-            }
+        # Return the most likely transcript
+        if response.results:
+            return response.results[0].alternatives[0].transcript
         else:
             return None
     except requests.exceptions.RequestException as e:

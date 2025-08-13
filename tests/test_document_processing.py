@@ -1,14 +1,11 @@
-import pytest
 import unittest
 from services.document_processing_service import DocumentProcessingService, document_processing_service
 from app import create_app
 from config import Config
 
-@pytest.mark.legacy
 class TestConfig(Config):
     TESTING = True
 
-@pytest.mark.legacy
 class TestDocumentProcessingService(unittest.TestCase):
     def setUp(self):
         # Although the service is simple, we set up a basic app context

@@ -1,11 +1,9 @@
-import pytest
 import sys
 import os
 from app import db
 from models import User
 
 
-@pytest.mark.legacy
 def test_login_no_json(client):
     """
     Tests that the login route returns a 400 error if the request is not JSON.
@@ -14,7 +12,6 @@ def test_login_no_json(client):
     assert response.status_code == 400
     assert response.get_json() == {"error": "La solicitud debe ser de tipo JSON."}
 
-@pytest.mark.legacy
 def test_login_missing_credentials(client):
     """
     Tests that the login route returns a 400 error if the email or password are not provided.
@@ -23,7 +20,6 @@ def test_login_missing_credentials(client):
     assert response.status_code == 400
     assert response.get_json() == {"error": "Email y contraseña requeridos."}
 
-@pytest.mark.legacy
 def test_login_invalid_credentials(client):
     """
     Tests that the login route returns a 401 error if the credentials are invalid.
@@ -32,7 +28,6 @@ def test_login_invalid_credentials(client):
     assert response.status_code == 401
     assert response.get_json() == {"error": "Email o contraseña incorrectos."}
 
-@pytest.mark.legacy
 def test_login_successful(client):
     """
     Tests that the login route returns a 200 status code and a token if the credentials are valid.
@@ -46,7 +41,6 @@ def test_login_successful(client):
     assert response.status_code == 200
     assert "token" in response.get_json()
 
-@pytest.mark.legacy
 def test_register_creates_admin_user(client):
     """
     Tests that a user created through the /register endpoint is assigned the 'admin' role.
@@ -81,7 +75,6 @@ def test_register_creates_admin_user(client):
     assert user is not None
     assert user.rol == 'admin'
 
-@pytest.mark.legacy
 def test_get_profile_endpoints(client):
     """
     Tests that the /perfil and /me endpoints return user data for an authenticated user.

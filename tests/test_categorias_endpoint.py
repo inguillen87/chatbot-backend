@@ -1,4 +1,3 @@
-import pytest
 import unittest
 from types import SimpleNamespace, ModuleType
 from unittest.mock import patch

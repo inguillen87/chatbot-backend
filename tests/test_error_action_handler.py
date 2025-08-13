@@ -1,8 +1,6 @@
-import pytest
 import unittest
 from services.chat_orchestrator import ChatOrchestrator
 
-@pytest.mark.legacy
 class TestErrorActionHandler(unittest.TestCase):
     def test_error_action(self):
         orchestrator = ChatOrchestrator(global_context={})

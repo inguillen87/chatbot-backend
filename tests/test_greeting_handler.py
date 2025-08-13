@@ -1,9 +1,7 @@
 import pytest
-import pytest
 from unittest.mock import patch
 from services.municipios import GreetingHandler
 
-@pytest.mark.legacy
 def test_greeting_handler():
     # Create a mock context
     context = {}

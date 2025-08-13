@@ -1,5 +1,4 @@
 from flask import Blueprint, request, jsonify, abort, current_app # Basic Flask components
-import json
 from twilio.request_validator import RequestValidator # For validating Twilio requests
 from twilio.rest import Client # For sending messages via Twilio
 import os # For accessing environment variables
@@ -231,11 +230,7 @@ def whatsapp_webhook():
         if location_info:
             kwargs_for_bot["location_info"] = location_info
 
-        raw_meta = request.form.get("ChannelMetadata") or "{}"
-        meta = json.loads(raw_meta)
-        profile_name = (meta.get("data", {})
-                            .get("context", {})
-                            .get("ProfileName") or "").strip() or None
+        profile_name = post_vars.get("ProfileName")
         if profile_name:
             kwargs_for_bot["profile_name"] = profile_name
 
@@ -356,7 +351,7 @@ def whatsapp_webhook():
                 # This is a workaround to handle the "interactive" type from the formatter.
                 # The Twilio API doesn't take this dict directly. We will send it as plain text.
                 body_text = interactive_payload.get("body", {}).get("text", "Por favor, elige una opción.")
-
+                
                 buttons = interactive_payload.get("action", {}).get("buttons", [])
                 rows = []
                 sections = interactive_payload.get("action", {}).get("sections", [])

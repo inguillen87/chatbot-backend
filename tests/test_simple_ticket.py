@@ -1,49 +1,54 @@
 import unittest
-import uuid
+from unittest.mock import patch
 from app import create_app, db
-from models import PymeTicket
-from config import TestConfig
+from models import User, MunicipioTicket, Rubro
+from services.ticket_service import servicio_tickets
 
-class SimpleTicketTests(unittest.TestCase):
+class SimpleTicketTest(unittest.TestCase):
     def setUp(self):
+        from config import TestConfig
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
-        self.client = self.app.test_client()
         db.create_all()
+        self.client = self.app.test_client()
 
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
 
-    def test_create_ticket(self):
-        ticket_data = {
-            'pregunta': '¿Cuál es el horario de atención?',
-            'nro_ticket': int(uuid.uuid4().int % 100000), # Generate a random ticket number
-            'user_id': 1 # Assuming a user with id 1 exists
-        }
-        ticket = PymeTicket(**ticket_data)
-        db.session.add(ticket)
+    def test_create_municipio_ticket(self):
+        # Create a user and a rubro
+        rubro = Rubro(nombre='municipios', clave='municipios')
+        db.session.add(rubro)
+        db.session.commit()
+        user = User(name='Test User', email='test@test.com', municipio_id=1, rubro_id=rubro.id)
+        user.set_password('password')
+        db.session.add(user)
         db.session.commit()
 
-        # Retrieve the ticket from the database
-        retrieved_ticket = PymeTicket.query.get(ticket.id)
-        self.assertIsNotNone(retrieved_ticket)
-        self.assertEqual(retrieved_ticket.pregunta, ticket_data['pregunta'])
-
-    def test_ticket_defaults(self):
+        # Create ticket data
         ticket_data = {
-            'pregunta': 'Consulta de stock',
-            'nro_ticket': int(uuid.uuid4().int % 100000),
-            'user_id': 1
+            "asunto": "Test Ticket",
+            "categoria": "Test Categoria",
+            "detalles": "Test Details",
+            "direccion": "Test Address",
+            "nombre_vecino": "Test Neighbor",
+            "telefono_vecino": "1234567890",
+            "email_vecino": "neighbor@test.com",
+            "estado": "nuevo",
+            "user_id": user.id,
+            "latitud": 1.0,
+            "longitud": 1.0
         }
-        ticket = PymeTicket(**ticket_data)
-        db.session.add(ticket)
+
+        # Create the ticket
+        ticket_creado = MunicipioTicket(**ticket_data)
+        db.session.add(ticket_creado)
         db.session.commit()
 
-        self.assertEqual(ticket.estado, 'nuevo')
-        self.assertIsNone(ticket.asunto)
-
-if __name__ == '__main__':
-    unittest.main()
+        # Assert that the ticket was created successfully
+        self.assertIsNotNone(ticket_creado)
+        self.assertEqual(ticket_creado.asunto, "Test Ticket")
+        self.assertEqual(ticket_creado.user_id, user.id)

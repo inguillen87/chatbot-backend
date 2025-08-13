@@ -1,4 +1,3 @@
-import pytest
 import unittest
 from unittest.mock import patch
 import os
@@ -12,7 +11,6 @@ from services.municipios import responder_municipio, ConversationState, CONTEXTO
 from models import db, User, Rubro, ChatSessionContext
 
 
-@pytest.mark.legacy
 class TestContextReset(unittest.TestCase):
 
     def setUp(self):
@@ -36,7 +34,7 @@ class TestContextReset(unittest.TestCase):
             db.session.remove()
             db.drop_all()
 
-    @patch('services.llm_utils.llamar_llm_para_json_estructurado')
+    @patch('services.municipios.llamar_gemini')
     def test_general_query_resets_reclamo_context(self, mock_llm):
         with self.app.app_context():
             owner_user = User.query.get(1)

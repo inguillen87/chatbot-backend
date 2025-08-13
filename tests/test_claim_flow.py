@@ -49,17 +49,10 @@ def test_client():
 @pytest.fixture
 def mock_llm():
     """Mock para la función llamar_gemini."""
-    with patch('services.llm_utils.llamar_llm_para_json_estructurado') as mock:
+    with patch('services.municipio_responder.llamar_gemini') as mock:
         yield mock
 
-@pytest.fixture
-def mock_tts():
-    """Mock para el servicio GoogleTextToSpeechService."""
-    with patch('services.google_text_to_speech.TextToSpeechService') as mock:
-        yield mock
-
-@pytest.mark.legacy
-def test_full_claim_in_one_go(test_client, mock_llm, mock_tts):
+def test_full_claim_in_one_go(test_client, mock_llm):
     """Prueba la creación de un reclamo cuando el usuario da toda la info de una vez."""
     owner_user = User.query.first()
     chat_session_id = "whatsapp_1_123456789"
@@ -104,8 +97,7 @@ def test_full_claim_in_one_go(test_client, mock_llm, mock_tts):
         assert kwargs['ticket_data']['categoria'] == "Semáforos"
         assert kwargs['ticket_data']['nombre_vecino'] == "Marcelo Guillen"
 
-@pytest.mark.legacy
-def test_claim_in_multiple_steps(test_client, mock_llm, mock_tts):
+def test_claim_in_multiple_steps(test_client, mock_llm):
     """Prueba la creación de un reclamo en múltiples interacciones."""
     owner_user = User.query.first()
     chat_session_id = "whatsapp_1_987654321"

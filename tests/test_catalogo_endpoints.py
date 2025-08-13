@@ -1,11 +1,9 @@
-import pytest
 import unittest
 from unittest.mock import patch
 from app import create_app, db
 from models import CatalogoItem, User, QA, Rubro
 from config import Config
 
-@pytest.mark.legacy
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"

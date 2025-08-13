@@ -1,4 +1,3 @@
-import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -21,7 +20,6 @@ from config import Config
 # Configuración de prueba
 from config import Config
 
-@pytest.mark.legacy
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
@@ -41,7 +39,6 @@ def _crear_plantilla(name, text, keywords=None, is_active=True, embedding_value=
     db.session.commit()
     return plantilla
 
-@pytest.mark.legacy
 def test_suggest_templates_success(client):
     rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")
     db.session.add(rubro)

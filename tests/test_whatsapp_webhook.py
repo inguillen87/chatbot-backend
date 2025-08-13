@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import sys
-import pytest
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root_whatsapp = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -338,34 +337,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 body="Ok\n\n\n\nResponde con el número de la opción que necesites."
             )
             self.mock_welcome.assert_called_once()
-
-class TestWhatsappWebhook(WhatsAppWebhookTestCase):
-    def test_whatsapp_webhook_non_empty_body(self):
-        """
-        Tests that the webhook returns a 200 status code with a non-empty body.
-        This is to prevent the "Guard 21619" error.
-        """
-        with patch('routes.whatsapp_webhook.validator') as mock_validator, \
-            patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot:
-            mock_validator.validate.return_value = True
-            mock_bot.return_value = {"message_body": "Test response"}
-
-            payload = {
-                "To": f"whatsapp:{self.test_whatsapp_number_str}",
-                "From": "whatsapp:+15557654321",
-                "Body": "Hello",
-                "MessageType": "text",
-                "SmsSid": "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                "SmsStatus": "received",
-                "WaId": "15557654321",
-                "AccountSid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-            }
-            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-            response = self.client.post("/webhook/whatsapp", data=payload, content_type="application/x-www-form-urlencoded", headers=headers)
-
-            self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.data.decode() != "")
 
 if __name__ == "__main__":
     unittest.main()
