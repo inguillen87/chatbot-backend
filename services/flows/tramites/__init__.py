@@ -7,23 +7,20 @@ import time
 CACHE = {}
 CACHE_TTL = 3600 # 1 hour
 
-def handle(msg, ctx):
+def handle(msg: str, ctx: dict):
     """
     Handles the conversation flow for procedures.
     """
-    tramite_query = msg.get('text', '').lower().strip()
-    if not tramite_query:
-        return {
-            "message_body": "Por favor, decime qué trámite querés consultar.",
-            "message_type": "text", "options_list": []
-        }
+    # The `msg` is the raw text or the action_id, which we can use as the query.
+    tramite_query = msg.lower().strip().replace('_', ' ')
 
     # Check cache first
     cached_result = CACHE.get(tramite_query)
     if cached_result and (time.time() - cached_result['timestamp']) < CACHE_TTL:
         search_results = cached_result['results']
     else:
-        municipio_name = ctx.get('user_obj').get('nombre_empresa') if ctx.get('user_obj') else "Junín"
+        user = ctx.get('user_obj')
+        municipio_name = user.nombre_empresa if user and hasattr(user, 'nombre_empresa') and user.nombre_empresa else "Junín"
         full_query = f"tramite {tramite_query} en {municipio_name}"
         search_results = google_search(full_query)
         if search_results:

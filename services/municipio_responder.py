@@ -173,7 +173,7 @@ def responder_municipio(
     intent = None
     context_state = chat_db_context.context_data.get('estado_conversacion')
 
-    if context_state == 'ESPERANDO_SELECCION_DE_LISTA' and msg.isdigit():
+    if context_state == ConversationState.ESPERANDO_SELECCION_DE_LISTA and msg.isdigit():
         num_seleccionado = int(msg)
         last_options = chat_db_context.context_data.get('last_options', [])
         if 0 < num_seleccionado <= len(last_options):
@@ -199,28 +199,31 @@ def responder_municipio(
 
 
     # Route intent to the corresponding flow handler
+    # Use the resolved intent as the message for the handler if it came from context
+    handler_msg = intent if context_state == ConversationState.ESPERANDO_SELECCION_DE_LISTA else msg
+
     if intent == "iniciar_reclamo":
-        payload = reclamos_flow.handle(msg, flow_context)
+        payload = reclamos_flow.handle(handler_msg, flow_context)
     elif intent in ["consultar_tramites", "tramite_licencia", "pagar_tasas", "veterinaria_bromatologia", "defensa_consumidor", "realizar_denuncia", "solicitar_turnos"]:
         # For now, route all procedural intents to the main tramites_flow
         # A more specific flow could be created for each one later.
         logger.info(f"Routing intent '{intent}' to tramites_flow.")
-        payload = tramites.handle(msg, flow_context)
+        payload = tramites.handle(handler_msg, flow_context)
     elif intent in ["agenda_cultural", "ultimas_novedades"]:
         logger.info(f"Routing intent '{intent}' to noticias_flow.")
-        payload = noticias.handle(msg, flow_context)
+        payload = noticias.handle(handler_msg, flow_context)
     elif intent == "mostrar_menu":
-        payload = menu.handle(msg, flow_context)
+        payload = menu.handle(handler_msg, flow_context)
     else:
         # Fallback to smalltalk/general LLM for unhandled intents
         logger.info(f"Intent '{intent}' not explicitly handled, using smalltalk/LLM fallback.")
-        payload = smalltalk.handle(msg, flow_context)
+        payload = smalltalk.handle(handler_msg, flow_context)
 
     logger.info(f"Flow payload: {payload}")
     # 4. Post-flow processing: save context for menus
     if payload.get("type") == "menu" and payload.get("data", {}).get("items"):
         chat_db_context.context_data['last_options'] = payload["data"]["items"]
-        chat_db_context.context_data['estado_conversacion'] = 'ESPERANDO_SELECCION_DE_LISTA'
+        chat_db_context.context_data['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_DE_LISTA
         logger.info("Saved menu options to context and set state to ESPERANDO_SELECCION_DE_LISTA")
 
     # 5. Render the payload to a WhatsApp message
