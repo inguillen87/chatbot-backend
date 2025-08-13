@@ -61,19 +61,11 @@ def route(text: str) -> str | None:
     # Sort by length of keyword descending to match longer phrases first
     all_keywords.sort(key=lambda x: len(x[0]), reverse=True)
 
-    # Use a set of words from the input for efficient checking
-    input_words = set(normalized_input.split())
-
     for keyword, intent in all_keywords:
-        # Check for exact match of the whole phrase first
-        if keyword == normalized_input:
-            logger.info(f"NLU router matched intent: {intent} (exact match: '{keyword}')")
-            return intent
-
-        # Then check if all words in the keyword are present in the input
-        keyword_words = set(keyword.split())
-        if keyword_words.issubset(input_words):
-            logger.info(f"NLU router matched intent: {intent} (subset match: '{keyword}')")
+        # Match if the keyword is present in the normalized input.
+        # The keywords are sorted by length, so longer phrases are checked first.
+        if keyword in normalized_input:
+            logger.info(f"NLU router matched intent: {intent} (keyword: '{keyword}')")
             return intent
 
     logger.info("NLU router found no specific intent, returning None.")
