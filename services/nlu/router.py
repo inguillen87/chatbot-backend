@@ -3,19 +3,18 @@ Deterministic NLU router to recognize commands and atajos before hitting the LLM
 """
 import unicodedata
 import logging
-import difflib
 import re
 
 logger = logging.getLogger(__name__)
 
 def normalize_text(text: str) -> str:
-    """Removes accents, punctuation, and converts to lowercase."""
+    """Removes accents, punctuation, and converts to lowercase, keeping spaces."""
     if not text:
         return ""
-    # Normalize to separate accents from letters
+    # Normalize to separate accents from letters and convert to lowercase
     nfkd_form = unicodedata.normalize('NFKD', text.lower())
-    # Keep only non-accent characters
-    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+    # Keep only alphanumeric characters and spaces
+    return "".join([c for c in nfkd_form if unicodedata.isalnum(c) or c.isspace()]).strip()
 
 # --- Intent Definitions ---
 # This dictionary maps keywords and action_ids to a canonical intent name.
@@ -74,30 +73,34 @@ def route(text: str) -> str | None:
     if not text:
         return None
 
-    normalized = normalize_text(text.strip())
-    logger.info(f"NLU router received normalized text: '{normalized}'")
+    normalized_input = normalize_text(text)
+    logger.info(f"NLU router received normalized text: '{normalized_input}'")
 
     # Check for numeric selection first
-    if normalized.isdigit():
-        num = int(normalized)
-        if 1 <= num <= 9:
+    if normalized_input.isdigit():
+        num = int(normalized_input)
+        # Allow for more than 9 options if needed in the future
+        if 1 <= num <= 20:
             intent = f"seleccion_numero_{num}"
             logger.info(f"NLU router matched intent: {intent}")
             return intent
 
-    # Flexible match for commands, prioritizing longer keywords first
-    # Create a flat list of (keyword, intent) tuples and sort by keyword length descending
+    # Create a flat list of (keyword, intent) tuples
     all_keywords = []
     for intent, keywords in INTENTS.items():
         for keyword in keywords:
-            all_keywords.append((keyword, intent))
+            all_keywords.append((normalize_text(keyword), intent))
 
-    all_keywords.sort(key=lambda x: len(x[0]), reverse=True)
+    # Sort by the number of words in the keyword, descending, to prioritize longer matches
+    all_keywords.sort(key=lambda x: len(x[0].split()), reverse=True)
 
-    # Iterate through the sorted keywords and find the first match
+    # Use a set of words from the input for efficient checking
+    input_words = set(normalized_input.split())
+
     for keyword, intent in all_keywords:
-        # Use word boundaries to prevent partial matches (e.g., 'r' in 'cultural')
-        if re.search(r'\b' + re.escape(keyword) + r'\b', normalized):
+        keyword_words = keyword.split()
+        # Check if all words from the keyword are present in the input text
+        if all(word in input_words for word in keyword_words):
             logger.info(f"NLU router matched intent: {intent} (keyword: '{keyword}')")
             return intent
 
