@@ -30,8 +30,10 @@ def solo_admin_requerido(f):
 
     return decorated
 
-@auth_bp.route('/login', methods=['POST'])
+@auth_bp.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
     if not request.is_json:
         return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
     data = request.get_json()
@@ -81,9 +83,11 @@ def get_google_maps_key():
     key = os.getenv("GOOGLE_MAPS_API_KEY", "")
     return jsonify({"api_key": key})
 
-@auth_bp.route('/google-login', methods=['POST'])
+@auth_bp.route('/google-login', methods=['POST', 'OPTIONS'])
 def google_login():
     """Inicia sesión utilizando un token de Google."""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
     data = request.get_json(silent=True) or {}
     token_id = (
         data.get('id_token')
@@ -130,8 +134,10 @@ def google_login():
         current_app.logger.error(f"Error en google_login: {e}", exc_info=True)
         return jsonify({"error": "Error interno"}), 500
 
-@auth_bp.route('/register', methods=['POST'])
+@auth_bp.route('/register', methods=['POST', 'OPTIONS'])
 def register():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
     data = request.get_json(silent=True) or {}
 
     if not data:
@@ -276,10 +282,12 @@ def register():
         }), 500
 
 
-@auth_bp.route('/widget/register', methods=['POST'])
+@auth_bp.route('/widget/register', methods=['POST', 'OPTIONS'])
 @token_requerido
 def register_from_widget(user):
     """Registro rápido desde el widget asociado al token."""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
     # Aceptar tanto JSON como formularios tradicionales
     data = request.get_json(silent=True)
     if not data:
@@ -350,10 +358,12 @@ def register_from_widget(user):
             "botones": [{"texto": "Volver al chat"}],
         }), 500
 
-@auth_bp.route('/widget/login', methods=['POST'])
+@auth_bp.route('/widget/login', methods=['POST', 'OPTIONS'])
 @token_requerido
 def login_from_widget(owner_user):
     """Login desde el widget asociado al token."""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
     data = request.get_json(silent=True)
     if not data:
         data = request.form.to_dict() if request.form else {}
@@ -391,9 +401,11 @@ def login_from_widget(owner_user):
 
 # Nuevos endpoints para el panel de usuarios de chat
 
-@auth_bp.route('/chatuserregisterpanel', methods=['POST'])
+@auth_bp.route('/chatuserregisterpanel', methods=['POST', 'OPTIONS'])
 def chatuser_register_panel():
     """Permite registrar un usuario final indicando el token de la entidad."""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
     data = request.get_json(silent=True)
     if not data:
         data = request.form.to_dict() if request.form else {}
@@ -540,9 +552,11 @@ def chatuser_register_panel():
         )
 
 
-@auth_bp.route('/chatuserloginpanel', methods=['POST'])
+@auth_bp.route('/chatuserloginpanel', methods=['POST', 'OPTIONS'])
 def chatuser_login_panel():
     """Login de usuarios finales indicando el token de la empresa."""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
     data = request.get_json(silent=True)
     if not data:
         data = request.form.to_dict() if request.form else {}

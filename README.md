@@ -11,6 +11,7 @@ This project exposes several endpoints to process questions for different sector
 - `POST /widget/login` – login for end users without leaving the widget.
 - `POST /chatuserregisterpanel` – register a chat user selecting the company token.
 - `POST /chatuserloginpanel` – login a chat user specifying the company token.
+- `POST /auth/login` – login for administrators or employees using email and password.
 - `POST /google-login` – login o registro utilizando un ID token de Google. Si
   el correo no existe se crea un usuario nuevo y puede enviarse `rol` y
   `tipo_chat` para definir sus permisos (`admin` o `usuario`) y el tipo de chat
@@ -88,7 +89,7 @@ fields like `id`, `nro_ticket`, `asunto`, `categoria`, `estado`, `fecha`,
 - `GET /notifications` – list pending notifications for the authenticated user.
 - `POST /presupuestos/generar` – send a PDF quote to a client based on item data.
 
-**Nota:** el blueprint de autenticación se registra sin el prefijo `/auth`. Por ello las rutas anteriores se invocan directamente (por ejemplo `/login` en lugar de `/auth/login`).
+**Nota:** el blueprint de autenticación utiliza el prefijo `/auth`, por lo que las rutas de inicio de sesión y registro de usuarios administrativos se invocan como `/auth/...`.
 
 ## Variables de entorno
 
