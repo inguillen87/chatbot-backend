@@ -84,11 +84,12 @@ def route(text: str) -> str | None:
             logger.info(f"NLU router matched intent: {intent}")
             return intent
 
-    # Exact match for simple commands
+    # Flexible match for commands
     for intent, keywords in INTENTS.items():
-        if normalized in keywords:
-            logger.info(f"NLU router matched intent: {intent}")
-            return intent
+        for keyword in keywords:
+            if keyword in normalized:
+                logger.info(f"NLU router matched intent: {intent} (keyword: '{keyword}')")
+                return intent
 
     logger.info("NLU router found no specific intent, returning None.")
     return None
