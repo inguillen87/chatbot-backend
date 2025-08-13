@@ -264,8 +264,8 @@ def responder_chatboc(
     if chat_db_context and chat_db_context.context_data and chat_db_context.context_data.get('source_is_audio'):
         generate_audio = True
 
-    # Check if the handler specifically requested audio generation (e.g., for welcome message)
-    if response_data and response_data.get('generar_audio_bienvenida'):
+    # Check if the handler specifically requested audio generation
+    if response_data and response_data.get('generar_audio'):
         generate_audio = True
 
     if generate_audio:
@@ -283,6 +283,6 @@ def responder_chatboc(
         if chat_db_context and chat_db_context.context_data:
             chat_db_context.context_data.pop('source_is_audio', None)
         if response_data:
-            response_data.pop('generar_audio_bienvenida', None)
+            response_data.pop('generar_audio', None)
 
     return response_data

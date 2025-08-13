@@ -492,7 +492,7 @@ class GreetingHandler(BaseMunicipioHandler):
             "accion_backend": "responder_directamente",
             "fuente": "greeting_handler_universal_v5",
             "categorias": categorias, # Keep original structure for channels that might support it
-            "generar_audio_bienvenida": True
+            "generar_audio": True
         }
 
 class NewsHandler(BaseMunicipioHandler):
@@ -1115,6 +1115,8 @@ MENU_KEYWORDS = {
     "defensa_del_consumidor": ["consumidor", "defensa"]
 }
 
+from fuzzywuzzy import process
+
 def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None:
     """
     Finds a menu action based on user input, checking for number, first letter, or keywords.
@@ -1140,12 +1142,13 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
                 return button.get("action_id")
 
     # 3. Check for keyword match
-    for action_id, keywords in MENU_KEYWORDS.items():
-        for keyword in keywords:
-            if keyword in normalized_input:
-                # Ensure this action_id is actually in the current menu to avoid ambiguity
-                if any(btn.get('action_id') == action_id for btn in menu_buttons):
-                    return action_id
+    all_keywords = {keyword: action_id for action_id, keywords in MENU_KEYWORDS.items() for keyword in keywords}
+    best_match, score = process.extractOne(normalized_input, all_keywords.keys())
+
+    if score > 80:
+        action_id = all_keywords[best_match]
+        if any(btn.get('action_id') == action_id for btn in menu_buttons):
+            return action_id
 
     return None
 
@@ -1182,10 +1185,11 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
                 return option.get("texto")
 
     # 3. Check for keyword match
-    for category, keywords in RECLAMO_KEYWORDS.items():
-        for keyword in keywords:
-            if keyword in normalized_input:
-                return category
+    all_keywords = {keyword: category for category, keywords in RECLAMO_KEYWORDS.items() for keyword in keywords}
+    best_match, score = process.extractOne(normalized_input, all_keywords.keys())
+
+    if score > 80:
+        return all_keywords[best_match]
 
     return None
 
@@ -1203,7 +1207,8 @@ def _get_reclamos_menu():
         "message_body": "Elegí una opción para tu reclamo:",
         "message_type": "interactive_buttons",
         "options_list": opciones,
-        "fuente": "submenu_reclamos_estandar_v2"
+        "fuente": "submenu_reclamos_estandar_v2",
+        "generar_audio": True
     }
 
 
@@ -1515,7 +1520,7 @@ def responder_municipio(
             # For all other actions, clear state and handle them
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(selected_action)
+            response = handle_main_menu_action(selected_action, context)
             if response:
                 return response
         else:

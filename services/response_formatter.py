@@ -57,7 +57,7 @@ def build_interactive_response(options: list,
         if 1 <= num_options <= 3:
             interactive_data["type"] = "button"
             interactive_data["action"]["buttons"] = [
-                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")[:20]}}
+                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")}}
                 for i, o in enumerate(options)
             ]
         elif 4 <= num_options <= 10:
@@ -68,8 +68,8 @@ def build_interactive_response(options: list,
                 "rows": [
                     {
                         "id": o.get("id", o.get("action_id", str(i))),
-                        "title": o.get("texto", "")[:24],
-                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()[:72]
+                        "title": o.get("texto", ""),
+                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()
                     }
                     for i, o in enumerate(options)
                 ]

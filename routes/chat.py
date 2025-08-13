@@ -13,6 +13,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
 from models import User, Rubro, Conversacion, db, ChatSessionContext # Added ChatSessionContext
+from socket_service import socketio # Import socketio
 from services.logic import (
     responder_chatboc,
     RUBROS_PUBLICOS,
@@ -508,6 +509,11 @@ def _procesar_chat(
             db.session.rollback()
             current_app.logger.error(f"Error during final commit: {e}", exc_info=True)
             return jsonify({"error": "Error interno del servidor al guardar la sesión."}), 500
+
+        # Emit the result via Socket.IO if the channel is web
+        if channel == "web" and chat_session_id_header:
+            socketio.emit('message', resultado, room=chat_session_id_header)
+            current_app.logger.info(f"Emitted socket event 'message' to room {chat_session_id_header}")
 
         return jsonify(resultado), 200
 
