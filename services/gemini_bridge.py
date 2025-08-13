@@ -100,6 +100,10 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         if mensaje and not mensaje_usuario:
             mensaje_usuario = mensaje
 
+        # Ensure mensaje_usuario is a string to prevent crashes on non-string inputs
+        if not isinstance(mensaje_usuario, str):
+            mensaje_usuario = str(mensaje_usuario)
+
         mensaje_usuario_obj = {}
         texto_mensaje = ""
         try:

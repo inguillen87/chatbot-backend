@@ -7,17 +7,20 @@ def handle(msg: str, meta: dict):
     """
 
     items = []
-    for i, categoria in enumerate(CATEGORIAS_RECLAMO, 1):
+    # CATEGORIAS_RECLAMO is a list of strings, not dicts. Iterate correctly.
+    for i, categoria_str in enumerate(CATEGORIAS_RECLAMO, 1):
         items.append({
             "n": str(i),
-            "label": categoria["label"],
-            "key": f"cat_reclamo_{categoria['key']}" # Add a prefix to distinguish from other commands
+            # Capitalize for better display
+            "label": categoria_str.capitalize(),
+            # Create a safe key for the action_id
+            "key": f"cat_reclamo_{categoria_str.replace(' ', '_').lower()}"
         })
 
     return {
         "type": "menu",
         "title": "Elegí una categoría para tu reclamo:",
-        "summary": "Estos son los tipos de reclamo que podés iniciar.",
+        "summary": "Estos son los tipos de reclamo que podés iniciar:",
         "data": {
             "items": items
         },
