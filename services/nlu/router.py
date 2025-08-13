@@ -17,15 +17,52 @@ def normalize_text(text: str) -> str:
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 # --- Intent Definitions ---
+# This dictionary maps keywords and action_ids to a canonical intent name.
 INTENTS = {
-    "iniciar_reclamo": ["r", "re", "reclamo", "reclamos", "reportar"],
-    "consultar_tramites": ["t", "tr", "tramite", "tramites"],
-    "solicitar_turnos": ["tu", "turno", "turnos"],
-    "consultar_estado_ticket": ["estado", "ticket"],
-    "derivar_humano": ["agente", "humano", "persona"],
-    "mostrar_menu": ["menu", "menu", "volver", "inicio"],
+    # General & Navigation
+    "mostrar_menu": ["menu", "volver", "inicio", "principal"],
     "agradecer": ["gracias", "ok", "bueno", "dale"],
-    "finalizar": ["finalizar", "cerrar", "chau", "adios"]
+    "finalizar": ["finalizar", "cerrar", "chau", "adios"],
+    "derivar_humano": ["agente", "humano", "persona", "hablar con alguien"],
+
+    # Main Menu Options (from web and whatsapp)
+    "iniciar_reclamo": [
+        "r", "re", "reclamo", "reclamos", "reportar", "iniciar un reclamo",
+        "hacer un reclamo", "show_reclamos_menu", "iniciar_reclamo"
+    ],
+    "realizar_denuncia": [
+        "denuncia", "denuncias", "realizar una denuncia", "hacer_denuncia"
+    ],
+    "tramite_licencia": [
+        "licencia", "licencia de conducir", "carnet", "licencia_de_conducir"
+    ],
+    "pagar_tasas": [
+        "tasas", "pagar tasas", "impuestos", "pago_de_tasas_vigentes"
+    ],
+    "consultar_tramites": [
+        "t", "tr", "tramite", "tramites", "consultar otros tramites",
+        "consultar tramites", "consultar_otros_tramites"
+    ],
+    "veterinaria_bromatologia": [
+        "veterinaria", "bromatologia", "mascotas", "animales",
+        "veterinaria y bromatologia", "veterinaria_y_bromatologia"
+    ],
+    "solicitar_turnos": [
+        "tu", "turno", "turnos", "solicitar turnos", "solicitar_turnos"
+    ],
+    "agenda_cultural": [
+        "agenda", "cultura", "turismo", "agenda cultural", "agenda cultural y turistica",
+        "agenda_cultural_y_turistica"
+    ],
+    "ultimas_novedades": [
+        "noticias", "novedades", "ultimas novedades", "ultimas_novedades"
+    ],
+    "defensa_consumidor": [
+        "consumidor", "defensa del consumidor", "defensa_del_consumidor"
+    ],
+
+    # Other specific intents
+    "consultar_estado_ticket": ["estado", "ticket", "mi reclamo", "ver estado"],
 }
 
 def route(text: str) -> str | None:
