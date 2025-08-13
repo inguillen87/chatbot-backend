@@ -260,11 +260,11 @@ def responder_chatboc(
 
     # --- Audio Response Generation ---
     generate_audio = False
-    # Check if the original input was audio
-    if chat_db_context and chat_db_context.context_data and chat_db_context.context_data.get('source_is_audio'):
+    # Check if the user has indicated a preference for audio (by sending an audio message)
+    if chat_db_context and chat_db_context.context_data and chat_db_context.context_data.get('prefers_audio'):
         generate_audio = True
 
-    # Check if the handler specifically requested audio generation
+    # Also check if the handler specifically requested audio generation for this specific response
     if response_data and response_data.get('generar_audio'):
         generate_audio = True
 
@@ -279,10 +279,10 @@ def responder_chatboc(
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")
 
-        # Clean up flags after processing to avoid unwanted audio responses in subsequent turns
-        if chat_db_context and chat_db_context.context_data:
-            chat_db_context.context_data.pop('source_is_audio', None)
+        # Clean up the single-use 'generar_audio' flag from the response
         if response_data:
             response_data.pop('generar_audio', None)
+        # The 'prefers_audio' and 'source_is_audio' flags are now managed in the webhook
+        # based on the type of the next incoming message.
 
     return response_data
