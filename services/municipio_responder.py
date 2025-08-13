@@ -584,19 +584,29 @@ def handle_main_menu_action(action_id: str, context: dict) -> dict:
     if action_id == "mostrar_menu_reclamos":
         return _get_reclamos_menu()
 
-    action_responses = {
-        "licencia_de_conducir": "Para requisitos y turnos de licencia de conducir visitá:\nhttps://www.juninmendoza.gov.ar/licencia-de-conducir-junin/",
-        "pago_tasas_vigentes": "Para pagar o descargar boletos vigentes, dirigite a:\nhttps://epagos.juninmendoza.gov.ar/jrentas/",
-        "defensa_del_consumidor": "Para asesoramiento, escribí a:\ndefensadelconsumidorjuninmza@gmail.com",
-        "veterinaria_y_bromatologia": "Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp:\n+54 9 2634 52-1563",
-    }
-
-    if action_id in action_responses:
+    if action_id == "licencia_de_conducir":
         return {
-            "message_body": action_responses[action_id],
-            "options_list": [],
-            "message_type": "text",
-            "fuente": f"info_request_{action_id}"
+            "message_body": "🚗 Para requisitos y turnos de licencia de conducir, visitá el sitio oficial.",
+            "options_list": [{"texto": "Ir al Sitio Web", "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/", "type": "url"}],
+            "message_type": "interactive_buttons", "fuente": "info_licencia_conducir"
+        }
+    if action_id == "pago_tasas_vigentes":
+        return {
+            "message_body": "💵 Para pagar o descargar boletos de tasas vigentes, ingresá al portal de pagos.",
+            "options_list": [{"texto": "Ir al Portal de Pagos", "url": "https://epagos.juninmendoza.gov.ar/jrentas/", "type": "url"}],
+            "message_type": "interactive_buttons", "fuente": "info_pago_tasas"
+        }
+    if action_id == "defensa_del_consumidor":
+        return {
+            "message_body": "🛒 Para asesoramiento de Defensa del Consumidor, podés escribir un email.",
+            "options_list": [{"texto": "Enviar Email", "url": "mailto:defensadelconsumidorjuninmza@gmail.com", "type": "url"}],
+            "message_type": "interactive_buttons", "fuente": "info_defensa_consumidor"
+        }
+    if action_id == "veterinaria_y_bromatologia":
+        return {
+            "message_body": "🐾 Para información de Veterinaria y Bromatología, comunicate por WhatsApp.",
+            "options_list": [{"texto": "Contactar por WhatsApp", "url": "https://wa.me/5492634521563", "type": "url"}],
+            "message_type": "interactive_buttons", "fuente": "info_veterinaria"
         }
 
     # Placeholder for actions without a defined response yet
@@ -1020,8 +1030,11 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
                 except Exception as e:
                     logger.error(f"Error ejecutando la herramienta '{nombre_herramienta}': {e}", exc_info=True)
+                    # Friendly message for the user, more specific than a generic error.
+                    user_friendly_tool_name = nombre_herramienta.replace("_", " ").replace("consultar", "la consulta de").replace("buscar", "la búsqueda de")
+
                     return {
-                        "message_body": "Hubo un error al intentar usar la herramienta. Por favor, intenta de nuevo.",
+                        "message_body": f"Lo siento, tuve un problema con {user_friendly_tool_name}. Por favor, intenta de nuevo en unos momentos.",
                         "options_list": [],
                         "message_type": "text",
                         "fuente": "error_herramienta"

@@ -7,6 +7,7 @@ class GoogleSearchTestCase(unittest.TestCase):
         cache.clear()
 
     @patch('services.google_search.requests.get')
+    @patch.dict('os.environ', {"GOOGLE_API_KEY": "test_key", "GOOGLE_CSE_ID": "test_cse_id"})
     def test_caching(self, mock_get):
         mock_response = MagicMock()
         mock_response.json.return_value = {"items": [{"title": "Test"}]}

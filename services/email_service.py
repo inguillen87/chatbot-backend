@@ -213,20 +213,37 @@ def enviar_email_ticket_admin(ticket) -> bool:
     return enviar_email(admin_email_val, asunto, cuerpo_html_ticket)
 
 
+from flask import render_template
+
 def enviar_email_ticket_cliente(ticket) -> bool:
-    """Confirma al cliente que su reclamo fue recibido."""
-    destino = getattr(ticket, "email", None)
+    """Confirma al cliente que su reclamo fue recibido con una plantilla HTML."""
+    destino = getattr(ticket, "email_vecino", None) or getattr(ticket, "email", None)
     if not destino:
-        logger.warning("[EMAIL] Ticket sin email de cliente.")
+        logger.warning(f"[EMAIL] Ticket {getattr(ticket, 'id', 'N/A')} sin email de cliente.")
         return False
 
-    asunto = f"Reclamo {ticket.nro_ticket} recibido"
-    cuerpo_html_confirmacion_ticket = (
-        f"<p>Hola,</p>"
-        f"<p>Registramos tu reclamo con número <strong>{ticket.nro_ticket}</strong>.</p>"
-        "<p>Nos comunicaremos pronto para darle seguimiento.</p>"
-    )
-    return enviar_email(destino, asunto, cuerpo_html_confirmacion_ticket)
+    asunto = f"Ticket #{ticket.nro_ticket} Recibido: {ticket.asunto}"
+
+    base_url = current_app.config.get("APP_BASE_URL", "https://www.chatboc.ar")
+    # Usa el tipo de ticket para construir la URL correcta si es necesario
+    # Por ahora, asumimos una ruta genérica /chat/<id>
+    chat_url = f"{base_url}/chat/{ticket.id}"
+
+    try:
+        cuerpo_html = render_template(
+            "email/ticket_creado.html",
+            nombre_vecino=getattr(ticket, "nombre_vecino", "Vecino/a"),
+            nro_ticket=f"M-{ticket.nro_ticket}",
+            categoria=getattr(ticket, "categoria", "No especificada"),
+            direccion=getattr(ticket, "direccion", "No especificada"),
+            detalles=getattr(ticket, "detalles", "Sin descripción."),
+            foto_url=getattr(ticket, "foto_url_directa", None),
+            chat_url=chat_url
+        )
+        return enviar_email(destino, asunto, cuerpo_html)
+    except Exception as e:
+        logger.error(f"Error al renderizar la plantilla de email para ticket {ticket.id}: {e}", exc_info=True)
+        return False
 
 
 def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
