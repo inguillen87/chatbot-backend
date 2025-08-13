@@ -12,11 +12,16 @@ def render(payload: dict) -> str:
 
     parts = []
 
-    # Title and Summary
+    # Title, Summary, and Body
     if payload.get("title"):
         parts.append(f"*{payload['title']}*")
     if payload.get("summary"):
         parts.append(payload['summary'])
+    if payload.get("message_body"):
+        # Add a separator if title or summary already exists
+        if payload.get("title") or payload.get("summary"):
+            parts.append("-" * 20)
+        parts.append(payload['message_body'])
 
     # Data items (for menus or news)
     if payload.get("data", {}).get("items"):
