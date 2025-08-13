@@ -22,21 +22,17 @@ def handle(msg: str, meta: dict) -> dict:
         }
 
     try:
-        # Prepare the arguments for ahe `llamar_gemini` function correctly.
-        # It expects 'mensaje_usuario', 'usuario' (a dict), and 'historial' (a list).
-
-        # The user to pass to the LLM is the one viewing the chat (the end-user)
+        # Prepare the arguments for the `llamar_gemini` function correctly.
         usuario_actual = viewer_user or owner_user
         usuario_dict = {
-            "nombre": usuario_actual.nombre,
-            "email": usuario_actual.email,
-            "id": usuario_actual.id,
-            "tipo_entidad": "municipio" # Assuming this flow is only for municipios for now
+            "nombre": getattr(usuario_actual, 'nombre', ''),
+            "email": getattr(usuario_actual, 'email', ''),
+            "id": getattr(usuario_actual, 'id', None),
+            "tipo_entidad": "municipio"
         }
-
-        # Extract history from the context
         historial = chat_db_context.context_data.get('mensajes_previos_gemini_formato', [])
 
+        # Corrected the keyword argument from 'pregunta' to 'mensaje_usuario'
         llm_response_payload = llamar_gemini(
             mensaje_usuario=msg,
             usuario=usuario_dict,

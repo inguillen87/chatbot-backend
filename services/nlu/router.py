@@ -4,6 +4,7 @@ Deterministic NLU router to recognize commands and atajos before hitting the LLM
 import unicodedata
 import logging
 import difflib
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +85,21 @@ def route(text: str) -> str | None:
             logger.info(f"NLU router matched intent: {intent}")
             return intent
 
-    # Flexible match for commands
+    # Flexible match for commands, prioritizing longer keywords first
+    # Create a flat list of (keyword, intent) tuples and sort by keyword length descending
+    all_keywords = []
     for intent, keywords in INTENTS.items():
         for keyword in keywords:
-            if keyword in normalized:
-                logger.info(f"NLU router matched intent: {intent} (keyword: '{keyword}')")
-                return intent
+            all_keywords.append((keyword, intent))
+
+    all_keywords.sort(key=lambda x: len(x[0]), reverse=True)
+
+    # Iterate through the sorted keywords and find the first match
+    for keyword, intent in all_keywords:
+        # Use word boundaries to prevent partial matches (e.g., 'r' in 'cultural')
+        if re.search(r'\b' + re.escape(keyword) + r'\b', normalized):
+            logger.info(f"NLU router matched intent: {intent} (keyword: '{keyword}')")
+            return intent
 
     logger.info("NLU router found no specific intent, returning None.")
     return None
