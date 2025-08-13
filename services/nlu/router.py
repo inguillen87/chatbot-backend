@@ -13,8 +13,8 @@ def normalize_text(text: str) -> str:
         return ""
     # Normalize to separate accents from letters and convert to lowercase
     nfkd_form = unicodedata.normalize('NFKD', text.lower())
-    # Keep only alphanumeric characters and spaces
-    return "".join([c for c in nfkd_form if unicodedata.isalnum(c) or c.isspace()]).strip()
+    # Correctly check if a character is alphanumeric
+    return "".join([c for c in nfkd_form if c.isalnum() or c.isspace()]).strip()
 
 # --- Intent Definitions ---
 # This dictionary maps keywords and action_ids to a canonical intent name.
