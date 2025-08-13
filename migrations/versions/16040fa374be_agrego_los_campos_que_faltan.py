@@ -3,53 +3,40 @@
 Revision ID: 16040fa374be
 Revises: 2cbd47100727
 Create Date: 2025-08-07 00:28:16.800957
-
 """
 from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '16040fa374be'
-down_revision = '2cbd47100727'
+revision = "16040fa374be"
+down_revision = "2cbd47100727"
 branch_labels = None
 depends_on = None
 
+
+def _has_column(table_name: str, column_name: str) -> bool:
+    """Devuelve True si la columna existe en la tabla (DB actual)."""
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    cols = [c["name"] for c in insp.get_columns(table_name)]
+    return column_name in cols
+
+
 def upgrade():
-    from sqlalchemy import text
-    op.get_bind().execute(text("PRAGMA foreign_keys=OFF"))
-    # --- INICIO cambios ---
-    # Si existe, dropea la tabla temporal (por si la dejó un error anterior)
+    # Si quedó una tabla temporal de un intento fallido, ignoramos si no existe
     try:
-        op.drop_table('_alembic_tmp_pyme_ticket')
+        op.drop_table("_alembic_tmp_pyme_ticket")
     except Exception:
-        pass  # Si no existe, que siga
-    with op.batch_alter_table('pyme_ticket', schema=None) as batch_op:
-        batch_op.drop_column('archivo_url')
-    # --- FIN cambios ---
-    op.get_bind().execute(text("PRAGMA foreign_keys=ON"))
+        pass
+
+    # Drop seguro: solo si la columna existe
+    if _has_column("pyme_ticket", "archivo_url"):
+        with op.batch_alter_table("pyme_ticket") as batch_op:
+            batch_op.drop_column("archivo_url")
+
 
 def downgrade():
-    with op.batch_alter_table('pyme_ticket', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('archivo_url', sa.VARCHAR(length=255), nullable=True))
-    op.create_table('_alembic_tmp_pyme_ticket',
-        sa.Column('id', sa.INTEGER(), nullable=False),
-        sa.Column('pregunta', sa.TEXT(), nullable=False),
-        sa.Column('asunto', sa.VARCHAR(length=200), nullable=True),
-        sa.Column('categoria', sa.VARCHAR(length=100), nullable=True),
-        sa.Column('user_id', sa.INTEGER(), nullable=True),
-        sa.Column('estado', sa.VARCHAR(length=30), nullable=True),
-        sa.Column('anon_id', sa.VARCHAR(length=80), nullable=True),
-        sa.Column('nro_ticket', sa.INTEGER(), nullable=False),
-        sa.Column('fecha', sa.DATETIME(), nullable=True),
-        sa.Column('rubro_id', sa.INTEGER(), nullable=True),
-        sa.Column('telefono', sa.VARCHAR(length=30), nullable=True),
-        sa.Column('email', sa.VARCHAR(length=120), nullable=True),
-        sa.Column('dni', sa.VARCHAR(length=20), nullable=True),
-        sa.Column('estado_cliente', sa.VARCHAR(length=30), nullable=True),
-        sa.Column('direccion', sa.VARCHAR(length=255), nullable=True),
-        sa.Column('latitud', sa.FLOAT(), nullable=True),
-        sa.Column('longitud', sa.FLOAT(), nullable=True),
-        sa.ForeignKeyConstraint(['rubro_id'], ['rubro.id'], ),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('nro_ticket')
-    )
+    # Add back seguro: solo si la columna NO existe
+    if not _has_column("pyme_ticket", "archivo_url"):
+        with op.batch_alter_table("pyme_ticket") as batch_op:
+            batch_op.add_column(sa.Column("archivo_url", sa.String(255), nullable=True))
