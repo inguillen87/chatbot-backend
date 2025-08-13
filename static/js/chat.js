@@ -1,147 +1,64 @@
-// This script assumes the following HTML structure exists:
-// <div id="chat-messages"></div>
-// <form id="message-form">
-//   <input id="message-input" autocomplete="off" />
-//   <button type="submit">Send</button>
-// </form>
-// <button id="record-button">Record</button>
-// <button id="location-button">Share Location</button>
-
 document.addEventListener('DOMContentLoaded', () => {
-    // Connect to the server using Socket.IO
-    const socket = io();
-
-    // Get references to the necessary HTML elements
     const chatMessages = document.getElementById('chat-messages');
     const messageForm = document.getElementById('message-form');
     const messageInput = document.getElementById('message-input');
+    // Keep the audio and location buttons for future use, but focus on text chat.
     const recordButton = document.getElementById('record-button');
     const locationButton = document.getElementById('location-button');
 
-    let mediaRecorder;
-    let audioChunks = [];
-    let isRecording = false;
+    // --- Core Message Sending Logic ---
 
-    // --- Audio Recording Logic ---
+    async function sendMessage(payload) {
+        // Add user's message to the chat window immediately
+        // The payload for a text message is { "pregunta": "user's text" }
+        if (payload.pregunta) {
+            appendMessage('user', payload.pregunta);
+        }
 
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        console.log('getUserMedia supported.');
+        try {
+            const response = await fetch('/ask/municipio', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Chat-Session-Id': getSessionId()
+                },
+                body: JSON.stringify(payload)
+            });
 
-        recordButton.addEventListener('click', () => {
-            if (isRecording) {
-                // Stop recording
-                mediaRecorder.stop();
-                recordButton.textContent = 'Record';
-                isRecording = false;
-            } else {
-                // Start recording
-                navigator.mediaDevices.getUserMedia({ audio: true })
-                    .then(stream => {
-                        mediaRecorder = new MediaRecorder(stream);
-                        mediaRecorder.start();
-                        recordButton.textContent = 'Stop Recording';
-                        isRecording = true;
-                        audioChunks = []; // Clear previous chunks
-
-                        mediaRecorder.addEventListener("dataavailable", event => {
-                            audioChunks.push(event.data);
-                        });
-
-                        mediaRecorder.addEventListener("stop", () => {
-                            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                            sendAudioMessage(audioBlob);
-                        });
-                    })
-                    .catch(error => {
-                        console.error('Error accessing microphone:', error);
-                        alert('Could not access your microphone. Please check your browser permissions.');
-                    });
+            if (!response.ok) {
+                // Handle server errors (like 500)
+                const errorData = await response.json().catch(() => ({ message: 'Error fetching response from server.' }));
+                throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
             }
-        });
 
-    } else {
-        console.error('getUserMedia not supported on your browser!');
-        recordButton.disabled = true;
-        recordButton.textContent = 'Recording Not Supported';
+            const data = await response.json();
+            handleBotResponse(data);
+
+        } catch (error) {
+            console.error('Error sending message:', error);
+            appendMessage('bot', '⚠️ No se pudo generar una respuesta.');
+        }
     }
 
-    // --- Message Sending Logic ---
+    // --- Event Listeners ---
 
-    // Send text message when the form is submitted
+    // Handle text message submission
     messageForm.addEventListener('submit', (e) => {
         e.preventDefault();
-        const message = messageInput.value;
-        if (message) {
-            // Add the user's message to the chat window
-            appendMessage('user', message);
-            // Emit the message to the server
-            socket.emit('message', { pregunta: message });
+        const messageText = messageInput.value.trim();
+        if (messageText) {
+            sendMessage({ pregunta: messageText });
             messageInput.value = '';
         }
     });
 
-    // Function to send audio message
-    function sendAudioMessage(audioBlob) {
-        const formData = new FormData();
-        formData.append('audio_file', audioBlob, 'recording.webm');
+    // --- Response Handling ---
 
-        // Add a visual indicator that the audio is being sent
-        appendMessage('user', '[Sending audio...]');
+    function handleBotResponse(data) {
+        console.log('Received data from server:', data);
 
-        // Use fetch to send the audio data to the /ask endpoint
-        fetch('/ask/municipio', { // Assuming a default endpoint, adjust if necessary
-            method: 'POST',
-            body: formData,
-            headers: {
-                // 'Content-Type': 'multipart/form-data' is set automatically by the browser with FormData
-                'X-Chat-Session-Id': getSessionId() // Important for session context
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            // The server will handle the audio and the response will come via Socket.IO
-            console.log('Audio sent successfully, waiting for socket response.');
-        })
-        .catch(error => {
-            console.error('Error sending audio:', error);
-            appendMessage('system', 'Error sending audio.');
-        });
-    }
-
-    // --- Location Logic ---
-
-    locationButton.addEventListener('click', () => {
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const location = {
-                        lat: position.coords.latitude,
-                        lon: position.coords.longitude,
-                    };
-                    // Add a message indicating location is being sent
-                    appendMessage('user', `[Sharing location: ${location.lat}, ${location.lon}]`);
-                    // Emit the location to the server
-                    socket.emit('location', location);
-                },
-                (error) => {
-                    console.error('Error getting location:', error);
-                    appendMessage('system', 'Could not get your location.');
-                }
-            );
-        } else {
-            console.error('Geolocation is not supported by this browser.');
-            appendMessage('system', 'Geolocation is not supported by this browser.');
-        }
-    });
-
-    // --- Response Handling Logic ---
-
-    // Listen for messages from the server
-    socket.on('message', (data) => {
-        console.log('Received message from server:', data);
-        const messageText = data.respuesta || data.message_body || 'No response text.';
-
-        // Add the bot's message to the chat window
+        // Use the response text from the server
+        const messageText = data.message_body || 'No response text.';
         appendMessage('bot', messageText);
 
         // If the response contains an audio URL, play it
@@ -149,51 +66,54 @@ document.addEventListener('DOMContentLoaded', () => {
             playAudio(data.audio_url);
         }
 
-        // If the response contains buttons, display them
-        if (data.botones && data.botones.length > 0) {
-            appendButtons(data.botones);
+        // If the response contains buttons or options, display them
+        const options = data.options_list || data.botones;
+        if (options && options.length > 0) {
+            appendButtons(options);
         }
-    });
+    }
 
-    // --- Helper Functions ---
+    // --- UI Helper Functions ---
 
-    // Function to append a message to the chat window
     function appendMessage(sender, text) {
         const messageElement = document.createElement('div');
         messageElement.classList.add('message', `${sender}-message`);
-        messageElement.innerText = text;
+        // Use innerHTML to render formatted text from the bot
+        messageElement.innerHTML = text.replace(/\n/g, '<br>');
         chatMessages.appendChild(messageElement);
-        chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to the bottom
+        chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
-    // Function to play an audio URL
     function playAudio(url) {
         const audioElement = new Audio(url);
-        audioElement.play()
-            .catch(error => console.error('Error playing audio:', error));
+        audioElement.play().catch(e => console.error('Error playing audio:', e));
     }
 
-    // Function to display buttons
     function appendButtons(buttons) {
         const buttonContainer = document.createElement('div');
         buttonContainer.classList.add('button-container');
+
         buttons.forEach(buttonInfo => {
             const button = document.createElement('button');
-            button.innerText = buttonInfo.texto;
+            button.innerText = buttonInfo.texto || buttonInfo.label; // Support both formats
+
             button.addEventListener('click', () => {
-                const message = buttonInfo.action_id || buttonInfo.texto;
-                appendMessage('user', message);
-                socket.emit('message', { pregunta: message });
-                // Remove buttons after one is clicked
+                // Use the action_id if available, otherwise use the text
+                const action = buttonInfo.action_id || buttonInfo.key || buttonInfo.texto || buttonInfo.label;
+                sendMessage({ pregunta: action });
+
+                // Remove buttons after one is clicked to prevent multiple clicks
                 buttonContainer.remove();
             });
             buttonContainer.appendChild(button);
         });
+
         chatMessages.appendChild(buttonContainer);
         chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
-    // Function to get or generate a session ID (for stateful communication)
+    // --- Session Management ---
+
     function getSessionId() {
         let sessionId = sessionStorage.getItem('chat_session_id');
         if (!sessionId) {
@@ -202,4 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return sessionId;
     }
+
+    // Optional: Send an initial message to get the welcome menu
+    // sendMessage({ pregunta: 'mostrar_menu' });
 });

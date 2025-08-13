@@ -196,6 +196,7 @@ def responder_municipio(
     flow_context['viewer_user_obj'] = viewer_user
     flow_context['user_obj'] = owner_user
     flow_context['channel'] = channel
+    flow_context['chat_db_context'] = chat_db_context
 
 
     # Route intent to the corresponding flow handler
