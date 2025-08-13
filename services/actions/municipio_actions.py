@@ -31,11 +31,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        nombre_vecino_final = action_data.get("usuario") or \
+        nombre_vecino_final = getattr(viewer_user, "name", None) or \
+                              getattr(viewer_user, "nombre", None) or \
+                              action_data.get("usuario") or \
                               action_data.get("nombre_usuario_detectado") or \
                               datos_parciales.get("nombre_usuario_detectado") or \
-                              getattr(viewer_user, "nombre", None) or \
-                              self.context.get("profile_name")
+                              self.context.get("profile_name") or \
+                              "Vecino/a"
 
         telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None
@@ -181,18 +183,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     logger.error(f"Error enviando notificación por SMS para {nro_ticket_str}: {e_sms}")
 
             # Formatear respuesta y obtener el botón de contacto
-            mensaje_respuesta, boton_contacto = formatear_ticket_respuesta(
+            municipio_config = self.context.get('municipio_config_actual', {})
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
+            mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
-                ticket_data_cleaned["nombre_vecino"],
+                ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
                 descripcion,
                 categoria,
                 nro_ticket_str,
-                contacto_especializado
+                contacto_especializado,
+                base_chat_url
             )
 
-            botones_finales = []
-            if boton_contacto:
-                botones_finales.append(boton_contacto)
+            # Log para debug
+            logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
 
             return {
                 "success": True,

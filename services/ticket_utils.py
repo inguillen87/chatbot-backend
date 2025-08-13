@@ -5,31 +5,28 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     botones = []
 
     if contacto_especializado:
-        # No hardcodear el default aquí, se debe manejar en el llamador.
         nombre_asesor = contacto_especializado.get("nombre")
         telefono_asesor = contacto_especializado.get("telefono")
         if nombre_asesor and telefono_asesor:
-            # Limpiar y asegurar que el número de teléfono sea solo dígitos
             telefono_numerico = ''.join(filter(str.isdigit, telefono_asesor))
             link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20quiero%20hacer%20seguimiento%20de%20mi%20{tipo}%20(ID:{id_ticket})"
             botones.append({
-                "texto": f"Contactar a {nombre_asesor}",
-                "url": link_whatsapp
+                "texto": f"📱 Contactar a {nombre_asesor}",
+                "url": link_whatsapp,
+                "type": "url"
             })
 
-    # --- START ENHANCEMENT: Add "Go to Chat" button ---
     if id_ticket and base_chat_url:
-        # Asegurarse de que la URL base no tenga una barra al final
         if base_chat_url.endswith('/'):
             base_chat_url = base_chat_url[:-1]
 
-        chat_url = f"{base_chat_url}/{id_ticket}"
+        ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
+        chat_url = f"{base_chat_url}/{ticket_id_numeric}"
         botones.append({
-            "texto": "Ir al Chat",
+            "texto": "💬 Ver mi Ticket",
             "url": chat_url,
-            "persistent_action": True # Para que el botón aparezca en la notificación
+            "type": "url"
         })
-    # --- END ENHANCEMENT ---
 
     tipos = {
         "reclamo": "Reclamo",
@@ -39,29 +36,21 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     }
     texto_tipo = tipos.get(tipo, "Consulta")
 
-    respuesta = f"""✅ ¡{texto_tipo} recibido, {nombre_usuario}!
+    respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*
 
-📄 **Resumen:**"""
-    if categoria:
-        respuesta += f"""  - **Categoría:** {categoria}
-"""
-    if descripcion:
-        respuesta += f"""  - **Descripción:** {descripcion}
-"""
-    if id_ticket:
-        respuesta += f"""  - **N° de Ticket:** {id_ticket}
+📄 *Resumen de tu {texto_tipo}:*
+- *N° de Ticket:* `{id_ticket}`
+- *Categoría:* {categoria}
+- *Descripción:* {descripcion}
 """
 
-    # No mostrar el link en el texto, solo en el botón.
     if nombre_asesor:
         respuesta += f"""
+📞 *Contacto para seguimiento:*
+Para seguir el estado de tu ticket, podés hablar directamente con *{nombre_asesor}* a través del botón de contacto."""
 
-**Contacto para seguimiento:**
-Para seguir el estado de tu ticket, podés hablar directamente con **{nombre_asesor}**."""
-
-    respuesta += f"""
+    respuesta += """
 
 Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
 
-    # Devuelve tanto el texto formateado como el botón de contacto si existe
     return respuesta, botones
