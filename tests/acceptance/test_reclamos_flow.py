@@ -4,6 +4,7 @@ from app import create_app, db
 from models import User, Rubro, ChatSessionContext
 from services.municipio_responder import responder_municipio
 
+@pytest.mark.legacy
 @pytest.fixture(scope='module')
 def test_client():
     app = create_app('config.TestingConfig')
@@ -21,6 +22,7 @@ def test_client():
             yield client
             db.drop_all()
 
+@pytest.mark.legacy
 def test_reclamo_happy_path_with_location(test_client):
     owner_user = User.query.first()
     chat_session_id = "whatsapp_1_happypath"

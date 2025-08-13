@@ -107,26 +107,12 @@ def responder_municipio(
     **kwargs
     ):
 
-    # Auto-learn audio preference
-    if msg.lower().strip() == 'solo texto':
-        if viewer_user:
-            viewer_user.prefers_audio = False
-            db.session.commit()
-        return {"message_body": "Entendido. A partir de ahora, solo te enviaré mensajes de texto."}
-    
-    is_audio_message = isinstance(pregunta_original, dict) and pregunta_original.get('media_url')
-
-    if is_audio_message:
-        audio_counter = chat_db_context.context_data.get('audio_counter', 0) + 1
-        chat_db_context.context_data['audio_counter'] = audio_counter
-        if audio_counter >= 2 and viewer_user and not viewer_user.prefers_audio:
-            viewer_user.prefers_audio = True
-            db.session.commit()
-    else:
-        chat_db_context.context_data['audio_counter'] = 0
-
+    estado_conversacion = None
     # 1. Get the raw text from the payload
-    if is_audio_message:
+    if chat_db_context and chat_db_context.context_data is None:
+        chat_db_context.context_data = {}
+
+    if isinstance(pregunta_original, dict) and pregunta_original.get('media_url'):
         from .audio_transcription_service import transcribe_audio_from_url
         transcription_result = transcribe_audio_from_url(
             pregunta_original['media_url'],
@@ -152,6 +138,24 @@ def responder_municipio(
     else:
         msg = pregunta_original
 
+    # Auto-learn audio preference
+    if msg.lower().strip() == 'solo texto':
+        if viewer_user:
+            viewer_user.prefers_audio = False
+            db.session.commit()
+        return {"message_body": "Entendido. A partir de ahora, solo te enviaré mensajes de texto."}
+
+    is_audio_message = isinstance(pregunta_original, dict) and pregunta_original.get('media_url')
+
+    if is_audio_message:
+        audio_counter = chat_db_context.context_data.get('audio_counter', 0) + 1
+        chat_db_context.context_data['audio_counter'] = audio_counter
+        if audio_counter >= 2 and viewer_user and not viewer_user.prefers_audio:
+            viewer_user.prefers_audio = True
+            db.session.commit()
+    else:
+        chat_db_context.context_data['audio_counter'] = 0
+
     # Handle STT confirmation state
     if chat_db_context and chat_db_context.context_data.get('estado_conversacion') == 'ESPERANDO_CONFIRMACION_STT':
         if msg.lower() == 'sí' or msg.lower() == 'si':
@@ -167,6 +171,7 @@ def responder_municipio(
 
     # 2. Route to get intent
     intent = nlu_route(msg)
+    logger.info(f"NLU intent: {intent}")
 
     # 3. Handle intent with flows
     flow_context = kwargs.copy()
@@ -189,6 +194,7 @@ def responder_municipio(
         # Fallback to smalltalk/general LLM
         payload = smalltalk.handle(msg, flow_context)
 
+    logger.info(f"Flow payload: {payload}")
     # 4. Render the payload to a WhatsApp message
     response_text = render_whatsapp.render(payload)
 

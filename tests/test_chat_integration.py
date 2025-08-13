@@ -1,3 +1,4 @@
+import pytest
 import unittest
 import json
 from unittest.mock import patch, MagicMock
@@ -5,12 +6,14 @@ from app import create_app, db
 from models import User, Rubro, ArchivoAdjunto, AnalisisArchivo, ChatSessionContext
 from config import Config
 
+@pytest.mark.legacy
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
     CELERY_TASK_ALWAYS_EAGER = True
 
+@pytest.mark.legacy
 class TestChatIntegration(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)
@@ -120,7 +123,7 @@ class TestChatIntegration(unittest.TestCase):
     #     self.assertEqual(contexto_actualizado.get("tipo_sugerido_imagen"), "Alumbrado Público")
     #     self.assertEqual(contexto_actualizado.get("archivo_id_reclamo_actual"), archivo_id)
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_utils.llamar_llm_para_json_estructurado')
     def test_anonymous_chat_municipio_loads_default_owner(self, mock_llamar_gemini):
         """
         Tests that an anonymous request to /ask/municipio

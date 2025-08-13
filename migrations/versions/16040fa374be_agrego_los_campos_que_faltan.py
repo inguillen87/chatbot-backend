@@ -23,8 +23,8 @@ def upgrade():
         op.drop_table('_alembic_tmp_pyme_ticket')
     except Exception:
         pass  # Si no existe, que siga
-    with op.batch_alter_table('pyme_ticket', schema=None) as batch_op:
-        batch_op.drop_column('archivo_url')
+    # with op.batch_alter_table('pyme_ticket', schema=None) as batch_op:
+    #     batch_op.drop_column('archivo_url')
     # --- FIN cambios ---
     op.get_bind().execute(text("PRAGMA foreign_keys=ON"))
 

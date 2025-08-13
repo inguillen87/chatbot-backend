@@ -1,4 +1,5 @@
 import pytest
+import pytest
 from flask import url_for, render_template_string
 from app import create_app, db
 from models import User
@@ -21,6 +22,7 @@ def app():
 def client(app):
     return app.test_client()
 
+@pytest.mark.legacy
 def test_get_user_locations(client):
     # Create test users
     user1 = User(id=2, name='Test User 1', municipio_id=1, latitud=10.0, longitud=20.0, email='test1@test.com', password_hash='test')

@@ -2,6 +2,10 @@
 Deterministic NLU router to recognize commands and atajos before hitting the LLM.
 """
 import unicodedata
+import logging
+import difflib
+
+logger = logging.getLogger(__name__)
 
 def normalize_text(text: str) -> str:
     """Removes accents, punctuation, and converts to lowercase."""
@@ -14,9 +18,11 @@ def normalize_text(text: str) -> str:
 
 # --- Intent Definitions ---
 INTENTS = {
-    "iniciar_reclamo": ["r", "re", "reclamo", "reclamos"],
+    "iniciar_reclamo": ["r", "re", "reclamo", "reclamos", "reportar"],
     "consultar_tramites": ["t", "tr", "tramite", "tramites"],
     "solicitar_turnos": ["tu", "turno", "turnos"],
+    "consultar_estado_ticket": ["estado", "ticket"],
+    "derivar_humano": ["agente", "humano", "persona"],
     "mostrar_menu": ["menu", "menu", "volver", "inicio"],
     "agradecer": ["gracias", "ok", "bueno", "dale"],
     "finalizar": ["finalizar", "cerrar", "chau", "adios"]
@@ -31,19 +37,21 @@ def route(text: str) -> str | None:
         return None
 
     normalized = normalize_text(text.strip())
+    logger.info(f"NLU router received normalized text: '{normalized}'")
 
-    # Direct match for simple commands
-    for intent, keywords in INTENTS.items():
-        if normalized in keywords:
-            return intent
-
-    # Check for numeric selection (will need context of which menu is active)
-    # For now, this is a placeholder.
+    # Check for numeric selection first
     if normalized.isdigit():
         num = int(normalized)
         if 1 <= num <= 9:
-            return f"seleccion_numero_{num}"
+            intent = f"seleccion_numero_{num}"
+            logger.info(f"NLU router matched intent: {intent}")
+            return intent
 
-    # More complex matching can be added here if needed, e.g., regex.
+    # Exact match for simple commands
+    for intent, keywords in INTENTS.items():
+        if normalized in keywords:
+            logger.info(f"NLU router matched intent: {intent}")
+            return intent
 
+    logger.info("NLU router found no specific intent, returning None.")
     return None

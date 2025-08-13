@@ -1,4 +1,5 @@
 import pytest
+import pytest
 from unittest.mock import patch, MagicMock
 from services.logic import responder_chatboc
 from services.pymes import responder_pyme
@@ -22,6 +23,7 @@ def mock_document_ai():
         yield mock_docai
 
 @patch('services.logic.responder_pyme')
+@pytest.mark.legacy
 def test_responder_chatboc_pyme_flow(mock_responder_pyme, mock_db_session):
     mock_responder_pyme.return_value = {
         "fuente": "pyme_iniciar_pedido_v2",
@@ -47,6 +49,7 @@ def test_responder_chatboc_pyme_flow(mock_responder_pyme, mock_db_session):
     assert "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel." in response.get("message_body", "")
 
 @patch('services.logic.responder_municipio')
+@pytest.mark.legacy
 def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_session):
     mock_responder_municipio.return_value = {
         "fuente": "municipio_crear_reclamo_v2",
@@ -71,8 +74,9 @@ def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_sess
     assert "municipio_crear_reclamo_v2" in response.get("fuente", "")
     assert "¿Cuál es la dirección del problema?" in response.get("message_body", "")
 
-@patch('services.municipio_responder.llamar_gemini')
+@patch('services.llm_utils.llamar_llm_para_json_estructurado')
 @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
+@pytest.mark.legacy
 def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_gemini, mock_db_session):
     mock_interpretar_imagen.return_value = {
         "es_reclamo": True,
@@ -108,10 +112,12 @@ def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_g
     assert "dirección" in response.get("message_body", "")
 
 @pytest.mark.skip(reason="Document processing for pymes is being refactored.")
+@pytest.mark.legacy
 def test_document_processing_pedido_pyme(mock_db_session):
     pass
 
-@patch('services.municipio_responder.llamar_gemini')
+@patch('services.llm_utils.llamar_llm_para_json_estructurado')
+@pytest.mark.legacy
 def test_information_gathering_reclamo_municipio(mock_llamar_gemini, mock_db_session):
     # 1. Initial request to create a reclamo
     mock_llamar_gemini.return_value = {

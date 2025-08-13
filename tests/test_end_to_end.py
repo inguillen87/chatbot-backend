@@ -1,3 +1,4 @@
+import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import os
@@ -9,6 +10,7 @@ sys.path.insert(0, project_root)
 
 from services.municipios import responder_municipio
 
+@pytest.mark.legacy
 class TestEndToEnd(unittest.TestCase):
 
     def setUp(self):

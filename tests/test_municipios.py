@@ -1,17 +1,18 @@
 import unittest
 from unittest.mock import patch, MagicMock
-import os
-import sys
-
-# Add project root to system path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
-
 from services.municipio_responder import responder_municipio
+import pytest
 
-def test_greeting_handler(client):
+@pytest.fixture
+def mock_tts():
+    """Mock para el servicio GoogleTextToSpeechService."""
+    with patch('services.google_text_to_speech.TextToSpeechService') as mock:
+        yield mock
+
+@pytest.mark.legacy
+def test_greeting_handler(init_database, owner_user, viewer_user, rubro, mock_tts):
     # Mockear el manejador de saludos para que no dependa de la configuración de Junín
-    with patch('services.municipio_responder.GreetingHandler') as mock_greeting_handler:
+    with patch('services.municipios.GreetingHandler') as mock_greeting_handler:
         mock_handler_instance = mock_greeting_handler.return_value
         mock_handler_instance.handle.return_value = {
             "message_body": "Hola, bienvenido al test.",
@@ -21,10 +22,10 @@ def test_greeting_handler(client):
         # Simular una solicitud con un input de saludo
         response = responder_municipio(
             pregunta_original="hola",
-            owner_user=MagicMock(),
-            viewer_user=MagicMock(),
+            owner_user=owner_user,
+            viewer_user=viewer_user,
             chat_db_context=MagicMock(),
-            rubro_obj=MagicMock(nombre='municipio')
+            rubro_obj=rubro
         )
 
         # Verificar que el manejador de saludos fue llamado
@@ -36,8 +37,9 @@ def test_greeting_handler(client):
         assert response["fuente"] == "mocked_greeting"
 
 
-def test_reclamo_handler_inicio(client):
-    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
+@pytest.mark.legacy
+def test_reclamo_handler_inicio(init_database, owner_user, viewer_user, rubro, mock_tts):
+    with patch('services.llm_utils.llamar_llm_para_json_estructurado') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
             "message_body": "Entendido, iniciando reclamo. ¿Sobre qué es?",
             "accion_backend": "crear_reclamo",
@@ -48,17 +50,18 @@ def test_reclamo_handler_inicio(client):
         # Simular una solicitud para iniciar un reclamo
         response = responder_municipio(
             pregunta_original="reclamo",
-            owner_user=MagicMock(),
-            viewer_user=MagicMock(),
+            owner_user=owner_user,
+            viewer_user=viewer_user,
             chat_db_context=MagicMock(context_data={}),
-            rubro_obj=MagicMock(nombre='municipio')
+            rubro_obj=rubro
         )
 
         mock_llamar_gemini.assert_called_once()
         assert response["message_body"] == "Entendido, iniciando reclamo. ¿Sobre qué es?"
 
-@patch('services.municipio_responder.llamar_gemini')
-def test_responder_municipio_imagen(mock_llamar_gemini, client):
+@pytest.mark.legacy
+@patch('services.llm_utils.llamar_llm_para_json_estructurado')
+def test_responder_municipio_imagen(mock_llamar_gemini, init_database, owner_user, viewer_user, rubro, mock_tts):
     mock_llamar_gemini.return_value = {
         "message_body": "Gracias por la imagen. Parece un reclamo sobre Bacheo. ¿Es correcto?",
         "accion_backend": "confirmar_reclamo_auto",
@@ -73,22 +76,23 @@ def test_responder_municipio_imagen(mock_llamar_gemini, client):
 
     response = responder_municipio(
         pregunta_original="Mira esta foto",
-        owner_user=MagicMock(),
-        viewer_user=MagicMock(),
+        owner_user=owner_user,
+        viewer_user=viewer_user,
         chat_db_context=MagicMock(context_data={}),
-        rubro_obj=MagicMock(nombre='municipio'),
+        rubro_obj=rubro,
         datos_interpretados_archivo=datos_interpretados
     )
 
     assert "Gracias por la imagen" in response["message_body"]
     assert "Bacheo" in response["message_body"]
 
-def test_button_click_sets_category_and_advances_flow(client):
+@pytest.mark.legacy
+def test_button_click_sets_category_and_advances_flow(init_database, owner_user, viewer_user, rubro, mock_tts):
     """
     Tests that clicking a sub-category button correctly sets the category
     in the context and advances the conversation to the next step.
     """
-    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
+    with patch('services.llm_utils.llamar_llm_para_json_estructurado') as mock_llamar_gemini:
         mock_llamar_gemini.return_value = {
             "message_body": "Entendido. Para el reclamo de Luminaria, por favor decime la descripción del problema y la dirección.",
             "accion_backend": "crear_reclamo",
@@ -101,10 +105,10 @@ def test_button_click_sets_category_and_advances_flow(client):
         # Simulate the user clicking the "Luminaria" button
         response = responder_municipio(
             pregunta_original="reclamoluminaria",
-            owner_user=MagicMock(id=1),
-            viewer_user=None,
+            owner_user=owner_user,
+            viewer_user=viewer_user,
             chat_db_context=chat_db_context,
-            rubro_obj=MagicMock(nombre='municipio'),
+            rubro_obj=rubro,
             channel="web",
             action="reclamoluminaria" # This is what the frontend sends
         )

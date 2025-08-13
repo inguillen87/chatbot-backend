@@ -8,8 +8,8 @@ def handle(msg, ctx):
     Handles the conversation flow for news.
     """
     municipio_name = "Junín" # Placeholder
-    if ctx.get('user_obj') and ctx.get('user_obj').nombre_empresa:
-        municipio_name = ctx.get('user_obj').nombre_empresa
+    if ctx.get('user_obj') and ctx.get('user_obj').get('nombre_empresa'):
+        municipio_name = ctx.get('user_obj').get('nombre_empresa')
 
     # Search for recent news
     query = f"noticias de {municipio_name}"
