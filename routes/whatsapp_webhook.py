@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify, abort, current_app # Basic Flask components
+import json
 from twilio.request_validator import RequestValidator # For validating Twilio requests
 from twilio.rest import Client # For sending messages via Twilio
 import os # For accessing environment variables
@@ -230,7 +231,11 @@ def whatsapp_webhook():
         if location_info:
             kwargs_for_bot["location_info"] = location_info
 
-        profile_name = post_vars.get("ProfileName")
+        raw_meta = request.form.get("ChannelMetadata") or "{}"
+        meta = json.loads(raw_meta)
+        profile_name = (meta.get("data", {})
+                            .get("context", {})
+                            .get("ProfileName") or "").strip() or None
         if profile_name:
             kwargs_for_bot["profile_name"] = profile_name
 

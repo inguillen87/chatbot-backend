@@ -1,3 +1,4 @@
+import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import os
@@ -5,6 +6,7 @@ import uuid
 
 from google.cloud import texttospeech
 
+@pytest.mark.legacy
 class TestTextToSpeechService(unittest.TestCase):
 
     @patch('services.google_text_to_speech.texttospeech.TextToSpeechClient')

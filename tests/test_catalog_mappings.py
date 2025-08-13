@@ -1,8 +1,10 @@
 import pytest
+import pytest
 import json
 from app import db
 from models import User, CatalogMapping
 
+@pytest.mark.legacy
 class TestCatalogMappingsAPI:
 
     @pytest.fixture(autouse=True)

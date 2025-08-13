@@ -23,6 +23,7 @@ PAYLOAD_SCHEMA = {
   "additionalProperties": True
 }
 
+@pytest.mark.legacy
 @pytest.mark.contract
 def test_payload_tramite_valido():
     """
@@ -41,6 +42,7 @@ def test_payload_tramite_valido():
     }
     jsonschema.validate(instance=p, schema=PAYLOAD_SCHEMA)
 
+@pytest.mark.legacy
 @pytest.mark.contract
 def test_payload_invalido_sin_required_fields():
     """
@@ -54,6 +56,7 @@ def test_payload_invalido_sin_required_fields():
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=p, schema=PAYLOAD_SCHEMA)
 
+@pytest.mark.legacy
 @pytest.mark.contract
 def test_payload_invalido_bad_type():
     """

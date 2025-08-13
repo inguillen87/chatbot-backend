@@ -1,3 +1,4 @@
+import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -15,11 +16,13 @@ import json
 from config import Config
 
 # Configuración de prueba
+@pytest.mark.legacy
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
 
+@pytest.mark.legacy
 class TestAISuggestions(unittest.TestCase):
     def setUp(self):
         """Set up for each test method."""

@@ -1,3 +1,4 @@
+import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import json
@@ -6,6 +7,7 @@ import os
 from services.gemini_bridge import llamar_gemini, _limpiar_historial_gemini, GEMINI_MODEL_PRESTAMOS, GEMINI_MODEL_STANDARD, GEMINI_SAFETY_SETTINGS, MAX_HISTORIAL_MESSAGES
 from services import prompts
 
+@pytest.mark.legacy
 class TestGeminiBridge(unittest.TestCase):
 
     def setUp(self):

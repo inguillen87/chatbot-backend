@@ -3,10 +3,17 @@ from app import create_app, db
 from models import User, MunicipioTicket, Rubro
 from config import TestConfig
 import json
+import pytest
+import os
+
+pytestmark = [
+    pytest.mark.legacy,
+    pytest.mark.skipif(os.getenv("NEW_PIPELINE") == "1", reason="Legacy test disabled for new pipeline")
+]
 
 class TicketEndpointsTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -97,11 +104,3 @@ class TicketEndpointsTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-\n
-import pytest
-import os
-
-pytestmark = [
-    pytest.mark.legacy,
-    pytest.mark.skipif(os.getenv("NEW_PIPELINE") == "1", reason="Legacy test disabled for new pipeline")
-]

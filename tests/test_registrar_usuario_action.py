@@ -1,9 +1,11 @@
 import unittest
 from unittest.mock import patch, MagicMock
-from services.actions.registrar_usuario_action import RegistrarUsuarioAction
+import pytest
+from services.actions.general_actions import RegistrarUsuarioActionHandler
 from models import User, db
 from app import create_app
 
+@pytest.mark.legacy
 class TestRegistrarUsuarioAction(unittest.TestCase):
 
     def setUp(self):
@@ -17,14 +19,15 @@ class TestRegistrarUsuarioAction(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.actions.registrar_usuario_action.db.session.add')
-    @patch('services.actions.registrar_usuario_action.db.session.commit')
+    @patch('services.actions.general_actions.db.session.add')
+    @patch('services.actions.general_actions.db.session.commit')
     def test_execute_success(self, mock_commit, mock_add):
-        action = RegistrarUsuarioAction()
+        action = RegistrarUsuarioActionHandler({})
         datos = {
             "nombre": "Test User",
             "email": "test@example.com",
-            "telefono": "1234567890"
+            "telefono": "1234567890",
+            "password": "testpassword"
         }
         resultado = action.execute(datos)
         self.assertTrue(resultado['success'])
@@ -33,11 +36,11 @@ class TestRegistrarUsuarioAction(unittest.TestCase):
         mock_commit.assert_called_once()
 
     def test_execute_missing_data(self):
-        action = RegistrarUsuarioAction()
+        action = RegistrarUsuarioActionHandler({})
         datos = {"nombre": "Test User"}
         resultado = action.execute(datos)
         self.assertFalse(resultado['success'])
-        self.assertIn('error', resultado)
+        self.assertIn('message_to_user', resultado)
 
 if __name__ == '__main__':
     unittest.main()

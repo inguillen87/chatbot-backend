@@ -7,6 +7,7 @@ def clear_cache():
     """Ensures the cache is clear before each test."""
     CACHE.clear()
 
+@pytest.mark.legacy
 @patch('services.flows.tramites.google_search')
 def test_tramites_flow_happy_path_and_caching(mock_google_search):
     """
@@ -34,6 +35,7 @@ def test_tramites_flow_happy_path_and_caching(mock_google_search):
     assert "Licencia de Conducir - Municipalidad de Junín" in response2['message_body']
     mock_google_search.assert_called_once() # Should NOT be called again
 
+@pytest.mark.legacy
 def test_tramites_flow_no_results():
     """
     Tests the flow when google_search returns no results.

@@ -27,12 +27,6 @@ def upgrade():
     try:
         op.drop_table("_alembic_tmp_pyme_ticket")
     except Exception:
-        pass
-
-    # Drop seguro: solo si la columna existe
-    if _has_column("pyme_ticket", "archivo_url"):
-        with op.batch_alter_table("pyme_ticket") as batch_op:
-            batch_op.drop_column("archivo_url")
 
 
 def downgrade():

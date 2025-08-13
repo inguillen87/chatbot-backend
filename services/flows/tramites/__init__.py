@@ -23,7 +23,7 @@ def handle(msg, ctx):
     if cached_result and (time.time() - cached_result['timestamp']) < CACHE_TTL:
         search_results = cached_result['results']
     else:
-        municipio_name = ctx.get('user_obj').nombre_empresa if ctx.get('user_obj') else "Junín"
+        municipio_name = ctx.get('user_obj').get('nombre_empresa') if ctx.get('user_obj') else "Junín"
         full_query = f"tramite {tramite_query} en {municipio_name}"
         search_results = google_search(full_query)
         if search_results:

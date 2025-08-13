@@ -1,3 +1,4 @@
+import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import os
@@ -9,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from services.google_vision_service import GoogleVisionService, analyze_image_from_content, GoogleAPICallError
 from google.api_core import exceptions as core_exceptions
 
+@pytest.mark.legacy
 class TestGoogleVisionService(unittest.TestCase):
     """Tests for the GoogleVisionService class itself."""
 
@@ -69,6 +71,7 @@ class TestGoogleVisionService(unittest.TestCase):
         with self.assertRaises(GoogleAPICallError):
             service.analyze_image(b'fake_content', [])
 
+@pytest.mark.legacy
 class TestAnalyzeImageFromContentFunction(unittest.TestCase):
     """Tests for the standalone analyze_image_from_content helper function."""
 

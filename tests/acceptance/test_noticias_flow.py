@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch
 from services.flows.noticias import handle as handle_noticias
 
+@pytest.mark.legacy
 @patch('services.flows.noticias.google_search')
 def test_noticias_flow_happy_path(mock_google_search):
     """
@@ -23,6 +24,7 @@ def test_noticias_flow_happy_path(mock_google_search):
     assert response['options_list'][0]['url'] == "https://junin.gob.ar/ciclovia"
     mock_google_search.assert_called_once_with("noticias de Junín", days=7)
 
+@pytest.mark.legacy
 @patch('services.flows.noticias.google_search', return_value=[])
 def test_noticias_flow_no_results(mock_google_search):
     """

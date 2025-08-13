@@ -1,9 +1,11 @@
 import pytest
+import pytest
 from unittest.mock import patch, Mock
 from services.herramientas_municipio import validar_y_formatear_direccion
 
 @patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
+@pytest.mark.legacy
 def test_validar_y_formatear_direccion_exitosa(mock_get):
     # Arrange
     mock_response = Mock()
@@ -35,6 +37,7 @@ def test_validar_y_formatear_direccion_exitosa(mock_get):
 
 @patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
+@pytest.mark.legacy
 def test_validar_y_formatear_direccion_invalida(mock_get):
     # Arrange
     mock_response = Mock()
@@ -51,6 +54,7 @@ def test_validar_y_formatear_direccion_invalida(mock_get):
     # Assert
     assert resultado is None
 
+@pytest.mark.legacy
 def test_generar_respuesta_audio_in_tool_registry():
     """
     Tests that the 'generar_respuesta_audio' tool is correctly registered.
@@ -65,6 +69,7 @@ def test_generar_respuesta_audio_in_tool_registry():
 
 @patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
+@pytest.mark.legacy
 def test_validar_y_formatear_direccion_error_api(mock_get):
     # Arrange
     mock_response = Mock()

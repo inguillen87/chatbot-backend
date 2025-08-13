@@ -1,4 +1,5 @@
 import unittest
+import pytest
 from types import SimpleNamespace, ModuleType
 from unittest.mock import patch, MagicMock # Added MagicMock
 import sys
@@ -81,13 +82,16 @@ class MunicipioLogicTests(unittest.TestCase):
         self.viewer_user.telefono = "2615550000"
         self.viewer_user.email = "vecino@example.com"
         self.viewer_user.direccion = "Av. Siempre Viva 742"
+        self.viewer_user.prefers_audio = False
 
     def tearDown(self):
         self.app_context.pop()
 
+    @pytest.mark.legacy
+    @patch('services.google_text_to_speech.TextToSpeechService')
     @patch('services.municipio_responder.servicio_tickets')
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_human_escalation(self, mock_llamar_gemini, mock_servicio_tickets):
+    @patch('services.llm_utils.llamar_llm_para_json_estructurado')
+    def test_human_escalation(self, mock_llamar_gemini, mock_servicio_tickets, mock_tts_service):
         mock_llamar_gemini.return_value = {
             "message_body": "Te estoy derivando con un agente.",
             "accion_backend": "derivar_humano",

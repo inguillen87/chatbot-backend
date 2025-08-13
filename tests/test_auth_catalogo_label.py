@@ -1,3 +1,4 @@
+import pytest
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from models import User, Rubro
 from routes.legacy_auth import get_current_user
 from config import Config
 
+@pytest.mark.legacy
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"

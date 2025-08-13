@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import os
 import sys
 from types import SimpleNamespace
+import pytest
 
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -14,6 +15,7 @@ from services.logic import responder_chatboc
 from services.municipio_responder import CONTEXTO_MUNICIPIO, ConversationState
 from services.response_formatter import build_interactive_response
 
+@pytest.mark.legacy
 class TestAccessibilityAndMedia(unittest.TestCase):
 
     def setUp(self):
@@ -109,7 +111,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         )
         self.assertEqual(formatted_payload['text']['body'], expected_body)
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_utils.llamar_llm_para_json_estructurado')
     def test_finalizar_tramite_action_resets_context(self, mock_llamar_gemini):
         """
         Tests if the 'finalizar_tramite' action correctly resets the conversation context.

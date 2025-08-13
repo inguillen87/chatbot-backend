@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from services.ui.render_whatsapp import render as render_whatsapp
 
+@pytest.mark.legacy
 @pytest.mark.contract
 def test_whatsapp_renderer_tramite_flow():
     """
@@ -45,6 +46,7 @@ def test_whatsapp_renderer_tramite_flow():
     assert "• Llamar ahora: tel:+542614000000" in rendered_message
     assert "_Decí *menu* para volver._" in rendered_message
 
+@pytest.mark.legacy
 @pytest.mark.contract
 def test_whatsapp_renderer_reclamo_flow():
     """

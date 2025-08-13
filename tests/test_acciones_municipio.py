@@ -1,3 +1,4 @@
+import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
@@ -14,6 +15,7 @@ from services.herramientas_municipio import direccion_es_valida
 from models import User
 from config import Config
 
+@pytest.mark.legacy
 class TestConfigAll(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = os.environ.get('TEST_DATABASE_URL', 'sqlite:///:memory:')
@@ -22,6 +24,7 @@ class TestConfigAll(Config):
     CELERY_TASK_ALWAYS_EAGER = True
     DEBUG = False
 
+@pytest.mark.legacy
 class TestAccionesMunicipio(unittest.TestCase):
 
     def setUp(self):
