@@ -108,9 +108,14 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         texto_mensaje = ""
         try:
             mensaje_usuario_obj = json.loads(mensaje_usuario)
-            texto_mensaje = mensaje_usuario_obj.get("texto", "")
+            if isinstance(mensaje_usuario_obj, dict):
+                texto_mensaje = mensaje_usuario_obj.get("texto", "")
+            else:
+                texto_mensaje = str(mensaje_usuario_obj)
+                mensaje_usuario_obj = {"texto": texto_mensaje}
         except (json.JSONDecodeError, TypeError):
             texto_mensaje = mensaje_usuario
+            mensaje_usuario_obj = {"texto": texto_mensaje}
 
         contents_for_api = [
             f"USUARIO: {json.dumps(usuario, ensure_ascii=False)}\nHISTORIAL PREVIO: {json.dumps(historial, ensure_ascii=False)}\nMENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}"
