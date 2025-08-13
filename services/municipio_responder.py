@@ -169,11 +169,27 @@ def responder_municipio(
                 "options_list": []
             }
 
-    # 2. Route to get intent
-    intent = nlu_route(msg)
-    logger.info(f"NLU intent: {intent}")
+    # 2. Handle contextual input (e.g., replying to a menu)
+    intent = None
+    context_state = chat_db_context.context_data.get('estado_conversacion')
 
-    # 3. Handle intent with flows
+    if context_state == 'ESPERANDO_SELECCION_DE_LISTA' and msg.isdigit():
+        num_seleccionado = int(msg)
+        last_options = chat_db_context.context_data.get('last_options', [])
+        if 0 < num_seleccionado <= len(last_options):
+            # Map number to action_id
+            intent = last_options[num_seleccionado - 1].get('key')
+            logger.info(f"Intent resolved from context menu selection: '{intent}'")
+            # Clear state after using it
+            chat_db_context.context_data['estado_conversacion'] = None
+            chat_db_context.context_data['last_options'] = None
+
+    # 3. If no intent from context, use NLU router
+    if not intent:
+        intent = nlu_route(msg)
+        logger.info(f"NLU intent: {intent}")
+
+    # 4. Handle intent with flows
     flow_context = kwargs.copy()
     flow_context['phone'] = anon_id
     flow_context['profile_name'] = kwargs.get('profile_name')
@@ -182,23 +198,35 @@ def responder_municipio(
     flow_context['channel'] = channel
 
 
+    # Route intent to the corresponding flow handler
     if intent == "iniciar_reclamo":
         payload = reclamos_flow.handle(msg, flow_context)
-    elif intent == "consultar_tramites":
+    elif intent in ["consultar_tramites", "tramite_licencia", "pagar_tasas", "veterinaria_bromatologia", "defensa_consumidor", "realizar_denuncia", "solicitar_turnos"]:
+        # For now, route all procedural intents to the main tramites_flow
+        # A more specific flow could be created for each one later.
+        logger.info(f"Routing intent '{intent}' to tramites_flow.")
         payload = tramites.handle(msg, flow_context)
-    elif intent == "solicitar_turnos":
-        payload = tramites.handle(msg, flow_context) # For now, same as tramites
+    elif intent in ["agenda_cultural", "ultimas_novedades"]:
+        logger.info(f"Routing intent '{intent}' to noticias_flow.")
+        payload = noticias.handle(msg, flow_context)
     elif intent == "mostrar_menu":
         payload = menu.handle(msg, flow_context)
     else:
-        # Fallback to smalltalk/general LLM
+        # Fallback to smalltalk/general LLM for unhandled intents
+        logger.info(f"Intent '{intent}' not explicitly handled, using smalltalk/LLM fallback.")
         payload = smalltalk.handle(msg, flow_context)
 
     logger.info(f"Flow payload: {payload}")
-    # 4. Render the payload to a WhatsApp message
+    # 4. Post-flow processing: save context for menus
+    if payload.get("type") == "menu" and payload.get("data", {}).get("items"):
+        chat_db_context.context_data['last_options'] = payload["data"]["items"]
+        chat_db_context.context_data['estado_conversacion'] = 'ESPERANDO_SELECCION_DE_LISTA'
+        logger.info("Saved menu options to context and set state to ESPERANDO_SELECCION_DE_LISTA")
+
+    # 5. Render the payload to a WhatsApp message
     response_text = render_whatsapp.render(payload)
 
-    # 5. Generate audio response
+    # 6. Generate audio response
     tts_service = TextToSpeechService()
     audio_url = None
     if (viewer_user and viewer_user.prefers_audio) or (isinstance(pregunta_original, dict) and pregunta_original.get('media_url')):
