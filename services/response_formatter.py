@@ -34,17 +34,17 @@ def build_interactive_response(options: list,
             return {"type": "audio", "audio": {"link": audio_url}}
 
         num_options = len(options)
-        # Force text-based menus for now, as requested by the user.
-        is_interactive = True
 
-        if not is_interactive:
-            # Fallback to simple text message
+        # If the message type is explicitly 'text', always format as text.
+        if message_type == 'text':
             final_body = body_text
             if options:
                 options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
                 options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
                 final_body += options_text
             return {"type": "text", "text": {"body": final_body}}
+
+        is_interactive = message_type in ['interactive_buttons', 'interactive_list']
 
         interactive_data = {
             "header": {"type": "text", "text": header_text or "Menú"} if header_text else None,

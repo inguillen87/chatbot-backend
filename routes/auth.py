@@ -741,3 +741,29 @@ def me_perfil(user):
             )
             return jsonify({"error": "Error interno al guardar el perfil."}), 500
 
+@auth_bp.route('/update_personal_data', methods=['POST'])
+@token_requerido
+def update_personal_data(current_user: User):
+    """
+    Actualiza los datos personales de un usuario.
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No se recibieron datos."}), 400
+
+    # Campos que se pueden actualizar
+    allowed_fields = ['name', 'telefono', 'email', 'direccion']
+
+    for field in allowed_fields:
+        if field in data:
+            setattr(current_user, field, data[field])
+
+    try:
+        db.session.commit()
+        return jsonify({"mensaje": "Datos personales actualizados correctamente."})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(
+            f"Error al actualizar datos personales para {current_user.email}: {e}", exc_info=True
+        )
+        return jsonify({"error": "Error interno al guardar los datos."}), 500

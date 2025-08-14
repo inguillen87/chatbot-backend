@@ -1,7 +1,6 @@
 import pytest
 from app import create_app, db
 from config import TestingConfig
-
 @pytest.fixture(scope='session')
 def app():
     """Create a new app instance for each test session."""
@@ -17,3 +16,36 @@ def client(app):
             yield client
             db.session.remove()
             db.drop_all()
+
+@pytest.fixture(scope='function')
+def init_database(client):
+    """Fixture to set up the database and create some initial users."""
+    from models import User, Rubro
+
+    # Create a test rubro
+    rubro = Rubro(id=1, clave="municipio", nombre="Municipalidad")
+    db.session.add(rubro)
+
+    # Create an owner user (admin)
+    owner_user = User(id=1, name="Admin User", email="admin@test.com", rol="admin", municipio_id=1, rubro_id=1)
+    owner_user.set_password("admin")
+    db.session.add(owner_user)
+
+    # Create a viewer user (citizen)
+    viewer_user = User(id=2, name="Test Viewer", email="viewer@test.com", rol="usuario")
+    viewer_user.set_password("viewer")
+    db.session.add(viewer_user)
+
+    db.session.commit()
+
+    yield db
+
+@pytest.fixture
+def owner_user(init_database):
+    from models import User
+    return User.query.get(1)
+
+@pytest.fixture
+def viewer_user(init_database):
+    from models import User
+    return User.query.get(2)

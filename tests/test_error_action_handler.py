@@ -11,7 +11,7 @@ class TestErrorActionHandler(unittest.TestCase):
         }
         result = orchestrator.execute_action(llm_output)
         self.assertFalse(result['success'])
-        self.assertEqual(result['message_to_user'], 'Hubo un problema al procesar tu solicitud (acción desconocida).')
+        self.assertEqual(result['message_to_user'], 'No pude procesar tu solicitud')
         self.assertEqual(result['executed_action_handler'], 'ErrorActionHandler')
 
 if __name__ == '__main__':

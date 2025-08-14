@@ -4,10 +4,12 @@ from app import db
 from models import User, ChatSessionContext
 from services.municipio_responder import responder_municipio
 
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.audio_transcription_service.transcribe_audio_from_url')
-def test_stt_low_confidence(mock_transcribe, init_database, owner_user):
+def test_stt_low_confidence(mock_transcribe, mock_llamar_gemini, init_database, owner_user):
+    mock_llamar_gemini.return_value = {'message_body': 'Soy una respuesta mock.'}
     mock_transcribe.return_value = {"transcript": "hola", "confidence": 0.7}
-    chat_context = ChatSessionContext(chat_session_id="stt_low", user_id=owner_user.id)
+    chat_context = ChatSessionContext(chat_session_id="stt_low", user_id=owner_user.id, context_data={})
     db.session.add(chat_context)
     db.session.commit()
 
@@ -16,9 +18,8 @@ def test_stt_low_confidence(mock_transcribe, init_database, owner_user):
     assert "¿Es correcto?" in response['message_body']
     assert chat_context.context_data['estado_conversacion'] == 'ESPERANDO_CONFIRMACION_STT'
 
-@patch('services.google_text_to_speech.TextToSpeechService.is_cached', return_value=False)
 @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
-def test_tts_caching(mock_synthesize, mock_is_cached, init_database, owner_user, viewer_user):
+def test_tts_caching(mock_synthesize, init_database, owner_user, viewer_user):
     viewer_user.prefers_audio = True
     db.session.commit()
 
@@ -44,8 +45,10 @@ def test_prefers_audio_flag(mock_synthesize, init_database, owner_user):
     responder_municipio("hola", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
     mock_synthesize.assert_called_once()
 
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.audio_transcription_service.transcribe_audio_from_url')
-def test_auto_learn_prefers_audio(mock_transcribe, init_database, owner_user):
+def test_auto_learn_prefers_audio(mock_transcribe, mock_llamar_gemini, init_database, owner_user):
+    mock_llamar_gemini.return_value = {'message_body': 'Hola, he procesado tu audio.'}
     mock_transcribe.return_value = {"transcript": "hola", "confidence": 0.9}
     viewer_user = User(name="Audio Learner", email="audio@learner.com", prefers_audio=False)
     viewer_user.set_password("testpassword")

@@ -48,7 +48,8 @@ from routes.reacciones import reacciones_bp
 from routes.carrito import carrito_bp
 # from routes.cart import cart_bp # This line caused an ImportError
 from routes.productos import productos_bp
-from routes.ai_templates import ai_templates_bp 
+from routes.ai_templates import ai_templates_bp
+from routes.ai import ai_bp as ai_suggest_bp
 from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
 from routes.catalog_mappings import catalog_mappings_bp
 from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
@@ -211,6 +212,7 @@ def create_app(config_class=Config):
     app.register_blueprint(municipal_bp)
     app.register_blueprint(reacciones_bp)
     app.register_blueprint(ai_templates_bp)
+    app.register_blueprint(ai_suggest_bp)
     app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
     app.register_blueprint(catalog_mappings_bp)
     app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)

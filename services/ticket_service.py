@@ -89,10 +89,30 @@ class ServicioTickets:
             "pyme": PymeTicketCreator()
         }
 
-    def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None]:
+    def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
+        from models import User  # Import User model here to avoid circular import at module level
         creator = self.creators.get(tipo_ticket)
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
+
+        # --- Verificación de datos personales del usuario ---
+        user_id = ticket_data.get("user_id")
+        if user_id:
+            user = db.session.get(User, user_id)
+            if user:
+                # Verificar si falta alguno de los datos esenciales
+                if not all([user.name, user.email, user.telefono]):
+                    logger.warning(f"Usuario {user_id} intentó crear un ticket sin datos personales completos. Name: {bool(user.name)}, Email: {bool(user.email)}, Tel: {bool(user.telefono)}")
+                    return {"error": "missing_personal_info", "message": "Por favor, complete sus datos personales para continuar."}
+
+                # Si los datos están, los agregamos al ticket_data para que se guarden en el ticket
+                ticket_data['nombre_vecino'] = user.name
+                ticket_data['email_vecino'] = user.email
+                ticket_data['telefono_vecino'] = user.telefono
+            else:
+                logger.warning(f"Se proveyó un user_id ({user_id}) para crear un ticket, pero el usuario no fue encontrado.")
+
+        # --- Fin de la verificación ---
 
         ticket_data["nro_ticket"] = random.randint(100000, 999999)
         try:
@@ -164,7 +184,8 @@ class ServicioTickets:
                 user_id=comentario_data.get("user_id"),
                 anon_id=comentario_data.get("anon_id"),
                 es_admin=comentario_data.get("es_admin", False),
-                archivo_adjunto_id=comentario_data.get("archivo_adjunto_id") # Add the new field
+                archivo_adjunto_id=comentario_data.get("archivo_adjunto_id"), # Add the new field
+                origen=comentario_data.get("origen", "chat") # Guardar el origen
             )
             if tipo_ticket == "municipio":
                 nuevo_comentario.municipio_ticket = ticket

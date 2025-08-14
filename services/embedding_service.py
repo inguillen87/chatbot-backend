@@ -20,10 +20,9 @@ def embed_textos_gemini(textos: List[str], input_type: str = "search_document") 
         logger.error("Entrada inválida: se esperaba una lista de strings.")
         return None
 
-    # El modelo de embedding de Gemini se llama a través de un endpoint específico,
-    # no a través de la API de generación de texto. La implementación actual de
-    # llamar_gemini_para_generacion_texto no es adecuada para esto.
-    # Se necesita una función que llame al endpoint de embedding de Gemini.
-    # Por ahora, devolveremos un mock.
-    logger.warning("La función de embedding de Gemini no está implementada todavía. Usando un mock.")
-    return [[0.0] * 768 for _ in textos]
+    # NOTA: Esta es una implementación mock/placeholder. Debería ser reemplazada
+    # con una llamada real al servicio de embeddings de Gemini.
+    # Los tests deben mockear esta función para devolver valores controlados.
+    logger.warning("Usando implementación MOCK de embed_textos_gemini. Devolverá vectores de ceros.")
+    # Se devuelve un vector de 1024 para ser consistente con los datos de prueba existentes.
+    return [[0.0] * 1024 for _ in textos]

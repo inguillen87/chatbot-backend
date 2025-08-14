@@ -19,7 +19,7 @@ def test_tramites_flow_happy_path_and_caching(mock_google_search):
         "snippet": "Requisitos para obtener la licencia de conducir por primera vez..."
     }]
 
-    msg = {"text": "licencia de conducir"}
+    msg = "licencia de conducir"
     ctx = {"user_obj": {"nombre_empresa": "Junín"}}
 
     # 1. First call, should call google_search
@@ -41,7 +41,7 @@ def test_tramites_flow_no_results():
     Tests the flow when google_search returns no results.
     """
     with patch('services.flows.tramites.google_search', return_value=[]):
-        msg = {"text": "un tramite inexistente"}
+        msg = "un tramite inexistente"
         ctx = {"user_obj": {"nombre_empresa": "Junín"}}
         response = handle_tramites(msg, ctx)
         assert "No encontré información sobre el trámite" in response['message_body']

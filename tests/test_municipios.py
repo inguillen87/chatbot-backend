@@ -106,7 +106,7 @@ def test_button_click_sets_category_and_advances_flow(client):
             chat_db_context=chat_db_context,
             rubro_obj=MagicMock(nombre='municipio'),
             channel="web",
-            action="reclamoluminaria" # This is what the frontend sends
+            action="reclamo_luminaria" # This is what the frontend sends
         )
 
         # 1. Assert the bot's response asks for the next piece of info

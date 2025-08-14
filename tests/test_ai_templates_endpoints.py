@@ -54,8 +54,8 @@ def test_suggest_templates_success(client):
     _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
     _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
-    with patch('services.embedding_service.embed_textos_gemini') as mock_embed_textos_gemini:
-        mock_embed_textos_gemini.return_value = {"embeddings": [[0.11]*1024]}
+    with patch('routes.ai.embed_textos_gemini') as mock_embed_textos_gemini:
+        mock_embed_textos_gemini.return_value = [[0.1]*1024]
         response = client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {mock_user.token}'},
                                     json={'asunto': 'Quiero saludar', 'contexto_ticket': 'Hola', 'top_n': 1})

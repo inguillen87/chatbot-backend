@@ -21,36 +21,33 @@ def app():
 def client(app):
     return app.test_client()
 
+from models import Rubro
 def test_get_user_locations(client):
     # Create test users
-    user1 = User(id=2, name='Test User 1', municipio_id=1, latitud=10.0, longitud=20.0, email='test1@test.com', password_hash='test')
-    user2 = User(id=3, name='Test User 2', municipio_id=1, latitud=30.0, longitud=40.0, email='test2@test.com', password_hash='test')
-    db.session.add_all([user1, user2])
+    user1 = User(id=2, name='Test User 1', municipio_id=1, latitud=10.0, longitud=20.0, email='test1@test.com')
+    user1.set_password("test")
+    user2 = User(id=3, name='Test User 2', municipio_id=1, latitud=30.0, longitud=40.0, email='test2@test.com')
+    user2.set_password("test")
+
+    admin_rubro = Rubro(id=1, nombre="municipio", clave="municipio")
+    db.session.add(admin_rubro)
     db.session.commit()
 
-    mock_user = User(id=1, rol='admin', municipio_id=1, name='Admin User', email='admin@test.com', password_hash='test')
-    mock_user.rubro = None
+    admin_user = User(id=1, rol='admin', municipio_id=1, name='Admin User', email='admin@test.com', token='test-admin-token', rubro_id=admin_rubro.id)
+    admin_user.set_password("adminpass")
 
-    def token_passthrough(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            return f(mock_user, *args, **kwargs)
-        return decorated_function
+    db.session.add_all([user1, user2, admin_user])
+    db.session.commit()
 
-    def admin_passthrough(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            return f(*args, **kwargs)
-        return decorated_function
+    response = client.get(
+        url_for('estadisticas.get_user_locations'),
+        headers={'Authorization': f'Bearer {admin_user.token}'}
+    )
 
-    with patch('routes.estadisticas.token_requerido', token_passthrough), \
-         patch('routes.estadisticas.admin_o_empleado_requerido', admin_passthrough):
-
-        response = client.get(url_for('estadisticas.get_user_locations'))
-        assert response.status_code == 200
-        data = json.loads(response.data)
-        assert len(data) == 2
-        assert {'lat': 10.0, 'lng': 20.0} in data
-        assert {'lat': 30.0, 'lng': 40.0} in data
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data) == 2
+    assert {'lat': 10.0, 'lng': 20.0} in data
+    assert {'lat': 30.0, 'lng': 40.0} in data
 
 

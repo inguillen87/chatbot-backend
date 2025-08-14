@@ -40,11 +40,13 @@ def test_reclamo_handler_categoria_buttons(client):
         assert response is not None
         from services.response_formatter import build_interactive_response
         formatted_response = build_interactive_response(
-            options=response.get('botones', []),
+            options=response.get('options_list', []),
             body_text=response.get('message_body'),
             channel='whatsapp',
+            message_type='text',
+            original_bot_response=response
         )
-        assert formatted_response["text"]["body"] == "Por favor, elegí una de las siguientes categorías:\n\n*1*. Alumbrado Público\n*2*. Bacheo\n*3*. Recolección de Residuos\n\n\n\nResponde con el número de la opción que necesites."
+        assert formatted_response["text"]["body"] == "Por favor, elegí una de las siguientes categorías:\n\n*1*. Alumbrado Público\n*2*. Bacheo\n*3*. Recolección de Residuos\n\n*➡️ Responde con el número de la opción que necesites.*"
 
 
 def test_reclamo_handler_share_location_button(client):
@@ -76,11 +78,13 @@ def test_reclamo_handler_share_location_button(client):
         assert response is not None
         from services.response_formatter import build_interactive_response
         formatted_response = build_interactive_response(
-            options=response.get('botones', []),
+            options=response.get('options_list', []),
             body_text=response.get('message_body'),
             channel='whatsapp',
+            message_type='text',
+            original_bot_response=response
         )
-        assert formatted_response["text"]["body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo.\n\n*1*. Compartir ubicación\n\n\n\nResponde con el número de la opción que necesites."
+        assert formatted_response["text"]["body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo.\n\n*1*. Compartir ubicación\n\n*➡️ Responde con el número de la opción que necesites.*"
 
 
 def test_ticket_status_handler_ticket_number_shortcut(client):

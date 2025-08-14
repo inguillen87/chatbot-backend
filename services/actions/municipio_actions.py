@@ -31,27 +31,30 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        nombre_vecino_final = getattr(viewer_user, "name", None) or \
-                              getattr(viewer_user, "nombre", None) or \
-                              action_data.get("usuario") or \
-                              action_data.get("nombre_usuario_detectado") or \
-                              datos_parciales.get("nombre_usuario_detectado") or \
-                              self.context.get("profile_name") or \
-                              "Vecino/a"
+        llm_name = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado")
+        profile_name_raw = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
+
+        # Prioritize LLM name if it's a valid string, otherwise fall back to profile name if it's a valid string.
+        nombre_vecino_final = "Vecino/a"  # Default
+        if isinstance(llm_name, str) and llm_name.strip():
+            nombre_vecino_final = llm_name
+        elif isinstance(profile_name_raw, str) and profile_name_raw.strip():
+            nombre_vecino_final = profile_name_raw
 
         telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None
         if telefono_from_llm and validar_telefono(telefono_from_llm):
             telefono_final = formatear_telefono_e164(telefono_from_llm)
-        elif viewer_user and getattr(viewer_user, "telefono", None) and validar_telefono(viewer_user.telefono):
-            telefono_final = formatear_telefono_e164(viewer_user.telefono)
+        elif viewer_user and getattr(viewer_user, "telefono", None) and validar_telefono(str(viewer_user.telefono)):
+             telefono_final = formatear_telefono_e164(str(viewer_user.telefono))
+
 
         email_from_llm = action_data.get("email") or action_data.get("email_detectado") or datos_parciales.get("email_detectado")
         email_final = None
         if email_from_llm and validar_email(email_from_llm):
             email_final = email_from_llm.lower()
-        elif viewer_user and getattr(viewer_user, "email", None) and validar_email(viewer_user.email):
-            email_final = viewer_user.email.lower()
+        elif viewer_user and getattr(viewer_user, "email", None) and validar_email(str(viewer_user.email)):
+            email_final = str(viewer_user.email).lower()
 
 
         # Actualizar el contexto con los datos más recientes para persistencia
@@ -207,11 +210,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
             }
         except Exception as e:
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
-            return {
+            response = {
                 "success": False,
                 "message_to_user": "Hubo un problema al registrar tu reclamo. Por favor, intenta de nuevo más tarde.",
                 "error_details": str(e)
             }
+            print(f"DEBUG: CrearReclamoActionHandler returning error: {response}")
+            return response
 
 class ConsultarEstadoTicketActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:

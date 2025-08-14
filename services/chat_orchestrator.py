@@ -78,7 +78,7 @@ class ChatOrchestrator:
                 "executed_action_handler": "SolicitarUbicacionHandler"
             }
 
-        if not action_name or action_name in ["no_accion", "small_talk", "respuesta_generica"]:
+        if not action_name or action_name in ["no_accion", "small_talk", "respuesta_generica", "responder_directamente"]:
             # Para respuestas genéricas, usamos la respuesta del LLM directamente
             # sin necesidad de un handler específico.
             return {
