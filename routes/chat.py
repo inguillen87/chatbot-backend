@@ -180,7 +180,6 @@ def _procesar_chat(
     if ticket_id and tipo_ticket and pregunta:
         from models import MunicipioTicket, PymeTicket
         from services.ticket_service import servicio_tickets
-        from socket_service import socketio
 
         TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         # Use with_for_update to lock the row during the check and update
