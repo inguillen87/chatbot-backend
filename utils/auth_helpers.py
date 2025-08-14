@@ -1,6 +1,6 @@
 import uuid
 from functools import wraps
-from flask import request, jsonify, current_app, g
+from flask import request, jsonify, current_app, g, make_response
 from flask_login import current_user
 from models import User
 
@@ -45,6 +45,13 @@ def obtener_token():
         current_app.logger.debug(f"[obtener_token] Found token in query args: '{token_args[:10]}...'")
         return token_args
 
+    # Algunas integraciones envían el token como ``entityToken`` en la query
+    entity_token_arg = request.args.get("entityToken") or request.args.get("entity_token")
+    if entity_token_arg:
+        entity_token_arg = entity_token_arg.strip()
+        current_app.logger.debug(f"[obtener_token] Found entityToken in query args: '{entity_token_arg[:10]}...'")
+        return entity_token_arg
+
     if request.is_json:
         json_data = request.get_json(silent=True) or {}
         token_json = json_data.get("token")
@@ -52,6 +59,12 @@ def obtener_token():
             token_json = token_json.strip()
             current_app.logger.debug(f"[obtener_token] Found token in JSON payload: '{token_json[:10]}...'")
             return token_json
+
+        entity_token_json = json_data.get("entityToken") or json_data.get("entity_token")
+        if entity_token_json:
+            entity_token_json = entity_token_json.strip()
+            current_app.logger.debug(f"[obtener_token] Found entityToken in JSON payload: '{entity_token_json[:10]}...'")
+            return entity_token_json
         # Also check for 'empresa_token' in JSON for /ask/municipio if it's being sent there for anonymous
         # This is specific for debugging the /ask/municipio anonymous case
         if request.path == '/ask/municipio' or request.path.endswith('/ask/municipio'): # Or other relevant /ask paths
@@ -67,6 +80,12 @@ def obtener_token():
         token_form = token_form.strip()
         current_app.logger.debug(f"[obtener_token] Found token in form data: '{token_form[:10]}...'")
         return token_form
+
+    entity_token_form = request.form.get("entityToken") or request.form.get("entity_token")
+    if entity_token_form:
+        entity_token_form = entity_token_form.strip()
+        current_app.logger.debug(f"[obtener_token] Found entityToken in form data: '{entity_token_form[:10]}...'")
+        return entity_token_form
 
     # For /ask/municipio anonymous, check form data for 'empresa_token' as well
     if request.path == '/ask/municipio' or request.path.endswith('/ask/municipio'):
@@ -100,7 +119,24 @@ def token_requerido(f):
         if not user:
             return jsonify({"error": "Token inválido o sesión expirada"}), 401
 
-        return f(user, *args, **kwargs)
+        response = f(user, *args, **kwargs)
+
+        # Si el token vino por header/query y no hay cookie, establecerla para
+        # futuras solicitudes (especialmente útil en iframes cross-domain).
+        cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+        if not request.cookies.get(cookie_name) and token:
+            resp = make_response(response)
+            resp.set_cookie(
+                cookie_name,
+                token,
+                domain=current_app.config.get("SESSION_COOKIE_DOMAIN"),
+                secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
+                httponly=True,
+                samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+            )
+            return resp
+
+        return response
     return decorated
 
 def admin_o_empleado_requerido(f):
