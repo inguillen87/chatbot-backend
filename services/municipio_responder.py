@@ -755,6 +755,7 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
 
     # Llama a la acción para crear el reclamo
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
+    print(f"DEBUG: respuesta_accion in _handle_ticket_creation: {respuesta_accion}")
 
     # Limpia el contexto del reclamo en el municipio, preservando datos del usuario
     keys_to_clear_after_claim = [
@@ -1346,13 +1347,59 @@ def responder_municipio(
     # --- END CONTEXT INITIALIZATION ---
 
     # For simple greetings, bypass LLM and show the main menu directly.
-    if normalizar_texto(pregunta_str) in SIMPLE_GREETINGS:
+    # --- Audio Processing Logic ---
+    is_from_audio = False
+    if isinstance(pregunta_original, dict) and "media_url" in pregunta_original:
+        from services.audio_transcription_service import transcribe_audio_from_url
+        is_from_audio = True
+
+        # Auto-learn prefers_audio
+        if viewer_user:
+            audio_message_count = contexto_municipio_actual.get('audio_message_count', 0) + 1
+            contexto_municipio_actual['audio_message_count'] = audio_message_count
+            if audio_message_count >= 2 and not viewer_user.prefers_audio:
+                viewer_user.prefers_audio = True
+                db.session.add(viewer_user)
+                db.session.commit()
+                logger_actual.info(f"User {viewer_user.id} prefers audio after {audio_message_count} audio messages.")
+
+        transcription_result = transcribe_audio_from_url(pregunta_original["media_url"])
+        if transcription_result:
+            transcript = transcription_result.get("transcript")
+            confidence = transcription_result.get("confidence", 1.0)
+
+            if confidence < 0.8: # Low confidence threshold
+                contexto_municipio_actual['estado_conversacion'] = 'ESPERANDO_CONFIRMACION_STT'
+                contexto_municipio_actual['stt_transcript_pendiente'] = transcript
+                return {
+                    "message_body": f"Escuché: \"{transcript}\". ¿Es correcto?",
+                    "options_list": [
+                        {"texto": "Sí, es correcto", "action_id": "confirmar_stt_si"},
+                        {"texto": "No, intentar de nuevo", "action_id": "confirmar_stt_no"}
+                    ],
+                    "message_type": "interactive_buttons"
+                }
+            else:
+                pregunta_str = transcript # Use high-confidence transcript as the new question
+                # Update the payload so subsequent logic sees the transcribed text
+                if "pregunta" in received_payload:
+                    received_payload["pregunta"] = pregunta_str
+
+
+    if not is_from_audio and normalizar_texto(pregunta_str) in SIMPLE_GREETINGS:
         logger_actual.info(f"Simple greeting '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
-        # Pass the full context to the handler
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
+
+        # --- FIX: Trigger TTS for GreetingHandler ---
+        if viewer_user and viewer_user.prefers_audio and response.get("message_body"):
+            from services.google_text_to_speech import TextToSpeechService
+            tts_service = TextToSpeechService()
+            audio_url = tts_service.synthesize_speech(response["message_body"])
+            if audio_url:
+                response['audio_url'] = audio_url
         return response
 
 
@@ -1361,8 +1408,22 @@ def responder_municipio(
 
     # Obtener el estado actual de la conversación antes de evaluar acciones
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
-
     action = received_payload.get("action")
+
+    if estado_conversacion == 'ESPERANDO_CONFIRMACION_STT':
+        transcript_pendiente = contexto_municipio_actual.get('stt_transcript_pendiente')
+        contexto_municipio_actual['estado_conversacion'] = None
+        contexto_municipio_actual.pop('stt_transcript_pendiente', None)
+
+        if "si" in normalizar_texto(pregunta_str) or (action and "si" in action):
+            pregunta_str = transcript_pendiente
+            if "pregunta" in received_payload:
+                received_payload["pregunta"] = pregunta_str
+        else:
+            return {
+                "message_body": "Entendido. Por favor, intentá de nuevo o escribí tu consulta.",
+                "options_list": []
+            }
 
     # New main menu handler
     if action == "mostrar_menu_reclamos":
@@ -1375,6 +1436,19 @@ def responder_municipio(
         response = handle_main_menu_action(action, context)
         if response:
             return response
+
+    reclamo_categories = {
+        "reclamo_luminaria": "Luminaria",
+        "reclamo_arbolado": "Arbolado",
+        "reclamo_limpieza_riego": "Limpieza y riego",
+        "reclamo_arreglo_calle": "Arreglo de calle",
+        "reclamo_otros": "Otros",
+    }
+    if action in reclamo_categories:
+        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual.setdefault('datos_parciales_llm_reclamo', {})['categoria'] = reclamo_categories[action]
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+
 
     # --- INICIO: Manejo de selección de lista dinámica (Noticias, etc.) ---
     elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_DE_LISTA.name:
@@ -1433,23 +1507,6 @@ def responder_municipio(
                 "fuente": "solicitar_ubicacion"
             }
 
-    reclamo_categories = {
-        "reclamo_luminaria": "Luminaria",
-        "reclamo_arbolado": "Arbolado",
-        "reclamo_limpieza_riego": "Limpieza y riego",
-        "reclamo_arreglo_calle": "Arreglo de calle",
-        "reclamo_otros": "Otros",
-    }
-    if action in reclamo_categories:
-        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['categoria_reclamo'] = reclamo_categories[action]
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_RECLAMO.name
-        return {
-            "message_body": f"Entendido, iniciaste un reclamo por **{reclamo_categories[action]}**. Por favor, describí la incidencia.",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "inicio_flujo_reclamo_categorizado"
-        }
 
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
@@ -1803,43 +1860,28 @@ def responder_municipio(
         logger_actual.info(f"[CONTEXT_SAVE_FINAL] Final context data being flagged for save: {chat_db_context.context_data}")
 
 
-    # --- Formatear respuesta final ---
-    message_type_final = "text"
-    if opciones_finales:
-        num_options = len(opciones_finales)
-        if 0 < num_options <= 3:
-            message_type_final = "interactive_buttons"
-        elif num_options > 3:
-            message_type_final = "interactive_list"
+    # --- Fallback logic ---
+    logger_actual.info(f"LLM no manejó la respuesta. Intentando fallback con Google Search.")
+    search_results = google_search(pregunta_str)
+    if search_results:
+        search_items = []
+        for result in search_results[:3]:
+            search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
 
+        final_response_dict = {
+            "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "municipio_fallback_google_search"
+        }
+    else:
+        final_response_dict = {
+            "message_body": "Lo siento, no pude entender tu consulta. ¿Podrías intentar reformularla?",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "fallback_final"
+        }
 
-    final_response_dict = {
-        "message_body": respuesta_final_texto,
-        "options_list": opciones_finales,
-        "message_type": message_type_final,
-        "estado": contexto_municipio_serializado_para_db.get("estado_conversacion"),
-        "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_municipio_serializado_para_db},
-        "ticket_id": action_handler_result.get("data", {}).get("ticket_id") or action_handler_result.get("data", {}).get("sugerencia_id"), # Tomar de data si existe
-        "fuente": action_handler_result.get("fuente") or llm_response_structured.get("accion_backend", "municipio_general_v4"),
-        # Otros campos como media_url, location_data, adjuntos se manejarían si son parte de la respuesta
-    }
-
-    # --- Google Search Fallback ---
-    generic_fuentes = ["municipio_general_v4", "fallback_final", "llm_respuesta_general_v2"]
-    if final_response_dict.get("fuente") in generic_fuentes and not final_response_dict.get("options_list"):
-        logger_actual.info(f"Respuesta genérica (fuente: {final_response_dict.get('fuente')}). Intentando fallback con Google Search.")
-        search_results = google_search(pregunta_str)
-        if search_results:
-            search_items = []
-            for result in search_results[:3]:
-                search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
-
-            final_response_dict = {
-                "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "municipio_fallback_google_search"
-            }
 
     # Log de conversación para anónimos
     if anon_id and not viewer_user:

@@ -218,12 +218,6 @@ def responder_chatboc(
 
     response_data = None
     if tipo_chat == "municipio":
-        # Añadir datos interpretados al contexto del usuario para el LLM
-        if datos_interpretados_de_archivo:
-            if not owner_user.datos_interpretados_archivo:
-                owner_user.datos_interpretados_archivo = {}
-            owner_user.datos_interpretados_archivo.update(datos_interpretados_de_archivo)
-
         response_data = responder_municipio(
             pregunta_original=pregunta, # La pregunta original del usuario
             owner_user=owner_user,
@@ -236,12 +230,6 @@ def responder_chatboc(
             **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
         )
     elif tipo_chat == "pyme":
-        # Añadir datos interpretados al contexto del usuario para el LLM
-        if datos_interpretados_de_archivo:
-            if not owner_user.datos_interpretados_archivo:
-                owner_user.datos_interpretados_archivo = {}
-            owner_user.datos_interpretados_archivo.update(datos_interpretados_de_archivo)
-
         response_data = responder_pyme(
             pregunta_original=pregunta,
             owner_user=owner_user,

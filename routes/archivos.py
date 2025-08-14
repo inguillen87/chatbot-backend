@@ -6,7 +6,10 @@ import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from routes.auth import token_requerido
-from services.gcs_service import upload_to_gcs, BUCKET_NAME, MAX_FILE_SIZE # Import centralized GCS service and constants
+from services.gcs_service import upload_to_gcs, BUCKET_NAME, MAX_FILE_SIZE
+from services.archivo_service import guardar_archivo_adjunto_ticket
+from services.ticket_service import servicio_tickets
+from utils.permissions import require_role
 # from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 from google.cloud import storage
 from services.google_vision_service import analyze_image_from_content
@@ -328,6 +331,63 @@ def subir_imagen(current_user):
             return jsonify({'error': 'Error al procesar la imagen.'}), 500
 
     return jsonify({'error': 'Formato de archivo no permitido'}), 400
+
+
+@archivos_bp.route('/subir_admin', methods=['POST'])
+@token_requerido
+@require_role('admin', 'empleado')
+def subir_archivo_admin(current_user: User):
+    """
+    Endpoint específico para que administradores/empleados suban archivos a un ticket existente.
+    Crea tanto el ArchivoAdjunto como el TicketComentario asociado.
+    """
+    if 'archivo' not in request.files:
+        return jsonify({'error': 'No se encontró el archivo'}), 400
+
+    file = request.files['archivo']
+    ticket_id = request.form.get('ticket_id')
+    tipo_ticket = request.form.get('tipo_ticket') # 'municipio' o 'pyme'
+
+    if not all([file, ticket_id, tipo_ticket]):
+        return jsonify({'error': 'Faltan datos: se requiere archivo, ticket_id y tipo_ticket.'}), 400
+
+    if not allowed_file(file.filename) or not allowed_mime(file.mimetype):
+        return jsonify({'error': 'Tipo de archivo no permitido.'}), 400
+
+    # Lógica de guardado y creación de comentario
+    try:
+        adjunto = guardar_archivo_adjunto_ticket(file, current_user.id, ticket_id, tipo_ticket)
+        if not adjunto:
+            return jsonify({'error': 'No se pudo guardar el archivo adjunto.'}), 500
+
+        # Crear el comentario que representa este archivo en el chat
+        comentario_texto = f"[Archivo adjunto: {adjunto.nombre_original}]"
+        comentario = servicio_tickets.crear_comentario(
+            ticket_id=ticket_id,
+            tipo_ticket=tipo_ticket,
+            comentario_data={
+                "comentario": comentario_texto,
+                "user_id": current_user.id,
+                "es_admin": True,
+                "archivo_adjunto_id": adjunto.id,
+                "origen": "chat" # Marcar como originado desde el chat
+            }
+        )
+        if not comentario:
+            # Aquí deberíamos idealmente borrar el adjunto que quedó huérfano.
+            # Por ahora, solo logueamos el error.
+            current_app.logger.error(f"Se guardó el adjunto {adjunto.id} pero falló la creación de su comentario en el ticket {ticket_id}.")
+            return jsonify({'error': 'El archivo fue guardado pero no se pudo asociar al chat.'}), 500
+
+        db.session.commit()
+
+        # Devolver el comentario serializado, que ya incluye 'attachment_info'
+        return jsonify(comentario.to_dict()), 201
+
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error en subir_archivo_admin para ticket {ticket_id}: {e}", exc_info=True)
+        return jsonify({'error': 'Error interno al procesar el archivo.'}), 500
 
 
 @archivos_bp.route('/<path:filename>', methods=['GET'])

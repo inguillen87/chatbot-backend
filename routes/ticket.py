@@ -371,8 +371,7 @@ def _serialize_ticket_details(ticket, ticket_type):
     user_data = _get_user_info(ticket, User)
 
     comentarios = [
-        {"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin}
-        for c in ticket.comentarios
+        c.to_dict() for c in ticket.comentarios
     ]
 
     archivos_adjuntos_data = []
@@ -393,6 +392,14 @@ def _serialize_ticket_details(ticket, ticket_type):
                 "size": adj.tamano, "url": adj.url, "fecha": adj.fecha.isoformat() if adj.fecha else None,
                 "analisis": analisis_data
             })
+
+    informacion_personal = {
+            "nombre": user_data["nombre"],
+            "telefono": user_data["telefono"],
+            "email": user_data["email"],
+            "direccion": user_data["direccion"],
+            "dni": user_data["dni"]
+        }
 
     ticket_data = {
         "id": ticket.id,
@@ -419,7 +426,8 @@ def _serialize_ticket_details(ticket, ticket_type):
         "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
         "nombre_y_avatar_whatsapp": { "nombre": getattr(ticket, 'nombre_display_whatsapp', None), "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None)
-        }
+        },
+        "informacion_personal_vecino": informacion_personal
     }
     return ticket_data
 

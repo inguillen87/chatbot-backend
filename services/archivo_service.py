@@ -1,10 +1,59 @@
 import logging
-from typing import List
+from typing import List, Optional
 from extensions import db
+from werkzeug.datastructures import FileStorage
 # from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, User # Movido para evitar importación circular
 from datetime import datetime, timedelta # Para posible filtro de tiempo
+from services.gcs_service import upload_to_gcs
 
 logger = logging.getLogger(__name__)
+
+
+def guardar_archivo_adjunto_ticket(file: FileStorage, user_id: int, ticket_id: int, tipo_ticket: str) -> Optional['ArchivoAdjunto']:
+    """
+    Guarda un archivo en GCS y crea el registro ArchivoAdjunto asociado a un ticket.
+    La sesión de la base de datos no se commitea aquí, se debe hacer en la función que llama.
+    """
+    from models import ArchivoAdjunto # Importación local para evitar ciclos
+
+    try:
+        # 1. Subir archivo a GCS
+        upload_result = upload_to_gcs(file)
+        if not upload_result:
+            logger.error(f"Fallo al subir archivo a GCS para el ticket {tipo_ticket} {ticket_id}.")
+            return None
+
+        # 2. Crear el registro en la base de datos
+        nuevo_adjunto = ArchivoAdjunto(
+            user_id=user_id,
+            filename=upload_result['unique_name'],
+            nombre_original=upload_result['original_name'],
+            mime=upload_result['mimetype'],
+            tamano=upload_result['size'],
+            tipo='chat', # Asumimos que es para el chat del ticket
+            url=upload_result['public_url'],
+        )
+
+        if tipo_ticket == 'municipio':
+            nuevo_adjunto.municipio_ticket_id = ticket_id
+        elif tipo_ticket == 'pyme':
+            nuevo_adjunto.pyme_ticket_id = ticket_id
+        else:
+            logger.error(f"Tipo de ticket '{tipo_ticket}' no válido al guardar adjunto.")
+            # Idealmente, borrar el archivo huérfano de GCS aquí.
+            return None
+
+        db.session.add(nuevo_adjunto)
+        db.session.flush() # Para obtener el ID del adjunto antes de hacer commit.
+
+        logger.info(f"ArchivoAdjunto ID {nuevo_adjunto.id} creado para ticket {tipo_ticket} {ticket_id}.")
+        return nuevo_adjunto
+
+    except Exception as e:
+        logger.error(f"Error en guardar_archivo_adjunto_ticket: {e}", exc_info=True)
+        # La función que llama debe manejar el rollback.
+        return None
+
 
 class ArchivoService:
 
@@ -27,6 +76,7 @@ class ArchivoService:
 
         Retorna True si se asoció al menos un archivo, False en caso contrario o error.
         """
+        from models import ArchivoAdjunto, MunicipioTicket, PymeTicket
         if not ticket_id or not tipo_ticket:
             logger.error("Ticket ID o tipo_ticket no proporcionados para asociar archivos.")
             return False

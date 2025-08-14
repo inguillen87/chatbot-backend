@@ -91,6 +91,7 @@ class User(db.Model, UserMixin):
     empresa = db.relationship('User', remote_side=[id], backref='clientes')
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     rubro = db.relationship("Rubro", backref="usuarios")
+    prefers_audio = db.Column(db.Boolean, default=False)
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
     municipio_tickets = db.relationship('MunicipioTicket', backref='municipio', lazy=True)
@@ -322,6 +323,7 @@ class TicketComentario(db.Model):
     user_id = db.Column(db.Integer, nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     es_admin = db.Column(db.Boolean, default=False)
+    origen = db.Column(db.String(20), default='chat') # Nuevo campo para 'chat' o 'email'
 
     # New field to link a comment directly to an attachment
     archivo_adjunto_id = db.Column(db.Integer, db.ForeignKey('archivo_adjunto.id'), nullable=True)
