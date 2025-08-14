@@ -126,8 +126,14 @@ def subir_archivo_options():
 @archivos_bp.route('/subir', methods=['POST'])
 @token_requerido
 def subir_archivo(current_user):
-    # Cambiado de 'archivo' a 'archivos' y usando getlist
+    # El frontend puede enviar un solo "archivo" o una lista "archivos".
     files = request.files.getlist("archivos")
+
+    # Si no se encontró lista "archivos", intentar con el campo singular.
+    if not files:
+        single = request.files.get("archivo")
+        if single:
+            files = [single]
 
     if not files or all(f.filename == '' for f in files):
         return jsonify({'error': 'No se enviaron archivos o nombres de archivo vacíos.'}), 400
