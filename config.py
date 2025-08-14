@@ -7,15 +7,26 @@ TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
 
 # --- Variables de Entorno para Despliegue ---
 ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
+
+# Render provides the public URL of the service through RENDER_EXTERNAL_URL.
+# If BACKEND_URL is not explicitly set we fall back to that value so the
+# frontend can discover the correct origin via /api/config.
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
+
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
 
-# Lista de orígenes permitidos para CORS, eliminando duplicados y barras finales.
-allowed_urls = [PANEL_URL, WIDGET_URL]
-ALLOWED_ORIGINS = list(dict.fromkeys([
-    url.strip('/') for url in allowed_urls if url
-]))
+# CORS_ALLOWED_ORIGINS can override the default allowed origins.  When unset we
+# allow the panel and widget URLs.  Values are cleaned of trailing slashes and
+# duplicates are removed.
+cors_env = os.getenv("CORS_ALLOWED_ORIGINS")
+if cors_env:
+    allowed_urls = [u.strip().rstrip('/') for u in cors_env.split(',') if u.strip()]
+else:
+    allowed_urls = [PANEL_URL, WIDGET_URL]
+
+ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
 
 class Config:
     """

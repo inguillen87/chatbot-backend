@@ -110,6 +110,13 @@ Recuerda también registrar la URL de tu frontend en el apartado
 "Authorized JavaScript origins" de la consola de Google Cloud.
 De lo contrario, el botón de inicio de sesión puede devolver errores 403.
 
+El endpoint `/api/config` permite al frontend descubrir la URL del backend y
+del panel.  Para que devuelva el valor correcto, define `BACKEND_URL` con la
+dirección pública de este servicio.  En Render se toma automáticamente de la
+variable `RENDER_EXTERNAL_URL` cuando `BACKEND_URL` no está presente.  Las
+variables `PANEL_URL` y `WIDGET_URL` se usan además para construir la lista por
+defecto de orígenes permitidos en CORS.
+
 Para definir qué orígenes pueden realizar peticiones al backend, puedes usar la
 variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
 Si no se especifica, se permiten dominios locales y los subdominios de
