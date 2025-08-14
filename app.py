@@ -182,6 +182,13 @@ def create_app(config_class=Config):
 
     # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)
+    # Alias para compatibilidad: permite acceder a /login sin prefijo /auth
+    app.add_url_rule(
+        '/login',
+        endpoint='login',
+        view_func=app.view_functions['auth.login'],
+        methods=['POST', 'OPTIONS']
+    )
     app.register_blueprint(legacy_auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
