@@ -24,5 +24,11 @@ class TokenExtractionTests(unittest.TestCase):
         with self.app.test_request_context('/', headers={'Authorization': 'Bearer abc123'}):
             self.assertEqual(obtener_token(), 'abc123')
 
+    def test_token_from_cookie(self):
+        cookie_name = self.app.config.get('AUTH_TOKEN_COOKIE_NAME', 'auth_token')
+        headers = {'Cookie': f'{cookie_name}=abc123'}
+        with self.app.test_request_context('/', headers=headers):
+            self.assertEqual(obtener_token(), 'abc123')
+
 if __name__ == '__main__':
     unittest.main()

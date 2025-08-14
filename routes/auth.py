@@ -55,8 +55,7 @@ def login():
     from flask_login import login_user
     login_user(user) # Establecer la sesión para el usuario
     current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
-
-    return jsonify({
+    response = jsonify({
         "mensaje": "Login exitoso",
         "id": user.id,
         "token": user.token,
@@ -68,6 +67,18 @@ def login():
         "tipo_chat": tipo_chat,
         "categorias": user.ticket_categorias or "",
     })
+
+    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    response.set_cookie(
+        cookie_name,
+        user.token,
+        domain=current_app.config.get("SESSION_COOKIE_DOMAIN"),
+        secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
+        httponly=True,
+        samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+    )
+
+    return response
 
 @auth_bp.route('/google-client-id', methods=['GET'])
 def get_google_client_id():
@@ -113,8 +124,7 @@ def google_login():
         from flask_login import login_user
         login_user(user) # Establecer la sesión para el usuario
         current_app.logger.info(f"Usuario {user.email} logueado vía Google y sesión Flask-Login establecida.")
-
-        return jsonify({
+        response = jsonify({
             "id": user.id,
             "token": user.token,
             "name": user.name,
@@ -125,6 +135,18 @@ def google_login():
             "tipo_chat": tipo_chat,
             "categorias": user.ticket_categorias or "",
         })
+
+        cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+        response.set_cookie(
+            cookie_name,
+            user.token,
+            domain=current_app.config.get("SESSION_COOKIE_DOMAIN"),
+            secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
+            httponly=True,
+            samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+        )
+
+        return response
     except ValueError as e:
         current_app.logger.error(f"Error de valor en google_login: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 401

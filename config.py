@@ -37,6 +37,9 @@ class Config:
     SESSION_COOKIE_SAMESITE = 'None'
     SESSION_TYPE = 'sqlalchemy'
     SESSION_SQLALCHEMY_TABLE = 'sessions'
+    # Nombre del cookie adicional que almacena el token de acceso como
+    # respaldo en caso de que la sesión basada en cookies falle
+    AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
     # 4. RESTO DE LA CONFIGURACIÓN...
     ATTENTION_BUBBLE_TEXT = os.getenv("ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?")
