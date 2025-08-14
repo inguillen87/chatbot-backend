@@ -24,8 +24,6 @@ def on_connect(auth):
     """
     current_app.logger.info(f"Socket.IO client connected: {request.sid}")
 
-    # The 'auth' argument is the primary source for the token.
-    # It's passed by standard Socket.IO clients.
     token = (auth or {}).get('token')
 
     if token:

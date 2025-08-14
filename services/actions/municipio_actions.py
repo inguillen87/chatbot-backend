@@ -32,14 +32,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Lógica de fusión de datos de contacto mejorada
         llm_name = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado")
-        profile_name_raw = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
+        profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
+        profile_name_from_context = self.context.get("profile_name")
 
-        # Prioritize LLM name if it's a valid string, otherwise fall back to profile name if it's a valid string.
+        # Prioritize LLM name, then profile from user object, then profile from context.
         nombre_vecino_final = "Vecino/a"  # Default
         if isinstance(llm_name, str) and llm_name.strip():
             nombre_vecino_final = llm_name
-        elif isinstance(profile_name_raw, str) and profile_name_raw.strip():
-            nombre_vecino_final = profile_name_raw
+        elif isinstance(profile_name_from_user_obj, str) and profile_name_from_user_obj.strip():
+            nombre_vecino_final = profile_name_from_user_obj
+        elif isinstance(profile_name_from_context, str) and profile_name_from_context.strip():
+            nombre_vecino_final = profile_name_from_context
 
         telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
         telefono_final = None

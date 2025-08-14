@@ -24,7 +24,7 @@ class TestAISuggestions(unittest.TestCase):
     def setUp(self):
         """Set up for each test method."""
         self.app = create_app(TestConfig)
-        self.app.register_blueprint(ai_bp, url_prefix='/ai')
+        # self.app.register_blueprint(ai_bp, url_prefix='/ai') # This is already registered in create_app
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -73,7 +73,7 @@ class TestAISuggestions(unittest.TestCase):
         self._crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
         self._crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
-        response = self.client.post('/ai/suggest-templates',
+        response = self.client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
                                     json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
 
@@ -87,7 +87,7 @@ class TestAISuggestions(unittest.TestCase):
         mock_embed_textos_gemini.assert_called_once()
 
     def test_suggest_templates_missing_asunto(self):
-        response = self.client.post('/ai/suggest-templates',
+        response = self.client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
                                     json={'consulta_cliente': 'Hola'})
         self.assertEqual(response.status_code, 400)
@@ -101,7 +101,7 @@ class TestAISuggestions(unittest.TestCase):
         self._crear_plantilla("Activa Sin Embedding", "Texto activo sin embedding", embedding_value=None)
         mock_embed_textos_gemini.return_value = [[0.1]*1024]
 
-        response = self.client.post('/ai/suggest-templates',
+        response = self.client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
                                     json={'asunto': 'Consulta', 'consulta_cliente': 'Duda', 'top_n': 1})
         self.assertEqual(response.status_code, 200)
@@ -117,7 +117,7 @@ class TestAISuggestions(unittest.TestCase):
         self._crear_plantilla("Activa Con Embedding", "Texto activo", embedding_value=[0.1]*1024)
         mock_embed_textos_gemini.return_value = None
 
-        response = self.client.post('/ai/suggest-templates',
+        response = self.client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.mock_user.token}'},
                                     json={'asunto': 'Consulta', 'consulta_cliente': 'Ayuda'})
 

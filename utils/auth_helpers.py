@@ -143,8 +143,7 @@ def token_requerido(f):
             if cookie_domain:
                 cookie_args["domain"] = cookie_domain
 
-            if token:
-                resp.set_cookie(**cookie_args)
+            resp.set_cookie(**cookie_args)
             return resp
 
         return response

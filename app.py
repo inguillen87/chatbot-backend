@@ -26,6 +26,7 @@ from models import User
 from utils.auth_helpers import obtener_token, user_from_token
 
 # Importación de todas tus rutas (Blueprints)
+from routes.config import config_bp
 from routes.auth import auth_bp
 from routes.legacy_auth import legacy_auth_bp
 from routes.chat import chat_bp
@@ -214,6 +215,7 @@ def create_app(config_class=Config):
         return resp
 
     # --- Registro de Blueprints (Rutas) ---
+    app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
     # Alias para compatibilidad: permite acceder a /login sin prefijo /auth
     app.add_url_rule(
