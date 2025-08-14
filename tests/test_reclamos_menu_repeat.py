@@ -2,6 +2,7 @@ import unittest
 from app import create_app, db
 from models import User, Rubro, ChatSessionContext
 from services.municipio_responder import responder_municipio
+from unittest.mock import patch
 
 class ReclamoMenuRepeatTestCase(unittest.TestCase):
     def setUp(self):
@@ -30,7 +31,13 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    def test_repeating_reclamo_command_returns_menu(self):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_repeating_reclamo_command_returns_menu(self, mock_llamar_gemini):
+        # Mock the LLM to return an action that shows the menu
+        mock_llamar_gemini.return_value = {
+            "accion_backend": "mostrar_menu_reclamos",
+            "message_body": "Aquí tienes el menú de reclamos."
+        }
         response1 = responder_municipio(
             "iniciar reclamo",
             self.owner_user,

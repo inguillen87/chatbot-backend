@@ -70,20 +70,19 @@ def login():
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
-    cookie_args = {
-        "key": cookie_name,
-        "value": user.token,
-        "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
-        "httponly": True,
-        "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-    }
-
-    # Solo añadir el dominio si está explícitamente configurado
-    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-    if cookie_domain:
-        cookie_args["domain"] = cookie_domain
-
     if user.token:
+        cookie_args = {
+            "key": cookie_name,
+            "value": user.token,
+            "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+            "httponly": True,
+            "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+        }
+
+        cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+        if cookie_domain:
+            cookie_args["domain"] = cookie_domain
+
         response.set_cookie(**cookie_args)
 
     return response
@@ -146,19 +145,19 @@ def google_login():
 
         cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
-        cookie_args = {
-            "key": cookie_name,
-            "value": user.token,
-            "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
-            "httponly": True,
-            "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-        }
-
-        cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-        if cookie_domain:
-            cookie_args["domain"] = cookie_domain
-
         if user.token:
+            cookie_args = {
+                "key": cookie_name,
+                "value": user.token,
+                "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+                "httponly": True,
+                "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+            }
+
+            cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+            if cookie_domain:
+                cookie_args["domain"] = cookie_domain
+
             response.set_cookie(**cookie_args)
 
         return response
