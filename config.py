@@ -5,32 +5,17 @@ from urllib.parse import urlparse
 basedir = os.path.abspath(os.path.dirname(__file__))
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
 
+# --- Variables de Entorno para Despliegue ---
+ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
+PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
+WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
 
-def _infer_cookie_domain():
-    """Determina un dominio de cookie adecuado a partir de variables de entorno.
-
-    Prioriza una configuración explícita mediante ``SESSION_COOKIE_DOMAIN``. Si no
-    está presente, intenta deducirlo desde ``PRIMARY_DOMAIN``, ``RENDER_EXTERNAL_URL``
-    o ``APP_BASE_URL``. En entornos locales o cuando el host es ``localhost`` no se
-    establece ningún dominio para facilitar el desarrollo.
-    """
-    explicit = os.getenv("SESSION_COOKIE_DOMAIN")
-    if explicit:
-        return explicit
-
-    for env_var in ("PRIMARY_DOMAIN", "RENDER_EXTERNAL_URL", "APP_BASE_URL"):
-        url = os.getenv(env_var)
-        if not url:
-            continue
-        hostname = urlparse(url).hostname
-        if not hostname or hostname.startswith("localhost"):
-            continue
-        parts = hostname.split('.')
-        if len(parts) >= 2:
-            return "." + ".".join(parts[-2:])
-
-    # Si no se pudo inferir, devolver ``None`` para el modo local
-    return None
+# Lista de orígenes permitidos para CORS, eliminando duplicados y barras finales.
+allowed_urls = [PANEL_URL, WIDGET_URL]
+ALLOWED_ORIGINS = list(dict.fromkeys([
+    url.strip('/') for url in allowed_urls if url
+]))
 
 class Config:
     """
@@ -57,13 +42,15 @@ class Config:
     }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN
-    # Se intenta inferir un dominio compatible con subdominios para entornos de
-    # producción. Si no se logra, queda en ``None`` para facilitar el desarrollo
-    # local.
-    SESSION_COOKIE_DOMAIN = _infer_cookie_domain()
-    SESSION_COOKIE_SECURE = True
-    SESSION_COOKIE_SAMESITE = 'None'
+    # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (MODO DEV/PROD)
+    SESSION_COOKIE_DOMAIN = (None if ENV == "dev" else os.getenv("COOKIE_DOMAIN"))
+    SESSION_COOKIE_SECURE = (ENV == "prod")
+    SESSION_COOKIE_SAMESITE = "None"
+
+    # Flask-Login "remember me" cookie settings
+    REMEMBER_COOKIE_SAMESITE = "None"
+    REMEMBER_COOKIE_SECURE = (ENV == "prod")
+
     SESSION_TYPE = 'sqlalchemy'
     SESSION_SQLALCHEMY_TABLE = 'sessions'
     # Nombre del cookie adicional que almacena el token de acceso como

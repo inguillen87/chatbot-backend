@@ -1,7 +1,7 @@
 import os
 import logging
 import sys
-from flask import Flask, request, current_app, jsonify
+from flask import Flask, request, current_app, jsonify, g
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from flask_cors import CORS
@@ -19,10 +19,11 @@ if os.environ.get("FLASK_ENV") != "production":
         print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
 
 from flask_session import Session
-from config import Config
+from config import Config, ALLOWED_ORIGINS
 from extensions import db, migrate, login_manager # Import login_manager
 from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
 from models import User
+from utils.auth_helpers import obtener_token, user_from_token
 
 # Importación de todas tus rutas (Blueprints)
 from routes.auth import auth_bp
@@ -124,6 +125,37 @@ def create_app(config_class=Config):
         current_app.logger.info(f"--- RAW FLASK REQUEST.COOKIES: {request.cookies} ---") 
         # Loguear todos los encabezados (como ya lo hacías, útil para comparar)
         current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}") 
+
+    @app.before_request
+    def attach_current_user():
+        """
+        Adjunta el usuario actual a `g.viewer` para cada solicitud.
+        Prioriza la sesión de Flask-Login, pero recurre a la autenticación por
+        token para soportar clientes sin estado (como el widget).
+        """
+        from flask_login import current_user
+
+        # g.viewer se usará para el usuario identificado en la solicitud actual.
+        g.viewer = None
+
+        # 1. Prioridad: Usuario autenticado con Flask-Login (sesión de cookie)
+        if current_user and current_user.is_authenticated:
+            g.viewer = current_user
+            current_app.logger.debug(f"User {current_user.id} loaded from Flask-Login session into g.viewer.")
+            return
+
+        # 2. Fallback: Intentar cargar usuario desde un token (para el widget u otras APIs)
+        token = obtener_token()
+        if token:
+            user = user_from_token(token)
+            if user:
+                g.viewer = user
+                current_app.logger.debug(f"User {user.id} loaded from token into g.viewer.")
+            else:
+                current_app.logger.debug("Token provided but no matching user found.")
+        else:
+            current_app.logger.debug("No user session and no token provided. g.viewer remains None.")
+
     # --- Inicialización de Extensiones ---
     init_celery(app) # Inicializar Celery con la app Flask
     login_manager.init_app(app) # Initialize Flask-Login
@@ -170,7 +202,7 @@ def create_app(config_class=Config):
 
     # --- Configuración de CORS ---
     CORS(app,
-         origins=["http://localhost:8080", "https://www.chatboc.ar", "http://localhost:5000", "https://chatboc-demo-widget-oigs.vercel.app"],
+         origins=ALLOWED_ORIGINS,
          supports_credentials=True,
          methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
          allow_headers=["Content-Type", "Authorization", "X-Entity-Token", "X-Chat-Session-Id", "Anon-Id"])
