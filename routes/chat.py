@@ -104,6 +104,7 @@ def _procesar_chat(
     owner_user=None,
     anon_id: str | None = None,
 ):
+    channel = "web"  # Define channel for this processing function
     # --- Session and Context Initialization ---
     chat_session_id_header = request.headers.get("X-Chat-Session-Id")
     if not chat_session_id_header:
