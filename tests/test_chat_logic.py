@@ -107,6 +107,20 @@ class ChatLogicTestCase(unittest.TestCase):
         self.assertEqual(response_dict['audio_url'], fake_audio_url)
         self.assertNotIn('source_is_audio', chat_session.context_data)
 
+    @patch('routes.chat.responder_chatboc')
+    @patch('socket_service.socketio.emit')
+    def test_web_chat_uses_socketio(self, mock_emit, mock_responder):
+        """Ensure web channel emits responses via Socket.IO without errors."""
+        mock_responder.return_value = {"message_body": "Hola"}
+
+        response = self.client.post(
+            '/ask/municipio',
+            json={'pregunta': 'Hola'}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_emit.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()
