@@ -29,8 +29,10 @@ class Config:
     }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (SIN VUELTAS)
-    SESSION_COOKIE_DOMAIN = '.chatboc.ar'         # <- SIEMPRE este dominio
+    # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN
+    # Permite definir el dominio vía variable de entorno. Si no se especifica,
+    # queda en `None` para facilitar el desarrollo local.
+    SESSION_COOKIE_DOMAIN = os.getenv("SESSION_COOKIE_DOMAIN") or None
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_SAMESITE = 'None'
     SESSION_TYPE = 'sqlalchemy'
@@ -100,6 +102,7 @@ class TestConfig(Config):
     CELERY_TASK_ALWAYS_EAGER = True
     SESSION_COOKIE_SECURE = False
     SERVER_NAME = 'localhost'
+    SESSION_COOKIE_DOMAIN = None
 
 class TestingConfig(TestConfig):
     pass
