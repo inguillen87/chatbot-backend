@@ -14,7 +14,7 @@ from datetime import datetime
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
-auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
+auth_bp = Blueprint('auth', __name__)
 
 from utils.auth_helpers import token_requerido, obtener_token
 from flask_login import current_user

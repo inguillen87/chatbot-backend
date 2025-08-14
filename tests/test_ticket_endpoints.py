@@ -68,7 +68,7 @@ class TicketEndpointsTest(unittest.TestCase):
         self.app_context.pop()
 
     def test_get_tickets_del_usuario_admin_municipio(self):
-        login_resp = self.client.post('/auth/login', json={
+        login_resp = self.client.post('/login', json={
             'email': 'admin@junin.com',
             'password': 'adminpass'
         })

@@ -8,7 +8,7 @@ def test_login_no_json(client):
     """
     Tests that the login route returns a 400 error if the request is not JSON.
     """
-    response = client.post('/auth/login', data="not a json")
+    response = client.post('/login', data="not a json")
     assert response.status_code == 400
     assert response.get_json() == {"error": "La solicitud debe ser de tipo JSON."}
 
@@ -16,7 +16,7 @@ def test_login_missing_credentials(client):
     """
     Tests that the login route returns a 400 error if the email or password are not provided.
     """
-    response = client.post('/auth/login', json={})
+    response = client.post('/login', json={})
     assert response.status_code == 400
     assert response.get_json() == {"error": "Email y contraseña requeridos."}
 
@@ -24,7 +24,7 @@ def test_login_invalid_credentials(client):
     """
     Tests that the login route returns a 401 error if the credentials are invalid.
     """
-    response = client.post('/auth/login', json={"email": "a@b.com", "password": "c"})
+    response = client.post('/login', json={"email": "a@b.com", "password": "c"})
     assert response.status_code == 401
     assert response.get_json() == {"error": "Email o contraseña incorrectos."}
 
@@ -37,7 +37,7 @@ def test_login_successful(client):
     db.session.add(user)
     db.session.commit()
 
-    response = client.post('/auth/login', json={"email": "a@b.com", "password": "c"})
+    response = client.post('/login', json={"email": "a@b.com", "password": "c"})
     assert response.status_code == 200
     assert "token" in response.get_json()
 

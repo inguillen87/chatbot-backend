@@ -66,7 +66,7 @@ class CatalogoLabelTests(unittest.TestCase):
         db.session.add(user)
         db.session.commit()
 
-        resp = self.client.get('/auth/profile', headers={'Authorization': f'Bearer {user.token}'})
+        resp = self.client.get('/profile', headers={'Authorization': f'Bearer {user.token}'})
         data = resp.get_json()
 
         self.assertEqual(resp.status_code, 200)

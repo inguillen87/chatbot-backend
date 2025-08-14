@@ -17,7 +17,7 @@ def test_get_tickets_requires_authentication(client):
     response = client.get('/tickets')
     assert response.status_code == 401
 
-    login_resp = client.post('/auth/login', json={
+    login_resp = client.post('/login', json={
         "email": "test@example.com",
         "password": "testpass"
     })

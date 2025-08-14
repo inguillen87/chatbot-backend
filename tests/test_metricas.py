@@ -39,7 +39,7 @@ class MetricasTestCase(unittest.TestCase):
 
     def _login(self):
         return self.client.post(
-            '/auth/login',
+            '/login',
             json={"email": "test@example.com", "password": "password"}
         )
 

@@ -43,7 +43,7 @@ class CatalogoEndpointsTests(unittest.TestCase):
             db.session.commit()
 
             # Login to get a token
-            login_resp = self.client.post('/auth/login', json={
+            login_resp = self.client.post('/login', json={
                 'email': 'test@example.com',
                 'password': 'password123'
             })

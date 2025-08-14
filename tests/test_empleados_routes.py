@@ -40,7 +40,7 @@ class EmpleadosRouteTests(unittest.TestCase):
         db.session.commit()
         data = {"name": "Emp", "email": "emp@e.com", "password": "123"}
         with self.client:
-            login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
+            login_response = self.client.post('/login', json={'email': 'test@test.com', 'password': 'test'})
             token = login_response.get_json()['token']
             headers = {'Authorization': f'Bearer {token}'}
             response = self.client.post('/empleados', json=data, headers=headers)
@@ -54,7 +54,7 @@ class EmpleadosRouteTests(unittest.TestCase):
             "categorias": ["A", "B"],
         }
         with self.client:
-            login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
+            login_response = self.client.post('/login', json={'email': 'test@test.com', 'password': 'test'})
             self.assertEqual(login_response.status_code, 200)
             token = login_response.get_json()['token']
             headers = {'Authorization': f'Bearer {token}'}

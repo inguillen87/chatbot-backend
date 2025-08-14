@@ -60,7 +60,7 @@ class ProfileUpdateSecurityTests(unittest.TestCase):
             return decorated_function
 
         with patch('routes.auth.token_requerido', token_passthrough):
-            resp = self.client.put('/auth/me', json=data)
+            resp = self.client.put('/me', json=data)
 
         # The endpoint should reject the request because it tries to change protected fields.
         # A 400 Bad Request or 403 Forbidden would also be reasonable. Let's assume 401 for now.

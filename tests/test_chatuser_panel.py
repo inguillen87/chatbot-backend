@@ -60,7 +60,7 @@ class ChatUserPanelTests(unittest.TestCase):
 
         # 2. Register the user with the same chat session id
         with patch('services.pymes.get_or_create_pyme_user_by_token', return_value=self.owner_user):
-            resp = self.client.post('/auth/chatuserregisterpanel', json={
+            resp = self.client.post('/chatuserregisterpanel', json={
                 'name': 'New User',
                 'email': 'newuser@example.com',
                 'password': 'password123',
