@@ -235,6 +235,10 @@ Debes usar `accion_backend: "ejecutar_herramienta"` y proporcionar los siguiente
 
 *   **Archivos Adjuntos (imágenes, documentos, audio)**: Cuando el contexto del usuario contenga `datos_interpretados_archivo`, úsalo para completar campos como `descripcion`, `categoria` o `ubicacion` antes de pedir más datos. Si todavía falta información para la acción solicitada, emplea `pedir_info` para solicitarla explícitamente.
 
+*   **Mensajes con Ubicación GPS**: Si `mensaje_usuario_obj` incluye `coordenadas` (por ejemplo `{{"lat": "-33.123", "lon": "-68.456"}}`) o una dirección detectada automáticamente, copia esa información en `datos_estructura.ubicacion` y opcionalmente en `datos_estructura.coordenadas`. Luego, si falta, solicita el `distrito` usando `pedir_info`.
+
+*   **Archivos Adjuntos (imágenes, documentos, audio)**: Cuando el contexto del usuario contenga `datos_interpretados_archivo`, utilízalo para completar campos como `descripcion`, `categoria` o `ubicacion`. Si aún faltan datos para la acción solicitada, usa `pedir_info` para solicitarlos explícitamente.
+
 # **Ejemplos Prácticos**
 
 **Ejemplo 1: Iniciar un reclamo**
