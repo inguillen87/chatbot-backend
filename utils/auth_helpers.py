@@ -29,6 +29,16 @@ def obtener_token():
         current_app.logger.debug(f"[obtener_token] Found X-Entity-Token header: '{token_x_entity_token[:10]}...'")
         return token_x_entity_token
 
+    # Fallback: intentar recuperar el token desde una cookie específica
+    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    token_cookie = request.cookies.get(cookie_name)
+    if token_cookie:
+        token_cookie = token_cookie.strip()
+        current_app.logger.debug(
+            f"[obtener_token] Found token in cookie '{cookie_name}': '{token_cookie[:10]}...'"
+        )
+        return token_cookie
+
     token_args = request.args.get("token")
     if token_args:
         token_args = token_args.strip()

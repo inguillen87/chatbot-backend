@@ -1209,6 +1209,7 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado."""
     opciones = [
+        {"texto": "0. ⬅️ Volver al inicio", "id_accion": "0"},
         {"texto": "1. 💡 Luminaria",        "id_accion": "1"},
         {"texto": "2. 🌳 Arbolado",         "id_accion": "2"},
         {"texto": "3. 🧹 Limpieza y riego", "id_accion": "3"},
@@ -1226,6 +1227,7 @@ def _get_reclamos_menu():
 
 
 SIMPLE_GREETINGS = {"hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "hi", "hello", "menu", "menú"}
+RETURN_TO_MAIN_MENU = {"volver al inicio", "volver al menu", "inicio", "menu"}
 
 def responder_municipio(
     pregunta_original,
@@ -1554,6 +1556,15 @@ def responder_municipio(
         logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}'")
 
         normalized_input = normalizar_texto(pregunta_str_reclamo or "")
+
+        if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
+            logger_actual.info("User requested to return to main menu from reclamos menu.")
+            handler = GreetingHandler(context)
+            response = handler.handle({})
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return response
+
         repeat_commands = {
             "show_reclamos_menu",
             "mostrar_menu_reclamos",
