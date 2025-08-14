@@ -1,13 +1,44 @@
 from flask_socketio import SocketIO, join_room, emit
-from flask import current_app
+from flask import current_app, request
+from config import ALLOWED_ORIGINS
 from models import User, db, TicketComentario
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 
-socketio = SocketIO(cors_allowed_origins="*")
+socketio = SocketIO(
+    cors_allowed_origins=ALLOWED_ORIGINS,
+    cookie=True,
+    async_mode="threading"
+)
 
 def emit_ticket_update(data):
     socketio.emit('ticket_update', data)
+
+@socketio.on('connect')
+def on_connect(auth):
+    """
+    Handles new Socket.IO connections.
+    Authenticates the user if a token is provided in the `auth` payload.
+    Rejects the connection if the token is invalid.
+    Allows anonymous connections if no token is provided.
+    """
+    current_app.logger.info(f"Socket.IO client connected: {request.sid}")
+
+    # The 'auth' argument is the primary source for the token.
+    # It's passed by standard Socket.IO clients.
+    token = (auth or {}).get('token')
+
+    if token:
+        current_app.logger.info(f"Socket.IO connection attempt with token for sid: {request.sid}")
+        try:
+            # Attempt to decode the token to validate it
+            jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+            current_app.logger.info(f"Socket.IO token validated successfully for sid: {request.sid}")
+        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
+            current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
+            return False  # Reject the connection
+    else:
+        current_app.logger.info(f"Socket.IO client connected anonymously: {request.sid}")
 
 @socketio.on('join')
 def on_join(data):

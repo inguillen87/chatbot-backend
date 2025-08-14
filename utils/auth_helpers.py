@@ -4,6 +4,12 @@ from flask import request, jsonify, current_app, g, make_response
 from flask_login import current_user
 from models import User
 
+def user_from_token(token: str) -> User | None:
+    """Busca un usuario a partir de un token de autenticación."""
+    if not token:
+        return None
+    return User.query.filter_by(token=token).first()
+
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
     current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
@@ -126,14 +132,19 @@ def token_requerido(f):
         cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
         if not request.cookies.get(cookie_name) and token:
             resp = make_response(response)
-            resp.set_cookie(
-                cookie_name,
-                token,
-                domain=current_app.config.get("SESSION_COOKIE_DOMAIN"),
-                secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
-                httponly=True,
-                samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-            )
+            cookie_args = {
+                "key": cookie_name,
+                "value": token,
+                "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+                "httponly": True,
+                "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+            }
+            cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+            if cookie_domain:
+                cookie_args["domain"] = cookie_domain
+
+            if token:
+                resp.set_cookie(**cookie_args)
             return resp
 
         return response
