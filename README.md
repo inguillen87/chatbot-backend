@@ -210,6 +210,10 @@ consulta el archivo [`docs/ejemplo-request-demo.md`](docs/ejemplo-request-demo.m
 ## SaaS Deployment
 This project can be deployed as a multi-tenant SaaS solution. Each company has its own token and context. See `docs/ARCHITECTURE.md` for how the LLM-driven flow integrates with the CRM modules.
 
+## Session configuration
+- `SESSION_COOKIE_DOMAIN`: domain to use for session cookies; leave unset for local development.
+- `AUTH_TOKEN_COOKIE_NAME`: name of the fallback cookie storing the user's auth token when headers are missing.
+
 ## New Features
 - The LLM now asks to confirm stored addresses before searching.
 - Queries like "veterinarias" reset any ongoing complaint context and clear previous complaint details.
