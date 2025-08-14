@@ -341,7 +341,8 @@ class TicketComentario(db.Model):
             "fecha": self.fecha.isoformat(),
             "user_id": self.user_id,
             "anon_id": self.anon_id,
-            "es_admin": self.es_admin
+            "es_admin": self.es_admin,
+            "origen": self.origen
         }
         if self.archivo_adjunto:
             data['attachment_info'] = {
