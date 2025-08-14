@@ -50,12 +50,13 @@ class TestNewFeatures(unittest.TestCase):
         """
         handler = GreetingHandler(context={})
         respuesta = handler.handle(payload={})
-
-        self.assertIn("¡Hola! Soy JuniA, el asistente virtual de la Municipalidad de Junín.", respuesta["message_body"])
+        self.assertIn("¡Hola, Vecino/a!", respuesta["message_body"])
+        self.assertIn("Soy JUNI", respuesta["message_body"])
         self.assertIn("options_list", respuesta)
-        self.assertEqual(len(respuesta["options_list"]), 5)
-        self.assertEqual(respuesta["options_list"][0]["texto"], "RECLAMOS")
-        self.assertEqual(respuesta["fuente"], "greeting_handler_v7_junin")
+        self.assertEqual(len(respuesta["options_list"]), 10)
+        self.assertEqual(respuesta["options_list"][0]["texto"], "🛠️ Iniciar un Reclamo")
+        self.assertEqual(respuesta["fuente"], "greeting_handler_categorized_v2")
+        self.assertEqual(len(respuesta.get("categorias", [])), 4)
 
 if __name__ == '__main__':
     unittest.main()

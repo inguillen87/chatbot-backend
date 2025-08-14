@@ -429,22 +429,80 @@ class BaseMunicipioHandler:
         raise NotImplementedError
 
 class GreetingHandler(BaseMunicipioHandler):
+    def _get_user_display_name(self) -> str:
+        """Return a friendly name for the user based on context info."""
+        name = self.context.get("nombre_usuario_contexto")
+        if name:
+            return name
+
+        phone = self.context.get("telefono_usuario_contexto") or self.context.get("telefono_usuario")
+        if phone:
+            return f"Usuario de WhatsApp {phone[-4:]}"
+
+        return "Vecino/a"
+
     def handle(self, payload: dict) -> dict | None:
+        user_name = self._get_user_display_name()
         welcome_message = (
-            "¡Hola! Soy JuniA, el asistente virtual de la Municipalidad de Junín.\n"
-            "Estas son las cosas que puedo hacer por vos:"
+            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
+            "reclamos, turnos, noticias y mucho más.\n\n"
+            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
         )
+
+        options_list = [
+            {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos", "id": "mostrar_menu_reclamos"},
+            {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias", "id": "denuncias"},
+            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir", "id": "licencia_de_conducir"},
+            {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes", "id": "pago_de_tasas_vigentes"},
+            {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites", "id": "consultar_otros_tramites"},
+            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia", "id": "veterinaria_y_bromatologia"},
+            {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos", "id": "solicitar_turnos"},
+            {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica", "id": "agenda_cultural_y_turistica"},
+            {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades", "id": "ultimas_novedades"},
+            {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor", "id": "defensa_del_consumidor"},
+        ]
+
+        categorias = [
+            {
+                "titulo": "Reclamos y Denuncias 🛠️",
+                "botones": [
+                    {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                    {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias"},
+                ],
+            },
+            {
+                "titulo": "Trámites y Consultas 📄",
+                "botones": [
+                    {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                    {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+                    {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"},
+                ],
+            },
+            {
+                "titulo": "Servicios y Turnos 📅",
+                "botones": [
+                    {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+                    {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"},
+                ],
+            },
+            {
+                "titulo": "Información y Novedades 📰",
+                "botones": [
+                    {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+                    {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
+                    {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"},
+                ],
+            },
+        ]
+
         return {
             "message_body": welcome_message,
-            "options_list": [
-                {"id": "reclamos", "texto": "RECLAMOS"},
-                {"id": "licencia_conducir", "texto": "LICENCIA DE CONDUCIR"},
-                {"id": "pago_tasas", "texto": "PAGO DE TASAS VIGENTES"},
-                {"id": "defensa_consumidor", "texto": "DEFENSA DEL CONSUMIDOR"},
-                {"id": "veterinaria_bromatologia", "texto": "VETERINARIA Y BROMATOLOGÍA"},
-            ],
-            "message_type": "interactive_list", # A list is better for this many options
-            "fuente": "greeting_handler_v7_junin"
+            "options_list": options_list,
+            "message_type": "interactive_list",
+            "fuente": "greeting_handler_categorized_v2",
+            "categorias": categorias,
+            "generar_audio": True,
         }
 
 class ReclamosMenuHandler(BaseMunicipioHandler):
