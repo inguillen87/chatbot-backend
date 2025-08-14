@@ -30,8 +30,10 @@ def solo_admin_requerido(f):
 
     return decorated
 
-@auth_bp.route('/login', methods=['POST'])
+@auth_bp.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'})
     if not request.is_json:
         return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
     data = request.get_json()
