@@ -1170,7 +1170,7 @@ RECLAMO_KEYWORDS = {
     "Luminaria": ["luminaria", "luz", "poste", "foco"],
     "Arbolado": ["arbolado", "arbol", "arboles", "rama", "ramas"],
     "Limpieza y riego": ["limpieza", "riego", "basura", "basural", "contenedor"],
-    "Arreglo de calle": ["calle", "bache", "pozo", "asfalto", "vereda"],
+    "Arreglo de calle": ["calle", "bache", "pozo", "asfalto", "vereda", "agujero", "hueco"],
     "Pérdida de agua": ["agua", "perdida", "caño", "cañeria"],
     "Otros": ["otros", "otro", "varios"]
 }
@@ -1198,10 +1198,19 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
             if normalizar_texto(option.get("texto", "")).startswith(normalized_input):
                 return option.get("texto")
 
-    # 3. Check for keyword match
-    all_keywords = {keyword: category for category, keywords in RECLAMO_KEYWORDS.items() for keyword in keywords}
-    best_match, score = process.extractOne(normalized_input, all_keywords.keys())
+    # 3. Check for keyword match within the input
+    for category, keywords in RECLAMO_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in normalized_input:
+                return category
 
+    # 4. Fallback to fuzzy matching if no direct keyword was found
+    all_keywords = {
+        keyword: category
+        for category, keywords in RECLAMO_KEYWORDS.items()
+        for keyword in keywords
+    }
+    best_match, score = process.extractOne(normalized_input, all_keywords.keys())
     if score > 80:
         return all_keywords[best_match]
 
