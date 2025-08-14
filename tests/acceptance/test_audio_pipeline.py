@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from app import db
 from models import User, ChatSessionContext
-from services.municipio_responder import responder_municipio
+from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
 
 @patch('services.municipio_responder.llamar_gemini')
 @patch('services.audio_transcription_service.transcribe_audio_from_url')
@@ -16,7 +16,7 @@ def test_stt_low_confidence(mock_transcribe, mock_llamar_gemini, init_database, 
     response = responder_municipio({"media_url": "http://a.b/c.ogg"}, owner_user, owner_user.rubro, chat_db_context=chat_context)
 
     assert "¿Es correcto?" in response['message_body']
-    assert chat_context.context_data['estado_conversacion'] == 'ESPERANDO_CONFIRMACION_STT'
+    assert chat_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'] == 'ESPERANDO_CONFIRMACION_STT'
 
 @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
 def test_tts_caching(mock_synthesize, init_database, owner_user, viewer_user):
@@ -54,9 +54,11 @@ def test_auto_learn_prefers_audio(mock_transcribe, mock_llamar_gemini, init_data
     viewer_user.set_password("testpassword")
     db.session.add(viewer_user)
     db.session.commit()
-    chat_context = ChatSessionContext(chat_session_id="auto_learn", user_id=owner_user.id)
-    db.session.add(chat_context)
-    db.session.commit()
+    class MockChatContext:
+        def __init__(self):
+            self.context_data = {}
+
+    chat_context = MockChatContext()
 
     # First audio message
     responder_municipio({"media_url": "http://a.b/1.ogg"}, owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
