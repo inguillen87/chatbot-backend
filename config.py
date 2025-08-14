@@ -1,4 +1,24 @@
 import os
+from urllib.parse import urlparse
+
+def get_parent_domain(url):
+    """
+    Extrae el dominio padre (ej. .dominio.com) de una URL completa.
+    Devuelve None si la URL es inválida, localhost, o no tiene un dominio claro.
+    """
+    if not url:
+        return None
+    try:
+        hostname = urlparse(url).hostname
+        if not hostname or hostname == 'localhost' or '.' not in hostname:
+            return None
+        parts = hostname.split('.')
+        if len(parts) > 1:
+            # Devuelve el dominio principal, ej., .chatboc.ar
+            return f".{'.'.join(parts[-2:])}"
+        return None # No es un dominio válido para cookies compartidas
+    except Exception:
+        return None
 
 # Directorio base de la aplicación
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -29,17 +49,28 @@ class Config:
     }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    # --- Configuración Inteligente de Dominio de Cookies ---
+    # 1. Prioridad: variable de entorno explícita.
+    # 2. Fallback: intentar inferir de RENDER_EXTERNAL_URL.
+    # 3. Fallback: intentar inferir de APP_BASE_URL.
+    # 4. Default: None (para desarrollo local como localhost).
+    _explicit_domain = os.getenv("SESSION_COOKIE_DOMAIN")
+    _render_domain = get_parent_domain(os.getenv("RENDER_EXTERNAL_URL"))
+    _app_base_domain = get_parent_domain(os.getenv("APP_BASE_URL"))
+
+    SESSION_COOKIE_DOMAIN = _explicit_domain or _render_domain or _app_base_domain or None
+
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN
-    # Permite definir el dominio vía variable de entorno. Si no se especifica,
-    # queda en `None` para facilitar el desarrollo local.
-    SESSION_COOKIE_DOMAIN = os.getenv("SESSION_COOKIE_DOMAIN") or None
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_SAMESITE = 'None'
     SESSION_TYPE = 'sqlalchemy'
     SESSION_SQLALCHEMY_TABLE = 'sessions'
-    # Nombre del cookie adicional que almacena el token de acceso como
-    # respaldo en caso de que la sesión basada en cookies falle
+
+    # --- Nombres de Cookies para Identificadores ---
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    ANON_ID_COOKIE_NAME = "anon_id"
+    CHAT_SESSION_ID_COOKIE_NAME = "chat_session_id"
+
 
     # 4. RESTO DE LA CONFIGURACIÓN...
     ATTENTION_BUBBLE_TEXT = os.getenv("ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?")

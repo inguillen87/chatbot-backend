@@ -104,20 +104,30 @@ def _procesar_chat(
     owner_user=None,
     anon_id: str | None = None,
 ):
+    from flask import g
     channel = "web"  # Define channel for this processing function
     # --- Session and Context Initialization ---
-    chat_session_id_header = request.headers.get("X-Chat-Session-Id")
-    if not chat_session_id_header:
-        chat_session_id_header = str(uuid.uuid4())
-        current_app.logger.warning(f"X-Chat-Session-Id not found. Generated new: {chat_session_id_header}")
+    chat_cookie_name = current_app.config["CHAT_SESSION_ID_COOKIE_NAME"]
+    chat_session_id = request.headers.get("X-Chat-Session-Id") or request.cookies.get(chat_cookie_name)
+
+    if not chat_session_id:
+        chat_session_id = str(uuid.uuid4())
+        g.set_chat_session_cookie = True  # Marcar para que after_request ponga la cookie
+        current_app.logger.warning(f"X-Chat-Session-Id not found in header or cookie. Generated new: {chat_session_id}")
+    else:
+        # Asegurarse de que el flag no esté presente si no es necesario.
+        g.set_chat_session_cookie = request.cookies.get(chat_cookie_name) != chat_session_id
+
+    # Guardar en el contexto global de la request para el handler after_request
+    g.chat_session_id = chat_session_id
 
     actor_principal = owner_user or current_user
-    chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
+    chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
 
     if not chat_context_obj:
-        current_app.logger.info(f"No ChatSessionContext found for {chat_session_id_header}. Creating new one.")
+        current_app.logger.info(f"No ChatSessionContext found for {chat_session_id}. Creating new one.")
         chat_context_obj = ChatSessionContext(
-            chat_session_id=chat_session_id_header,
+            chat_session_id=chat_session_id,
             user_id=getattr(actor_principal, 'id', None),
             anon_id=anon_id if not actor_principal else None,
             context_data={}
@@ -324,41 +334,7 @@ def _procesar_chat(
         # The chat endpoint is only responsible for passing the attachment_info.
         analisis_archivo_resultado = None
 
-        # Leer el X-Chat-Session-Id del header
-        chat_session_id_header = request.headers.get("X-Chat-Session-Id")
-
-        if not chat_session_id_header:
-            # Fallback: Generar un nuevo ID si no viene en el header.
-            # Idealmente, el frontend SIEMPRE debería enviarlo.
-            chat_session_id_header = str(uuid.uuid4())
-            current_app.logger.warning(f"X-Chat-Session-Id no encontrado en headers. Generando uno nuevo: {chat_session_id_header}")
-
-        current_app.logger.info(f"Usando Chat Session ID (from header or generated): {chat_session_id_header}")
-
-        # Cargar o crear el contexto de la base de datos
-        chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
-
-        if not chat_context_obj:
-            current_app.logger.info(f"No se encontró ChatSessionContext. Creando uno nuevo.")
-            chat_context_obj = ChatSessionContext(
-                chat_session_id=chat_session_id_header,
-                user_id=getattr(actor_principal, 'id', None), # Asociar con usuario logueado si existe
-                anon_id=anon_id if not actor_principal else None, # Asociar con anon_id si no hay usuario logueado
-                context_data={} # Inicializar con datos vacíos
-            )
-            db.session.add(chat_context_obj)
-            # No hacer commit aquí todavía, se hará después de procesar el chat
-        else:
-            current_app.logger.info(f"ChatSessionContext cargado. User_id: {chat_context_obj.user_id}, Anon_id: {chat_context_obj.anon_id}")
-
-
-            # Detect if user just logged in with this session
-            if actor_principal and chat_context_obj.user_id == actor_principal.id and not chat_context_obj.context_data.get("user_was_present_before", False):
-                chat_context_obj.context_data["just_logged_in_flag"] = True
-                current_app.logger.info(f"User {actor_principal.id} just logged in with session {chat_session_id_header}. Setting just_logged_in_flag.")
-
-            # This flag should be set to True if an authenticated user is present.
-            chat_context_obj.context_data["user_was_present_before"] = bool(actor_principal)
+        # El bloque de inicialización de chat_session_id y chat_context_obj ya se movió al inicio de la función.
 
         if chat_context_obj and chat_context_obj.context_data.get('just_logged_in_flag'):
             current_app.logger.info(f"User {actor_principal.id} just logged in. Clearing flag.")
@@ -395,7 +371,7 @@ def _procesar_chat(
             tipo_chat=tipo_chat,
             contexto_previo=contexto_previo, # Este 'contexto_previo' del request original podría necesitar ser integrado o reemplazado por el de la DB
             anon_id=anon_id, # El anon_id de la cabecera, para lógica de límites de mensajes anónimos, etc.
-            chat_session_uuid=chat_session_id_header, # El ID de sesión único, ahora desde el header
+            chat_session_uuid=chat_session_id, # El ID de sesión único, ahora desde el header o cookie
             chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
             channel="web", # Set channel to web
             attachment_info=attachment_info,
@@ -435,14 +411,14 @@ def _procesar_chat(
                 current_app.logger.info(f"ChatSessionContext Serialization: TopLevelState before='{top_level_state_before}', after='{top_level_state_after}'. SubContextState before='{state_before_global_serialization}', after='{state_after_global_serialization}'.")
 
             flag_modified(chat_context_obj, "context_data")
-            current_app.logger.info(f"ChatSessionContext.context_data (post-serialization) marcado como modificado para {chat_session_id_header}.")
+            current_app.logger.info(f"ChatSessionContext.context_data (post-serialization) marcado como modificado para {chat_session_id}.")
 
         try:
             db.session.commit() # Commit principal para ChatSessionContext y User.preguntas_usadas
-            current_app.logger.info(f"ChatSessionContext para {chat_session_id_header} guardado/actualizado en DB (Commit Principal).")
+            current_app.logger.info(f"ChatSessionContext para {chat_session_id} guardado/actualizado en DB (Commit Principal).")
         except Exception as e_commit:
             db.session.rollback()
-            current_app.logger.error(f"Error en Commit Principal (ChatSessionContext) para {chat_session_id_header}: {e_commit}", exc_info=True)
+            current_app.logger.error(f"Error en Commit Principal (ChatSessionContext) para {chat_session_id}: {e_commit}", exc_info=True)
             # La respuesta al usuario ya se formó, pero el contexto no se guardó.
 
         es_publico = es_rubro_publico(rubro_obj_global)
@@ -511,9 +487,9 @@ def _procesar_chat(
             return jsonify({"error": "Error interno del servidor al guardar la sesión."}), 500
 
         # Emit the result via Socket.IO if the channel is web
-        if channel == "web" and chat_session_id_header:
-            socketio.emit('message', resultado, room=chat_session_id_header)
-            current_app.logger.info(f"Emitted socket event 'message' to room {chat_session_id_header}")
+        if channel == "web" and chat_session_id:
+            socketio.emit('message', resultado, room=chat_session_id)
+            current_app.logger.info(f"Emitted socket event 'message' to room {chat_session_id}")
 
         return jsonify(resultado), 200
 

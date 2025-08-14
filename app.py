@@ -1,7 +1,8 @@
 import os
 import logging
 import sys
-from flask import Flask, request, current_app, jsonify
+from flask import Flask, request, current_app, jsonify, g
+from datetime import timedelta
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from flask_cors import CORS
@@ -176,10 +177,43 @@ def create_app(config_class=Config):
          allow_headers=["Content-Type", "Authorization", "X-Entity-Token", "X-Chat-Session-Id", "Anon-Id"])
 
     @app.after_request
-    def add_permissions_policy(resp):
+    def after_request_handler(response):
+        """
+        Handler to modify the response before it's sent to the client.
+        - Sets the Permissions-Policy header.
+        - Sets persistent cookies for anonymous ID and chat session ID as a fallback.
+        - Sets response headers for these IDs so the client can use them immediately.
+        """
+        # 1. Set Permissions-Policy header
         policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
-        resp.headers.setdefault("Permissions-Policy", policy)
-        return resp
+        response.headers.setdefault("Permissions-Policy", policy)
+
+        # 2. Set session identifier cookies and headers as a robust fallback
+        domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+        secure = current_app.config.get("SESSION_COOKIE_SECURE", True)
+        samesite = current_app.config.get("SESSION_COOKIE_SAMESITE", "None")
+        max_age = timedelta(days=365) # Persist cookies for a year
+
+        # Set anon_id cookie if a new one was generated (or to refresh)
+        if hasattr(g, 'anon_id') and g.anon_id:
+            # Set the cookie regardless of the 'set_anon_cookie' flag to ensure it's always refreshed
+            anon_cookie_name = current_app.config["ANON_ID_COOKIE_NAME"]
+            response.set_cookie(
+                anon_cookie_name, g.anon_id,
+                domain=domain, secure=secure, httponly=True, samesite=samesite, max_age=max_age
+            )
+            response.headers['X-Anon-Id'] = g.anon_id
+
+        # Set chat_session_id cookie if a new one was generated (or to refresh)
+        if hasattr(g, 'chat_session_id') and g.chat_session_id:
+            chat_cookie_name = current_app.config["CHAT_SESSION_ID_COOKIE_NAME"]
+            response.set_cookie(
+                chat_cookie_name, g.chat_session_id,
+                domain=domain, secure=secure, httponly=True, samesite=samesite, max_age=max_age
+            )
+            response.headers['X-Chat-Session-Id'] = g.chat_session_id
+
+        return response
 
     # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(auth_bp)

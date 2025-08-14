@@ -117,7 +117,13 @@ def anon_o_token_requerido(f):
     """
     Decorador que maneja la autenticación para endpoints que aceptan
     tanto usuarios autenticados con token como usuarios anónimos.
-    Para anónimos en endpoints de municipio, carga un owner por defecto.
+
+    Prioriza la identificación en este orden:
+    1. Usuario autenticado (vía token o sesión Flask-Login).
+    2. Usuario anónimo (vía header 'X-Anon-Id' o cookie 'anon_id').
+
+    Si no se encuentra ningún identificador anónimo, se genera uno nuevo
+    y se marca para ser enviado como cookie en la respuesta.
     """
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -128,10 +134,18 @@ def anon_o_token_requerido(f):
         user = User.query.filter_by(token=token).first() if token else None
         owner_user = user # Por defecto, el owner es el mismo usuario
 
-        g.anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
-        if not g.anon_id:
-            g.anon_id = str(uuid.uuid4())
-            current_app.logger.info(f"Generado nuevo ID anónimo para la request: {g.anon_id}")
+        # Lógica de identificación anónima (header > cookie > generar nuevo)
+        anon_cookie_name = current_app.config["ANON_ID_COOKIE_NAME"]
+        anon_id = request.headers.get("X-Anon-Id") or request.cookies.get(anon_cookie_name)
+
+        if not anon_id:
+            anon_id = str(uuid.uuid4())
+            g.set_anon_cookie = True  # Marcar para que after_request ponga la cookie
+            current_app.logger.info(f"Generado nuevo ID anónimo para la request: {anon_id}")
+        else:
+            g.set_anon_cookie = False
+
+        g.anon_id = anon_id # Guardar en el contexto global de la request
 
         if not user:
             # Lógica para usuarios anónimos
