@@ -1553,6 +1553,19 @@ def responder_municipio(
 
         logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}'")
 
+        normalized_input = normalizar_texto(pregunta_str_reclamo or "")
+        repeat_commands = {
+            "show_reclamos_menu",
+            "mostrar_menu_reclamos",
+            "hacer un reclamo",
+            "iniciar reclamo",
+            "reclamo",
+            "reclamos",
+        }
+        if not pregunta_str_reclamo or normalized_input in repeat_commands:
+            logger_actual.info("Input requests reclamos menu again. Returning submenu.")
+            return _get_reclamos_menu()
+
         # El menú ahora tiene id_accion numéricos.
         # Primero, intentar matchear el input numérico con el id_accion.
         reclamo_options = _get_reclamos_menu().get("options_list", [])
