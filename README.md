@@ -81,8 +81,9 @@ fields like `id`, `nro_ticket`, `asunto`, `categoria`, `estado`, `fecha`,
 - Employees can be limited to specific ticket categories using the `categorias`
   field when creating or updating them.
 - `GET /historial` – retrieve the logged user's full history of chats and tickets.
-- `POST /archivos/subir` – upload a file associated with chats or tickets.
-  Only images, PDFs, spreadsheets and text documents up to 10MB are accepted.
+- `POST /archivos/subir` – upload files associated with chats or tickets.  Use the
+  `archivos` field for multiple files or `archivo` for a single file. Only images,
+  PDFs, spreadsheets and text documents up to 10MB are accepted.
 - `GET /archivos/<nombre>` – download a previously uploaded file (requires authentication).
 - `GET /archivos/sesion/<id>` – list all chat files for the given session.
 - `GET /notifications` – list pending notifications for the authenticated user.
