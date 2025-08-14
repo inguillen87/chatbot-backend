@@ -1,8 +1,36 @@
 import os
+from urllib.parse import urlparse
 
 # Directorio base de la aplicación
 basedir = os.path.abspath(os.path.dirname(__file__))
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
+
+
+def _infer_cookie_domain():
+    """Determina un dominio de cookie adecuado a partir de variables de entorno.
+
+    Prioriza una configuración explícita mediante ``SESSION_COOKIE_DOMAIN``. Si no
+    está presente, intenta deducirlo desde ``PRIMARY_DOMAIN``, ``RENDER_EXTERNAL_URL``
+    o ``APP_BASE_URL``. En entornos locales o cuando el host es ``localhost`` no se
+    establece ningún dominio para facilitar el desarrollo.
+    """
+    explicit = os.getenv("SESSION_COOKIE_DOMAIN")
+    if explicit:
+        return explicit
+
+    for env_var in ("PRIMARY_DOMAIN", "RENDER_EXTERNAL_URL", "APP_BASE_URL"):
+        url = os.getenv(env_var)
+        if not url:
+            continue
+        hostname = urlparse(url).hostname
+        if not hostname or hostname.startswith("localhost"):
+            continue
+        parts = hostname.split('.')
+        if len(parts) >= 2:
+            return "." + ".".join(parts[-2:])
+
+    # Si no se pudo inferir, devolver ``None`` para el modo local
+    return None
 
 class Config:
     """
@@ -30,9 +58,10 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN
-    # Permite definir el dominio vía variable de entorno. Si no se especifica,
-    # queda en `None` para facilitar el desarrollo local.
-    SESSION_COOKIE_DOMAIN = os.getenv("SESSION_COOKIE_DOMAIN") or None
+    # Se intenta inferir un dominio compatible con subdominios para entornos de
+    # producción. Si no se logra, queda en ``None`` para facilitar el desarrollo
+    # local.
+    SESSION_COOKIE_DOMAIN = _infer_cookie_domain()
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_SAMESITE = 'None'
     SESSION_TYPE = 'sqlalchemy'
