@@ -128,6 +128,10 @@ def subir_archivo_options():
 def subir_archivo(current_user):
     # El frontend puede enviar un solo "archivo" o una lista "archivos".
     files = request.files.getlist("archivos")
+    if not files:
+        single = request.files.get("archivo")
+        if single:
+            files = [single]
 
     # Si no se encontró lista "archivos", intentar con el campo singular.
     if not files:
@@ -197,15 +201,15 @@ def subir_archivo(current_user):
         archivos_guardados_info.append(upload_result)
 
     # Si todos los archivos se guardaron bien, ahora los registramos en la BD
-    for upload_result in archivos_guardados_info:
-        url = upload_result['public_url']
+    for agi in archivos_guardados_info:
+        url = agi['public_url']
         nuevo_adjunto = ArchivoAdjunto(
             user_id=current_user.id,
             session_id=session_id,
-            filename=upload_result['unique_name'],
-            nombre_original=upload_result['original_name'],
-            mime=upload_result['mimetype'],
-            tamano=upload_result['size'],
+            filename=agi['unique_name'],
+            nombre_original=agi['original_name'],
+            mime=agi['mimetype'],
+            tamano=agi['size'],
             tipo=tipo_adjunto,
             pyme_ticket_id=pyme_ticket_id if pyme_ticket_id else None,
             municipio_ticket_id=municipio_ticket_id if municipio_ticket_id else None,
@@ -214,51 +218,69 @@ def subir_archivo(current_user):
         db.session.add(nuevo_adjunto)
 
         try:
-            db.session.commit() # Commit por cada archivo para obtener ID para la tarea
+            db.session.commit()  # Commit por cada archivo para obtener ID para la tarea
 
             # Encolar tarea de análisis de archivo
             try:
                 tarea_analizar_contenido_archivo.delay(nuevo_adjunto.id)
-                current_app.logger.info(f"Tarea de análisis encolada para ArchivoAdjunto ID: {nuevo_adjunto.id}")
+                current_app.logger.info(
+                    f"Tarea de análisis encolada para ArchivoAdjunto ID: {nuevo_adjunto.id}"
+                )
             except Exception as e_celery:
-                current_app.logger.error(f"Error al encolar tarea de análisis para ArchivoAdjunto ID: {nuevo_adjunto.id}. Error: {e_celery}", exc_info=True)
+                current_app.logger.error(
+                    f"Error al encolar tarea de análisis para ArchivoAdjunto ID: {nuevo_adjunto.id}. Error: {e_celery}",
+                    exc_info=True,
+                )
                 # No revertimos la subida, solo logueamos el error de encolado
 
             current_app.logger.info(
-                f"Archivo subido por user {current_user.id}: {agi['unique']} ({agi['original']}). ID: {nuevo_adjunto.id}"
+                f"Archivo subido por user {current_user.id}: {agi['unique_name']} ({agi['original_name']}). ID: {nuevo_adjunto.id}"
             )
 
-            # Procesar el archivo con Document AI si es un PDF o una imagen
+            # Procesar el archivo con Document AI si es un PDF o una imagen (solo si hay path disponible)
             extracted_data = None
-            if agi['mimetype'] == 'application/pdf':
+            if agi.get('path') and agi['mimetype'] == 'application/pdf':
                 extracted_data = procesar_catalogo_pdf_google(agi['path'], current_user.id)
-            elif agi['mimetype'].startswith('image/'):
+            elif agi.get('path') and agi['mimetype'].startswith('image/'):
                 extracted_data = procesar_catalogo_imagen_google(agi['path'], current_user.id)
 
-            resultados_subida.append({
-                'filename': agi['unique'],
-                'id': nuevo_adjunto.id,
-                'name': agi['original'],
-                'mimeType': agi['mimetype'],
-                'size': agi['tamano'],
-                'url': url,
-                'extracted_data': extracted_data
-            })
+            resultados_subida.append(
+                {
+                    'filename': agi['unique_name'],
+                    'id': nuevo_adjunto.id,
+                    'name': agi['original_name'],
+                    'mimeType': agi['mimetype'],
+                    'size': agi['size'],
+                    'url': url,
+                    'extracted_data': extracted_data,
+                }
+            )
         except Exception as e_db:
             db.session.rollback()
-            current_app.logger.error(f"Error al registrar en BD el archivo {agi['original']}: {e_db}", exc_info=True)
+            current_app.logger.error(
+                f"Error al registrar en BD el archivo {agi.get('original_name', 'desconocido')}: {e_db}",
+                exc_info=True,
+            )
             # Eliminar el archivo físico que se guardó pero no se pudo registrar en BD
             try:
-                storage_client.bucket(BUCKET_NAME).blob(agi['unique']).delete()
+                storage_client = storage.Client()
+                storage_client.bucket(BUCKET_NAME).blob(agi['unique_name']).delete()
             except Exception as e_delete:
-                current_app.logger.error(f"Error al eliminar archivo {agi['unique']} de GCS durante el rollback: {e_delete}", exc_info=True)
+                current_app.logger.error(
+                    f"Error al eliminar archivo {agi['unique_name']} de GCS durante el rollback: {e_delete}",
+                    exc_info=True,
+                )
 
     if not resultados_subida and archivos_guardados_info:
         for agi in archivos_guardados_info:
             try:
-                storage_client.bucket(BUCKET_NAME).blob(agi['unique']).delete()
+                storage_client = storage.Client()
+                storage_client.bucket(BUCKET_NAME).blob(agi['unique_name']).delete()
             except Exception as e_delete:
-                current_app.logger.error(f"Error al eliminar archivo {agi['unique']} de GCS durante el rollback: {e_delete}", exc_info=True)
+                current_app.logger.error(
+                    f"Error al eliminar archivo {agi['unique_name']} de GCS durante el rollback: {e_delete}",
+                    exc_info=True,
+                )
         return jsonify({'error': 'Error al procesar archivos en la base de datos después de guardarlos.'}), 500
 
     if not resultados_subida and not files: # Si no se enviaron archivos válidos desde el principio
