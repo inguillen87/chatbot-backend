@@ -345,12 +345,14 @@ def whatsapp_webhook():
     # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            # The formatter now returns a structured payload. We check its type.
-            interactive_payload = formatted_whatsapp_payload.get("interactive")
-            if interactive_payload:
-                # This is a workaround to handle the "interactive" type from the formatter.
-                # The Twilio API doesn't take this dict directly. We will send it as plain text.
-                body_text = interactive_payload.get("body", {}).get("text", "Por favor, elige una opción.")
+            # El formateador ahora devuelve un diccionario con 'type' y los datos.
+            # Si es de tipo 'text', usamos el cuerpo directamente.
+            if formatted_whatsapp_payload.get("type") == "text":
+                final_body = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
+            # Si es interactivo (para otros canales o flujos futuros), generamos un fallback de texto.
+            elif formatted_whatsapp_payload.get("type") == "interactive":
+                interactive_payload = formatted_whatsapp_payload.get("interactive", {})
+                body_text = interactive_payload.get("body", {}).get("text", "")
                 
                 buttons = interactive_payload.get("action", {}).get("buttons", [])
                 rows = []
@@ -359,40 +361,33 @@ def whatsapp_webhook():
                     for section in sections:
                         rows.extend(section.get("rows", []))
 
-                options_text = ""
-                # For buttons
+                options_text_parts = []
                 if buttons:
-                    options_text = "\n\n" + "\n".join([f"*{i+1}*. {btn['reply']['title']}" for i, btn in enumerate(buttons)])
-                # For lists
+                    options_text_parts = [f"*{i+1}*. {btn['reply']['title']}" for i, btn in enumerate(buttons)]
                 elif rows:
-                    options_list = []
                     for i, row in enumerate(rows):
                         title = row.get('title', '')
-                        # The description now contains the URL, if present.
                         description = row.get('description', '')
-                        if description and 'https://' in description:
-                             options_list.append(f"*{i+1}*. {title} ({description})")
+                        if description:
+                            options_text_parts.append(f"*{i+1}*. {title} - {description}")
                         else:
-                             options_list.append(f"*{i+1}*. {title}")
-                    options_text = "\n\n" + "\n".join(options_list)
+                            options_text_parts.append(f"*{i+1}*. {title}")
 
-                if options_text:
-                     options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
+                if options_text_parts:
+                    options_text = "\n\n" + "\n".join(options_text_parts)
+                    options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
+                    final_body = body_text + options_text
+                else:
+                    final_body = body_text
+            else:
+                # Fallback para cualquier otro tipo o si no hay tipo
+                final_body = bot_response_dict.get('message_body', "Hubo un error al procesar la respuesta.")
 
-                final_body = body_text + options_text
-                message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'body': final_body,
-                }
-            else: # Standard text message
-                final_body = formatted_whatsapp_payload.get("text", {}).get("body") or \
-                             bot_response_dict.get('message_body', "Error: sin cuerpo de mensaje.")
-                message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'body': final_body,
-                }
+            message_params = {
+                'from_': to_number_raw,
+                'to': from_number_raw,
+                'body': final_body.strip(),
+            }
 
             # Send the main message (text or interactive)
             main_message = twilio_client.messages.create(**message_params)
