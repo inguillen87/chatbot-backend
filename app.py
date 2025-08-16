@@ -201,7 +201,6 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- Configuración de CORS ---
-<<<<<<< codex/fix-cors-and-access-issues-in-application-2ji9rn
     CORS(
         app,
         origins=ALLOWED_ORIGINS,
@@ -216,14 +215,6 @@ def create_app(config_class=Config):
         ],
         expose_headers=["X-Anon-Id"],
     )
-=======
-    CORS(app,
-         origins=ALLOWED_ORIGINS,
-         supports_credentials=True,
-         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "X-Entity-Token", "X-Chat-Session-Id", "X-Anon-Id", "Anon-Id"],
-         expose_headers=["X-Anon-Id"])
->>>>>>> main
 
     @app.after_request
     def add_permissions_policy(resp):
