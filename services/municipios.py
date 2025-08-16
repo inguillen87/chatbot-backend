@@ -260,7 +260,7 @@ def obtener_info_tramite_web(tramite_nombre: str) -> dict:
     """
     from services.scraper_avanzado import extraer_contenido_general
 
-    tramites_links = cargar_configuracion_municipio(MUNICIPIO_ID, "tramites_links.json")
+    tramites_links = cargar_configuracion_municipio(MUNICIPIO_ID, "tramites.json")
     if not tramites_links:
         return {"error": "No se encontraron links de trámites."}
 
