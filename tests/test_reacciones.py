@@ -7,6 +7,9 @@ project_root_reacciones = os.path.abspath(os.path.join(os.path.dirname(__file__)
 if project_root_reacciones not in sys.path:
     sys.path.insert(0, project_root_reacciones)
 
+import jwt
+from datetime import datetime, timedelta
+
 try:
     from app import create_app
     from models import Conversacion # Moved to top
@@ -26,14 +29,19 @@ class ReaccionesEndpointTests(unittest.TestCase):
         db.create_all()
         from models import User
         # Create a user with the token 'tok'
-        user = User(email="reacciones@test.com", name="Test User", token="tok")
+        user = User(email="reacciones@test.com", name="Test User")
         user.set_password("password")
         db.session.add(user)
+        db.session.commit() # Commit to get user.id
+
         conv = Conversacion(pregunta="p", respuesta="r", fuente="bot", user_id=user.id)
         db.session.add(conv)
         db.session.commit()
         self.conv_id = conv.id
         self.user_id = user.id
+
+        jwt_payload = {'user_id': user.id, 'exp': datetime.utcnow() + timedelta(days=1)}
+        self.jwt_token = jwt.encode(jwt_payload, self.app.config['SECRET_KEY'], algorithm="HS256")
 
     def tearDown(self):
         db.session.remove()
@@ -54,10 +62,10 @@ class ReaccionesEndpointTests(unittest.TestCase):
         self.client.post(
             "/reacciones",
             json={"conversacion_id": self.conv_id, "emoji": "👍"},
-            headers={"Authorization": "Bearer tok"},
+            headers={"Authorization": f"Bearer {self.jwt_token}"},
         )
         resp = self.client.get(
-            f"/reacciones/{self.conv_id}", headers={"Authorization": "Bearer tok"}
+            f"/reacciones/{self.conv_id}", headers={"Authorization": f"Bearer {self.jwt_token}"}
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json.get("👍"), 1)

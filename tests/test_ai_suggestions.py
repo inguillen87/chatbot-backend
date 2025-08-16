@@ -13,6 +13,8 @@ from models import PlantillasRespuesta, User, Rubro
 from routes.ai import ai_bp
 import json
 from config import Config
+import jwt
+from datetime import datetime, timedelta
 
 # Configuración de prueba
 class TestConfig(Config):
@@ -36,11 +38,18 @@ class TestAISuggestions(unittest.TestCase):
 
         self.mock_user = User(
             id=1, name="Test Admin User", email="admin@test.com",
-            rol="admin", token="test_auth_token_admin", rubro_id=self.mock_rubro.id
+            rol="admin", rubro_id=self.mock_rubro.id
         )
         self.mock_user.set_password("adminpass")
         db.session.add(self.mock_user)
         db.session.commit()
+
+        # Generate JWT for the mock user
+        jwt_payload = {
+            'user_id': self.mock_user.id,
+            'exp': datetime.utcnow() + timedelta(days=1)
+        }
+        self.jwt_token = jwt.encode(jwt_payload, self.app.config['SECRET_KEY'], algorithm="HS256")
 
         self.g_patcher = patch('flask.g', new_callable=MagicMock)
         self.mock_g = self.g_patcher.start()
@@ -74,7 +83,7 @@ class TestAISuggestions(unittest.TestCase):
         self._crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
         response = self.client.post('/api/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
+                                    headers={'Authorization': f'Bearer {self.jwt_token}'},
                                     json={'asunto': 'Quiero saludar', 'consulta_cliente': 'Hola', 'top_n': 1})
 
         self.assertEqual(response.status_code, 200)
@@ -88,7 +97,7 @@ class TestAISuggestions(unittest.TestCase):
 
     def test_suggest_templates_missing_asunto(self):
         response = self.client.post('/api/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
+                                    headers={'Authorization': f'Bearer {self.jwt_token}'},
                                     json={'consulta_cliente': 'Hola'})
         self.assertEqual(response.status_code, 400)
         data = json.loads(response.data)
@@ -102,7 +111,7 @@ class TestAISuggestions(unittest.TestCase):
         mock_embed_textos_gemini.return_value = [[0.1]*1024]
 
         response = self.client.post('/api/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
+                                    headers={'Authorization': f'Bearer {self.jwt_token}'},
                                     json={'asunto': 'Consulta', 'consulta_cliente': 'Duda', 'top_n': 1})
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
@@ -118,7 +127,7 @@ class TestAISuggestions(unittest.TestCase):
         mock_embed_textos_gemini.return_value = None
 
         response = self.client.post('/api/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {self.mock_user.token}'},
+                                    headers={'Authorization': f'Bearer {self.jwt_token}'},
                                     json={'asunto': 'Consulta', 'consulta_cliente': 'Ayuda'})
 
         self.assertEqual(response.status_code, 500)

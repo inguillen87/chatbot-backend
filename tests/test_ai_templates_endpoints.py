@@ -16,6 +16,8 @@ from routes.ai import ai_bp as ai_templates_bp
 import json
 import pytest
 from config import Config
+import jwt
+from datetime import datetime, timedelta
 
 # Configuración de prueba
 from config import Config
@@ -46,18 +48,27 @@ def test_suggest_templates_success(client):
 
     mock_user = User(
         id=1, name="Test Admin User", email="admin@test.com",
-        rol="admin", token="test_auth_token_admin", rubro_id=rubro.id
+        rol="admin", rubro_id=rubro.id
     )
     mock_user.set_password("adminpass")
     db.session.add(mock_user)
     db.session.commit()
+
+    # Generate JWT for the mock user
+    jwt_payload = {
+        'user_id': mock_user.id,
+        'exp': datetime.utcnow() + timedelta(days=1)
+    }
+    # We need access to the app to get the secret key
+    jwt_token = jwt.encode(jwt_payload, client.application.config['SECRET_KEY'], algorithm="HS256")
+
     _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
     _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
     with patch('routes.ai.embed_textos_gemini') as mock_embed_textos_gemini:
         mock_embed_textos_gemini.return_value = [[0.1]*1024]
         response = client.post('/api/ai/suggest-templates',
-                                    headers={'Authorization': f'Bearer {mock_user.token}'},
+                                    headers={'Authorization': f'Bearer {jwt_token}'},
                                     json={'asunto': 'Quiero saludar', 'contexto_ticket': 'Hola', 'top_n': 1})
 
         assert response.status_code == 200

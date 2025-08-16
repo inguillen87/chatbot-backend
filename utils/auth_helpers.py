@@ -3,12 +3,23 @@ from functools import wraps
 from flask import request, jsonify, current_app, g, make_response
 from flask_login import current_user
 from models import User
+import jwt
 
 def user_from_token(token: str) -> User | None:
-    """Busca un usuario a partir de un token de autenticación."""
+    """
+    Busca un usuario a partir de un token de autenticación JWT.
+    """
     if not token:
         return None
-    return User.query.filter_by(token=token).first()
+    try:
+        payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+        user_id = payload.get('user_id')
+        if not user_id:
+            return None
+        return User.query.get(user_id)
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
+        current_app.logger.warning(f"Error al decodificar token JWT: {e}")
+        return None
 
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
@@ -159,7 +170,7 @@ def token_requerido(f):
             resp.headers.setdefault("Anon-Id", anon_id)
             return resp, 401
 
-        user = User.query.filter_by(token=token).first()
+        user = user_from_token(token)
 
         if not user:
             resp = jsonify({"error": "Token inválido o sesión expirada"})
@@ -210,7 +221,7 @@ def strict_token_requerido(f):
         if not token:
             return jsonify({"error": "Token de autenticación es requerido."}), 401
 
-        user = User.query.filter_by(token=token).first()
+        user = user_from_token(token)
         if not user:
             return jsonify({"error": "Token inválido o la sesión ha expirado."}), 401
 
@@ -255,7 +266,7 @@ def anon_o_token_requerido(f):
             return resp
 
         token = obtener_token()
-        user = User.query.filter_by(token=token).first() if token else None
+        user = user_from_token(token) if token else None
         owner_user = user # Por defecto, el owner es el mismo usuario
 
         if not user:

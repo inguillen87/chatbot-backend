@@ -13,6 +13,8 @@ from app import create_app, db
 from models import User, Rubro
 from routes.legacy_auth import get_current_user
 from config import Config
+import jwt
+from datetime import datetime, timedelta
 
 class TestConfig(Config):
     TESTING = True
@@ -61,12 +63,14 @@ class CatalogoLabelTests(unittest.TestCase):
 
     def test_pyme_label(self):
         user = self._base_user()
-        user.token = 'test-token-pyme'
         user.tipo_chat = 'pyme'
         db.session.add(user)
         db.session.commit()
 
-        resp = self.client.get('/auth/profile', headers={'Authorization': f'Bearer {user.token}'})
+        jwt_payload = {'user_id': user.id, 'exp': datetime.utcnow() + timedelta(days=1)}
+        jwt_token = jwt.encode(jwt_payload, self.app.config['SECRET_KEY'], algorithm="HS256")
+
+        resp = self.client.get('/auth/profile', headers={'Authorization': f'Bearer {jwt_token}'})
         data = resp.get_json()
 
         self.assertEqual(resp.status_code, 200)
@@ -75,7 +79,6 @@ class CatalogoLabelTests(unittest.TestCase):
 
     def test_municipio_label(self):
         user = self._base_user()
-        user.token = 'test-token-muni'
         # Associate a rubro that is considered public
         public_rubro = Rubro(nombre='municipios', clave='municipios', es_publico=True)
         user.rubro = public_rubro
@@ -83,7 +86,10 @@ class CatalogoLabelTests(unittest.TestCase):
         db.session.add(user)
         db.session.commit()
 
-        resp = self.client.get('/auth/profile', headers={'Authorization': f'Bearer {user.token}'})
+        jwt_payload = {'user_id': user.id, 'exp': datetime.utcnow() + timedelta(days=1)}
+        jwt_token = jwt.encode(jwt_payload, self.app.config['SECRET_KEY'], algorithm="HS256")
+
+        resp = self.client.get('/auth/profile', headers={'Authorization': f'Bearer {jwt_token}'})
         data = resp.get_json()
 
         self.assertEqual(resp.status_code, 200)
