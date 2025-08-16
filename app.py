@@ -206,7 +206,8 @@ def create_app(config_class=Config):
          origins=ALLOWED_ORIGINS,
          supports_credentials=True,
          methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "X-Entity-Token", "X-Chat-Session-Id", "Anon-Id"])
+         allow_headers=["Content-Type", "Authorization", "X-Entity-Token", "X-Chat-Session-Id", "X-Anon-Id", "Anon-Id"],
+         expose_headers=["X-Anon-Id"])
 
     @app.after_request
     def add_permissions_policy(resp):
