@@ -491,6 +491,12 @@ def _procesar_chat(
         if interpretacion_imagen_resultado and not interpretacion_imagen_resultado.get("error"):
             resultado["interpretacion_adjunto"] = interpretacion_imagen_resultado
 
+        # Backwards compatibility for older frontends expecting different keys
+        if "message_body" in resultado and "msg" not in resultado:
+            resultado["msg"] = resultado["message_body"]
+        if "options_list" in resultado and "botones" not in resultado:
+            resultado["botones"] = resultado["options_list"]
+
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
             resultado['pedir_info'] = ["nombre", "telefono", "email"]

@@ -288,6 +288,11 @@ def whatsapp_webhook():
                 'message_body': "Lo siento, hubo un error interno al procesar tu mensaje.",
                 'options_list': [], 'message_type': 'text', 'fuente': 'error_handler_non_dict_response'
             }
+        else:
+            # If the bot provided a user-facing message but didn't set 'message_body',
+            # copy it so downstream formatting and Twilio delivery work correctly.
+            if 'message_body' not in bot_response_dict and bot_response_dict.get('message_to_user'):
+                bot_response_dict['message_body'] = bot_response_dict['message_to_user']
 
         # Ensure context_data is a dict for saving
         if not isinstance(session_context_db_entry.context_data, dict):
