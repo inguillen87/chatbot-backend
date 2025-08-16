@@ -6,12 +6,17 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
 
 # --- Variables de Entorno para Despliegue ---
-ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
+ENV = os.getenv("ENV", "prod" if os.getenv("RENDER") == "true" else "dev")  # "dev" o "prod"
 
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+if not RENDER_EXTERNAL_URL:
+    render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+    if render_hostname:
+        RENDER_EXTERNAL_URL = f"https://{render_hostname}"
+
 BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
 
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
