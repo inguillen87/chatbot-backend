@@ -256,6 +256,10 @@ def responder_chatboc(
     if response_data and response_data.get('generar_audio'):
         generate_audio = True
 
+    # Always generate audio for the WhatsApp channel to improve accessibility
+    if channel == 'whatsapp':
+        generate_audio = True
+
     if generate_audio:
         text_to_speak = response_data.get('message_body')
         if text_to_speak:

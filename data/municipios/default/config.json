@@ -4,5 +4,11 @@
   "tramites_web_url": "https://www.juninmendoza.gov.ar/tramites/",
   "web_url": "https://www.juninmendoza.gov.ar",
   "ciudad": "Junín, Mendoza",
-  "base_chat_url": "https://www.chatboc.ar/chat"
+  "base_chat_url": "https://www.chatboc.ar/chat",
+  "informacion_contacto_post_reclamo": {
+    "telefono": "0800-123-4567 (Atención Ciudadana)",
+    "email": "reclamos@juninmendoza.gov.ar",
+    "horario": "Lunes a Viernes de 8:00 a 18:00 hs",
+    "website": "https://www.juninmendoza.gov.ar/reclamos"
+  }
 }

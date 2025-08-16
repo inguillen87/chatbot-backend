@@ -405,96 +405,122 @@ class BaseMunicipioHandler:
 
 from services.google_search import google_search
 
+def _get_main_menu_payload(context: dict, welcome_message_override: str = None) -> dict:
+    """
+    Generates the main menu payload, allowing for a custom welcome message.
+    This centralizes menu creation to be reused by GreetingHandler and error handlers.
+    """
+    viewer_user = context.get("viewer_user_obj")
+    profile_name = context.get("profile_name")
+
+    # Prioritize the fresh ProfileName from WhatsApp, then fallback to the database name.
+    user_name = None
+    if isinstance(profile_name, str) and profile_name.strip():
+        user_name = profile_name.strip()
+    elif viewer_user:
+        user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
+
+    if welcome_message_override:
+        welcome_message = welcome_message_override
+    elif user_name:
+        welcome_message = (
+            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
+            "reclamos, turnos, noticias y mucho más.\n\n"
+            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+        )
+    else:
+        # Fallback for when there is no user name available
+        wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
+        display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
+        welcome_message = (
+            f"¡Hola, {display_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
+            "enviarme un audio, una foto de un problema o compartir tu ubicación.\n\n"
+            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+        )
+
+    categorias = [
+        {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
+            {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+            {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias"}
+        ]},
+        {"titulo": "Trámites y Consultas 📄", "botones": [
+            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+            {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+            {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+        ]},
+        {"titulo": "Servicios y Turnos 📅", "botones": [
+            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+            {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"}
+        ]},
+        {"titulo": "Información y Novedades 📰", "botones": [
+            {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+            {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
+            {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+        ]}
+    ]
+
+    flat_buttons = []
+    for categoria in categorias:
+        for boton in categoria.get('botones', []):
+            new_boton = boton.copy()
+            new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+            flat_buttons.append(new_boton)
+
+    return {
+        "message_body": welcome_message,
+        "options_list": flat_buttons,
+        "message_type": "interactive_list",
+        "accion_backend": "responder_directamente",
+        "fuente": "greeting_handler_universal_v5",
+        "categorias": categorias,
+        "generar_audio": True
+    }
+
+
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        # When a greeting is triggered, we perform a full reset of the conversation context.
         chat_db_context_data = self.context.get("chat_db_context_data")
 
         if not chat_db_context_data:
             logger.warning("[GreetingHandler] chat_db_context_data not found in context. Cannot perform a full reset.")
             contexto_municipio_actual = {}
         else:
-            # Preserve essential user info if it exists from the old context
-            user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
-            
-            # Create a completely new, clean context dictionary
-            contexto_municipio_nuevo = {}
-            
-            # Restore essential info if it existed
-            if user_info:
-                contexto_municipio_nuevo['user'] = user_info
-            
-            # Replace the old context dictionary with the new one
-            chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
-            
-            # Also clear any other top-level keys that should not persist across sessions
-            chat_db_context_data.pop("historial_conversacion_general_llm", None)
-            
-            contexto_municipio_actual = contexto_municipio_nuevo
+            contexto_municipio_actual = chat_db_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            estado_previo = contexto_municipio_actual.get("estado_conversacion")
 
-        logger.info("[GreetingHandler] Conversation context has been reset.")
+            # Check if the user is in the middle of an important, multi-step flow.
+            # If so, we show the menu but DO NOT reset the underlying context data.
+            is_in_flow = estado_previo and estado_previo not in [
+                None,
+                ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+                ConversationState.CONVERSACION_GENERAL_LLM.name,
+            ]
 
-        # Set the state to wait for a menu selection in the new context
+            if is_in_flow:
+                logger.info(f"[GreetingHandler] Conversation in progress (state: {estado_previo}). Showing menu without resetting context.")
+                # Don't reset, just prepare the menu response. The state will be updated below.
+            else:
+                logger.info("[GreetingHandler] No active flow detected or at main menu. Performing full context reset.")
+                user_info = contexto_municipio_actual.get('user', {})
+
+                # Create a completely new, clean context dictionary
+                contexto_municipio_nuevo = {}
+                if user_info:
+                    contexto_municipio_nuevo['user'] = user_info
+
+                # Replace the old context dictionary with the new one
+                chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
+                chat_db_context_data.pop("historial_conversacion_general_llm", None)
+                contexto_municipio_actual = contexto_municipio_nuevo
+
+        # No matter what, set the state to wait for a menu selection for the next turn.
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
         logger.info(f"[GreetingHandler] Set estado_conversacion to {contexto_municipio_actual['estado_conversacion']}")
 
-        viewer_user = self.context.get("viewer_user_obj")
-        profile_name = self.context.get("profile_name")
-        user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None) or profile_name
-
-        if user_name:
-            welcome_message = (
-                f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
-                "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
-                "reclamos, turnos, noticias y mucho más.\n\n"
-                "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
-            )
-        else:
-            welcome_message = (
-                "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
-                "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
-                "reclamos, turnos, noticias y mucho más. Para empezar, podés escribirme, enviarme un audio, "
-                "una foto de un problema o compartir tu ubicación.\n\n"
-                "¿Cómo te puedo ayudar hoy? Elegí una opción o respondé con el número, la primera letra o una palabra clave:"
-            )
-
-        categorias = [
-            {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
-                {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias"}
-            ]},
-            {"titulo": "Trámites y Consultas 📄", "botones": [
-                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"}
-            ]},
-            {"titulo": "Servicios y Turnos 📅", "botones": [
-                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"}
-            ]},
-            {"titulo": "Información y Novedades 📰", "botones": [
-                {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
-                {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
-            ]}
-        ]
-
-        flat_buttons = []
-        for categoria in categorias:
-            for boton in categoria.get('botones', []):
-                new_boton = boton.copy()
-                new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
-                flat_buttons.append(new_boton)
-
-        return {
-            "message_body": welcome_message,
-            "options_list": flat_buttons,
-            "message_type": "interactive_list",
-            "accion_backend": "responder_directamente",
-            "fuente": "greeting_handler_universal_v5",
-            "categorias": categorias, # Keep original structure for channels that might support it
-            "generar_audio": True
-        }
+        # Use the centralized function to get the menu payload
+        return _get_main_menu_payload(self.context)
 
 class NewsHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
@@ -578,7 +604,7 @@ class PointsOfInterestHandler(BaseMunicipioHandler):
             "fuente": "poi_handler_with_results"
         }
 
-def handle_main_menu_action(action_id: str, context: dict) -> dict:
+def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
     """
     Handles actions from the new categorized main menu.
     """
@@ -616,7 +642,30 @@ def handle_main_menu_action(action_id: str, context: dict) -> dict:
     
     if action_id == "consultar_otros_tramites":
         from .actions.municipio_actions import ConsultarInfoTramiteActionHandler
-        return ConsultarInfoTramiteActionHandler(context).execute({})
+        handler_response = ConsultarInfoTramiteActionHandler(context).execute({})
+
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+
+        if not handler_response.get('success', True):
+            # This is the case where the handler needs more info.
+            # We set the state and return a standardized response.
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_TRAMITE.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return {
+                "message_body": handler_response.get('message_to_user', '¿Sobre qué trámite necesitas información?'),
+                "message_type": "text",
+                "options_list": [],
+                "fuente": "fix_tramites_bug_wrapper_v2"
+            }
+        else:
+            # If the handler succeeded, we assume it returned a standard response.
+            # We clear the state to avoid getting stuck.
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return handler_response
 
     unimplemented_actions = [
         "denuncias", "solicitar_turnos",
@@ -1482,7 +1531,7 @@ def responder_municipio(
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(_get_reclamos_menu())
     elif action:
-        response = handle_main_menu_action(action, context)
+        response = handle_main_menu_action(action, context, chat_db_context)
         if response:
             return _finalize_response(response)
 
@@ -1577,6 +1626,42 @@ def responder_municipio(
         logger_actual.info(f"Pregunta generada a partir de ubicación: '{pregunta_str}'")
     # <<< FIN FIX
 
+    # --- INICIO: Manejo proactivo de multimedia y ubicación ---
+    # Si el usuario envía solo una imagen o ubicación, el bot debe actuar proactivamente.
+    if not pregunta_str.strip(): # Solo actuar si no hay texto del usuario
+        synthetic_prompt = None
+        datos_interpretados = kwargs.get("datos_interpretados_archivo")
+
+        if datos_interpretados and isinstance(datos_interpretados, dict):
+            logger_actual.info(f"Manejando proactivamente un archivo interpretado: {datos_interpretados}")
+            categoria = datos_interpretados.get("categoria_sugerida", "No especificada")
+            descripcion = datos_interpretados.get("descripcion_sugerida", "No especificada")
+            synthetic_prompt = (
+                f"El usuario ha enviado una imagen para iniciar un reclamo. "
+                f"El análisis automático sugiere: Categoría='{categoria}', Descripción='{descripcion}'. "
+                f"Inicia el proceso de reclamo confirmando estos datos con el usuario y pide la información que falte (ej. ubicación)."
+            )
+        elif location:
+            logger_actual.info(f"Manejando proactivamente una ubicación: {location}")
+            address = location.get("address", f"coordenadas {location.get('latitude')}, {location.get('longitude')}")
+            synthetic_prompt = (
+                f"El usuario ha compartido la ubicación '{address}' sin texto adicional. "
+                f"Actúa proactivamente: confirma la ubicación con el usuario y pregúntale qué problema quiere reportar en esa dirección."
+            )
+
+        if synthetic_prompt:
+            logger_actual.info(f"Pregunta sintética generada para manejo proactivo: '{synthetic_prompt}'")
+            # Forzar el estado a conversación general para que el LLM tome el control
+            contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+            response_dict, _ = handle_llm_interaction(
+                synthetic_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
+            )
+            if response_dict:
+                return _finalize_response(response_dict)
+    # --- FIN: Manejo proactivo ---
+
     contexto_municipio_data_from_db = {}
     chat_db_context_live_data = {}
 
@@ -1639,15 +1724,36 @@ def responder_municipio(
             # For all other actions, clear state and handle them
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(selected_action, context)
+            response = handle_main_menu_action(selected_action, context, chat_db_context)
             if response:
                 return _finalize_response(response)
         else:
-            # If no match, clear state and let LLM handle it
-            logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Passing to LLM.")
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            # If no match, re-prompt with the menu instead of clearing state
+            logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Re-prompting with main menu.")
+            # We keep the state as ESPERANDO_SELECCION_MENU_PRINCIPAL
+            # and just show the menu again with an added error message.
+            error_message = "Opción no válida. Por favor, elegí una de las siguientes:"
+            return _finalize_response(_get_main_menu_payload(context, welcome_message_override=error_message))
     # --- FIN: Manejo de selección de menú principal ---
+
+    # --- INICIO: Manejo de la espera por nombre de trámite ---
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_TRAMITE.name:
+        logger_actual.info(f"Handling input in ESPERANDO_SELECCION_TRAMITE state. Input: '{pregunta_str}'")
+        from .actions.municipio_actions import ConsultarInfoTramiteActionHandler
+
+        # The handler expects the data in the payload dict
+        received_payload['nombre_tramite'] = pregunta_str
+
+        handler = ConsultarInfoTramiteActionHandler(context)
+        handler_response = handler.execute(received_payload)
+
+        # The handler should now succeed and return a standard response with the info.
+        # We need to clear the state after this.
+        contexto_municipio_actual['estado_conversacion'] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(handler_response)
+    # --- FIN: Manejo de la espera por nombre de trámite ---
 
     # --- INICIO: Manejo de selección de menú de reclamos ---
     elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name:
