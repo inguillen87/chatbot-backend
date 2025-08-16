@@ -783,48 +783,15 @@ def me_perfil(user):
         return jsonify(profile_data)
 
     elif request.method == 'PUT':
+        from services.user_service import update_user_profile
         data = request.get_json(silent=True) or {}
         if not data:
             return jsonify({"error": "No se recibieron datos."}), 400
 
-        for key, value in data.items():
-            if key in {"tags", "acepta_marketing", "rol", "role", "empresa_id", "token", "id", "email"}:
-                # Evitar cambios críticos que permitirían escalar privilegios o cambiar identificadores
-                continue
-            elif hasattr(user, key):
-                if key == "horario_json":
-                    setattr(user, "horario", value)
-                else:
-                    if key == "plan" and isinstance(value, str):
-                        value = value.lower()
-                    setattr(user, key, value)
-                    if key == "plan":
-                        if value == "pro":
-                            user.limite_preguntas = 200
-                        elif value == "full":
-                            user.limite_preguntas = None
-
-        if "tags" in data:
-            tags = data.get("tags")
-            if isinstance(tags, list):
-                user.tags = ",".join(tags)
-            elif isinstance(tags, str):
-                user.tags = tags
-
-        if "acepta_marketing" in data:
-            nueva = bool(data.get("acepta_marketing"))
-            if nueva and not user.acepta_marketing:
-                user.fecha_aceptacion_marketing = datetime.utcnow()
-            user.acepta_marketing = nueva
-
-        try:
-            db.session.commit()
+        # Usar el servicio centralizado para actualizar el perfil
+        if update_user_profile(user, data):
             return jsonify({"mensaje": "Perfil actualizado correctamente."})
-        except Exception as e:
-            db.session.rollback()
-            current_app.logger.error(
-                f"Error al actualizar perfil para {user.email}: {e}", exc_info=True
-            )
+        else:
             return jsonify({"error": "Error interno al guardar el perfil."}), 500
 
 @auth_bp.route('/update_personal_data', methods=['POST'])
