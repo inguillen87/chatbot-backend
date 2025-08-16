@@ -531,7 +531,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     log_ticket_debug(
         "responder_agente_con_archivos", # Acción actualizada
         ticket_id,
-        request.headers.get("Anon-Id"),
+        request.headers.get("X-Anon-Id"),
         ticket_obj,
     )
 
@@ -716,7 +716,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     log_ticket_debug(
         "cambiar_estado",
         ticket_id,
-        request.headers.get("Anon-Id"),
+        request.headers.get("X-Anon-Id"),
         ticket_obj,
     )
 
@@ -1194,9 +1194,9 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    anon_id_header = request.headers.get("Anon-Id")
+    anon_id_header = request.headers.get("X-Anon-Id")
 
-    # Si el ticket aún es anónimo pero coincide el Anon-Id, lo asignamos al usuario
+    # Si el ticket aún es anónimo pero coincide el X-Anon-Id, lo asignamos al usuario
     if (
         anon_id_header
         and ticket_obj.anon_id

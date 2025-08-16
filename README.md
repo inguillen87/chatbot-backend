@@ -110,21 +110,30 @@ Recuerda también registrar la URL de tu frontend en el apartado
 "Authorized JavaScript origins" de la consola de Google Cloud.
 De lo contrario, el botón de inicio de sesión puede devolver errores 403.
 
+Si el frontend falla con el mensaje `VITE_BACKEND_URL is not defined`,
+asegúrate de definir esa variable con la URL del backend antes de ejecutar
+`npm run dev` o `npm run build`. Vite sólo lee variables que comienzan con
+`VITE_` en el entorno de compilación.
+
 El endpoint `/api/config` permite al frontend descubrir la URL del backend y
 del panel.  Para que devuelva el valor correcto, define `BACKEND_URL` con la
 dirección pública de este servicio.  En Render se toma automáticamente de la
 variable `RENDER_EXTERNAL_URL` cuando `BACKEND_URL` no está presente.  Las
 variables `PANEL_URL` y `WIDGET_URL` se usan además para construir la lista por
-defecto de orígenes permitidos en CORS.
+defecto de orígenes permitidos en CORS.  Si el backend corre en un subdominio
+(por ejemplo `https://api.ejemplo.com`), también se habilitan automáticamente
+`https://ejemplo.com` y `https://www.ejemplo.com` para facilitar el uso del
+widget embebido.
 
-Para definir qué orígenes pueden realizar peticiones al backend, puedes usar la
-variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas de URLs.
-Si no se especifica, se permiten dominios locales y los subdominios de
-`chatboc.ar` por defecto.  Si necesitas aceptar peticiones desde cualquier
-sitio (por ejemplo, si el widget se incrustará en múltiples dominios), define
-`CORS_ALLOWED_ORIGINS=*`. El backend enviará entonces el encabezado
-`Access-Control-Allow-Origin` correspondiente a cada solicitud y la seguridad
-se delegará a la validación de tokens.
+Para definir manualmente qué orígenes pueden realizar peticiones al backend,
+puedes usar la variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas
+de URLs. Si no se especifica, se permiten los dominios definidos en `PANEL_URL`
+y `WIDGET_URL` (por defecto `http://localhost:8080`), además de los dominios
+derivados del `BACKEND_URL` como se describió arriba. Para aceptar peticiones
+desde cualquier sitio (por ejemplo, si el widget se incrustará en múltiples
+dominios), define `CORS_ALLOWED_ORIGINS=*`. El backend enviará entonces el
+encabezado `Access-Control-Allow-Origin` correspondiente a cada solicitud y la
+seguridad se delegará a la validación de tokens.
 
 Define también `GOOGLE_MAPS_API_KEY` si el frontend usa el widget de mapa.
 El valor se obtiene desde `/google-maps-key` para inicializar Google Maps.
@@ -182,8 +191,8 @@ Para usuarios finales que acceden al panel web existe `POST /chatuserregisterpan
 ### Migración de tickets anónimos
 
 Si el usuario crea tickets en el widget antes de registrarse, guarda un
-identificador anónimo en el navegador (`Anon-Id`). Al enviar ese valor en el
-header `Anon-Id` durante la llamada a `POST /widget/register`, el backend
+identificador anónimo en el navegador (`X-Anon-Id`). Al enviar ese valor en el
+header `X-Anon-Id` durante la llamada a `POST /widget/register`, el backend
 migrará automáticamente esos tickets y comentarios para que pertenezcan al nuevo
 usuario.
 

@@ -104,11 +104,33 @@ def obtener_token():
     current_app.logger.debug("[obtener_token] No token found in any common location.")
     return None
 
+
+def get_or_create_anon_id() -> str:
+    """Obtiene el ID anónimo de la request o genera uno nuevo."""
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.args.get("anon_id")
+    )
+    if not anon_id and request.is_json:
+        anon_id = (request.get_json(silent=True) or {}).get("anon_id")
+
+    if not anon_id:
+        anon_id = str(uuid.uuid4())
+        current_app.logger.info(
+            f"Generado nuevo ID anónimo para la request: {anon_id}"
+        )
+
+    g.anon_id = anon_id
+    return anon_id
+
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        anon_id = get_or_create_anon_id()
         if request.method == 'OPTIONS':
-            return '', 200
+            resp = make_response('', 200)
+            resp.headers.setdefault("X-Anon-Id", anon_id)
+            return resp
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
@@ -118,12 +140,16 @@ def token_requerido(f):
         token = obtener_token()
 
         if not token:
-            return jsonify({"error": "Token faltante o malformado"}), 401
+            resp = jsonify({"error": "Token faltante o malformado"})
+            resp.headers.setdefault("X-Anon-Id", anon_id)
+            return resp, 401
 
         user = User.query.filter_by(token=token).first()
 
         if not user:
-            return jsonify({"error": "Token inválido o sesión expirada"}), 401
+            resp = jsonify({"error": "Token inválido o sesión expirada"})
+            resp.headers.setdefault("X-Anon-Id", anon_id)
+            return resp, 401
 
         response = f(user, *args, **kwargs)
 
@@ -144,9 +170,12 @@ def token_requerido(f):
                 cookie_args["domain"] = cookie_domain
 
             resp.set_cookie(**cookie_args)
+            resp.headers.setdefault("X-Anon-Id", anon_id)
             return resp
 
-        return response
+        resp = make_response(response)
+        resp.headers.setdefault("X-Anon-Id", anon_id)
+        return resp
     return decorated
 
 def admin_o_empleado_requerido(f):
@@ -167,17 +196,15 @@ def anon_o_token_requerido(f):
     """
     @wraps(f)
     def decorated(*args, **kwargs):
+        anon_id = get_or_create_anon_id()
         if request.method == "OPTIONS":
-            return "", 200
+            resp = make_response("", 200)
+            resp.headers.setdefault("X-Anon-Id", anon_id)
+            return resp
 
         token = obtener_token()
         user = User.query.filter_by(token=token).first() if token else None
         owner_user = user # Por defecto, el owner es el mismo usuario
-
-        g.anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
-        if not g.anon_id:
-            g.anon_id = str(uuid.uuid4())
-            current_app.logger.info(f"Generado nuevo ID anónimo para la request: {g.anon_id}")
 
         if not user:
             # Lógica para usuarios anónimos
@@ -204,6 +231,12 @@ def anon_o_token_requerido(f):
             # Lógica para usuarios autenticados
             current_user = user
 
-        return f(current_user=current_user, owner_user=owner_user, anon_id=g.anon_id, *args, **kwargs)
+        response = f(
+            current_user=current_user, owner_user=owner_user, anon_id=anon_id, *args, **kwargs
+        )
+
+        resp = make_response(response)
+        resp.headers.setdefault("X-Anon-Id", anon_id)
+        return resp
 
     return decorated

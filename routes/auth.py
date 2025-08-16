@@ -5,7 +5,7 @@ from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext, db
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext
 from extensions import db
 from functools import wraps
 import uuid
@@ -16,7 +16,7 @@ from services.pymes import get_or_create_pyme_user_by_token
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-from utils.auth_helpers import token_requerido, obtener_token
+from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id
 from flask_login import current_user
 
 
@@ -32,19 +32,28 @@ def solo_admin_requerido(f):
 
 @auth_bp.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    anon_id = get_or_create_anon_id()
     if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'})
+        resp = jsonify({'status': 'ok'})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp
     if not request.is_json:
-        return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
+        resp = jsonify({"error": "La solicitud debe ser de tipo JSON."})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp, 400
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
-        return jsonify({"error": "Email y contraseña requeridos."}), 400
+        resp = jsonify({"error": "Email y contraseña requeridos."})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp, 400
 
     user = User.query.filter_by(email=data.get("email").strip().lower()).first()
 
     if not user or not user.check_password(data.get("password")):
         current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
-        return jsonify({"error": "Email o contraseña incorrectos."}), 401
+        resp = jsonify({"error": "Email o contraseña incorrectos."})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp, 401
 
     current_app.logger.info(f"Login exitoso para: {user.email}")
 
@@ -85,6 +94,7 @@ def login():
 
         response.set_cookie(**cookie_args)
 
+    response.headers.setdefault('X-Anon-Id', anon_id)
     return response
 
 @auth_bp.route('/google-client-id', methods=['GET'])
@@ -118,11 +128,12 @@ def google_login():
         current_app.logger.info(f"Login Google para: {user.email}")
 
         if not getattr(user, "rubro_id", None):
-            return jsonify({
+            resp = jsonify({
                 "status": "falta_rubro",
                 "token": user.token,
                 "email": user.email,
             })
+            return resp
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
         tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
@@ -325,7 +336,10 @@ def register_from_widget(user):
     name = data.get('name') or "Sin nombre"
     email = data.get('email')
     password = data.get('password')
-    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or data.get("anon_id")
+    )
     if not name or not email or not password:
         return jsonify({
             "error": "Faltan datos obligatorios.",
@@ -371,7 +385,7 @@ def register_from_widget(user):
             servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
         # --------- FIN BLOQUE CRÍTICO ----------
 
-        return jsonify({
+        resp = jsonify({
             "id": nuevo.id,
             "token": nuevo.token,
             "name": nuevo.name,
@@ -379,7 +393,10 @@ def register_from_widget(user):
             "rol": nuevo.rol,
             "tipo_chat": nuevo.tipo_chat,
             "empresa_id": nuevo.empresa_id,
-        }), 201
+        })
+        if anon_id:
+            resp.headers["X-Anon-Id"] = anon_id
+        return resp, 201
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Error en register_from_widget: {e}", exc_info=True)
@@ -397,7 +414,10 @@ def login_from_widget(owner_user):
         data = request.form.to_dict() if request.form else {}
     email = data.get('email')
     password = data.get('password')
-    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or data.get("anon_id")
+    )
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
@@ -414,7 +434,7 @@ def login_from_widget(owner_user):
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
-    return jsonify({
+    resp = jsonify({
         "id": user.id,
         "token": user.token,
         "name": user.name,
@@ -425,6 +445,9 @@ def login_from_widget(owner_user):
         "tipo_chat": tipo_chat,
         "categorias": user.ticket_categorias or "",
     })
+    if anon_id:
+        resp.headers["X-Anon-Id"] = anon_id
+    return resp
 
 
 # Nuevos endpoints para el panel de usuarios de chat
@@ -440,7 +463,9 @@ def chatuser_register_panel():
     # Log received data for debugging, excluding password
     logged_data = {k: v for k, v in data.items() if k != 'password'}
     current_app.logger.info(f"[chatuser_register_panel] Received data (password excluded): {logged_data}")
-    current_app.logger.info(f"[chatuser_register_panel] Anon-Id header: {request.headers.get('Anon-Id')}")
+    current_app.logger.info(
+        f"[chatuser_register_panel] X-Anon-Id header: {request.headers.get('X-Anon-Id')}"
+    )
 
 
     if not empresa_token:
@@ -460,7 +485,10 @@ def chatuser_register_panel():
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
-    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or data.get("anon_id")
+    )
 
     # If the user is anonymous, we can assign a default password
     if not password:
@@ -485,7 +513,7 @@ def chatuser_register_panel():
             if anon_id:
                 from services.ticket_service import servicio_tickets
                 servicio_tickets.migrar_tickets_de_anonimo(anon_id, existing_user.id)
-            return jsonify({
+            resp = jsonify({
                 "id": existing_user.id,
                 "token": existing_user.token,
                 "name": existing_user.name,
@@ -495,7 +523,10 @@ def chatuser_register_panel():
                 "empresa_id": existing_user.empresa_id,
                 "already_registered": True,
                 "message": "Usuario ya registrado con esta entidad."
-            }), 200
+            })
+            if anon_id:
+                resp.headers["X-Anon-Id"] = anon_id
+            return resp, 200
         else:
             # Email exists but is associated with a different empresa_id.
             current_app.logger.warning(f"[chatuser_register_panel] Usuario existente '{email}' (Empresa ID: {existing_user.empresa_id}) intentó registrarse bajo una entidad diferente (Owner ID: {owner_user.id}).")
@@ -556,19 +587,19 @@ def chatuser_register_panel():
                 db.session.commit()
                 current_app.logger.info(f"Updated ChatSessionContext {chat_session_id} for new user {nuevo.id}")
 
-        return (
-            jsonify({
-                "id": nuevo.id,
-                "token": nuevo.token,
-                "name": nuevo.name,
-                "email": nuevo.email,
-                "rol": nuevo.rol,
-                "tipo_chat": nuevo.tipo_chat,
-                "empresa_id": nuevo.empresa_id,
-                "already_registered": False,
-            }),
-            201,
-        )
+        resp = jsonify({
+            "id": nuevo.id,
+            "token": nuevo.token,
+            "name": nuevo.name,
+            "email": nuevo.email,
+            "rol": nuevo.rol,
+            "tipo_chat": nuevo.tipo_chat,
+            "empresa_id": nuevo.empresa_id,
+            "already_registered": False,
+        })
+        if anon_id:
+            resp.headers["X-Anon-Id"] = anon_id
+        return resp, 201
     except Exception as e:  # pragma: no cover - por si falla la DB
         db.session.rollback()
         current_app.logger.error(f"Error en chatuser_register_panel: {e}", exc_info=True)
@@ -595,7 +626,10 @@ def chatuser_login_panel():
 
     email = data.get('email')
     password = data.get('password')
-    anon_id = request.headers.get("Anon-Id") or data.get("anon_id")
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or data.get("anon_id")
+    )
 
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
@@ -611,7 +645,7 @@ def chatuser_login_panel():
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
-    return jsonify({
+    resp = jsonify({
         "id": user.id,
         "token": user.token,
         "name": user.name,
@@ -621,6 +655,9 @@ def chatuser_login_panel():
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
     })
+    if anon_id:
+        resp.headers["X-Anon-Id"] = anon_id
+    return resp
 
 
 # Nueva ruta para obtener información básica del token
