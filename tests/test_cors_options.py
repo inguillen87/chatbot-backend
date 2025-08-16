@@ -19,7 +19,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'GET'
         })
-        self.assertIn(resp.status_code, [200, 204])
+        self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
     def test_notifications_options(self):
@@ -27,7 +27,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'GET'
         })
-        self.assertIn(resp.status_code, [200, 204])
+        self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
     def test_ask_municipio_options(self):
@@ -35,7 +35,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'POST'
         })
-
+        self.assertEqual(resp.status_code, 204)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
     def test_options_allows_anon_id_header(self):
@@ -44,7 +44,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Access-Control-Request-Method': 'GET',
             'Access-Control-Request-Headers': 'Anon-Id'
         })
-        self.assertIn(resp.status_code, [200, 204])
+        self.assertEqual(resp.status_code, 200)
         allow_headers = resp.headers.get('Access-Control-Allow-Headers', '')
         self.assertIn('Anon-Id', allow_headers)
 
@@ -53,7 +53,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'PUT'
         })
-
+        self.assertEqual(resp.status_code, 204)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
     def test_legacy_perfil_get_options(self):
@@ -61,7 +61,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'GET'
         })
-        self.assertIn(resp.status_code, [200, 204])
+        self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
     def test_legacy_me_get_options(self):
@@ -69,7 +69,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'GET'
         })
-        self.assertIn(resp.status_code, [200, 204])
+        self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
 if __name__ == '__main__':

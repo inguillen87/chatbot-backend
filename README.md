@@ -140,12 +140,6 @@ dominios), define `CORS_ALLOWED_ORIGINS=*`. El backend enviará entonces el
 encabezado `Access-Control-Allow-Origin` correspondiente a cada solicitud y la
 seguridad se delegará a la validación de tokens.
 
-### Entornos local vs producción
-
-- **Local:** ejecuta el backend con `flask run` y en el frontend define `VITE_API_URL=http://localhost:5000`. Deja `SESSION_COOKIE_DOMAIN=None` para evitar conflictos de cookies.
-- **Producción (Render/Vercel):** establece `VITE_API_URL` con la URL pública del backend (por ejemplo `https://tu-backend.onrender.com`). En Render, el backend toma `BACKEND_URL` de `RENDER_EXTERNAL_URL` cuando `RENDER=true`. Configura `SESSION_COOKIE_DOMAIN` con el dominio público (por ejemplo `.chatboc.ar`) y `SESSION_COOKIE_SECURE=true` para aislar las cookies del entorno local.
-- Verifica en la pestaña *Network* del navegador que las peticiones apunten al host correcto y evita entradas en `/etc/hosts` que redirijan dominios públicos a `127.0.0.1`.
-
 Define también `GOOGLE_MAPS_API_KEY` si el frontend usa el widget de mapa.
 El valor se obtiene desde `/google-maps-key` para inicializar Google Maps.
 

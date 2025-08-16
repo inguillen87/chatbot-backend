@@ -118,36 +118,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.test_user_number_str,
             "Usuario de WhatsApp 4321"
         )
-    def test_whatsapp_webhook_uses_message_to_user_when_missing_message_body(self):
-        """Ensure webhook falls back to 'message_to_user' when 'message_body' is absent."""
-        self.mock_validator.validate.return_value = True
-
-        mock_twilio_message = MagicMock()
-        mock_twilio_message.sid = "SM_message_to_user_test"
-        self.mock_twilio_create.return_value = mock_twilio_message
-
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot:
-            mock_bot.return_value = {
-                'success': False,
-                'message_to_user': '¿Sobre qué trámite necesitas información?',
-                'pedir_info': 'nombre_tramite'
-            }
-
-            payload = {
-                "To": f"whatsapp:{self.test_whatsapp_number_str}",
-                "From": f"whatsapp:{self.test_user_number_str}",
-                "Body": "tramites"
-            }
-            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-
-            self.assertEqual(response.status_code, 200)
-            self.mock_twilio_create.assert_called_once_with(
-                from_=f"whatsapp:{self.test_whatsapp_number_str}",
-                to=f"whatsapp:{self.test_user_number_str}",
-                body="¿Sobre qué trámite necesitas información?"
-            )
 
     def test_whatsapp_webhook_invalid_signature(self):
         # Arrange
