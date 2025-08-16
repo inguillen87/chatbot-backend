@@ -174,10 +174,16 @@ def anon_o_token_requerido(f):
         user = User.query.filter_by(token=token).first() if token else None
         owner_user = user # Por defecto, el owner es el mismo usuario
 
-        g.anon_id = request.headers.get("X-Anon-Id") or request.args.get("anon_id")
+        g.anon_id = (
+            request.headers.get("X-Anon-Id")
+            or request.headers.get("Anon-Id")
+            or request.args.get("anon_id")
+        )
         if not g.anon_id:
             g.anon_id = str(uuid.uuid4())
-            current_app.logger.info(f"Generado nuevo ID anónimo para la request: {g.anon_id}")
+            current_app.logger.info(
+                f"Generado nuevo ID anónimo para la request: {g.anon_id}"
+            )
 
         if not user:
             # Lógica para usuarios anónimos
@@ -204,6 +210,12 @@ def anon_o_token_requerido(f):
             # Lógica para usuarios autenticados
             current_user = user
 
-        return f(current_user=current_user, owner_user=owner_user, anon_id=g.anon_id, *args, **kwargs)
+        response = f(
+            current_user=current_user, owner_user=owner_user, anon_id=g.anon_id, *args, **kwargs
+        )
+
+        resp = make_response(response)
+        resp.headers.setdefault("X-Anon-Id", g.anon_id)
+        return resp
 
     return decorated

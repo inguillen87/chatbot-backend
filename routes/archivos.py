@@ -56,7 +56,7 @@ def cors_options_response():
         # Consider if '*' is appropriate or if a more specific origin list should be used
         response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = (
-        'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token, x-chat-session-id'
+        'Authorization, Content-Type, Origin, Accept, X-Anon-Id, Anon-Id, x-entity-token, x-chat-session-id'
     )
     # Ensure all methods intended to be covered by CORS are listed, including OPTIONS itself
     # The methods listed here should ideally match or be a superset of those in apply_cors for consistency
@@ -512,7 +512,7 @@ def apply_cors(response):
     else:
         response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = (
-        'Authorization, Content-Type, Origin, Accept, Anon-Id, x-entity-token, x-chat-session-id'
+        'Authorization, Content-Type, Origin, Accept, X-Anon-Id, Anon-Id, x-entity-token, x-chat-session-id'
     )
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
     response.headers['Access-Control-Allow-Credentials'] = 'true'
