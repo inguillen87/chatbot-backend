@@ -444,7 +444,7 @@ class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         user_name = self._get_user_display_name()
         welcome_message = (
-            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            f"**VERSIÓN DE PRUEBA:** ¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
             "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
             "reclamos, turnos, noticias y mucho más.\n\n"
             "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
