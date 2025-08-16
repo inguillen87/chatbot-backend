@@ -770,6 +770,38 @@ def test_login_accepts_legacy_anon_id(client):
     assert response.status_code == 200
     assert response.headers.get("X-Anon-Id") == "legacy-anon"
 
+
+def test_login_echoes_anon_id(client):
+    user = User(email="anon@test.com", name="Anon", token="anon-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    anon_header = {"X-Anon-Id": "test-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "anon@test.com", "password": "pw"},
+        headers=anon_header,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "test-anon"
+
+
+def test_login_accepts_legacy_anon_id(client):
+    user = User(email="legacy@test.com", name="Legacy", token="legacy-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    headers = {"Anon-Id": "legacy-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "legacy@test.com", "password": "pw"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "legacy-anon"
+
 def test_register_creates_admin_user(client):
     """
     Devuelve los mensajes del chat en vivo para un ticket.
