@@ -81,6 +81,7 @@ class MunicipioLogicTests(unittest.TestCase):
         self.viewer_user.telefono = "2615550000"
         self.viewer_user.email = "vecino@example.com"
         self.viewer_user.direccion = "Av. Siempre Viva 742"
+        self.viewer_user.prefers_audio = False
 
     def tearDown(self):
         self.app_context.pop()

@@ -149,6 +149,27 @@ def token_requerido(f):
         return response
     return decorated
 
+def strict_token_requerido(f):
+    """
+    Decorador que requiere un token de autenticación, ignorando la sesión de Flask-Login.
+    Usado para endpoints de API que deben ser estrictamente stateless.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            return '', 200
+
+        token = obtener_token()
+        if not token:
+            return jsonify({"error": "Token de autenticación es requerido."}), 401
+
+        user = User.query.filter_by(token=token).first()
+        if not user:
+            return jsonify({"error": "Token inválido o la sesión ha expirado."}), 401
+
+        return f(user, *args, **kwargs)
+    return decorated
+
 def admin_o_empleado_requerido(f):
     """Permite solo a admins (empresa_id None) o empleados."""
     @wraps(f)

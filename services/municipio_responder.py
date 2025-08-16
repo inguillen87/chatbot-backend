@@ -309,6 +309,7 @@ class ConversationState(Enum):
     ESPERANDO_SELECCION_MENU_RECLAMOS = auto()
     ESPERANDO_SELECCION_DE_LISTA = auto()
     ESPERANDO_UBICACION_GENERAL = auto()
+    ESPERANDO_NUEVO_DATO_USUARIO = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -747,17 +748,13 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
     return handler.execute(datos_reclamo)
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
-    Handles the ticket creation process.
+    Handles the ticket creation process and enriches the confirmation message.
     """
-    # Combina los datos parciales con los nuevos datos recibidos
     datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
     datos_reclamo.update(datos_estructura_llm)
 
-    # Llama a la acción para crear el reclamo
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
-    print(f"DEBUG: respuesta_accion in _handle_ticket_creation: {respuesta_accion}")
 
-    # Limpia el contexto del reclamo en el municipio, preservando datos del usuario
     keys_to_clear_after_claim = [
         "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
         "estado_conversacion", "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo",
@@ -766,33 +763,47 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     for key in keys_to_clear_after_claim:
         contexto_municipio_actual.pop(key, None)
 
-    # Si la creación del ticket fue exitosa, prepara una respuesta de confirmación
     if respuesta_accion and respuesta_accion.get("success"):
-        logger.info(f"Ticket creado con ID: {respuesta_accion.get('data', {}).get('ticket_id')}")
-        # Usar el mensaje ya formateado por el ActionHandler
-        message_body = respuesta_accion.get("message_to_user")
+        ticket_id = respuesta_accion.get('data', {}).get('ticket_id')
+        logger.info(f"Ticket creado con ID: {ticket_id}")
 
-        # Opcional: añadir botones si el handler no los proveyó
+        message_body_from_action = respuesta_accion.get("message_to_user")
+
+        # Cargar info de contacto desde el contexto para enriquecer la respuesta
+        municipio_config = context.get('municipio_config_actual', {})
+        info_adicional = municipio_config.get('informacion_contacto_post_reclamo')
+
+        rich_info_text = ""
+        if info_adicional:
+            contact_details = []
+            if info_adicional.get('telefono'):
+                contact_details.append(f"📞 *Teléfono:* {info_adicional.get('telefono')}")
+            if info_adicional.get('email'):
+                contact_details.append(f"📧 *Email:* {info_adicional.get('email')}")
+            if info_adicional.get('horario'):
+                contact_details.append(f"⏰ *Horario de atención:* {info_adicional.get('horario')}")
+            if info_adicional.get('website'):
+                contact_details.append(f"🌐 *Sitio web:* {info_adicional.get('website')}")
+
+            if contact_details:
+                rich_info_text = "\n\n*Para seguimiento o consultas sobre tu reclamo, podés usar estos medios:*\n" + "\n".join(contact_details)
+
         options_list = (respuesta_accion.get("options_list") or [])
-        logger.info(f"Options list from action handler: {options_list}")
         if not options_list:
-            logger.info("Action handler did not provide options, adding default buttons.")
             options_list.extend([
                 {"texto": "Ver estado de mi reclamo", "id_accion": "consultar_estado_ticket"},
                 {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
             ])
 
-        # Create a combined message
-        final_message = f"{message_body}\n\n¿Hay algo más en lo que pueda ayudarte?"
+        final_message = f"{message_body_from_action}{rich_info_text}\n\n¿Hay algo más en lo que pueda ayudarte?"
 
         return {
             "message_body": final_message,
             "options_list": options_list,
             "message_type": "interactive_buttons",
-            "fuente": "ticket_creado_v2"
+            "fuente": "ticket_creado_con_info_rica_v1"
         }, contexto_municipio_actual
     else:
-        # En caso de fallo, simplemente devuelve la respuesta de error del handler.
         return respuesta_accion, contexto_municipio_actual
 
 
@@ -984,6 +995,28 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 "message_type": "interactive_buttons" if botones_llm else "text",
                 "fuente": "llm_finalizar_tramite"
             }, contexto_municipio_actual
+
+        elif accion_backend_llm == "pedir_dato_usuario":
+            campo_a_pedir = pedir_info_llm[0] if isinstance(pedir_info_llm, list) and pedir_info_llm else None
+            if not campo_a_pedir:
+                logger.warning("[HANDLE_LLM] 'pedir_dato_usuario' action received without 'pedir_info'.")
+                return None, contexto_municipio_actual
+
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUEVO_DATO_USUARIO.name
+            contexto_municipio_actual['campo_a_actualizar'] = campo_a_pedir
+
+            # Guarda la pregunta original del usuario que inició este flujo para poder reanudarla.
+            if historial_para_llm:
+                # El historial se pasa como ['pregunta_usuario', 'respuesta_ia', ...], tomamos la última pregunta.
+                contexto_municipio_actual['accion_original_para_reintentar'] = historial_para_llm[-2] if len(historial_para_llm) > 1 else pregunta_str
+
+            return {
+                "message_body": respuesta_usuario_llm,
+                "options_list": botones_llm,
+                "message_type": "interactive_buttons" if botones_llm else "text",
+                "fuente": "llm_pide_dato_usuario"
+            }, contexto_municipio_actual
+
         elif accion_backend_llm == "ejecutar_herramienta":
             nombre_herramienta = datos_estructura_llm.get("nombre_herramienta")
             parametros_herramienta = datos_estructura_llm.get("parametros_herramienta", {})
@@ -1251,6 +1284,19 @@ def responder_municipio(
     **kwargs
 ):
     logger_actual = current_app.logger if has_app_context() else logger
+
+    def _finalize_response(response):
+        """Añade TTS si el usuario lo prefiere y la respuesta es apta."""
+        if response and viewer_user and viewer_user.prefers_audio and response.get("message_body"):
+            from services.google_text_to_speech import TextToSpeechService
+            tts_service = TextToSpeechService()
+            # No generar audio para mensajes de error muy cortos o técnicos
+            if len(response["message_body"].split()) > 2 and "error" not in response.get("fuente", ""):
+                audio_url = tts_service.synthesize_speech(response["message_body"])
+                if audio_url:
+                    response['audio_url'] = audio_url
+        return response
+
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] =================================================="
     )
@@ -1382,14 +1428,14 @@ def responder_municipio(
             if confidence < 0.8: # Low confidence threshold
                 contexto_municipio_actual['estado_conversacion'] = 'ESPERANDO_CONFIRMACION_STT'
                 contexto_municipio_actual['stt_transcript_pendiente'] = transcript
-                return {
+                return _finalize_response({
                     "message_body": f"Escuché: \"{transcript}\". ¿Es correcto?",
                     "options_list": [
                         {"texto": "Sí, es correcto", "action_id": "confirmar_stt_si"},
                         {"texto": "No, intentar de nuevo", "action_id": "confirmar_stt_no"}
                     ],
                     "message_type": "interactive_buttons"
-                }
+                })
             else:
                 pregunta_str = transcript # Use high-confidence transcript as the new question
                 # Update the payload so subsequent logic sees the transcribed text
@@ -1403,15 +1449,7 @@ def responder_municipio(
         response = handler.handle(received_payload)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-
-        # --- FIX: Trigger TTS for GreetingHandler ---
-        if viewer_user and viewer_user.prefers_audio and response.get("message_body"):
-            from services.google_text_to_speech import TextToSpeechService
-            tts_service = TextToSpeechService()
-            audio_url = tts_service.synthesize_speech(response["message_body"])
-            if audio_url:
-                response['audio_url'] = audio_url
-        return response
+        return _finalize_response(response)
 
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
@@ -1431,10 +1469,10 @@ def responder_municipio(
             if "pregunta" in received_payload:
                 received_payload["pregunta"] = pregunta_str
         else:
-            return {
+            return _finalize_response({
                 "message_body": "Entendido. Por favor, intentá de nuevo o escribí tu consulta.",
                 "options_list": []
-            }
+            })
 
     # New main menu handler
     if action == "mostrar_menu_reclamos":
@@ -1442,11 +1480,11 @@ def responder_municipio(
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-        return _get_reclamos_menu()
+        return _finalize_response(_get_reclamos_menu())
     elif action:
         response = handle_main_menu_action(action, context)
         if response:
-            return response
+            return _finalize_response(response)
 
     reclamo_categories = {
         "reclamo_luminaria": "Luminaria",
@@ -1478,45 +1516,45 @@ def responder_municipio(
         contexto_municipio_actual.pop('opciones_en_pantalla', None)
 
         if seleccion and seleccion.get('url'):
-            return {
+            return _finalize_response({
                 "message_body": f"Aquí tienes el enlace que pediste: {seleccion.get('url')}",
                 "options_list": [{"texto": "Menú Principal", "action_id": "saludar"}],
                 "message_type": "interactive_buttons",
                 "fuente": "seleccion_lista_dinamica"
-            }
+            })
         else:
             # Si no se pudo procesar la selección, volver al menú principal
-            return GreetingHandler(context).handle({})
+            return _finalize_response(GreetingHandler(context).handle({}))
 
 
     if action == "iniciar_reclamo": # Kept for backward compatibility or other flows
-        return _get_reclamos_menu()
+        return _finalize_response(_get_reclamos_menu())
 
     if action == "reclamo_perdida_agua":
-        return {
+        return _finalize_response({
             "message_body": "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/",
             "options_list": [],
             "message_type": "text",
             "fuente": "info_perdida_agua"
-        }
+        })
 
     if es_consulta_general(pregunta_str_for_check):
         current_location = location or flask_session.get("user_location")
         if current_location:
             # The location object might be a dict from session or a direct payload
             address = current_location.get("formatted_address") or current_location.get("address")
-            return PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": address})
+            return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": address}))
         else:
             contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
             contexto_municipio_actual['consulta_pendiente_ubicacion'] = pregunta_original # Save the original query
             if chat_db_context: flag_modified(chat_db_context, "context_data")
-            return {
+            return _finalize_response({
                 "message_body": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
                 "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "No, gracias", "action": "cancelar"}],
                 "message_type": "interactive_buttons",
                 "fuente": "solicitar_ubicacion"
-            }
+            })
 
 
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
@@ -1596,14 +1634,14 @@ def responder_municipio(
             if selected_action == "mostrar_menu_reclamos":
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
-                return _get_reclamos_menu()
+                return _finalize_response(_get_reclamos_menu())
 
             # For all other actions, clear state and handle them
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
             response = handle_main_menu_action(selected_action, context)
             if response:
-                return response
+                return _finalize_response(response)
         else:
             # If no match, clear state and let LLM handle it
             logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Passing to LLM.")
@@ -1629,7 +1667,7 @@ def responder_municipio(
             response = handler.handle({})
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            return response
+            return _finalize_response(response)
 
         repeat_commands = {
             "show_reclamos_menu",
@@ -1641,7 +1679,7 @@ def responder_municipio(
         }
         if not pregunta_str_reclamo or normalized_input in repeat_commands:
             logger_actual.info("Input requests reclamos menu again. Returning submenu.")
-            return _get_reclamos_menu()
+            return _finalize_response(_get_reclamos_menu())
 
         # El menú ahora tiene id_accion numéricos.
         # Primero, intentar matchear el input numérico con el id_accion.
@@ -1666,10 +1704,10 @@ def responder_municipio(
             if selected_category_name == "Pérdida de agua":
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
-                return {
+                return _finalize_response({
                     "message_body": "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/",
                     "options_list": [], "message_type": "text", "fuente": "info_perdida_agua"
-                }
+                })
 
             logger_actual.info(f"Categoría de reclamo seleccionada: '{selected_category_name}'")
             constructed_prompt = f"Quiero iniciar un reclamo de {selected_category_name}"
@@ -1689,16 +1727,63 @@ def responder_municipio(
             # --- FIN REFACTOR ---
 
             if response_dict is None:
-                return {"message_body": "No pude procesar la selección. Probá de nuevo.",
-                        "message_type": "text", "options_list": [], "fuente": "error_category_selection"}
+                return _finalize_response({"message_body": "No pude procesar la selección. Probá de nuevo.",
+                        "message_type": "text", "options_list": [], "fuente": "error_category_selection"})
 
             response_dict.setdefault("message_type", "text")
             response_dict.setdefault("options_list", [])
-            return response_dict
+            return _finalize_response(response_dict)
         else:
             logger_actual.warning(f"Input '{pregunta_str_reclamo}' no coincide con ninguna categoría. Mostrando menú de nuevo.")
-            return _get_reclamos_menu()
+            return _finalize_response(_get_reclamos_menu())
     # --- FIN: Manejo de selección de menú de reclamos ---
+
+    # --- INICIO: Manejo de actualización de datos de usuario ---
+    elif estado_conversacion == ConversationState.ESPERANDO_NUEVO_DATO_USUARIO.name:
+        campo_a_actualizar = contexto_municipio_actual.get('campo_a_actualizar')
+        nuevo_valor = pregunta_str.strip()
+
+        if not campo_a_actualizar:
+            logger_actual.error("[UPDATE_USER_DATA] In ESPERANDO_NUEVO_DATO_USUARIO state but no 'campo_a_actualizar' in context. Resetting.")
+            contexto_municipio_actual['estado_conversacion'] = None
+        elif not viewer_user:
+            logger_actual.error("[UPDATE_USER_DATA] Cannot update data for a non-logged-in user. Resetting.")
+            contexto_municipio_actual['estado_conversacion'] = None
+            # Limpiar contexto para no quedar en un bucle
+            contexto_municipio_actual.pop('campo_a_actualizar', None)
+            contexto_municipio_actual.pop('accion_original_para_reintentar', None)
+            return _finalize_response({"message_body": "Para actualizar tus datos, primero necesitás iniciar sesión. ¿Querés que te ayude con eso?", "fuente": "update_data_login_required"})
+        else:
+            from services.user_service import actualizar_perfil_usuario
+            resultado_actualizacion = actualizar_perfil_usuario(
+                user_id=viewer_user.id,
+                datos_actualizacion={campo_a_actualizar: nuevo_valor}
+            )
+
+            if resultado_actualizacion.get('status') == 'success':
+                contexto_municipio_actual.pop('campo_a_actualizar', None)
+                contexto_municipio_actual['estado_conversacion'] = None # Reset state to re-evaluate
+
+                accion_original = contexto_municipio_actual.pop('accion_original_para_reintentar', "continuar con el reclamo")
+
+                pregunta_str = (
+                    f"Acabo de actualizar el/la {campo_a_actualizar} del usuario a '{nuevo_valor}'. "
+                    f"Confirma al usuario que el dato fue actualizado correctamente. "
+                    f"Ahora, por favor, continúa con su pedido original, que era: '{accion_original}'"
+                )
+
+                logger_actual.info(f"Generated synthetic prompt to resume flow: {pregunta_str}")
+                # La ejecución continuará y llamará a handle_llm_interaction con la nueva pregunta_str
+            else:
+                contexto_municipio_actual['estado_conversacion'] = None # Reset state
+                error_message = resultado_actualizacion.get('message', f"Hubo un error al actualizar tu {campo_a_actualizar}.")
+                return _finalize_response({
+                    "message_body": error_message,
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "error_actualizacion_dato_usuario"
+                })
+    # --- FIN: Manejo de actualización de datos de usuario ---
 
     # --- INICIO: Manejo de recepción de ubicación para consulta general ---
     elif estado_conversacion == ConversationState.ESPERANDO_UBICACION_GENERAL.name:
@@ -1709,15 +1794,15 @@ def responder_municipio(
 
             if consulta_guardada:
                 logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
-                return PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location.get("address")})
+                return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location.get("address")}))
             else:
                 logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
-                return {"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"}
+                return _finalize_response({"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"})
         else:
             # User sent something other than a location
             contexto_municipio_actual['estado_conversacion'] = None # Reset state
             if chat_db_context: flag_modified(chat_db_context, "context_data")
-            return {"message_body": "No recibí una ubicación. Si cambiaste de opinión, no hay problema. ¿En qué te puedo ayudar?", "options_list": [], "message_type": "text", "fuente": "no_location_received"}
+            return _finalize_response({"message_body": "No recibí una ubicación. Si cambiaste de opinión, no hay problema. ¿En qué te puedo ayudar?", "options_list": [], "message_type": "text", "fuente": "no_location_received"})
     # --- FIN: Manejo de recepción de ubicación ---
 
     # Initialize the context if it's empty
@@ -1796,12 +1881,12 @@ def responder_municipio(
         else:
             contexto_municipio_actual["ubicacion_confirmada"] = False
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-            return {
+            return _finalize_response({
                 "message_body": "Por favor, decime la nueva ubicación.",
                 "options_list": [],
                 "message_type": "text",
                 "fuente": "pedir_nueva_ubicacion"
-            }, contexto_municipio_actual
+            })
 
     if USAR_LLM_PARA_RECLAMOS:
         # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---
@@ -1857,7 +1942,7 @@ def responder_municipio(
                 respuesta_manejada_por_llm = {"message_body": str(respuesta_manejada_por_llm)}
             respuesta_manejada_por_llm.setdefault("message_type", "text")
             respuesta_manejada_por_llm.setdefault("options_list", [])
-            return respuesta_manejada_por_llm
+            return _finalize_response(respuesta_manejada_por_llm)
 
         # Si la intención se estableció en derivar a un agente, significa que el flujo del LLM
         # ya manejó la lógica y no debemos continuar con el flujo antiguo.
@@ -1866,12 +1951,12 @@ def responder_municipio(
             # Ensure the context is saved before returning
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            return {
+            return _finalize_response({
                 "message_body": mensaje_para_escalar,
                 "options_list": [],
                 "message_type": "text",
                 "fuente": "llm_derivar_humano_v2"
-            }
+            })
 
 
 
@@ -1930,4 +2015,4 @@ def responder_municipio(
             db.session.rollback()
 
     logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict.get('message_body', '')[:100]}...', Fuente: {final_response_dict.get('fuente', 'N/A')}")
-    return final_response_dict
+    return _finalize_response(final_response_dict)
