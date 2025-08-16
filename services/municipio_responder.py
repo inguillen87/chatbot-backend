@@ -812,48 +812,19 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     for key in keys_to_clear_after_claim:
         contexto_municipio_actual.pop(key, None)
 
-    if respuesta_accion and respuesta_accion.get("success"):
-        ticket_id = respuesta_accion.get('data', {}).get('ticket_id')
-        logger.info(f"Ticket creado con ID: {ticket_id}")
-
-        message_body_from_action = respuesta_accion.get("message_to_user")
-
-        # Cargar info de contacto desde el contexto para enriquecer la respuesta
-        municipio_config = context.get('municipio_config_actual', {})
-        info_adicional = municipio_config.get('informacion_contacto_post_reclamo')
-
-        rich_info_text = ""
-        if info_adicional:
-            contact_details = []
-            if info_adicional.get('telefono'):
-                contact_details.append(f"📞 *Teléfono:* {info_adicional.get('telefono')}")
-            if info_adicional.get('email'):
-                contact_details.append(f"📧 *Email:* {info_adicional.get('email')}")
-            if info_adicional.get('horario'):
-                contact_details.append(f"⏰ *Horario de atención:* {info_adicional.get('horario')}")
-            if info_adicional.get('website'):
-                contact_details.append(f"🌐 *Sitio web:* {info_adicional.get('website')}")
-
-            if contact_details:
-                rich_info_text = "\n\n*Para seguimiento o consultas sobre tu reclamo, podés usar estos medios:*\n" + "\n".join(contact_details)
-
-        options_list = (respuesta_accion.get("options_list") or [])
-        if not options_list:
-            options_list.extend([
-                {"texto": "Ver estado de mi reclamo", "id_accion": "consultar_estado_ticket"},
-                {"texto": "Hacer otro reclamo", "id_accion": "iniciar_reclamo"}
-            ])
-
-        final_message = f"{message_body_from_action}{rich_info_text}\n\n¿Hay algo más en lo que pueda ayudarte?"
-
-        return {
-            "message_body": final_message,
-            "options_list": options_list,
-            "message_type": "interactive_buttons",
-            "fuente": "ticket_creado_con_info_rica_v1"
-        }, contexto_municipio_actual
-    else:
+    # The `accion_crear_reclamo_municipio` (and its underlying handler) is now responsible
+    # for the entire logic, including loading specialized contacts and formatting the final message.
+    # We simply pass its response through.
+    if respuesta_accion:
+        # The handler should have already cleared the context if the ticket was created successfully.
         return respuesta_accion, contexto_municipio_actual
+    else:
+        # Fallback in case the action handler returns None unexpectedly.
+        return {
+            "message_body": "Hubo un problema al procesar la creación de tu reclamo. Por favor, intenta de nuevo.",
+            "message_type": "text",
+            "fuente": "error_handler_crear_reclamo"
+        }, contexto_municipio_actual
 
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
