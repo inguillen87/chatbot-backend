@@ -674,7 +674,7 @@ def chatuser_login_panel():
 
 
 # Nueva ruta para obtener información básica del token
-@auth_bp.route('/token-info', methods=['GET', 'OPTIONS'])
+@auth_bp.route('/token-info', methods=['GET'])
 @token_requerido
 def token_info(user):
     """Devuelve el rubro y la empresa asociados al token."""
@@ -687,6 +687,16 @@ def token_info(user):
         "empresa_id": user.empresa_id,
         "tipo_chat": getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme"),
     })
+
+
+@auth_bp.route('/token-info', methods=['OPTIONS'])
+def token_info_options():
+    """Preflight CORS para /token-info."""
+    anon_id = get_or_create_anon_id()
+    resp = jsonify({'status': 'ok'})
+    resp.headers.setdefault('X-Anon-Id', anon_id)
+    resp.headers.setdefault('Anon-Id', anon_id)
+    return resp, 204
 
 
 @auth_bp.route('/me/dashboard', methods=['GET', 'OPTIONS'])
