@@ -5,7 +5,7 @@ from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext, db
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext
 from extensions import db
 from functools import wraps
 import uuid
@@ -16,7 +16,7 @@ from services.pymes import get_or_create_pyme_user_by_token
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-from utils.auth_helpers import token_requerido, obtener_token
+from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id
 from flask_login import current_user
 
 
@@ -32,19 +32,28 @@ def solo_admin_requerido(f):
 
 @auth_bp.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    anon_id = get_or_create_anon_id()
     if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'})
+        resp = jsonify({'status': 'ok'})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp
     if not request.is_json:
-        return jsonify({"error": "La solicitud debe ser de tipo JSON."}), 400
+        resp = jsonify({"error": "La solicitud debe ser de tipo JSON."})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp, 400
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
-        return jsonify({"error": "Email y contraseña requeridos."}), 400
+        resp = jsonify({"error": "Email y contraseña requeridos."})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp, 400
 
     user = User.query.filter_by(email=data.get("email").strip().lower()).first()
 
     if not user or not user.check_password(data.get("password")):
         current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
-        return jsonify({"error": "Email o contraseña incorrectos."}), 401
+        resp = jsonify({"error": "Email o contraseña incorrectos."})
+        resp.headers.setdefault('X-Anon-Id', anon_id)
+        return resp, 401
 
     current_app.logger.info(f"Login exitoso para: {user.email}")
 
@@ -85,6 +94,7 @@ def login():
 
         response.set_cookie(**cookie_args)
 
+    response.headers.setdefault('X-Anon-Id', anon_id)
     return response
 
 @auth_bp.route('/google-client-id', methods=['GET'])
@@ -328,7 +338,6 @@ def register_from_widget(user):
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
-        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
     if not name or not email or not password:
@@ -407,7 +416,6 @@ def login_from_widget(owner_user):
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
-        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
     if not email or not password:
@@ -456,7 +464,7 @@ def chatuser_register_panel():
     logged_data = {k: v for k, v in data.items() if k != 'password'}
     current_app.logger.info(f"[chatuser_register_panel] Received data (password excluded): {logged_data}")
     current_app.logger.info(
-        f"[chatuser_register_panel] Anon-Id header: {request.headers.get('X-Anon-Id') or request.headers.get('Anon-Id')}"
+        f"[chatuser_register_panel] X-Anon-Id header: {request.headers.get('X-Anon-Id')}"
     )
 
 
@@ -479,7 +487,6 @@ def chatuser_register_panel():
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
-        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
 
@@ -621,7 +628,6 @@ def chatuser_login_panel():
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
-        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
 
