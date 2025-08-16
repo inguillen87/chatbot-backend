@@ -125,6 +125,11 @@ defecto de orígenes permitidos en CORS.  Si el backend corre en un subdominio
 `https://ejemplo.com` y `https://www.ejemplo.com` para facilitar el uso del
 widget embebido.
 
+Adicionalmente, la variable `PUBLIC_ROOT_DOMAIN` (por defecto `chatboc.ar`)
+añade `https://<dominio>` y `https://www.<dominio>` a la lista de orígenes
+permitidos.  Esto permite probar en local el widget alojado en un dominio
+público sin necesidad de definir manualmente `CORS_ALLOWED_ORIGINS`.
+
 Para definir manualmente qué orígenes pueden realizar peticiones al backend,
 puedes usar la variable `CORS_ALLOWED_ORIGINS` con una lista separada por comas
 de URLs. Si no se especifica, se permiten los dominios definidos en `PANEL_URL`

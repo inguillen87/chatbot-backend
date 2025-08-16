@@ -36,6 +36,12 @@ else:
                 f"https://{root_domain}",
                 f"https://www.{root_domain}",
             ])
+    public_root = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
+    if public_root and public_root not in ("localhost", "127.0.0.1"):
+        allowed_urls.extend([
+            f"https://{public_root}",
+            f"https://www.{public_root}",
+        ])
 
 ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
 
