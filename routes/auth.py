@@ -36,15 +36,18 @@ def login():
     if request.method == 'OPTIONS':
         resp = jsonify({'status': 'ok'})
         resp.headers.setdefault('X-Anon-Id', anon_id)
+        resp.headers.setdefault('Anon-Id', anon_id)
         return resp
     if not request.is_json:
         resp = jsonify({"error": "La solicitud debe ser de tipo JSON."})
         resp.headers.setdefault('X-Anon-Id', anon_id)
+        resp.headers.setdefault('Anon-Id', anon_id)
         return resp, 400
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
         resp = jsonify({"error": "Email y contraseña requeridos."})
         resp.headers.setdefault('X-Anon-Id', anon_id)
+        resp.headers.setdefault('Anon-Id', anon_id)
         return resp, 400
 
     user = User.query.filter_by(email=data.get("email").strip().lower()).first()
@@ -53,6 +56,7 @@ def login():
         current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
         resp = jsonify({"error": "Email o contraseña incorrectos."})
         resp.headers.setdefault('X-Anon-Id', anon_id)
+        resp.headers.setdefault('Anon-Id', anon_id)
         return resp, 401
 
     current_app.logger.info(f"Login exitoso para: {user.email}")
@@ -338,6 +342,7 @@ def register_from_widget(user):
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
     if not name or not email or not password:
@@ -396,6 +401,7 @@ def register_from_widget(user):
         })
         if anon_id:
             resp.headers["X-Anon-Id"] = anon_id
+            resp.headers["Anon-Id"] = anon_id
         return resp, 201
     except Exception as e:
         db.session.rollback()
@@ -416,6 +422,7 @@ def login_from_widget(owner_user):
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
     if not email or not password:
@@ -447,6 +454,7 @@ def login_from_widget(owner_user):
     })
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
+        resp.headers["Anon-Id"] = anon_id
     return resp
 
 
@@ -464,7 +472,7 @@ def chatuser_register_panel():
     logged_data = {k: v for k, v in data.items() if k != 'password'}
     current_app.logger.info(f"[chatuser_register_panel] Received data (password excluded): {logged_data}")
     current_app.logger.info(
-        f"[chatuser_register_panel] X-Anon-Id header: {request.headers.get('X-Anon-Id')}"
+        f"[chatuser_register_panel] X-Anon-Id header: {request.headers.get('X-Anon-Id') or request.headers.get('Anon-Id')}"
     )
 
 
@@ -487,6 +495,7 @@ def chatuser_register_panel():
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
 
@@ -526,6 +535,7 @@ def chatuser_register_panel():
             })
             if anon_id:
                 resp.headers["X-Anon-Id"] = anon_id
+                resp.headers["Anon-Id"] = anon_id
             return resp, 200
         else:
             # Email exists but is associated with a different empresa_id.
@@ -599,6 +609,7 @@ def chatuser_register_panel():
         })
         if anon_id:
             resp.headers["X-Anon-Id"] = anon_id
+            resp.headers["Anon-Id"] = anon_id
         return resp, 201
     except Exception as e:  # pragma: no cover - por si falla la DB
         db.session.rollback()
@@ -628,6 +639,7 @@ def chatuser_login_panel():
     password = data.get('password')
     anon_id = (
         request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
 
@@ -657,6 +669,7 @@ def chatuser_login_panel():
     })
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
+        resp.headers["Anon-Id"] = anon_id
     return resp
 
 

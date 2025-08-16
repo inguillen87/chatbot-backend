@@ -109,6 +109,7 @@ def get_or_create_anon_id() -> str:
     """Obtiene el ID anónimo de la request o genera uno nuevo."""
     anon_id = (
         request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
         or request.args.get("anon_id")
     )
     if not anon_id and request.is_json:
@@ -130,6 +131,7 @@ def token_requerido(f):
         if request.method == 'OPTIONS':
             resp = make_response('', 200)
             resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
             return resp
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
@@ -142,6 +144,7 @@ def token_requerido(f):
         if not token:
             resp = jsonify({"error": "Token faltante o malformado"})
             resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
             return resp, 401
 
         user = User.query.filter_by(token=token).first()
@@ -149,6 +152,7 @@ def token_requerido(f):
         if not user:
             resp = jsonify({"error": "Token inválido o sesión expirada"})
             resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
             return resp, 401
 
         response = f(user, *args, **kwargs)
@@ -171,10 +175,12 @@ def token_requerido(f):
 
             resp.set_cookie(**cookie_args)
             resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
             return resp
 
         resp = make_response(response)
         resp.headers.setdefault("X-Anon-Id", anon_id)
+        resp.headers.setdefault("Anon-Id", anon_id)
         return resp
     return decorated
 
@@ -200,6 +206,7 @@ def anon_o_token_requerido(f):
         if request.method == "OPTIONS":
             resp = make_response("", 200)
             resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
             return resp
 
         token = obtener_token()
@@ -237,6 +244,7 @@ def anon_o_token_requerido(f):
 
         resp = make_response(response)
         resp.headers.setdefault("X-Anon-Id", anon_id)
+        resp.headers.setdefault("Anon-Id", anon_id)
         return resp
 
     return decorated

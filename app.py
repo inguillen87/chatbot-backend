@@ -212,8 +212,9 @@ def create_app(config_class=Config):
             "X-Entity-Token",
             "X-Chat-Session-Id",
             "X-Anon-Id",
+            "Anon-Id",
         ],
-        expose_headers=["X-Anon-Id"],
+        expose_headers=["X-Anon-Id", "Anon-Id"],
     )
 
     @app.after_request

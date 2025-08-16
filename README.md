@@ -196,9 +196,11 @@ Para usuarios finales que acceden al panel web existe `POST /chatuserregisterpan
 ### Migración de tickets anónimos
 
 Si el usuario crea tickets en el widget antes de registrarse, guarda un
-identificador anónimo en el navegador (`X-Anon-Id`). Al enviar ese valor en el
-header `X-Anon-Id` durante la llamada a `POST /widget/register`, el backend
-migrará automáticamente esos tickets y comentarios para que pertenezcan al nuevo
+identificador anónimo en el navegador (`X-Anon-Id`). Los clientes legados pueden
+enviar este valor usando el encabezado `Anon-Id`, pero el servidor siempre lo
+responderá como `X-Anon-Id`. Al remitir ese identificador en cualquiera de estos
+headers durante la llamada a `POST /widget/register`, el backend migrará
+automáticamente esos tickets y comentarios para que pertenezcan al nuevo
 usuario.
 
 Para ver un ejemplo completo de cómo enviar una pregunta en modo anónimo
