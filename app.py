@@ -1,3 +1,5 @@
+import os
+os.environ["EVENTLET_NO_GREENDNS"] = "1"  # desactiva el resolver de eventlet
 import eventlet
 eventlet.monkey_patch()
 
