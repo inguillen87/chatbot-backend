@@ -67,7 +67,7 @@ class ChatUserPanelTests(unittest.TestCase):
                 'empresa_token': self.owner_user.token
             }, headers={
                 'X-Chat-Session-Id': chat_session_id,
-                'Anon-Id': anon_id
+                'X-Anon-Id': anon_id
             })
 
         self.assertEqual(resp.status_code, 201)

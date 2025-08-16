@@ -18,7 +18,6 @@ if os.environ.get("FLASK_ENV") != "production":
     else:
         print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
 
-from flask_session import Session
 from config import Config, ALLOWED_ORIGINS
 from extensions import db, migrate, login_manager # Import login_manager
 from celery_utils import celery_app, init_celery # Importar Celery y su inicializador
@@ -202,11 +201,21 @@ def create_app(config_class=Config):
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
     # --- Configuración de CORS ---
-    CORS(app,
-         origins=ALLOWED_ORIGINS,
-         supports_credentials=True,
-         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "X-Entity-Token", "X-Chat-Session-Id", "Anon-Id"])
+    CORS(
+        app,
+        origins=ALLOWED_ORIGINS,
+        supports_credentials=True,
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Entity-Token",
+            "X-Chat-Session-Id",
+            "X-Anon-Id",
+            "Anon-Id",
+        ],
+        expose_headers=["X-Anon-Id", "Anon-Id"],
+    )
 
     @app.after_request
     def add_permissions_policy(resp):

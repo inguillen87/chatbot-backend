@@ -45,7 +45,7 @@ def apply_cors(response):
     else:
         response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = (
-        "Content-Type,Authorization,Anon-Id,x-entity-token"
+        "Content-Type,Authorization,X-Anon-Id,Anon-Id,x-entity-token"
     )
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response

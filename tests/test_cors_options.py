@@ -38,6 +38,16 @@ class CorsOptionsTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
+    def test_options_allows_anon_id_header(self):
+        resp = self.client.options('/perfil', headers={
+            'Origin': 'http://localhost:8080',
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'Anon-Id'
+        })
+        self.assertEqual(resp.status_code, 200)
+        allow_headers = resp.headers.get('Access-Control-Allow-Headers', '')
+        self.assertIn('Anon-Id', allow_headers)
+
     def test_perfil_options(self):
         resp = self.client.options('/auth/perfil', headers={
             'Origin': 'http://localhost:8080',

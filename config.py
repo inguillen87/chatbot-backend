@@ -17,6 +17,8 @@ BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
 
+parsed_backend = urlparse(BACKEND_URL)
+
 # CORS_ALLOWED_ORIGINS can override the default allowed origins.  When unset we
 # allow the panel and widget URLs.  Values are cleaned of trailing slashes and
 # duplicates are removed.
@@ -24,9 +26,34 @@ cors_env = os.getenv("CORS_ALLOWED_ORIGINS")
 if cors_env:
     allowed_urls = [u.strip().rstrip('/') for u in cors_env.split(',') if u.strip()]
 else:
-    allowed_urls = [PANEL_URL, WIDGET_URL]
+    allowed_urls = [PANEL_URL.rstrip('/'), WIDGET_URL.rstrip('/')]
+    host = parsed_backend.hostname
+    if host and host != "localhost":
+        parts = host.split('.')
+        if len(parts) >= 2:
+            root_domain = ".".join(parts[-2:])
+            allowed_urls.extend([
+                f"https://{root_domain}",
+                f"https://www.{root_domain}",
+            ])
+    public_root = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
+    if public_root and public_root not in ("localhost", "127.0.0.1"):
+        allowed_urls.extend([
+            f"https://{public_root}",
+            f"https://www.{public_root}",
+        ])
 
 ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
+
+# Derive cookie domain for production if not provided explicitly
+cookie_domain_env = os.getenv("COOKIE_DOMAIN")
+if cookie_domain_env:
+    COOKIE_DOMAIN = cookie_domain_env
+elif ENV != "dev" and parsed_backend.hostname:
+    parts = parsed_backend.hostname.split('.')
+    COOKIE_DOMAIN = f".{parts[-2]}.{parts[-1]}" if len(parts) >= 2 else None
+else:
+    COOKIE_DOMAIN = None
 
 class Config:
     """
@@ -54,7 +81,7 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (MODO DEV/PROD)
-    SESSION_COOKIE_DOMAIN = (None if ENV == "dev" else os.getenv("COOKIE_DOMAIN"))
+    SESSION_COOKIE_DOMAIN = (None if ENV == "dev" else COOKIE_DOMAIN)
     SESSION_COOKIE_SECURE = (ENV == "prod")
     SESSION_COOKIE_SAMESITE = "None"
 
