@@ -30,15 +30,23 @@ def build_interactive_response(options: list,
 
 
     if channel == "whatsapp":
+        # --- NUEVA LÓGICA PARA FORZAR TEXTO EN MENÚS DE WHATSAPP ---
+        # Si la acción es 'mostrar_menu', siempre la formateamos como texto.
+        if original_bot_response.get("accion_backend") == "mostrar_menu":
+            message_type = 'text'
+        # --- FIN DE LA NUEVA LÓGICA ---
+
         if audio_url:
             return {"type": "audio", "audio": {"link": audio_url}}
 
         num_options = len(options)
 
-        # If the message type is explicitly 'text', always format as text.
+        # Si el tipo de mensaje es 'text', siempre formatear como texto.
+        # Esto ahora también se activará con la lógica de 'mostrar_menu'.
         if message_type == 'text':
             final_body = body_text
             if options:
+                # Mantener los íconos que vienen en el texto del botón.
                 options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
                 options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
                 final_body += options_text
