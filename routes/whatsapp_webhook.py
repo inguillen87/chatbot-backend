@@ -4,6 +4,7 @@ from twilio.rest import Client # For sending messages via Twilio
 import os # For accessing environment variables
 import requests
 import io
+import json
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto # Import necessary models
 from extensions import db # Import db instance for database operations
@@ -347,47 +348,21 @@ def whatsapp_webhook():
         try:
             # El formateador ahora devuelve un diccionario con 'type' y los datos.
             # Si es de tipo 'text', usamos el cuerpo directamente.
-            if formatted_whatsapp_payload.get("type") == "text":
-                final_body = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
-            # Si es interactivo (para otros canales o flujos futuros), generamos un fallback de texto.
-            elif formatted_whatsapp_payload.get("type") == "interactive":
-                interactive_payload = formatted_whatsapp_payload.get("interactive", {})
-                body_text = interactive_payload.get("body", {}).get("text", "")
-                
-                buttons = interactive_payload.get("action", {}).get("buttons", [])
-                rows = []
-                sections = interactive_payload.get("action", {}).get("sections", [])
-                if sections:
-                    for section in sections:
-                        rows.extend(section.get("rows", []))
-
-                options_text_parts = []
-                if buttons:
-                    options_text_parts = [f"*{i+1}*. {btn['reply']['title']}" for i, btn in enumerate(buttons)]
-                elif rows:
-                    for i, row in enumerate(rows):
-                        title = row.get('title', '')
-                        description = row.get('description', '')
-                        if description:
-                            options_text_parts.append(f"*{i+1}*. {title} - {description}")
-                        else:
-                            options_text_parts.append(f"*{i+1}*. {title}")
-
-                if options_text_parts:
-                    options_text = "\n\n" + "\n".join(options_text_parts)
-                    options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
-                    final_body = body_text + options_text
-                else:
-                    final_body = body_text
-            else:
-                # Fallback para cualquier otro tipo o si no hay tipo
-                final_body = bot_response_dict.get('message_body', "Hubo un error al procesar la respuesta.")
-
             message_params = {
                 'from_': to_number_raw,
                 'to': from_number_raw,
-                'body': final_body.strip(),
             }
+
+            if formatted_whatsapp_payload.get("type") == "interactive":
+                interactive_payload = formatted_whatsapp_payload.get("interactive")
+                # The body is required, it's the fallback for notifications and older clients
+                message_params['body'] = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
+                # The PersistentAction is what actually sends the interactive message
+                # It needs to be a list of strings, with the format "channel:payload"
+                # For WhatsApp, the payload is a JSON string of the interactive object.
+                message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
+            else: # Text message
+                message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
 
             # Send the main message (text or interactive)
             main_message = twilio_client.messages.create(**message_params)
