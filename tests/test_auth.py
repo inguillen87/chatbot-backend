@@ -738,32 +738,39 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
 
-    # Notificación por Websocket
-    ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
 
-    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
-    ticket_data = {
-        "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
-        "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": ticket_obj.fecha.isoformat(),
-        "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
-        "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "rubro_id": getattr(ticket_obj, 'rubro_id', None),
-        "telefono": getattr(ticket_obj, 'telefono', None),
-        "email": getattr(ticket_obj, 'email', None),
-        "dni": getattr(ticket_obj, 'dni', None),
-        "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
-        "archivo_url": getattr(ticket_obj, 'archivo_url', None),
-        "latitud": getattr(ticket_obj, 'latitud', None),
-        "longitud": getattr(ticket_obj, 'longitud', None)
-    }
-    return jsonify(ticket_data)
+def test_login_echoes_anon_id(client):
+    user = User(email="anon@test.com", name="Anon", token="anon-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
 
-# ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
-@ticket_bp.route('/tickets/chat/<int:ticket_id>/mensajes', methods=['GET'])
-@anon_o_token_requerido
-def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    anon_header = {"X-Anon-Id": "test-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "anon@test.com", "password": "pw"},
+        headers=anon_header,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "test-anon"
+
+
+def test_login_accepts_legacy_anon_id(client):
+    user = User(email="legacy@test.com", name="Legacy", token="legacy-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    headers = {"Anon-Id": "legacy-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "legacy@test.com", "password": "pw"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "legacy-anon"
+
+def test_register_creates_admin_user(client):
     """
     Devuelve los mensajes del chat en vivo para un ticket.
     Requiere que el usuario esté autenticado o que proporcione un anon_id válido.
