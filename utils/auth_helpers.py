@@ -129,7 +129,19 @@ def token_requerido(f):
     def decorated(*args, **kwargs):
         anon_id = get_or_create_anon_id()
         if request.method == 'OPTIONS':
-            resp = make_response('', 200)
+            resp = make_response('', 204)
+            origin = request.headers.get('Origin')
+            if origin:
+                resp.headers['Access-Control-Allow-Origin'] = origin
+                resp.headers['Vary'] = 'Origin'
+            else:
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+            resp.headers['Access-Control-Allow-Headers'] = (
+                'Authorization, Content-Type, Origin, Accept, '
+                'X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id'
+            )
+            resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+            resp.headers['Access-Control-Allow-Credentials'] = 'true'
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
             return resp
@@ -204,7 +216,19 @@ def anon_o_token_requerido(f):
     def decorated(*args, **kwargs):
         anon_id = get_or_create_anon_id()
         if request.method == "OPTIONS":
-            resp = make_response("", 200)
+            resp = make_response("", 204)
+            origin = request.headers.get("Origin")
+            if origin:
+                resp.headers["Access-Control-Allow-Origin"] = origin
+                resp.headers["Vary"] = "Origin"
+            else:
+                resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Access-Control-Allow-Headers"] = (
+                "Authorization, Content-Type, Origin, Accept, "
+                "X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id"
+            )
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
             return resp
