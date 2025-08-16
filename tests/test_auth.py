@@ -802,55 +802,34 @@ def test_login_accepts_legacy_anon_id(client):
     assert response.status_code == 200
     assert response.headers.get("X-Anon-Id") == "legacy-anon"
 
+from models import Rubro, User
 def test_register_creates_admin_user(client):
     """
-    Devuelve los mensajes del chat en vivo para un ticket.
-    Requiere que el usuario esté autenticado o que proporcione un anon_id válido.
+    Verifica que el endpoint de registro crea un nuevo usuario con rol de admin.
     """
-    try:
-        sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
-        if not sala_de_chat:
-            return jsonify({"error": "Sala de chat no encontrada."}), 404
+    # Primero, asegúrate de que exista un Rubro para asociar al usuario
+    rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+    db.session.add(rubro)
+    db.session.commit()
 
-        es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
-        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
-        es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
+    register_data = {
+        "name": "Test Admin",
+        "email": "newadmin@test.com",
+        "password": "password123",
+        "nombre_empresa": "Test Company",
+        "rubro": rubro.id,
+        "tipo_chat": "pyme",
+        "acepto_terminos": True
+    }
+    response = client.post('/auth/register', json=register_data)
 
-        log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
+    assert response.status_code == 201
 
-        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido):
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-        if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-
-        ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
-        mensajes_nuevos = (
-            TicketComentario.query
-            .filter(
-                TicketComentario.municipio_ticket_id == ticket_id,
-                TicketComentario.id > ultimo_mensaje_id
-            )
-            .order_by(TicketComentario.fecha.asc())
-            .all()
-        )
-        mensajes_formateados = [
-            {
-                "id": msg.id,
-                "texto": msg.comentario,
-                "fecha": msg.fecha.isoformat(),
-                "es_admin": msg.es_admin
-            }
-            for msg in mensajes_nuevos
-        ]
-        respuesta_final = {
-            "estado_chat": sala_de_chat.estado,
-            "mensajes": mensajes_formateados
-        }
-        return jsonify(respuesta_final)
-    except Exception as e:
-        current_app.logger.error(f"Error en get_chat_mensajes para ticket {ticket_id}: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+    # Verificar que el usuario fue creado en la base de datos
+    user = User.query.filter_by(email="newadmin@test.com").first()
+    assert user is not None
+    assert user.name == "Test Admin"
+    assert user.rol == "admin" # El registro por defecto crea un admin de su propia empresa
 
 
 # ---------- CHAT EN VIVO PYME: MENSAJES ----------

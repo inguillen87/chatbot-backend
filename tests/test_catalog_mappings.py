@@ -2,6 +2,8 @@ import pytest
 import json
 from app import db
 from models import User, CatalogMapping
+import jwt
+from datetime import datetime, timedelta
 
 class TestCatalogMappingsAPI:
 
@@ -14,15 +16,17 @@ class TestCatalogMappingsAPI:
             id=1,
             name="Test PYME",
             email="pyme@test.com",
-            rol="admin",
-            token="test-token-123"
+            rol="admin"
         )
         self.pyme_user.set_password("password")
         db.session.add(self.pyme_user)
         db.session.commit()
 
+        jwt_payload = {'user_id': self.pyme_user.id, 'exp': datetime.utcnow() + timedelta(days=1)}
+        jwt_token = jwt.encode(jwt_payload, self.client.application.config['SECRET_KEY'], algorithm="HS256")
+
         self.auth_headers = {
-            'Authorization': f'Bearer {self.pyme_user.token}'
+            'Authorization': f'Bearer {jwt_token}'
         }
 
 

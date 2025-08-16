@@ -10,7 +10,8 @@ from extensions import db
 from functools import wraps
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+import jwt
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
@@ -68,10 +69,17 @@ def login():
     from flask_login import login_user
     login_user(user) # Establecer la sesión para el usuario
     current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
+    # Generar el token JWT
+    jwt_payload = {
+        'user_id': user.id,
+        'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
     response = jsonify({
         "mensaje": "Login exitoso",
         "id": user.id,
-        "token": user.token,
+        "token": jwt_token,
         "email": user.email,
         "name": user.name,
         "rol": user.rol,
@@ -83,10 +91,10 @@ def login():
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
-    if user.token:
+    if jwt_token:
         cookie_args = {
             "key": cookie_name,
-            "value": user.token,
+            "value": jwt_token,
             "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
             "httponly": True,
             "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
@@ -132,9 +140,15 @@ def google_login():
         current_app.logger.info(f"Login Google para: {user.email}")
 
         if not getattr(user, "rubro_id", None):
+            # Aún si falta el rubro, generamos un token para que pueda continuar
+            jwt_payload = {
+                'user_id': user.id,
+                'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+            }
+            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
             resp = jsonify({
                 "status": "falta_rubro",
-                "token": user.token,
+                "token": jwt_token,
                 "email": user.email,
             })
             return resp
@@ -146,9 +160,16 @@ def google_login():
         from flask_login import login_user
         login_user(user) # Establecer la sesión para el usuario
         current_app.logger.info(f"Usuario {user.email} logueado vía Google y sesión Flask-Login establecida.")
+        # Generar el token JWT
+        jwt_payload = {
+            'user_id': user.id,
+            'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+        }
+        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
         response = jsonify({
             "id": user.id,
-            "token": user.token,
+            "token": jwt_token,
             "name": user.name,
             "email": user.email,
             "rol": user.rol,
@@ -160,20 +181,20 @@ def google_login():
 
         cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
-        if user.token:
-            cookie_args = {
-                "key": cookie_name,
-                "value": user.token,
-                "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
-                "httponly": True,
-                "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-            }
+        if jwt_token:
+                cookie_args = {
+                    "key": cookie_name,
+                "value": jwt_token,
+                    "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+                    "httponly": True,
+                    "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+                }
 
-            cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-            if cookie_domain:
-                cookie_args["domain"] = cookie_domain
+                cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+                if cookie_domain:
+                    cookie_args["domain"] = cookie_domain
 
-            response.set_cookie(**cookie_args)
+                response.set_cookie(**cookie_args)
 
         return response
     except ValueError as e:
@@ -291,7 +312,7 @@ def register():
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
-        token=str(uuid.uuid4()),
+        # token=str(uuid.uuid4()), # El token ahora es JWT y se genera bajo demanda
         nombre_empresa=data['nombre_empresa'].strip(),
         rubro_id=rubro.id,
         plan="gratis",
@@ -310,10 +331,18 @@ def register():
         db.session.add(user)
         db.session.commit()
         current_app.logger.info(f"Usuario registrado: {user.email} con ID {user.id}")
+
+        # Generar el token JWT
+        jwt_payload = {
+            'user_id': user.id,
+            'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+        }
+        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
         return jsonify({
             "mensaje": "Usuario registrado exitosamente.",
             "id": user.id,
-            "token": user.token,
+            "token": jwt_token,
             "name": user.name,
             "email": user.email,
             "rol": user.rol,
@@ -369,7 +398,7 @@ def register_from_widget(user):
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
-        token=str(uuid.uuid4()),
+        # token=str(uuid.uuid4()), # El token ahora es JWT y se genera bajo demanda
         rubro_id=user.rubro_id,
         empresa_id=user.id,
         plan="gratis",
@@ -390,9 +419,16 @@ def register_from_widget(user):
             servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
         # --------- FIN BLOQUE CRÍTICO ----------
 
+        # Generar el token JWT
+        jwt_payload = {
+            'user_id': nuevo.id,
+            'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+        }
+        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
         resp = jsonify({
             "id": nuevo.id,
-            "token": nuevo.token,
+            "token": jwt_token,
             "name": nuevo.name,
             "email": nuevo.email,
             "rol": nuevo.rol,
@@ -441,9 +477,16 @@ def login_from_widget(owner_user):
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
+    # Generar el token JWT
+    jwt_payload = {
+        'user_id': user.id,
+        'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
     resp = jsonify({
         "id": user.id,
-        "token": user.token,
+        "token": jwt_token,
         "name": user.name,
         "email": user.email,
         "rol": user.rol,
@@ -522,9 +565,17 @@ def chatuser_register_panel():
             if anon_id:
                 from services.ticket_service import servicio_tickets
                 servicio_tickets.migrar_tickets_de_anonimo(anon_id, existing_user.id)
+
+            # Generar el token JWT
+            jwt_payload = {
+                'user_id': existing_user.id,
+                'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+            }
+            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
             resp = jsonify({
                 "id": existing_user.id,
-                "token": existing_user.token,
+                "token": jwt_token,
                 "name": existing_user.name,
                 "email": existing_user.email,
                 "rol": existing_user.rol,
@@ -560,7 +611,7 @@ def chatuser_register_panel():
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
-        token=str(uuid.uuid4()),
+        # token=str(uuid.uuid4()), # El token ahora es JWT y se genera bajo demanda
         rubro_id=owner_user.rubro_id,
         empresa_id=owner_user.id,
         plan="gratis",
@@ -597,9 +648,16 @@ def chatuser_register_panel():
                 db.session.commit()
                 current_app.logger.info(f"Updated ChatSessionContext {chat_session_id} for new user {nuevo.id}")
 
+        # Generar el token JWT
+        jwt_payload = {
+            'user_id': nuevo.id,
+            'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+        }
+        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
         resp = jsonify({
             "id": nuevo.id,
-            "token": nuevo.token,
+            "token": jwt_token,
             "name": nuevo.name,
             "email": nuevo.email,
             "rol": nuevo.rol,
@@ -657,9 +715,16 @@ def chatuser_login_panel():
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
+    # Generar el token JWT
+    jwt_payload = {
+        'user_id': user.id,
+        'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
     resp = jsonify({
         "id": user.id,
-        "token": user.token,
+        "token": jwt_token,
         "name": user.name,
         "email": user.email,
         "rol": user.rol,

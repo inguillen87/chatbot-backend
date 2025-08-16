@@ -5,6 +5,8 @@ from models import User
 from unittest.mock import patch
 import json
 from functools import wraps
+import jwt
+from datetime import datetime, timedelta
 
 from config import TestConfig
 
@@ -33,15 +35,18 @@ def test_get_user_locations(client):
     db.session.add(admin_rubro)
     db.session.commit()
 
-    admin_user = User(id=1, rol='admin', municipio_id=1, name='Admin User', email='admin@test.com', token='test-admin-token', rubro_id=admin_rubro.id)
+    admin_user = User(id=1, rol='admin', municipio_id=1, name='Admin User', email='admin@test.com', rubro_id=admin_rubro.id)
     admin_user.set_password("adminpass")
 
     db.session.add_all([user1, user2, admin_user])
     db.session.commit()
 
+    jwt_payload = {'user_id': admin_user.id, 'exp': datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, client.application.config['SECRET_KEY'], algorithm="HS256")
+
     response = client.get(
         url_for('estadisticas.get_user_locations'),
-        headers={'Authorization': f'Bearer {admin_user.token}'}
+        headers={'Authorization': f'Bearer {jwt_token}'}
     )
 
     assert response.status_code == 200

@@ -23,16 +23,17 @@ class GoogleLoginRouteTests(unittest.TestCase):
         self.app_context.pop()
 
     def test_status_falta_rubro(self):
-        user = User(id=1, email='a@b.com', name='A', token='t1', password_hash='test')
+        user = User(id=1, email='a@b.com', name='A', password_hash='test')
         with self.app.test_request_context(json={'id_token': 'tok'}):
             with patch('routes.auth.login_o_crear_usuario', return_value=user):
                 resp = google_login()
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.get_json(), {
-            'status': 'falta_rubro',
-            'token': 't1',
-            'email': 'a@b.com'
-        })
+        data = resp.get_json()
+        self.assertEqual(data['status'], 'falta_rubro')
+        self.assertEqual(data['email'], 'a@b.com')
+        self.assertIn('token', data)
+        self.assertIsInstance(data['token'], str)
+        self.assertTrue(len(data['token']) > 20) # JWTs are long
 
     def test_login_normal(self):
         rubro = Rubro(nombre='IT', clave='it')
