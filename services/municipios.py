@@ -1133,23 +1133,31 @@ def responder_municipio(
 
         handler_context = {"user_obj": owner_user, "viewer_user_obj": viewer_user}
         handler = GreetingHandler(handler_context)
-        return handler.handle(received_payload)
+        response_data = handler.handle(received_payload)
+        response_data['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
+        return response_data
 
     # --- Simple Router for Main Menu Options ---
     pregunta_str_lower = pregunta_str.strip().lower()
+    response_data = None
     if pregunta_str_lower == "reclamos":
-        return ReclamosMenuHandler(context).handle(received_payload)
+        response_data = ReclamosMenuHandler(context).handle(received_payload)
     elif pregunta_str_lower == "licencia_conducir":
-        return LicenciaConducirHandler(context).handle(received_payload)
+        response_data = LicenciaConducirHandler(context).handle(received_payload)
     elif pregunta_str_lower == "pago_tasas":
-        return PagoTasasHandler(context).handle(received_payload)
+        response_data = PagoTasasHandler(context).handle(received_payload)
     elif pregunta_str_lower == "defensa_consumidor":
-        return DefensaConsumidorHandler(context).handle(received_payload)
+        response_data = DefensaConsumidorHandler(context).handle(received_payload)
     elif pregunta_str_lower == "veterinaria_bromatologia":
-        return VeterinariaBromatologiaHandler(context).handle(received_payload)
+        response_data = VeterinariaBromatologiaHandler(context).handle(received_payload)
     elif pregunta_str_lower == "reclamo_perdida_agua":
-        return PerdidaDeAguaHandler(context).handle(received_payload)
-    elif pregunta_str_lower.startswith("reclamo_"):
+        response_data = PerdidaDeAguaHandler(context).handle(received_payload)
+
+    if response_data:
+        response_data['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
+        return response_data
+
+    if pregunta_str_lower.startswith("reclamo_"):
         categoria = pregunta_str_lower.replace("reclamo_", "").replace("_", " ").title()
         contexto_municipio_actual['categoria_reclamo'] = categoria
         # Let it fall through to the LLM to ask for the claim details
