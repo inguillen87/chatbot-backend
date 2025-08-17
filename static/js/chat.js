@@ -10,6 +10,15 @@
 document.addEventListener('DOMContentLoaded', () => {
     // Connect to the server using Socket.IO
     const socket = io();
+    socket.on('connect', () => {
+        console.log('Socket connected, id:', socket.id);
+    });
+    socket.on('disconnect', () => {
+        console.log('Socket disconnected');
+    });
+    socket.on('connect_error', (err) => {
+        console.error('Socket connection error:', err);
+    });
 
     // Get references to the necessary HTML elements
     const chatMessages = document.getElementById('chat-messages');
@@ -74,6 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (message) {
             // Add the user's message to the chat window
             appendMessage('user', message);
+            console.log('Sending message to server:', message);
             // Emit the message to the server
             socket.emit('message', { pregunta: message });
             messageInput.value = '';
@@ -100,6 +110,7 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(response => response.json())
         .then(data => {
             // The server will handle the audio and the response will come via Socket.IO
+            console.log('Audio upload response:', data);
             console.log('Audio sent successfully, waiting for socket response.');
         })
         .catch(error => {

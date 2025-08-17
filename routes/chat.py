@@ -176,6 +176,20 @@ def _procesar_chat(
         except Exception as e:
             return jsonify({"error": f"Invalid request format: {e}"}), 400
 
+        current_app.logger.debug(
+            "Parsed request data",
+            extra={
+                "pregunta": pregunta,
+                "tipo_chat": tipo_chat,
+                "rubro_id": rubro_id,
+                "rubro_clave": rubro_clave,
+                "attachment_info": attachment_info,
+                "location": location,
+                "ticket_id": ticket_id,
+                "tipo_ticket": tipo_ticket,
+            },
+        )
+
     # --- Intercept messages for active live chats ---
     if ticket_id and tipo_ticket and pregunta:
         from models import MunicipioTicket, PymeTicket
@@ -513,8 +527,17 @@ def _procesar_chat(
         # Emit the result via Socket.IO if the channel is web
         if channel == "web" and chat_session_id_header:
             socketio.emit('message', resultado, room=chat_session_id_header)
-            current_app.logger.info(f"Emitted socket event 'message' to room {chat_session_id_header}")
+            current_app.logger.debug(
+                "Emitting socket message",
+                extra={"room": chat_session_id_header, "payload": resultado},
+            )
+            current_app.logger.info(
+                f"Emitted socket event 'message' to room {chat_session_id_header}"
+            )
 
+        current_app.logger.debug(
+            "Returning HTTP response", extra={"payload": resultado}
+        )
         return jsonify(resultado), 200
 
     except Exception as e:
