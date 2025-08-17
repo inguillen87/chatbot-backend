@@ -258,15 +258,18 @@ def whatsapp_webhook():
 
             # Extraer info del mensaje actual del usuario
             from services.llm_utils import extract_multiple_contact_details_llm
-            extracted_data = extract_multiple_contact_details_llm(message_body)
+            potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
+            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
+            extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
+            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
 
             # Actualizar datos del reclamo con la info extraída
-            if extracted_data.get("nombre"):
-                datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre"]
-            if extracted_data.get("telefono"):
-                datos_reclamo["telefono_detectado"] = extracted_data["telefono"]
-            if extracted_data.get("email"):
-                datos_reclamo["email_detectado"] = extracted_data["email"]
+            if extracted_data.get("nombre_cliente"):
+                datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre_cliente"]
+            if extracted_data.get("telefono_cliente"):
+                datos_reclamo["telefono_detectado"] = extracted_data["telefono_cliente"]
+            if extracted_data.get("email_cliente"):
+                datos_reclamo["email_detectado"] = extracted_data["email_cliente"]
 
             # Guardar datos actualizados en el contexto
             contexto_actual["datos_parciales_llm_reclamo"] = datos_reclamo
@@ -380,6 +383,7 @@ def whatsapp_webhook():
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
             else: # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
+            current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
             # Send the main message (text or interactive)
             main_message = twilio_client.messages.create(**message_params)
@@ -400,6 +404,7 @@ def whatsapp_webhook():
                     'to': from_number_raw,
                     'media_url': [absolute_audio_url]
                 }
+                current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
                 audio_message = twilio_client.messages.create(**audio_message_params)
                 print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
 
