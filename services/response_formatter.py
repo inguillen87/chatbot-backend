@@ -20,7 +20,7 @@ def build_interactive_response(options: list,
         options = [item for sublist in options for item in sublist]
 
     if channel == "whatsapp":
-        # Per user request, always format as text to ensure options are visible
+        # Per user request, always format as text to ensure options are always visible
         final_body = body_text or ""
         if options:
             options_text_parts = []
@@ -77,53 +77,3 @@ def build_interactive_response(options: list,
     else:
         logger.error(f"Canal desconocido: {channel}. No se pudo formatear la respuesta.")
         return {"error": f"Canal no soportado: {channel}"}
-
-if __name__ == '__main__':
-    sample_options_short = [
-        {"id": "reclamo_basura_123", "texto": "🗑️ Basura"},
-        {"id": "reclamo_luminaria_456", "texto": "💡 Luminaria"},
-    ]
-    sample_options_long = [
-        {"id": "tramite_a", "texto": "Trámite A", "description": "Descripción del trámite A"},
-        {"id": "tramite_b", "texto": "Trámite B"},
-        {"id": "tramite_c", "texto": "Trámite C con un texto bastante largo para el título"},
-    ]
-    url_option = [{"id": "web_url", "texto": "Visitar Web", "type": "url", "url": "https://example.com"}]
-
-
-    print("--- WhatsApp Interactive Output (Buttons) ---")
-    whatsapp_buttons = build_interactive_response(options=sample_options_short, body_text="Elige una categoría de reclamo:", channel="whatsapp", message_type='interactive_buttons', header_text="Reclamos", footer_text="Selecciona una opción")
-    print(json.dumps(whatsapp_buttons, indent=2, ensure_ascii=False))
-    # Expected: {"type": "interactive", "interactive": {"type": "button", ...}}
-
-    print("\n--- WhatsApp Interactive Output (List) ---")
-    whatsapp_list = build_interactive_response(options=sample_options_long, body_text="Selecciona un trámite:", channel="whatsapp", message_type='interactive_list', header_text="Trámites Municipales", footer_text="Elige de la lista")
-    print(json.dumps(whatsapp_list, indent=2, ensure_ascii=False))
-    # Expected: {"type": "interactive", "interactive": {"type": "list", ...}}
-
-    print("\n--- WhatsApp Text Output ---")
-    whatsapp_text = build_interactive_response(options=[], body_text="Este es un mensaje de texto simple.", channel="whatsapp", message_type='text')
-    print(json.dumps(whatsapp_text, indent=2, ensure_ascii=False))
-    # Expected: {"type": "text", "text": {"body": "..."}}
-
-    print("\n--- Web Response (con opciones) ---")
-    web_response_options = build_interactive_response(
-        options=sample_options_short + url_option,
-        body_text="Elige una opción para la web:",
-        channel="web",
-        message_type='interactive_buttons',
-        original_bot_response={"fuente": "test_web_main_example"}
-    )
-    print(json.dumps(web_response_options, indent=2, ensure_ascii=False))
-    # Expected: {"respuesta": "...", "botones": [{"texto": ..., "action_id": ...}, {"texto": ..., "action_id": ..., "url": ...}]}
-
-    print("\n--- Web Response (text only) ---")
-    web_response_text = build_interactive_response(
-        options=[],
-        body_text="Texto simple para web.",
-        channel="web",
-        message_type='text',
-        original_bot_response={"fuente": "test_web_text_example"}
-    )
-    print(json.dumps(web_response_text, indent=2, ensure_ascii=False))
-    # Expected: {"respuesta": "...", "botones": [], ...}

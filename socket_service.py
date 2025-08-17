@@ -8,7 +8,7 @@ from services.ticket_service import servicio_tickets # Reutilizamos el servicio 
 socketio = SocketIO(
     cors_allowed_origins=ALLOWED_ORIGINS,
     cookie=True,
-    async_mode="eventlet"
+    async_mode="gevent"
 )
 
 def emit_ticket_update(data):

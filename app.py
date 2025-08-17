@@ -1,9 +1,9 @@
 import os
 os.environ["EVENTLET_NO_GREENDNS"] = "1"  # desactiva el resolver de eventlet
-import eventlet
-eventlet.monkey_patch()
-
 import os
+if os.environ.get("FLASK_ENV") != 'testing':
+    import eventlet
+    eventlet.monkey_patch()
 import logging
 import sys
 from flask import Flask, request, current_app, jsonify, g
@@ -80,7 +80,10 @@ def create_app(config_class=Config):
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
-    app.config.from_object(config_class)
+    if os.environ.get("FLASK_ENV") == 'testing':
+        app.config.from_object('config.TestingConfig')
+    else:
+        app.config.from_object(config_class)
     print(f"Loaded config: {config_class}")
     print(f"Database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
     print(f"DB object: {db}")

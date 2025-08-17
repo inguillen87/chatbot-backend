@@ -155,7 +155,7 @@ class Config:
 
 class TestConfig(Config):
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///' + os.path.join(basedir, 'test.db')
     CELERY_TASK_ALWAYS_EAGER = True
     SESSION_COOKIE_SECURE = False
     SERVER_NAME = 'localhost'
