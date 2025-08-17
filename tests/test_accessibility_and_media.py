@@ -74,7 +74,10 @@ class TestAccessibilityAndMedia(unittest.TestCase):
 
         # --- Act ---
         with patch('services.logic.responder_municipio') as mock_responder_municipio:
-            mock_responder_municipio.return_value = {"message_body": "Esta es una respuesta de prueba.", "audio_url": fake_audio_url}
+            mock_responder_municipio.return_value = {
+                "message_body": "Esta es una respuesta de prueba.",
+                "generar_audio": True,
+            }
             response_dict = responder_chatboc(
                 pregunta="test",
                 owner_user=self.owner_user,
