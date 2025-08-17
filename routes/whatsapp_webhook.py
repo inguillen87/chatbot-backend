@@ -283,6 +283,19 @@ def whatsapp_webhook():
             socketio.emit('message', {'msg': message_body}, room=room)
             return "OK", 200
 
+    # --- Numeric Menu Handling ---
+    last_options = session_context_db_entry.context_data.get("last_options_sent")
+    if message_body.isdigit() and last_options:
+        idx = int(message_body) - 1
+        if 0 <= idx < len(last_options):
+            selected = last_options[idx]
+            message_body = (
+                selected.get("id")
+                or selected.get("action_id")
+                or selected.get("texto")
+                or message_body
+            )
+
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
     bot_response_dict = {
@@ -301,7 +314,9 @@ def whatsapp_webhook():
 
         interpretacion_media_data = None
         if uploaded_file_info:
-            interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
+            mime_type = uploaded_file_info.get("mime_type", "")
+            if not mime_type.startswith("audio/"):
+                interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
         elif location_info:
             interpretacion_media_data = {
                 "categoria_sugerida": "ubicacion",

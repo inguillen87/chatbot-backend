@@ -36,6 +36,13 @@ def build_interactive_response(options: list,
         audio_url,
     )
 
+    # Track options sent so numeric replies can be mapped later
+    context_update = original_bot_response.get("contexto_actualizado")
+    if channel == "whatsapp" and options:
+        # Store the raw option objects so we can resolve numeric responses
+        context_update = (context_update or {}).copy()
+        context_update["last_options_sent"] = options
+
 
     if channel == "whatsapp":
         original_type = message_type
@@ -83,7 +90,7 @@ def build_interactive_response(options: list,
             return {
                 "type": "text",
                 "text": {"body": final_body},
-                "contexto_actualizado": original_bot_response.get("contexto_actualizado"),
+                "contexto_actualizado": context_update if context_update else None,
                 "audio_url": audio_url
             }
             if audio_url:
@@ -136,7 +143,7 @@ def build_interactive_response(options: list,
         payload = {
             "type": "interactive",
             "interactive": interactive_data,
-            "contexto_actualizado": original_bot_response.get("contexto_actualizado")
+            "contexto_actualizado": context_update if context_update else None
         }
         if audio_url:
             payload["audio"] = {"link": audio_url}
