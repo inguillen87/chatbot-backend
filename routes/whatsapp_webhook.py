@@ -283,6 +283,19 @@ def whatsapp_webhook():
             socketio.emit('message', {'msg': message_body}, room=room)
             return "OK", 200
 
+    # --- Numeric Menu Handling ---
+    last_options = session_context_db_entry.context_data.get("last_options_sent")
+    if message_body.isdigit() and last_options:
+        idx = int(message_body) - 1
+        if 0 <= idx < len(last_options):
+            selected = last_options[idx]
+            message_body = (
+                selected.get("id")
+                or selected.get("action_id")
+                or selected.get("texto")
+                or message_body
+            )
+
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
     bot_response_dict = {
