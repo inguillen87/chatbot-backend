@@ -176,8 +176,43 @@ class CrearReclamoActionHandler(BaseActionHandler):
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
             # Cargar contactos y encontrar el específico para la categoría
-            contactos = cargar_configuracion_municipio(getattr(owner_user, "municipio_id", "default"), "contactos_especializados.json")
-            contacto_especializado = contactos.get(categoria, contactos.get("default"))
+            contactos = cargar_configuracion_municipio(
+                getattr(owner_user, "municipio_id", "default"),
+                "contactos_especializados.json",
+            )
+            contacto_especializado = dict(contactos.get(categoria, contactos.get("default", {})))
+
+            # Completar datos desde tramites.json si existen
+            tramites_cfg = cargar_configuracion_municipio(
+                getattr(owner_user, "municipio_id", "default"),
+                "tramites.json",
+            )
+            tramite_info = tramites_cfg.get(categoria, {}) if isinstance(tramites_cfg, dict) else {}
+            if isinstance(tramite_info, dict):
+                if not contacto_especializado.get("telefono") and tramite_info.get("telefono"):
+                    contacto_especializado["telefono"] = tramite_info.get("telefono")
+                if not contacto_especializado.get("horario") and tramite_info.get("horario"):
+                    contacto_especializado["horario"] = tramite_info.get("horario")
+                if not contacto_especializado.get("link"):
+                    botones = tramite_info.get("botones")
+                    if isinstance(botones, list) and botones:
+                        contacto_especializado["link"] = botones[0].get("url")
+
+            # Fallback con datos del perfil del municipio y configuración general
+            if getattr(owner_user, "link_web", None):
+                contacto_especializado.setdefault("link", owner_user.link_web)
+            else:
+                cfg = cargar_configuracion_municipio(
+                    getattr(owner_user, "municipio_id", "default"),
+                    "config.json",
+                )
+                if isinstance(cfg, dict) and cfg.get("web_url"):
+                    contacto_especializado.setdefault("link", cfg.get("web_url"))
+
+            if getattr(owner_user, "telefono", None):
+                contacto_especializado.setdefault("telefono", owner_user.telefono)
+            if getattr(owner_user, "horario", None):
+                contacto_especializado.setdefault("horario", owner_user.horario)
 
             # Limpiar contexto de reclamo después de la creación exitosa
             user_info = contexto_reclamo.get('user', {})

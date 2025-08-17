@@ -36,21 +36,30 @@
                 </div>
                 {% endif %}
 
-                <p style="margin: 0; text-align: center;">
-                    <a href="{{ chat_url }}" style="background-color: #007bff; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">Ver Estado del Ticket</a>
-                </p>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 20px 40px; text-align: center; background-color: #f9f9f9; border-top: 1px solid #eeeeee; border-radius: 0 0 8px 8px;">
-                <p style="margin: 0; color: #888888; font-size: 12px;">
-                    Te mantendremos informado sobre cualquier novedad. Gracias por tu colaboración.
-                </p>
-                <p style="margin: 5px 0 0; color: #888888; font-size: 12px;">
-                    Este es un mensaje automático, por favor no respondas a este correo.
-                </p>
-            </td>
-        </tr>
-    </table>
-</body>
-</html>
+                  <p style="margin: 0; text-align: center;">
+                      <a href="{{ chat_url }}" style="background-color: #007bff; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">Ver Estado del Ticket</a>
+                  </p>
+                  {% if telefono_contacto %}
+                  <p style="margin: 20px 0 5px; color: #444444;"><strong>Teléfono de contacto:</strong> {{ telefono_contacto }}</p>
+                  {% endif %}
+                  {% if horario_contacto %}
+                  <p style="margin: 5px 0; color: #444444;"><strong>Horario de atención:</strong> {{ horario_contacto }}</p>
+                  {% endif %}
+                  {% if enlace_contacto %}
+                  <p style="margin: 5px 0;"><a href="{{ enlace_contacto }}" style="color: #007bff;">Enlace de interés</a></p>
+                  {% endif %}
+              </td>
+          </tr>
+          <tr>
+              <td style="padding: 20px 40px; text-align: center; background-color: #f9f9f9; border-top: 1px solid #eeeeee; border-radius: 0 0 8px 8px;">
+                  <p style="margin: 0; color: #888888; font-size: 12px;">
+                      Te mantendremos informado sobre cualquier novedad. Gracias por tu colaboración.
+                  </p>
+                  <p style="margin: 5px 0 0; color: #888888; font-size: 12px;">
+                      Este es un mensaje automático, por favor no respondas a este correo.
+                  </p>
+              </td>
+          </tr>
+      </table>
+ </body>
+ </html>
