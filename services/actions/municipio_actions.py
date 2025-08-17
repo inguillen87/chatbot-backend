@@ -77,6 +77,27 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not viewer_user and not all([nombre_vecino_final, telefono_final, email_final]):
              campos_faltantes.extend(["nombre", "telefono", "email"])
 
+        # Data confirmation flow
+        if not contexto_reclamo.get("datos_confirmados") and not campos_faltantes:
+            from services.municipio_responder import ConversationState
+            contexto_reclamo["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
+            self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+
+            mensaje = f"""Por favor, confirmá si tus datos son correctos:
+*Nombre:* {nombre_vecino_final}
+*Teléfono:* {telefono_final}
+*Email:* {email_final}
+"""
+            botones = [
+                {"texto": "Sí, son correctos", "action_id": "confirmar_datos_si"},
+                {"texto": "No, quiero editar", "action_id": "confirmar_datos_no"}
+            ]
+            return {
+                "success": False,
+                "message_to_user": mensaje,
+                "options_list": botones,
+                "message_type": "interactive_buttons"
+            }
 
         if campos_faltantes:
             # Eliminar duplicados

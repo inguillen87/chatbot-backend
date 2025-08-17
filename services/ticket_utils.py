@@ -48,6 +48,8 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
         respuesta += f"""
 📞 *Contacto para seguimiento:*
 Para seguir el estado de tu ticket, podés hablar directamente con *{nombre_asesor}* a través del botón de contacto."""
+        if contacto_especializado.get("horario"):
+            respuesta += f"\n*Horario de atención:* {contacto_especializado.get('horario')}"
 
     respuesta += """
 
