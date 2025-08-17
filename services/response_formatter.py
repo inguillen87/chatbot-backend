@@ -43,11 +43,29 @@ def build_interactive_response(options: list,
         if message_type == 'text':
             final_body = body_text
             if options:
-                # Mantener los íconos que vienen en el texto del botón.
-                options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
+                # Mantener los íconos que vienen en el texto del botón. Si existen
+                # categorías, las usamos para agrupar las opciones en el texto.
+                categorias = original_bot_response.get("categorias")
+                if categorias:
+                    lines = []
+                    counter = 1
+                    for categoria in categorias:
+                        titulo = categoria.get("titulo")
+                        if titulo:
+                            lines.append(f"*{titulo}*")
+                        for boton in categoria.get("botones", []):
+                            lines.append(f"*{counter}*. {boton.get('texto', '')}")
+                            counter += 1
+                    options_text = "\n\n" + "\n".join(lines)
+                else:
+                    options_text = "\n\n" + "\n".join(
+                        [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)]
+                    )
                 options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
                 final_body += options_text
-            logger.info(f"build_interactive_response: returning text payload: {{'type': 'text', 'text': {{'body': final_body}}}}")
+            logger.info(
+                "build_interactive_response: returning text payload: {'type': 'text', 'text': {'body': final_body}}"
+            )
             return {
                 "type": "text",
                 "text": {"body": final_body},
