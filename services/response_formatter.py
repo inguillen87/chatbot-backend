@@ -30,6 +30,8 @@ def build_interactive_response(options: list,
 
 
     if channel == "whatsapp":
+        # Force text for now, as per user request, to ensure menus are always visible
+        message_type = 'text'
 
         if audio_url:
             return {"type": "audio", "audio": {"link": audio_url}}

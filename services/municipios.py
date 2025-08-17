@@ -306,6 +306,7 @@ class ConversationState(Enum):
     ESPERANDO_CREACION_TICKET = auto()
     ESPERANDO_CONFIRMACION_UBICACION = auto()
     ESPERANDO_CONSULTA_GENERAL = auto()
+    ESPERANDO_CONFIRMACION_DATOS_RECLAMO = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -1006,6 +1007,26 @@ def responder_municipio(
         )
         pregunta_str = ""
         received_payload["pregunta"] = ""
+
+    # Proactive handling of attachments
+    datos_interpretados_archivo = kwargs.get("datos_interpretados_archivo")
+    if datos_interpretados_archivo and not pregunta_str.strip():
+        logger_actual.info(f"Proactively handling interpreted file data: {datos_interpretados_archivo}")
+        categoria_sugerida = datos_interpretados_archivo.get("categoria_sugerida", "un problema")
+        descripcion_sugerida = datos_interpretados_archivo.get("descripcion_sugerida", "el problema que se ve en el archivo")
+
+        # We craft a "fake" user question to start the LLM flow
+        pregunta_str = f"Recibí un archivo sobre un posible reclamo de '{categoria_sugerida}'. La descripción inicial es: '{descripcion_sugerida}'."
+
+        # We need to ensure the context is initialized here before using it
+        if chat_db_context and chat_db_context.context_data is not None:
+             contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+             # Pre-populate the claim data
+             contexto_municipio_actual['datos_parciales_llm_reclamo'] = {
+                 "categoria": categoria_sugerida,
+                 "descripcion": descripcion_sugerida
+             }
+             logger_actual.info(f"Pre-populating context with interpreted data for LLM.")
     if kwargs:
         for key, value in kwargs.items():
             received_payload[key] = value
@@ -1174,6 +1195,34 @@ def responder_municipio(
                 "options_list": [],
                 "message_type": "text",
                 "fuente": "pedir_nueva_ubicacion"
+            }, contexto_municipio_actual
+    elif estado_conversacion_actual == ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name:
+        if "si" in pregunta_str.lower() or "confirmar_datos_si" in pregunta_str.lower():
+            contexto_municipio_actual["datos_confirmados"] = True
+            # Re-call handle_llm_interaction to proceed with claim creation
+            pregunta_para_llm = "Los datos son correctos, proceder a crear el reclamo."
+            respuesta_manejada_por_llm, _ = handle_llm_interaction(pregunta_para_llm, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
+            return respuesta_manejada_por_llm
+        elif "no" in pregunta_str.lower() or "confirmar_datos_no" in pregunta_str.lower():
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+            return {
+                "message_body": "Entendido. ¿Qué dato te gustaría corregir?",
+                "options_list": [
+                    {"texto": "Email", "action_id": "editar_email"},
+                    {"texto": "Teléfono", "action_id": "editar_telefono"},
+                    {"texto": "Nombre", "action_id": "editar_nombre"}
+                ],
+                "message_type": "interactive_buttons"
+            }, contexto_municipio_actual
+        else:
+            # Handle ambiguous response
+            return {
+                "message_body": "Por favor, respondé con 'Sí, son correctos' o 'No, quiero editar'.",
+                "options_list": [
+                    {"texto": "Sí, son correctos", "action_id": "confirmar_datos_si"},
+                    {"texto": "No, quiero editar", "action_id": "confirmar_datos_no"}
+                ],
+                "message_type": "interactive_buttons"
             }, contexto_municipio_actual
 
     # --- LLM-first approach ---
