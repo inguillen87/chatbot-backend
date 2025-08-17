@@ -46,7 +46,11 @@ def build_interactive_response(options: list,
                 options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
                 final_body += options_text
             logger.info(f"build_interactive_response: returning text payload: {{'type': 'text', 'text': {{'body': final_body}}}}")
-            return {"type": "text", "text": {"body": final_body}}
+            return {
+                "type": "text",
+                "text": {"body": final_body},
+                "contexto_actualizado": original_bot_response.get("contexto_actualizado")
+            }
 
         is_interactive = message_type in ['interactive_buttons', 'interactive_list']
 
@@ -91,7 +95,11 @@ def build_interactive_response(options: list,
         if not interactive_data["footer"]: del interactive_data["footer"]
 
         logger.info(f"build_interactive_response: returning interactive payload: {interactive_data}")
-        return {"type": "interactive", "interactive": interactive_data}
+        return {
+            "type": "interactive",
+            "interactive": interactive_data,
+            "contexto_actualizado": original_bot_response.get("contexto_actualizado")
+        }
 
     elif channel == "web":
         web_response = {

@@ -11,6 +11,7 @@ from extensions import db # Import db instance for database operations
 import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
+from sqlalchemy.orm.attributes import flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs # Import the GCS service
 
@@ -313,10 +314,12 @@ def whatsapp_webhook():
     try:
         from services.response_formatter import build_interactive_response
 
+        body_text = bot_response_dict.get('message_body') or bot_response_dict.get('message_to_user', "Error de formato.")
+
         # This call will modify bot_response_dict to include context for the numeric menu
         formatted_whatsapp_payload = build_interactive_response(
             options=bot_response_dict.get('options_list', []),
-            body_text=bot_response_dict.get('message_body', "Error de formato."),
+            body_text=body_text,
             channel='whatsapp',
             message_type=bot_response_dict.get('message_type', 'text'),
             original_bot_response=bot_response_dict,
@@ -327,12 +330,26 @@ def whatsapp_webhook():
 
         # After formatting, the context might be updated (e.g., with last_options_sent).
         # We need to merge this updated context back into our main session object before saving.
-        updated_context = bot_response_dict.get('contexto_actualizado')
-        if updated_context:
-            session_context_db_entry.context_data.update(updated_context)
+        updated_context = formatted_whatsapp_payload.get('contexto_actualizado')
 
-        # Explicitly re-assign the dictionary to ensure SQLAlchemy detects the change.
-        session_context_db_entry.context_data = session_context_db_entry.context_data
+        # The existing context from the database
+        db_context = session_context_db_entry.context_data or {}
+        current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto de la base de datos: {db_context}")
+        current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: {updated_context}")
+
+
+        # Merge the contexts
+        if updated_context:
+            merged_context = {**db_context, **updated_context}
+        else:
+            merged_context = db_context
+
+        current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto fusionado para guardar: {merged_context}")
+
+
+        # Save the merged context
+        session_context_db_entry.context_data = merged_context
+        flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
         print(f"Session saved for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
