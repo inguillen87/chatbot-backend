@@ -1143,10 +1143,9 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                     contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
                 else:
-                    # Si no pide más info, podría ser momento de confirmar o crear el reclamo
-                    # (Esta lógica podría necesitar más refinamiento, pero por ahora es una respuesta general)
-                    contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                    # FIX: If we are in a claim flow and the LLM doesn't request more info,
+                    # assume it's time to create the ticket instead of resetting the conversation.
+                    return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
 
             else: # Conversación general que no es parte de un flujo de reclamo activo
                 contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
