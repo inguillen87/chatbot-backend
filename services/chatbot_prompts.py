@@ -175,11 +175,13 @@ Usa esta sección para responder preguntas específicas sobre trámites.
 ```
 
 ## **4. Distritos Válidos de Junín**
-Al recopilar el `distrito` para un reclamo, DEBE ser uno de los siguientes valores oficiales. Puedes ser flexible con la entrada del usuario (ej: si dice "centro", usa "Ciudad").
+Al recopilar el `distrito` para un reclamo, DEBE ser uno de los siguientes valores oficiales.
+**IMPORTANTE:** Puedes ser flexible con la entrada del usuario. Por ejemplo:
+- si dice "centro", "Junín Centro" o "Junin", usa "Ciudad".
 
 *   Algarrobo Grande
 *   Alto Verde
-*   Ciudad (usa este para "Junín Centro", "Centro", "Ciudad de Junín")
+*   Ciudad (usa este para "Junín Centro", "Centro", "Ciudad de Junín", "Junin")
 *   Ingeniero Giagnoni
 *   La Colonia
 *   Los Barriales

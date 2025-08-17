@@ -314,10 +314,12 @@ def whatsapp_webhook():
     try:
         from services.response_formatter import build_interactive_response
 
+        body_text = bot_response_dict.get('message_body') or bot_response_dict.get('message_to_user', "Error de formato.")
+
         # This call will modify bot_response_dict to include context for the numeric menu
         formatted_whatsapp_payload = build_interactive_response(
             options=bot_response_dict.get('options_list', []),
-            body_text=bot_response_dict.get('message_body', "Error de formato."),
+            body_text=body_text,
             channel='whatsapp',
             message_type=bot_response_dict.get('message_type', 'text'),
             original_bot_response=bot_response_dict,
