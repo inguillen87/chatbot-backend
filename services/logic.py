@@ -51,7 +51,6 @@ def es_rubro_publico(rubro) -> bool:
 from services.llm_utils import clasificar_entidad_con_llm
 from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
-from services.common_utils import clean_text_for_tts
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
@@ -247,34 +246,19 @@ def responder_chatboc(
         response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
 
     # --- Audio Response Generation ---
-    generate_audio = False
-    # Check if the original input was audio
-    if chat_db_context and chat_db_context.context_data and chat_db_context.context_data.get('source_is_audio'):
-        generate_audio = True
-
-    # Check if the handler specifically requested audio generation
-    if response_data and response_data.get('generar_audio'):
-        generate_audio = True
-
-    # Always generate audio for the WhatsApp channel to improve accessibility
-    if channel == 'whatsapp':
-        generate_audio = True
-
-    if generate_audio:
+    if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
         text_to_speak = response_data.get('message_body')
         if text_to_speak:
-            cleaned_text = clean_text_for_tts(text_to_speak)
-            from services.google_text_to_speech import TextToSpeechService
-            tts_service = TextToSpeechService()
-            audio_url = tts_service.synthesize_speech(cleaned_text)
+            from services.google_text_to_speech import generate_audio_url
+            context_data = chat_db_context.context_data if chat_db_context else None
+            audio_url = generate_audio_url(text_to_speak, context_data, current_user)
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")
 
-        # Clean up flags after processing to avoid unwanted audio responses in subsequent turns
-        if chat_db_context and chat_db_context.context_data:
-            chat_db_context.context_data.pop('source_is_audio', None)
-        if response_data:
-            response_data.pop('generar_audio', None)
+    if chat_db_context and chat_db_context.context_data:
+        chat_db_context.context_data.pop('source_is_audio', None)
+    if response_data:
+        response_data.pop('generar_audio', None)
 
     return response_data

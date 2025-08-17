@@ -193,8 +193,10 @@ class TestResponseFormatter(unittest.TestCase):
             audio_url=audio_url
         )
         expected_payload = {
-            "type": "audio",
-            "audio": {"link": audio_url}
+            "type": "text",
+            "text": {"body": "This is a caption."},
+            "audio": {"link": audio_url},
+            "contexto_actualizado": None,
         }
         self.assertEqual(formatted_response, expected_payload)
 
@@ -210,7 +212,8 @@ class TestResponseFormatter(unittest.TestCase):
         )
         expected_payload = {
             "type": "text",
-            "text": {"body": "This is a standard text message."}
+            "text": {"body": "This is a standard text message."},
+            "contexto_actualizado": None,
         }
         self.assertEqual(formatted_response, expected_payload)
 
