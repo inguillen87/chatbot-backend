@@ -380,6 +380,7 @@ def whatsapp_webhook():
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
             else: # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
+            current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
             # Send the main message (text or interactive)
             main_message = twilio_client.messages.create(**message_params)
@@ -400,6 +401,7 @@ def whatsapp_webhook():
                     'to': from_number_raw,
                     'media_url': [absolute_audio_url]
                 }
+                current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
                 audio_message = twilio_client.messages.create(**audio_message_params)
                 print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
 
