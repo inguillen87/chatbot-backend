@@ -13,8 +13,9 @@ from services.logic import responder_chatboc  # Import the correct chatbot logic
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from sqlalchemy.orm.attributes import flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
-from services.gcs_service import upload_to_gcs  # Import the GCS service
-from services.media_classifier import clasificar_adjunto_whatsapp
+from services.gcs_service import upload_to_gcs # Import the GCS service
+from services.llm_utils import extract_multiple_contact_details_llm
+from services.user_service import update_user_profile
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -96,20 +97,91 @@ def whatsapp_webhook():
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
 
-    # --- Message and Media Handling SECOND ---
+    # Determine incoming text before any special handling
     button_payload = post_vars.get("ButtonPayload")
     list_id = post_vars.get("ListId")
+    incoming_text = button_payload or list_id or post_vars.get("Body", "")
+
+    # --- Profile confirmation flow ---
+    if not session_context_db_entry.context_data.get("perfil_confirmado"):
+        perfil = session_context_db_entry.context_data.get("perfil_en_revision") or {
+            "nombre": getattr(end_user, "name", ""),
+            "dni": session_context_db_entry.context_data.get("dni", ""),
+            "email": getattr(end_user, "email", ""),
+            "telefono": getattr(end_user, "telefono", from_number_cleaned),
+        }
+
+        if session_context_db_entry.context_data.get("estado_conversacion") == "esperando_confirmacion_perfil":
+            texto = incoming_text.strip()
+            updated = False
+            if texto.lower() not in ["si", "sí", "s", "ok", "correcto"]:
+                nuevos = extract_multiple_contact_details_llm(texto)
+                for key in ["nombre", "dni", "email", "telefono"]:
+                    if nuevos.get(key):
+                        perfil[key] = nuevos[key]
+                        updated = True
+                update_payload = {}
+                if perfil.get("nombre"):
+                    update_payload["name"] = perfil["nombre"]
+                if perfil.get("telefono"):
+                    update_payload["telefono"] = perfil["telefono"]
+                if perfil.get("email"):
+                    update_payload["email"] = perfil["email"]
+                if update_payload:
+                    update_user_profile(end_user, update_payload)
+                if perfil.get("dni"):
+                    session_context_db_entry.context_data["dni"] = perfil["dni"]
+
+            resumen = []
+            if perfil.get("nombre"): resumen.append(f"Nombre: {perfil['nombre']}")
+            if perfil.get("dni"): resumen.append(f"DNI: {perfil['dni']}")
+            if perfil.get("email"): resumen.append(f"Email: {perfil['email']}")
+            if perfil.get("telefono"): resumen.append(f"Teléfono: {perfil['telefono']}")
+
+            session_context_db_entry.context_data["perfil_confirmado"] = True
+            session_context_db_entry.context_data["estado_conversacion"] = "activo"
+            session_context_db_entry.context_data["perfil_en_revision"] = perfil
+            flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
+            db.session.commit()
+
+            if twilio_client:
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body="Gracias, tus datos fueron " + ("actualizados" if updated else "confirmados") + ".\n" + "\n".join(resumen)
+                )
+            return "OK", 200
+        else:
+            resumen = []
+            if perfil.get("nombre"): resumen.append(f"Nombre: {perfil['nombre']}")
+            if perfil.get("dni"): resumen.append(f"DNI: {perfil['dni']}")
+            if perfil.get("email"): resumen.append(f"Email: {perfil['email']}")
+            if perfil.get("telefono"): resumen.append(f"Teléfono: {perfil['telefono']}")
+            mensaje = (
+                "Estos son los datos que tengo registrados:\n" +
+                "\n".join(resumen) +
+                "\n¿Son correctos? Responde 'sí' para confirmar o envía los correctos."
+            )
+            session_context_db_entry.context_data["estado_conversacion"] = "esperando_confirmacion_perfil"
+            session_context_db_entry.context_data["perfil_en_revision"] = perfil
+            flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
+            db.session.commit()
+
+            if twilio_client:
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body=mensaje
+                )
+            return "OK", 200
+
+    # --- Message and Media Handling SECOND ---
     media_url = post_vars.get("MediaUrl0")
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
-    message_body = ""
-
-    if button_payload:
-        message_body = button_payload
-    elif list_id:
-        message_body = list_id
-    else:
-        message_body = post_vars.get("Body", "")
+    message_body = incoming_text
 
     if media_url and media_content_type:
         if media_content_type.startswith("audio/"):
@@ -267,7 +339,6 @@ def whatsapp_webhook():
             datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
 
             # Extraer info del mensaje actual del usuario
-            from services.llm_utils import extract_multiple_contact_details_llm
             extracted_data = extract_multiple_contact_details_llm(message_body)
 
             # Actualizar datos del reclamo con la info extraída
