@@ -1,19 +1,20 @@
-from flask import Blueprint, request, jsonify, abort, current_app # Basic Flask components
-from twilio.request_validator import RequestValidator # For validating Twilio requests
-from twilio.rest import Client # For sending messages via Twilio
-import os # For accessing environment variables
+from flask import Blueprint, request, jsonify, abort, current_app  # Basic Flask components
+from twilio.request_validator import RequestValidator  # For validating Twilio requests
+from twilio.rest import Client  # For sending messages via Twilio
+import os  # For accessing environment variables
 import requests
 import io
 import json
 from werkzeug.datastructures import FileStorage
-from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto # Import necessary models
-from extensions import db # Import db instance for database operations
+from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
+from extensions import db  # Import db instance for database operations
 import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from sqlalchemy.orm.attributes import flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
-from services.gcs_service import upload_to_gcs # Import the GCS service
+from services.gcs_service import upload_to_gcs  # Import the GCS service
+from services.media_classifier import clasificar_adjunto_whatsapp
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -224,13 +225,22 @@ def whatsapp_webhook():
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
-        kwargs_for_bot = {
-            "source_channel": "whatsapp"
-        }
+        interpretacion_media_data = None
+        if uploaded_file_info:
+            interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
+        elif location_info:
+            interpretacion_media_data = {
+                "categoria_sugerida": "ubicacion",
+                "ubicacion": location_info,
+            }
+
+        kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
         if location_info:
             kwargs_for_bot["location_info"] = location_info
+        if interpretacion_media_data and not interpretacion_media_data.get("error"):
+            kwargs_for_bot["interpretacion_imagen_data"] = interpretacion_media_data
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:
