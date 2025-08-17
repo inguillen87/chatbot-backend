@@ -6,6 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication # Para adjuntos
 from twilio.rest import Client
 from flask import current_app # Para acceder a la configuración
+from services.config_loader import cargar_configuracion_municipio
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,21 @@ def enviar_email_ticket_cliente(ticket) -> bool:
     # Por ahora, asumimos una ruta genérica /chat/<id>
     chat_url = f"{base_url}/chat/{ticket.id}"
 
+    from models import User  # Import local to avoid circular imports
+    entidad = None
+    if getattr(ticket, "municipio_id", None):
+        entidad = User.query.get(ticket.municipio_id)
+    elif getattr(ticket, "pyme_id", None):
+        entidad = User.query.get(ticket.pyme_id)
+
+    telefono_contacto = getattr(entidad, "telefono", None) if entidad else None
+    horario_contacto = getattr(entidad, "horario", None) if entidad else None
+    enlace_contacto = getattr(entidad, "link_web", None) if entidad else None
+    if not enlace_contacto and getattr(ticket, "municipio_id", None):
+        cfg = cargar_configuracion_municipio(ticket.municipio_id, "config.json")
+        if isinstance(cfg, dict):
+            enlace_contacto = cfg.get("web_url")
+
     try:
         cuerpo_html = render_template(
             "email/ticket_creado.html",
@@ -238,11 +254,17 @@ def enviar_email_ticket_cliente(ticket) -> bool:
             direccion=getattr(ticket, "direccion", "No especificada"),
             detalles=getattr(ticket, "detalles", "Sin descripción."),
             foto_url=getattr(ticket, "foto_url_directa", None),
-            chat_url=chat_url
+            chat_url=chat_url,
+            telefono_contacto=telefono_contacto,
+            horario_contacto=horario_contacto,
+            enlace_contacto=enlace_contacto,
         )
         return enviar_email(destino, asunto, cuerpo_html)
     except Exception as e:
-        logger.error(f"Error al renderizar la plantilla de email para ticket {ticket.id}: {e}", exc_info=True)
+        logger.error(
+            f"Error al renderizar la plantilla de email para ticket {ticket.id}: {e}",
+            exc_info=True,
+        )
         return False
 
 
