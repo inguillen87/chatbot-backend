@@ -69,6 +69,13 @@ def obtener_token():
         current_app.logger.debug(f"[obtener_token] Found entityToken in query args: '{entity_token_arg[:10]}...'")
         return entity_token_arg
 
+    # Fallback to 'empresa_token' in query args
+    empresa_token_arg = request.args.get("empresa_token")
+    if empresa_token_arg:
+        empresa_token_arg = empresa_token_arg.strip()
+        current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in query args: '{empresa_token_arg[:10]}...'")
+        return empresa_token_arg
+
     if request.is_json:
         json_data = request.get_json(silent=True) or {}
         token_json = json_data.get("token")
@@ -82,14 +89,13 @@ def obtener_token():
             entity_token_json = entity_token_json.strip()
             current_app.logger.debug(f"[obtener_token] Found entityToken in JSON payload: '{entity_token_json[:10]}...'")
             return entity_token_json
-        # Also check for 'empresa_token' in JSON for /ask/municipio if it's being sent there for anonymous
-        # This is specific for debugging the /ask/municipio anonymous case
-        if request.path == '/ask/municipio' or request.path.endswith('/ask/municipio'): # Or other relevant /ask paths
-            empresa_token_json = json_data.get("empresa_token")
-            if empresa_token_json:
-                empresa_token_json = empresa_token_json.strip()
-                current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in JSON payload for {request.path}: '{empresa_token_json[:10]}...'")
-                return empresa_token_json
+
+        # Fallback to 'empresa_token' in JSON payload (no longer path-restricted)
+        empresa_token_json = json_data.get("empresa_token")
+        if empresa_token_json:
+            empresa_token_json = empresa_token_json.strip()
+            current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in JSON payload: '{empresa_token_json[:10]}...'")
+            return empresa_token_json
 
 
     token_form = request.form.get("token")
@@ -104,13 +110,12 @@ def obtener_token():
         current_app.logger.debug(f"[obtener_token] Found entityToken in form data: '{entity_token_form[:10]}...'")
         return entity_token_form
 
-    # For /ask/municipio anonymous, check form data for 'empresa_token' as well
-    if request.path == '/ask/municipio' or request.path.endswith('/ask/municipio'):
-        empresa_token_form = request.form.get("empresa_token")
-        if empresa_token_form:
-            empresa_token_form = empresa_token_form.strip()
-            current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in form data for {request.path}: '{empresa_token_form[:10]}...'")
-            return empresa_token_form
+    # Fallback to 'empresa_token' in form data (no longer path-restricted)
+    empresa_token_form = request.form.get("empresa_token")
+    if empresa_token_form:
+        empresa_token_form = empresa_token_form.strip()
+        current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in form data: '{empresa_token_form[:10]}...'")
+        return empresa_token_form
 
     current_app.logger.debug("[obtener_token] No token found in any common location.")
     return None
