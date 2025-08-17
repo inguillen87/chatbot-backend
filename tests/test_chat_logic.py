@@ -76,11 +76,12 @@ class ChatLogicTestCase(unittest.TestCase):
         mock_synthesize_speech.return_value = fake_audio_url
         mock_responder_municipio.return_value = {
             "message_body": "Esta es una respuesta de prueba.",
-            "options_list": []
+            "options_list": [],
+            "generar_audio": True,
         }
 
         owner_user = SimpleNamespace(id=1, rubro=SimpleNamespace(clave="municipio"), tipo_chat="municipio")
-        viewer_user = SimpleNamespace(id=2)
+        viewer_user = SimpleNamespace(id=2, prefers_audio=True)
 
         chat_session = ChatSessionContext(
             chat_session_id='audio_test_session',

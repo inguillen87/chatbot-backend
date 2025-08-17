@@ -60,6 +60,8 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         fake_audio_url = "/static/audio/test_audio.mp3"
         mock_synthesize_speech.return_value = fake_audio_url
 
+        self.viewer_user.prefers_audio = True
+
         chat_session = ChatSessionContext(
             chat_session_id='audio_test_session',
             user_id=self.owner_user.id,
@@ -72,7 +74,10 @@ class TestAccessibilityAndMedia(unittest.TestCase):
 
         # --- Act ---
         with patch('services.logic.responder_municipio') as mock_responder_municipio:
-            mock_responder_municipio.return_value = {"message_body": "Esta es una respuesta de prueba.", "audio_url": fake_audio_url}
+            mock_responder_municipio.return_value = {
+                "message_body": "Esta es una respuesta de prueba.",
+                "generar_audio": True,
+            }
             response_dict = responder_chatboc(
                 pregunta="test",
                 owner_user=self.owner_user,

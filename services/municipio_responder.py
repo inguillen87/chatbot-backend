@@ -1306,15 +1306,7 @@ def responder_municipio(
     logger_actual = current_app.logger if has_app_context() else logger
 
     def _finalize_response(response):
-        """Añade TTS si el usuario lo prefiere y la respuesta es apta."""
-        if response and viewer_user and viewer_user.prefers_audio and response.get("message_body"):
-            from services.google_text_to_speech import TextToSpeechService
-            tts_service = TextToSpeechService()
-            # No generar audio para mensajes de error muy cortos o técnicos
-            if len(response["message_body"].split()) > 2 and "error" not in response.get("fuente", ""):
-                audio_url = tts_service.synthesize_speech(response["message_body"])
-                if audio_url:
-                    response['audio_url'] = audio_url
+        """Return the response unchanged; audio is handled upstream."""
         return response
 
     logger_actual.info(
