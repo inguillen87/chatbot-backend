@@ -28,26 +28,62 @@ def build_interactive_response(options: list,
         # Flatten the list if it's nested (e.g., [[...]])
         options = [item for sublist in options for item in sublist]
 
+    logger.debug(
+        "build_interactive_response called | channel=%s | message_type=%s | num_options=%d | audio_url=%s",
+        channel,
+        message_type,
+        len(options) if options else 0,
+        audio_url,
+    )
+
 
     if channel == "whatsapp":
+        original_type = message_type
         # Force text for now, as per user request, to ensure menus are always visible
         message_type = 'text'
+        num_options = len(options)
+
+        logger.debug(
+            "WhatsApp fallback enforced | original_type=%s | num_options=%d",
+            original_type,
+            num_options,
+        )
 
         if audio_url:
+            logger.debug("Returning only audio message with url=%s", audio_url)
             return {"type": "audio", "audio": {"link": audio_url}}
-
-        num_options = len(options)
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
         # Esto ahora también se activará con la lógica de 'mostrar_menu'.
         if message_type == 'text':
             final_body = body_text
             if options:
-                # Mantener los íconos que vienen en el texto del botón.
-                options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
+                # Mantener los íconos que vienen en el texto del botón. Si existen
+                # categorías, las usamos para agrupar las opciones en el texto.
+                categorias = original_bot_response.get("categorias")
+                if categorias:
+                    lines = []
+                    counter = 1
+                    for categoria in categorias:
+                        titulo = categoria.get("titulo")
+                        if titulo:
+                            lines.append(f"*{titulo}*")
+                        for boton in categoria.get("botones", []):
+                            lines.append(f"*{counter}*. {boton.get('texto', '')}")
+                            counter += 1
+                    options_text = "\n\n" + "\n".join(lines)
+                else:
+                    options_text = "\n\n" + "\n".join(
+                        [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)]
+                    )
                 options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
                 final_body += options_text
-            logger.info(f"build_interactive_response: returning text payload: {{'type': 'text', 'text': {{'body': final_body}}}}")
+            else:
+                logger.warning("No se recibieron opciones para construir el menú de texto")
+            logger.debug("Final WhatsApp text body: %s", final_body)
+            logger.info(
+                "build_interactive_response: returning text payload: {'type': 'text', 'text': {'body': final_body}}"
+            )
             return {
                 "type": "text",
                 "text": {"body": final_body},

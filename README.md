@@ -2,6 +2,10 @@
 
 This project exposes several endpoints to process questions for different sectors.
 
+When WhatsApp interactive menus are not approved or available, the bot falls back
+to a text-based menu that groups options by category and includes numeric
+selection instructions to maintain full visibility of all choices.
+
 ## Endpoints
 
 - `POST /ask` – generic handler that decides the logic according to the provided sector (`rubro`).
