@@ -10,7 +10,7 @@ if project_root_whatsapp not in sys.path:
 
 from app import create_app, db
 from config import Config
-from models import User, Rubro, WhatsappNumero
+from models import User, Rubro, WhatsappNumero, ChatSessionContext
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -76,6 +76,24 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         self.welcome_patch = patch('routes.whatsapp_webhook.enviar_bienvenida_whatsapp', MagicMock())
         self.mock_welcome = self.welcome_patch.start()
+
+    def _create_confirmed_session(self):
+        session_context = ChatSessionContext(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}",
+            user_id=self.empresa_id_for_test,
+            anon_id=self.test_user_number_str,
+            context_data={
+                "historial_chat": [],
+                "estado_conversacion": "activo",
+                "user_id_empresa": self.empresa_id_for_test,
+                "telefono_usuario": self.test_user_number_str,
+                "canal_origen": "whatsapp",
+                "mensajes_previos_gemini_formato": [],
+                "perfil_confirmado": True,
+            },
+        )
+        db.session.add(session_context)
+        db.session.commit()
 
     def tearDown(self):
         db.session.remove()
@@ -199,6 +217,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         mock_twilio_message.sid = "SM_pdf_test"
         self.mock_twilio_create.return_value = mock_twilio_message
 
+        self._create_confirmed_session()
+
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
@@ -240,7 +260,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 to=f"whatsapp:{self.test_user_number_str}",
                 body="Ok"
             )
-            self.mock_welcome.assert_called_once()
+            self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
@@ -255,6 +275,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         mock_twilio_message = MagicMock()
         mock_twilio_message.sid = "SM_docx_test"
         self.mock_twilio_create.return_value = mock_twilio_message
+
+        self._create_confirmed_session()
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
@@ -300,7 +322,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 to=f"whatsapp:{self.test_user_number_str}",
                 body="Ok"
             )
-            self.mock_welcome.assert_called_once()
+            self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_image_attachment(self, mock_requests_get):
@@ -315,6 +337,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         mock_twilio_message = MagicMock()
         mock_twilio_message.sid = "SM_image_test"
         self.mock_twilio_create.return_value = mock_twilio_message
+
+        self._create_confirmed_session()
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
@@ -357,7 +381,63 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 to=f"whatsapp:{self.test_user_number_str}",
                 body="Ok"
             )
-            self.mock_welcome.assert_called_once()
+            self.mock_welcome.assert_not_called()
+
+    @patch('routes.whatsapp_webhook.requests.get')
+    def test_whatsapp_webhook_audio_attachment_skips_classification(self, mock_requests_get):
+        # Mock the download response
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.content = b'fake-audio-content'
+        mock_requests_get.return_value = mock_response
+
+        self.mock_validator.validate.return_value = True
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SM_audio_test"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        self._create_confirmed_session()
+
+        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
+             patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
+             patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
+            mock_bot.return_value = {"message_body": "Ok"}
+            mock_upload_gcs.return_value = {
+                'public_url': 'http://gcs.example.com/test.ogg',
+                'unique_name': 'unique_test.ogg',
+                'original_name': 'test.ogg',
+                'mimetype': 'audio/ogg',
+                'size': len(b'fake-audio-content')
+            }
+
+            payload = {
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}",
+                "Body": "Audio",
+                "MediaUrl0": "http://example.com/test.ogg",
+                "MediaContentType0": "audio/ogg"
+            }
+            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data.decode(), "OK")
+
+            mock_bot.assert_called_once()
+            _, kwargs = mock_bot.call_args
+            self.assertIn("uploaded_file_info", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "audio/ogg")
+            self.assertNotIn("interpretacion_imagen_data", kwargs)
+            mock_classifier.assert_not_called()
+
+            self.mock_twilio_create.assert_called_once_with(
+                from_=f"whatsapp:{self.test_whatsapp_number_str}",
+                to=f"whatsapp:{self.test_user_number_str}",
+                body="Ok"
+            )
+            self.mock_welcome.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

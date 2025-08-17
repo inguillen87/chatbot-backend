@@ -16,6 +16,7 @@ from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs # Import the GCS service
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
+from services.media_classifier import clasificar_adjunto_whatsapp
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -300,7 +301,9 @@ def whatsapp_webhook():
 
         interpretacion_media_data = None
         if uploaded_file_info:
-            interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
+            mime_type = uploaded_file_info.get("mime_type", "")
+            if not mime_type.startswith("audio/"):
+                interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
         elif location_info:
             interpretacion_media_data = {
                 "categoria_sugerida": "ubicacion",
