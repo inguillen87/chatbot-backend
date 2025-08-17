@@ -41,8 +41,13 @@ def build_interactive_response(options: list,
         original_type = message_type
         # Force text for now, as per user request, to ensure menus are always visible
         message_type = 'text'
-
         num_options = len(options)
+
+        logger.debug(
+            "WhatsApp fallback enforced | original_type=%s | num_options=%d",
+            original_type,
+            num_options,
+        )
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
         # Esto ahora también se activará con la lógica de 'mostrar_menu'.
@@ -69,11 +74,17 @@ def build_interactive_response(options: list,
                     )
                 options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
                 final_body += options_text
-            logger.info(f"build_interactive_response: returning text payload: {{'type': 'text', 'text': {{'body': final_body}}}}")
-            payload = {
+            else:
+                logger.warning("No se recibieron opciones para construir el menú de texto")
+            logger.debug("Final WhatsApp text body: %s", final_body)
+            logger.info(
+                "build_interactive_response: returning text payload: {'type': 'text', 'text': {'body': final_body}}"
+            )
+            return {
                 "type": "text",
                 "text": {"body": final_body},
-                "contexto_actualizado": original_bot_response.get("contexto_actualizado")
+                "contexto_actualizado": original_bot_response.get("contexto_actualizado"),
+                "audio_url": audio_url
             }
             if audio_url:
                 payload["audio"] = {"link": audio_url}
