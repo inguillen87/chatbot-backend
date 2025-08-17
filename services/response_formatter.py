@@ -33,9 +33,6 @@ def build_interactive_response(options: list,
         # Force text for now, as per user request, to ensure menus are always visible
         message_type = 'text'
 
-        if audio_url:
-            return {"type": "audio", "audio": {"link": audio_url}}
-
         num_options = len(options)
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
@@ -48,11 +45,14 @@ def build_interactive_response(options: list,
                 options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
                 final_body += options_text
             logger.info(f"build_interactive_response: returning text payload: {{'type': 'text', 'text': {{'body': final_body}}}}")
-            return {
+            payload = {
                 "type": "text",
                 "text": {"body": final_body},
                 "contexto_actualizado": original_bot_response.get("contexto_actualizado")
             }
+            if audio_url:
+                payload["audio"] = {"link": audio_url}
+            return payload
 
         is_interactive = message_type in ['interactive_buttons', 'interactive_list']
 
@@ -97,11 +97,14 @@ def build_interactive_response(options: list,
         if not interactive_data["footer"]: del interactive_data["footer"]
 
         logger.info(f"build_interactive_response: returning interactive payload: {interactive_data}")
-        return {
+        payload = {
             "type": "interactive",
             "interactive": interactive_data,
             "contexto_actualizado": original_bot_response.get("contexto_actualizado")
         }
+        if audio_url:
+            payload["audio"] = {"link": audio_url}
+        return payload
 
     elif channel == "web":
         web_response = {

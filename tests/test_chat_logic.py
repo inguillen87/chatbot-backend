@@ -80,7 +80,7 @@ class ChatLogicTestCase(unittest.TestCase):
         }
 
         owner_user = SimpleNamespace(id=1, rubro=SimpleNamespace(clave="municipio"), tipo_chat="municipio")
-        viewer_user = SimpleNamespace(id=2)
+        viewer_user = SimpleNamespace(id=2, prefers_audio=True)
 
         chat_session = ChatSessionContext(
             chat_session_id='audio_test_session',

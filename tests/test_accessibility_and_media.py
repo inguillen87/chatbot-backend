@@ -60,6 +60,8 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         fake_audio_url = "/static/audio/test_audio.mp3"
         mock_synthesize_speech.return_value = fake_audio_url
 
+        self.viewer_user.prefers_audio = True
+
         chat_session = ChatSessionContext(
             chat_session_id='audio_test_session',
             user_id=self.owner_user.id,

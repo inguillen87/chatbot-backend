@@ -1,7 +1,11 @@
 import logging
 import os
 import uuid
+from typing import Optional, Dict, Any
+
 from google.cloud import texttospeech
+from services.preferences import is_audio_enabled
+from services.common_utils import clean_text_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +88,26 @@ class TextToSpeechService:
         except Exception as e:
             logger.error(f"An unexpected error occurred during speech synthesis: {e}", exc_info=True)
             return None
+
+
+def generate_audio_url(text: str,
+                        chat_context_data: Optional[Dict[str, Any]] = None,
+                        user: Any | None = None) -> Optional[str]:
+    """Return an audio URL for ``text`` if audio is enabled for the user."""
+    if not text:
+        return None
+
+    if not is_audio_enabled(chat_context_data or {}, user):
+        return None
+
+    cleaned_text = clean_text_for_tts(text)
+
+    try:
+        tts = TextToSpeechService()
+        return tts.synthesize_speech(cleaned_text)
+    except Exception as e:
+        logger.error("Failed to generate audio", exc_info=e)
+        return None
 
 if __name__ == '__main__':
     # This is for local testing of the service.

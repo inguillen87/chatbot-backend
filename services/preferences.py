@@ -1,7 +1,8 @@
 # from flask import session # REMOVED
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 
 PREFERENCES_KEY = "preferencias"
+AUDIO_ENABLED_KEY = "audio_enabled"
 
 def _prefs(chat_context_data: Dict[str, Any]) -> Dict[str, Any]:
     """Return preferences dict from chat_context_data, creating it if needed."""
@@ -31,8 +32,28 @@ def get_preferences(chat_context_data: Dict[str, Any], key: str | None = None) -
     """Get preferences from chat_context_data."""
     prefs = _prefs(chat_context_data)
     if key is not None:
-        return prefs.get(key, []) # Return empty list if key not found, consistent with old behavior
+        return prefs.get(key, [])
     return prefs
+
+
+def set_audio_enabled(chat_context_data: Dict[str, Any], enabled: bool) -> None:
+    """Enable or disable audio responses in chat_context_data."""
+    prefs = _prefs(chat_context_data)
+    prefs[AUDIO_ENABLED_KEY] = enabled
+
+
+def is_audio_enabled(chat_context_data: Dict[str, Any], user: Any | None = None) -> bool:
+    """Return True if audio responses should be generated."""
+    if user is not None and getattr(user, "prefers_audio", False):
+        user_pref = True
+    else:
+        user_pref = False
+
+    prefs = _prefs(chat_context_data)
+    context_pref = prefs.get(AUDIO_ENABLED_KEY)
+    if isinstance(context_pref, bool):
+        return context_pref
+    return user_pref
 
 
 def clear_preferences(chat_context_data: Dict[str, Any]) -> None:

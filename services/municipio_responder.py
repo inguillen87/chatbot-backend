@@ -1307,14 +1307,15 @@ def responder_municipio(
 
     def _finalize_response(response):
         """Añade TTS si el usuario lo prefiere y la respuesta es apta."""
-        if response and viewer_user and viewer_user.prefers_audio and response.get("message_body"):
-            from services.google_text_to_speech import TextToSpeechService
-            tts_service = TextToSpeechService()
-            # No generar audio para mensajes de error muy cortos o técnicos
-            if len(response["message_body"].split()) > 2 and "error" not in response.get("fuente", ""):
-                audio_url = tts_service.synthesize_speech(response["message_body"])
-                if audio_url:
-                    response['audio_url'] = audio_url
+        if response and response.get("message_body"):
+            from services.google_text_to_speech import generate_audio_url
+            audio_url = generate_audio_url(
+                response["message_body"],
+                getattr(chat_db_context, "context_data", None),
+                viewer_user,
+            )
+            if audio_url:
+                response['audio_url'] = audio_url
         return response
 
     logger_actual.info(
