@@ -330,7 +330,6 @@ def whatsapp_webhook():
             datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
 
             # Extraer info del mensaje actual del usuario
-            from services.llm_utils import extract_multiple_contact_details_llm
             extracted_data = extract_multiple_contact_details_llm(message_body)
 
             # Actualizar datos del reclamo con la info extraída
