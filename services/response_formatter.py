@@ -43,12 +43,6 @@ def build_interactive_response(options: list,
         message_type = 'text'
         num_options = len(options)
 
-        logger.debug(
-            "WhatsApp fallback enforced | original_type=%s | num_options=%d",
-            original_type,
-            num_options,
-        )
-
         num_options = len(options)
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
