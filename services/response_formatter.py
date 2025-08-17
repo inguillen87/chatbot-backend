@@ -6,106 +6,41 @@ logger = logging.getLogger(__name__)
 def build_interactive_response(options: list,
                                body_text: str,
                                channel: str,
-                               message_type: str = 'text', # e.g. 'text', 'interactive_buttons', 'interactive_list'
-                               original_bot_response: dict = None, # The full dict from responder_pyme/municipio
-                               header_text: str = None,
-                               footer_text: str = None,
-                               audio_url: str = None,
-                               ) -> dict:
+                               message_type: str = 'text',
+                               original_bot_response: dict = None,
+                               **kwargs) -> dict:
     if original_bot_response is None:
         original_bot_response = {}
 
-    # Prioritize options from original_bot_response if available
-    if original_bot_response.get('botones'):
-        options = original_bot_response['botones']
-    elif original_bot_response.get('options_list'):
-        options = original_bot_response['options_list']
+    # Use options_list from the bot response, fallback to the passed options
+    options = original_bot_response.get('options_list', []) or options or []
 
-    # Ensure options is a list and handle nesting
-    if options is None:
-        options = []
+    # Ensure options is a flat list of dictionaries
     if options and isinstance(options[0], list):
-        # Flatten the list if it's nested (e.g., [[...]])
         options = [item for sublist in options for item in sublist]
 
-
     if channel == "whatsapp":
-        # Force text for now, as per user request, to ensure menus are always visible
-        message_type = 'text'
+        # Per user request, always format as text to ensure options are visible
+        final_body = body_text or ""
+        if options:
+            options_text_parts = []
+            for i, o in enumerate(options):
+                if isinstance(o, dict) and o.get("texto"):
+                    options_text_parts.append(f"*{i+1}*. {o.get('texto')}")
 
-        if audio_url:
-            return {"type": "audio", "audio": {"link": audio_url}}
+            if options_text_parts:
+                final_body += "\n\n" + "\n".join(options_text_parts)
+                final_body += "\n\n*➡️ Responde con el número de la opción que necesites.*"
 
-        num_options = len(options)
-
-        # Si el tipo de mensaje es 'text', siempre formatear como texto.
-        # Esto ahora también se activará con la lógica de 'mostrar_menu'.
-        if message_type == 'text':
-            final_body = body_text
-            if options:
-                # Mantener los íconos que vienen en el texto del botón.
-                options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
-                options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
-                final_body += options_text
-            logger.info(f"build_interactive_response: returning text payload: {{'type': 'text', 'text': {{'body': final_body}}}}")
-            return {
-                "type": "text",
-                "text": {"body": final_body},
-                "contexto_actualizado": original_bot_response.get("contexto_actualizado")
-            }
-
-        is_interactive = message_type in ['interactive_buttons', 'interactive_list']
-
-        interactive_data = {
-            "header": {"type": "text", "text": header_text or "Menú"} if header_text else None,
-            "body": {"text": body_text},
-            "footer": {"text": footer_text} if footer_text else None,
-            "action": {}
-        }
-
-        # Automatically decide between button and list based on number of options
-        if 1 <= num_options <= 3:
-            interactive_data["type"] = "button"
-            interactive_data["action"]["buttons"] = [
-                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")}}
-                for i, o in enumerate(options)
-            ]
-        elif 4 <= num_options <= 10:
-            interactive_data["type"] = "list"
-            interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
-            interactive_data["action"]["sections"] = [{
-                "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
-                "rows": [
-                    {
-                        "id": o.get("id", o.get("action_id", str(i))),
-                        "title": o.get("texto", ""),
-                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()
-                    }
-                    for i, o in enumerate(options)
-                ]
-            }]
-        else:
-            # Fallback for 0 or >10 options, format as text
-            final_body = body_text
-            options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
-            options_text += "\n\nResponde con el número de la opción que necesites."
-            final_body += options_text
-            return {"type": "text", "text": {"body": final_body}}
-
-        # Clean None values from header/footer
-        if not interactive_data["header"]: del interactive_data["header"]
-        if not interactive_data["footer"]: del interactive_data["footer"]
-
-        logger.info(f"build_interactive_response: returning interactive payload: {interactive_data}")
         return {
-            "type": "interactive",
-            "interactive": interactive_data,
+            "type": "text",
+            "text": {"body": final_body.strip()},
             "contexto_actualizado": original_bot_response.get("contexto_actualizado")
         }
 
     elif channel == "web":
         web_response = {
-            "respuesta": body_text, # "respuesta" is the key often used for web body
+            "respuesta": body_text,
             "botones": [],
             "fuente": original_bot_response.get("fuente"),
             "contexto_actualizado": original_bot_response.get("contexto_actualizado"),
@@ -121,44 +56,23 @@ def build_interactive_response(options: list,
 
         if message_type == 'interactive_menu' and original_bot_response.get("data"):
             web_response["menu"] = original_bot_response["data"]
-            web_response["botones"] = [] # Ensure buttons are not processed separately
-        elif message_type in ['interactive_buttons', 'interactive_list', 'quick_replies'] and options:
+        elif options:
             formatted_botones = []
             for o in options:
                 btn = None
                 if isinstance(o, str):
-                    # Handle the case where an option is a simple string.
                     btn = {"texto": o, "action_id": o}
-                elif isinstance(o, dict):
-                    # It's a dictionary, process it.
-                    btn_text = o.get("texto")
-                    if not btn_text:
-                        logger.warning(f"Button object is missing 'texto' key: {o}")
-                        continue
-
-                    # Use action_id for web. If type is 'url', default action_id to 'open_url_action' unless specified otherwise.
-                    action_id = o.get("id", o.get("action", btn_text))
-                    if o.get("type") == "url":
-                        action_id = o.get("action_id", "open_url_action")
-
-                    btn = {"texto": btn_text, "action_id": action_id}
-
+                elif isinstance(o, dict) and o.get("texto"):
+                    action_id = o.get("id", o.get("action_id", o.get("texto")))
+                    btn = {"texto": o.get("texto"), "action_id": action_id}
                     if o.get("type") == "url" and o.get("url"):
                         btn["url"] = o["url"]
-                else:
-                    logger.warning(f"Unsupported type in options list: {type(o)}. Skipping.")
-                    continue
-
-                if message_type == 'quick_replies' and btn:
-                    btn["type"] = "quick_reply"
 
                 if btn:
+                    if message_type == 'quick_replies':
+                        btn["type"] = "quick_reply"
                     formatted_botones.append(btn)
             web_response["botones"] = formatted_botones
-
-        # Clean None values from web_response for cleaner JSON, if desired
-        # web_response_cleaned = {k: v for k, v in web_response.items() if v is not None}
-        # return web_response_cleaned
         return web_response
     else:
         logger.error(f"Canal desconocido: {channel}. No se pudo formatear la respuesta.")
