@@ -339,15 +339,19 @@ def whatsapp_webhook():
             datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
 
             # Extraer info del mensaje actual del usuario
-            extracted_data = extract_multiple_contact_details_llm(message_body)
+            from services.llm_utils import extract_multiple_contact_details_llm
+            potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
+            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
+            extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
+            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
 
             # Actualizar datos del reclamo con la info extraída
-            if extracted_data.get("nombre"):
-                datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre"]
-            if extracted_data.get("telefono"):
-                datos_reclamo["telefono_detectado"] = extracted_data["telefono"]
-            if extracted_data.get("email"):
-                datos_reclamo["email_detectado"] = extracted_data["email"]
+            if extracted_data.get("nombre_cliente"):
+                datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre_cliente"]
+            if extracted_data.get("telefono_cliente"):
+                datos_reclamo["telefono_detectado"] = extracted_data["telefono_cliente"]
+            if extracted_data.get("email_cliente"):
+                datos_reclamo["email_detectado"] = extracted_data["email_cliente"]
 
             # Guardar datos actualizados en el contexto
             contexto_actual["datos_parciales_llm_reclamo"] = datos_reclamo
