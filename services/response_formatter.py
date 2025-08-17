@@ -41,7 +41,6 @@ def build_interactive_response(options: list,
         original_type = message_type
         # Force text for now, as per user request, to ensure menus are always visible
         message_type = 'text'
-        num_options = len(options)
 
         num_options = len(options)
 
