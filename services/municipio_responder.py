@@ -197,6 +197,36 @@ def extract_description_and_check_confirmation(text: str, confirmation_keywords:
 
 URL_REGEX = re.compile(r"https?://\S+")
 
+
+def _remove_redundant_urls_from_message(message_body, options_list):
+    """
+    Removes URLs from the message body if they are already present in the buttons.
+    """
+    if not message_body or not options_list:
+        return message_body
+
+    for option in options_list:
+        if isinstance(option, dict) and 'url' in option and option['url'] in message_body:
+            message_body = message_body.replace(option['url'], '')
+
+    # Clean up common leftover phrases and extra spaces
+    # Using regex to be more robust and case-insensitive
+    message_body = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+    message_body = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+    message_body = re.sub(r'enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+
+    # Replace multiple spaces with a single space and clean up punctuation
+    message_body = re.sub(r'\s{2,}', ' ', message_body).strip()
+    message_body = message_body.replace(' .', '.').strip()
+    # Remove hanging colons or commas before a period.
+    message_body = re.sub(r'[,:]\s*\.', '.', message_body)
+    # If the message is just a colon now, clear it.
+    if message_body == ':':
+        message_body = ''
+
+    return message_body
+
+
 def agregar_botones_para_links(texto: str, botones: list) -> list:
     if not texto:
         return botones
@@ -2106,6 +2136,14 @@ def responder_municipio(
         if respuesta_manejada_por_llm:
             if not isinstance(respuesta_manejada_por_llm, dict):
                 respuesta_manejada_por_llm = {"message_body": str(respuesta_manejada_por_llm)}
+
+            # Clean the message body of redundant URLs that are in buttons
+            if 'message_body' in respuesta_manejada_por_llm:
+                respuesta_manejada_por_llm['message_body'] = _remove_redundant_urls_from_message(
+                    respuesta_manejada_por_llm.get('message_body'),
+                    respuesta_manejada_por_llm.get('options_list', [])
+                )
+
             respuesta_manejada_por_llm.setdefault("message_type", "text")
             respuesta_manejada_por_llm.setdefault("options_list", [])
             return _finalize_response(respuesta_manejada_por_llm)
