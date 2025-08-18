@@ -232,14 +232,22 @@ def create_app(config_class=Config):
     app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
 
-    # Import the login view function to create an alias
+    # Import view functions to create aliases
     from routes.auth import login as login_view_func
+    from routes.auth import me_perfil as me_perfil_view_func
 
     # Explicitly define the /login route as an alias for auth.login
     @app.route('/login', methods=['POST', 'OPTIONS'])
     def login_alias():
         """Alias for the /auth/login endpoint."""
         return login_view_func()
+
+    # Explicitly define the /perfil route as an alias for auth.perfil
+    @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
+    def perfil_alias():
+        """Alias for the /auth/perfil endpoint to fix frontend incorrect URL calls."""
+        # This function is decorated with @token_requerido, which handles user extraction
+        return me_perfil_view_func()
 
     app.register_blueprint(legacy_auth_bp)
     app.register_blueprint(chat_bp)
