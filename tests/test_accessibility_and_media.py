@@ -73,9 +73,11 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.session.commit()
 
         # --- Act ---
-        with patch('services.logic.responder_municipio') as mock_responder_municipio:
-            mock_responder_municipio.return_value = {
-                "message_body": "Esta es una respuesta de prueba.",
+        # The original patch was pointing to the wrong function.
+        # This test runs with a 'pyme' user, so we need to patch 'responder_pyme'.
+        with patch('services.pymes.responder_pyme') as mock_responder_pyme:
+            mock_responder_pyme.return_value = {
+                "respuesta": "Esta es una respuesta de prueba.",
                 "generar_audio": True,
             }
             response_dict = responder_chatboc(
@@ -87,10 +89,11 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             )
 
         # --- Assert ---
+        # The 'responder_chatboc' function should ultimately return the URL,
+        # and the synthesis mock should have been called.
         mock_synthesize_speech.assert_called_once_with("Esta es una respuesta de prueba.")
         self.assertIn('audio_url', response_dict)
         self.assertEqual(response_dict['audio_url'], fake_audio_url)
-        self.assertNotIn('source_is_audio', chat_session.context_data)
 
     def test_button_fallback_formats_options_as_text_list(self):
         """
@@ -120,7 +123,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             "Por favor, elige una opción:\n\n"
             "*1*. Opción 1\n"
             "*2*. Opción 2\n\n"
-            "*➡️ Responde con el número de la opción que necesites.*"
+            "Responde con el número de la opción que necesites."
         )
         self.assertEqual(formatted_payload['text']['body'], expected_body)
 

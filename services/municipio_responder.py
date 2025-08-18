@@ -876,20 +876,13 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     contexto_municipio_actual["datos_a_confirmar"] = datos_reclamo.copy()
 
     mensaje_confirmacion = (
-        f"Por favor, confirmá si los datos para tu reclamo son correctos:
-"
-        f"*Categoría:* {categoria}
-"
-        f"*Descripción:* {descripcion}
-"
-        f"*Ubicación:* {ubicacion}
-"
-        f"*Nombre:* {nombre_usuario}
-"
-        f"*Teléfono:* {telefono_usuario}
-"
-        f"*Email:* {email_usuario}
-"
+        f"Por favor, confirmá si los datos para tu reclamo son correctos:\n"
+        f"- **Categoría**: {categoria}\n"
+        f"- **Descripción**: {descripcion}\n"
+        f"- **Ubicación**: {ubicacion}\n"
+        f"- **Nombre**: {nombre_usuario}\n"
+        f"- **Teléfono**: {telefono_usuario}\n"
+        f"- **Email**: {email_usuario}"
     )
 
     botones = [
@@ -1053,8 +1046,11 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
             if not pedir_info_llm:
-                # _handle_ticket_creation returns the tuple (response, context), which is what this function should return.
-                return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
+                # If the LLM thinks it has all the data, call the handler to validate and create the ticket.
+                handler = CrearReclamoActionHandler(context)
+                response = handler.execute(datos_actuales)
+                # The handler's response is the final one, no more processing needed in this branch.
+                return response, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
@@ -1198,10 +1194,18 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             logger.info("[HANDLE_LLM] LLM solicitó responder directamente.")
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
             contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-            return {
-                "message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text",
-                "accion_backend": accion_backend_llm, "datos_estructura": datos_estructura_llm, "pedir_info": pedir_info_llm, "fuente": "llm_respuesta_directa"
-            }, contexto_municipio_actual
+            response_payload = {
+                "message_body": respuesta_usuario_llm,
+                "options_list": botones_llm,
+                "message_type": "interactive_buttons" if botones_llm else "text",
+                "accion_backend": accion_backend_llm,
+                "datos_estructura": datos_estructura_llm,
+                "pedir_info": pedir_info_llm,
+                "fuente": "llm_respuesta_directa"
+            }
+            if respuesta_llm_dict.get("generar_audio"):
+                response_payload["generar_audio"] = True
+            return response_payload, contexto_municipio_actual
 
         elif estado_conversacion_para_llm == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
             # User is at the confirmation step. Their response is either a "yes" or a correction.
@@ -2027,20 +2031,14 @@ def responder_municipio(
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
 
         mensaje_confirmacion = (
-            f"Perfecto, he actualizado los datos. Por favor, confirmá si ahora son correctos:
-"
-            f"*Categoría:* {datos_pendientes.get('categoria', 'No especificada')}
-"
-            f"*Descripción:* {datos_pendientes.get('descripcion', 'No especificada')}
-"
-            f"*Ubicación:* {datos_pendientes.get('ubicacion', 'No especificada')}
-"
-            f"*Nombre:* {datos_pendientes.get('nombre_usuario_detectado', 'No especificado')}
-"
-            f"*Teléfono:* {datos_pendientes.get('telefono_detectado', 'No especificado')}
-"
-            f"*Email:* {datos_pendientes.get('email_detectado', 'No especificado')}
-"
+            f"""Perfecto, he actualizado los datos. Por favor, confirmá si ahora son correctos:
+*Categoría:* {datos_pendientes.get('categoria', 'No especificada')}
+*Descripción:* {datos_pendientes.get('descripcion', 'No especificada')}
+*Ubicación:* {datos_pendientes.get('ubicacion', 'No especificada')}
+*Nombre:* {datos_pendientes.get('nombre_usuario_detectado', 'No especificado')}
+*Teléfono:* {datos_pendientes.get('telefono_detectado', 'No especificado')}
+*Email:* {datos_pendientes.get('email_detectado', 'No especificado')}
+"""
         )
 
         botones = [

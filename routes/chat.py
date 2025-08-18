@@ -486,6 +486,24 @@ def _procesar_chat(
 
         # The 'resultado' dictionary from responder_chatboc is now structured
         # exactly as the LLM specified, which is what the frontend expects.
+
+        # --- Audio Synthesis Step ---
+        # If the response indicates that audio should be generated, do it now.
+        if isinstance(resultado, dict) and resultado.get("generar_audio"):
+            from services.google_text_to_speech import TextToSpeechService
+            tts_service = TextToSpeechService()
+            # The text to synthesize can be in 'message_body' (municipio) or 'respuesta' (pyme)
+            text_to_synthesize = resultado.get("message_body") or resultado.get("respuesta")
+            if text_to_synthesize:
+                try:
+                    audio_url = tts_service.synthesize_speech(text_to_synthesize)
+                    if audio_url:
+                        resultado["audio_url"] = audio_url
+                        current_app.logger.info(f"Audio generado y añadido a la respuesta: {audio_url}")
+                except Exception as e:
+                    # Log the error, but don't crash the main response flow
+                    current_app.logger.error(f"Error durante la síntesis de voz: {e}", exc_info=True)
+
         # We just need to pass it through after adding any necessary metadata.
 
         if isinstance(resultado, tuple):

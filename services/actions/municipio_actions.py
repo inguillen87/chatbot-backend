@@ -14,6 +14,31 @@ logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
+class BuscarEstacionamientoActionHandler:
+    action_name = "buscar_estacionamiento"
+
+    def handle(self, context):
+        # si ya tenemos ubicación del usuario en context, usarla; si no, pedirla
+        ubic = context.get("ubicacion") or context.get("payload", {}).get("ubicacion")
+        if not ubic:
+            return {
+                "texto": (
+                    "Decime la **calle y altura** o compartí tu **ubicación**.\n"
+                    "Ej: *San Martín 1200, Junín* o enviá ubicación por WhatsApp."
+                ),
+                "pedir_info": {"tipo": "ubicacion_o_texto"},
+                "botones": [
+                    {"texto": "Enviar ubicación", "accion": "enviar_ubicacion"},
+                    {"texto": "San Martín 1200", "accion": "texto_libre", "valor": "San Martín 1200, Junín"}
+                ],
+            }
+
+        # Llamar a servicio
+        from services.estacionamiento_service import consultar_ocupacion
+        resultado = consultar_ocupacion(ubic)
+
+        return resultado
+
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")
@@ -31,7 +56,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        llm_name = action_data.get("usuario") or action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado")
+        llm_name = (action_data.get("usuario") or datos_parciales.get("usuario") or
+                    action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado"))
         profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
         profile_name_from_context = self.context.get("profile_name")
 
@@ -44,7 +70,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         elif isinstance(profile_name_from_context, str) and profile_name_from_context.strip():
             nombre_vecino_final = profile_name_from_context
 
-        telefono_from_llm = action_data.get("telefono") or action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado")
+        telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
+                             action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
         telefono_final = None
         if telefono_from_llm and validar_telefono(telefono_from_llm):
             telefono_final = formatear_telefono_e164(telefono_from_llm)
@@ -52,7 +79,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
              telefono_final = formatear_telefono_e164(str(viewer_user.telefono))
 
 
-        email_from_llm = action_data.get("email") or action_data.get("email_detectado") or datos_parciales.get("email_detectado")
+        email_from_llm = (action_data.get("email") or datos_parciales.get("email") or
+                          action_data.get("email_detectado") or datos_parciales.get("email_detectado"))
         email_final = None
         if email_from_llm and validar_email(email_from_llm):
             email_final = email_from_llm.lower()
@@ -74,8 +102,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes.append("descripcion")
         if not ubicacion_llm and not coordenadas_llm:
             campos_faltantes.append("ubicacion")
-        if not viewer_user and not all([nombre_vecino_final, telefono_final, email_final]):
-             campos_faltantes.extend(["nombre", "telefono", "email"])
+        logger.info(f"DEBUG: viewer_user: {viewer_user}")
+        logger.info(f"DEBUG: nombre_vecino_final: {nombre_vecino_final}")
+        logger.info(f"DEBUG: telefono_final: {telefono_final}")
+        logger.info(f"DEBUG: email_final: {email_final}")
+        logger.info(f"DEBUG: campos_faltantes before: {campos_faltantes}")
+        if not viewer_user and (nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final):
+             if nombre_vecino_final == "Vecino/a": campos_faltantes.append("nombre")
+             if not telefono_final: campos_faltantes.append("telefono")
+             if not email_final: campos_faltantes.append("email")
+        logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
         # Este handler ahora solo valida y crea.
@@ -199,15 +235,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Guardamos la info del usuario si existe, para no perderla.
             user_info = contexto_reclamo.get('user', {})
             # Limpiamos TODO el contexto del municipio para evitar "context bleed".
-            self.context[CONTEXTO_MUNICIPIO].clear()
-            # Restauramos la info del usuario.
-            if user_info:
-                self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
+            if CONTEXTO_MUNICIPIO in self.context:
+                self.context[CONTEXTO_MUNICIPIO].clear()
+                # Restauramos la info del usuario.
+                if user_info:
+                    self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
 
-            # Forzamos el estado de vuelta a conversación general para que el bot no quede "trabado" en el flujo de reclamo.
-            from services.municipio_responder import ConversationState
-            self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-            logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}")
+                # Forzamos el estado de vuelta a conversación general para que el bot no quede "trabado" en el flujo de reclamo.
+                from services.municipio_responder import ConversationState
+                self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}")
 
 
             # Notificaciones
@@ -565,6 +602,18 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
             "message_to_user": user_message,
             "data": {"campo_corregido": campo_a_corregir, "valor_actualizado": nuevo_valor},
             "pedir_info": "confirmacion_tras_correccion"
+        }
+
+class MenuPrincipalActionHandler:
+    # ...
+    def handle(self, context):
+        return {
+            "texto": "Estas son las cosas que puedo hacer por vos:",
+            "botones": [
+                {"texto": "Hacer un Reclamo", "accion": "crear_reclamo"},
+                {"texto": "Consultas y Turnos", "accion": "consultar_tramite"},
+                {"texto": "Buscar estacionamiento", "accion": "buscar_estacionamiento"},
+            ],
         }
 
 # Add other handlers as needed

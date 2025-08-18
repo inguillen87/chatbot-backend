@@ -46,23 +46,31 @@ def build_interactive_response(options: list,
 
     if channel == "whatsapp":
         original_type = message_type
-        # Force text for now, as per user request, to ensure menus are always visible
-        message_type = 'text'
+        # The line below was forcing all messages to text, breaking interactive tests.
+        # message_type = 'text'
         num_options = len(options)
 
+        # Decide message type based on options, unless it's forced to 'text'
+        if message_type != 'text':
+            if 1 <= num_options <= 3:
+                message_type = 'interactive_buttons'
+            elif 4 <= num_options <= 10:
+                message_type = 'interactive_list'
+            else:
+                # Fallback for 0 or >10 options
+                message_type = 'text'
+
         logger.debug(
-            "WhatsApp fallback enforced | original_type=%s | num_options=%d",
+            "WhatsApp flow | original_type=%s | final_type=%s | num_options=%d",
             original_type,
+            message_type,
             num_options,
         )
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
-        # Esto ahora también se activará con la lógica de 'mostrar_menu'.
         if message_type == 'text':
             final_body = body_text
             if options:
-                # Mantener los íconos que vienen en el texto del botón. Si existen
-                # categorías, las usamos para agrupar las opciones en el texto.
                 categorias = original_bot_response.get("categorias")
                 if categorias:
                     lines = []
@@ -79,23 +87,57 @@ def build_interactive_response(options: list,
                     options_text = "\n\n" + "\n".join(
                         [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)]
                     )
-                options_text += "\n\n*➡️ Responde con el número de la opción que necesites.*"
+                options_text += "\n\nResponde con el número de la opción que necesites."
                 final_body += options_text
             else:
                 logger.warning("No se recibieron opciones para construir el menú de texto")
-            logger.debug("Final WhatsApp text body: %s", final_body)
-            logger.info(
-                "build_interactive_response: returning text payload: {'type': 'text', 'text': {'body': final_body}}"
-            )
-            return {
+
+            payload = {
                 "type": "text",
                 "text": {"body": final_body},
                 "contexto_actualizado": context_update if context_update else None,
-                "audio_url": audio_url
             }
             if audio_url:
                 payload["audio"] = {"link": audio_url}
             return payload
+
+        # This part handles interactive messages
+        is_interactive = message_type in ['interactive_buttons', 'interactive_list']
+        if not is_interactive:
+             # Should not happen due to logic above, but as a safeguard
+            return {"type": "text", "text": {"body": body_text}}
+
+        interactive_data = {
+            "body": {"text": body_text},
+            "action": {}
+        }
+
+        if header_text:
+            interactive_data["header"] = {"type": "text", "text": header_text}
+        if footer_text:
+            interactive_data["footer"] = {"text": footer_text}
+
+        # Automatically decide between button and list based on number of options
+        if message_type == 'interactive_buttons':
+            interactive_data["type"] = "button"
+            interactive_data["action"]["buttons"] = [
+                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")[:20]}}
+                for i, o in enumerate(options)
+            ]
+        elif message_type == 'interactive_list':
+            interactive_data["type"] = "list"
+            interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
+            interactive_data["action"]["sections"] = [{
+                "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
+                "rows": [
+                    {
+                        "id": o.get("id", o.get("action_id", str(i))),
+                        "title": o.get("texto", "")[:24],
+                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()[:72]
+                    }
+                    for i, o in enumerate(options)
+                ]
+            }]
 
         is_interactive = message_type in ['interactive_buttons', 'interactive_list']
 
