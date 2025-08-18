@@ -900,7 +900,11 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
-    if estado_conversacion_para_llm in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
+    if estado_conversacion_para_llm in [
+        ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+        ConversationState.CONVERSACION_GENERAL_LLM.name,
+        ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name # Add this state to the LLM-handled states
+    ]:
         invocar_llm = True
     elif not estado_conversacion_para_llm or contexto_municipio_actual.get("saludo_detectado_en_largo_mensaje"):
         if len(pregunta_str.strip().split()) > 1 or (context.get("es_foto") and not pregunta_str.strip()):
@@ -1147,49 +1151,59 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             logger.info("[HANDLE_LLM] LLM solicitó responder directamente.")
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
             contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-
-            # Devolvemos un diccionario que se asemeja más a la respuesta original del LLM
-            # para que el frontend pueda procesarlo directamente.
             return {
-                "message_body": respuesta_usuario_llm,
-                "options_list": botones_llm,
-                "message_type": "interactive_buttons" if botones_llm else "text",
-                "accion_backend": accion_backend_llm,
-                "datos_estructura": datos_estructura_llm,
-                "pedir_info": pedir_info_llm,
-                "fuente": "llm_respuesta_directa"
+                "message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text",
+                "accion_backend": accion_backend_llm, "datos_estructura": datos_estructura_llm, "pedir_info": pedir_info_llm, "fuente": "llm_respuesta_directa"
             }, contexto_municipio_actual
 
-        else: # Respuesta general o continuación de un flujo
-            # Si estábamos esperando info para un reclamo y el LLM no generó una acción concreta
-            # pero sí extrajo datos, los fusionamos con los datos parciales.
+        elif estado_conversacion_para_llm == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
+            # User is at the confirmation step. Their response is either a "yes" or a correction.
+            _, es_confirmacion = extract_description_and_check_confirmation(pregunta_str, PALABRAS_CLAVE_CONFIRMACION)
+
+            if es_confirmacion:
+                # User confirmed. Proceed to create the ticket.
+                logger_actual.info("[HANDLE_LLM_CONFIRM] Confirmación detectada. Procediendo a crear ticket.")
+                return _handle_ticket_creation(contexto_municipio_actual, context, {})
+            else:
+                # User sent a correction. Extract new data, merge, and re-confirm.
+                logger_actual.info("[HANDLE_LLM_CONFIRM] No es confirmación, asumiendo corrección.")
+                datos_nuevos = extract_multiple_contact_details_llm(pregunta_str)
+                datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+                datos_actuales.update(datos_nuevos)
+                contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
+
+                # Re-prompt for confirmation with updated data
+                # This part needs to be improved to show the data again. For now, a generic message.
+                # A better implementation would call a function to format the confirmation message.
+                return {"message_body": "OK, he actualizado tus datos. ¿Son correctos ahora?", "options_list": botones_llm, "message_type": "text", "fuente": "llm_re_pide_confirmacion"}, contexto_municipio_actual
+
+        else: # Generic flow continuation
             if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name and datos_estructura_llm:
                 contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
-
-                # Fusionar datos nuevos con los existentes
                 datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
                 nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
                 datos_actuales.update(nuevos_datos)
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
-
-                # El LLM puede pedir más info o haber terminado de recopilar
-                if pedir_info_llm:
-                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                    contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-                else:
-                    # FIX: If we are in a claim flow and the LLM doesn't request more info,
-                    # assume it's time to create the ticket instead of resetting the conversation.
-                    return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
-
-            else: # Conversación general que no es parte de un flujo de reclamo activo
+            else:
                 contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
-                if pedir_info_llm:
-                    # Esto podría iniciar un nuevo flujo si el LLM lo decide
+
+            # State transition logic based on 'pedir_info'
+            if pedir_info_llm:
+                next_state_obj = PEDIR_INFO_TO_STATE.get(pedir_info_llm)
+                if next_state_obj:
+                    contexto_municipio_actual["estado_conversacion"] = next_state_obj.name
+                else:
+                    # Fallback if a new 'pedir_info' value isn't in our map
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                    contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                contexto_municipio_actual["esperando_info_llm"] = pedir_info_llm
+            else:
+                # If no more info is needed, decide what to do
+                if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+                    # If we were in a claim flow, it's time to create the ticket
+                    return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
                 else:
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None) # Limpiar por si acaso
+                    contexto_municipio_actual.pop("esperando_info_llm", None)
 
             return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general_v2"}, contexto_municipio_actual
 

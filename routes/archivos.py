@@ -10,7 +10,7 @@ from services.gcs_service import upload_to_gcs, BUCKET_NAME, MAX_FILE_SIZE
 from services.archivo_service import guardar_archivo_adjunto_ticket
 from services.ticket_service import servicio_tickets
 from utils.permissions import require_role
-# from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
+from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 from google.cloud import storage
 from services.google_vision_service import analyze_image_from_content
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google

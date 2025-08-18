@@ -58,9 +58,43 @@ class AnalisisArchivoService:
         analisis.fecha_analisis = datetime.utcnow()
         db.session.commit()
 
-# The existing Celery task can be kept for other asynchronous processing,
-# but our IntelligentCatalogProcessor will use the service class directly.
-# from celery_utils import celery_app
-# @celery_app.task(...)
-# def tarea_analizar_contenido_archivo(...)
-# ...
+from celery_utils import celery_app
+from models import ArchivoAdjunto
+from services.interpretacion_service import interpretacion_service
+
+@celery_app.task(name="analisis_archivo.tarea_analizar_contenido_archivo")
+def tarea_analizar_contenido_archivo(archivo_adjunto_id: int):
+    """
+    Celery task to analyze the content of a file asynchronously.
+    """
+    logger.info(f"Iniciando tarea de análisis para ArchivoAdjunto ID: {archivo_adjunto_id}")
+    service = AnalisisArchivoService()
+    analisis = None
+    try:
+        # Create an initial record to track that processing has started
+        analisis = service.crear_analisis_inicial(archivo_adjunto_id)
+
+        # Fetch the file object
+        archivo_adjunto = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
+        if not archivo_adjunto:
+            raise ValueError(f"No se encontró el ArchivoAdjunto con ID {archivo_adjunto_id}")
+
+        # Delegate to the interpretation service
+        resultado_interpretacion = interpretacion_service.interpretar_archivo(archivo_adjunto)
+
+        # Update the analysis record with the result
+        service.actualizar_analisis_completado(
+            analisis_id=analisis.id,
+            datos_estructurados=resultado_interpretacion.get("datos_estructurados"),
+            texto_extraido=resultado_interpretacion.get("texto_extraido")
+        )
+        logger.info(f"Análisis completado exitosamente para ArchivoAdjunto ID: {archivo_adjunto_id}")
+
+    except Exception as e:
+        error_message = f"Error en la tarea de análisis para el archivo {archivo_adjunto_id}: {e}"
+        logger.error(error_message, exc_info=True)
+        if analisis:
+            # If the analysis record was created, update it with the error
+            service.actualizar_analisis_con_error(analisis.id, error_message)
+        # If analisis object was not even created, there's nothing to update.
+        # The error is logged, which is the best we can do.

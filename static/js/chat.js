@@ -131,8 +131,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     };
                     // Add a message indicating location is being sent
                     appendMessage('user', `[Sharing location: ${location.lat}, ${location.lon}]`);
-                    // Emit the location to the server
-                    socket.emit('location', location);
+                    // Send location data as part of a standard message payload
+                    socket.emit('message', {
+                        pregunta: '[Ubicación compartida por el usuario]',
+                        location: location
+                    });
                 },
                 (error) => {
                     console.error('Error getting location:', error);

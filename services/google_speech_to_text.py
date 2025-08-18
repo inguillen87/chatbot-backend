@@ -52,7 +52,7 @@ class SpeechToTextService:
             config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                 sample_rate_hertz=16000,
-                language_code="es-US",
+                language_code="es-AR",
                 model="default",
             )
 
@@ -121,7 +121,7 @@ class SpeechToTextService:
             config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                 sample_rate_hertz=16000,
-                language_code="es-US",  # Use a broad Spanish language code
+                language_code="es-AR",  # Use a broad Spanish language code
                 model="default", # Or specify other models like "telephony" or "medical" if applicable
             )
 
