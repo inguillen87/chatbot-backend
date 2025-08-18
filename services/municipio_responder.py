@@ -1288,7 +1288,7 @@ def _get_reclamos_menu():
     }
 
 
-SIMPLE_GREETINGS = {"hola", "buenos dias", "buenas tardes", "buenas noches", "hey", "hi", "hello", "menu", "menú"}
+SIMPLE_GREETINGS = {"hola", "buenos dias", "buenas tardes", "buenas noches", "menu", "hola buenos dias", "hola buenas tardes", "hola buenas noches", "buenas"}
 RETURN_TO_MAIN_MENU = {"volver al inicio", "volver al menu", "inicio", "menu"}
 
 def responder_municipio(
