@@ -281,29 +281,39 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
     return "Otros"
 
 
-# --- NUEVA FUNCIÓN-HERRAMIENTA: AGENDA DE EVENTOS ---
+from services.google_search import google_search
+
+# --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS CON GOOGLE SEARCH ---
 
 def consultar_eventos_culturales(fecha: str) -> str:
     """
-    Consulta una agenda de eventos FAKE para una fecha dada.
-    En un futuro, esto consultaría una base de datos real.
+    Consulta eventos culturales, recitales o actividades municipales para una fecha específica
+    utilizando Google Search.
     """
-    # Normalizamos la fecha que nos llega del LLM para poder buscarla.
-    fecha_normalizada = normalizar_texto(fecha)
-    
-    # Cargamos la agenda desde la configuración del municipio
-    agenda = cargar_configuracion_municipio(MUNICIPIO_ID, "agenda.json")
-    if not isinstance(agenda, dict):
-        agenda = {}
-    
-    eventos = agenda.get(fecha_normalizada)
-    
-    if eventos:
-        lista_eventos = "\n".join(f"- {evento}" for evento in eventos)
-        return f"Para la fecha '{fecha}', encontré los siguientes eventos:\n{lista_eventos}"
-    else:
-        # El LLM es bueno interpretando fechas, si nos pasa '15 de junio' y no lo tenemos, damos esta respuesta.
+    municipio_nombre = CONFIG_MUNICIPIO.get("nombre_display", "nuestro municipio")
+    query = f"eventos culturales y turísticos en {municipio_nombre} para {fecha}"
+    logger.info(f"[HERRAMIENTA EVENTOS] Realizando búsqueda en Google: '{query}'")
+
+    search_results = google_search(query)
+
+    if not search_results:
         return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
+
+    lista_eventos = []
+    for result in search_results:
+        title = result.get('title')
+        link = result.get('link')
+        snippet = result.get('snippet')
+
+        # Formatear la entrada para que sea más legible
+        evento_info = f"- {title}: {snippet} [Ver más]({link})"
+        lista_eventos.append(evento_info)
+    
+    if lista_eventos:
+        eventos_str = "\n".join(lista_eventos)
+        return f"Para la fecha '{fecha}', encontré los siguientes posibles eventos y noticias:\n{eventos_str}"
+    else:
+        return f"No encontré resultados para eventos en '{fecha}'. Te sugiero visitar el sitio web oficial del municipio para obtener la información más actualizada."
 
 def buscar_puntos_de_interes(
     rubro: str = None,

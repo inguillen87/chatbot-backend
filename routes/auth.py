@@ -5,7 +5,7 @@ from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext
+from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext, generate_token
 from extensions import db
 from functools import wraps
 import uuid
@@ -312,7 +312,7 @@ def register():
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
-        # token=str(uuid.uuid4()), # El token ahora es JWT y se genera bajo demanda
+        token=generate_token(), # FIX: Generate and assign the legacy token on registration
         nombre_empresa=data['nombre_empresa'].strip(),
         rubro_id=rubro.id,
         plan="gratis",
@@ -398,7 +398,7 @@ def register_from_widget(user):
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
-        # token=str(uuid.uuid4()), # El token ahora es JWT y se genera bajo demanda
+        token=generate_token(), # FIX: Generate and assign the legacy token on registration
         rubro_id=user.rubro_id,
         empresa_id=user.id,
         plan="gratis",

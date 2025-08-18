@@ -27,7 +27,7 @@ def google_search(query: str, days=None):
         "key": api_key,
         "cx": cse_id,
         "q": query,
-        "num": 1
+        "num": 5
     }
     if days:
         params["dateRestrict"] = f"d[{days}]"

@@ -488,42 +488,29 @@ class GreetingHandler(BaseMunicipioHandler):
         chat_db_context_data = self.context.get("chat_db_context_data")
 
         if not chat_db_context_data:
-            logger.warning("[GreetingHandler] chat_db_context_data not found in context. Cannot perform a full reset.")
+            logger.warning("[GreetingHandler] chat_db_context_data no encontrado. No se puede hacer un reseteo completo.")
             contexto_municipio_actual = {}
         else:
-            contexto_municipio_actual = chat_db_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-            estado_previo = contexto_municipio_actual.get("estado_conversacion")
+            logger.info("[GreetingHandler] Saludo detectado. Realizando reseteo completo del contexto del municipio.")
+            # Guardar información del usuario si existe, para no perderla entre reseteos.
+            contexto_municipio_viejo = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {})
+            user_info = contexto_municipio_viejo.get('user', {})
 
-            # Check if the user is in the middle of an important, multi-step flow.
-            # If so, we show the menu but DO NOT reset the underlying context data.
-            is_in_flow = estado_previo and estado_previo not in [
-                None,
-                ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
-                ConversationState.CONVERSACION_GENERAL_LLM.name,
-            ]
+            # Crear un diccionario de contexto completamente nuevo y limpio.
+            contexto_municipio_nuevo = {}
+            if user_info:
+                contexto_municipio_nuevo['user'] = user_info
 
-            if is_in_flow:
-                logger.info(f"[GreetingHandler] Conversation in progress (state: {estado_previo}). Showing menu without resetting context.")
-                # Don't reset, just prepare the menu response. The state will be updated below.
-            else:
-                logger.info("[GreetingHandler] No active flow detected or at main menu. Performing full context reset.")
-                user_info = contexto_municipio_actual.get('user', {})
+            # Reemplazar el diccionario de contexto viejo con el nuevo.
+            # Esto elimina todo estado de conversación, historiales, datos parciales, etc.
+            chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
+            contexto_municipio_actual = contexto_municipio_nuevo
 
-                # Create a completely new, clean context dictionary
-                contexto_municipio_nuevo = {}
-                if user_info:
-                    contexto_municipio_nuevo['user'] = user_info
-
-                # Replace the old context dictionary with the new one
-                chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
-                chat_db_context_data.pop("historial_conversacion_general_llm", None)
-                contexto_municipio_actual = contexto_municipio_nuevo
-
-        # No matter what, set the state to wait for a menu selection for the next turn.
+        # Establecer el estado para esperar una selección del menú principal en el próximo turno.
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
-        logger.info(f"[GreetingHandler] Set estado_conversacion to {contexto_municipio_actual['estado_conversacion']}")
+        logger.info(f"[GreetingHandler] Nuevo estado de conversación: {contexto_municipio_actual['estado_conversacion']}")
 
-        # Use the centralized function to get the menu payload
+        # Usar la función centralizada para obtener el payload del menú.
         return _get_main_menu_payload(self.context)
 
 class NewsHandler(BaseMunicipioHandler):
@@ -831,33 +818,33 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
     return handler.execute(datos_reclamo)
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
-    Handles the ticket creation process and enriches the confirmation message.
+    Handles the ticket creation process, including robust error handling.
     """
     datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
     datos_reclamo.update(datos_estructura_llm)
 
     respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
 
-    keys_to_clear_after_claim = [
-        "historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo",
-        "estado_conversacion", "categoria_reclamo", "descripcion_reclamo", "direccion_reclamo",
-        "coordenadas_reclamo", "foto_url", "mensaje_previo_llm_para_escalamiento"
-    ]
-    for key in keys_to_clear_after_claim:
-        contexto_municipio_actual.pop(key, None)
-
-    # The `accion_crear_reclamo_municipio` (and its underlying handler) is now responsible
-    # for the entire logic, including loading specialized contacts and formatting the final message.
-    # We simply pass its response through.
-    if respuesta_accion:
-        # The handler should have already cleared the context if the ticket was created successfully.
+    # The action handler is now responsible for clearing context on success.
+    # We just need to check the outcome and return the appropriate response.
+    if respuesta_accion and respuesta_accion.get("success"):
+        # On success, the handler provides the full, user-ready response.
         return respuesta_accion, contexto_municipio_actual
     else:
-        # Fallback in case the action handler returns None unexpectedly.
+        # On failure, the handler provides a user-friendly error message.
+        # We also ensure the state is reset so the user isn't stuck.
+        logger.error(f"La creación del reclamo falló. Respuesta del handler: {respuesta_accion}")
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+        # Default error message if the handler doesn't provide one
+        error_message = "Hubo un problema al crear tu reclamo. Por favor, intenta de nuevo más tarde."
+        if respuesta_accion and isinstance(respuesta_accion.get("message_to_user"), str):
+            error_message = respuesta_accion["message_to_user"]
+
         return {
-            "message_body": "Hubo un problema al procesar la creación de tu reclamo. Por favor, intenta de nuevo.",
+            "message_body": error_message,
             "message_type": "text",
-            "fuente": "error_handler_crear_reclamo"
+            "fuente": "error_handler_crear_reclamo_v2"
         }, contexto_municipio_actual
 
 
@@ -985,8 +972,12 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             return response, contexto_municipio_actual
 
         if accion_backend_llm in ["crear_reclamo", "iniciar_reclamo"] and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
-            # Si es el inicio de un nuevo reclamo, limpiar el contexto anterior
+            # Si es el inicio de un nuevo reclamo, limpiar el contexto anterior para evitar "context bleed".
             if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+                logger_actual.info("[CONTEXT_RESET] Nuevo reclamo detectado. Limpiando historiales de conversación.")
+                # Eliminar el historial de la conversación general anterior.
+                contexto_municipio_actual.pop("historial_conversacion_general_llm", None)
+                # Reiniciar el contexto específico del reclamo.
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
                 contexto_municipio_actual["historial_llm_reclamo"] = []
 

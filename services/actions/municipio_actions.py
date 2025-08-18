@@ -230,14 +230,19 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 contacto_especializado.setdefault("horario", owner_user.horario)
 
             # Limpiar contexto de reclamo después de la creación exitosa
+            # Guardamos la info del usuario si existe, para no perderla.
             user_info = contexto_reclamo.get('user', {})
-            contexto_reclamo.clear()
+            # Limpiamos TODO el contexto del municipio para evitar "context bleed".
+            self.context[CONTEXTO_MUNICIPIO].clear()
+            # Restauramos la info del usuario.
             if user_info:
-                contexto_reclamo['user'] = user_info
+                self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
 
-            # Set the state back to general conversation to avoid getting stuck
+            # Forzamos el estado de vuelta a conversación general para que el bot no quede "trabado" en el flujo de reclamo.
             from services.municipio_responder import ConversationState
-            contexto_reclamo['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}")
+
 
             # Notificaciones
             if ticket_data_cleaned.get("telefono_vecino"):
