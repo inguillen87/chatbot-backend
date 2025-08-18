@@ -1334,22 +1334,22 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 def _get_reclamos_menu():
-    """Devuelve la estructura del menú de reclamos estandarizado y sin numeración visible."""
+    """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
     opciones = [
-        {"texto": "Volver al inicio", "id_accion": "0"},
-        {"texto": "Luminaria", "id_accion": "1"},
-        {"texto": "Arbolado", "id_accion": "2"},
-        {"texto": "Limpieza y riego", "id_accion": "3"},
-        {"texto": "Arreglo de calle", "id_accion": "4"},
-        {"texto": "Pérdida de agua", "id_accion": "5"},
-        {"texto": "Otros", "id_accion": "6"},
+        {"texto": "*Volver al inicio*", "id_accion": "0", "category_name": "Volver al inicio"},
+        {"texto": "💡 *Luminaria*", "id_accion": "1", "category_name": "Luminaria"},
+        {"texto": "🌳 *Arbolado*", "id_accion": "2", "category_name": "Arbolado"},
+        {"texto": "🗑️ *Limpieza y riego*", "id_accion": "3", "category_name": "Limpieza y riego"},
+        {"texto": "🚧 *Arreglo de calle*", "id_accion": "4", "category_name": "Arreglo de calle"},
+        {"texto": "💧 *Pérdida de agua*", "id_accion": "5", "category_name": "Pérdida de agua"},
+        {"texto": "⚫ *Otros*", "id_accion": "6", "category_name": "Otros"},
     ]
-    # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número.
+    # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número o seleccionar una opción.
     return {
-        "message_body": "Elegí una opción para tu reclamo o respondé con el número correspondiente:",
+        "message_body": "Elegí una opción para tu reclamo:",
         "message_type": "interactive_buttons",
         "options_list": opciones,
-        "fuente": "submenu_reclamos_estandar_v3",
+        "fuente": "submenu_reclamos_estandar_v4",
         "generar_audio": True
     }
 
@@ -1823,15 +1823,15 @@ def responder_municipio(
         if pregunta_str_reclamo.isdigit():
             for option in reclamo_options:
                 if option.get("id_accion") == pregunta_str_reclamo:
-                    # Extraer el nombre de la categoría del texto del botón, ej "💡 Luminaria" -> "Luminaria"
-                    selected_category_name = re.sub(r'^\d+\.\s*💡?\s*', '', option.get("texto", "")).strip()
+                    selected_category_name = option.get("category_name")
                     break
 
         # Si no es un número, o el número no corresponde a una opción, intentar matchear por texto.
         if not selected_category_name:
             # Usar la función existente que busca por keywords.
-            # Le pasamos una lista de dicts con la clave "texto" que espera.
-            plain_text_options = [{"texto": re.sub(r'^\d+\.\s*💡?\s*', '', opt.get("texto", "")).strip()} for opt in reclamo_options]
+            # Le pasamos una lista de dicts con la clave "texto" que espera la función.
+            # Usamos el 'category_name' limpio que agregamos.
+            plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
             selected_category_name = find_reclamo_category_by_input(pregunta_str_reclamo, plain_text_options)
 
         if selected_category_name:
