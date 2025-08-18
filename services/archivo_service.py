@@ -4,49 +4,40 @@ from extensions import db
 from werkzeug.datastructures import FileStorage
 # from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, User # Movido para evitar importación circular
 from datetime import datetime, timedelta # Para posible filtro de tiempo
-from services.gcs_service import upload_to_gcs
+from services.attachment_service import create_attachment_with_thumbnail
 
 logger = logging.getLogger(__name__)
 
 
 def guardar_archivo_adjunto_ticket(file: FileStorage, user_id: int, ticket_id: int, tipo_ticket: str) -> Optional['ArchivoAdjunto']:
     """
-    Guarda un archivo en GCS y crea el registro ArchivoAdjunto asociado a un ticket.
+    Guarda un archivo, genera su thumbnail, y crea los registros en la BD asociados a un ticket.
     La sesión de la base de datos no se commitea aquí, se debe hacer en la función que llama.
     """
     from models import ArchivoAdjunto # Importación local para evitar ciclos
 
     try:
-        # 1. Subir archivo a GCS
-        upload_result = upload_to_gcs(file)
-        if not upload_result:
-            logger.error(f"Fallo al subir archivo a GCS para el ticket {tipo_ticket} {ticket_id}.")
+        # 1. Usar el nuevo servicio que maneja todo (subida, thumbnail, db records)
+        nuevo_adjunto = create_attachment_with_thumbnail(file, user_id=user_id)
+
+        if not nuevo_adjunto:
+            logger.error(f"Fallo al procesar archivo con attachment_service para el ticket {tipo_ticket} {ticket_id}.")
             return None
 
-        # 2. Crear el registro en la base de datos
-        nuevo_adjunto = ArchivoAdjunto(
-            user_id=user_id,
-            filename=upload_result['unique_name'],
-            nombre_original=upload_result['original_name'],
-            mime=upload_result['mimetype'],
-            tamano=upload_result['size'],
-            tipo='chat', # Asumimos que es para el chat del ticket
-            url=upload_result['public_url'],
-        )
-
+        # 2. Asociar el adjunto al ticket correspondiente
         if tipo_ticket == 'municipio':
             nuevo_adjunto.municipio_ticket_id = ticket_id
         elif tipo_ticket == 'pyme':
             nuevo_adjunto.pyme_ticket_id = ticket_id
         else:
             logger.error(f"Tipo de ticket '{tipo_ticket}' no válido al guardar adjunto.")
-            # Idealmente, borrar el archivo huérfano de GCS aquí.
+            # La lógica de borrado de huérfanos estaría en el attachment_service si esto falla.
             return None
 
-        db.session.add(nuevo_adjunto)
-        db.session.flush() # Para obtener el ID del adjunto antes de hacer commit.
+        # El objeto ya está en la sesión por create_attachment_with_thumbnail,
+        # solo lo modificamos. La función que llama hará el commit.
 
-        logger.info(f"ArchivoAdjunto ID {nuevo_adjunto.id} creado para ticket {tipo_ticket} {ticket_id}.")
+        logger.info(f"ArchivoAdjunto ID {nuevo_adjunto.id} preparado para ticket {tipo_ticket} {ticket_id}.")
         return nuevo_adjunto
 
     except Exception as e:

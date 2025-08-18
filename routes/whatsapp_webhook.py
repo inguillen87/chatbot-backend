@@ -13,7 +13,8 @@ from services.logic import responder_chatboc  # Import the correct chatbot logic
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from sqlalchemy.orm.attributes import flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
-from services.gcs_service import upload_to_gcs # Import the GCS service
+from services.gcs_service import upload_to_gcs
+from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
@@ -197,66 +198,48 @@ def whatsapp_webhook():
         else:
             session_context_db_entry.context_data.pop('source_is_audio', None)
 
-        file_extension = ".bin"
-        if media_content_type.startswith("image/"): file_extension = ".jpg"
-        elif media_content_type.startswith("audio/"): file_extension = ".ogg"
+        # This block handles non-audio media (images, PDFs)
+        if not media_content_type.startswith("audio/"):
+            try:
+                # Download the file from Twilio's URL
+                auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                r = requests.get(media_url, auth=auth)
+                r.raise_for_status()
 
-        file_name = f"whatsapp_file_{uuid.uuid4().hex[:8]}{file_extension}"
-
-        try:
-            # Download the file from Twilio's URL
-            auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            r = requests.get(media_url, auth=auth)
-            r.raise_for_status()
-
-            # Create an in-memory file-like object
-            file_stream = io.BytesIO(r.content)
-
-            # Wrap it in a FileStorage object to be compatible with our service
-            file_storage = FileStorage(
-                stream=file_stream,
-                filename=file_name,
-                content_type=media_content_type
-            )
-
-            # Upload to GCS
-            upload_result = upload_to_gcs(file_storage)
-
-            if upload_result:
-                # Create ArchivoAdjunto record
-                nuevo_adjunto = ArchivoAdjunto(
-                    user_id=end_user.id if end_user else None,
-                    session_id=chat_session_id_internal,
-                    filename=upload_result['unique_name'],
-                    nombre_original=upload_result['original_name'],
-                    mime=upload_result['mimetype'],
-                    tamano=upload_result['size'],
-                    tipo='whatsapp_adjunto',
-                    url=upload_result['public_url']
+                # Create a FileStorage object to be compatible with our services
+                file_stream = io.BytesIO(r.content)
+                file_name = f"whatsapp_media_{uuid.uuid4().hex[:12]}"
+                file_storage = FileStorage(
+                    stream=file_stream,
+                    filename=file_name,
+                    content_type=media_content_type
                 )
-                db.session.add(nuevo_adjunto)
-                db.session.commit()
 
-                uploaded_file_info = {
-                    "id": nuevo_adjunto.id,
-                    "url": nuevo_adjunto.url,
-                    "mime_type": nuevo_adjunto.mime,
-                    "name": nuevo_adjunto.nombre_original,
-                    "source": "whatsapp"
-                }
-                if media_content_type.startswith("audio/") and message_body:
-                    uploaded_file_info["transcribed_text"] = message_body
-                post_vars["uploaded_file_info"] = uploaded_file_info
-                current_app.logger.info(f"WhatsApp media saved as ArchivoAdjunto ID: {nuevo_adjunto.id}")
+                # Use the new attachment service
+                adjunto = create_attachment_with_thumbnail(
+                    file_storage=file_storage,
+                    user_id=end_user.id if end_user else None,
+                    session_id=chat_session_id_internal
+                )
 
-            else:
-                current_app.logger.error(f"Failed to upload WhatsApp media to GCS from URL: {media_url}")
+                if adjunto:
+                    # Prepare the info for the chatbot logic
+                    uploaded_file_info = {
+                        "id": adjunto.id,
+                        "url": adjunto.url,
+                        "mime_type": adjunto.mime,
+                        "name": adjunto.nombre_original,
+                        "source": "whatsapp"
+                    }
+                    post_vars["uploaded_file_info"] = uploaded_file_info
+                    current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
+                else:
+                    current_app.logger.error(f"Failed to process WhatsApp media from URL: {media_url} using attachment_service")
 
-        except requests.exceptions.RequestException as e:
-            current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
-        except Exception as e:
-            current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
-            db.session.rollback()
+            except requests.exceptions.RequestException as e:
+                current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
+            except Exception as e:
+                current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
 
     else:
         session_context_db_entry.context_data.pop('source_is_audio', None)

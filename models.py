@@ -8,6 +8,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 import uuid
 import json
+import os
+from services.gcs_service import get_thumb_filename, BUCKET_NAME
+
 
 print("Importing models.py")
 
@@ -345,13 +348,31 @@ class TicketComentario(db.Model):
             "origen": self.origen
         }
         if self.archivo_adjunto:
-            data['attachment_info'] = {
+            attachment_info = {
                 "id": self.archivo_adjunto.id,
                 "url": self.archivo_adjunto.url,
                 "name": self.archivo_adjunto.nombre_original,
                 "mimeType": self.archivo_adjunto.mime,
                 "size": self.archivo_adjunto.tamano
             }
+
+            # Dynamically construct thumb_url and add meta
+            thumb_filename = get_thumb_filename(self.archivo_adjunto.filename)
+            attachment_info['thumb_url'] = f"https://storage.googleapis.com/{BUCKET_NAME}/{thumb_filename}"
+
+            # Fetch metadata from AnalisisArchivo
+            analisis = AnalisisArchivo.query.filter_by(
+                archivo_adjunto_id=self.archivo_adjunto.id,
+                tipo_analisis='thumbnail_meta'
+            ).first()
+
+            if analisis:
+                attachment_info['meta'] = analisis.datos_estructurados
+            else:
+                attachment_info['meta'] = None
+
+            data['attachment_info'] = attachment_info
+
         return data
 
 class CatalogoItem(db.Model):
