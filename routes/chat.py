@@ -530,6 +530,12 @@ def _procesar_chat(
 
         # Emit the result via Socket.IO if the channel is web
         if channel == "web" and chat_session_id_header:
+            # FIX: Ensure 'botones' key is present for the frontend if 'options_list' exists.
+            # The frontend widget expects 'botones', but many backend handlers generate 'options_list'.
+            if resultado and isinstance(resultado, dict) and 'options_list' in resultado and 'botones' not in resultado:
+                resultado['botones'] = resultado['options_list']
+                current_app.logger.info("Copiando 'options_list' a 'botones' para compatibilidad con el frontend.")
+
             socketio.emit('message', resultado, room=chat_session_id_header)
             current_app.logger.debug(
                 "Emitting socket message",
