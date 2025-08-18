@@ -282,6 +282,7 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 
 
 from services.google_search import google_search
+from services.scraper_avanzado import extraer_noticias
 
 # --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS CON GOOGLE SEARCH ---
 
@@ -314,6 +315,32 @@ def consultar_eventos_culturales(fecha: str) -> str:
         return f"Para la fecha '{fecha}', encontré los siguientes posibles eventos y noticias:\n{eventos_str}"
     else:
         return f"No encontré resultados para eventos en '{fecha}'. Te sugiero visitar el sitio web oficial del municipio para obtener la información más actualizada."
+
+def consultar_noticias_municipio() -> str:
+    """
+    Consulta las últimas noticias del municipio y las formatea para el usuario.
+    """
+    # URL hardcodeada temporalmente. Debería venir de la config del municipio.
+    url_noticias = "https://www.juninmendoza.gov.ar/category/noticias/"
+
+    resultado_scrape = extraer_noticias(url_noticias, limit=3)
+
+    if "error" in resultado_scrape or not resultado_scrape.get("noticias"):
+        error_msg = resultado_scrape.get("error", "No se encontraron noticias.")
+        logger.warning(f"[HERRAMIENTA NOTICIAS] Falló el scrapeo: {error_msg}")
+        # Fallback a un link genérico
+        return (
+            "No pude obtener las últimas noticias en este momento. "
+            "Puedes consultarlas directamente en el sitio web: https://www.juninmendoza.gov.ar/noticias/"
+        )
+
+    mensaje = "Aquí están las últimas noticias de Junín Mendoza:\n\n"
+    for i, noticia in enumerate(resultado_scrape.get("noticias", []), 1):
+        mensaje += f"📰 *{noticia['titulo']}*\n"
+        mensaje += f"   {noticia['link']}\n\n"
+
+    return mensaje.strip()
+
 
 def buscar_puntos_de_interes(
     rubro: str = None,
@@ -581,6 +608,12 @@ TOOL_REGISTRY = {
         "parametros": {
             "fecha": {"type": "string", "description": "La fecha de la consulta. Puede ser una palabra como 'hoy', 'mañana', 'este fin de semana', o una fecha específica como '15 de junio'."}
         },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "consultar_noticias": {
+        "funcion": consultar_noticias_municipio,
+        "descripcion": "Consulta las 3 noticias más recientes del sitio web del municipio. No necesita parámetros.",
+        "parametros": {},
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
     "buscar_puntos_de_interes": {

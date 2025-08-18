@@ -41,6 +41,10 @@ TOOL_REGISTRY_INFO = {
             "localidad": {"type": "string", "description": "La localidad o zona donde buscar (ej: 'centro', 'barrio Jardín')."}
         }
     },
+    "consultar_noticias": {
+        "descripcion": "Consulta las 3 noticias más recientes del sitio web del municipio. No necesita parámetros.",
+        "parametros": {}
+    },
     "generar_respuesta_audio": {
         "descripcion": "Convierte un texto a voz y lo devuelve como un archivo de audio. Úsalo para responder con voz cuando la consulta del usuario fue por audio.",
         "parametros": {
@@ -374,7 +378,7 @@ Debes usar `accion_backend: "ejecutar_herramienta"` y proporcionar los siguiente
         {{ "texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos" }},
         {{ "texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir" }},
         {{ "texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes" }},
-        {{ "texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades" }}
+        {{ "texto": "📰 Últimas Novedades", "action_id": "consultar_noticias" }}
       ]
     }}
     ```
@@ -486,6 +490,23 @@ Debes usar `accion_backend: "ejecutar_herramienta"` y proporcionar los siguiente
         "nombre_usuario_detectado": "Marcelo Guillen",
         "email_detectado": "guillen.marce@gmail.com",
         "telefono_detectado": "(el teléfono que ya tenías)"
+      }},
+      "pedir_info": null,
+      "botones": null
+    }}
+    ```
+
+**Ejemplo 12: Consultar noticias**
+*   **Usuario**: "ultimas noticias"
+*   **Tu JSON**:
+    ```json
+    {{
+      "message_body": "Consultando las últimas noticias...",
+      "accion_backend": "ejecutar_herramienta",
+      "datos_estructura": {{
+        "target": "municipio",
+        "nombre_herramienta": "consultar_noticias",
+        "parametros_herramienta": {{}}
       }},
       "pedir_info": null,
       "botones": null
