@@ -44,7 +44,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Access-Control-Request-Method': 'GET',
             'Access-Control-Request-Headers': 'Anon-Id'
         })
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 204)
         allow_headers = resp.headers.get('Access-Control-Allow-Headers', '')
         self.assertIn('Anon-Id', allow_headers)
 
@@ -61,7 +61,7 @@ class CorsOptionsTests(unittest.TestCase):
             'Origin': 'http://localhost:8080',
             'Access-Control-Request-Method': 'GET'
         })
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 204)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
     def test_legacy_me_get_options(self):

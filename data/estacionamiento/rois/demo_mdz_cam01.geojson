@@ -1,0 +1,16 @@
+{
+  "type": "FeatureCollection",
+  "image_size": {"width": 1280, "height": 720},
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "id": "seg_1", "label": "Cordón izq. (frente a kiosco)" },
+      "geometry": { "type": "Polygon", "coordinates": [[ [120,600],[380,600],[380,690],[120,690] ]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "seg_2", "label": "Bahía derecha" },
+      "geometry": { "type": "Polygon", "coordinates": [[ [820,540],[1140,540],[1140,700],[820,700] ]] }
+    }
+  ]
+}

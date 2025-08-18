@@ -68,20 +68,32 @@ def test_responder_municipio_imagen(mock_llamar_gemini, client):
     datos_interpretados = {
         "es_reclamo": True,
         "categoria_sugerida": "Bacheo",
-        "descripcion_sugerida": "Parece ser un bache."
+        "descripcion_sugerida": "Parece ser un bache.",
+        "ubicacion_sugerida": "Calle Falsa 123"
     }
 
-    response = responder_municipio(
-        pregunta_original="Mira esta foto",
-        owner_user=MagicMock(),
-        viewer_user=MagicMock(),
-        chat_db_context=MagicMock(context_data={}),
-        rubro_obj=MagicMock(nombre='municipio'),
-        datos_interpretados_archivo=datos_interpretados
-    )
+    # Mock the owner_user to have a valid municipio_id for the action handler
+    owner_user_mock = MagicMock(id=1, municipio_id=1)
 
-    assert "Gracias por la imagen" in response["message_body"]
-    assert "Bacheo" in response["message_body"]
+    with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+        mock_ticket = MagicMock()
+        mock_ticket.nro_ticket = "IMG-001"
+        mock_crear_ticket.return_value = mock_ticket
+
+        response = responder_municipio(
+            pregunta_original="Mira esta foto",
+            owner_user=owner_user_mock,
+            viewer_user=MagicMock(),
+            chat_db_context=MagicMock(context_data={}),
+            rubro_obj=MagicMock(nombre='municipio'),
+            datos_interpretados_archivo=datos_interpretados
+        )
+
+        # The flow now asks for contact details since none were provided, which is correct.
+        # In this specific flow, responder_municipio returns the dictionary directly.
+        assert "Para continuar con tu reclamo, necesito algunos datos más" in response["message_to_user"]
+        assert "nombre" in response["message_to_user"]
+        assert "teléfono" in response["message_to_user"]
 
 def test_button_click_sets_category_and_advances_flow(client):
     """

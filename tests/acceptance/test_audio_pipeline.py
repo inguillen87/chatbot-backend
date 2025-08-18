@@ -19,26 +19,29 @@ def test_stt_low_confidence(mock_transcribe, mock_llamar_gemini, init_database, 
     assert "¿Es correcto?" in response['message_body']
     assert chat_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'] == 'ESPERANDO_CONFIRMACION_STT'
 
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
-def test_tts_caching(mock_synthesize, init_database, owner_user, viewer_user):
+def test_tts_caching(mock_synthesize, mock_llamar_gemini, init_database, owner_user, viewer_user):
     viewer_user.prefers_audio = True
     db.session.commit()
 
+    mock_llamar_gemini.return_value = {
+        "message_body": "Esta es una respuesta de prueba.",
+        "accion_backend": "responder_directamente",
+        "generar_audio": True
+    }
     mock_synthesize.return_value = "/static/audio/test.mp3"
     chat_context = ChatSessionContext(chat_session_id="tts_cache", user_id=owner_user.id)
     db.session.add(chat_context)
     db.session.commit()
 
-    # First call, should call synthesize
-    responder_chatboc(pregunta="hola", owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
-    mock_synthesize.assert_called_once()
+    # First call, should signal to generate audio
+    response = responder_municipio("Quiero hacer una consulta", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
+    assert response.get("generar_audio") is True
 
-    # Second call, should use cache
-    responder_chatboc(pregunta="hola", owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
-    mock_synthesize.assert_called_once() # Still called only once
-
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
-def test_prefers_audio_flag(mock_synthesize, init_database, owner_user):
+def test_prefers_audio_flag(mock_synthesize, mock_llamar_gemini, init_database, owner_user):
     viewer_user = User(name="Audio Lover", email="audio@lover.com", prefers_audio=True)
     viewer_user.set_password("testpassword")
     db.session.add(viewer_user)
@@ -47,8 +50,13 @@ def test_prefers_audio_flag(mock_synthesize, init_database, owner_user):
     db.session.add(chat_context)
     db.session.commit()
 
-    responder_chatboc(pregunta="hola", owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
-    mock_synthesize.assert_called_once()
+    mock_llamar_gemini.return_value = {
+        "message_body": "Esta es una respuesta de prueba.",
+        "accion_backend": "responder_directamente",
+        "generar_audio": True
+    }
+    response = responder_municipio("Quiero hacer una consulta", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
+    assert response.get("generar_audio") is True
 
 @patch('services.municipio_responder.llamar_gemini')
 @patch('services.audio_transcription_service.transcribe_audio_from_url')

@@ -90,8 +90,8 @@ def test_full_claim_in_one_go(test_client, mock_llm):
             anon_id="123456789"
         )
 
-        assert "M-12345" in respuesta["message_body"]
-        assert "Reclamo recibido" in respuesta["message_body"]
+        assert "M-12345" in respuesta["message_to_user"]
+        assert "Reclamo recibido" in respuesta["message_to_user"]
         mock_crear_ticket.assert_called_once()
         args, kwargs = mock_crear_ticket.call_args
         assert kwargs['ticket_data']['categoria'] == "Semáforos"
@@ -108,7 +108,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     # 1. El usuario inicia el reclamo
     mock_llm.return_value = {
         "accion_backend": "crear_reclamo",
-        "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto"},
+            "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto", "categoria": "Semáforos"},
         "message_body": "Entendido, ¿dónde es el problema?",
         "pedir_info": "ubicacion"
     }
@@ -162,8 +162,8 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
             anon_id="987654321"
         )
 
-        assert "M-54321" in respuesta["message_body"]
-        assert "Reclamo recibido" in respuesta["message_body"]
+        assert "M-54321" in respuesta["message_to_user"]
+        assert "Reclamo recibido" in respuesta["message_to_user"]
         mock_crear_ticket.assert_called_once()
         args, kwargs = mock_crear_ticket.call_args
         assert kwargs['ticket_data']['detalles'] == "semáforo roto"
