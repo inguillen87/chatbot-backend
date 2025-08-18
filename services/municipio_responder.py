@@ -313,6 +313,7 @@ class ConversationState(Enum):
     ESPERANDO_DESCRIPCION_DENUNCIA = auto()
     ESPERANDO_UBICACION_DENUNCIA = auto()
     ESPERANDO_CONFIRMACION_DATOS_RECLAMO = auto()
+    ESPERANDO_CORRECCION_DATOS_RECLAMO = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -1908,17 +1909,16 @@ def responder_municipio(
 
     elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name:
         if "si" in normalizar_texto(pregunta_str) or action == "confirmar_reclamo_si":
-            # Retrieve confirmed data and proceed
+            # User confirmed. Retrieve data and proceed with ticket creation.
             datos_confirmados = contexto_municipio_actual.pop("datos_a_confirmar", {})
             contexto_municipio_actual["datos_confirmados"] = True
 
-            # Re-call the action handler with the confirmed data
             from .actions.municipio_actions import CrearReclamoActionHandler
             handler = CrearReclamoActionHandler(context)
             response = handler.execute(datos_confirmados)
             return _finalize_response(response)
         else: # User wants to edit
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response({
