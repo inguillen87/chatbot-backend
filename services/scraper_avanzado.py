@@ -133,3 +133,65 @@ def extraer_info_contacto_web(base_url: str) -> dict:
     except Exception as e:
         logger.error(f"[SCRAPER_CONTACTO] Error en {base_url}: {e}")
         return {"error": str(e)}
+
+
+def extraer_noticias(url: str, limit: int = 5) -> dict:
+    """
+    Extrae las últimas noticias de la página de un municipio.
+    """
+    logger.info(f"[SCRAPER_NOTICIAS] Extrayendo noticias de: {url}")
+    noticias = []
+    try:
+        respuesta = requests.get(url, headers=HEADERS, timeout=20)
+        # It's common for sites to fail with 4xx, but we might still get content
+        if not respuesta.ok:
+            logger.warning(f"[SCRAPER_NOTICIAS] URL {url} devolvió status {respuesta.status_code}. Se intentará parsear de todas formas.")
+
+        soup = BeautifulSoup(respuesta.content, 'html.parser')
+
+        # This selector is a guess. Common patterns for news articles.
+        # We look for article tags, or divs with classes like 'news-item', 'post', 'card'
+        contenedores = soup.select('article, div.news-item, div.post, div.card, .entry-content')
+
+        if not contenedores:
+            logger.warning(f"No se encontraron contenedores de noticias con los selectores comunes en {url}")
+            # Fallback to a more generic search if specific containers fail
+            contenedores = soup.find_all('div')
+
+        for item in contenedores:
+            if len(noticias) >= limit:
+                break
+
+            # Find title
+            titulo_tag = item.select_one('h2, h3, .entry-title, .post-title')
+            titulo = titulo_tag.text.strip() if titulo_tag else None
+
+            # Find link
+            link_tag = item.find('a', href=True)
+            link = urljoin(url, link_tag['href']) if link_tag else None
+
+            # Find summary
+            resumen_tag = item.select_one('p, .entry-summary, .post-excerpt')
+            resumen = resumen_tag.text.strip() if resumen_tag else None
+
+            # Basic validation: we need at least a title and a link
+            if titulo and link:
+                # Avoid adding the same news multiple times if selectors overlap
+                if not any(n['link'] == link for n in noticias):
+                    noticias.append({
+                        "titulo": titulo,
+                        "resumen": resumen or "No hay resumen disponible.",
+                        "link": link
+                    })
+
+        if not noticias:
+             return {"error": "No se pudieron encontrar noticias en la página. Puede que el formato haya cambiado."}
+
+        return {"tipo": "noticias", "noticias": noticias[:limit]}
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[SCRAPER_NOTICIAS] Error de conexión en {url}: {e}")
+        return {"error": f"No se pudo conectar con el sitio de noticias: {e}"}
+    except Exception as e:
+        logger.error(f"[SCRAPER_NOTICIAS] Error general en {url}: {e}", exc_info=True)
+        return {"error": f"Ocurrió un error inesperado al procesar la página de noticias: {e}"}
