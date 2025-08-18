@@ -310,6 +310,9 @@ class ConversationState(Enum):
     ESPERANDO_SELECCION_DE_LISTA = auto()
     ESPERANDO_UBICACION_GENERAL = auto()
     ESPERANDO_NUEVO_DATO_USUARIO = auto()
+    ESPERANDO_DESCRIPCION_DENUNCIA = auto()
+    ESPERANDO_UBICACION_DENUNCIA = auto()
+    ESPERANDO_CONFIRMACION_DATOS_RECLAMO = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -667,10 +670,40 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 flag_modified(chat_db_context, "context_data")
             return handler_response
 
-    unimplemented_actions = [
-        "denuncias", "solicitar_turnos",
-        "agenda_cultural_y_turistica"
-    ]
+    if action_id == "agenda_cultural_y_turistica":
+        from .herramientas_municipio import consultar_eventos_culturales
+        # For now, we default to "hoy". A more advanced version could ask the user for a date.
+        eventos_hoy = consultar_eventos_culturales(fecha="hoy")
+        return {
+            "message_body": f"Aquí tienes la agenda para hoy:\n\n{eventos_hoy}",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "agenda_cultural_hoy"
+        }
+
+    if action_id == "denuncias":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_DENUNCIA.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return {
+            "message_body": "Por favor, describí la denuncia que querés realizar.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "iniciar_denuncia"
+        }
+
+    if action_id == "solicitar_turnos":
+        # TODO: Implement a full appointment scheduling flow.
+        # For now, redirect the user to the main municipal website.
+        return {
+            "message_body": "📅 Para solicitar turnos, por favor visitá el sitio web oficial del municipio donde encontrarás las opciones disponibles.",
+            "options_list": [{"texto": "Ir al Sitio Web", "url": "https://www.juninmendoza.gov.ar/", "type": "url"}],
+            "message_type": "interactive_buttons",
+            "fuente": "info_solicitar_turnos_fase1"
+        }
+
+    unimplemented_actions = []
     if action_id in unimplemented_actions:
         return {
             "message_body": "Esta función aún no está implementada.",
@@ -1872,6 +1905,66 @@ def responder_municipio(
             if chat_db_context: flag_modified(chat_db_context, "context_data")
             return _finalize_response({"message_body": "No recibí una ubicación. Si cambiaste de opinión, no hay problema. ¿En qué te puedo ayudar?", "options_list": [], "message_type": "text", "fuente": "no_location_received"})
     # --- FIN: Manejo de recepción de ubicación ---
+
+    elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name:
+        if "si" in normalizar_texto(pregunta_str) or action == "confirmar_reclamo_si":
+            # Retrieve confirmed data and proceed
+            datos_confirmados = contexto_municipio_actual.pop("datos_a_confirmar", {})
+            contexto_municipio_actual["datos_confirmados"] = True
+
+            # Re-call the action handler with the confirmed data
+            from .actions.municipio_actions import CrearReclamoActionHandler
+            handler = CrearReclamoActionHandler(context)
+            response = handler.execute(datos_confirmados)
+            return _finalize_response(response)
+        else: # User wants to edit
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": "Entendido. ¿Qué dato te gustaría corregir o agregar? Por favor, decímelo y lo corrijo.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "pide_correccion_reclamo"
+            })
+
+    elif estado_conversacion == ConversationState.ESPERANDO_DESCRIPCION_DENUNCIA.name:
+        descripcion = pregunta_str
+        contexto_municipio_actual['denuncia_descripcion'] = descripcion
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_DENUNCIA.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response({
+            "message_body": "Gracias. Ahora, por favor, compartí la ubicación de la denuncia o escribí la dirección.",
+            "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}],
+            "message_type": "interactive_buttons",
+            "fuente": "pedir_ubicacion_denuncia"
+        })
+
+    elif estado_conversacion == ConversationState.ESPERANDO_UBICACION_DENUNCIA.name:
+        ubicacion_str = ""
+        if location and location.get("address"):
+            ubicacion_str = location.get("address")
+        elif pregunta_str:
+            ubicacion_str = pregunta_str
+
+        descripcion = contexto_municipio_actual.get('denuncia_descripcion', '(sin descripción)')
+
+        # Log the denuncia
+        logger_actual.info(f"DENUNCIA RECIBIDA: Descripción: '{descripcion}', Ubicación: '{ubicacion_str}'")
+
+        # Clear the context
+        contexto_municipio_actual.pop('denuncia_descripcion', None)
+        contexto_municipio_actual['estado_conversacion'] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        return _finalize_response({
+            "message_body": "Gracias por tu denuncia. La hemos registrado y será revisada por el área correspondiente.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "finalizar_denuncia"
+        })
 
     # Initialize the context if it's empty
     # This dictionary is passed to handlers and used throughout this function.
