@@ -445,23 +445,23 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
 
     categorias = [
-        {"titulo": "Reclamos y Denuncias 🛠️", "botones": [
-            {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias"}
+        {"titulo": "Reclamos y Denuncias", "botones": [
+            {"texto": "Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+            {"texto": "Realizar una Denuncia", "action_id": "denuncias"}
         ]},
-        {"titulo": "Trámites y Consultas 📄", "botones": [
-            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
-            {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-            {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+        {"titulo": "Trámites y Consultas", "botones": [
+            {"texto": "Licencia de Conducir", "action_id": "licencia_de_conducir"},
+            {"texto": "Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+            {"texto": "Consultar otros trámites", "action_id": "consultar_otros_tramites"}
         ]},
-        {"titulo": "Servicios y Turnos 📅", "botones": [
-            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-            {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"}
+        {"titulo": "Servicios y Turnos", "botones": [
+            {"texto": "Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+            {"texto": "Solicitar Turnos", "action_id": "solicitar_turnos"}
         ]},
-        {"titulo": "Información y Novedades 📰", "botones": [
-            {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-            {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
-            {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+        {"titulo": "Información y Novedades", "botones": [
+            {"texto": "Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+            {"texto": "Últimas Novedades", "action_id": "ultimas_novedades"},
+            {"texto": "Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
         ]}
     ]
 
@@ -818,34 +818,60 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
     return handler.execute(datos_reclamo)
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
-    Handles the ticket creation process, including robust error handling.
+    Prepares the confirmation message for the user before creating a ticket.
+    It does not create the ticket itself but sets the stage for the final confirmation.
     """
     datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
     datos_reclamo.update(datos_estructura_llm)
 
-    respuesta_accion = accion_crear_reclamo_municipio(datos_reclamo, context)
+    categoria = datos_reclamo.get("categoria")
+    descripcion = datos_reclamo.get("descripcion")
+    ubicacion = datos_reclamo.get("ubicacion")
+    nombre_usuario = datos_reclamo.get("nombre_usuario_detectado")
+    telefono_usuario = datos_reclamo.get("telefono_detectado")
+    email_usuario = datos_reclamo.get("email_detectado")
 
-    # The action handler is now responsible for clearing context on success.
-    # We just need to check the outcome and return the appropriate response.
-    if respuesta_accion and respuesta_accion.get("success"):
-        # On success, the handler provides the full, user-ready response.
-        return respuesta_accion, contexto_municipio_actual
-    else:
-        # On failure, the handler provides a user-friendly error message.
-        # We also ensure the state is reset so the user isn't stuck.
-        logger.error(f"La creación del reclamo falló. Respuesta del handler: {respuesta_accion}")
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+    campos_faltantes = [campo for campo, valor in {
+        "categoría": categoria, "descripción": descripcion, "ubicación": ubicacion,
+        "nombre": nombre_usuario, "teléfono": telefono_usuario, "email": email_usuario
+    }.items() if not valor]
 
-        # Default error message if the handler doesn't provide one
-        error_message = "Hubo un problema al crear tu reclamo. Por favor, intenta de nuevo más tarde."
-        if respuesta_accion and isinstance(respuesta_accion.get("message_to_user"), str):
-            error_message = respuesta_accion["message_to_user"]
-
+    if campos_faltantes:
         return {
-            "message_body": error_message,
-            "message_type": "text",
-            "fuente": "error_handler_crear_reclamo_v2"
+            "message_body": f"Para continuar, aún necesito estos datos: {', '.join(campos_faltantes)}.",
+            "fuente": "error_crear_reclamo_faltan_datos_previo"
         }, contexto_municipio_actual
+
+    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
+    contexto_municipio_actual["datos_a_confirmar"] = datos_reclamo.copy()
+
+    mensaje_confirmacion = (
+        f"Por favor, confirmá si los datos para tu reclamo son correctos:
+"
+        f"*Categoría:* {categoria}
+"
+        f"*Descripción:* {descripcion}
+"
+        f"*Ubicación:* {ubicacion}
+"
+        f"*Nombre:* {nombre_usuario}
+"
+        f"*Teléfono:* {telefono_usuario}
+"
+        f"*Email:* {email_usuario}
+"
+    )
+
+    botones = [
+        {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
+        {"texto": "No, quiero editar", "action_id": "confirmar_reclamo_no"},
+    ]
+
+    return {
+        "message_body": mensaje_confirmacion,
+        "options_list": botones,
+        "message_type": "interactive_buttons"
+    }, contexto_municipio_actual
 
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
@@ -1308,21 +1334,22 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 def _get_reclamos_menu():
-    """Devuelve la estructura del menú de reclamos estandarizado."""
+    """Devuelve la estructura del menú de reclamos estandarizado y sin numeración visible."""
     opciones = [
-        {"texto": "0. ⬅️ Volver al inicio", "id_accion": "0"},
-        {"texto": "1. 💡 Luminaria",        "id_accion": "1"},
-        {"texto": "2. 🌳 Arbolado",         "id_accion": "2"},
-        {"texto": "3. 🧹 Limpieza y riego", "id_accion": "3"},
-        {"texto": "4. 🚧 Arreglo de calle", "id_accion": "4"},
-        {"texto": "5. 💧 Pérdida de agua",  "id_accion": "5"},
-        {"texto": "6. 📋 Otros",            "id_accion": "6"},
+        {"texto": "Volver al inicio", "id_accion": "0"},
+        {"texto": "Luminaria", "id_accion": "1"},
+        {"texto": "Arbolado", "id_accion": "2"},
+        {"texto": "Limpieza y riego", "id_accion": "3"},
+        {"texto": "Arreglo de calle", "id_accion": "4"},
+        {"texto": "Pérdida de agua", "id_accion": "5"},
+        {"texto": "Otros", "id_accion": "6"},
     ]
+    # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número.
     return {
-        "message_body": "Elegí una opción para tu reclamo:",
+        "message_body": "Elegí una opción para tu reclamo o respondé con el número correspondiente:",
         "message_type": "interactive_buttons",
         "options_list": opciones,
-        "fuente": "submenu_reclamos_estandar_v2",
+        "fuente": "submenu_reclamos_estandar_v3",
         "generar_audio": True
     }
 
@@ -1914,13 +1941,19 @@ def responder_municipio(
 
     elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name:
         if "si" in normalizar_texto(pregunta_str) or action == "confirmar_reclamo_si":
-            # User confirmed. Retrieve data and proceed with ticket creation.
             datos_confirmados = contexto_municipio_actual.pop("datos_a_confirmar", {})
-            contexto_municipio_actual["datos_confirmados"] = True
 
-            from .actions.municipio_actions import CrearReclamoActionHandler
+            # Llamar a la acción de creación de reclamo
             handler = CrearReclamoActionHandler(context)
             response = handler.execute(datos_confirmados)
+
+            # Limpiar el estado de la conversación solo si la creación fue exitosa
+            if response.get("success"):
+                contexto_municipio_actual['estado_conversacion'] = None
+
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
             return _finalize_response(response)
         else: # User wants to edit
             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name
@@ -1932,6 +1965,51 @@ def responder_municipio(
                 "message_type": "text",
                 "fuente": "pide_correccion_reclamo"
             })
+
+    elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:
+        logger_actual.info(f"Handling input in ESPERANDO_CORRECCION_DATOS_RECLAMO state. Input: '{pregunta_str}'")
+
+        datos_nuevos = extract_multiple_contact_details_llm(pregunta_str, ["nombre", "email", "telefono", "ubicacion", "descripcion"])
+        datos_pendientes = contexto_municipio_actual.get("datos_a_confirmar", {})
+
+        # Mapeo de claves para actualizar correctamente
+        if datos_nuevos.get("nombre"): datos_pendientes["nombre_usuario_detectado"] = datos_nuevos["nombre"]
+        if datos_nuevos.get("email"): datos_pendientes["email_detectado"] = datos_nuevos["email"]
+        if datos_nuevos.get("telefono"): datos_pendientes["telefono_detectado"] = datos_nuevos["telefono"]
+        if datos_nuevos.get("ubicacion"): datos_pendientes["ubicacion"] = datos_nuevos["ubicacion"]
+        if datos_nuevos.get("descripcion"): datos_pendientes["descripcion"] = datos_nuevos["descripcion"]
+
+        contexto_municipio_actual["datos_a_confirmar"] = datos_pendientes
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
+
+        mensaje_confirmacion = (
+            f"Perfecto, he actualizado los datos. Por favor, confirmá si ahora son correctos:
+"
+            f"*Categoría:* {datos_pendientes.get('categoria', 'No especificada')}
+"
+            f"*Descripción:* {datos_pendientes.get('descripcion', 'No especificada')}
+"
+            f"*Ubicación:* {datos_pendientes.get('ubicacion', 'No especificada')}
+"
+            f"*Nombre:* {datos_pendientes.get('nombre_usuario_detectado', 'No especificado')}
+"
+            f"*Teléfono:* {datos_pendientes.get('telefono_detectado', 'No especificado')}
+"
+            f"*Email:* {datos_pendientes.get('email_detectado', 'No especificado')}
+"
+        )
+
+        botones = [
+            {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
+            {"texto": "No, seguir editando", "action_id": "confirmar_reclamo_no"},
+        ]
+
+        return _finalize_response({
+            "message_body": mensaje_confirmacion,
+            "options_list": botones,
+            "message_type": "interactive_buttons",
+            "fuente": "re_pide_confirmacion_reclamo"
+        })
 
     elif estado_conversacion == ConversationState.ESPERANDO_DESCRIPCION_DENUNCIA.name:
         descripcion = pregunta_str

@@ -77,42 +77,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not viewer_user and not all([nombre_vecino_final, telefono_final, email_final]):
              campos_faltantes.extend(["nombre", "telefono", "email"])
 
-        # Data confirmation flow
-        if not contexto_reclamo.get("datos_confirmados") and not campos_faltantes:
-            from services.municipio_responder import ConversationState
-            contexto_reclamo["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
-            # Store the data to be confirmed
-            contexto_reclamo["datos_a_confirmar"] = {
-                "categoria": categoria,
-                "descripcion": descripcion,
-                "ubicacion": ubicacion_llm,
-                "distrito": distrito_llm,
-                "coordenadas": coordenadas_llm,
-                "foto_url_adjunta": foto_url_llm,
-                "nombre_usuario_detectado": nombre_vecino_final,
-                "telefono_detectado": telefono_final,
-                "email_detectado": email_final,
-            }
-            self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-
-            mensaje = f"""Por favor, confirmá si los datos para tu reclamo son correctos:
-*Categoría:* {categoria or "No especificada"}
-*Descripción:* {descripcion or "No especificada"}
-*Ubicación:* {ubicacion_llm or "No especificada"}
-*Nombre:* {nombre_vecino_final or "No especificado"}
-*Teléfono:* {telefono_final or "No especificado"}
-*Email:* {email_final or "No especificado"}
-"""
-            botones = [
-                {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
-                {"texto": "No, quiero editar", "action_id": "confirmar_reclamo_no"}
-            ]
-            return {
-                "success": False,
-                "message_to_user": mensaje,
-                "options_list": botones,
-                "message_type": "interactive_buttons"
-            }
+        # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
+        # Este handler ahora solo valida y crea.
 
         if campos_faltantes:
             # Eliminar duplicados
