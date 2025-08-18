@@ -876,20 +876,13 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     contexto_municipio_actual["datos_a_confirmar"] = datos_reclamo.copy()
 
     mensaje_confirmacion = (
-        f"Por favor, confirmá si los datos para tu reclamo son correctos:
-"
-        f"*Categoría:* {categoria}
-"
-        f"*Descripción:* {descripcion}
-"
-        f"*Ubicación:* {ubicacion}
-"
-        f"*Nombre:* {nombre_usuario}
-"
-        f"*Teléfono:* {telefono_usuario}
-"
-        f"*Email:* {email_usuario}
-"
+        f"Por favor, confirmá si los datos para tu reclamo son correctos:\n"
+        f"*Categoría:* {categoria}\n"
+        f"*Descripción:* {descripcion}\n"
+        f"*Ubicación:* {ubicacion}\n"
+        f"*Nombre:* {nombre_usuario}\n"
+        f"*Teléfono:* {telefono_usuario}\n"
+        f"*Email:* {email_usuario}\n"
     )
 
     botones = [
@@ -2027,20 +2020,13 @@ def responder_municipio(
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
 
         mensaje_confirmacion = (
-            f"Perfecto, he actualizado los datos. Por favor, confirmá si ahora son correctos:
-"
-            f"*Categoría:* {datos_pendientes.get('categoria', 'No especificada')}
-"
-            f"*Descripción:* {datos_pendientes.get('descripcion', 'No especificada')}
-"
-            f"*Ubicación:* {datos_pendientes.get('ubicacion', 'No especificada')}
-"
-            f"*Nombre:* {datos_pendientes.get('nombre_usuario_detectado', 'No especificado')}
-"
-            f"*Teléfono:* {datos_pendientes.get('telefono_detectado', 'No especificado')}
-"
-            f"*Email:* {datos_pendientes.get('email_detectado', 'No especificado')}
-"
+            f"Perfecto, he actualizado los datos. Por favor, confirmá si ahora son correctos:\n"
+            f"*Categoría:* {datos_pendientes.get('categoria', 'No especificada')}\n"
+            f"*Descripción:* {datos_pendientes.get('descripcion', 'No especificada')}\n"
+            f"*Ubicación:* {datos_pendientes.get('ubicacion', 'No especificada')}\n"
+            f"*Nombre:* {datos_pendientes.get('nombre_usuario_detectado', 'No especificado')}\n"
+            f"*Teléfono:* {datos_pendientes.get('telefono_detectado', 'No especificado')}\n"
+            f"*Email:* {datos_pendientes.get('email_detectado', 'No especificado')}\n"
         )
 
         botones = [

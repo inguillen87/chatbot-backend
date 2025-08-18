@@ -46,8 +46,6 @@ def build_interactive_response(options: list,
 
     if channel == "whatsapp":
         original_type = message_type
-        # Force text for now, as per user request, to ensure menus are always visible
-        message_type = 'text'
         num_options = len(options)
 
         logger.debug(
@@ -87,11 +85,10 @@ def build_interactive_response(options: list,
             logger.info(
                 "build_interactive_response: returning text payload: {'type': 'text', 'text': {'body': final_body}}"
             )
-            return {
+            payload = {
                 "type": "text",
                 "text": {"body": final_body},
                 "contexto_actualizado": context_update if context_update else None,
-                "audio_url": audio_url
             }
             if audio_url:
                 payload["audio"] = {"link": audio_url}

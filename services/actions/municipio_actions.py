@@ -199,15 +199,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Guardamos la info del usuario si existe, para no perderla.
             user_info = contexto_reclamo.get('user', {})
             # Limpiamos TODO el contexto del municipio para evitar "context bleed".
-            self.context[CONTEXTO_MUNICIPIO].clear()
+            contexto_reclamo.clear()
             # Restauramos la info del usuario.
             if user_info:
-                self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
+                contexto_reclamo['user'] = user_info
 
             # Forzamos el estado de vuelta a conversación general para que el bot no quede "trabado" en el flujo de reclamo.
             from services.municipio_responder import ConversationState
-            self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-            logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}")
+            contexto_reclamo['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {contexto_reclamo['estado_conversacion']}")
 
 
             # Notificaciones
