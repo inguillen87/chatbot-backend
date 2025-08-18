@@ -144,7 +144,11 @@ def _procesar_chat(
             os.remove(temp_path)
 
             if not pregunta:
-                pregunta = "[Audio could not be transcribed]"
+                return jsonify({
+                    "message_body": "Lo siento, no pude entender lo que dijiste en el audio. ¿Podrías intentarlo de nuevo o escribir tu consulta?",
+                    "message_type": "text",
+                    "fuente": "audio_transcription_failed"
+                }), 400
 
             # Set default values for other parameters when processing audio
             contexto_previo = None

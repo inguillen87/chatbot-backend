@@ -246,13 +246,13 @@ def admin_o_empleado_requerido(f):
 def anon_o_token_requerido(f):
     """
     Decorador que maneja la autenticación para endpoints que aceptan
-    tanto usuarios autenticados con token como usuarios anónimos.
-    Para anónimos en endpoints de municipio, carga un owner por defecto.
+    tanto usuarios autenticados (JWT) como anónimos (con un token de entidad estático).
     """
     @wraps(f)
     def decorated(*args, **kwargs):
         anon_id = get_or_create_anon_id()
         if request.method == "OPTIONS":
+            # Pre-flight request. Reply successfully.
             resp = make_response("", 204)
             origin = request.headers.get("Origin")
             if origin:
@@ -271,38 +271,47 @@ def anon_o_token_requerido(f):
             return resp
 
         token = obtener_token()
-        user = user_from_token(token) if token else None
-        owner_user = user # Por defecto, el owner es el mismo usuario
+        current_user = None  # El usuario final que chatea (el "viewer")
+        owner_user = None    # El dueño del bot (la "entidad", ej: municipio)
 
-        if not user:
-            # Lógica para usuarios anónimos
-            current_user = None
-
-            json_data = request.get_json(silent=True) or {}
-            empresa_token = json_data.get("empresa_token")
-
-            if empresa_token:
-                owner_user = User.query.filter_by(token=empresa_token).first()
-                if owner_user:
-                    current_app.logger.info(f"Anonymous request to '{request.path}', loaded owner_user '{owner_user.id}' via 'empresa_token'.")
+        if token:
+            # Primero, intentar decodificar como JWT. Esto es para usuarios logueados.
+            jwt_user = user_from_token(token)
+            if jwt_user:
+                current_app.logger.info(f"Request authenticated via JWT. User ID: {jwt_user.id}")
+                current_user = jwt_user
+                # Si un usuario logueado tiene un `empresa_id`, el owner es esa empresa.
+                if jwt_user.empresa_id:
+                    owner_user = User.query.get(jwt_user.empresa_id)
                 else:
-                     current_app.logger.warning(f"Anonymous request with an invalid 'empresa_token': {empresa_token}")
-
-            # Como fallback para endpoints públicos de municipio, cargamos un owner por defecto.
-            if 'municipio' in request.path and not owner_user:
-                owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-                if owner_user:
-                    current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")
+                    # Si no, el owner es el propio usuario (ej, el admin del municipio)
+                    owner_user = jwt_user
+            else:
+                # Si falla el JWT, tratar el token como un token de entidad estático (API Key/UUID).
+                # Esto es para el widget anónimo.
+                entity_user = User.query.filter_by(token=token).first()
+                if entity_user:
+                    current_app.logger.info(f"Request authenticated via static entity token. Owner User ID: {entity_user.id}")
+                    owner_user = entity_user
+                    # El current_user sigue siendo None porque es una sesión anónima del widget.
                 else:
-                    current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
-        else:
-            # Lógica para usuarios autenticados
-            current_user = user
+                    current_app.logger.warning(f"Token '{token[:10]}...' provided but is not a valid JWT or a known entity token.")
 
+        # Si después de todo no hay owner (ej. request anónima sin token),
+        # cargar el owner por defecto para el municipio.
+        if not owner_user and 'municipio' in request.path:
+            owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
+            if owner_user:
+                current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")
+            else:
+                current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
+
+        # Llamar a la función de la ruta con los usuarios identificados
         response = f(
             current_user=current_user, owner_user=owner_user, anon_id=anon_id, *args, **kwargs
         )
 
+        # Adjuntar el anon_id a la respuesta para que el cliente lo pueda usar
         resp = make_response(response)
         resp.headers.setdefault("X-Anon-Id", anon_id)
         resp.headers.setdefault("Anon-Id", anon_id)

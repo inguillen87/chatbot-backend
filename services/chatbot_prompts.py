@@ -469,4 +469,26 @@ Debes usar `accion_backend: "ejecutar_herramienta"` y proporcionar los siguiente
       "botones": null
     }}
     ```
+
+**Ejemplo 11: Corrección de datos y confirmación en un solo paso**
+*   **Contexto de Entrada**: Estás en el paso de confirmación de un reclamo de "Luminaria" en "bousquet isidoro 5500". El nombre actual es "Vecino/a" y no hay email.
+*   **Usuario**: "nombre marcelo guillen el telefono esta bien mail guillen.marce@gmail.com agendar estos datos y confirmar el reclamo"
+*   **Tu JSON**:
+    ```json
+    {{
+      "message_body": "Perfecto, Marcelo. He actualizado tus datos y confirmado el reclamo. En breve recibirás la confirmación por email.",
+      "accion_backend": "crear_reclamo",
+      "datos_estructura": {{
+        "target": "municipio",
+        "categoria": "Luminaria",
+        "descripcion": "Reclamo por luminaria",
+        "ubicacion": "bousquet isidoro 5500",
+        "nombre_usuario_detectado": "Marcelo Guillen",
+        "email_detectado": "guillen.marce@gmail.com",
+        "telefono_detectado": "(el teléfono que ya tenías)"
+      }},
+      "pedir_info": null,
+      "botones": null
+    }}
+    ```
 '''.strip()
