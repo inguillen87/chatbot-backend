@@ -832,6 +832,29 @@ def test_register_creates_admin_user(client):
     assert user.rol == "admin" # El registro por defecto crea un admin de su propia empresa
 
 
+def test_login_alias_works(client):
+    """Verifica que el alias /login funciona correctamente."""
+    # Asegúrate de que exista un Rubro para asociar al usuario
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(email="alias@test.com", name="Alias", token="alias-token", rubro_id=rubro.id)
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    response = client.post(
+        '/login',
+        json={"email": "alias@test.com", "password": "pw"},
+    )
+    assert response.status_code == 200
+    json_data = response.get_json()
+    assert json_data["email"] == "alias@test.com"
+
+
 # ---------- CHAT EN VIVO PYME: MENSAJES ----------
 @ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/mensajes', methods=['GET'])
 @token_requerido

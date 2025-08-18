@@ -231,13 +231,16 @@ def create_app(config_class=Config):
     # --- Registro de Blueprints (Rutas) ---
     app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
-    # Alias para compatibilidad: permite acceder a /login sin prefijo /auth
-    app.add_url_rule(
-        '/login',
-        endpoint='login',
-        view_func=app.view_functions['auth.login'],
-        methods=['POST', 'OPTIONS']
-    )
+
+    # Import the login view function to create an alias
+    from routes.auth import login as login_view_func
+
+    # Explicitly define the /login route as an alias for auth.login
+    @app.route('/login', methods=['POST', 'OPTIONS'])
+    def login_alias():
+        """Alias for the /auth/login endpoint."""
+        return login_view_func()
+
     app.register_blueprint(legacy_auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ticket_bp)
