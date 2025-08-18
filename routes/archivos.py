@@ -1,12 +1,14 @@
 from flask import Blueprint, request, jsonify, current_app, send_from_directory, make_response
 from extensions import db
-from models import ArchivoAdjunto, User
+from models import ArchivoAdjunto, User, AnalisisArchivo
 import os
 import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime
+from utils.auth_helpers import anon_o_token_requerido
 from routes.auth import token_requerido
 from services.gcs_service import upload_to_gcs, BUCKET_NAME, MAX_FILE_SIZE
+from services.attachment_service import create_attachment_with_thumbnail
 from services.archivo_service import guardar_archivo_adjunto_ticket
 from services.ticket_service import servicio_tickets
 from utils.permissions import require_role
@@ -517,3 +519,79 @@ def apply_cors(response):
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
     response.headers['Access-Control-Allow-Credentials'] = 'true'
     return response
+
+# --- Nuevo Endpoint para Chat Widget ---
+
+ALLOWED_CHAT_MIMES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "application/pdf"
+}
+
+@archivos_bp.route('/upload/chat_attachment', methods=['OPTIONS'])
+def upload_chat_attachment_options():
+    """Manejo de preflight CORS para /upload/chat_attachment."""
+    return cors_options_response()
+
+@archivos_bp.route('/upload/chat_attachment', methods=['POST'])
+@anon_o_token_requerido
+def upload_chat_attachment(current_user=None, anon_id=None):
+    """
+    Endpoint para que el ChatWidget suba un archivo.
+    No lo asocia a ningún ticket, solo lo sube y crea los registros.
+    Devuelve la metadata para que el frontend la use en la llamada a /ask.
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No se encontró el campo de archivo "file"'}), 400
+
+    file = request.files['file']
+
+    if file.filename == '':
+        return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
+
+    # Validaciones de seguridad
+    if file.mimetype not in ALLOWED_CHAT_MIMES:
+        return jsonify({'error': f'Tipo de archivo no permitido: {file.mimetype}'}), 400
+
+    # El tamaño se valida dentro de gcs_service
+
+    try:
+        user_id = current_user.id if current_user else None
+        session_id = request.headers.get("X-Chat-Session-Id")
+
+        if not session_id:
+             current_app.logger.warning("X-Chat-Session-Id header is missing.")
+             # Consider returning an error if session ID is strictly required
+             # return jsonify({'error': 'X-Chat-Session-Id header es requerido'}), 400
+
+        adjunto = create_attachment_with_thumbnail(
+            file_storage=file,
+            user_id=user_id,
+            session_id=session_id # Opcional, para asociar a una sesión de chat
+        )
+
+        if not adjunto:
+            return jsonify({'error': 'Error al procesar y guardar el archivo.'}), 500
+
+        db.session.commit()
+
+        # Cargar metadatos del análisis si existen
+        analisis = AnalisisArchivo.query.filter_by(archivo_adjunto_id=adjunto.id, tipo_analisis='thumbnail_meta').first()
+        meta_data = analisis.datos_estructurados if analisis else None
+
+        return jsonify({
+            "ok": True,
+            "attachment_info": {
+                "id": adjunto.id,
+                "original_url": adjunto.url,
+                "mime": adjunto.mime,
+                "size": adjunto.tamano,
+                "name": adjunto.nombre_original,
+                "meta": meta_data
+            }
+        }), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Error crítico en upload_chat_attachment: {e}", exc_info=True)
+        return jsonify({'error': 'Error interno del servidor.'}), 500

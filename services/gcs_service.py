@@ -3,9 +3,21 @@ import uuid
 from flask import current_app
 from google.cloud import storage
 from werkzeug.utils import secure_filename
+import io
+from services.thumbnail_service import generar_thumbnail
 
-BUCKET_NAME = "chatboc-files"
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
+MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
+
+def _get_gcs_client():
+    """Initializes and returns a GCS client."""
+    # This could be extended with more robust credential handling if needed
+    return storage.Client()
+
+def get_thumb_filename(original_filename: str) -> str:
+    """Generates a predictable thumbnail filename from an original filename."""
+    base, _ = os.path.splitext(original_filename)
+    return f"{base}_thumb.webp"
 
 def upload_to_gcs(file_storage) -> dict | None:
     """
@@ -48,4 +60,63 @@ def upload_to_gcs(file_storage) -> dict | None:
         }
     except Exception as e:
         current_app.logger.error(f"Error uploading file {original_filename} to GCS: {e}", exc_info=True)
+        return None
+
+def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
+    """
+    Uploads a file and its generated thumbnail to GCS.
+
+    Args:
+        file_storage: The FileStorage object from the request.
+
+    Returns:
+        A dictionary with original file URL, and thumbnail metadata, or None on failure.
+    """
+    if not file_storage or not file_storage.filename:
+        return None
+
+    original_filename = secure_filename(file_storage.filename)
+    unique_name = f"{uuid.uuid4().hex}_{original_filename}"
+
+    # Rewind stream to read for validation and thumbnailing
+    file_storage.seek(0)
+    file_bytes = file_storage.read()
+
+    if len(file_bytes) > MAX_FILE_SIZE:
+        current_app.logger.warning(f"File '{original_filename}' exceeds max size of {MAX_FILE_SIZE} bytes.")
+        return None
+
+    # Create a new stream for thumbnail generation
+    file_stream_for_thumb = io.BytesIO(file_bytes)
+
+    try:
+        storage_client = _get_gcs_client()
+        bucket = storage_client.bucket(BUCKET_NAME)
+
+        # 1. Upload Original File
+        blob_original = bucket.blob(unique_name)
+        blob_original.upload_from_string(file_bytes, content_type=file_storage.mimetype)
+
+        # 2. Generate and Upload Thumbnail
+        thumbnail_bytes, thumb_meta = generar_thumbnail(file_stream_for_thumb, file_storage.mimetype)
+
+        thumb_url = None
+        if thumbnail_bytes and thumb_meta:
+            thumb_filename = get_thumb_filename(unique_name)
+            blob_thumb = bucket.blob(thumb_filename)
+            blob_thumb.upload_from_string(thumbnail_bytes, content_type='image/webp')
+            thumb_url = blob_thumb.public_url # We can store this if we ever add the DB column
+            current_app.logger.info(f"Thumbnail uploaded to {thumb_url}")
+
+        return {
+            "unique_name": unique_name,
+            "original_url": blob_original.public_url,
+            "size": len(file_bytes),
+            "original_name": original_filename,
+            "mimetype": file_storage.mimetype,
+            "thumb_meta": thumb_meta # Contains width, height, pages
+        }
+
+    except Exception as e:
+        current_app.logger.error(f"Error in guardar_adjunto_y_thumbnail for {original_filename}: {e}", exc_info=True)
         return None
