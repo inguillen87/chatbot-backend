@@ -91,6 +91,7 @@ def build_interactive_response(options: list,
                 final_body += options_text
             else:
                 logger.warning("No se recibieron opciones para construir el menú de texto")
+
             payload = {
                 "type": "text",
                 "text": {"body": final_body},

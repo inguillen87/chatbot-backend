@@ -162,8 +162,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        # Updated assertion to match new generic error message
-        self.assertIn("necesito algunos datos más: **descripcion, email, nombre, telefono**", respuesta["message_to_user"])
+        # The new logic correctly identifies the user's name from the "usuario" field
+        self.assertIn("necesito algunos datos más: **descripcion, email, telefono**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -173,8 +173,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
-        # Updated assertion to match new generic error message
-        self.assertIn("necesito algunos datos más: **email, nombre, telefono, ubicacion**", respuesta["message_to_user"])
+        # The new logic correctly identifies the user's name from the "usuario" field
+        self.assertIn("necesito algunos datos más: **email, telefono, ubicacion**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')

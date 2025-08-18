@@ -62,13 +62,12 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["interactive"]["type"], "list")
         self.assertEqual(len(response["interactive"]["action"]["sections"][0]["rows"]), 10)
 
-    def test_whatsapp_interactive_list_too_many_options_truncates(self):
+    def test_whatsapp_interactive_list_too_many_options_fallbacks_to_text(self):
         options = [{"id": f"li{i}", "texto": f"Lista Item {i}"} for i in range(15)]
         response = build_interactive_response(
             options=options, body_text="Demasiadas opciones de lista:", channel="whatsapp", message_type='interactive_list'
         )
         self.assertEqual(response["type"], "text")
-        # The new logic doesn't truncate for text-based lists
         expected_body = "Demasiadas opciones de lista:\n\n" + "\n".join([f"*{i+1}*. Lista Item {i}" for i in range(15)]) + "\n\nResponde con el número de la opción que necesites."
         self.assertEqual(response["text"]["body"], expected_body)
 
@@ -84,7 +83,7 @@ class TestResponseFormatter(unittest.TestCase):
             options=[], body_text="Sin opciones", channel="whatsapp", message_type='interactive_buttons'
         )
         self.assertEqual(response["type"], "text")
-        self.assertEqual(response["text"]["body"], "Sin opciones\n\n\n\nResponde con el número de la opción que necesites.")
+        self.assertEqual(response["text"]["body"], "Sin opciones")
 
     def test_whatsapp_list_section_and_button_text_from_original_response(self):
         original_bot_response_data = {
