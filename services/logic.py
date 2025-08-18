@@ -129,7 +129,8 @@ def responder_chatboc(
     # --- INICIO: Manejo de confusión Pyme/Municipio ---
     if tipo_chat == "pyme":
         from services.municipio_responder import MENU_KEYWORDS as MUNICIPIO_MENU_KEYWORDS
-        pregunta_norm = normalizar_texto(pregunta)
+        pregunta_text = pregunta if isinstance(pregunta, str) else pregunta.get("pregunta", "")
+        pregunta_norm = normalizar_texto(pregunta_text)
         # Check for municipal keywords in the user's query
         for action, keywords in MUNICIPIO_MENU_KEYWORDS.items():
             if any(keyword in pregunta_norm for keyword in keywords):
