@@ -51,6 +51,53 @@ def test_validar_y_formatear_direccion_invalida(mock_get):
     # Assert
     assert resultado is None
 
+@patch('services.herramientas_municipio.extraer_noticias')
+def test_consultar_noticias_municipio_exitosa(mock_extraer_noticias):
+    # Arrange
+    mock_extraer_noticias.return_value = {
+        "tipo": "noticias",
+        "noticias": [
+            {"titulo": "Noticia 1", "resumen": "Resumen 1", "link": "https://example.com/1"},
+            {"titulo": "Noticia 2", "resumen": "Resumen 2", "link": "https://example.com/2"},
+        ]
+    }
+    from services.herramientas_municipio import consultar_noticias_municipio
+
+    # Act
+    resultado = consultar_noticias_municipio()
+
+    # Assert
+    assert "Aquí están las últimas noticias" in resultado
+    assert "Noticia 1" in resultado
+    assert "https://example.com/1" in resultado
+    assert "Noticia 2" in resultado
+    assert "https://example.com/2" in resultado
+
+@patch('services.herramientas_municipio.extraer_noticias')
+def test_consultar_noticias_municipio_sin_noticias(mock_extraer_noticias):
+    # Arrange
+    mock_extraer_noticias.return_value = {"tipo": "noticias", "noticias": []}
+    from services.herramientas_municipio import consultar_noticias_municipio
+
+    # Act
+    resultado = consultar_noticias_municipio()
+
+    # Assert
+    assert "No se encontraron noticias recientes" in resultado
+
+@patch('services.herramientas_municipio.extraer_noticias')
+def test_consultar_noticias_municipio_error(mock_extraer_noticias):
+    # Arrange
+    mock_extraer_noticias.return_value = {"error": "Error de prueba"}
+    from services.herramientas_municipio import consultar_noticias_municipio
+
+    # Act
+    resultado = consultar_noticias_municipio()
+
+    # Assert
+    assert "No pude obtener las últimas noticias" in resultado
+    assert "https://www.juninmendoza.gov.ar/noticias/" in resultado
+
 def test_generar_respuesta_audio_in_tool_registry():
     """
     Tests that the 'generar_respuesta_audio' tool is correctly registered.
