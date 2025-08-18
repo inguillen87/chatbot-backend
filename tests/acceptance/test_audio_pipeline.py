@@ -2,7 +2,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 from app import db
 from models import User, ChatSessionContext
-from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
+from services.municipio_responder import CONTEXTO_MUNICIPIO
+from services.logic import responder_chatboc
 
 @patch('services.municipio_responder.llamar_gemini')
 @patch('services.audio_transcription_service.transcribe_audio_from_url')
@@ -13,7 +14,7 @@ def test_stt_low_confidence(mock_transcribe, mock_llamar_gemini, init_database, 
     db.session.add(chat_context)
     db.session.commit()
 
-    response = responder_municipio({"media_url": "http://a.b/c.ogg"}, owner_user, owner_user.rubro, chat_db_context=chat_context)
+    response = responder_chatboc(pregunta={"media_url": "http://a.b/c.ogg"}, owner_user=owner_user, rubro_obj=owner_user.rubro, chat_db_context=chat_context)
 
     assert "¿Es correcto?" in response['message_body']
     assert chat_context.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'] == 'ESPERANDO_CONFIRMACION_STT'
@@ -29,8 +30,12 @@ def test_tts_caching(mock_synthesize, init_database, owner_user, viewer_user):
     db.session.commit()
 
     # First call, should call synthesize
-    responder_municipio("hola", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
+    responder_chatboc(pregunta="hola", owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
     mock_synthesize.assert_called_once()
+
+    # Second call, should use cache
+    responder_chatboc(pregunta="hola", owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
+    mock_synthesize.assert_called_once() # Still called only once
 
 @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
 def test_prefers_audio_flag(mock_synthesize, init_database, owner_user):
@@ -42,7 +47,7 @@ def test_prefers_audio_flag(mock_synthesize, init_database, owner_user):
     db.session.add(chat_context)
     db.session.commit()
 
-    responder_municipio("hola", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
+    responder_chatboc(pregunta="hola", owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
     mock_synthesize.assert_called_once()
 
 @patch('services.municipio_responder.llamar_gemini')
@@ -61,9 +66,9 @@ def test_auto_learn_prefers_audio(mock_transcribe, mock_llamar_gemini, init_data
     chat_context = MockChatContext()
 
     # First audio message
-    responder_municipio({"media_url": "http://a.b/1.ogg"}, owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
+    responder_chatboc(pregunta={"media_url": "http://a.b/1.ogg"}, owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
     assert not viewer_user.prefers_audio
 
     # Second audio message
-    responder_municipio({"media_url": "http://a.b/2.ogg"}, owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
+    responder_chatboc(pregunta={"media_url": "http://a.b/2.ogg"}, owner_user=owner_user, rubro_obj=owner_user.rubro, current_user=viewer_user, chat_db_context=chat_context)
     assert viewer_user.prefers_audio
