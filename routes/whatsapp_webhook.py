@@ -300,18 +300,19 @@ def whatsapp_webhook():
             mime_type = uploaded_file_info.get("mime_type", "")
             if not mime_type.startswith("audio/"):
                 interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
-        # Location info should not be treated as interpreted media.
-        # It should be passed directly as location data.
+        elif location_info:
+            interpretacion_media_data = {
+                "categoria_sugerida": "ubicacion",
+                "ubicacion": location_info,
+            }
 
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
         if location_info:
-            # Pass location_info directly to the 'location' parameter of the bot logic
-            kwargs_for_bot["location"] = location_info
+            kwargs_for_bot["location_info"] = location_info
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
-            # This will now only contain data from actual images/files, not locations.
-            kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
+            kwargs_for_bot["interpretacion_imagen_data"] = interpretacion_media_data
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:

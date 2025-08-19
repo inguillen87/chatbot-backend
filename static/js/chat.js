@@ -10,7 +10,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     // Connect to the server using Socket.IO
     const socket = io({
-        query: { channel: 'web' }
+        auth: { channel: 'web' }
     });
     socket.on('connect', () => {
         console.log('Socket connected, id:', socket.id);
@@ -197,9 +197,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const button = document.createElement('button');
             button.innerText = buttonInfo.texto;
             button.addEventListener('click', () => {
-                const message = buttonInfo.action_id || buttonInfo.texto;
-                appendMessage('user', message);
-                socket.emit('message', { pregunta: message });
+                // The text to display in the chat
+                const displayText = buttonInfo.texto;
+                // The action to send to the backend. The server sends the action in the 'id' field.
+                const actionId = buttonInfo.id;
+
+                // Display the user-friendly text in the chat
+                appendMessage('user', displayText);
+
+                // Send the action_id in the 'action' field, and the text as 'pregunta'
+                socket.emit('message', {
+                    pregunta: displayText,
+                    action: actionId
+                });
+
                 // Remove buttons after one is clicked
                 buttonContainer.remove();
             });

@@ -1,30 +1,3 @@
-import re
-
-def _remove_redundant_urls_from_message(message_body, options_list):
-    """
-    Removes URLs from the message body if they are already present in the buttons.
-    """
-    if not message_body or not options_list:
-        return message_body
-
-    for option in options_list:
-        if isinstance(option, dict) and 'url' in option and option['url'] in message_body:
-            message_body = message_body.replace(option['url'], '')
-
-    # Clean up common leftover phrases and extra spaces
-    message_body = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
-    message_body = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
-    message_body = re.sub(r'enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
-
-    # Replace multiple spaces with a single space and clean up punctuation
-    message_body = re.sub(r'\s{2,}', ' ', message_body).strip()
-    message_body = message_body.replace(' .', '.').strip()
-    message_body = re.sub(r'[,:]\s*\.', '.', message_body)
-    if message_body == ':':
-        message_body = ''
-
-    return message_body
-
 def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None):
     nombre_asesor = None
     telefono_asesor = None
@@ -93,7 +66,4 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 
 Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
 
-    # Limpiar URLs redundantes del cuerpo del mensaje
-    respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones)
-
-    return respuesta_limpia, botones
+    return respuesta, botones

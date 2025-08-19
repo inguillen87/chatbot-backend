@@ -45,10 +45,8 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             raise TypeError("El cuerpo debe ser JSON")
 
         pregunta = data.get("pregunta")
-        location = data.get("location")
-        # Si no hay pregunta pero sí ubicación, es válido. Se generará una pregunta sintética más adelante.
-        if not pregunta and not location:
-            raise ValueError("La solicitud debe contener al menos un campo 'pregunta' o 'location'.")
+        if not pregunta:
+            raise ValueError("Falta el campo 'pregunta'")
 
         if tipo_chat_fijo:
             tipo_chat = tipo_chat_fijo
@@ -179,12 +177,7 @@ def _procesar_chat(
             ) = _parse_request(tipo_chat_fijo)
             if error_response:
                 return error_response, 400
-
-            # Si la solicitud solo contenía una ubicación, creamos una pregunta sintética para que el backend la procese.
-            if not pregunta and location:
-                pregunta = "[Ubicación compartida por el usuario]"
         except Exception as e:
-            current_app.logger.error(f"Error parsing request in _procesar_chat: {e}", exc_info=True)
             return jsonify({"error": f"Invalid request format: {e}"}), 400
 
         current_app.logger.debug(
