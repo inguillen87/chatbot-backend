@@ -1,0 +1,9 @@
+[
+    {
+        "nombre": "Demo MDZ Cam 01",
+        "lat": -32.8906,
+        "lon": -68.844,
+        "url": "https://www.youtube.com/watch?v=F32145I2R38",
+        "rois_file": "data/estacionamiento/rois/demo_mdz_cam01.geojson"
+    }
+]

@@ -9,6 +9,7 @@ instance/*
 !data/tramites.json
 !data/respuestas_municipio.json
 !data/product_synonyms.json
+!data/estacionamiento/camaras.json
 !data/municipios/**
 __pycache__/
 *.pyc
@@ -21,3 +22,4 @@ sandbox_venv/
 
 # Pero permite que la estructura instance/ exista
 node_modules
+!data/estacionamiento/camaras.json
