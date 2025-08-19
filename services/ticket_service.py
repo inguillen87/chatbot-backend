@@ -10,7 +10,6 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     db,
-    User,
 )
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
@@ -91,6 +90,7 @@ class ServicioTickets:
         }
 
     def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
+        from models import User  # Import User model here to avoid circular import at module level
         creator = self.creators.get(tipo_ticket)
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
@@ -98,6 +98,7 @@ class ServicioTickets:
         # --- Verificación y actualización de datos personales del usuario ---
         user_id = ticket_data.get("user_id")
         if user_id:
+            from models import User
             user = db.session.get(User, user_id)
             if user:
                 # Priorizar datos del LLM si existen y son diferentes a los del perfil
