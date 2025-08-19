@@ -187,61 +187,64 @@ def whatsapp_webhook():
     message_body = incoming_text
 
     if media_url and media_content_type:
-        if media_content_type.startswith("audio/"):
-            session_context_db_entry.context_data['source_is_audio'] = True
-            from services.audio_transcription_service import transcribe_audio_from_url
-            transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            if transcribed_text:
-                message_body = transcribed_text
-            else:
-                print("Audio transcription failed or returned empty.")
-        else:
-            session_context_db_entry.context_data.pop('source_is_audio', None)
+        try:
+            # Download the file from Twilio's URL first
+            auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            r = requests.get(media_url, auth=auth)
+            r.raise_for_status()
+            media_content = r.content
 
-        # This block handles non-audio media (images, PDFs)
-        if not media_content_type.startswith("audio/"):
-            try:
-                # Download the file from Twilio's URL
-                auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-                r = requests.get(media_url, auth=auth)
-                r.raise_for_status()
+            # Create a FileStorage object to be compatible with our services
+            file_stream = io.BytesIO(media_content)
+            file_name = f"whatsapp_media_{uuid.uuid4().hex[:12]}"
+            file_storage = FileStorage(
+                stream=file_stream,
+                filename=file_name,
+                content_type=media_content_type
+            )
 
-                # Create a FileStorage object to be compatible with our services
-                file_stream = io.BytesIO(r.content)
-                file_name = f"whatsapp_media_{uuid.uuid4().hex[:12]}"
-                file_storage = FileStorage(
-                    stream=file_stream,
-                    filename=file_name,
-                    content_type=media_content_type
-                )
+            # Use the attachment service to save the file and create a thumbnail if applicable
+            adjunto = create_attachment_with_thumbnail(
+                file_storage=file_storage,
+                user_id=end_user.id if end_user else None,
+                session_id=chat_session_id_internal
+            )
 
-                # Use the new attachment service
-                adjunto = create_attachment_with_thumbnail(
-                    file_storage=file_storage,
-                    user_id=end_user.id if end_user else None,
-                    session_id=chat_session_id_internal
-                )
+            if not adjunto:
+                 raise Exception("create_attachment_with_thumbnail failed to return an attachment object.")
 
-                if adjunto:
-                    # Prepare the info for the chatbot logic
-                    uploaded_file_info = {
-                        "id": adjunto.id,
-                        "url": adjunto.url,
-                        "mime_type": adjunto.mime,
-                        "name": adjunto.nombre_original,
-                        "source": "whatsapp"
-                    }
-                    post_vars["uploaded_file_info"] = uploaded_file_info
-                    current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
+            # Prepare the info for the chatbot logic, which will be used for all media types
+            uploaded_file_info = {
+                "id": adjunto.id,
+                "url": adjunto.url,
+                "mime_type": adjunto.mime,
+                "name": adjunto.nombre_original,
+                "source": "whatsapp"
+            }
+            current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
+
+            if media_content_type.startswith("audio/"):
+                session_context_db_entry.context_data['source_is_audio'] = True
+                from services.audio_transcription_service import transcribe_audio_from_url
+                # We pass the direct URL to the transcription service
+                transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                if transcribed_text:
+                    message_body = transcribed_text
+                    uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
-                    current_app.logger.error(f"Failed to process WhatsApp media from URL: {media_url} using attachment_service")
+                    current_app.logger.warning("Audio transcription failed or returned empty.")
+            else:
+                # If it's not audio, remove the source_is_audio flag
+                session_context_db_entry.context_data.pop('source_is_audio', None)
 
-            except requests.exceptions.RequestException as e:
-                current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
-            except Exception as e:
-                current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
-
+        except requests.exceptions.RequestException as e:
+            current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
+        except Exception as e:
+            current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
+            # Reset uploaded_file_info if processing fails
+            uploaded_file_info = None
     else:
+        # If no media, ensure the flag is not present
         session_context_db_entry.context_data.pop('source_is_audio', None)
 
     # --- Location Handling ---

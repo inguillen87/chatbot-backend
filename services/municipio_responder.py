@@ -1327,7 +1327,7 @@ MENU_KEYWORDS = {
     "licencia_de_conducir": ["licencia", "conducir", "licencias", "carnet"],
     "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "boletas"],
     "consultar_otros_tramites": ["consultar", "consulta", "tramites", "tramite", "otros"],
-    "veterinaria_y_bromatologia": ["veterinaria", "animales", "perro", "gato", "mascotas", "bromatologia"],
+    "veterinaria_y_bromatologia": ["veterinaria", "animales", "perro", "gato", "mascotas", "bromatologia", "bromatología"],
     "solicitar_turnos": ["turnos", "turno", "solicitar"],
     "agenda_cultural_y_turistica": ["agenda", "cultural", "turistica", "turismo", "eventos"],
     "ultimas_novedades": ["novedades", "noticias", "ultimas"],
@@ -1361,13 +1361,18 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
                 return button.get("action_id")
 
     # 3. Check for keyword match
-    all_keywords = {keyword: action_id for action_id, keywords in MENU_KEYWORDS.items() for keyword in keywords}
-    best_match, score = process.extractOne(normalized_input, all_keywords.keys())
+    local_keywords = {}
+    for button in menu_buttons:
+        action_id = button.get('action_id')
+        if action_id in MENU_KEYWORDS:
+            for keyword in MENU_KEYWORDS[action_id]:
+                local_keywords[keyword] = action_id
 
-    if score > 80:
-        action_id = all_keywords[best_match]
-        if any(btn.get('action_id') == action_id for btn in menu_buttons):
-            return action_id
+    if local_keywords:
+        best_match, score = process.extractOne(normalized_input, local_keywords.keys())
+
+        if score > 80:
+            return local_keywords[best_match]
 
     return None
 

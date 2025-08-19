@@ -163,7 +163,7 @@ def _procesar_chat(
         else:
             return jsonify({"error": "Audio file is empty."}), 400
     else:
-        chat_context_obj.context_data.pop('source_is_audio', None) # Remove flag if it's a text message
+        # chat_context_obj.context_data.pop('source_is_audio', None) # This was moved to after the check
         try:
             (
                 pregunta,

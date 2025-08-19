@@ -7,23 +7,25 @@ def _remove_redundant_urls_from_message(message_body, options_list):
     if not message_body or not options_list:
         return message_body
 
+    message_body_str = str(message_body)
+
     for option in options_list:
-        if isinstance(option, dict) and 'url' in option and option['url'] in message_body:
-            message_body = message_body.replace(option['url'], '')
+        if isinstance(option, dict) and 'url' in option and option['url'] in message_body_str:
+            message_body_str = message_body_str.replace(option['url'], '')
 
     # Clean up common leftover phrases and extra spaces
-    message_body = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
-    message_body = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
-    message_body = re.sub(r'enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+    message_body_str = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
+    message_body_str = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
+    message_body_str = re.sub(r'enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
 
     # Replace multiple spaces with a single space and clean up punctuation
-    message_body = re.sub(r'\s{2,}', ' ', message_body).strip()
-    message_body = message_body.replace(' .', '.').strip()
-    message_body = re.sub(r'[,:]\s*\.', '.', message_body)
-    if message_body == ':':
-        message_body = ''
+    message_body_str = re.sub(r'\s{2,}', ' ', message_body_str).strip()
+    message_body_str = message_body_str.replace(' .', '.').strip()
+    message_body_str = re.sub(r'[,:]\s*\.', '.', message_body_str)
+    if message_body_str == ':':
+        message_body_str = ''
 
-    return message_body
+    return message_body_str
 
 def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None):
     nombre_asesor = None
@@ -39,17 +41,18 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
         horario_asesor = contacto_especializado.get("horario")
         link_informacion = contacto_especializado.get("link")
         if nombre_asesor and telefono_asesor:
-            telefono_numerico = ''.join(filter(str.isdigit, telefono_asesor))
-            link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20quiero%20hacer%20seguimiento%20de%20mi%20{tipo}%20(ID:{id_ticket})"
-            botones.append({
-                "texto": f"📱 Contactar a {nombre_asesor}",
-                "url": link_whatsapp,
-                "type": "url"
-            })
+            # telefono_numerico = ''.join(filter(str.isdigit, str(telefono_asesor)))
+            # link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20quiero%20hacer%20seguimiento%20de%20mi%20{tipo}%20(ID:{id_ticket})"
+            # botones.append({
+            #     "texto": f"📱 Contactar a {nombre_asesor}",
+            #     "url": str(link_whatsapp),
+            #     "type": "url"
+            # })
+            pass
         if link_informacion:
             botones.append({
                 "texto": "🌐 Más información",
-                "url": link_informacion,
+                "url": str(link_informacion),
                 "type": "url"
             })
 

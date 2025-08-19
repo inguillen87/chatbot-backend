@@ -902,6 +902,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         }
     )
     if nuevo_comentario:
+        db.session.commit()
         # Notificación por Websocket
         data = {
             "message": f"Nuevo mensaje en tu ticket #{sala_de_chat.nro_ticket}",
@@ -947,6 +948,7 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
         },
     )
     if nuevo_comentario:
+        db.session.commit()
         data = {
             "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
             "ticket_id": ticket_id,

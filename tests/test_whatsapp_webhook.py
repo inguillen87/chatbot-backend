@@ -223,16 +223,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self._create_confirmed_session()
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
-             patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
+             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
-            mock_upload_gcs.return_value = {
-                'public_url': 'http://gcs.example.com/test.pdf',
-                'unique_name': 'unique_test.pdf',
-                'original_name': 'test.pdf',
-                'mimetype': 'application/pdf',
-                'size': len(b'fake-pdf-content')
-            }
+            mock_adjunto = MagicMock()
+            mock_adjunto.id = 1
+            mock_adjunto.url = 'http://fake.storage/test.pdf'
+            mock_adjunto.mime = 'application/pdf'
+            mock_adjunto.nombre_original = 'test.pdf'
+            mock_create_attachment.return_value = mock_adjunto
             mock_classifier.return_value = {"categoria_sugerida": "documentacion"}
 
             payload = {
@@ -253,9 +252,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             _, kwargs = mock_bot.call_args
             self.assertIn("uploaded_file_info", kwargs)
             self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "application/pdf")
-            self.assertIn("interpretacion_imagen_data", kwargs)
+            self.assertIn("datos_interpretados_archivo", kwargs)
             self.assertEqual(
-                kwargs["interpretacion_imagen_data"], {"categoria_sugerida": "documentacion"}
+                kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "documentacion"}
             )
 
             self.mock_twilio_create.assert_called_once_with(
@@ -282,16 +281,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self._create_confirmed_session()
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
-             patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
+             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
-            mock_upload_gcs.return_value = {
-                'public_url': 'http://gcs.example.com/test.docx',
-                'unique_name': 'unique_test.docx',
-                'original_name': 'test.docx',
-                'mimetype': "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                'size': len(b'fake-docx-content')
-            }
+            mock_adjunto = MagicMock()
+            mock_adjunto.id = 2
+            mock_adjunto.url = 'http://fake.storage/test.docx'
+            mock_adjunto.mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            mock_adjunto.nombre_original = 'test.docx'
+            mock_create_attachment.return_value = mock_adjunto
             mock_classifier.return_value = {"categoria_sugerida": "documentacion"}
 
             payload = {
@@ -315,9 +313,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 kwargs["uploaded_file_info"]["mime_type"],
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
-            self.assertIn("interpretacion_imagen_data", kwargs)
+            self.assertIn("datos_interpretados_archivo", kwargs)
             self.assertEqual(
-                kwargs["interpretacion_imagen_data"], {"categoria_sugerida": "documentacion"}
+                kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "documentacion"}
             )
 
             self.mock_twilio_create.assert_called_once_with(
@@ -344,16 +342,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self._create_confirmed_session()
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
-             patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
+             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
-            mock_upload_gcs.return_value = {
-                'public_url': 'http://gcs.example.com/test.jpg',
-                'unique_name': 'unique_test.jpg',
-                'original_name': 'test.jpg',
-                'mimetype': 'image/jpeg',
-                'size': len(b'fake-image-content')
-            }
+            mock_adjunto = MagicMock()
+            mock_adjunto.id = 3
+            mock_adjunto.url = 'http://fake.storage/test.jpg'
+            mock_adjunto.mime = 'image/jpeg'
+            mock_adjunto.nombre_original = 'test.jpg'
+            mock_create_attachment.return_value = mock_adjunto
             mock_classifier.return_value = {"categoria_sugerida": "reclamo"}
 
             payload = {
@@ -374,9 +371,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             _, kwargs = mock_bot.call_args
             self.assertIn("uploaded_file_info", kwargs)
             self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "image/jpeg")
-            self.assertIn("interpretacion_imagen_data", kwargs)
+            self.assertIn("datos_interpretados_archivo", kwargs)
             self.assertEqual(
-                kwargs["interpretacion_imagen_data"], {"categoria_sugerida": "reclamo"}
+                kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "reclamo"}
             )
 
             self.mock_twilio_create.assert_called_once_with(
@@ -436,17 +433,16 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self._create_confirmed_session()
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
-             patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
+             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
              patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
-            mock_upload_gcs.return_value = {
-                'public_url': 'http://gcs.example.com/test.ogg',
-                'unique_name': 'unique_test.ogg',
-                'original_name': 'test.ogg',
-                'mimetype': 'audio/ogg',
-                'size': len(b'fake-audio-content')
-            }
+            mock_adjunto = MagicMock()
+            mock_adjunto.id = 4
+            mock_adjunto.url = 'http://fake.storage/test.ogg'
+            mock_adjunto.mime = 'audio/ogg'
+            mock_adjunto.nombre_original = 'test.ogg'
+            mock_create_attachment.return_value = mock_adjunto
             mock_transcribe.return_value = None
 
             payload = {
@@ -467,7 +463,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             _, kwargs = mock_bot.call_args
             self.assertIn("uploaded_file_info", kwargs)
             self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "audio/ogg")
-            self.assertNotIn("interpretacion_imagen_data", kwargs)
+            self.assertNotIn("datos_interpretados_archivo", kwargs)
             mock_classifier.assert_not_called()
 
             self.mock_twilio_create.assert_called_once_with(
@@ -493,17 +489,16 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self._create_confirmed_session()
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
-             patch('routes.whatsapp_webhook.upload_to_gcs') as mock_upload_gcs, \
+             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
              patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
-            mock_upload_gcs.return_value = {
-                'public_url': 'http://gcs.example.com/test.ogg',
-                'unique_name': 'unique_test.ogg',
-                'original_name': 'test.ogg',
-                'mimetype': 'audio/ogg',
-                'size': len(b'fake-audio-content')
-            }
+            mock_adjunto = MagicMock()
+            mock_adjunto.id = 5
+            mock_adjunto.url = 'http://fake.storage/test.ogg'
+            mock_adjunto.mime = 'audio/ogg'
+            mock_adjunto.nombre_original = 'test.ogg'
+            mock_create_attachment.return_value = mock_adjunto
             mock_transcribe.return_value = "hola que tal"
 
             payload = {
@@ -521,6 +516,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             mock_bot.assert_called_once()
             kwargs = mock_bot.call_args.kwargs
             self.assertEqual(kwargs["pregunta"], "hola que tal")
+            self.assertIn("uploaded_file_info", kwargs)
             self.assertEqual(kwargs["uploaded_file_info"]["transcribed_text"], "hola que tal")
             mock_classifier.assert_not_called()
             mock_transcribe.assert_called_once()

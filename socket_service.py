@@ -144,6 +144,7 @@ def handle_send_chat_message(data):
     )
 
     if nuevo_comentario:
+        db.session.commit()
         # 1. Emitir el nuevo mensaje a todos en la sala del chat en vivo.
         emit('new_chat_message', {
             'ticket_id': ticket_id,
