@@ -43,17 +43,23 @@ def set_audio_enabled(chat_context_data: Dict[str, Any], enabled: bool) -> None:
 
 
 def is_audio_enabled(chat_context_data: Dict[str, Any], user: Any | None = None) -> bool:
-    """Return True if audio responses should be generated."""
-    if user is not None and getattr(user, "prefers_audio", False):
-        user_pref = True
-    else:
-        user_pref = False
-
+    """
+    Return True if audio responses should be generated.
+    Defaults to True for inclusivity, but respects user/session overrides.
+    """
     prefs = _prefs(chat_context_data)
+
+    # 1. Check for an explicit session-level override (e.g., user clicked a button)
     context_pref = prefs.get(AUDIO_ENABLED_KEY)
     if isinstance(context_pref, bool):
         return context_pref
-    return user_pref
+
+    # 2. Check for a user-level preference stored in their profile
+    if user is not None and hasattr(user, 'prefers_audio') and isinstance(user.prefers_audio, bool):
+        return user.prefers_audio
+
+    # 3. Default to True for all users if no specific preference is set
+    return True
 
 
 def clear_preferences(chat_context_data: Dict[str, Any]) -> None:

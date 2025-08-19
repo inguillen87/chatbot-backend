@@ -87,5 +87,30 @@ class TestMunicipioImprovements(unittest.TestCase):
                     self.fail(f"responder_municipio raised TypeError unexpectedly: {e}")
 
 
+from services.response_formatter import build_interactive_response
+
+class TestResponseFormatter(unittest.TestCase):
+    def test_build_interactive_response_for_whatsapp_list(self):
+        """
+        Tests that build_interactive_response generates a 'list' type interactive
+        message for WhatsApp when more than 3 options are provided.
+        """
+        options = [
+            {"id": "1", "texto": "Option 1"},
+            {"id": "2", "texto": "Option 2"},
+            {"id": "3", "texto": "Option 3"},
+            {"id": "4", "texto": "Option 4"},
+        ]
+        body_text = "Please choose an option:"
+        channel = "whatsapp"
+
+        response = build_interactive_response(options, body_text, channel, message_type='interactive_list')
+
+        self.assertEqual(response['type'], 'interactive')
+        interactive_payload = response['interactive']
+        self.assertEqual(interactive_payload['type'], 'list')
+        self.assertEqual(len(interactive_payload['action']['sections'][0]['rows']), 4)
+
+
 if __name__ == '__main__':
     unittest.main()
