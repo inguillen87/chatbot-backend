@@ -52,6 +52,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
         ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
+
+        if ubicacion_llm and not distrito_llm:
+            logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
+            parsed_address = parse_direccion(ubicacion_llm)
+            if parsed_address and parsed_address.get('localidad'):
+                distrito_llm = parsed_address.get('localidad')
+                logger.info(f"Parsed district: {distrito_llm}")
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 

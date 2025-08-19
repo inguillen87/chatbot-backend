@@ -27,7 +27,7 @@ def init_database(client):
     db.session.add(rubro)
 
     # Create an owner user (admin)
-    owner_user = User(id=1, name="Admin User", email="admin@test.com", rol="admin", municipio_id=1, rubro_id=1)
+    owner_user = User(id=1, name="Admin User", email="admin@test.com", rol="admin", municipio_id=1, rubro_id=1, tipo_chat="municipio")
     owner_user.set_password("admin")
     db.session.add(owner_user)
 

@@ -45,39 +45,30 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.pymes.llamar_gemini')
-    @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
-    def test_audio_response_is_generated_for_audio_input(self, mock_synthesize_speech, mock_llamar_gemini):
+    @patch('services.google_text_to_speech.generate_audio_url')
+    def test_audio_response_is_generated_for_audio_input(self, mock_generate_audio_url):
         """
         Tests if an audio response is generated when the input was audio.
         """
         # --- Setup ---
-        mock_llamar_gemini.return_value = {
-            "message_body": "Esta es una respuesta de prueba.",
-            "accion_backend": "responder_directamente",
-            "options_list": []
-        }
         fake_audio_url = "/static/audio/test_audio.mp3"
-        mock_synthesize_speech.return_value = fake_audio_url
+        mock_generate_audio_url.return_value = fake_audio_url
 
         self.viewer_user.prefers_audio = True
+        db.session.commit()
 
         chat_session = ChatSessionContext(
             chat_session_id='audio_test_session',
             user_id=self.owner_user.id,
-            context_data={
-                'source_is_audio': True
-            }
+            context_data={'source_is_audio': True}
         )
         db.session.add(chat_session)
         db.session.commit()
 
         # --- Act ---
-        # The original patch was pointing to the wrong function.
-        # This test runs with a 'pyme' user, so we need to patch 'responder_pyme'.
-        with patch('services.pymes.responder_pyme') as mock_responder_pyme:
-            mock_responder_pyme.return_value = {
-                "respuesta": "Esta es una respuesta de prueba.",
+        with patch('services.logic.responder_municipio') as mock_responder_municipio:
+            mock_responder_municipio.return_value = {
+                "message_body": "Esta es una respuesta de prueba.",
                 "generar_audio": True,
             }
             response_dict = responder_chatboc(
@@ -89,9 +80,10 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             )
 
         # --- Assert ---
-        # The 'responder_chatboc' function should ultimately return the URL,
-        # and the synthesis mock should have been called.
-        mock_synthesize_speech.assert_called_once_with("Esta es una respuesta de prueba.")
+        mock_generate_audio_url.assert_called_once()
+        args, _ = mock_generate_audio_url.call_args
+        self.assertEqual(args[0], "Esta es una respuesta de prueba.")
+        self.assertEqual(args[2], self.viewer_user)
         self.assertIn('audio_url', response_dict)
         self.assertEqual(response_dict['audio_url'], fake_audio_url)
 

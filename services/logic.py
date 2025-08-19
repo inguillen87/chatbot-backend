@@ -25,6 +25,7 @@ RUBROS_PUBLICOS = {
     "entidad_publica",
     "municipal",
     "publico",
+    "municipalidad",
     # Agregá acá los que consideres públicos
 }
 
@@ -34,10 +35,10 @@ def normalizar_rubro(rubro) -> str:
         return ""
     if isinstance(rubro, str):
         return rubro.strip().lower()
-    if hasattr(rubro, "nombre") and getattr(rubro, "nombre"):
-        return str(rubro.nombre).strip().lower()
     if hasattr(rubro, "clave") and getattr(rubro, "clave"):
         return str(rubro.clave).strip().lower()
+    if hasattr(rubro, "nombre") and getattr(rubro, "nombre"):
+        return str(rubro.nombre).strip().lower()
     return str(rubro).strip().lower()
 
 
@@ -56,6 +57,8 @@ from services.pymes import responder_pyme
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
 
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
+from sqlalchemy.orm.attributes import flag_modified
+
 def responder_chatboc(
     pregunta,
     owner_user=None,
@@ -72,6 +75,38 @@ def responder_chatboc(
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
     logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}', chat_session_uuid='{chat_session_uuid}', channel='{channel}'")
+
+    # --- Low-confidence STT handling ---
+    if isinstance(pregunta, dict) and 'confidence' in pregunta and 'transcript' in pregunta:
+        confidence = pregunta.get('confidence', 1.0)
+        transcript = pregunta.get('transcript', '')
+        if confidence < 0.8 and transcript:
+            if chat_db_context:
+                chat_db_context.context_data['stt_pending_confirmation'] = transcript
+                flag_modified(chat_db_context, "context_data")
+            return {
+                "message_body": f"Escuché: \"{transcript}\". ¿Es correcto?",
+                "options_list": [
+                    {"texto": "Sí, es correcto", "action_id": "confirmar_stt_si"},
+                    {"texto": "No, intentar de nuevo", "action_id": "confirmar_stt_no"}
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "confirmacion_stt_baja_confianza"
+            }
+        pregunta = transcript # Use the transcript as the question
+
+    if pregunta == "confirmar_stt_si":
+        if chat_db_context and 'stt_pending_confirmation' in chat_db_context.context_data:
+            pregunta = chat_db_context.context_data.pop('stt_pending_confirmation')
+            flag_modified(chat_db_context, "context_data")
+        else:
+            return {"message_body": "Hubo un error, no recuerdo qué estábamos confirmando. Por favor, inténtalo de nuevo."}
+
+    if pregunta == "confirmar_stt_no":
+        if chat_db_context:
+            chat_db_context.context_data.pop('stt_pending_confirmation', None)
+            flag_modified(chat_db_context, "context_data")
+        return {"message_body": "Entendido. Por favor, envía tu mensaje de nuevo."}
 
     # 1. Determinar el 'effective_owner_user' (la entidad o bot dueño)
     effective_owner_user = owner_user

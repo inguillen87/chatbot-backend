@@ -169,6 +169,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.botones && data.botones.length > 0) {
             appendButtons(data.botones);
         }
+
+        // If the server asks for more info, display a form
+        if (data.pedir_info && Array.isArray(data.pedir_info)) {
+            appendContactForm(data.pedir_info);
+        }
     });
 
     // --- Helper Functions ---
@@ -207,6 +212,42 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         chatMessages.appendChild(buttonContainer);
         chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // Function to append a contact form
+    function appendContactForm(fields) {
+        const form = document.createElement('form');
+        form.id = 'contact-form';
+
+        fields.forEach(field => {
+            const input = document.createElement('input');
+            input.id = `contact-${field}`;
+            input.name = field;
+            input.placeholder = field.charAt(0).toUpperCase() + field.slice(1);
+            input.required = true;
+            form.appendChild(input);
+        });
+
+        const submitButton = document.createElement('button');
+        submitButton.type = 'submit';
+        submitButton.textContent = 'Enviar';
+        form.appendChild(submitButton);
+
+        chatMessages.appendChild(form);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData.entries());
+
+            // Create a readable message from the data
+            const message = Object.entries(data).map(([key, value]) => `${key}: ${value}`).join(', ');
+
+            appendMessage('user', message);
+            socket.emit('message', { pregunta: message });
+            form.remove();
+        });
     }
 
     // Function to get or generate a session ID (for stateful communication)

@@ -91,9 +91,7 @@ def test_responder_municipio_imagen(mock_llamar_gemini, client):
 
         # The flow now asks for contact details since none were provided, which is correct.
         # In this specific flow, responder_municipio returns the dictionary directly.
-        assert "Para continuar con tu reclamo, necesito algunos datos más" in response["message_to_user"]
-        assert "nombre" in response["message_to_user"]
-        assert "teléfono" in response["message_to_user"]
+        assert "Para continuar, aún necesito estos datos: ubicación, nombre, teléfono, email." in response["message_body"]
 
 def test_button_click_sets_category_and_advances_flow(client):
     """

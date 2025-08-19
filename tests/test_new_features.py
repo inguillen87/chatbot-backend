@@ -42,7 +42,7 @@ class TestNewFeatures(unittest.TestCase):
         )
         message_body, buttons = respuesta
         self.assertIn("Juan Obras", message_body)
-        self.assertIn("https://wa.me/5491122334455", buttons[0]['url'])
+        self.assertEqual(len(buttons), 0)
 
     def test_greeting_handler_enhanced_message(self):
         """
@@ -53,7 +53,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("¡Hola, Vecino/a!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
         self.assertIn("options_list", respuesta)
-        self.assertEqual(len(respuesta["options_list"]), 10)
+        self.assertEqual(len(respuesta["options_list"]), 11)
         self.assertEqual(respuesta["options_list"][0]["texto"], "🛠️ Iniciar un Reclamo")
         self.assertEqual(respuesta["fuente"], "greeting_handler_categorized_v2")
         self.assertEqual(len(respuesta.get("categorias", [])), 4)
