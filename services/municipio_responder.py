@@ -475,8 +475,9 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
 
     categorias = [
-        {"titulo": "🛠️ Reclamos", "botones": [
-            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}
+        {"titulo": "🛠️ Reclamos y Denuncias", "botones": [
+            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+            {"texto": "📢 Realizar una Denuncia", "action_id": "denuncias"}
         ]},
         {"titulo": "📄 Trámites y Consultas", "botones": [
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
@@ -485,6 +486,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         ]},
         {"titulo": "📅 Servicios y Turnos", "botones": [
             {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+            {"texto": "🚗 Estacionamiento", "action_id": "estacionamiento"},
             {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"}
         ]},
         {"titulo": "📰 Información y Novedades", "botones": [
@@ -741,6 +743,19 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "options_list": [],
             "message_type": "text",
             "fuente": "iniciar_denuncia"
+        }
+
+    if action_id == "estacionamiento":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
+        contexto_municipio_actual['consulta_pendiente_ubicacion'] = 'estacionamiento' # The query to run after getting location
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return {
+            "message_body": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección.",
+            "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
+            "message_type": "interactive_buttons",
+            "fuente": "pedir_ubicacion_estacionamiento"
         }
 
     if action_id == "solicitar_turnos":
@@ -1078,11 +1093,18 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
             if not pedir_info_llm:
-                # If the LLM thinks it has all the data, call the handler to validate and create the ticket.
+                # If the LLM thinks it has all the data, call the handler to validate.
+                # The handler is the source of truth. Its response will be used.
+                # This prevents a premature confirmation from the LLM being shown
+                # if the handler then asks for more information.
+                logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing CrearReclamoActionHandler for validation and creation.")
                 handler = CrearReclamoActionHandler(context)
-                response = handler.execute(datos_actuales)
-                # The handler's response is the final one, no more processing needed in this branch.
-                return response, contexto_municipio_actual
+                handler_response = handler.execute(datos_actuales)
+
+                # The handler's response is the final one, whether it's a success message
+                # or a request for more info. We return it directly, ignoring the LLM's
+                # potentially premature confirmation message.
+                return handler_response, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
@@ -1421,7 +1443,7 @@ def _get_reclamos_menu():
 
 
 SIMPLE_GREETINGS = {"hola", "buenos dias", "buenas tardes", "buenas noches", "menu", "hola buenos dias", "hola buenas tardes", "hola buenas noches", "buenas"}
-RETURN_TO_MAIN_MENU = {"volver al inicio", "volver al menu", "inicio", "menu"}
+RETURN_TO_MAIN_MENU = {"volver al inicio", "volver al menu", "inicio", "menu", "menú principal"}
 
 def responder_municipio(
     pregunta_original,
@@ -1586,13 +1608,16 @@ def responder_municipio(
                     received_payload["pregunta"] = pregunta_str
 
 
-    if not is_from_audio and normalizar_texto(pregunta_str) in SIMPLE_GREETINGS:
-        logger_actual.info(f"Simple greeting '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
+    # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
+    # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
+    if not is_from_audio and normalizar_texto(pregunta_str) in (SIMPLE_GREETINGS | RETURN_TO_MAIN_MENU):
+        logger_actual.info(f"Greeting or main menu request '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
+    # --- FIN FIX ---
 
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
@@ -1795,30 +1820,21 @@ def responder_municipio(
 
         logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}'")
 
-        # Reconstruct the button list to be used for matching
-        categorias_menu = [
-            {"titulo": "🛠️ Reclamos y Denuncias", "botones": [
-                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "📢 Realizar una Denuncia", "action_id": "denuncias"}
-            ]},
-            {"titulo": "📄 Trámites y Consultas", "botones": [
-                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                {"texto": "❓ Consultar otros trámites", "action_id": "consultar_otros_tramites"}
-            ]},
-            {"titulo": "📅 Servicios y Turnos", "botones": [
-                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"}
-            ]},
-            {"titulo": "📰 Información y Novedades", "botones": [
-                {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                {"texto": "🗞️ Últimas Novedades", "action_id": "ultimas_novedades"},
-                {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
-            ]}
-        ]
-        flat_buttons = [boton for categoria in categorias_menu for boton in categoria.get('botones', [])]
+        # Get the definitive menu structure from the payload generator
+        # This ensures that the menu we check against is the same one the user saw.
+        menu_payload = _get_main_menu_payload(context)
+        # The payload has 'options_list' which is the flat list of buttons with 'id' and 'texto'
+        flat_buttons = menu_payload.get('options_list', [])
 
-        selected_action = find_menu_action_by_input(pregunta_str_menu, flat_buttons)
+        # We need to adapt the list for find_menu_action_by_input, which expects 'action_id'
+        buttons_for_finder = []
+        for btn in flat_buttons:
+            buttons_for_finder.append({
+                "texto": btn.get("texto"),
+                "action_id": btn.get("id") # The 'id' key holds the action_id
+            })
+
+        selected_action = find_menu_action_by_input(pregunta_str_menu, buttons_for_finder)
 
         if selected_action:
             logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
@@ -2013,10 +2029,55 @@ def responder_municipio(
                 logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
                 return _finalize_response({"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"})
         else:
-            # User sent something other than a location
-            contexto_municipio_actual['estado_conversacion'] = None # Reset state
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
-            return _finalize_response({"message_body": "No recibí una ubicación. Si cambiaste de opinión, no hay problema. ¿En qué te puedo ayudar?", "options_list": [], "message_type": "text", "fuente": "no_location_received"})
+            # If no location object was sent, check if the user typed an address
+            if pregunta_str and len(pregunta_str) > 5: # Basic check to see if it's a potential address
+                from .herramientas_municipio import validar_y_formatear_direccion
+                logger_actual.info(f"Attempting to geocode textual address: '{pregunta_str}'")
+
+                # We can use the simpler geocoding tool here
+                geocoded_location = validar_y_formatear_direccion(pregunta_str)
+
+                if geocoded_location:
+                    # Address was valid, proceed with the original query
+                    consulta_guardada = contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
+                    contexto_municipio_actual['estado_conversacion'] = None # Clear state
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+                    if consulta_guardada:
+                        logger_actual.info(f"Geocoded address successfully. Processing saved query: '{consulta_guardada}'")
+                        # The handler expects the address string in the 'location' key
+                        return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": geocoded_location.get("formatted_address")}))
+                    else:
+                        # This case is unlikely but handled for safety
+                        logger_actual.warning("Geocoded address but no saved query found.")
+                        return _finalize_response({"message_body": f"OK, entiendo que estás en {geocoded_location.get('formatted_address')}. ¿Qué necesitabas buscar?", "options_list": [], "message_type": "text", "fuente": "geocoded_but_no_query"})
+                else:
+                    # Geocoding failed, stay in the same state and re-prompt.
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": "No pude entender esa dirección. Por favor, intentá de nuevo con más detalles, usá el botón para compartir tu ubicación, o escribí 'cancelar' para salir.",
+                        "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
+                        "message_type": "interactive_buttons",
+                        "fuente": "geocoding_failed_reprompt"
+                    })
+            else:
+                # User sent something that is not a location and not a potential address.
+                # Check for cancellation.
+                cancel_keywords = {"cancelar", "no", "salir", "basta", "terminar"}
+                if normalizar_texto(pregunta_str) in cancel_keywords or action == "cancelar":
+                    contexto_municipio_actual['estado_conversacion'] = None # Reset state
+                    contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({"message_body": "Ok, cancelado. ¿En qué otra cosa te puedo ayudar?", "options_list": [], "message_type": "text", "fuente": "ubicacion_cancelled"})
+                else:
+                    # Not a location, not an address, not a cancellation. Re-prompt.
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": "No recibí una ubicación. Por favor, compartí tu ubicación, escribí una dirección, o escribí 'cancelar' para salir.",
+                        "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
+                        "message_type": "interactive_buttons",
+                        "fuente": "no_location_reprompt"
+                    })
     # --- FIN: Manejo de recepción de ubicación ---
 
     elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name:
