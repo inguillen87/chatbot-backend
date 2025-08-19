@@ -56,11 +56,9 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 
     if nombre_asesor:
         respuesta += f"""
-📞 *Contacto para seguimiento:* {nombre_asesor} - {telefono_asesor}"""
+📞 *Contacto para seguimiento:* {nombre_asesor}"""
         if horario_asesor:
             respuesta += f"\n🕒 *Horario de atención:* {horario_asesor}"
-        if link_informacion:
-            respuesta += f"\n🔗 {link_informacion}"
 
     respuesta += """
 
