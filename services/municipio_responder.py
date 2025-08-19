@@ -475,9 +475,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
 
     categorias = [
-        {"titulo": "🛠️ Reclamos y Denuncias", "botones": [
-            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "📢 Realizar una Denuncia", "action_id": "denuncias"}
+        {"titulo": "🛠️ Reclamos", "botones": [
+            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}
         ]},
         {"titulo": "📄 Trámites y Consultas", "botones": [
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
@@ -486,7 +485,6 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         ]},
         {"titulo": "📅 Servicios y Turnos", "botones": [
             {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-            {"texto": "🚗 Estacionamiento", "action_id": "buscar_estacionamiento"},
             {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"}
         ]},
         {"titulo": "📰 Información y Novedades", "botones": [
@@ -630,28 +628,65 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     """
     Handles actions from the new categorized main menu.
     """
-    # Lista de actions que se consideran de "información simple" y deben ser manejadas por el handler genérico.
-    info_actions = [
-        "licencia_de_conducir",
-        "pago_de_tasas_vigentes",
-        "defensa_del_consumidor",
-        "veterinaria_y_bromatologia"
-    ]
-
-    if action_id in info_actions:
-        return handle_info_requests(action_id)
-
     if action_id == "mostrar_menu_reclamos":
         return _get_reclamos_menu()
 
-    if action_id == "buscar_estacionamiento":
-        municipio_name = context.get('municipio_config_actual', {}).get('nombre_display', 'Junín')
-        google_search_url = f"https://www.google.com/maps/search/?api=1&query=estacionamiento+en+{municipio_name.replace(' ', '+')}"
+    if action_id == "licencia_de_conducir":
         return {
-            "message_body": f"🚗 Para encontrar estacionamiento en {municipio_name}, te sugiero consultar el mapa:",
-            "options_list": [{"texto": "Buscar en Mapa", "url": google_search_url, "type": "url"}],
-            "message_type": "interactive_buttons",
-            "fuente": "info_estacionamiento_fase1"
+            "message_body": "🚗 Para requisitos y turnos de licencia de conducir, visitá el sitio oficial.",
+            "options_list": [{"texto": "Ir al Sitio Web", "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/", "type": "url"}],
+            "message_type": "interactive_buttons", "fuente": "info_licencia_conducir"
+        }
+    if action_id == "pago_tasas_vigentes":
+        return {
+            "message_body": "💵 Para pagar o descargar boletos de tasas vigentes, ingresá al portal de pagos.",
+            "options_list": [{"texto": "Ir al Portal de Pagos", "url": "https://epagos.juninmendoza.gov.ar/jrentas/", "type": "url"}],
+            "message_type": "interactive_buttons", "fuente": "info_pago_tasas"
+        }
+    if action_id == "defensa_del_consumidor":
+        return {
+            "message_body": "🛒 Para asesoramiento de Defensa del Consumidor, podés escribir un email.",
+            "options_list": [{"texto": "Enviar Email", "url": "mailto:defensadelconsumidorjuninmza@gmail.com", "type": "url"}],
+            "message_type": "interactive_buttons", "fuente": "info_defensa_consumidor"
+        }
+    if action_id == "veterinaria_y_bromatologia":
+        contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
+        contacto_data = contactos_info.get("Veterinaria y Bromatologia", {})
+
+        if not contacto_data:
+            # Fallback message if data is missing
+            return {
+                "message_body": "No se encontró la información de contacto para Veterinaria y Bromatología en este momento.",
+                "message_type": "text"
+            }
+
+        nombre = contacto_data.get("nombre")
+        telefono = contacto_data.get("telefono")
+        horario = contacto_data.get("horario")
+
+        message_body = f"🐾 *Información de Veterinaria y Bromatología*\n\n"
+        if nombre:
+            message_body += f"Encargado/a: *{nombre}*\n"
+        if telefono:
+            message_body += f"Teléfono: *{telefono}*\n"
+        if horario:
+            message_body += f"Horario de atención: *{horario}*\n"
+
+        botones = []
+        if telefono:
+            telefono_numerico = ''.join(filter(str.isdigit, telefono))
+            link_whatsapp = f"https://wa.me/{telefono_numerico}"
+            botones.append({
+                "texto": "Contactar por WhatsApp",
+                "url": link_whatsapp,
+                "type": "url"
+            })
+
+        return {
+            "message_body": message_body.strip(),
+            "options_list": botones,
+            "message_type": "interactive_buttons" if botones else "text",
+            "fuente": "info_veterinaria_json"
         }
 
     # Placeholder for actions without a defined response yet
@@ -753,36 +788,14 @@ def handle_info_requests(action_id: str) -> dict:
                 "message_type": "interactive_buttons" if tramite_data["botones"] else "text",
                 "fuente": f"info_request_{tramite_key}"
             }
-    elif action_id == "veterinaria_y_bromatologia":
+    elif action_id == "info_veterinaria":
         contacto_data = contactos_info.get("Veterinaria y Bromatologia")
         if contacto_data:
-            # Formatear una respuesta más completa
-            mensaje = "Para temas de veterinaria y bromatología, aquí tienes la información de contacto:\n"
-            if contacto_data.get("nombre"):
-                mensaje += f"\n- *Área:* {contacto_data['nombre']}"
-            if contacto_data.get("telefono"):
-                mensaje += f"\n- *Teléfono:* {contacto_data['telefono']}"
-            if contacto_data.get("horario"):
-                mensaje += f"\n- *Horario:* {contacto_data['horario']}"
-            if contacto_data.get("direccion"):
-                mensaje += f"\n- *Dirección:* {contacto_data['direccion']}"
-
-            botones = []
-            if contacto_data.get("telefono"):
-                telefono_numerico = ''.join(filter(str.isdigit, contacto_data['telefono']))
-                if telefono_numerico:
-                     link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20necesito%20información%20de%20Bromatología"
-                     botones.append({"texto": "Contactar por WhatsApp", "url": link_whatsapp, "type": "url"})
-
-            if contacto_data.get("link"):
-                botones.append({"texto": "Más Info en la Web", "url": contacto_data.get("link"), "type": "url"})
-
-
             return {
-                "message_body": mensaje,
-                "options_list": botones,
-                "message_type": "interactive_buttons" if botones else "text",
-                "fuente": "info_request_bromatologia_v2"
+                "message_body": f"Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp: {contacto_data['telefono']}",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "info_request_veterinaria"
             }
 
     return {
@@ -1387,41 +1400,22 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 def _get_reclamos_menu():
-    """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas, en formato de lista interactiva."""
-
-    # Define las categorías y sus botones. Cada diccionario en la lista es una sección en la lista interactiva.
-    categorias_reclamo = [
-        {
-            "titulo": "Categorías de Reclamos",
-            "botones": [
-                {"texto": "💡 Luminaria", "action_id": "reclamo_luminaria"},
-                {"texto": "🌳 Arbolado", "action_id": "reclamo_arbolado"},
-                {"texto": "🗑️ Limpieza y riego", "action_id": "reclamo_limpieza_riego"},
-                {"texto": "🚧 Arreglo de calle", "action_id": "reclamo_arreglo_calle"},
-                {"texto": "💧 Pérdida de agua", "action_id": "reclamo_perdida_agua"},
-                {"texto": "⚫ Otros", "action_id": "reclamo_otros"},
-                {"texto": "↩️ Volver al menú principal", "action_id": "saludar"},
-            ]
-        }
+    """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
+    opciones = [
+        {"texto": "*Volver al inicio*", "id_accion": "0", "category_name": "Volver al inicio"},
+        {"texto": "💡 *Luminaria*", "id_accion": "1", "category_name": "Luminaria"},
+        {"texto": "🌳 *Arbolado*", "id_accion": "2", "category_name": "Arbolado"},
+        {"texto": "🗑️ *Limpieza y riego*", "id_accion": "3", "category_name": "Limpieza y riego"},
+        {"texto": "🚧 *Arreglo de calle*", "id_accion": "4", "category_name": "Arreglo de calle"},
+        {"texto": "💧 *Pérdida de agua*", "id_accion": "5", "category_name": "Pérdida de agua"},
+        {"texto": "⚫ *Otros*", "id_accion": "6", "category_name": "Otros"},
     ]
-
-    # El frontend que usa 'interactive_list' espera una lista plana de botones en 'options_list'
-    # y la estructura anidada en 'categorias'.
-    flat_buttons = []
-    for categoria in categorias_reclamo:
-        for boton in categoria.get('botones', []):
-            new_boton = boton.copy()
-            # Asegurarse de que cada botón tenga un 'id' único para el frontend.
-            new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
-            flat_buttons.append(new_boton)
-
+    # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número o seleccionar una opción.
     return {
-        "message_body": "Elegí una categoría para tu reclamo:",
-        "options_list": flat_buttons,
-        "message_type": "interactive_list",
-        "accion_backend": "responder_directamente",
-        "fuente": "submenu_reclamos_lista_v5",
-        "categorias": categorias_reclamo,
+        "message_body": "Elegí una opción para tu reclamo:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_reclamos_estandar_v4",
         "generar_audio": True
     }
 

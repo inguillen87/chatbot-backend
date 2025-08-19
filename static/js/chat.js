@@ -9,7 +9,9 @@
 
 document.addEventListener('DOMContentLoaded', () => {
     // Connect to the server using Socket.IO
-    const socket = io();
+    const socket = io({
+        query: { channel: 'web' }
+    });
     socket.on('connect', () => {
         console.log('Socket connected, id:', socket.id);
     });

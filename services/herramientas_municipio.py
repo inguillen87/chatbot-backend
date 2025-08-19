@@ -141,26 +141,6 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     if not texto_direccion:
         return None
 
-    # Normalizar la entrada para una comparación robusta
-    texto_normalizado = normalizar_texto(texto_direccion)
-    nombre_municipio_norm = normalizar_texto(municipio_config.get('ciudad', '')) if municipio_config else ''
-
-    # Si el usuario solo ingresa el nombre del municipio (ej. "Junin"),
-    # interpretarlo como el centro de la ciudad para evitar preguntas innecesarias.
-    if nombre_municipio_norm and texto_normalizado == nombre_municipio_norm:
-        logger.info(f"Se detectó el nombre del municipio '{texto_direccion}' como entrada. Interpretando como centro de la ciudad.")
-        return {
-            "calle": None,
-            "numero": None,
-            "piso": None,
-            "departamento": None,
-            "barrio": "Centro",
-            "localidad": municipio_config.get('ciudad', 'Junín'),
-            "provincia": municipio_config.get('provincia', 'Mendoza'),
-            "codigo_postal": None,
-            "otros_detalles": "El usuario especificó el centro de la ciudad."
-        }
-
     if municipio_config is None:
         # This case should be less frequent if context always provides one (even the global one)
         logger.warning("[ParseDireccion] municipio_config no fue proporcionado, usando un diccionario vacío como fallback para defaults.")

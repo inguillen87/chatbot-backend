@@ -1,3 +1,30 @@
+import re
+
+def _remove_redundant_urls_from_message(message_body, options_list):
+    """
+    Removes URLs from the message body if they are already present in the buttons.
+    """
+    if not message_body or not options_list:
+        return message_body
+
+    for option in options_list:
+        if isinstance(option, dict) and 'url' in option and option['url'] in message_body:
+            message_body = message_body.replace(option['url'], '')
+
+    # Clean up common leftover phrases and extra spaces
+    message_body = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+    message_body = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+    message_body = re.sub(r'enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+
+    # Replace multiple spaces with a single space and clean up punctuation
+    message_body = re.sub(r'\s{2,}', ' ', message_body).strip()
+    message_body = message_body.replace(' .', '.').strip()
+    message_body = re.sub(r'[,:]\s*\.', '.', message_body)
+    if message_body == ':':
+        message_body = ''
+
+    return message_body
+
 def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None):
     nombre_asesor = None
     telefono_asesor = None
@@ -31,10 +58,7 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
             base_chat_url = base_chat_url[:-1]
 
         ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
-        # The frontend URL for viewing a ticket is /ticket/<nro>, not /chat/<nro>
-        # We derive the base URL and append the correct path.
-        base_url = base_chat_url.split('/chat')[0] if '/chat' in base_chat_url else base_chat_url
-        chat_url = f"{base_url}/ticket/{ticket_id_numeric}"
+        chat_url = f"{base_chat_url}/{ticket_id_numeric}"
         botones.append({
             "texto": "💬 Ver mi Ticket",
             "url": chat_url,
@@ -49,30 +73,27 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     }
     texto_tipo = tipos.get(tipo, "Consulta")
 
-    # --- Nuevo formato de respuesta ---
-    respuesta = f"""*¡Tu {texto_tipo} ha sido registrado con éxito!* ✅
+    respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*
 
-Aquí tienes los detalles de tu ticket:
------------------------------------
-- 📝 *Número de Ticket:* `{id_ticket}`
-- 🗂️ *Categoría:* {categoria}
-- 📋 *Tu descripción:* "{descripcion}"
------------------------------------
-
-*¿Qué sigue ahora?*
-El área correspondiente revisará tu solicitud. Te notificaremos por este medio sobre cualquier actualización.
+📄 *Resumen de tu {texto_tipo}:*
+- *N° de Ticket:* `{id_ticket}`
+- *Categoría:* {categoria}
+- *Descripción:* {descripcion}
 """
 
-    # Bloque de contacto mejorado
-    if nombre_asesor or telefono_asesor:
-        respuesta += "\n*¿Necesitas hacer un seguimiento?*\n"
-        if nombre_asesor:
-            respuesta += f"- 🏢 *Área:* {nombre_asesor}\n"
+    if nombre_asesor:
+        respuesta += f"""
+📞 *Contacto para seguimiento:* {nombre_asesor} - {telefono_asesor}"""
         if horario_asesor:
-            respuesta += f"- ⏰ *Horario:* {horario_asesor}\n"
-        if telefono_asesor:
-            respuesta += f"- 📞 *Teléfono:* {telefono_asesor}\n"
+            respuesta += f"\n🕒 *Horario de atención:* {horario_asesor}"
+        if link_informacion:
+            respuesta += f"\n🔗 {link_informacion}"
 
-    respuesta += "\n\nGracias por ayudarnos a mejorar Junín."
+    respuesta += """
 
-    return respuesta, botones
+Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
+
+    # Limpiar URLs redundantes del cuerpo del mensaje
+    respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones)
+
+    return respuesta_limpia, botones
