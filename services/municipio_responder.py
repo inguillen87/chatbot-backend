@@ -480,9 +480,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
 
     categorias = [
-        {"titulo": "🛠️ Reclamos y Denuncias", "botones": [
+        {"titulo": "🛠️ Reclamos", "botones": [
             {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "📢 Realizar una Denuncia", "action_id": "denuncias"}
         ]},
         {"titulo": "📄 Trámites y Consultas", "botones": [
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
@@ -1068,7 +1067,17 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 # If the LLM thinks it has all the data, call the handler to validate and create the ticket.
                 handler = CrearReclamoActionHandler(context)
                 response = handler.execute(datos_actuales)
-                # The handler's response is the final one, no more processing needed in this branch.
+
+                if not response.get("success"):
+                    # The handler detected missing fields and is asking for them.
+                    return {
+                        "message_body": response.get("message_to_user"),
+                        "options_list": response.get("options_list", []),
+                        "message_type": response.get("message_type", "text"),
+                        "fuente": "handler_pide_info_v2"
+                    }, contexto_municipio_actual
+
+                # If success, the handler's response is the final one.
                 return response, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
@@ -1387,22 +1396,41 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 def _get_reclamos_menu():
-    """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
-    opciones = [
-        {"texto": "*Volver al inicio*", "id_accion": "0", "category_name": "Volver al inicio"},
-        {"texto": "💡 *Luminaria*", "id_accion": "1", "category_name": "Luminaria"},
-        {"texto": "🌳 *Arbolado*", "id_accion": "2", "category_name": "Arbolado"},
-        {"texto": "🗑️ *Limpieza y riego*", "id_accion": "3", "category_name": "Limpieza y riego"},
-        {"texto": "🚧 *Arreglo de calle*", "id_accion": "4", "category_name": "Arreglo de calle"},
-        {"texto": "💧 *Pérdida de agua*", "id_accion": "5", "category_name": "Pérdida de agua"},
-        {"texto": "⚫ *Otros*", "id_accion": "6", "category_name": "Otros"},
+    """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas, en formato de lista interactiva."""
+
+    # Define las categorías y sus botones. Cada diccionario en la lista es una sección en la lista interactiva.
+    categorias_reclamo = [
+        {
+            "titulo": "Categorías de Reclamos",
+            "botones": [
+                {"texto": "💡 Luminaria", "action_id": "reclamo_luminaria"},
+                {"texto": "🌳 Arbolado", "action_id": "reclamo_arbolado"},
+                {"texto": "🗑️ Limpieza y riego", "action_id": "reclamo_limpieza_riego"},
+                {"texto": "🚧 Arreglo de calle", "action_id": "reclamo_arreglo_calle"},
+                {"texto": "💧 Pérdida de agua", "action_id": "reclamo_perdida_agua"},
+                {"texto": "⚫ Otros", "action_id": "reclamo_otros"},
+                {"texto": "↩️ Volver al menú principal", "action_id": "saludar"},
+            ]
+        }
     ]
-    # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número o seleccionar una opción.
+
+    # El frontend que usa 'interactive_list' espera una lista plana de botones en 'options_list'
+    # y la estructura anidada en 'categorias'.
+    flat_buttons = []
+    for categoria in categorias_reclamo:
+        for boton in categoria.get('botones', []):
+            new_boton = boton.copy()
+            # Asegurarse de que cada botón tenga un 'id' único para el frontend.
+            new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+            flat_buttons.append(new_boton)
+
     return {
-        "message_body": "Elegí una opción para tu reclamo:",
-        "message_type": "interactive_buttons",
-        "options_list": opciones,
-        "fuente": "submenu_reclamos_estandar_v4",
+        "message_body": "Elegí una categoría para tu reclamo:",
+        "options_list": flat_buttons,
+        "message_type": "interactive_list",
+        "accion_backend": "responder_directamente",
+        "fuente": "submenu_reclamos_lista_v5",
+        "categorias": categorias_reclamo,
         "generar_audio": True
     }
 
@@ -1692,8 +1720,8 @@ def responder_municipio(
 
     # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
     if not pregunta_str.strip() and location:
-        lat = location.get('latitude')
-        lon = location.get('longitude')
+        lat = location.get('lat')
+        lon = location.get('lon')
         address = location.get('address', f"coordenadas {lat}, {lon}")
 
         pregunta_str = (

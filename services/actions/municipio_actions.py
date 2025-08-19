@@ -55,6 +55,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
+        attachment_info = self.context.get("attachment_info")
+        if attachment_info and isinstance(attachment_info, dict):
+            foto_url_llm = attachment_info.get("url", foto_url_llm)
+
         # Lógica de fusión de datos de contacto mejorada
         llm_name = (action_data.get("usuario") or datos_parciales.get("usuario") or
                     action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado"))
