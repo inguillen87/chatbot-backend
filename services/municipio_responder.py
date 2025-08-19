@@ -486,6 +486,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         ]},
         {"titulo": "📅 Servicios y Turnos", "botones": [
             {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+            {"texto": "🚗 Estacionamiento", "action_id": "buscar_estacionamiento"},
             {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"}
         ]},
         {"titulo": "📰 Información y Novedades", "botones": [
@@ -629,32 +630,28 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     """
     Handles actions from the new categorized main menu.
     """
+    # Lista de actions que se consideran de "información simple" y deben ser manejadas por el handler genérico.
+    info_actions = [
+        "licencia_de_conducir",
+        "pago_de_tasas_vigentes",
+        "defensa_del_consumidor",
+        "veterinaria_y_bromatologia"
+    ]
+
+    if action_id in info_actions:
+        return handle_info_requests(action_id)
+
     if action_id == "mostrar_menu_reclamos":
         return _get_reclamos_menu()
 
-    if action_id == "licencia_de_conducir":
+    if action_id == "buscar_estacionamiento":
+        municipio_name = context.get('municipio_config_actual', {}).get('nombre_display', 'Junín')
+        google_search_url = f"https://www.google.com/maps/search/?api=1&query=estacionamiento+en+{municipio_name.replace(' ', '+')}"
         return {
-            "message_body": "🚗 Para requisitos y turnos de licencia de conducir, visitá el sitio oficial.",
-            "options_list": [{"texto": "Ir al Sitio Web", "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/", "type": "url"}],
-            "message_type": "interactive_buttons", "fuente": "info_licencia_conducir"
-        }
-    if action_id == "pago_tasas_vigentes":
-        return {
-            "message_body": "💵 Para pagar o descargar boletos de tasas vigentes, ingresá al portal de pagos.",
-            "options_list": [{"texto": "Ir al Portal de Pagos", "url": "https://epagos.juninmendoza.gov.ar/jrentas/", "type": "url"}],
-            "message_type": "interactive_buttons", "fuente": "info_pago_tasas"
-        }
-    if action_id == "defensa_del_consumidor":
-        return {
-            "message_body": "🛒 Para asesoramiento de Defensa del Consumidor, podés escribir un email.",
-            "options_list": [{"texto": "Enviar Email", "url": "mailto:defensadelconsumidorjuninmza@gmail.com", "type": "url"}],
-            "message_type": "interactive_buttons", "fuente": "info_defensa_consumidor"
-        }
-    if action_id == "veterinaria_y_bromatologia":
-        return {
-            "message_body": "🐾 Para información de Veterinaria y Bromatología, comunicate por WhatsApp.",
-            "options_list": [{"texto": "Contactar por WhatsApp", "url": "https://wa.me/5492634521563", "type": "url"}],
-            "message_type": "interactive_buttons", "fuente": "info_veterinaria"
+            "message_body": f"🚗 Para encontrar estacionamiento en {municipio_name}, te sugiero consultar el mapa:",
+            "options_list": [{"texto": "Buscar en Mapa", "url": google_search_url, "type": "url"}],
+            "message_type": "interactive_buttons",
+            "fuente": "info_estacionamiento_fase1"
         }
 
     # Placeholder for actions without a defined response yet
@@ -735,42 +732,59 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
 def handle_info_requests(action_id: str) -> dict:
     """
-    Handles simple informational requests based on action IDs from buttons.
+    Handles simple informational requests based on an action_id.
+    It checks both tramites.json and contactos_especializados.json.
     """
     tramites_info = get_tramites_info()
     contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
 
-    info_map = {
-        "info_licencia_conducir": "licencia_de_conducir",
-        "info_pago_tasas": "pago_de_tasas_vigentes",
-        "info_defensa_consumidor": "defensa_del_consumidor",
+    # Normalize the action_id to find a corresponding key in the JSON files
+    # e.g., 'veterinaria_y_bromatologia' -> 'Veterinaria y Bromatologia'
+    normalized_key = action_id.replace('_', ' ').title()
+
+    # A mapping for special cases where action_id doesn't directly map to a key
+    key_map = {
+        "Licencia De Conducir": "Licencia de Conducir",
+        "Pago De Tasas Vigentes": "Pago de Tasas",
+        "Defensa Del Consumidor": "Defensa del Consumidor",
+        "Veterinaria Y Bromatologia": "Veterinaria y Bromatologia" # Note the missing accent
     }
 
-    if action_id in info_map:
-        tramite_key = info_map[action_id]
-        if tramite_key in tramites_info:
-            tramite_data = tramites_info[tramite_key]
-            return {
-                "message_body": tramite_data["descripcion"],
-                "options_list": tramite_data["botones"],
-                "message_type": "interactive_buttons" if tramite_data["botones"] else "text",
-                "fuente": f"info_request_{tramite_key}"
-            }
-    elif action_id == "info_veterinaria":
-        contacto_data = contactos_info.get("Veterinaria y Bromatologia")
-        if contacto_data:
-            return {
-                "message_body": f"Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp: {contacto_data['telefono']}",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "info_request_veterinaria"
-            }
+    final_key = key_map.get(normalized_key, normalized_key)
+
+    tramite_data = tramites_info.get(action_id)  # tramites.json uses action_id directly
+    contacto_data = contactos_info.get(final_key)
+
+    if not tramite_data and not contacto_data:
+        return {
+            "message_body": "No encontré información sobre este tema. Por favor, intentá de nuevo.",
+            "fuente": "info_request_not_found"
+        }
+
+    # Build the response
+    message_parts = []
+    botones = []
+
+    if tramite_data and isinstance(tramite_data, dict):
+        if "descripcion" in tramite_data:
+            message_parts.append(tramite_data["descripcion"])
+        if "botones" in tramite_data:
+            botones.extend(tramite_data["botones"])
+
+    if contacto_data and isinstance(contacto_data, dict):
+        contact_message = f"Para más detalles, podés contactar a:\n" \
+                          f"👤 *{contacto_data.get('nombre', 'No disponible')}* ({contacto_data.get('titulo', 'N/A')})\n" \
+                          f"📞 *Teléfono:* {contacto_data.get('telefono', 'No disponible')}\n" \
+                          f"🕒 *Horario:* {contacto_data.get('horario', 'No disponible')}"
+        message_parts.append(contact_message)
+
+    final_message = "\n\n".join(message_parts)
 
     return {
-        "message_body": "No encontré la información solicitada. Por favor, intentá de nuevo.",
-        "options_list": [],
-        "message_type": "text",
-        "fuente": "info_request_not_found"
+        "message_body": final_message,
+        "options_list": botones,
+        "message_type": "interactive_buttons" if botones else "text",
+        "fuente": f"info_request_{action_id}"
     }
 
 
