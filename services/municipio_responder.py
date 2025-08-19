@@ -931,6 +931,7 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
 
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
     logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
+    datos_actuales = {} # Initialize to prevent UnboundLocalError
 
     logger_actual.info(
         f"[HANDLE_LLM_START] pregunta='{pregunta_str}' estado_previo='{contexto_municipio_actual.get('estado_conversacion')}' ubicacion='{contexto_municipio_actual.get('datos_parciales_llm_reclamo', {}).get('ubicacion')}'"
@@ -1012,7 +1013,12 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
         try:
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-            respuesta_llm_dict = llamar_gemini(mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm)
+            respuesta_llm_dict = llamar_gemini(
+                mensaje_usuario=mensaje_para_gemini,
+                usuario=usuario_info_llm,
+                historial=historial_para_llm,
+                chat_session_id=context.get("chat_session_uuid")
+            )
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
             logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as e:

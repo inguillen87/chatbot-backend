@@ -11,7 +11,10 @@ from google.oauth2 import service_account
 from tenacity import retry, stop_after_attempt, wait_fixed
 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 import vertexai
+from flask import current_app
 from services.chatbot_prompts import JULES_SYSTEM_PROMPT
+from models import LlmInteractionLog
+from database import db
 
 # Configuración del logger
 logger = logging.getLogger(__name__)
@@ -64,7 +67,7 @@ def robust_chat(model, *args, **kwargs):
     """
     return model.generate_content(*args, **kwargs)
 
-def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None) -> dict:
+def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None, chat_session_id: str = None) -> dict:
     logger = logging.getLogger(__name__)
     try:
         import vertexai
@@ -279,13 +282,14 @@ def llamar_gemini(
     mensaje: str = None,
     timeout_seconds: int = 50,
     delay_warning_seconds: int = 8,
+    chat_session_id: str = None,
 ) -> dict:
     """Wrapper con timeout y logging para la llamada al LLM."""
 
     logger = logging.getLogger(__name__)
     start_time = time.time()
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje)
+        future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje, chat_session_id)
         try:
             respuesta = future.result(timeout=timeout_seconds)
         except TimeoutError:
@@ -300,8 +304,25 @@ def llamar_gemini(
 
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
-    # if elapsed > delay_warning_seconds and isinstance(respuesta, dict) and respuesta.get("message_body"):
-    #     respuesta["message_body"] = "Sigo buscando la mejor respuesta, dame unos segundos más… " + respuesta["message_body"]
+
+    # Log the interaction
+    if chat_session_id:
+        try:
+            with current_app.app_context():
+                log_entry = LlmInteractionLog(
+                    chat_session_id=chat_session_id,
+                    user_query=mensaje_usuario or mensaje,
+                    llm_response_raw=respuesta,
+                    status='pending_review'
+                )
+                db.session.add(log_entry)
+                db.session.commit()
+                logger.info(f"LLM interaction logged for session {chat_session_id}")
+        except Exception as e:
+            logger.error(f"Failed to log LLM interaction for session {chat_session_id}: {e}", exc_info=True)
+            # No relanzar el error para no afectar el flujo principal del chat
+            db.session.rollback()
+
 
     return respuesta
 
