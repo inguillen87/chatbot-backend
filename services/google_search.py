@@ -2,7 +2,6 @@ import os
 import requests
 import logging
 import time
-import re
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -12,29 +11,9 @@ def google_search(query: str, days=None):
     """
     Performs a Google search using the Custom Search JSON API, with caching.
     """
-    # Sanitize the query to remove emojis and other non-standard characters
-    try:
-        # The following pattern covers most common emojis.
-        emoji_pattern = re.compile(
-            "["
-            "\U0001F600-\U0001F64F"  # emoticons
-            "\U0001F300-\U0001F5FF"  # symbols & pictographs
-            "\U0001F680-\U0001F6FF"  # transport & map symbols
-            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
-            "\U00002702-\U000027B0"
-            "\U000024C2-\U0001F251"
-            "]+",
-            flags=re.UNICODE,
-        )
-        sanitized_query = emoji_pattern.sub(r"", query)
-        # Also remove leading/trailing whitespace that might result
-        sanitized_query = sanitized_query.strip()
-    except Exception:
-        sanitized_query = query # Fallback to original query in case of error
-
-    cache_key = f"{sanitized_query}_{days}"
+    cache_key = f"{query}_{days}"
     if cache_key in cache:
-        logger.info(f"Returning cached results for query: {sanitized_query}")
+        logger.info(f"Returning cached results for query: {query}")
         return cache[cache_key]
 
     api_key = os.environ.get("GOOGLE_API_KEY")
@@ -47,7 +26,7 @@ def google_search(query: str, days=None):
     params = {
         "key": api_key,
         "cx": cse_id,
-        "q": sanitized_query,
+        "q": query,
         "num": 5
     }
     if days:

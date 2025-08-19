@@ -97,37 +97,21 @@ class ServicioTickets:
 
         # --- Verificación y actualización de datos personales del usuario ---
         user_id = ticket_data.get("user_id")
-        email_llm = ticket_data.get("email_vecino")
-
-        # 1. Si se proporciona un email, buscar si ya existe un usuario con ese email.
-        if email_llm:
-            user_existente = User.query.filter_by(email=email_llm).first()
-            if user_existente:
-                logger.info(f"Usuario existente encontrado por email '{email_llm}'. Vinculando ticket al User ID: {user_existente.id}")
-                # Usar el ID del usuario existente
-                ticket_data["user_id"] = user_existente.id
-                # Asegurarse de que los datos del ticket reflejen los del usuario encontrado
-                ticket_data['nombre_vecino'] = user_existente.name
-                ticket_data['email_vecino'] = user_existente.email
-                ticket_data['telefono_vecino'] = user_existente.telefono
-                # Anular el user_id original si era de un usuario anónimo diferente
-                if user_id != user_existente.id:
-                    logger.info(f"Cambiando user_id del ticket de {user_id} a {user_existente.id}")
-                    user_id = user_existente.id
-
-        # 2. Si no se encontró un usuario existente por email, proceder a actualizar el usuario actual (si existe).
-        if user_id and not 'user_existente' in locals():
+        if user_id:
+            from models import User
             user = db.session.get(User, user_id)
             if user:
+                # Priorizar datos del LLM si existen y son diferentes a los del perfil
                 nombre_llm = ticket_data.get("nombre_vecino")
+                email_llm = ticket_data.get("email_vecino")
                 telefono_llm = ticket_data.get("telefono_vecino")
 
+                # Comprobar si hay que actualizar el perfil del usuario
                 should_update = False
                 if nombre_llm and nombre_llm != user.name:
                     user.name = nombre_llm
                     should_update = True
                 if email_llm and email_llm != user.email:
-                    # Este es el punto crítico. Si llegamos aquí, es porque no hay otro usuario con este email.
                     user.email = email_llm
                     should_update = True
                 if telefono_llm and telefono_llm != user.telefono:
@@ -137,18 +121,19 @@ class ServicioTickets:
                 if should_update:
                     try:
                         db.session.commit()
-                        logger.info(f"Perfil del usuario {user_id} actualizado con nuevos datos.")
+                        logger.info(f"Perfil del usuario {user_id} actualizado con datos del LLM.")
                     except SQLAlchemyError as e:
                         db.session.rollback()
-                        logger.error(f"Error al actualizar el perfil del usuario {user_id} durante la creación del ticket: {e}")
-                        # No se propaga el error, pero el ticket se creará con los datos viejos.
+                        logger.error(f"Error al actualizar el perfil del usuario {user_id}: {e}")
+                        # No fallar la creación del ticket, pero loggear el error.
 
-                # Refrescar los datos para el ticket desde el usuario (actualizado o no)
+                # Usar los datos del perfil (ya actualizados si fue necesario) para el ticket
                 ticket_data['nombre_vecino'] = user.name
                 ticket_data['email_vecino'] = user.email
                 ticket_data['telefono_vecino'] = user.telefono
             else:
-                logger.warning(f"Se proveyó un user_id ({user_id}) para crear un ticket, pero el usuario no fue encontrado en la DB.")
+                logger.warning(f"Se proveyó un user_id ({user_id}) para crear un ticket, pero el usuario no fue encontrado.")
+
         # --- Fin de la verificación ---
 
         ticket_data["nro_ticket"] = random.randint(100000, 999999)

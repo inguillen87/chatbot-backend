@@ -125,24 +125,60 @@ def _procesar_chat(
         db.session.add(chat_context_obj)
 
     # --- Request Parsing (Audio or JSON) ---
-    chat_context_obj.context_data.pop('source_is_audio', None) # Remove flag if it's a text message
-    try:
-        (
-            pregunta,
-            contexto_previo,
-            tipo_chat,
-            rubro_id,
-            rubro_clave,
-            attachment_info,
-            location,
-            ticket_id,
-            tipo_ticket,
-            error_response,
-        ) = _parse_request(tipo_chat_fijo)
-        if error_response:
-            return error_response, 400
-    except Exception as e:
-        return jsonify({"error": f"Invalid request format: {e}"}), 400
+    if 'audio_file' in request.files:
+        audio_file = request.files['audio_file']
+        if audio_file.filename != '':
+            from services.google_speech_to_text import SpeechToTextService
+            import tempfile
+
+            chat_context_obj.context_data['source_is_audio'] = True
+
+            # Use a more unique filename to avoid collisions
+            temp_filename = f"{uuid.uuid4()}_{audio_file.filename}"
+            temp_path = os.path.join(tempfile.gettempdir(), temp_filename)
+            audio_file.save(temp_path)
+
+            stt_service = SpeechToTextService()
+            pregunta = stt_service.transcribe_audio_file(file_path=temp_path, mime_type=audio_file.mimetype)
+
+            os.remove(temp_path)
+
+            if not pregunta:
+                return jsonify({
+                    "message_body": "Lo siento, no pude entender lo que dijiste en el audio. ¿Podrías intentarlo de nuevo o escribir tu consulta?",
+                    "message_type": "text",
+                    "fuente": "audio_transcription_failed"
+                }), 400
+
+            # Set default values for other parameters when processing audio
+            contexto_previo = None
+            tipo_chat = tipo_chat_fijo or 'municipio'
+            rubro_id = request.form.get('rubro_id')
+            rubro_clave = request.form.get('rubro_clave')
+            uploaded_file_info = None
+            archivo_adjunto_id = None
+            location = None
+        else:
+            return jsonify({"error": "Audio file is empty."}), 400
+    else:
+        chat_context_obj.context_data.pop('source_is_audio', None) # Remove flag if it's a text message
+        try:
+            (
+                pregunta,
+                contexto_previo,
+                tipo_chat,
+                rubro_id,
+                rubro_clave,
+                attachment_info,
+                location,
+                ticket_id,
+                tipo_ticket,
+                error_response,
+            ) = _parse_request(tipo_chat_fijo)
+            if error_response:
+                return error_response, 400
+        except Exception as e:
+            return jsonify({"error": f"Invalid request format: {e}"}), 400
 
         current_app.logger.debug(
             "Parsed request data",

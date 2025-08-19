@@ -465,13 +465,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
     else:
         # Fallback for when there is no user name available
-        channel = context.get("channel", "web") # Default to web
-        if channel == 'web':
-            display_name = "Vecino/a"
-        else: # whatsapp
-            wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
-            display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
-
+        wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
+        display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
         welcome_message = (
             f"¡Hola, {display_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
             "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
@@ -480,8 +475,9 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
 
     categorias = [
-        {"titulo": "🛠️ Reclamos", "botones": [
+        {"titulo": "🛠️ Reclamos y Denuncias", "botones": [
             {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+            {"texto": "📢 Realizar una Denuncia", "action_id": "denuncias"}
         ]},
         {"titulo": "📄 Trámites y Consultas", "botones": [
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
@@ -736,59 +732,64 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
 def handle_info_requests(action_id: str) -> dict:
     """
-    Handles simple informational requests based on an action_id.
-    It checks both tramites.json and contactos_especializados.json.
+    Handles simple informational requests based on action IDs from buttons.
     """
     tramites_info = get_tramites_info()
     contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
 
-    # Normalize the action_id to find a corresponding key in the JSON files
-    # e.g., 'veterinaria_y_bromatologia' -> 'Veterinaria y Bromatologia'
-    normalized_key = action_id.replace('_', ' ').title()
-
-    # A mapping for special cases where action_id doesn't directly map to a key
-    key_map = {
-        "Licencia De Conducir": "Licencia de Conducir",
-        "Pago De Tasas Vigentes": "Pago de Tasas",
-        "Defensa Del Consumidor": "Defensa del Consumidor",
-        "Veterinaria Y Bromatologia": "Veterinaria y Bromatologia" # Note the missing accent
+    info_map = {
+        "info_licencia_conducir": "licencia_de_conducir",
+        "info_pago_tasas": "pago_de_tasas_vigentes",
+        "info_defensa_consumidor": "defensa_del_consumidor",
     }
 
-    final_key = key_map.get(normalized_key, normalized_key)
+    if action_id in info_map:
+        tramite_key = info_map[action_id]
+        if tramite_key in tramites_info:
+            tramite_data = tramites_info[tramite_key]
+            return {
+                "message_body": tramite_data["descripcion"],
+                "options_list": tramite_data["botones"],
+                "message_type": "interactive_buttons" if tramite_data["botones"] else "text",
+                "fuente": f"info_request_{tramite_key}"
+            }
+    elif action_id == "veterinaria_y_bromatologia":
+        contacto_data = contactos_info.get("Veterinaria y Bromatologia")
+        if contacto_data:
+            # Formatear una respuesta más completa
+            mensaje = "Para temas de veterinaria y bromatología, aquí tienes la información de contacto:\n"
+            if contacto_data.get("nombre"):
+                mensaje += f"\n- *Área:* {contacto_data['nombre']}"
+            if contacto_data.get("telefono"):
+                mensaje += f"\n- *Teléfono:* {contacto_data['telefono']}"
+            if contacto_data.get("horario"):
+                mensaje += f"\n- *Horario:* {contacto_data['horario']}"
+            if contacto_data.get("direccion"):
+                mensaje += f"\n- *Dirección:* {contacto_data['direccion']}"
 
-    tramite_data = tramites_info.get(action_id)  # tramites.json uses action_id directly
-    contacto_data = contactos_info.get(final_key)
+            botones = []
+            if contacto_data.get("telefono"):
+                telefono_numerico = ''.join(filter(str.isdigit, contacto_data['telefono']))
+                if telefono_numerico:
+                     link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20necesito%20información%20de%20Bromatología"
+                     botones.append({"texto": "Contactar por WhatsApp", "url": link_whatsapp, "type": "url"})
 
-    if not tramite_data and not contacto_data:
-        return {
-            "message_body": "No encontré información sobre este tema. Por favor, intentá de nuevo.",
-            "fuente": "info_request_not_found"
-        }
+            if contacto_data.get("link"):
+                botones.append({"texto": "Más Info en la Web", "url": contacto_data.get("link"), "type": "url"})
 
-    # Build the response
-    message_parts = []
-    botones = []
 
-    if tramite_data and isinstance(tramite_data, dict):
-        if "descripcion" in tramite_data:
-            message_parts.append(tramite_data["descripcion"])
-        if "botones" in tramite_data:
-            botones.extend(tramite_data["botones"])
-
-    if contacto_data and isinstance(contacto_data, dict):
-        contact_message = f"Para más detalles, podés contactar a:\n" \
-                          f"👤 *{contacto_data.get('nombre', 'No disponible')}* ({contacto_data.get('titulo', 'N/A')})\n" \
-                          f"📞 *Teléfono:* {contacto_data.get('telefono', 'No disponible')}\n" \
-                          f"🕒 *Horario:* {contacto_data.get('horario', 'No disponible')}"
-        message_parts.append(contact_message)
-
-    final_message = "\n\n".join(message_parts)
+            return {
+                "message_body": mensaje,
+                "options_list": botones,
+                "message_type": "interactive_buttons" if botones else "text",
+                "fuente": "info_request_bromatologia_v2"
+            }
 
     return {
-        "message_body": final_message,
-        "options_list": botones,
-        "message_type": "interactive_buttons" if botones else "text",
-        "fuente": f"info_request_{action_id}"
+        "message_body": "No encontré la información solicitada. Por favor, intentá de nuevo.",
+        "options_list": [],
+        "message_type": "text",
+        "fuente": "info_request_not_found"
     }
 
 
@@ -1067,17 +1068,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                 # If the LLM thinks it has all the data, call the handler to validate and create the ticket.
                 handler = CrearReclamoActionHandler(context)
                 response = handler.execute(datos_actuales)
-
-                if not response.get("success"):
-                    # The handler detected missing fields and is asking for them.
-                    return {
-                        "message_body": response.get("message_to_user"),
-                        "options_list": response.get("options_list", []),
-                        "message_type": response.get("message_type", "text"),
-                        "fuente": "handler_pide_info_v2"
-                    }, contexto_municipio_actual
-
-                # If success, the handler's response is the final one.
+                # The handler's response is the final one, no more processing needed in this branch.
                 return response, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
@@ -1720,8 +1711,8 @@ def responder_municipio(
 
     # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
     if not pregunta_str.strip() and location:
-        lat = location.get('lat')
-        lon = location.get('lon')
+        lat = location.get('latitude')
+        lon = location.get('longitude')
         address = location.get('address', f"coordenadas {lat}, {lon}")
 
         pregunta_str = (

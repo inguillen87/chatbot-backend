@@ -55,10 +55,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
-        attachment_info = self.context.get("attachment_info")
-        if attachment_info and isinstance(attachment_info, dict):
-            foto_url_llm = attachment_info.get("url", foto_url_llm)
-
         # Lógica de fusión de datos de contacto mejorada
         llm_name = (action_data.get("usuario") or datos_parciales.get("usuario") or
                     action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado"))
@@ -121,21 +117,27 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Este handler ahora solo valida y crea.
 
         if campos_faltantes:
-            # Eliminar duplicados
-            campos_faltantes = sorted(list(set(campos_faltantes)))
+            # Tomar solo el primer campo faltante para una interacción más fluida
+            campo_a_pedir = sorted(list(set(campos_faltantes)))[0]
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
 
-            # Mensaje más amigable y botones de acción
-            mensaje = f"Para continuar con tu reclamo, necesito algunos datos más: **{', '.join(campos_faltantes)}**. Por favor, indícamelos."
-            botones = [{"texto": f"Ingresar {campo.replace('_', ' ')}", "id_accion": f"ingresar_{campo}"} for campo in campos_faltantes]
-            botones.append({"texto": "Cancelar reclamo", "id_accion": "cancelar_reclamo"})
+            # Mapeo de campos a preguntas más amigables
+            mapa_preguntas = {
+                "descripcion": "¿Podrías describir el problema o la situación que querés reportar?",
+                "ubicacion": "Por favor, decime la dirección exacta del reclamo o compartí tu ubicación.",
+                "nombre": "Para registrar el reclamo, ¿podrías decirme tu nombre completo?",
+                "telefono": "¿Me podrías dar un número de teléfono de contacto?",
+                "email": "Y por último, ¿cuál es tu correo electrónico?"
+            }
+
+            mensaje = mapa_preguntas.get(campo_a_pedir, f"Para continuar, necesito que me indiques tu {campo_a_pedir.replace('_', ' ')}.")
 
             return {
                 "success": False,
                 "message_to_user": mensaje,
-                "pedir_info": campos_faltantes,
-                "options_list": botones,
-                "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
+                "pedir_info": [campo_a_pedir], # Pedir solo un campo
+                "options_list": [], # Sin botones para que el usuario responda directamente
+                "message_type": "text"
             }
 
         # Recopilación final de datos y creación del ticket
