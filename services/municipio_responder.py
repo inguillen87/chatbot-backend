@@ -465,8 +465,13 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
     else:
         # Fallback for when there is no user name available
-        wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
-        display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
+        channel = context.get("channel", "web") # Default to web
+        if channel == 'web':
+            display_name = "Vecino/a"
+        else: # whatsapp
+            wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
+            display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
+
         welcome_message = (
             f"¡Hola, {display_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
             "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
