@@ -38,6 +38,61 @@ def on_connect(auth):
     else:
         current_app.logger.info(f"Socket.IO client connected anonymously: {request.sid}")
 
+    # Automatic welcome message for anonymous web connections
+    from services.municipio_responder import responder_municipio
+    from models import User, ChatSessionContext, Rubro, db
+    from uuid import uuid4
+    from flask import g
+
+    is_anonymous = not token
+    # For sockets, the query parameters are in the auth dict, not request.args
+    channel = (auth or {}).get('channel')
+
+    if is_anonymous and channel == 'web':
+        current_app.logger.info(f"Web channel anonymous connection detected for sid: {request.sid}. Sending welcome message.")
+        with current_app.app_context():
+            owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
+            if not owner_user:
+                current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
+                return
+
+            rubro = Rubro.query.filter_by(user_id=owner_user.id, nombre="municipios").first()
+            if not rubro:
+                current_app.logger.error(f"Rubro 'municipios' not found for user {owner_user.id}")
+                return
+
+            chat_session_uuid = str(uuid4())
+            chat_db_context = ChatSessionContext(
+                session_id=chat_session_uuid,
+                user_id=owner_user.id,
+                context_data={}
+            )
+            db.session.add(chat_db_context)
+            db.session.commit()
+
+            anon_id = str(uuid4())
+            # Ensure g.viewer is clean for this anonymous session
+            if 'viewer' in g:
+                del g.viewer
+
+            respuesta = responder_municipio(
+                pregunta_original="hola",
+                owner_user=owner_user,
+                rubro_obj=rubro,
+                viewer_user=None,
+                chat_db_context=chat_db_context,
+                anon_id=anon_id,
+                channel='web',
+                chat_session_uuid=chat_session_uuid
+            )
+
+            # Adapt response for socket if needed
+            if "options_list" in respuesta and "botones" not in respuesta:
+                respuesta["botones"] = respuesta["options_list"]
+
+            emit('message', respuesta)
+            current_app.logger.info(f"Welcome message sent to sid: {request.sid}")
+
 @socketio.on('join')
 def on_join(data):
     room = data['room']
