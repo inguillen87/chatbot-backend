@@ -10,6 +10,7 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     db,
+    User,
 )
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
@@ -90,7 +91,6 @@ class ServicioTickets:
         }
 
     def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
-        from models import User  # Import User model here to avoid circular import at module level
         creator = self.creators.get(tipo_ticket)
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
@@ -100,28 +100,39 @@ class ServicioTickets:
         if user_id:
             user = db.session.get(User, user_id)
             if user:
-                # Priorizar y actualizar datos si vienen del LLM
-                if ticket_data.get("nombre_usuario_detectado"):
-                    user.name = ticket_data["nombre_usuario_detectado"]
-                if ticket_data.get("email_detectado"):
-                    user.email = ticket_data["email_detectado"]
-                if ticket_data.get("telefono_detectado"):
-                    tel = str(ticket_data["telefono_detectado"])
-                    if not tel.startswith('+') and len(tel) > 5: # Simple validación para no agregar '+' a respuestas cortas
-                        tel = f"+{tel}"
-                    user.telefono = tel
+                # Priorizar datos del LLM si existen y son diferentes a los del perfil
+                nombre_llm = ticket_data.get("nombre_vecino")
+                email_llm = ticket_data.get("email_vecino")
+                telefono_llm = ticket_data.get("telefono_vecino")
 
-                # Verificar si falta alguno de los datos esenciales después de la posible actualización
-                if not all([user.name, user.email, user.telefono]):
-                    logger.warning(f"Usuario {user_id} intentó crear un ticket sin datos personales completos. Name: {bool(user.name)}, Email: {bool(user.email)}, Tel: {bool(user.telefono)}")
-                    return {"error": "missing_personal_info", "message": "Por favor, complete sus datos personales para continuar."}
+                # Comprobar si hay que actualizar el perfil del usuario
+                should_update = False
+                if nombre_llm and nombre_llm != user.name:
+                    user.name = nombre_llm
+                    should_update = True
+                if email_llm and email_llm != user.email:
+                    user.email = email_llm
+                    should_update = True
+                if telefono_llm and telefono_llm != user.telefono:
+                    user.telefono = telefono_llm
+                    should_update = True
 
-                # Usar los datos (potencialmente actualizados) del usuario para el ticket
+                if should_update:
+                    try:
+                        db.session.commit()
+                        logger.info(f"Perfil del usuario {user_id} actualizado con datos del LLM.")
+                    except SQLAlchemyError as e:
+                        db.session.rollback()
+                        logger.error(f"Error al actualizar el perfil del usuario {user_id}: {e}")
+                        # No fallar la creación del ticket, pero loggear el error.
+
+                # Usar los datos del perfil (ya actualizados si fue necesario) para el ticket
                 ticket_data['nombre_vecino'] = user.name
                 ticket_data['email_vecino'] = user.email
                 ticket_data['telefono_vecino'] = user.telefono
             else:
                 logger.warning(f"Se proveyó un user_id ({user_id}) para crear un ticket, pero el usuario no fue encontrado.")
+
         # --- Fin de la verificación ---
 
         ticket_data["nro_ticket"] = random.randint(100000, 999999)

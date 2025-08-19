@@ -429,6 +429,8 @@ class BaseMunicipioHandler:
     def handle(self, payload: dict) -> dict | None:
         raise NotImplementedError
 
+from services.local_data_service import LocalDataHandler
+
 class GreetingHandler(BaseMunicipioHandler):
     def _get_user_display_name(self) -> str:
         """Return a friendly name for the user based on context info."""
@@ -522,39 +524,6 @@ class ReclamosMenuHandler(BaseMunicipioHandler):
             "fuente": "reclamos_menu_handler"
         }
 
-class LicenciaConducirHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        message_body = "Para requisitos y turnos de licencia de conducir visitá:\nhttps://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
-        botones = agregar_botones_para_links(message_body, [])
-        return {
-            "message_body": message_body,
-            "options_list": botones,
-            "fuente": "licencia_conducir_handler"
-        }
-
-class PagoTasasHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        message_body = "Para pagar o descargar boletos vigentes, dirigite a:\nhttps://epagos.juninmendoza.gov.ar/jrentas/"
-        botones = agregar_botones_para_links(message_body, [])
-        return {
-            "message_body": message_body,
-            "options_list": botones,
-            "fuente": "pago_tasas_handler"
-        }
-
-class DefensaConsumidorHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        return {
-            "message_body": "Para asesoramiento, escribí a:\ndefensadelconsumidorjuninmza@gmail.com",
-            "fuente": "defensa_consumidor_handler"
-        }
-
-class VeterinariaBromatologiaHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        return {
-            "message_body": "Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp:\n+54 9 2634 52-1563",
-            "fuente": "veterinaria_bromatologia_handler"
-        }
 
 class PerdidaDeAguaHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
@@ -1137,19 +1106,23 @@ def responder_municipio(
         response_data['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
         return response_data
 
-    # --- Simple Router for Main Menu Options ---
+    # --- Simple Router for Main Menu Options & Local Data Files ---
     pregunta_str_lower = pregunta_str.strip().lower()
+
+    # Check local data files first
+    local_data_handler = LocalDataHandler(municipio_id=MUNICIPIO_ID)
+    local_data_files = ["tramites.json", "contactos_especializados.json"]
+
+    for file_name in local_data_files:
+        response_data = local_data_handler.handle(pregunta_str_lower, file_name)
+        if response_data:
+            response_data['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
+            return response_data
+
+    # Fallback to hardcoded handlers if not found in local data
     response_data = None
     if pregunta_str_lower == "reclamos":
         response_data = ReclamosMenuHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "licencia_conducir":
-        response_data = LicenciaConducirHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "pago_tasas":
-        response_data = PagoTasasHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "defensa_consumidor":
-        response_data = DefensaConsumidorHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "veterinaria_bromatologia":
-        response_data = VeterinariaBromatologiaHandler(context).handle(received_payload)
     elif pregunta_str_lower == "reclamo_perdida_agua":
         response_data = PerdidaDeAguaHandler(context).handle(received_payload)
 

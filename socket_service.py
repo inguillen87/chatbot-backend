@@ -1,3 +1,4 @@
+import os
 from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
 from config import ALLOWED_ORIGINS
@@ -5,10 +6,15 @@ from models import User, db, TicketComentario
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 
+# Determina el modo asíncrono basado en el entorno.
+# En 'testing', usamos 'threading' para evitar problemas con eventlet.
+# De lo contrario, usamos 'eventlet' como estaba configurado.
+async_mode = 'threading' if os.environ.get('FLASK_ENV') == 'testing' else 'eventlet'
+
 socketio = SocketIO(
     cors_allowed_origins=ALLOWED_ORIGINS,
     cookie=True,
-    async_mode="eventlet"
+    async_mode=async_mode
 )
 
 def emit_ticket_update(data):

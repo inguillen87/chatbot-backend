@@ -1,10 +1,13 @@
 import os
-os.environ["EVENTLET_NO_GREENDNS"] = "1"
-import eventlet
-if os.environ.get("FLASK_ENV") != "testing" and os.environ.get("FLASK_APP_TYPE") != "celery":
-    eventlet.monkey_patch()
 
-import os
+# Conditional import and monkey-patching for eventlet
+if os.environ.get("FLASK_ENV") not in ["testing", "test", "development_local"] and os.environ.get("FLASK_APP_TYPE") != "celery":
+    os.environ["EVENTLET_NO_GREENDNS"] = "1"
+    try:
+        import eventlet
+        eventlet.monkey_patch()
+    except ImportError:
+        print("Eventlet not found, running without monkey-patching.")
 import logging
 import sys
 from flask import Flask, request, current_app, jsonify, g
