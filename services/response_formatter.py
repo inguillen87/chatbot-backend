@@ -45,34 +45,36 @@ def build_interactive_response(options: list,
 
 
     if channel == "whatsapp":
+        original_type = message_type
+        # The line below was forcing all messages to text, breaking interactive tests.
+        # message_type = 'text'
         num_options = len(options)
-        final_message_type = message_type
 
-        # 1. Decide the final message type
-        if final_message_type != 'text':
+        # Decide message type based on options, unless it's forced to 'text'
+        is_greeting_menu = original_bot_response.get("fuente") == "greeting_handler_categorized_v2"
+
+        if is_greeting_menu:
+            message_type = 'text'
+        elif message_type != 'text':
             if 1 <= num_options <= 3:
-                final_message_type = 'interactive_buttons'
+                message_type = 'interactive_buttons'
             elif 4 <= num_options <= 10:
-                final_message_type = 'interactive_list'
-            else: # Fallback for 0 or > 10 options
-                final_message_type = 'text'
+                message_type = 'interactive_list'
+            else:
+                # Fallback for 0 or >10 options
+                message_type = 'text'
 
         logger.debug(
             "WhatsApp flow | original_type=%s | final_type=%s | num_options=%d",
+            original_type,
             message_type,
-            final_message_type,
             num_options,
         )
 
-        # 2. Build the payload based on the final message type
-        payload = {"contexto_actualizado": context_update if context_update else None}
-        if audio_url:
-            payload["audio"] = {"link": audio_url}
-
-        if final_message_type == 'text':
+        # Si el tipo de mensaje es 'text', siempre formatear como texto.
+        if message_type == 'text':
             final_body = body_text
             if options:
-                # Logic for categorized menus
                 categorias = original_bot_response.get("categorias")
                 if categorias:
                     lines = []
@@ -85,49 +87,142 @@ def build_interactive_response(options: list,
                             lines.append(f"*{counter}*. {boton.get('texto', '')}")
                             counter += 1
                     options_text = "\n\n" + "\n".join(lines)
-                else: # Logic for simple menus
+                else:
                     options_text = "\n\n" + "\n".join(
                         [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)]
                     )
                 options_text += "\n\nResponde con el número de la opción que necesites."
                 final_body += options_text
+            else:
+                logger.warning("No se recibieron opciones para construir el menú de texto")
 
-            payload.update({"type": "text", "text": {"body": final_body}})
+            payload = {
+                "type": "text",
+                "text": {"body": final_body},
+                "contexto_actualizado": context_update if context_update else None,
+            }
+            if audio_url:
+                payload["audio"] = {"link": audio_url}
             return payload
 
-        # 3. Build interactive messages (Buttons or List)
+        # This part handles interactive messages
+        is_interactive = message_type in ['interactive_buttons', 'interactive_list']
+        if not is_interactive:
+             # Should not happen due to logic above, but as a safeguard
+            return {"type": "text", "text": {"body": body_text}}
+
         interactive_data = {
             "body": {"text": body_text},
             "action": {}
         }
+
         if header_text:
             interactive_data["header"] = {"type": "text", "text": header_text}
         if footer_text:
             interactive_data["footer"] = {"text": footer_text}
 
-        if final_message_type == 'interactive_buttons':
+        # Automatically decide between button and list based on number of options
+        if message_type == 'interactive_buttons':
             interactive_data["type"] = "button"
-            interactive_data["action"]["buttons"] = [
-                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i+1))), "title": o.get("texto", "")[:20]}}
-                for i, o in enumerate(options)
-            ]
-        elif final_message_type == 'interactive_list':
+
+            reply_buttons = []
+            url_texts = []
+            body_text_to_update = interactive_data["body"]["text"]
+
+            for i, o in enumerate(options):
+                if o.get("type") == "url" and o.get("url"):
+                    # For URL options, add them to the text body
+                    url_texts.append(f"➡️ {o.get('texto', 'Ver más')}: {o.get('url')}")
+                else:
+                    # For other options, create a standard reply button
+                    reply_buttons.append(
+                        {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")[:20]}}
+                    )
+
+            if url_texts:
+                body_text_to_update += "\n\n" + "\n".join(url_texts)
+
+            if not reply_buttons:
+                # If there are no reply buttons left (e.g., it was only a URL option),
+                # we must fall back to a text message.
+                payload = {
+                    "type": "text",
+                    "text": {"body": body_text_to_update},
+                    "contexto_actualizado": context_update if context_update else None,
+                }
+                if audio_url:
+                    payload["audio"] = {"link": audio_url}
+                logger.info(f"build_interactive_response: falling back to TEXT payload because only URL options were present.")
+                return payload
+            else:
+                # Otherwise, send the interactive message with the reply buttons
+                interactive_data["body"]["text"] = body_text_to_update
+                interactive_data["action"]["buttons"] = reply_buttons
+        elif message_type == 'interactive_list':
             interactive_data["type"] = "list"
             interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
             interactive_data["action"]["sections"] = [{
                 "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
                 "rows": [
                     {
-                        "id": o.get("id", o.get("action_id", str(i+1))),
+                        "id": o.get("id", o.get("action_id", str(i))),
                         "title": o.get("texto", "")[:24],
-                        "description": o.get("description", "")[:72]
+                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()[:72]
                     }
                     for i, o in enumerate(options)
                 ]
             }]
 
-        payload.update({"type": "interactive", "interactive": interactive_data})
-        logger.info(f"build_interactive_response: returning interactive payload: {payload}")
+        is_interactive = message_type in ['interactive_buttons', 'interactive_list']
+
+        interactive_data = {
+            "header": {"type": "text", "text": header_text or "Menú"} if header_text else None,
+            "body": {"text": body_text},
+            "footer": {"text": footer_text} if footer_text else None,
+            "action": {}
+        }
+
+        # Automatically decide between button and list based on number of options
+        if 1 <= num_options <= 3:
+            interactive_data["type"] = "button"
+            interactive_data["action"]["buttons"] = [
+                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")}}
+                for i, o in enumerate(options)
+            ]
+        elif 4 <= num_options <= 10:
+            interactive_data["type"] = "list"
+            interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
+            interactive_data["action"]["sections"] = [{
+                "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
+                "rows": [
+                    {
+                        "id": o.get("id", o.get("action_id", str(i))),
+                        "title": o.get("texto", ""),
+                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()
+                    }
+                    for i, o in enumerate(options)
+                ]
+            }]
+        else:
+            # Fallback for 0 or >10 options, format as text
+            final_body = body_text
+            options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
+            options_text += "\n\nResponde con el número de la opción que necesites."
+            final_body += options_text
+            return {"type": "text", "text": {"body": final_body}}
+
+        # Clean None values from header/footer
+        if not interactive_data["header"]: del interactive_data["header"]
+        if not interactive_data["footer"]: del interactive_data["footer"]
+
+        logger.info(f"build_interactive_response: returning interactive payload: {interactive_data}")
+        payload = {
+            "type": "interactive",
+            "interactive": interactive_data,
+            "contexto_actualizado": context_update if context_update else None
+        }
+        if audio_url:
+            payload["audio"] = {"link": audio_url}
         return payload
 
     elif channel == "web":

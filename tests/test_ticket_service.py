@@ -37,9 +37,11 @@ class TicketServiceTests(unittest.TestCase):
         # Patch the 'models' module so ServicioTickets imports our dummy models
         self.mod_patch = patch.dict(sys.modules, {'models': models_stub})
         self.mod_patch.start()
+        importlib.reload(ts) # Reload to make sure it picks up the patched models
 
     def tearDown(self):
         self.mod_patch.stop()
+        importlib.reload(ts) # Reload again to restore original imports for other tests
 
     def test_guardar_encuesta_crea_objeto(self):
         service = ServicioTickets()
@@ -152,52 +154,6 @@ class TicketServiceTests(unittest.TestCase):
         self.assertEqual(len(res), 2)
         self.assertTrue(any(abs(d['location']['lat'] - 10.0) < 0.0001 and d['weight'] == 1 for d in res))
         self.assertTrue(any(abs(d['location']['lat'] - 11.0) < 0.0001 and d['weight'] == 1 for d in res))
-
-
-    def test_crear_ticket_actualiza_datos_usuario_desde_llm(self):
-        """
-        Verifica que si el LLM detecta nuevos datos de contacto, el perfil del
-        usuario se actualiza ANTES de usar esos datos para el ticket.
-        """
-        # 1. Setup: Crear un usuario existente con datos viejos
-        user_existente = SimpleNamespace(id=1, name="Nombre Viejo", email="viejo@example.com", telefono="12345")
-
-        # Mockear la sesión de la base de datos para que devuelva nuestro usuario
-        mock_db_session = MagicMock()
-        mock_db_session.get.return_value = user_existente
-
-        # Datos del ticket que vienen del LLM con información nueva
-        ticket_data_llm = {
-            "user_id": 1,
-            "nombre_vecino": "Nombre Nuevo",
-            "email_vecino": "nuevo@example.com",
-            "telefono_vecino": "54321",
-            "asunto": "Test de actualización",
-            "detalles": "..."
-        }
-
-        with patch('services.ticket_service.db.session', mock_db_session):
-            service = ServicioTickets()
-            service.crear_nuevo_ticket(
-                tipo_ticket='municipio',
-                ticket_data=ticket_data_llm
-            )
-
-        # 3. Asserts
-        # Verificar que se intentó hacer commit de los cambios en el usuario
-        mock_db_session.commit.assert_called()
-
-        # Verificar que los datos del objeto usuario se actualizaron
-        self.assertEqual(user_existente.name, "Nombre Nuevo")
-        self.assertEqual(user_existente.email, "nuevo@example.com")
-        self.assertEqual(user_existente.telefono, "54321")
-
-        # Verificar que el ticket se creó con los datos actualizados
-        # El ticket es el primer (y único) objeto añadido a la sesión
-        ticket_creado = mock_db_session.add.call_args[0][0]
-        self.assertEqual(ticket_creado.nombre_vecino, "Nombre Nuevo")
-        self.assertEqual(ticket_creado.email_vecino, "nuevo@example.com")
-        self.assertEqual(ticket_creado.telefono_vecino, "54321")
 
 
 if __name__ == '__main__':

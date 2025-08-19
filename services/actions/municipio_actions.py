@@ -616,5 +616,17 @@ class MenuPrincipalActionHandler:
             ],
         }
 
+class BuscarEstacionamientoActionHandler(BaseActionHandler):
+    def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing BuscarEstacionamientoActionHandler with data: {payload}")
+
+        user_message = "Próximamente, podrás buscar estacionamiento desde aquí. ¡Estamos trabajando en esta funcionalidad!"
+
+        return {
+            "message_body": user_message,
+            "options_list": [],
+            "fuente": "buscar_estacionamiento_placeholder"
+        }
+
 # Add other handlers as needed
 # e.g., CalificarAtencionActionHandler, ConfirmarCierreTicketActionHandler
