@@ -21,27 +21,33 @@ def on_connect(auth):
     Authenticates the user if a token is provided in the `auth` payload.
     Rejects the connection if the token is invalid.
     Allows anonymous connections if no token is provided.
-    For anonymous web connections, sends an automatic welcome message.
     """
-    from services.municipio_responder import responder_municipio
-    from models import User, ChatSessionContext, Rubro, db
-    from uuid import uuid4
-    from flask import g
     current_app.logger.info(f"Socket.IO client connected: {request.sid}")
+
     token = (auth or {}).get('token')
-    is_anonymous = not token
+
     if token:
         current_app.logger.info(f"Socket.IO connection attempt with token for sid: {request.sid}")
         try:
+            # Attempt to decode the token to validate it
             jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
             current_app.logger.info(f"Socket.IO token validated successfully for sid: {request.sid}")
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
             current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
-            return False
+            return False  # Reject the connection
     else:
         current_app.logger.info(f"Socket.IO client connected anonymously: {request.sid}")
+
     # Automatic welcome message for anonymous web connections
-    channel = request.args.get('channel')
+    from services.municipio_responder import responder_municipio
+    from models import User, ChatSessionContext, Rubro, db
+    from uuid import uuid4
+    from flask import g
+
+    is_anonymous = not token
+    # For sockets, the query parameters are in the auth dict, not request.args
+    channel = (auth or {}).get('channel')
+
     if is_anonymous and channel == 'web':
         current_app.logger.info(f"Web channel anonymous connection detected for sid: {request.sid}. Sending welcome message.")
         with current_app.app_context():
@@ -49,10 +55,12 @@ def on_connect(auth):
             if not owner_user:
                 current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
                 return
+
             rubro = Rubro.query.filter_by(user_id=owner_user.id, nombre="municipios").first()
             if not rubro:
                 current_app.logger.error(f"Rubro 'municipios' not found for user {owner_user.id}")
                 return
+
             chat_session_uuid = str(uuid4())
             chat_db_context = ChatSessionContext(
                 session_id=chat_session_uuid,
@@ -61,8 +69,12 @@ def on_connect(auth):
             )
             db.session.add(chat_db_context)
             db.session.commit()
+
             anon_id = str(uuid4())
-            g.viewer = None
+            # Ensure g.viewer is clean for this anonymous session
+            if 'viewer' in g:
+                del g.viewer
+
             respuesta = responder_municipio(
                 pregunta_original="hola",
                 owner_user=owner_user,
@@ -73,8 +85,11 @@ def on_connect(auth):
                 channel='web',
                 chat_session_uuid=chat_session_uuid
             )
+
+            # Adapt response for socket if needed
             if "options_list" in respuesta and "botones" not in respuesta:
                 respuesta["botones"] = respuesta["options_list"]
+
             emit('message', respuesta)
             current_app.logger.info(f"Welcome message sent to sid: {request.sid}")
 

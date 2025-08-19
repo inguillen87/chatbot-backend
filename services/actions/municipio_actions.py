@@ -117,27 +117,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Este handler ahora solo valida y crea.
 
         if campos_faltantes:
-            # Tomar solo el primer campo faltante para una interacción más fluida
-            campo_a_pedir = sorted(list(set(campos_faltantes)))[0]
+            # Eliminar duplicados
+            campos_faltantes = sorted(list(set(campos_faltantes)))
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
 
-            # Mapeo de campos a preguntas más amigables
-            mapa_preguntas = {
-                "descripcion": "¿Podrías describir el problema o la situación que querés reportar?",
-                "ubicacion": "Por favor, decime la dirección exacta del reclamo o compartí tu ubicación.",
-                "nombre": "Para registrar el reclamo, ¿podrías decirme tu nombre completo?",
-                "telefono": "¿Me podrías dar un número de teléfono de contacto?",
-                "email": "Y por último, ¿cuál es tu correo electrónico?"
-            }
-
-            mensaje = mapa_preguntas.get(campo_a_pedir, f"Para continuar, necesito que me indiques tu {campo_a_pedir.replace('_', ' ')}.")
+            # Mensaje más amigable y botones de acción
+            mensaje = f"Para continuar con tu reclamo, necesito algunos datos más: **{', '.join(campos_faltantes)}**. Por favor, indícamelos."
+            botones = [{"texto": f"Ingresar {campo.replace('_', ' ')}", "id_accion": f"ingresar_{campo}"} for campo in campos_faltantes]
+            botones.append({"texto": "Cancelar reclamo", "id_accion": "cancelar_reclamo"})
 
             return {
                 "success": False,
                 "message_to_user": mensaje,
-                "pedir_info": [campo_a_pedir], # Pedir solo un campo
-                "options_list": [], # Sin botones para que el usuario responda directamente
-                "message_type": "text"
+                "pedir_info": campos_faltantes,
+                "options_list": botones,
+                "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
             }
 
         # Recopilación final de datos y creación del ticket

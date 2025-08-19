@@ -141,26 +141,6 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     if not texto_direccion:
         return None
 
-    # Normalizar la entrada para una comparación robusta
-    texto_normalizado = normalizar_texto(texto_direccion)
-    nombre_municipio_norm = normalizar_texto(municipio_config.get('ciudad', '')) if municipio_config else ''
-
-    # Si el usuario solo ingresa el nombre del municipio (ej. "Junin"),
-    # interpretarlo como el centro de la ciudad para evitar preguntas innecesarias.
-    if nombre_municipio_norm and texto_normalizado == nombre_municipio_norm:
-        logger.info(f"Se detectó el nombre del municipio '{texto_direccion}' como entrada. Interpretando como centro de la ciudad.")
-        return {
-            "calle": None,
-            "numero": None,
-            "piso": None,
-            "departamento": None,
-            "barrio": "Centro",
-            "localidad": municipio_config.get('ciudad', 'Junín'),
-            "provincia": municipio_config.get('provincia', 'Mendoza'),
-            "codigo_postal": None,
-            "otros_detalles": "El usuario especificó el centro de la ciudad."
-        }
-
     if municipio_config is None:
         # This case should be less frequent if context always provides one (even the global one)
         logger.warning("[ParseDireccion] municipio_config no fue proporcionado, usando un diccionario vacío como fallback para defaults.")
@@ -491,24 +471,39 @@ def log_uso_herramienta(nombre, usuario, parametros, resultado):
 
 def validar_y_formatear_direccion(direccion: str) -> dict | None:
     """
-    Valida y formatea una dirección utilizando la API de Google Maps.
+    Valida y formatea una dirección utilizando la API de Google Maps,
+    con bias hacia Argentina.
     """
     if not Maps_API_KEY:
-        logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
+        logger.error("[GEO] Maps_API_KEY no configurada.")
         return None
 
-    geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={requests.utils.quote(direccion)}&key={Maps_API_KEY}&language=es"
+    # Componentes para sesgar la búsqueda a Argentina
+    params = {
+        'address': direccion,
+        'key': Maps_API_KEY,
+        'language': 'es',
+        'components': 'country:AR'
+    }
+
+    geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
 
     try:
-        response = requests.get(geocode_url)
+        response = requests.get(geocode_url, params=params)
         response.raise_for_status()
         data = response.json()
 
         if data and data.get('status') == 'OK' and data.get('results'):
             best_result = data['results'][0]
+
+            # Additional check: Does the result actually fall within a reasonable area?
+            # This can prevent overly broad matches. For now, we trust Google's first result if status is OK.
+
             formatted_address = best_result.get('formatted_address')
             location = best_result['geometry']['location']
             lat, lng = location['lat'], location['lng']
+
+            logger.info(f"[GEO] Dirección '{direccion}' geocodificada exitosamente a '{formatted_address}' ({lat}, {lng}).")
 
             return {
                 "formatted_address": formatted_address,
@@ -516,12 +511,16 @@ def validar_y_formatear_direccion(direccion: str) -> dict | None:
                 "lng": lng
             }
         else:
+            # Log the failure reason from Google
+            status = data.get('status', 'N/A')
+            error_message = data.get('error_message', 'No error message provided.')
+            logger.warning(f"[GEO] Falla al geocodificar '{direccion}'. Status: {status}. Error: {error_message}")
             return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error de conexión con Google API para geocoding ({direccion}): {e}")
+        logger.error(f"[GEO] Error de conexión con Google API para geocoding ({direccion}): {e}")
         return None
     except Exception as e:
-        logger.error(f"Error inesperado en geocoding para {direccion}: {e}", exc_info=True)
+        logger.error(f"[GEO] Error inesperado en geocoding para {direccion}: {e}", exc_info=True)
         return None
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
