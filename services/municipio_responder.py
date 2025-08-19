@@ -340,8 +340,6 @@ class ConversationState(Enum):
     ESPERANDO_SELECCION_DE_LISTA = auto()
     ESPERANDO_UBICACION_GENERAL = auto()
     ESPERANDO_NUEVO_DATO_USUARIO = auto()
-    ESPERANDO_DESCRIPCION_DENUNCIA = auto()
-    ESPERANDO_UBICACION_DENUNCIA = auto()
     ESPERANDO_CONFIRMACION_DATOS_RECLAMO = auto()
     ESPERANDO_CORRECCION_DATOS_RECLAMO = auto()
 
@@ -475,9 +473,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
 
     categorias = [
-        {"titulo": "🛠️ Reclamos y Denuncias", "botones": [
-            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "📢 Realizar una Denuncia", "action_id": "denuncias"}
+        {"titulo": "🛠️ Reclamos", "botones": [
+            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}
         ]},
         {"titulo": "📄 Trámites y Consultas", "botones": [
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
@@ -731,18 +728,6 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "options_list": [],
             "message_type": "text",
             "fuente": "agenda_cultural_hoy"
-        }
-
-    if action_id == "denuncias":
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DESCRIPCION_DENUNCIA.name
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return {
-            "message_body": "Por favor, describí la denuncia que querés realizar.",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "iniciar_denuncia"
         }
 
     if action_id == "estacionamiento":
@@ -1323,7 +1308,6 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
 MENU_KEYWORDS = {
     "mostrar_menu_reclamos": ["reclamo", "reclamos", "iniciar", "problema"],
-    "denuncias": ["denuncia", "denuncias"],
     "licencia_de_conducir": ["licencia", "conducir", "licencias", "carnet"],
     "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "boletas"],
     "consultar_otros_tramites": ["consultar", "consulta", "tramites", "tramite", "otros"],
@@ -2151,43 +2135,6 @@ def responder_municipio(
             "fuente": "re_pide_confirmacion_reclamo"
         })
 
-    elif estado_conversacion == ConversationState.ESPERANDO_DESCRIPCION_DENUNCIA.name:
-        descripcion = pregunta_str
-        contexto_municipio_actual['denuncia_descripcion'] = descripcion
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_DENUNCIA.name
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return _finalize_response({
-            "message_body": "Gracias. Ahora, por favor, compartí la ubicación de la denuncia o escribí la dirección.",
-            "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}],
-            "message_type": "interactive_buttons",
-            "fuente": "pedir_ubicacion_denuncia"
-        })
-
-    elif estado_conversacion == ConversationState.ESPERANDO_UBICACION_DENUNCIA.name:
-        ubicacion_str = ""
-        if location and location.get("address"):
-            ubicacion_str = location.get("address")
-        elif pregunta_str:
-            ubicacion_str = pregunta_str
-
-        descripcion = contexto_municipio_actual.get('denuncia_descripcion', '(sin descripción)')
-
-        # Log the denuncia
-        logger_actual.info(f"DENUNCIA RECIBIDA: Descripción: '{descripcion}', Ubicación: '{ubicacion_str}'")
-
-        # Clear the context
-        contexto_municipio_actual.pop('denuncia_descripcion', None)
-        contexto_municipio_actual['estado_conversacion'] = None
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-
-        return _finalize_response({
-            "message_body": "Gracias por tu denuncia. La hemos registrado y será revisada por el área correspondiente.",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "finalizar_denuncia"
-        })
 
     # Initialize the context if it's empty
     # This dictionary is passed to handlers and used throughout this function.

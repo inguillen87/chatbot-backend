@@ -21,7 +21,6 @@ INTENTS = {
         "reclamo", "reclamos", "reportar", "iniciar un reclamo",
         "hacer un reclamo", "show_reclamos_menu"
     ],
-    "realizar_denuncia": ["denuncia", "denuncias", "realizar una denuncia", "hacer_denuncia"],
     "tramite_licencia": ["licencia", "licencia de conducir", "carnet", "licencia_de_conducir"],
     "pagar_tasas": ["tasas", "pagar tasas", "impuestos", "pago_de_tasas_vigentes"],
     "consultar_tramites": ["tramite", "tramites", "consultar otros tramites", "consultar_otros_tramites"],

@@ -5,7 +5,7 @@
   "Supermercados": ["supermercado", "supermercados", "compras", "almacen"],
   "Registro Civil": ["registro civil", "dni", "partida de nacimiento", "casamiento"],
   "Correo": ["correo", "carta", "paquete", "encomienda"],
-  "Policía": ["policia", "comisaria", "denuncia"],
+  "Policía": ["policia", "comisaria"],
   "Bomberos": ["bomberos", "incendio"],
   "Municipalidad": ["municipalidad", "municipio", "municipalidad de junin"]
 }
