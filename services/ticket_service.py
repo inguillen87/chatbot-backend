@@ -95,23 +95,33 @@ class ServicioTickets:
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
 
-        # --- Verificación de datos personales del usuario ---
+        # --- Verificación y actualización de datos personales del usuario ---
         user_id = ticket_data.get("user_id")
         if user_id:
             user = db.session.get(User, user_id)
             if user:
-                # Verificar si falta alguno de los datos esenciales
+                # Priorizar y actualizar datos si vienen del LLM
+                if ticket_data.get("nombre_usuario_detectado"):
+                    user.name = ticket_data["nombre_usuario_detectado"]
+                if ticket_data.get("email_detectado"):
+                    user.email = ticket_data["email_detectado"]
+                if ticket_data.get("telefono_detectado"):
+                    tel = str(ticket_data["telefono_detectado"])
+                    if not tel.startswith('+') and len(tel) > 5: # Simple validación para no agregar '+' a respuestas cortas
+                        tel = f"+{tel}"
+                    user.telefono = tel
+
+                # Verificar si falta alguno de los datos esenciales después de la posible actualización
                 if not all([user.name, user.email, user.telefono]):
                     logger.warning(f"Usuario {user_id} intentó crear un ticket sin datos personales completos. Name: {bool(user.name)}, Email: {bool(user.email)}, Tel: {bool(user.telefono)}")
                     return {"error": "missing_personal_info", "message": "Por favor, complete sus datos personales para continuar."}
 
-                # Si los datos están, los agregamos al ticket_data para que se guarden en el ticket
+                # Usar los datos (potencialmente actualizados) del usuario para el ticket
                 ticket_data['nombre_vecino'] = user.name
                 ticket_data['email_vecino'] = user.email
                 ticket_data['telefono_vecino'] = user.telefono
             else:
                 logger.warning(f"Se proveyó un user_id ({user_id}) para crear un ticket, pero el usuario no fue encontrado.")
-
         # --- Fin de la verificación ---
 
         ticket_data["nro_ticket"] = random.randint(100000, 999999)
