@@ -123,9 +123,9 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
         generation_config = GenerationConfig(
             temperature=0.2,
-            top_p=0.95,
+            top_p=0.9,
             top_k=40,
-            max_output_tokens=8192,
+            max_output_tokens=512,
             response_mime_type="application/json"
         )
 
