@@ -31,7 +31,10 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
             base_chat_url = base_chat_url[:-1]
 
         ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
-        chat_url = f"{base_chat_url}/{ticket_id_numeric}"
+        # The frontend URL for viewing a ticket is /ticket/<nro>, not /chat/<nro>
+        # We derive the base URL and append the correct path.
+        base_url = base_chat_url.split('/chat')[0] if '/chat' in base_chat_url else base_chat_url
+        chat_url = f"{base_url}/ticket/{ticket_id_numeric}"
         botones.append({
             "texto": "💬 Ver mi Ticket",
             "url": chat_url,
@@ -46,22 +49,30 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     }
     texto_tipo = tipos.get(tipo, "Consulta")
 
-    respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*
+    # --- Nuevo formato de respuesta ---
+    respuesta = f"""*¡Tu {texto_tipo} ha sido registrado con éxito!* ✅
 
-📄 *Resumen de tu {texto_tipo}:*
-- *N° de Ticket:* `{id_ticket}`
-- *Categoría:* {categoria}
-- *Descripción:* {descripcion}
+Aquí tienes los detalles de tu ticket:
+-----------------------------------
+- 📝 *Número de Ticket:* `{id_ticket}`
+- 🗂️ *Categoría:* {categoria}
+- 📋 *Tu descripción:* "{descripcion}"
+-----------------------------------
+
+*¿Qué sigue ahora?*
+El área correspondiente revisará tu solicitud. Te notificaremos por este medio sobre cualquier actualización.
 """
 
-    if nombre_asesor:
-        respuesta += f"""
-📞 *Contacto para seguimiento:* {nombre_asesor}"""
+    # Bloque de contacto mejorado
+    if nombre_asesor or telefono_asesor:
+        respuesta += "\n*¿Necesitas hacer un seguimiento?*\n"
+        if nombre_asesor:
+            respuesta += f"- 🏢 *Área:* {nombre_asesor}\n"
         if horario_asesor:
-            respuesta += f"\n🕒 *Horario de atención:* {horario_asesor}"
+            respuesta += f"- ⏰ *Horario:* {horario_asesor}\n"
+        if telefono_asesor:
+            respuesta += f"- 📞 *Teléfono:* {telefono_asesor}\n"
 
-    respuesta += """
-
-Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
+    respuesta += "\n\nGracias por ayudarnos a mejorar Junín."
 
     return respuesta, botones

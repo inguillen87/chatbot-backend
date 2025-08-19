@@ -465,13 +465,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         )
     else:
         # Fallback for when there is no user name available
-        channel = context.get("channel", "web") # Default to web
-        if channel == 'web':
-            display_name = "Vecino/a"
-        else: # whatsapp
-            wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
-            display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
-
+        wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
+        display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
         welcome_message = (
             f"¡Hola, {display_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
             "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
@@ -737,59 +732,64 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
 def handle_info_requests(action_id: str) -> dict:
     """
-    Handles simple informational requests based on an action_id.
-    It checks both tramites.json and contactos_especializados.json.
+    Handles simple informational requests based on action IDs from buttons.
     """
     tramites_info = get_tramites_info()
     contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
 
-    # Normalize the action_id to find a corresponding key in the JSON files
-    # e.g., 'veterinaria_y_bromatologia' -> 'Veterinaria y Bromatologia'
-    normalized_key = action_id.replace('_', ' ').title()
-
-    # A mapping for special cases where action_id doesn't directly map to a key
-    key_map = {
-        "Licencia De Conducir": "Licencia de Conducir",
-        "Pago De Tasas Vigentes": "Pago de Tasas",
-        "Defensa Del Consumidor": "Defensa del Consumidor",
-        "Veterinaria Y Bromatologia": "Veterinaria y Bromatologia" # Note the missing accent
+    info_map = {
+        "info_licencia_conducir": "licencia_de_conducir",
+        "info_pago_tasas": "pago_de_tasas_vigentes",
+        "info_defensa_consumidor": "defensa_del_consumidor",
     }
 
-    final_key = key_map.get(normalized_key, normalized_key)
+    if action_id in info_map:
+        tramite_key = info_map[action_id]
+        if tramite_key in tramites_info:
+            tramite_data = tramites_info[tramite_key]
+            return {
+                "message_body": tramite_data["descripcion"],
+                "options_list": tramite_data["botones"],
+                "message_type": "interactive_buttons" if tramite_data["botones"] else "text",
+                "fuente": f"info_request_{tramite_key}"
+            }
+    elif action_id == "veterinaria_y_bromatologia":
+        contacto_data = contactos_info.get("Veterinaria y Bromatologia")
+        if contacto_data:
+            # Formatear una respuesta más completa
+            mensaje = "Para temas de veterinaria y bromatología, aquí tienes la información de contacto:\n"
+            if contacto_data.get("nombre"):
+                mensaje += f"\n- *Área:* {contacto_data['nombre']}"
+            if contacto_data.get("telefono"):
+                mensaje += f"\n- *Teléfono:* {contacto_data['telefono']}"
+            if contacto_data.get("horario"):
+                mensaje += f"\n- *Horario:* {contacto_data['horario']}"
+            if contacto_data.get("direccion"):
+                mensaje += f"\n- *Dirección:* {contacto_data['direccion']}"
 
-    tramite_data = tramites_info.get(action_id)  # tramites.json uses action_id directly
-    contacto_data = contactos_info.get(final_key)
+            botones = []
+            if contacto_data.get("telefono"):
+                telefono_numerico = ''.join(filter(str.isdigit, contacto_data['telefono']))
+                if telefono_numerico:
+                     link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20necesito%20información%20de%20Bromatología"
+                     botones.append({"texto": "Contactar por WhatsApp", "url": link_whatsapp, "type": "url"})
 
-    if not tramite_data and not contacto_data:
-        return {
-            "message_body": "No encontré información sobre este tema. Por favor, intentá de nuevo.",
-            "fuente": "info_request_not_found"
-        }
+            if contacto_data.get("link"):
+                botones.append({"texto": "Más Info en la Web", "url": contacto_data.get("link"), "type": "url"})
 
-    # Build the response
-    message_parts = []
-    botones = []
 
-    if tramite_data and isinstance(tramite_data, dict):
-        if "descripcion" in tramite_data:
-            message_parts.append(tramite_data["descripcion"])
-        if "botones" in tramite_data:
-            botones.extend(tramite_data["botones"])
-
-    if contacto_data and isinstance(contacto_data, dict):
-        contact_message = f"Para más detalles, podés contactar a:\n" \
-                          f"👤 *{contacto_data.get('nombre', 'No disponible')}* ({contacto_data.get('titulo', 'N/A')})\n" \
-                          f"📞 *Teléfono:* {contacto_data.get('telefono', 'No disponible')}\n" \
-                          f"🕒 *Horario:* {contacto_data.get('horario', 'No disponible')}"
-        message_parts.append(contact_message)
-
-    final_message = "\n\n".join(message_parts)
+            return {
+                "message_body": mensaje,
+                "options_list": botones,
+                "message_type": "interactive_buttons" if botones else "text",
+                "fuente": "info_request_bromatologia_v2"
+            }
 
     return {
-        "message_body": final_message,
-        "options_list": botones,
-        "message_type": "interactive_buttons" if botones else "text",
-        "fuente": f"info_request_{action_id}"
+        "message_body": "No encontré la información solicitada. Por favor, intentá de nuevo.",
+        "options_list": [],
+        "message_type": "text",
+        "fuente": "info_request_not_found"
     }
 
 
@@ -1387,22 +1387,41 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 def _get_reclamos_menu():
-    """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
-    opciones = [
-        {"texto": "*Volver al inicio*", "id_accion": "0", "category_name": "Volver al inicio"},
-        {"texto": "💡 *Luminaria*", "id_accion": "1", "category_name": "Luminaria"},
-        {"texto": "🌳 *Arbolado*", "id_accion": "2", "category_name": "Arbolado"},
-        {"texto": "🗑️ *Limpieza y riego*", "id_accion": "3", "category_name": "Limpieza y riego"},
-        {"texto": "🚧 *Arreglo de calle*", "id_accion": "4", "category_name": "Arreglo de calle"},
-        {"texto": "💧 *Pérdida de agua*", "id_accion": "5", "category_name": "Pérdida de agua"},
-        {"texto": "⚫ *Otros*", "id_accion": "6", "category_name": "Otros"},
+    """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas, en formato de lista interactiva."""
+
+    # Define las categorías y sus botones. Cada diccionario en la lista es una sección en la lista interactiva.
+    categorias_reclamo = [
+        {
+            "titulo": "Categorías de Reclamos",
+            "botones": [
+                {"texto": "💡 Luminaria", "action_id": "reclamo_luminaria"},
+                {"texto": "🌳 Arbolado", "action_id": "reclamo_arbolado"},
+                {"texto": "🗑️ Limpieza y riego", "action_id": "reclamo_limpieza_riego"},
+                {"texto": "🚧 Arreglo de calle", "action_id": "reclamo_arreglo_calle"},
+                {"texto": "💧 Pérdida de agua", "action_id": "reclamo_perdida_agua"},
+                {"texto": "⚫ Otros", "action_id": "reclamo_otros"},
+                {"texto": "↩️ Volver al menú principal", "action_id": "saludar"},
+            ]
+        }
     ]
-    # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número o seleccionar una opción.
+
+    # El frontend que usa 'interactive_list' espera una lista plana de botones en 'options_list'
+    # y la estructura anidada en 'categorias'.
+    flat_buttons = []
+    for categoria in categorias_reclamo:
+        for boton in categoria.get('botones', []):
+            new_boton = boton.copy()
+            # Asegurarse de que cada botón tenga un 'id' único para el frontend.
+            new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+            flat_buttons.append(new_boton)
+
     return {
-        "message_body": "Elegí una opción para tu reclamo:",
-        "message_type": "interactive_buttons",
-        "options_list": opciones,
-        "fuente": "submenu_reclamos_estandar_v4",
+        "message_body": "Elegí una categoría para tu reclamo:",
+        "options_list": flat_buttons,
+        "message_type": "interactive_list",
+        "accion_backend": "responder_directamente",
+        "fuente": "submenu_reclamos_lista_v5",
+        "categorias": categorias_reclamo,
         "generar_audio": True
     }
 
