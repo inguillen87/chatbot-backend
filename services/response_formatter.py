@@ -45,89 +45,52 @@ def build_interactive_response(options: list,
 
 
     if channel == "whatsapp":
-        num_options = len(options)
-        final_message_type = message_type
+        # Per user request, force all WhatsApp responses to be text-based for maximum reliability and clarity.
+        final_body = body_text
 
-        # 1. Decide the final message type
-        if final_message_type != 'text':
-            if 1 <= num_options <= 3:
-                final_message_type = 'interactive_buttons'
-            elif 4 <= num_options <= 10:
-                final_message_type = 'interactive_list'
-            else: # Fallback for 0 or > 10 options
-                final_message_type = 'text'
+        # Append categorized options if they exist
+        categorias = original_bot_response.get("categorias")
+        if categorias:
+            lines = []
+            counter = 1
+            for categoria in categorias:
+                titulo = categoria.get("titulo")
+                if titulo:
+                    lines.append(f"*{titulo}*")
+                for boton in categoria.get("botones", []):
+                    lines.append(f"*{counter}*. {boton.get('texto', '')}")
+                    counter += 1
+            options_text = "\n\n" + "\n".join(lines)
+            final_body += options_text
 
-        logger.debug(
-            "WhatsApp flow | original_type=%s | final_type=%s | num_options=%d",
-            message_type,
-            final_message_type,
-            num_options,
-        )
+        # Append simple options if they exist (and are not part of a categorized menu)
+        elif options:
+            lines = []
+            for i, o in enumerate(options):
+                # If the option is a URL, format it nicely into the text.
+                if o.get("type") == "url" and o.get("url"):
+                    lines.append(f"➡️ {o.get('texto', 'Ver más')}: {o.get('url')}")
+                else:
+                    # Otherwise, format as a standard numbered list item.
+                    lines.append(f"*{i+1}*. {o.get('texto', '')}")
+            options_text = "\n\n" + "\n".join(lines)
+            final_body += options_text
 
-        # 2. Build the payload based on the final message type
-        payload = {"contexto_actualizado": context_update if context_update else None}
+        # Add a concluding prompt for numeric selection if there were options.
+        if categorias or options:
+            if not any(o.get("type") == "url" for o in options or []):
+                 final_body += "\n\nResponde con el número de la opción que necesites."
+
+        payload = {
+            "contexto_actualizado": context_update if context_update else None,
+            "type": "text",
+            "text": {"body": final_body}
+        }
+
         if audio_url:
             payload["audio"] = {"link": audio_url}
 
-        if final_message_type == 'text':
-            final_body = body_text
-            if options:
-                # Logic for categorized menus
-                categorias = original_bot_response.get("categorias")
-                if categorias:
-                    lines = []
-                    counter = 1
-                    for categoria in categorias:
-                        titulo = categoria.get("titulo")
-                        if titulo:
-                            lines.append(f"*{titulo}*")
-                        for boton in categoria.get("botones", []):
-                            lines.append(f"*{counter}*. {boton.get('texto', '')}")
-                            counter += 1
-                    options_text = "\n\n" + "\n".join(lines)
-                else: # Logic for simple menus
-                    options_text = "\n\n" + "\n".join(
-                        [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)]
-                    )
-                options_text += "\n\nResponde con el número de la opción que necesites."
-                final_body += options_text
-
-            payload.update({"type": "text", "text": {"body": final_body}})
-            return payload
-
-        # 3. Build interactive messages (Buttons or List)
-        interactive_data = {
-            "body": {"text": body_text},
-            "action": {}
-        }
-        if header_text:
-            interactive_data["header"] = {"type": "text", "text": header_text}
-        if footer_text:
-            interactive_data["footer"] = {"text": footer_text}
-
-        if final_message_type == 'interactive_buttons':
-            interactive_data["type"] = "button"
-            interactive_data["action"]["buttons"] = [
-                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i+1))), "title": o.get("texto", "")[:20]}}
-                for i, o in enumerate(options)
-            ]
-        elif final_message_type == 'interactive_list':
-            interactive_data["type"] = "list"
-            interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
-            interactive_data["action"]["sections"] = [{
-                "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
-                "rows": [
-                    {
-                        "id": o.get("id", o.get("action_id", str(i+1))),
-                        "title": o.get("texto", "")[:24],
-                        "description": o.get("description", "")[:72]
-                    }
-                    for i, o in enumerate(options)
-                ]
-            }]
-
-        payload.update({"type": "interactive", "interactive": interactive_data})
-        logger.info(f"build_interactive_response: returning interactive payload: {payload}")
+        logger.info(f"build_interactive_response: returning TEXT payload for WhatsApp: {payload}")
         return payload
 
     elif channel == "web":

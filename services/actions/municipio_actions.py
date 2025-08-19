@@ -14,30 +14,17 @@ logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
-class BuscarEstacionamientoActionHandler:
-    action_name = "buscar_estacionamiento"
+class BuscarEstacionamientoActionHandler(BaseActionHandler):
+    def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing BuscarEstacionamientoActionHandler with data: {payload}")
 
-    def handle(self, context):
-        # si ya tenemos ubicación del usuario en context, usarla; si no, pedirla
-        ubic = context.get("ubicacion") or context.get("payload", {}).get("ubicacion")
-        if not ubic:
-            return {
-                "texto": (
-                    "Decime la **calle y altura** o compartí tu **ubicación**.\n"
-                    "Ej: *San Martín 1200, Junín* o enviá ubicación por WhatsApp."
-                ),
-                "pedir_info": {"tipo": "ubicacion_o_texto"},
-                "botones": [
-                    {"texto": "Enviar ubicación", "accion": "enviar_ubicacion"},
-                    {"texto": "San Martín 1200", "accion": "texto_libre", "valor": "San Martín 1200, Junín"}
-                ],
-            }
+        user_message = "Próximamente, podrás buscar estacionamiento desde aquí. ¡Estamos trabajando en esta funcionalidad!"
 
-        # Llamar a servicio
-        from services.estacionamiento_service import consultar_ocupacion
-        resultado = consultar_ocupacion(ubic)
-
-        return resultado
+        return {
+            "message_body": user_message,
+            "options_list": [],
+            "fuente": "buscar_estacionamiento_placeholder"
+        }
 
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
