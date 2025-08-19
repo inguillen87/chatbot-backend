@@ -66,6 +66,7 @@ class TicketRoutesTests(unittest.TestCase):
             vecino_user = User(
                 name="Juan Perez",
                 email="juan.perez@test.com",
+                telefono="+5491122334455",
                 rol="usuario",
                 direccion="Calle Falsa 123",
                 empresa_id=admin_user.id
@@ -114,6 +115,8 @@ class TicketRoutesTests(unittest.TestCase):
             personal_info = ticket_data['informacion_personal_vecino']
             self.assertEqual(personal_info['nombre'], 'Juan Perez')
             self.assertEqual(personal_info['direccion'], 'Calle Falsa 123')
+            self.assertEqual(personal_info['email'], 'juan.perez@test.com')
+            self.assertEqual(personal_info['telefono'], '+5491122334455')
             self.assertIsNone(personal_info['dni'])
 
 
