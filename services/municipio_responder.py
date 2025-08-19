@@ -11,6 +11,7 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
+import emoji
 from flask import current_app, has_app_context, session as flask_session
 from sqlalchemy.orm.attributes import flag_modified
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
@@ -444,6 +445,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     """
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
+    channel = context.get("channel", "web")  # Default to web for safety
 
     # Prioritize the fresh ProfileName from WhatsApp, then fallback to the database name.
     user_name = None
@@ -462,15 +464,24 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
         )
     else:
-        # Fallback for when there is no user name available
-        wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
-        display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
-        welcome_message = (
-            f"¡Hola, {display_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
-            "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
-            "enviarme un audio, una foto de un problema o compartir tu ubicación.\n\n"
-            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
-        )
+        # Fallback for anonymous users, needs to be channel-aware.
+        if channel == "whatsapp":
+            wa_id = context.get("anon_id", "").replace("whatsapp:+", "")
+            display_name = f"Usuario de WhatsApp {wa_id[-4:]}" if wa_id else "¡Hola!"
+            welcome_message = (
+                f"¡Hola, {display_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+                "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
+                "enviarme un audio, una foto de un problema o compartir tu ubicación.\n\n"
+                "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+            )
+        else:  # for "web" and other channels
+            # For anonymous web users, a more generic greeting is better.
+            welcome_message = (
+                "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+                "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
+                "adjuntar una foto de un problema o compartir tu ubicación.\n\n"
+                "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+            )
 
     categorias = [
         {"titulo": "🛠️ Reclamos", "botones": [
@@ -1701,81 +1712,6 @@ def responder_municipio(
             "fuente": "info_perdida_agua"
         })
 
-    if es_consulta_general(pregunta_str_for_check):
-        current_location = location or flask_session.get("user_location")
-        if current_location:
-            # The location object might be a dict from session or a direct payload
-            address = current_location.get("formatted_address") or current_location.get("address")
-            return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": address}))
-        else:
-            contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
-            contexto_municipio_actual['consulta_pendiente_ubicacion'] = pregunta_original # Save the original query
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
-            return _finalize_response({
-                "message_body": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
-                "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "No, gracias", "action": "cancelar"}],
-                "message_type": "interactive_buttons",
-                "fuente": "solicitar_ubicacion"
-            })
-
-
-    USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
-    respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
-
-    # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
-    if not pregunta_str.strip() and location:
-        lat = location.get('latitude')
-        lon = location.get('longitude')
-        address = location.get('address', f"coordenadas {lat}, {lon}")
-
-        pregunta_str = (
-            f"El usuario ha compartido una ubicación sin texto adicional. "
-            f"La ubicación es: {address}. "
-            f"Es muy probable que quiera reportar un problema en este lugar. "
-            f"Por favor, actúa proactivamente: confirma la ubicación con el usuario y pregúntale "
-            f"directamente qué problema o reclamo quiere reportar en esa dirección."
-        )
-        received_payload['pregunta'] = pregunta_str
-        logger_actual.info(f"Pregunta generada a partir de ubicación: '{pregunta_str}'")
-    # <<< FIN FIX
-
-    # --- INICIO: Manejo proactivo de multimedia y ubicación ---
-    # Si el usuario envía solo una imagen o ubicación, el bot debe actuar proactivamente.
-    if not pregunta_str.strip(): # Solo actuar si no hay texto del usuario
-        synthetic_prompt = None
-        datos_interpretados = kwargs.get("datos_interpretados_archivo")
-
-        if datos_interpretados and isinstance(datos_interpretados, dict):
-            logger_actual.info(f"Manejando proactivamente un archivo interpretado: {datos_interpretados}")
-            categoria = datos_interpretados.get("categoria_sugerida", "No especificada")
-            descripcion = datos_interpretados.get("descripcion_sugerida", "No especificada")
-            synthetic_prompt = (
-                f"El usuario ha enviado una imagen para iniciar un reclamo. "
-                f"El análisis automático sugiere: Categoría='{categoria}', Descripción='{descripcion}'. "
-                f"Inicia el proceso de reclamo confirmando estos datos con el usuario y pide la información que falte (ej. ubicación)."
-            )
-        elif location:
-            logger_actual.info(f"Manejando proactivamente una ubicación: {location}")
-            address = location.get("address", f"coordenadas {location.get('latitude')}, {location.get('longitude')}")
-            synthetic_prompt = (
-                f"El usuario ha compartido la ubicación '{address}' sin texto adicional. "
-                f"Actúa proactivamente: confirma la ubicación con el usuario y pregúntale qué problema quiere reportar en esa dirección."
-            )
-
-        if synthetic_prompt:
-            logger_actual.info(f"Pregunta sintética generada para manejo proactivo: '{synthetic_prompt}'")
-            # Forzar el estado a conversación general para que el LLM tome el control
-            contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-
-            response_dict, _ = handle_llm_interaction(
-                synthetic_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
-            )
-            if response_dict:
-                return _finalize_response(response_dict)
-    # --- FIN: Manejo proactivo ---
-
     contexto_municipio_data_from_db = {}
     chat_db_context_live_data = {}
 
@@ -2017,7 +1953,13 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = None # Clear state
             if chat_db_context: flag_modified(chat_db_context, "context_data")
 
-            if consulta_guardada:
+            if consulta_guardada == 'estacionamiento':
+                from services.estacionamiento_service import consultar_ocupacion
+                lat = location.get('latitude')
+                lon = location.get('longitude')
+                resultado = consultar_ocupacion(lat, lon)
+                return _finalize_response({"message_body": resultado, "message_type": "text", "fuente": "estacionamiento_service"})
+            elif consulta_guardada:
                 logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
                 return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location.get("address")}))
             else:
@@ -2038,7 +1980,13 @@ def responder_municipio(
                     contexto_municipio_actual['estado_conversacion'] = None # Clear state
                     if chat_db_context: flag_modified(chat_db_context, "context_data")
 
-                    if consulta_guardada:
+                    if consulta_guardada == 'estacionamiento':
+                        from services.estacionamiento_service import consultar_ocupacion
+                        lat = geocoded_location.get('lat')
+                        lon = geocoded_location.get('lng')
+                        resultado = consultar_ocupacion(lat, lon)
+                        return _finalize_response({"message_body": resultado, "message_type": "text", "fuente": "estacionamiento_service"})
+                    elif consulta_guardada:
                         logger_actual.info(f"Geocoded address successfully. Processing saved query: '{consulta_guardada}'")
                         # The handler expects the address string in the 'location' key
                         return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": geocoded_location.get("formatted_address")}))
@@ -2140,6 +2088,82 @@ def responder_municipio(
             "message_type": "interactive_buttons",
             "fuente": "re_pide_confirmacion_reclamo"
         })
+
+
+    if es_consulta_general(pregunta_str_for_check):
+        current_location = location or flask_session.get("user_location")
+        if current_location:
+            # The location object might be a dict from session or a direct payload
+            address = current_location.get("formatted_address") or current_location.get("address")
+            return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": address}))
+        else:
+            contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
+            contexto_municipio_actual['consulta_pendiente_ubicacion'] = pregunta_original # Save the original query
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
+                "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "No, gracias", "action": "cancelar"}],
+                "message_type": "interactive_buttons",
+                "fuente": "solicitar_ubicacion"
+            })
+
+
+    USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
+    respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
+
+    # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
+    if not pregunta_str.strip() and location:
+        lat = location.get('latitude')
+        lon = location.get('longitude')
+        address = location.get('address', f"coordenadas {lat}, {lon}")
+
+        pregunta_str = (
+            f"El usuario ha compartido una ubicación sin texto adicional. "
+            f"La ubicación es: {address}. "
+            f"Es muy probable que quiera reportar un problema en este lugar. "
+            f"Por favor, actúa proactivamente: confirma la ubicación con el usuario y pregúntale "
+            f"directamente qué problema o reclamo quiere reportar en esa dirección."
+        )
+        received_payload['pregunta'] = pregunta_str
+        logger_actual.info(f"Pregunta generada a partir de ubicación: '{pregunta_str}'")
+    # <<< FIN FIX
+
+    # --- INICIO: Manejo proactivo de multimedia y ubicación ---
+    # Si el usuario envía solo una imagen o ubicación, el bot debe actuar proactivamente.
+    if not pregunta_str.strip(): # Solo actuar si no hay texto del usuario
+        synthetic_prompt = None
+        datos_interpretados = kwargs.get("datos_interpretados_archivo")
+
+        if datos_interpretados and isinstance(datos_interpretados, dict):
+            logger_actual.info(f"Manejando proactivamente un archivo interpretado: {datos_interpretados}")
+            categoria = datos_interpretados.get("categoria_sugerida", "No especificada")
+            descripcion = datos_interpretados.get("descripcion_sugerida", "No especificada")
+            synthetic_prompt = (
+                f"El usuario ha enviado una imagen para iniciar un reclamo. "
+                f"El análisis automático sugiere: Categoría='{categoria}', Descripción='{descripcion}'. "
+                f"Inicia el proceso de reclamo confirmando estos datos con el usuario y pide la información que falte (ej. ubicación)."
+            )
+        elif location:
+            logger_actual.info(f"Manejando proactivamente una ubicación: {location}")
+            address = location.get("address", f"coordenadas {location.get('latitude')}, {location.get('longitude')}")
+            synthetic_prompt = (
+                f"El usuario ha compartido la ubicación '{address}' sin texto adicional. "
+                f"Actúa proactivamente: confirma la ubicación con el usuario y pregúntale qué problema quiere reportar en esa dirección."
+            )
+
+        if synthetic_prompt:
+            logger_actual.info(f"Pregunta sintética generada para manejo proactivo: '{synthetic_prompt}'")
+            # Forzar el estado a conversación general para que el LLM tome el control
+            contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+            response_dict, _ = handle_llm_interaction(
+                synthetic_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
+            )
+            if response_dict:
+                return _finalize_response(response_dict)
+    # --- FIN: Manejo proactivo ---
 
 
     # Initialize the context if it's empty

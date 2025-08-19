@@ -472,24 +472,25 @@ def whatsapp_webhook():
             main_message = twilio_client.messages.create(**message_params)
             print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
 
-            # Second, if there is an audio URL, send it as a separate media message.
-            audio_url = bot_response_dict.get('audio_url')
-            if audio_url:
-                # Ensure the URL is absolute
-                if audio_url.startswith('/'):
-                    base_url = request.url_root.rstrip('/')
-                    absolute_audio_url = f"{base_url}{audio_url}"
-                else:
-                    absolute_audio_url = audio_url
-
-                audio_message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'media_url': [absolute_audio_url]
-                }
-                current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
-                audio_message = twilio_client.messages.create(**audio_message_params)
-                print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
+            # Second, if the 'generar_audio' flag is set, generate and send audio.
+            if bot_response_dict.get('generar_audio'):
+                from services.google_text_to_speech import GoogleTextToSpeechService
+                tts_service = GoogleTextToSpeechService()
+                text_to_synthesize = bot_response_dict.get('message_body', '')
+                if text_to_synthesize:
+                    # The TTS service should return a public URL to the generated audio file.
+                    audio_url = tts_service.synthesize_speech(text_to_synthesize)
+                    if audio_url:
+                        audio_message_params = {
+                            'from_': to_number_raw,
+                            'to': from_number_raw,
+                            'media_url': [audio_url]
+                        }
+                        current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
+                        audio_message = twilio_client.messages.create(**audio_message_params)
+                        print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
+                    else:
+                        current_app.logger.error("TTS service failed to generate audio URL.")
 
         except Exception as e:
             print(f"Error al enviar mensaje de Twilio: {e}")
