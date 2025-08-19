@@ -124,6 +124,10 @@ def serialize_ticket_to_json(ticket, ticket_type):
 
 
     # Construir el diccionario con la estructura deseada
+    dni_vecino = user_data.get("dni")
+    if dni_vecino == "No especificado" or not dni_vecino:
+        dni_vecino = None
+
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
@@ -142,6 +146,11 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
+        "informacion_personal_vecino": {
+            "nombre": user_data.get("nombre", "No especificado"),
+            "dni": dni_vecino,
+            "direccion": user_data.get("direccion", "No especificada")
+        }
     }
     return serialized_data
 

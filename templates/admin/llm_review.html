@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Revisión de Interacciones LLM</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
+        th { background-color: #f2f2f2; }
+        pre { white-space: pre-wrap; word-wrap: break-word; background-color: #eee; padding: 1em; }
+        .actions form { display: inline-block; }
+        .actions button { margin-right: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Revisión de Interacciones LLM</h1>
+    <p>Aquí se muestran las conversaciones donde el LLM actuó como fallback y que están pendientes de revisión.</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Fecha</th>
+                <th>Consulta del Usuario</th>
+                <th>Respuesta del LLM</th>
+                <th>Acciones</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td>{{ log.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td>{{ log.user_query }}</td>
+                <td>
+                    <details>
+                        <summary>Ver/Ocultar JSON</summary>
+                        <pre>{{ log.llm_response_raw | tojson(indent=2) }}</pre>
+                    </details>
+                </td>
+                <td class="actions">
+                    <form action="/crm/llm-review/{{ log.id }}/create-faq" method="GET" style="display:inline;">
+                        <button type="submit">Crear FAQ</button>
+                    </form>
+                    <form action="/crm/llm-review/{{ log.id }}/reject" method="POST" style="display:inline;">
+                        <button type="submit">Rechazar</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="4">No hay interacciones pendientes de revisión.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

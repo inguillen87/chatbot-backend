@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify, request, current_app, render_template
 from models import (
     User,
     Conversacion,
@@ -7,6 +7,7 @@ from models import (
     TicketComentario,
     ArchivoAdjunto,
     ClienteNota, # Nueva importación
+    LlmInteractionLog,
 )
 from extensions import db
 from sqlalchemy import or_
@@ -727,6 +728,14 @@ def get_recent_clients(current_user: User):
             })
 
     return jsonify(sorted(recent_clients_data, key=lambda x: x["last_interaction_date"], reverse=True))
+
+@crm_bp.route('/llm-review')
+@token_requerido
+@admin_o_empleado_requerido
+def llm_review(current_user: User):
+    """Muestra las interacciones del LLM que están pendientes de revisión."""
+    logs = LlmInteractionLog.query.filter_by(status='pending_review').order_by(LlmInteractionLog.created_at.desc()).all()
+    return render_template('admin/llm_review.html', logs=logs)
 
 @crm_bp.route('/clientes/insights/needs_followup', methods=['GET'])
 @token_requerido

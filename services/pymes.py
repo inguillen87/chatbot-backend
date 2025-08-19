@@ -840,7 +840,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     llm_response_structured = llamar_gemini(
         mensaje_usuario=mensaje_para_gemini,
         usuario=usuario_info_for_gemini,
-        historial=historial_chat_para_gemini
+        historial=historial_chat_para_gemini,
+        chat_session_id=kwargs.get("chat_session_uuid")
     )
 
     # Actualizar historial para la próxima llamada a Gemini
