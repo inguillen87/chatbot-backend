@@ -185,8 +185,24 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             texto_mensaje = mensaje_usuario
             mensaje_usuario_obj = {"texto": texto_mensaje}
 
+        from vertexai.generative_models import Content, Part
+
         chat_historial_limpio = _limpiar_historial_gemini(historial or [])
-        chat = model.start_chat(history=chat_historial_limpio)
+
+        # FIX: Convert the history from a list of dicts to a list of Content objects
+        # as required by the new model.start_chat() API.
+        formatted_history = []
+        if chat_historial_limpio:
+            for item in chat_historial_limpio:
+                # Ensure the item is a dictionary and has the expected structure
+                if isinstance(item, dict) and "role" in item and "parts" in item:
+                    # The 'parts' key should contain a list of dictionaries
+                    if isinstance(item["parts"], list) and item["parts"]:
+                        text_part = item["parts"][0].get("text", "")
+                        if text_part: # Ensure there is text to add
+                             formatted_history.append(Content(role=item["role"], parts=[Part.from_text(text_part)]))
+
+        chat = model.start_chat(history=formatted_history)
 
         mensaje_actual_completo = (
             f"MENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}\n\n"
@@ -201,7 +217,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             temperature=0.2,
             top_p=0.9,
             top_k=40,
-
+            max_output_tokens=1024,  # Aumentado para evitar truncamiento de JSON
             response_mime_type="application/json"
         )
 
