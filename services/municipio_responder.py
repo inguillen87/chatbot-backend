@@ -628,23 +628,18 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     if action_id == "mostrar_menu_reclamos":
         return _get_reclamos_menu()
 
-    if action_id == "licencia_de_conducir":
+    tramites_info = get_tramites_info()
+    if action_id in tramites_info:
+        data = tramites_info[action_id] or {}
+        botones = data.get("botones", [])
+        for btn in botones:
+            if btn.get("url") and not btn.get("type"):
+                btn["type"] = "url"
         return {
-            "message_body": "🚗 Para requisitos y turnos de licencia de conducir, visitá el sitio oficial.",
-            "options_list": [{"texto": "Ir al Sitio Web", "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/", "type": "url"}],
-            "message_type": "interactive_buttons", "fuente": "info_licencia_conducir"
-        }
-    if action_id == "pago_tasas_vigentes":
-        return {
-            "message_body": "💵 Para pagar o descargar boletos de tasas vigentes, ingresá al portal de pagos.",
-            "options_list": [{"texto": "Ir al Portal de Pagos", "url": "https://epagos.juninmendoza.gov.ar/jrentas/", "type": "url"}],
-            "message_type": "interactive_buttons", "fuente": "info_pago_tasas"
-        }
-    if action_id == "defensa_del_consumidor":
-        return {
-            "message_body": "🛒 Para asesoramiento de Defensa del Consumidor, podés escribir un email.",
-            "options_list": [{"texto": "Enviar Email", "url": "mailto:defensadelconsumidorjuninmza@gmail.com", "type": "url"}],
-            "message_type": "interactive_buttons", "fuente": "info_defensa_consumidor"
+            "message_body": data.get("descripcion", ""),
+            "options_list": botones,
+            "message_type": "interactive_buttons" if botones else "text",
+            "fuente": f"info_{action_id}_json",
         }
     if action_id == "veterinaria_y_bromatologia":
         contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
