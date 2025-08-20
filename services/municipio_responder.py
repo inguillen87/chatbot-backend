@@ -1953,7 +1953,12 @@ def responder_municipio(
                     "options_list": [], "message_type": "text", "fuente": "info_perdida_agua"
                 })
 
-            logger_actual.info(f"Categoría de reclamo seleccionada: '{selected_category_name}'")
+            logger_actual.info(f"Categoría de reclamo seleccionada: '{selected_category_name}'. Limpiando contexto anterior.")
+
+            # FIX: Limpiar explícitamente el contexto del reclamo anterior para evitar el "estado atascado".
+            contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+            contexto_municipio_actual.pop("historial_llm_reclamo", None)
+
             constructed_prompt = f"Quiero iniciar un reclamo de {selected_category_name}"
 
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
