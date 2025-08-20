@@ -137,7 +137,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_twilio_create.assert_called_once()
         self.mock_welcome.assert_called_once_with(
             self.test_user_number_str,
-            "Usuario de WhatsApp 4321"
+            "Vecino/a"
         )
 
     def test_whatsapp_webhook_invalid_signature(self):

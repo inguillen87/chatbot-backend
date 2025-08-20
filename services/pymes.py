@@ -718,7 +718,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
         acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
         fecha_aceptacion_terminos=datetime.utcnow()
     )
-    nuevo_usuario.name = f"Usuario de WhatsApp {phone_number[-4:]}"
+    nuevo_usuario.name = "Vecino/a"
     nuevo_usuario.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
 
     try:
