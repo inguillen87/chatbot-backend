@@ -38,14 +38,9 @@ def _limpiar_historial_gemini(historial: list) -> list:
 
 # --- Logging helper -------------------------------------------------------
 
-def _log_llm_interaction_async(chat_session_id: str, user_query: str, llm_response: dict) -> None:
-    """Persist LLM interactions in a background greenlet.
-
-    Using a separate SQLAlchemy session avoids interfering with the main
-    request transaction and prevents long blocking when the SQLite database is
-    locked. Any failure is logged but ignored to keep the chat responsive.
-    """
-    with current_app.app_context():
+def _log_llm_interaction_async(app, chat_session_id: str, user_query: str, llm_response: dict) -> None:
+    """Persist LLM interactions in a background greenlet."""
+    with app.app_context():
         Session = sessionmaker(bind=db.engine)
         session = Session()
         try:
@@ -57,11 +52,11 @@ def _log_llm_interaction_async(chat_session_id: str, user_query: str, llm_respon
             )
             session.add(entry)
             session.commit()
-            current_app.logger.info(
+            app.logger.info(
                 f"LLM interaction logged for session {chat_session_id}"
             )
         except Exception as e:
-            current_app.logger.error(
+            app.logger.error(
                 f"Failed to log LLM interaction for session {chat_session_id}: {e}",
                 exc_info=True,
             )
@@ -110,21 +105,27 @@ def robust_chat(model, *args, **kwargs):
 
 
 def _repair_json_response(respuesta_texto_crudo: str) -> str:
-    """Intenta reparar JSONs parcialmente truncados o con errores comunes.
-
-    Este reparador es heurístico y busca corregir problemas simples como:
-    - campos sin valor (p. ej., `"botones":` al final de la cadena).
-    - comas sobrantes antes de cierres de objetos/listas.
-    - desbalanceo de llaves o corchetes.
-    - cita faltante en `id_archivo": null`.
     """
-    fixed = respuesta_texto_crudo.replace('id_archivo": null', 'id_archivo": null"').strip()
+    Intenta reparar JSONs parcialmente truncados o con errores comunes.
+    """
+    fixed = respuesta_texto_crudo.strip()
 
-    if re.search(r'"botones"\s*:\s*$', fixed):
-        fixed += " []"
+    # Intenta corregir cadenas sin cerrar al final del JSON
+    # Cubre casos como `"url": "https://...`
+    fixed = re.sub(r'(":\s*)"([^"]*)$', r'\1"\2"', fixed)
 
+    # Si 'botones' no tiene valor, asumimos una lista vacía.
+    if re.search(r'"botones"\s*:\s*$', fixed, re.IGNORECASE):
+        fixed += "[]"
+
+    # Si 'botones' está truncado, intenta cerrarlo
+    if re.search(r'"botones"\s*:\s*\[\s*\{', fixed, re.IGNORECASE) and not re.search(r'\}\s*\]\s*$', fixed):
+         fixed += "}]"
+
+    # Eliminar comas sobrantes antes de un cierre de objeto o array
     fixed = re.sub(r",\s*(\}|\])", r"\1", fixed)
 
+    # Balancear llaves y corchetes
     brace_diff = fixed.count('{') - fixed.count('}')
     if brace_diff > 0:
         fixed += '}' * brace_diff
@@ -338,6 +339,7 @@ def llamar_gemini_para_generacion_texto(
 
 
 def llamar_gemini(
+    app,
     mensaje_usuario: str = None,
     usuario: dict = None,
     historial: list = None,
@@ -347,18 +349,18 @@ def llamar_gemini(
     chat_session_id: str = None,
 ) -> dict:
     """Wrapper con timeout y logging para la llamada al LLM."""
-
     logger = logging.getLogger(__name__)
     start_time = time.time()
+
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje, chat_session_id)
         try:
             respuesta = future.result(timeout=timeout_seconds)
         except TimeoutError:
-            logger.error(f"Llamada a Gemini superó {timeout_seconds}s")
+            logger.error(f"Llamada a Gemini superó los {timeout_seconds} segundos de timeout.")
             return {
-                "message_body": "En este momento hay mucha demanda. ¿Querés intentar de nuevo?",
-                "accion_backend": "no_accion",
+                "message_body": "El asistente IA está tardando más de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
+                "accion_backend": "derivar_humano",
                 "datos_estructura": {"error_detalle": "timeout"},
                 "pedir_info": None,
                 "botones": []
@@ -367,11 +369,9 @@ def llamar_gemini(
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
 
-    # Log the interaction without blocking the main thread
     if chat_session_id:
         user_query = mensaje_usuario or mensaje
-        eventlet.spawn_n(_log_llm_interaction_async, chat_session_id, user_query, respuesta)
-
+        eventlet.spawn_n(_log_llm_interaction_async, app, chat_session_id, user_query, respuesta)
 
     return respuesta
 

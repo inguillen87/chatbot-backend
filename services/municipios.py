@@ -42,6 +42,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro
 )
+from .intent_classifier import intent_classifier
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
@@ -442,55 +443,53 @@ class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         user_name = self._get_user_display_name()
         welcome_message = (
-            f"**VERSIÓN DE PRUEBA:** ¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
             "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
             "reclamos, turnos, noticias y mucho más.\n\n"
             "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
         )
 
         options_list = [
-            {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos", "id": "mostrar_menu_reclamos"},
-            {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias", "id": "denuncias"},
+            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos", "id": "mostrar_menu_reclamos"},
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir", "id": "licencia_de_conducir"},
             {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes", "id": "pago_de_tasas_vigentes"},
-            {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites", "id": "consultar_otros_tramites"},
+            {"texto": "❓ Consultar otros trámites", "action_id": "consultar_otros_tramites", "id": "consultar_otros_tramites"},
             {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia", "id": "veterinaria_y_bromatologia"},
-            {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos", "id": "solicitar_turnos"},
-            {"texto": "🅿️ Buscar Estacionamiento", "action_id": "buscar_estacionamiento", "id": "buscar_estacionamiento"},
+            {"texto": "🚗 Estacionamiento", "action_id": "estacionamiento", "id": "estacionamiento"},
+            {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos", "id": "solicitar_turnos"},
             {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica", "id": "agenda_cultural_y_turistica"},
-            {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades", "id": "ultimas_novedades"},
+            {"texto": "🗞️ Últimas Novedades", "action_id": "ultimas_novedades", "id": "ultimas_novedades"},
             {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor", "id": "defensa_del_consumidor"},
         ]
 
         categorias = [
             {
-                "titulo": "Reclamos y Denuncias 🛠️",
+                "titulo": "🛠️ Reclamos",
                 "botones": [
-                    {"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                    {"texto": "⚖️ Realizar una Denuncia", "action_id": "denuncias"},
+                    {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
                 ],
             },
             {
-                "titulo": "Trámites y Consultas 📄",
+                "titulo": "📄 Trámites y Consultas",
                 "botones": [
                     {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
                     {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-                    {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"},
+                    {"texto": "❓ Consultar otros trámites", "action_id": "consultar_otros_tramites"},
                 ],
             },
             {
-                "titulo": "Servicios y Turnos 📅",
+                "titulo": "📅 Servicios y Turnos",
                 "botones": [
                     {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-                    {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"},
-                    {"texto": "🅿️ Buscar Estacionamiento", "action_id": "buscar_estacionamiento"},
+                     {"texto": "🚗 Estacionamiento", "action_id": "estacionamiento"},
+                    {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"},
                 ],
             },
             {
-                "titulo": "Información y Novedades 📰",
+                "titulo": "📰 Información y Novedades",
                 "botones": [
                     {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-                    {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
+                    {"texto": "🗞️ Últimas Novedades", "action_id": "ultimas_novedades"},
                     {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"},
                 ],
             },
@@ -500,69 +499,79 @@ class GreetingHandler(BaseMunicipioHandler):
             "message_body": welcome_message,
             "options_list": options_list,
             "message_type": "interactive_list",
-            "fuente": "greeting_handler_categorized_v2",
+            "fuente": "greeting_handler_universal_v5",
             "categorias": categorias,
-            "generar_audio": True,
         }
 
-class ReclamosMenuHandler(BaseMunicipioHandler):
+class IntentClassifierHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        return {
-            "message_body": "Por favor, seleccioná el tipo de reclamo:",
-            "options_list": [
-                {"id": "reclamo_luminaria", "texto": "Luminaria"},
-                {"id": "reclamo_arbolado", "texto": "Arbolado"},
-                {"id": "reclamo_limpieza", "texto": "Limpieza y riego"},
-                {"id": "reclamo_calle", "texto": "Arreglo de calle"},
-                {"id": "reclamo_perdida_agua", "texto": "Pérdida de agua"},
-                {"id": "reclamo_otros", "texto": "Otros"},
-            ],
-            "message_type": "interactive_list",
-            "fuente": "reclamos_menu_handler"
-        }
+        pregunta = payload.get("pregunta", "")
+        if not pregunta:
+            return None
 
+        # Usar el clasificador global
+        intent, score = intent_classifier.classify(pregunta, rubro='municipios')
+
+        if intent:
+            # Reemplazar placeholders en la respuesta
+            respuesta_texto = reemplazar_placeholders(intent["respuesta"], self.context["municipio_config_actual"])
+
+            # Construir botones si hay acciones o links
+            botones = []
+            if "ACTION_" in respuesta_texto:
+                # Lógica para manejar acciones especiales si es necesario
+                # Por ahora, si es una acción, mejor que lo maneje el LLM o un handler específico.
+                return None
+
+            botones = agregar_botones_para_links(respuesta_texto, botones)
+
+            message_type = "text"
+            if botones:
+                message_type = "interactive_buttons" if len(botones) <= 3 else "interactive_list"
+
+            return {
+                "message_body": respuesta_texto,
+                "options_list": botones,
+                "message_type": message_type,
+                "fuente": f"intent_classifier_{intent['categoria']}",
+            }
+
+        return None
+
+# Handlers for specific actions, now simplified
 class LicenciaConducirHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        message_body = "Para requisitos y turnos de licencia de conducir visitá:\nhttps://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
+        # This logic can be simplified if the response is in intents.json
+        # For now, we keep it for direct action mapping
+        info = get_tramites_info().get("licencia_de_conducir", {})
+        message_body = info.get("respuesta", "No se encontró información para Licencia de Conducir.")
         botones = agregar_botones_para_links(message_body, [])
         return {
             "message_body": message_body,
             "options_list": botones,
-            "fuente": "licencia_conducir_handler"
+            "fuente": "info_licencia_conducir"
         }
 
 class PagoTasasHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        message_body = "Para pagar o descargar boletos vigentes, dirigite a:\nhttps://epagos.juninmendoza.gov.ar/jrentas/"
+        info = get_tramites_info().get("pago_de_tasas_vigentes", {})
+        message_body = info.get("respuesta", "No se encontró información para el pago de tasas.")
         botones = agregar_botones_para_links(message_body, [])
         return {
             "message_body": message_body,
             "options_list": botones,
-            "fuente": "pago_tasas_handler"
+            "fuente": "info_pago_tasas"
         }
 
 class DefensaConsumidorHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
-        return {
-            "message_body": "Para asesoramiento, escribí a:\ndefensadelconsumidorjuninmza@gmail.com",
-            "fuente": "defensa_consumidor_handler"
-        }
-
-class VeterinariaBromatologiaHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        return {
-            "message_body": "Para información vinculada a veterinaria y bromatología municipal escribí al WhatsApp:\n+54 9 2634 52-1563",
-            "fuente": "veterinaria_bromatologia_handler"
-        }
-
-class PerdidaDeAguaHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        message_body = "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/"
+        info = get_tramites_info().get("defensa_del_consumidor", {})
+        message_body = info.get("respuesta", "Para asesoramiento, escribí a: defensadelconsumidorjuninmza@gmail.com")
         botones = agregar_botones_para_links(message_body, [])
         return {
             "message_body": message_body,
-            "options_list": botones,
-            "fuente": "perdida_de_agua_handler"
+             "options_list": botones,
+            "fuente": "info_defensa_consumidor"
         }
 
 def safe_llm_call(prompt, preamble, fallback=None):
@@ -794,7 +803,8 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
 
         try:
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-            respuesta_llm_dict = llamar_gemini(mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm)
+            app_for_llm = current_app._get_current_object()
+            respuesta_llm_dict = llamar_gemini(app=app_for_llm, mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm, chat_session_id=kwargs.get('chat_session_uuid'))
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
             logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as e:
@@ -1138,6 +1148,15 @@ def responder_municipio(
 
     # --- Simple Router for Main Menu Options ---
     pregunta_str_lower = pregunta_str.strip().lower()
+
+    # --- Intent Classifier Logic ---
+    intent_handler = IntentClassifierHandler(context)
+    intent_response = intent_handler.handle(received_payload)
+    if intent_response:
+        logger_actual.info(f"Respuesta generada por IntentClassifier: {intent_response.get('fuente')}")
+        intent_response['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
+        return intent_response
+
     response_data = None
     if pregunta_str_lower == "reclamos":
         response_data = ReclamosMenuHandler(context).handle(received_payload)
