@@ -185,11 +185,15 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             texto_mensaje = mensaje_usuario
             mensaje_usuario_obj = {"texto": texto_mensaje}
 
-        contents_for_api = [
-            f"USUARIO: {json.dumps(usuario, ensure_ascii=False)}\nHISTORIAL PREVIO: {json.dumps(historial, ensure_ascii=False)}\nMENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}"
-        ]
+        chat_historial_limpio = _limpiar_historial_gemini(historial or [])
+        chat = model.start_chat(history=chat_historial_limpio)
+
+        mensaje_actual_completo = (
+            f"MENSAJE ACTUAL: {json.dumps(mensaje_usuario_obj, ensure_ascii=False)}\n\n"
+            f"DATOS DEL USUARIO (para referencia): {json.dumps(usuario, ensure_ascii=False)}"
+        )
         if usuario and usuario.get("datos_interpretados_archivo"):
-            contents_for_api.append(f"\nDATOS EXTRAIDOS DE ARCHIVO ADJUNTO: {json.dumps(usuario.get('datos_interpretados_archivo'), ensure_ascii=False)}")
+            mensaje_actual_completo += f"\nDATOS EXTRAIDOS DE ARCHIVO ADJUNTO: {json.dumps(usuario.get('datos_interpretados_archivo'), ensure_ascii=False)}"
 
         logger.info(f"Enviando a Gemini ({model_name}). Mensaje: {texto_mensaje[:100]}...")
 
@@ -197,14 +201,12 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             temperature=0.2,
             top_p=0.9,
             top_k=40,
-            max_output_tokens=256,
+            max_output_tokens=256,  # Reducido para ahorrar costos
             response_mime_type="application/json"
         )
 
-        # Use permissive safety settings so contact details don't trigger empty
-        # responses from the LLM. The backend validates any user-provided data.
-        response = model.generate_content(
-            contents_for_api,
+        response = chat.send_message(
+            mensaje_actual_completo,
             generation_config=generation_config,
             safety_settings=GEMINI_SAFETY_SETTINGS,
         )
