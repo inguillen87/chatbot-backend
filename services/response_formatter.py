@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 # When Twilio hasn't approved interactive templates yet we fall back to
 # rendering every WhatsApp menu as plain text.  The environment variable
 # allows re‑enabling interactive components without touching the code.
-WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() == "true"
+WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "false").lower() == "true"
 
 def build_interactive_response(options: list,
                                body_text: str,

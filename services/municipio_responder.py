@@ -922,8 +922,8 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     }, contexto_municipio_actual
 
 
-def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
-    logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
+def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
+    logger_actual = app.logger if app else (current_app.logger if has_app_context() else logging.getLogger(__name__))
     datos_actuales = {} # Initialize to prevent UnboundLocalError
 
     logger_actual.info(
@@ -1007,7 +1007,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         try:
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
             respuesta_llm_dict = llamar_gemini(
-                app=current_app._get_current_object(),
+                app=app,
                 mensaje_usuario=mensaje_para_gemini,
                 usuario=usuario_info_llm,
                 historial=historial_para_llm,
@@ -1484,6 +1484,9 @@ def responder_municipio(
     )
 
     # --- INICIO REFACTOR: Inicialización de 'context' y 'received_payload' al principio ---
+    # Obtener la app actual
+    app = current_app._get_current_object()
+
     # Cargar config específica del municipio (si existe)
     final_municipio_config = CONFIG_MUNICIPIO # Default global
     if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
@@ -1789,7 +1792,7 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
 
             response_dict, _ = handle_llm_interaction(
-                synthetic_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
+                app, synthetic_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
             )
             if response_dict:
                 return _finalize_response(response_dict)
@@ -1971,7 +1974,7 @@ def responder_municipio(
             # El diccionario 'context' ya se inicializó al principio de la función
             # y contiene toda la información necesaria.
             response_dict, _ = handle_llm_interaction(
-                constructed_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
+                app, constructed_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
             )
             # --- FIN REFACTOR ---
 
@@ -2296,7 +2299,7 @@ def responder_municipio(
 
 
         logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
-        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
+        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
         logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         if respuesta_manejada_por_llm:
             if not isinstance(respuesta_manejada_por_llm, dict):

@@ -21,7 +21,10 @@ class TestSendWhatsappTemplate(unittest.TestCase):
         args, kwargs = mock_client.messages.create.call_args
         assert kwargs['to'] == 'whatsapp:+5491111111111'
         assert kwargs['from_'] == notifications.TWILIO_WHATSAPP_NUMBER
-        assert 'template' in kwargs
+        assert 'content_sid' in kwargs
+        assert 'content_variables' in kwargs
+        assert kwargs['content_sid'] == 'bienvenida'
+        assert kwargs['content_variables'] == '{"1": "Marce"}'
 
 if __name__ == '__main__':
     unittest.main()

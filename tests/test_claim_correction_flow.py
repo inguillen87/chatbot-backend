@@ -69,6 +69,7 @@ class TestClaimCorrectionLogic(unittest.TestCase):
 
         # 3. Call the function under test
         response_dict, updated_context = handle_llm_interaction(
+            app=self.app,
             pregunta_str=user_input, context=full_context, viewer_user=self.user,
             owner_user=None, chat_db_context=None, contexto_municipio_actual=contexto_municipio_actual
         )
@@ -114,6 +115,7 @@ class TestClaimCorrectionLogic(unittest.TestCase):
         }
 
         handle_llm_interaction(
+            app=self.app,
             pregunta_str=user_input,
             context=full_context,
             viewer_user=self.user,
