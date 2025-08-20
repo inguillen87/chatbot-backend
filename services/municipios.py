@@ -774,21 +774,27 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         logger.info(f"[HANDLE_LLM] Invocando LLM. Estado: {estado_conversacion_para_llm}")
 
     datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-    usuario_info_llm = {
-        "nombre": datos_reclamo.get("nombre_usuario_detectado") or getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
-        "tipo_entidad": "municipio",
-        "ubicacion": datos_reclamo.get("ubicacion") or getattr(viewer_user, "direccion", None) if viewer_user else None,
-        "contacto": {
-            "telefono": datos_reclamo.get("telefono_detectado") or getattr(viewer_user, "telefono", None) if viewer_user else None,
-            "email": datos_reclamo.get("email_detectado") or getattr(viewer_user, "email", None) if viewer_user else None
-        }
-    }
-
     historial_para_llm = []
     if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
         historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
     else:
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
+
+    # Optimización: No enviar el objeto de usuario completo en cada turno
+    if not historial_para_llm: # Es el primer turno de la conversación
+        usuario_info_llm = {
+            "nombre": datos_reclamo.get("nombre_usuario_detectado") or getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
+            "tipo_entidad": "municipio",
+            "ubicacion": datos_reclamo.get("ubicacion") or getattr(viewer_user, "direccion", None) if viewer_user else None,
+            "contacto": {
+                "telefono": datos_reclamo.get("telefono_detectado") or getattr(viewer_user, "telefono", None) if viewer_user else None,
+                "email": datos_reclamo.get("email_detectado") or getattr(viewer_user, "email", None) if viewer_user else None
+            }
+        }
+    else: # Turnos subsiguientes
+        usuario_info_llm = {
+             "nombre": datos_reclamo.get("nombre_usuario_detectado") or getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
+        }
 
     try:
         mensaje_completo_para_llm = {"texto": pregunta_str}
