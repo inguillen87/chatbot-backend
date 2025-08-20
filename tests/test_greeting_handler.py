@@ -17,4 +17,4 @@ def test_greeting_handler():
     assert "¡Hola, Vecino/a!" in response.get("message_body", "")
     assert "Soy JUNI" in response.get("message_body", "")
     assert len(response.get("categorias", [])) == 4
-    assert response.get("fuente") == "greeting_handler_categorized_v2"
+    assert response.get("fuente") == "greeting_handler_universal_v5"

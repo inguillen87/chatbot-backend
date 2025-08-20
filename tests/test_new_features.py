@@ -54,9 +54,9 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("¡Hola, Vecino/a!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
         self.assertIn("options_list", respuesta)
-        self.assertEqual(len(respuesta["options_list"]), 11)
-        self.assertEqual(respuesta["options_list"][0]["texto"], "🛠️ Iniciar un Reclamo")
-        self.assertEqual(respuesta["fuente"], "greeting_handler_categorized_v2")
+        self.assertEqual(len(respuesta["options_list"]), 10)
+        self.assertEqual(respuesta["options_list"][0]["texto"], "📝 Iniciar un Reclamo")
+        self.assertEqual(respuesta["fuente"], "greeting_handler_universal_v5")
         self.assertEqual(len(respuesta.get("categorias", [])), 4)
 
     @patch('services.municipio_responder.llamar_gemini')

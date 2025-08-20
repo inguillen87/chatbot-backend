@@ -73,7 +73,7 @@ def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_sess
 
 @patch('services.municipio_responder.llamar_gemini')
 @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
-def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_gemini, mock_db_session):
+def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_gemini, client, mock_db_session):
     mock_interpretar_imagen.return_value = {
         "es_reclamo": True,
         "categoria_sugerida": "Arreglo de calle",
@@ -112,7 +112,7 @@ def test_document_processing_pedido_pyme(mock_db_session):
     pass
 
 @patch('services.municipio_responder.llamar_gemini')
-def test_information_gathering_reclamo_municipio(mock_llamar_gemini, mock_db_session):
+def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, mock_db_session):
     # 1. Initial request to create a reclamo
     mock_llamar_gemini.return_value = {
         "message_body": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",

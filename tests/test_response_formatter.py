@@ -123,8 +123,11 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["type"], "interactive")
         self.assertEqual(response["interactive"]["type"], "button")
 
+    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
     def test_force_text_via_env_var(self):
         """If WHATSAPP_FORCE_TEXT=true even interactive calls return text."""
+        import importlib
+        importlib.reload(rf)
 
         response = build_interactive_response(
             options=[{"id": "a", "texto": "Opción A"}],
@@ -133,7 +136,10 @@ class TestResponseFormatter(unittest.TestCase):
             message_type='interactive_buttons'
         )
         self.assertEqual(response["type"], "text")
+
         # Restore default for remaining tests
+        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+        importlib.reload(rf)
 
 
     def test_web_response_structure_buttons(self):
