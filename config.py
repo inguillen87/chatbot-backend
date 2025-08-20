@@ -76,7 +76,7 @@ class Config:
         SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}?check_same_thread=False"
 
     SQLALCHEMY_ENGINE_OPTIONS = {
-        'connect_args': {'timeout': 15}
+        'connect_args': {'timeout': 30}
     }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
