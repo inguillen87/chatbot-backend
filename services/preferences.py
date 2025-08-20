@@ -44,16 +44,18 @@ def set_audio_enabled(chat_context_data: Dict[str, Any], enabled: bool) -> None:
 
 def is_audio_enabled(chat_context_data: Dict[str, Any], user: Any | None = None) -> bool:
     """Return True if audio responses should be generated."""
-    if user is not None and getattr(user, "prefers_audio", False):
-        user_pref = True
-    else:
-        user_pref = False
+    if chat_context_data.get("source_is_audio"):
+        return True
 
     prefs = _prefs(chat_context_data)
     context_pref = prefs.get(AUDIO_ENABLED_KEY)
     if isinstance(context_pref, bool):
         return context_pref
-    return user_pref
+
+    if user is not None and getattr(user, "prefers_audio", False):
+        return True
+
+    return False
 
 
 def clear_preferences(chat_context_data: Dict[str, Any]) -> None:

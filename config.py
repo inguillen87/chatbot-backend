@@ -75,8 +75,11 @@ class Config:
         os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
         SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}?check_same_thread=False"
 
+    # Reduce SQLite lock wait time to avoid long blocking when the database is
+    # busy. A smaller timeout makes the application fail fast instead of
+    # waiting ~30s on each locked write.
     SQLALCHEMY_ENGINE_OPTIONS = {
-        'connect_args': {'timeout': 30}
+        'connect_args': {'timeout': 5}
     }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 

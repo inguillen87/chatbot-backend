@@ -436,10 +436,7 @@ class GreetingHandler(BaseMunicipioHandler):
         if name:
             return name
 
-        phone = self.context.get("telefono_usuario_contexto") or self.context.get("telefono_usuario")
-        if phone:
-            return f"Usuario de WhatsApp {phone[-4:]}"
-
+        # Avoid exposing phone details; use a generic friendly fallback
         return "Vecino/a"
 
     def handle(self, payload: dict) -> dict | None:

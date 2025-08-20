@@ -10,6 +10,7 @@ if project_root not in sys.path:
 
 from services.ticket_utils import formatear_ticket_respuesta
 from services.municipios import GreetingHandler
+from services.municipio_responder import responder_municipio
 from config import TestConfig
 from app import create_app
 from models import db
@@ -57,6 +58,29 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(respuesta["options_list"][0]["texto"], "🛠️ Iniciar un Reclamo")
         self.assertEqual(respuesta["fuente"], "greeting_handler_categorized_v2")
         self.assertEqual(len(respuesta.get("categorias", [])), 4)
+
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
+        """Verifica que la acción "mostrar_menu" del LLM devuelve el menú completo."""
+        mock_llamar_gemini.return_value = {
+            "message_body": "Partial menu",  # Should be replaced by local menu
+            "accion_backend": "mostrar_menu",
+            "datos_estructura": {"target": "municipio", "nombre_menu": "principal"},
+            "botones": [{"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}],
+        }
+
+        response = responder_municipio(
+            pregunta_original="otra consulta",
+            owner_user=MagicMock(id=1),
+            rubro_obj=MagicMock(nombre='municipio'),
+            chat_db_context=MagicMock(context_data={}),
+        )
+
+        self.assertIn("¿Cómo te puedo ayudar hoy?", response.get("message_body", ""))
+        self.assertEqual(len(response.get("options_list", [])), 10)
+        self.assertTrue(
+            any(opt.get("texto") == "📝 Iniciar un Reclamo" for opt in response.get("options_list", []))
+        )
 
 if __name__ == '__main__':
     unittest.main()

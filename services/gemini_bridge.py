@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Dict, Any, List, Optional
@@ -11,7 +12,9 @@ from google.oauth2 import service_account
 from tenacity import retry, stop_after_attempt, wait_fixed
 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 import vertexai
+import eventlet
 from flask import current_app
+from sqlalchemy.orm import sessionmaker
 from services.chatbot_prompts import JULES_SYSTEM_PROMPT
 from models import LlmInteractionLog
 from database import db
@@ -32,6 +35,39 @@ def _limpiar_historial_gemini(historial: list) -> list:
     if len(historial) > MAX_HISTORIAL_MESSAGES:
         return historial[-MAX_HISTORIAL_MESSAGES:]
     return historial
+
+# --- Logging helper -------------------------------------------------------
+
+def _log_llm_interaction_async(chat_session_id: str, user_query: str, llm_response: dict) -> None:
+    """Persist LLM interactions in a background greenlet.
+
+    Using a separate SQLAlchemy session avoids interfering with the main
+    request transaction and prevents long blocking when the SQLite database is
+    locked. Any failure is logged but ignored to keep the chat responsive.
+    """
+    with current_app.app_context():
+        Session = sessionmaker(bind=db.engine)
+        session = Session()
+        try:
+            entry = LlmInteractionLog(
+                chat_session_id=chat_session_id,
+                user_query=user_query,
+                llm_response_raw=llm_response,
+                status="pending_review",
+            )
+            session.add(entry)
+            session.commit()
+            current_app.logger.info(
+                f"LLM interaction logged for session {chat_session_id}"
+            )
+        except Exception as e:
+            current_app.logger.error(
+                f"Failed to log LLM interaction for session {chat_session_id}: {e}",
+                exc_info=True,
+            )
+            session.rollback()
+        finally:
+            session.close()
 
 # --- Configuración de Seguridad de Gemini ---
 GEMINI_SAFETY_SETTINGS = {
@@ -66,6 +102,33 @@ def robust_chat(model, *args, **kwargs):
     Wrapper para la llamada a `generate_content` con reintentos.
     """
     return model.generate_content(*args, **kwargs)
+
+
+def _repair_json_response(respuesta_texto_crudo: str) -> str:
+    """Intenta reparar JSONs parcialmente truncados o con errores comunes.
+
+    Este reparador es heurístico y busca corregir problemas simples como:
+    - campos sin valor (p. ej., `"botones":` al final de la cadena).
+    - comas sobrantes antes de cierres de objetos/listas.
+    - desbalanceo de llaves o corchetes.
+    - cita faltante en `id_archivo": null`.
+    """
+    fixed = respuesta_texto_crudo.replace('id_archivo": null', 'id_archivo": null"').strip()
+
+    if re.search(r'"botones"\s*:\s*$', fixed):
+        fixed += " []"
+
+    fixed = re.sub(r",\s*(\}|\])", r"\1", fixed)
+
+    brace_diff = fixed.count('{') - fixed.count('}')
+    if brace_diff > 0:
+        fixed += '}' * brace_diff
+
+    bracket_diff = fixed.count('[') - fixed.count(']')
+    if bracket_diff > 0:
+        fixed += ']' * bracket_diff
+
+    return fixed
 
 def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None, chat_session_id: str = None) -> dict:
     logger = logging.getLogger(__name__)
@@ -132,11 +195,19 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             response_mime_type="application/json"
         )
 
+        # Allow benign personal information (e.g., phone numbers or emails) to pass
+        # through without being blocked by the safety system. Previously the model
+        # would often return an empty response when users shared contact details,
+        # which caused the conversation to stall. Relaxing all harm categories to
+        # `BLOCK_NONE` lets the LLM provide a JSON response while still enabling the
+        # backend to validate and sanitize the data before use.
         safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY: HarmBlockThreshold.BLOCK_NONE,
         }
 
         response = model.generate_content(
@@ -205,8 +276,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
     except json.JSONDecodeError as e_json:
         logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
-        # Attempt to fix the JSON by adding the missing quote
-        fixed_json_str = respuesta_texto_crudo.replace('id_archivo": null', 'id_archivo": null"')
+        fixed_json_str = _repair_json_response(respuesta_texto_crudo)
         try:
             logger.info(f"Intentando parsear JSON reparado: {fixed_json_str[:500]}...")
             parsed_response = json.loads(fixed_json_str)
@@ -305,23 +375,10 @@ def llamar_gemini(
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
 
-    # Log the interaction
+    # Log the interaction without blocking the main thread
     if chat_session_id:
-        try:
-            with current_app.app_context():
-                log_entry = LlmInteractionLog(
-                    chat_session_id=chat_session_id,
-                    user_query=mensaje_usuario or mensaje,
-                    llm_response_raw=respuesta,
-                    status='pending_review'
-                )
-                db.session.add(log_entry)
-                db.session.commit()
-                logger.info(f"LLM interaction logged for session {chat_session_id}")
-        except Exception as e:
-            logger.error(f"Failed to log LLM interaction for session {chat_session_id}: {e}", exc_info=True)
-            # No relanzar el error para no afectar el flujo principal del chat
-            db.session.rollback()
+        user_query = mensaje_usuario or mensaje
+        eventlet.spawn_n(_log_llm_interaction_async, chat_session_id, user_query, respuesta)
 
 
     return respuesta
