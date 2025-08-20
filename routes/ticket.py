@@ -809,18 +809,13 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
             .order_by(TicketComentario.fecha.asc())
             .all()
         )
-        mensajes_formateados = [
-            {
-                "id": msg.id,
-                "texto": msg.comentario,
-                "fecha": msg.fecha.isoformat(),
-                "es_admin": msg.es_admin
-            }
-            for msg in mensajes_nuevos
-        ]
+        # Usar el método to_dict() del modelo para asegurar que todos los datos,
+        # incluyendo la información de adjuntos, se serialicen correctamente.
+        mensajes_formateados = [msg.to_dict() for msg in mensajes_nuevos]
+
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
-            "mensajes": mensajes_formateados
+            "mensajes": mensajes_formateados,
         }
         return jsonify(respuesta_final)
     except Exception as e:
@@ -863,17 +858,16 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
             .all()
         )
 
-        mensajes_formateados = [
-            {
-                "id": msg.id,
-                "texto": msg.comentario,
-                "fecha": msg.fecha.isoformat(),
-                "es_admin": msg.es_admin
-            }
-            for msg in mensajes_nuevos
-        ]
+        # Usar el método to_dict() del modelo para asegurar que todos los datos,
+        # incluyendo la información de adjuntos, se serialicen correctamente.
+        mensajes_formateados = [msg.to_dict() for msg in mensajes_nuevos]
 
-        return jsonify({"estado_chat": sala_de_chat.estado, "mensajes": mensajes_formateados})
+        # Devolver una estructura consistente con get_chat_mensajes
+        respuesta_final = {
+            "estado_chat": sala_de_chat.estado,
+            "mensajes": mensajes_formateados,
+        }
+        return jsonify(respuesta_final)
     except Exception as e:
         current_app.logger.error(f"Error en get_chat_mensajes_pyme para ticket {ticket_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
@@ -1372,6 +1366,88 @@ def mapa_de_tickets(current_user: User, tipo: str):
         return jsonify({"error": "Tipo de mapa no válido."}), 400
 
     return jsonify(datos)
+
+# ---------- ENVIAR HISTORIAL POR CORREO ----------
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
+@token_requerido
+@admin_o_empleado_requerido
+def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
+    """
+    Recupera el historial completo de un ticket y lo envía por correo electrónico
+    al cliente y al correo de contacto del agente/municipio.
+    """
+    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
+    ticket_obj = db.session.get(TicketModel, ticket_id)
+
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    # --- Verificación de Permisos ---
+    if tipo == 'municipio':
+        if not (current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id):
+            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+    elif tipo == 'pyme':
+        if not (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id):
+            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+    else:
+        return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
+
+    # --- Recopilación de Datos ---
+    try:
+        comentarios = ticket_obj.comentarios.order_by(TicketComentario.fecha.asc()).all()
+
+        adjuntos_unicos = []
+        adjunto_ids = set()
+        for c in comentarios:
+            if c.archivo_adjunto and c.archivo_adjunto.id not in adjunto_ids:
+                adjuntos_unicos.append(c.archivo_adjunto)
+                adjunto_ids.add(c.archivo_adjunto.id)
+
+        # --- Obtener Destinatarios ---
+        cliente_info = _get_user_info(ticket_obj, User)
+        email_cliente = cliente_info.get("email") if cliente_info.get("email") != "No especificado" else None
+
+        email_agente = None
+        if tipo == 'municipio' and ticket_obj.municipio_id:
+            agente_user = db.session.get(User, ticket_obj.municipio_id)
+            if agente_user:
+                email_agente = agente_user.email
+        elif tipo == 'pyme' and ticket_obj.rubro_id:
+            # Asumiendo que el rubro tiene un usuario asociado o una forma de encontrar el email
+            # Por ahora, usamos el email del usuario que realiza la acción como fallback.
+            email_agente = current_user.email
+
+        destinos = [d for d in [email_cliente, email_agente] if d]
+        if not destinos:
+            return jsonify({"error": "No se encontraron correos de destino válidos para el cliente o el agente."}), 400
+
+        # --- Renderizar y Enviar Correo ---
+        asunto = f"Historial de conversación del Ticket #{ticket_obj.nro_ticket}"
+
+        cuerpo_html = render_template(
+            "email/ticket_history.html",
+            ticket=ticket_obj,
+            comentarios=comentarios
+        )
+
+        from services.email_service import enviar_email_con_multiples_adjuntos
+
+        exito = enviar_email_con_multiples_adjuntos(
+            destinos=destinos,
+            asunto=asunto,
+            cuerpo_html=cuerpo_html,
+            adjuntos=adjuntos_unicos
+        )
+
+        if exito:
+            return jsonify({"success": True, "message": "El historial del ticket ha sido enviado por correo."})
+        else:
+            return jsonify({"error": "Hubo un problema al enviar el correo con el historial."}), 500
+
+    except Exception as e:
+        current_app.logger.error(f"Error en send_ticket_history para ticket {ticket_id}: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al procesar el envío del historial."}), 500
+
 
 # The local file serving route is no longer needed as files are served from GCS public URLs.
 # from flask_login import login_required, current_user as flask_login_current_user

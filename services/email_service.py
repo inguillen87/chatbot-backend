@@ -214,6 +214,76 @@ def enviar_email_ticket_admin(ticket) -> bool:
     return enviar_email(admin_email_val, asunto, cuerpo_html_ticket)
 
 
+import requests
+from typing import List
+from models import ArchivoAdjunto
+
+def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo_html: str, adjuntos: List[ArchivoAdjunto], cuerpo_texto: str = "") -> bool:
+    """Envía un email con múltiples archivos adjuntos."""
+    smtp_host = current_app.config.get("SMTP_HOST")
+    smtp_port = current_app.config.get("SMTP_PORT", 587)
+    smtp_user = current_app.config.get("SMTP_USER")
+    smtp_password = current_app.config.get("SMTP_PASSWORD")
+    from_email = current_app.config.get("MAIL_FROM_ADDRESS")
+    from_name = current_app.config.get("MAIL_FROM_NAME", from_email)
+    use_tls = current_app.config.get("SMTP_USE_TLS", True)
+    use_ssl = current_app.config.get("SMTP_USE_SSL", False)
+
+    if not all([smtp_host, smtp_port, from_email, destinos]):
+        logger.error("[EMAIL_MULTI_ADJ] Configuración SMTP incompleta o falta destino. Email no enviado.")
+        return False
+
+    msg = MIMEMultipart('mixed')
+    msg['Subject'] = asunto
+    msg['From'] = f"{from_name} <{from_email}>"
+    msg['To'] = ", ".join(destinos)
+
+    body_content = MIMEMultipart('alternative')
+    if cuerpo_texto:
+        body_content.attach(MIMEText(cuerpo_texto, "plain", "utf-8"))
+    if cuerpo_html:
+        body_content.attach(MIMEText(cuerpo_html, "html", "utf-8"))
+    msg.attach(body_content)
+
+    for adjunto in adjuntos:
+        try:
+            response = requests.get(adjunto.url, timeout=10)
+            response.raise_for_status()
+            contenido_adjunto = response.content
+
+            main_type, sub_type = (adjunto.mime or 'application/octet-stream').split('/', 1)
+
+            adj = MIMEApplication(contenido_adjunto, _subtype=sub_type)
+            adj.add_header("Content-Disposition", "attachment", filename=adjunto.nombre_original)
+            msg.attach(adj)
+            logger.info(f"[EMAIL_MULTI_ADJ] Adjuntado archivo {adjunto.nombre_original} ({adjunto.mime}) desde {adjunto.url}")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[EMAIL_MULTI_ADJ] No se pudo descargar el adjunto desde {adjunto.url}: {e}")
+            # Continuar sin este adjunto
+            continue
+        except Exception as e:
+            logger.error(f"[EMAIL_MULTI_ADJ] Error procesando adjunto {adjunto.id}: {e}")
+            continue
+
+    try:
+        logger.info(f"[EMAIL_MULTI_ADJ] Intentando enviar a {', '.join(destinos)} con {len(adjuntos)} adjuntos.")
+        if use_ssl:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port)
+        if use_tls and not use_ssl:
+            server.starttls()
+        if smtp_user and smtp_password:
+            server.login(smtp_user, smtp_password)
+        server.send_message(msg)
+        server.quit()
+        logger.info(f"[EMAIL_MULTI_ADJ] Enviado a {', '.join(destinos)} exitosamente.")
+        return True
+    except Exception as e:
+        logger.error(f"[EMAIL_MULTI_ADJ] Error enviando correo con múltiples adjuntos: {e}", exc_info=True)
+        return False
+
 from flask import render_template
 
 def enviar_email_ticket_cliente(ticket) -> bool:
