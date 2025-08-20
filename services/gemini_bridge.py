@@ -201,7 +201,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             temperature=0.2,
             top_p=0.9,
             top_k=40,
-            max_output_tokens=512,  # Reducido para ahorrar costos
+            max_output_tokens=1024,  # Reducido para ahorrar costos
             response_mime_type="application/json"
         )
 
