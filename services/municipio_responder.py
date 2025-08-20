@@ -1328,14 +1328,20 @@ from fuzzywuzzy import process
 
 def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None:
     """
-    Finds a menu action based on user input, checking for number, first letter, or keywords.
+    Finds a menu action based on user input, checking for exact match, number, first letter, or keywords.
     """
     if not user_input or not menu_buttons:
         return None
 
     normalized_input = normalizar_texto(user_input.strip())
 
-    # 1. Check for numeric selection
+    # 1. Check for exact match on normalized button text (most reliable for web channel)
+    for button in menu_buttons:
+        button_text_norm = normalizar_texto(button.get("texto", ""))
+        if button_text_norm == normalized_input:
+            return button.get('action_id')
+
+    # 2. Check for numeric selection
     try:
         selection_index = int(normalized_input) - 1
         if 0 <= selection_index < len(menu_buttons):
@@ -1343,14 +1349,14 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     except (ValueError, IndexError):
         pass  # Not a valid number or index, proceed to other checks
 
-    # 2. Check for first letter match (only if input is a single character)
+    # 3. Check for first letter match (only if input is a single character)
     if len(normalized_input) == 1:
         for button in menu_buttons:
             button_text_norm = normalizar_texto(button.get("texto", ""))
             if button_text_norm.startswith(normalized_input):
                 return button.get("action_id")
 
-    # 3. Check for keyword match
+    # 4. Check for keyword match (fuzzy matching for natural language)
     local_keywords = {}
     for button in menu_buttons:
         action_id = button.get('action_id')
@@ -1605,7 +1611,7 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
-    if not is_from_audio and normalizar_texto(pregunta_str) in (SIMPLE_GREETINGS | RETURN_TO_MAIN_MENU):
+    if pregunta_str == "__INIT__" or (not is_from_audio and normalizar_texto(pregunta_str) in (SIMPLE_GREETINGS | RETURN_TO_MAIN_MENU)):
         logger_actual.info(f"Greeting or main menu request '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
@@ -1806,6 +1812,7 @@ def responder_municipio(
     context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Ensure main context points to this sub-context
 
     # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
+    logger_actual.info(f"DEBUG: Checking state. Current state: {estado_conversacion}")
     if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
         pregunta_str_menu = ""
         if isinstance(pregunta_original, str):
@@ -1829,7 +1836,9 @@ def responder_municipio(
                 "action_id": btn.get("id") # The 'id' key holds the action_id
             })
 
+        logger_actual.info(f"DEBUG: Calling find_menu_action_by_input with input='{pregunta_str_menu}'")
         selected_action = find_menu_action_by_input(pregunta_str_menu, buttons_for_finder)
+        logger_actual.info(f"DEBUG: find_menu_action_by_input returned: '{selected_action}'")
 
         if selected_action:
             logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
@@ -1846,24 +1855,6 @@ def responder_municipio(
             response = handle_main_menu_action(selected_action, context, chat_db_context)
             if response:
                 return _finalize_response(response)
-        # --- WEB CHANNEL FIX: If no exact match, try matching just the text for web ---
-        elif channel == 'web':
-            # This is a fallback for the web widget, which sends text instead of action_ids
-            # It tries to find a match based on the button text.
-            for btn in flat_buttons:
-                # Use normalized comparison for robustness
-                if normalizar_texto(btn.get("texto", "")) == normalizar_texto(pregunta_str_menu):
-                    selected_action = btn.get("id")
-                    logger_actual.info(f"Web channel text input '{pregunta_str_menu}' matched to action: '{selected_action}'")
-                    contexto_municipio_actual['estado_conversacion'] = None
-                    if chat_db_context: flag_modified(chat_db_context, "context_data")
-                    response = handle_main_menu_action(selected_action, context, chat_db_context)
-                    if response:
-                        return _finalize_response(response)
-            # If still no match after this, then it's an invalid option.
-            logger_actual.info(f"Web input '{pregunta_str_menu}' did not match any menu option text. Re-prompting.")
-            error_message = "Opción no válida. Por favor, elegí una de las siguientes:"
-            return _finalize_response(_get_main_menu_payload(context, welcome_message_override=error_message))
         else:
             # If no match, re-prompt with the menu instead of clearing state
             logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Re-prompting with main menu.")
