@@ -32,14 +32,17 @@ def enviar_notificacion_sms(numero_destino: str, mensaje: str):
 def enviar_notificacion_whatsapp_con_plantilla(
     numero_destino: str, nombre: str, nro_ticket: str, categoria: str
 ):
+    """
+    Envía una notificación de WhatsApp usando una plantilla.
+    Si falla, intenta enviar un mensaje de texto plano como fallback.
+    """
     if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
-        logger.error("[NOTIFICACION WHATSAPP] Faltan credenciales de Twilio para enviar mensajes. SID, Token o Número de WhatsApp no configurados.")
+        logger.error("[NOTIFICACION WHATSAPP] Faltan credenciales de Twilio.")
         return
 
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     destinatario_whatsapp = f"whatsapp:{numero_destino}"
 
-    # Intento 1: Enviar con plantilla
     if TWILIO_WHATSAPP_CONTENT_SID:
         try:
             variables_plantilla = {"1": nombre, "2": f"M-{nro_ticket}", "3": categoria}
@@ -50,17 +53,17 @@ def enviar_notificacion_whatsapp_con_plantilla(
                 content_variables=json.dumps(variables_plantilla),
             )
             logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
-            return # Éxito, no continuar al fallback
+            return
         except Exception as e:
             logger.error(
                 f"[NOTIFICACION WHATSAPP] Error al enviar plantilla (SID: {TWILIO_WHATSAPP_CONTENT_SID}): {e}. "
-                "Se intentará enviar un mensaje de texto plano como fallback.",
+                "Intentando fallback a texto plano.",
                 exc_info=True
             )
     else:
-        logger.warning("[NOTIFICACION WHATSAPP] No se ha configurado un CONTENT_SID para la plantilla. Se usará un mensaje de texto plano directamente.")
+        logger.warning("[NOTIFICACION WHATSAPP] No se configuró TWILIO_WHATSAPP_CONTENT_SID. Usando texto plano.")
 
-    # Intento 2: Fallback a mensaje de texto plano
+    # Fallback a mensaje de texto plano
     try:
         fallback_message = f"Hola {nombre}, tu reclamo por '{categoria}' ha sido registrado con el número de ticket M-{nro_ticket}."
         message = client.messages.create(
@@ -68,65 +71,48 @@ def enviar_notificacion_whatsapp_con_plantilla(
             to=destinatario_whatsapp,
             body=fallback_message,
         )
-        logger.info(f"[NOTIFICACION WHATSAPP] Mensaje de fallback enviado con éxito, SID: {message.sid}")
+        logger.info(f"[NOTIFICACION WHATSAPP] Mensaje de fallback enviado, SID: {message.sid}")
     except Exception as e_fallback:
         logger.error(
             f"[NOTIFICACION WHATSAPP] Error al enviar mensaje de fallback: {e_fallback}", exc_info=True
         )
-    try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        variables_plantilla = {"1": nombre, "2": f"M-{nro_ticket}", "3": categoria}
-        message = client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=destinatario_whatsapp,
-            content_sid=TWILIO_WHATSAPP_CONTENT_SID,
-            content_variables=json.dumps(variables_plantilla),
-        )
-        logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
-    except Exception as e:
-        logger.error(
-            f"[NOTIFICACION WHATSAPP] Error al enviar plantilla: {e}", exc_info=True
-        )
-        try:
-            logger.info(f"Intentando enviar mensaje de texto plano como fallback a {destinatario_whatsapp}")
-            fallback_message = f"Hola {nombre}, tu reclamo por '{categoria}' ha sido registrado con el número de ticket M-{nro_ticket}."
-            client.messages.create(
-                from_=TWILIO_WHATSAPP_NUMBER,
-                to=destinatario_whatsapp,
-                body=fallback_message,
-            )
-            logger.info(f"[NOTIFICACION WHATSAPP] Mensaje de fallback enviado con éxito.")
-        except Exception as e_fallback:
-            logger.error(
-                f"[NOTIFICACION WHATSAPP] Error al enviar mensaje de fallback: {e_fallback}", exc_info=True
-            )
 
 
 def enviar_bienvenida_whatsapp(numero_destino: str, nombre: str):
-    """Envía el mensaje de bienvenida con botones usando una plantilla de WhatsApp."""
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
-        logger.error("[WHATSAPP] Faltan credenciales de Twilio para bienvenida.")
+    """Envía el mensaje de bienvenida usando una plantilla de WhatsApp."""
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER, TWILIO_WELCOME_TEMPLATE]):
+        logger.error("[WHATSAPP] Faltan credenciales o el SID de la plantilla de bienvenida de Twilio.")
         return
 
     destinatario = f"whatsapp:{numero_destino}"
-    template_payload = {
-        "name": TWILIO_WELCOME_TEMPLATE,
-        "language": {"code": "es"},
-        "components": [
-            {"type": "body", "parameters": [{"type": "text", "text": nombre}]}
-        ],
-    }
 
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        # Para plantillas con variables, se usa content_sid y content_variables.
+        # Asumimos que TWILIO_WELCOME_TEMPLATE es el SID de la plantilla.
         message = client.messages.create(
             from_=TWILIO_WHATSAPP_NUMBER,
             to=destinatario,
-            template=template_payload,
+            content_sid=TWILIO_WELCOME_TEMPLATE,
+            content_variables=json.dumps({"1": nombre}),
         )
-        logger.info(f"[WHATSAPP] Bienvenida enviada, SID: {message.sid}")
+        logger.info(f"[WHATSAPP] Mensaje de bienvenida enviado con plantilla, SID: {message.sid}")
     except Exception as e:
         logger.error(
-            f"[WHATSAPP] Error al enviar mensaje de bienvenida: {e}",
-            exc_info=True,
+            f"[WHATSAPP] Error al enviar mensaje de bienvenida con plantilla: {e}",
+            exc_info=True
         )
+        # Fallback a un mensaje de texto simple si la plantilla falla
+        try:
+            fallback_message = f"¡Hola, {nombre}! Bienvenido a nuestro servicio de atención."
+            client.messages.create(
+                from_=TWILIO_WHATSAPP_NUMBER,
+                to=destinatario,
+                body=fallback_message,
+            )
+            logger.info("[WHATSAPP] Mensaje de bienvenida de fallback enviado.")
+        except Exception as e_fallback:
+            logger.error(
+                f"[WHATSAPP] Error al enviar mensaje de bienvenida de fallback: {e_fallback}",
+                exc_info=True,
+            )
