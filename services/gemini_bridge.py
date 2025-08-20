@@ -23,8 +23,8 @@ from database import db
 logger = logging.getLogger(__name__)
 
 # --- Modelos de Gemini ---
-GEMINI_MODEL_PRESTAMOS = "gemini-2.5-pro"
-GEMINI_MODEL_STANDARD = "gemini-2.5-pro"
+GEMINI_MODEL_PRESTAMOS = "gemini-2.5-flash"
+GEMINI_MODEL_STANDARD = "gemini-2.5-flash"
 MAX_HISTORIAL_MESSAGES = 10
 
 def _limpiar_historial_gemini(historial: list) -> list:
@@ -70,11 +70,16 @@ def _log_llm_interaction_async(chat_session_id: str, user_query: str, llm_respon
             session.close()
 
 # --- Configuración de Seguridad de Gemini ---
+# Allow benign personal information (e.g., phone numbers or emails) to pass
+# through without being blocked by the safety system. The backend still
+# validates and sanitizes user data before use.
 GEMINI_SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY: HarmBlockThreshold.BLOCK_NONE,
 }
 
 # --- Inicialización del Executor para llamadas asíncronas ---
@@ -156,7 +161,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-        model_name = "gemini-2.5-pro"
+        model_name = "gemini-2.5-flash"
 
         model = GenerativeModel(
             model_name,
@@ -195,25 +200,12 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             response_mime_type="application/json"
         )
 
-        # Allow benign personal information (e.g., phone numbers or emails) to pass
-        # through without being blocked by the safety system. Previously the model
-        # would often return an empty response when users shared contact details,
-        # which caused the conversation to stall. Relaxing all harm categories to
-        # `BLOCK_NONE` lets the LLM provide a JSON response while still enabling the
-        # backend to validate and sanitize the data before use.
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY: HarmBlockThreshold.BLOCK_NONE,
-        }
-
+        # Use permissive safety settings so contact details don't trigger empty
+        # responses from the LLM. The backend validates any user-provided data.
         response = model.generate_content(
             contents_for_api,
             generation_config=generation_config,
-            safety_settings=safety_settings,
+            safety_settings=GEMINI_SAFETY_SETTINGS,
         )
 
         logger.info(f"Respuesta recibida de Gemini. Candidates count: {len(response.candidates)}")
