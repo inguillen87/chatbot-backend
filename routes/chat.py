@@ -46,9 +46,11 @@ def _parse_request(tipo_chat_fijo: str | None = None):
 
         pregunta = data.get("pregunta")
         location = data.get("location")
-        # Si no hay pregunta pero sí ubicación, es válido. Se generará una pregunta sintética más adelante.
-        if not pregunta and not location:
-            raise ValueError("La solicitud debe contener al menos un campo 'pregunta' o 'location'.")
+
+        # If the question is empty (or not provided) and there's no location,
+        # it's the initial message from the widget.
+        if not location and (pregunta is None or str(pregunta).strip() == ""):
+            pregunta = "__INIT__" # Special keyword for initial message
 
         if tipo_chat_fijo:
             tipo_chat = tipo_chat_fijo
