@@ -64,10 +64,14 @@ from routes.estacionamiento import bp_est # <--- NUEVA IMPORTACIÓN ESTACIONAMIE
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
 def my_on_connect_listener(dbapi_connection, connection_record):
-    # Ejemplo: Forzar foreign keys en SQLite (sólo si usás SQLite)
+    # Ensure SQLite connections are configured for better concurrency.
     try:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # Enable WAL mode so reads and writes don't block each other and
+        # configure a short busy timeout to fail fast when locked.
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")  # milliseconds
         cursor.close()
     except Exception:
         pass

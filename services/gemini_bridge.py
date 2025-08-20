@@ -12,7 +12,9 @@ from google.oauth2 import service_account
 from tenacity import retry, stop_after_attempt, wait_fixed
 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 import vertexai
+import eventlet
 from flask import current_app
+from sqlalchemy.orm import sessionmaker
 from services.chatbot_prompts import JULES_SYSTEM_PROMPT
 from models import LlmInteractionLog
 from database import db
@@ -33,6 +35,39 @@ def _limpiar_historial_gemini(historial: list) -> list:
     if len(historial) > MAX_HISTORIAL_MESSAGES:
         return historial[-MAX_HISTORIAL_MESSAGES:]
     return historial
+
+# --- Logging helper -------------------------------------------------------
+
+def _log_llm_interaction_async(chat_session_id: str, user_query: str, llm_response: dict) -> None:
+    """Persist LLM interactions in a background greenlet.
+
+    Using a separate SQLAlchemy session avoids interfering with the main
+    request transaction and prevents long blocking when the SQLite database is
+    locked. Any failure is logged but ignored to keep the chat responsive.
+    """
+    with current_app.app_context():
+        Session = sessionmaker(bind=db.engine)
+        session = Session()
+        try:
+            entry = LlmInteractionLog(
+                chat_session_id=chat_session_id,
+                user_query=user_query,
+                llm_response_raw=llm_response,
+                status="pending_review",
+            )
+            session.add(entry)
+            session.commit()
+            current_app.logger.info(
+                f"LLM interaction logged for session {chat_session_id}"
+            )
+        except Exception as e:
+            current_app.logger.error(
+                f"Failed to log LLM interaction for session {chat_session_id}: {e}",
+                exc_info=True,
+            )
+            session.rollback()
+        finally:
+            session.close()
 
 # --- Configuración de Seguridad de Gemini ---
 GEMINI_SAFETY_SETTINGS = {
@@ -339,23 +374,10 @@ def llamar_gemini(
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
 
-    # Log the interaction
+    # Log the interaction without blocking the main thread
     if chat_session_id:
-        try:
-            with current_app.app_context():
-                log_entry = LlmInteractionLog(
-                    chat_session_id=chat_session_id,
-                    user_query=mensaje_usuario or mensaje,
-                    llm_response_raw=respuesta,
-                    status='pending_review'
-                )
-                db.session.add(log_entry)
-                db.session.commit()
-                logger.info(f"LLM interaction logged for session {chat_session_id}")
-        except Exception as e:
-            logger.error(f"Failed to log LLM interaction for session {chat_session_id}: {e}", exc_info=True)
-            # No relanzar el error para no afectar el flujo principal del chat
-            db.session.rollback()
+        user_query = mensaje_usuario or mensaje
+        eventlet.spawn_n(_log_llm_interaction_async, chat_session_id, user_query, respuesta)
 
 
     return respuesta
