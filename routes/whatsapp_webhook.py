@@ -1,16 +1,16 @@
-from flask import Blueprint, request, jsonify, abort, current_app  # Basic Flask components
-from twilio.request_validator import RequestValidator  # For validating Twilio requests
-from twilio.rest import Client  # For sending messages via Twilio
-import os  # For accessing environment variables
+from flask import Blueprint, request, jsonify, abort, current_app
+from twilio.request_validator import RequestValidator
+from twilio.rest import Client
+import os
 import requests
 import io
 import json
 from werkzeug.datastructures import FileStorage
-from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
-from extensions import db  # Import db instance for database operations
+from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto
+from extensions import db
 import uuid
-from services.logic import responder_chatboc  # Import the correct chatbot logic processor
-from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
+from services.logic import responder_chatboc
+from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs
@@ -19,14 +19,11 @@ from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 
-# Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
 
-# Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
-# Initialize Twilio client and request validator
 if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
     twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     validator = RequestValidator(TWILIO_AUTH_TOKEN)
@@ -55,7 +52,6 @@ def whatsapp_webhook():
     to_number_cleaned = to_number_raw.replace("whatsapp:", "")
     from_number_cleaned = from_number_raw.replace("whatsapp:", "")
 
-    # --- Session Management FIRST ---
     whatsapp_mapping = WhatsappNumero.query.options(
         joinedload(WhatsappNumero.user).joinedload(User.rubro)
     ).filter_by(numero_whatsapp=to_number_cleaned, is_active=True).first()
@@ -95,16 +91,13 @@ def whatsapp_webhook():
         except Exception as e:
             print(f"Error sending welcome template: {e}")
 
-    # Ensure context_data is a dict
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
 
-    # Determine incoming text before any special handling
     button_payload = post_vars.get("ButtonPayload")
     list_id = post_vars.get("ListId")
     incoming_text = button_payload or list_id or post_vars.get("Body", "")
 
-    # --- Profile confirmation flow ---
     if not session_context_db_entry.context_data.get("perfil_confirmado"):
         perfil = session_context_db_entry.context_data.get("perfil_en_revision") or {
             "nombre": getattr(end_user, "name", ""),
@@ -180,74 +173,59 @@ def whatsapp_webhook():
                 )
             return "OK", 200
 
-    # --- Message and Media Handling SECOND ---
     media_url = post_vars.get("MediaUrl0")
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
 
     if media_url and media_content_type:
-        try:
-            # Download the file from Twilio's URL first
-            auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            r = requests.get(media_url, auth=auth)
-            r.raise_for_status()
-            media_content = r.content
-
-            # Create a FileStorage object to be compatible with our services
-            file_stream = io.BytesIO(media_content)
-            file_name = f"whatsapp_media_{uuid.uuid4().hex[:12]}"
-            file_storage = FileStorage(
-                stream=file_stream,
-                filename=file_name,
-                content_type=media_content_type
-            )
-
-            # Use the attachment service to save the file and create a thumbnail if applicable
-            adjunto = create_attachment_with_thumbnail(
-                file_storage=file_storage,
-                user_id=end_user.id if end_user else None,
-                session_id=chat_session_id_internal
-            )
-
-            if not adjunto:
-                 raise Exception("create_attachment_with_thumbnail failed to return an attachment object.")
-
-            # Prepare the info for the chatbot logic, which will be used for all media types
-            uploaded_file_info = {
-                "id": adjunto.id,
-                "url": adjunto.url,
-                "mime_type": adjunto.mime,
-                "name": adjunto.nombre_original,
-                "source": "whatsapp"
-            }
-            current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
-
-            if media_content_type.startswith("audio/"):
-                session_context_db_entry.context_data['source_is_audio'] = True
-                from services.audio_transcription_service import transcribe_audio_from_url
-                # We pass the direct URL to the transcription service
-                transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-                if transcribed_text:
-                    message_body = transcribed_text
-                    uploaded_file_info['transcribed_text'] = transcribed_text
-                else:
-                    current_app.logger.warning("Audio transcription failed or returned empty.")
+        if media_content_type.startswith("audio/"):
+            session_context_db_entry.context_data['source_is_audio'] = True
+            from services.audio_transcription_service import transcribe_audio_from_url
+            transcription_result = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            if transcription_result:
+                message_body = transcription_result # Can be a dict or a string
             else:
-                # If it's not audio, remove the source_is_audio flag
-                session_context_db_entry.context_data.pop('source_is_audio', None)
+                print("Audio transcription failed or returned empty.")
+        else:
+            session_context_db_entry.context_data.pop('source_is_audio', None)
 
-        except requests.exceptions.RequestException as e:
-            current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
-        except Exception as e:
-            current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
-            # Reset uploaded_file_info if processing fails
-            uploaded_file_info = None
+        if not media_content_type.startswith("audio/"):
+            try:
+                auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                r = requests.get(media_url, auth=auth)
+                r.raise_for_status()
+                file_stream = io.BytesIO(r.content)
+                file_name = f"whatsapp_media_{uuid.uuid4().hex[:12]}"
+                file_storage = FileStorage(
+                    stream=file_stream,
+                    filename=file_name,
+                    content_type=media_content_type
+                )
+                adjunto = create_attachment_with_thumbnail(
+                    file_storage=file_storage,
+                    user_id=end_user.id if end_user else None,
+                    session_id=chat_session_id_internal
+                )
+                if adjunto:
+                    uploaded_file_info = {
+                        "id": adjunto.id,
+                        "url": adjunto.url,
+                        "mime_type": adjunto.mime,
+                        "name": adjunto.nombre_original,
+                        "source": "whatsapp"
+                    }
+                    post_vars["uploaded_file_info"] = uploaded_file_info
+                    current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
+                else:
+                    current_app.logger.error(f"Failed to process WhatsApp media from URL: {media_url} using attachment_service")
+            except requests.exceptions.RequestException as e:
+                current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
+            except Exception as e:
+                current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
     else:
-        # If no media, ensure the flag is not present
         session_context_db_entry.context_data.pop('source_is_audio', None)
 
-    # --- Location Handling ---
     latitude = post_vars.get("Latitude")
     longitude = post_vars.get("Longitude")
     location_info = None
@@ -261,7 +239,6 @@ def whatsapp_webhook():
             location_info["label"] = label
         print(f"Received location data: {location_info}")
 
-    # --- Human Chat Check ---
     if session_context_db_entry.context_data.get("human_chat_in_progress"):
         room = session_context_db_entry.context_data.get("room")
         if room:
@@ -269,9 +246,14 @@ def whatsapp_webhook():
             socketio.emit('message', {'msg': message_body}, room=room)
             return "OK", 200
 
-    # --- Numeric Menu Handling ---
+    # FIX: Ensure message_body is a string before string operations
+    if isinstance(message_body, dict) and 'transcript' in message_body:
+        if uploaded_file_info:
+             uploaded_file_info['transcribed_text'] = message_body['transcript']
+        message_body = message_body['transcript']
+
     last_options = session_context_db_entry.context_data.get("last_options_sent")
-    if message_body.isdigit() and last_options:
+    if isinstance(message_body, str) and message_body.isdigit() and last_options:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
             selected = last_options[idx]
@@ -282,8 +264,6 @@ def whatsapp_webhook():
                 or message_body
             )
 
-    # --- Call Real Chatbot Logic: responder_chatboc ---
-    # Initialize with a default error response
     bot_response_dict = {
         'message_body': "Lo siento, no pude procesar tu solicitud en este momento.",
         'options_list': [],
@@ -292,39 +272,35 @@ def whatsapp_webhook():
     }
     respuesta_del_bot_text = bot_response_dict['message_body']
 
-    # The context_data from session_context_db_entry will be passed to responder_chatboc
-    # and it's expected that responder_chatboc might modify it directly or return a new context.
-
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
         interpretacion_media_data = None
         if uploaded_file_info:
             mime_type = uploaded_file_info.get("mime_type", "")
+            current_app.logger.info(f"DEBUG: Mime type is {mime_type}")
             if not mime_type.startswith("audio/"):
+                current_app.logger.info(f"DEBUG: Classifying attachment...")
                 interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
-        # Location info should not be treated as interpreted media.
-        # It should be passed directly as location data.
+                current_app.logger.info(f"DEBUG: Classification result: {interpretacion_media_data}")
 
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
         if location_info:
-            # Pass location_info directly to the 'location' parameter of the bot logic
-            kwargs_for_bot["location"] = location_info
+            kwargs_for_bot["location_info"] = location_info
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
-            # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
+            current_app.logger.info(f"DEBUG: Added datos_interpretados_archivo to kwargs.")
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:
             kwargs_for_bot["profile_name"] = profile_name
 
-        # The actual call that might raise an exception
         bot_response_dict = responder_chatboc(
             pregunta=message_body,
             owner_user=client_user,
-            current_user=end_user,
+            viewer_user=end_user,
             rubro_obj=client_user.rubro,
             chat_db_context=session_context_db_entry,
             rubro_nombre_frontend=None,
@@ -335,74 +311,50 @@ def whatsapp_webhook():
             **kwargs_for_bot
         )
 
-        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
             contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})
             datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
-
-            # Extraer info del mensaje actual del usuario
-            potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
-            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
-            extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
-            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
-
-            # Actualizar datos del reclamo con la info extraída
+            extracted_data = extract_multiple_contact_details_llm(message_body, ["nombre_cliente", "telefono_cliente", "email_cliente"])
             if extracted_data.get("nombre_cliente"):
                 datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre_cliente"]
             if extracted_data.get("telefono_cliente"):
                 datos_reclamo["telefono_detectado"] = extracted_data["telefono_cliente"]
             if extracted_data.get("email_cliente"):
                 datos_reclamo["email_detectado"] = extracted_data["email_cliente"]
-
-            # Guardar datos actualizados en el contexto
             contexto_actual["datos_parciales_llm_reclamo"] = datos_reclamo
             session_context_db_entry.context_data["contexto_municipio"] = contexto_actual
-
-            # Verificar si ya tenemos toda la info
             if not (datos_reclamo.get("nombre_usuario_detectado") and datos_reclamo.get("telefono_detectado") and datos_reclamo.get("email_detectado")):
-                # Si falta info, volver a pedirla
                 bot_response_dict = {
                     "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
                     "pedir_info": ["nombre", "telefono", "email"]
                 }
 
         print(f"Raw response from responder_chatboc: {bot_response_dict}")
-
-        # Validate the response from the bot logic
         if not isinstance(bot_response_dict, dict):
             print(f"Warning: responder_chatboc did not return a dictionary. Response: {bot_response_dict}")
-            # Keep the default error response initialized earlier
             bot_response_dict = {
                 'message_body': "Lo siento, hubo un error interno al procesar tu mensaje.",
                 'options_list': [], 'message_type': 'text', 'fuente': 'error_handler_non_dict_response'
             }
 
-        # Ensure context_data is a dict for saving
         if not isinstance(session_context_db_entry.context_data, dict):
             print(f"Warning: context_data in session_context_db_entry is not a dict. Resetting. Data: {session_context_db_entry.context_data}")
             session_context_db_entry.context_data = {
                 "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format."}],
                 "estado_conversacion": "error_context"
             }
-
     except Exception as e:
         print(f"Error calling real chatbot logic (responder_chatboc): {e}")
         import traceback
-        traceback.print_exc() # Log full traceback for debugging
-        # bot_response_dict is already set to a default error message, so we just log and continue
+        traceback.print_exc()
 
-    # Update respuesta_del_bot_text for logging from the final bot_response_dict
     respuesta_del_bot_text = bot_response_dict.get('message_body', "Error: message_body no encontrado en la respuesta del bot.")
     print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 
-    # --- Format Response and Save Session ---
     formatted_whatsapp_payload = {}
     try:
         from services.response_formatter import build_interactive_response
-
         body_text = bot_response_dict.get('message_body') or bot_response_dict.get('message_to_user', "Error de formato.")
-
-        # This call will modify bot_response_dict to include context for the numeric menu
         formatted_whatsapp_payload = build_interactive_response(
             options=bot_response_dict.get('options_list', []),
             body_text=body_text,
@@ -413,85 +365,56 @@ def whatsapp_webhook():
             footer_text=bot_response_dict.get('footer_text'),
             audio_url=bot_response_dict.get('audio_url')
         )
-
-        # After formatting, the context might be updated (e.g., with last_options_sent).
-        # We need to merge this updated context back into our main session object before saving.
         updated_context = formatted_whatsapp_payload.get('contexto_actualizado')
-
-        # The existing context from the database
         db_context = session_context_db_entry.context_data or {}
         current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto de la base de datos: {db_context}")
         current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: {updated_context}")
-
-
-        # Merge the contexts
         if updated_context:
             merged_context = {**db_context, **updated_context}
         else:
             merged_context = db_context
-
         current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto fusionado para guardar: {merged_context}")
-
-
-        # Save the merged context
         session_context_db_entry.context_data = merged_context
         flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
         print(f"Session saved for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
-
     except Exception as e:
         db.session.rollback()
         print(f"Error formatting response or saving session for {chat_session_id_internal}: {e}")
         import traceback
         traceback.print_exc()
 
-    # --- Send Response via Twilio ---
     if twilio_client:
         try:
-            # El formateador ahora devuelve un diccionario con 'type' y los datos.
-            # Si es de tipo 'text', usamos el cuerpo directamente.
             message_params = {
                 'from_': to_number_raw,
                 'to': from_number_raw,
             }
-
             if formatted_whatsapp_payload.get("type") == "interactive":
                 interactive_payload = formatted_whatsapp_payload.get("interactive")
-                # The body is required, it's the fallback for notifications and older clients
                 message_params['body'] = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
-                # The PersistentAction is what actually sends the interactive message
-                # It needs to be a list of strings, with the format "channel:payload"
-                # For WhatsApp, the payload is a JSON string of the interactive object.
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
-            else: # Text message
+            else:
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
-
-            # Send the main message (text or interactive)
             main_message = twilio_client.messages.create(**message_params)
             print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
-
-            # Second, if the 'generar_audio' flag is set, generate and send audio.
-            if bot_response_dict.get('generar_audio'):
-                from services.google_text_to_speech import GoogleTextToSpeechService
-                tts_service = GoogleTextToSpeechService()
-                text_to_synthesize = bot_response_dict.get('message_body', '')
-                if text_to_synthesize:
-                    # The TTS service should return a public URL to the generated audio file.
-                    audio_url = tts_service.synthesize_speech(text_to_synthesize)
-                    if audio_url:
-                        audio_message_params = {
-                            'from_': to_number_raw,
-                            'to': from_number_raw,
-                            'media_url': [audio_url]
-                        }
-                        current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
-                        audio_message = twilio_client.messages.create(**audio_message_params)
-                        print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
-                    else:
-                        current_app.logger.error("TTS service failed to generate audio URL.")
-
+            audio_url = bot_response_dict.get('audio_url')
+            if audio_url:
+                if audio_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    absolute_audio_url = f"{base_url}{audio_url}"
+                else:
+                    absolute_audio_url = audio_url
+                audio_message_params = {
+                    'from_': to_number_raw,
+                    'to': from_number_raw,
+                    'media_url': [absolute_audio_url]
+                }
+                current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
+                audio_message = twilio_client.messages.create(**audio_message_params)
+                print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
         except Exception as e:
             print(f"Error al enviar mensaje de Twilio: {e}")
             import traceback

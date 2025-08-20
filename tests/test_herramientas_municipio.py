@@ -83,7 +83,7 @@ def test_consultar_noticias_municipio_sin_noticias(mock_extraer_noticias):
     resultado = consultar_noticias_municipio()
 
     # Assert
-    assert "No pude obtener las últimas noticias" in resultado
+    assert "No se encontraron noticias recientes" in resultado
 
 @patch('services.herramientas_municipio.extraer_noticias')
 def test_consultar_noticias_municipio_error(mock_extraer_noticias):

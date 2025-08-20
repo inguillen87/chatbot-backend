@@ -672,17 +672,3 @@ class CatalogMapping(db.Model):
             "createdAt": self.created_at.isoformat(),
             "updatedAt": self.updated_at.isoformat()
         }
-
-class LlmInteractionLog(db.Model):
-    __tablename__ = "llm_interaction_log"
-    id = db.Column(db.Integer, primary_key=True)
-    chat_session_id = db.Column(db.String(36), db.ForeignKey('chat_session_context.chat_session_id'), nullable=False, index=True)
-    user_query = db.Column(db.Text, nullable=False)
-    llm_response_raw = db.Column(db.JSON, nullable=True)
-    status = db.Column(db.String(50), default='pending_review', nullable=False, index=True) # pending_review, converted_to_faq, rejected
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    chat_session = db.relationship('ChatSessionContext', backref=db.backref('llm_interaction_logs', lazy='dynamic'))
-
-    def __repr__(self):
-        return f"<LlmInteractionLog id={self.id} session_id={self.chat_session_id} status='{self.status}'>"

@@ -290,6 +290,7 @@ faq_data = {
         "Reclamos y servicios urbanos": [
             ["¿Cómo hago un reclamo por luminaria?", "Completá el formulario en [linkWeb], llamá al [telefono] o acercate a [direccion]."],
             ["¿Cómo denuncio un bache?", "Ingresá el reclamo en [linkWeb], o comunicate con atención al vecino en [telefono]."],
+            ["¿Dónde denuncio ruido molesto?", "Podés denunciar en [nombreEmpresa] en [direccion] o completar el formulario en [linkWeb]."],
             ["¿Dónde solicito poda de árboles?", "Presentá tu pedido en [linkWeb] o personalmente en [direccion] durante el [horario]."],
             ["¿Qué hago si no pasa el recolector de residuos?", "Reportá la situación al [telefono] o desde [linkWeb]."],
             ["¿Cómo hago un reclamo por cloacas o agua?", "Contactá a [nombreEmpresa] en [telefono] o acercate a [direccion]."],
@@ -306,6 +307,7 @@ faq_data = {
             ["¿Dónde funciona el área de discapacidad?", "El área de discapacidad atiende en [direccion]. Más información en [linkWeb]."],
             ["¿Cómo accedo a programas de empleo?", "Revisá los programas activos en [linkWeb] o acercate a la oficina de empleo en [direccion]."],
             ["¿Dónde pido turnos para vacunación?", "Los turnos se solicitan en [linkWeb] o telefónicamente al [telefono]."],
+            ["¿Dónde denunciar violencia de género?", "Podés comunicarte al [telefono] o acercarte a [direccion] (área de Género y Diversidad)."]
         ],
         "Educación y cultura": [
             ["¿Dónde me inscribo en talleres municipales?", "Las inscripciones se realizan en [linkWeb] o personalmente en [direccion]."],
@@ -340,6 +342,7 @@ faq_data = {
             ["¿El municipio tiene número de emergencia?", "Sí, el número es [telefono]. Consultá [linkWeb] para más líneas directas."],
             ["¿Dónde está la comisaría más cercana?", "Consultá el mapa de dependencias en [linkWeb] o preguntá en mesa de entradas de [nombreEmpresa], en [direccion]."],
             ["¿A quién aviso en caso de animales sueltos?", "Llamá al área de Zoonosis al [telefono] o hacé el reclamo en [linkWeb]."],
+            ["¿Dónde denunciar incendios o quemas?", "Comunicá la situación inmediatamente a Defensa Civil al [telefono] o al cuerpo de bomberos."]
         ]
     }
 }

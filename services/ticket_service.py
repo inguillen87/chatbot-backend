@@ -144,8 +144,12 @@ class ServicioTickets:
             else:
                  logger.warning(f"Se proveyó un user_id ({ticket_data.get('user_id')}) para crear un ticket, pero el usuario no fue encontrado.")
 
-        # El commit se movió al final de la transacción en routes/chat.py
-        # para evitar detached instances.
+        try:
+            db.session.commit()
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            logger.error(f"Error al actualizar datos de usuario durante la creación de ticket: {e}")
+            # No fallar la creación del ticket, pero loggear el error y continuar.
         # --- Fin de la lógica de manejo de usuario ---
 
         ticket_data["nro_ticket"] = random.randint(100000, 999999)
@@ -156,7 +160,7 @@ class ServicioTickets:
 
             ticket = creator.create(ticket_data)
             db.session.add(ticket)
-            db.session.flush() # flush para obtener el ID del ticket para el comentario
+            db.session.flush()
 
             # Si viene un comentario opcional, lo agregamos
             if ticket_data.get("comentario"):
@@ -171,7 +175,7 @@ class ServicioTickets:
                     comentario.pyme_ticket = ticket
                 db.session.add(comentario)
 
-            # db.session.commit() # <<< ELIMINADO
+            db.session.commit()
             logger.info(f"Ticket #{ticket.nro_ticket} (ID: {ticket.id}) ({tipo_ticket}) creado localmente. Municipio ID: {getattr(ticket, 'municipio_id', 'N/A')}. Datos: {ticket.__dict__}")
 
             # Integración con SIGEM para tickets municipales
@@ -226,7 +230,7 @@ class ServicioTickets:
             else:
                 nuevo_comentario.pyme_ticket = ticket
             db.session.add(nuevo_comentario)
-            # db.session.commit() # <<< ELIMINADO
+            db.session.commit()
             try:
                 from services.email_service import (
                     enviar_email_ticket_novedad,
@@ -265,7 +269,7 @@ class ServicioTickets:
                 comentario=comentario,
             )
             db.session.add(encuesta)
-            # db.session.commit() # <<< ELIMINADO
+            db.session.commit()
             return encuesta
         except SQLAlchemyError as e:
             db.session.rollback()
@@ -381,7 +385,7 @@ class ServicioTickets:
                 TicketComentario.query.filter_by(anon_id=anon_id)
                 .update({"user_id": nuevo_user_id})
             )
-            # db.session.commit() # <<< ELIMINADO
+            db.session.commit()
             total = (muni_count or 0) + (pyme_count or 0) + (comentario_count or 0)
             logger.info(
                 "Tickets migrados de anon_id %s a user_id %s: %s",

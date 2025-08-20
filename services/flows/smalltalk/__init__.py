@@ -36,8 +36,7 @@ def handle(msg: str, meta: dict) -> dict:
         llm_response_payload = llamar_gemini(
             mensaje_usuario=msg,
             usuario=usuario_dict,
-            historial=historial,
-            chat_session_id=meta.get("chat_session_uuid")
+            historial=historial
         )
 
         llm_response_payload["fuente"] = "llm_fallback"

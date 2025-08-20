@@ -5,12 +5,13 @@ import re
 from typing import List, Optional, Dict, Any, Tuple
 from collections import OrderedDict, Counter
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
-from services.logic import es_rubro_publico
+from .common_utils import es_rubro_publico
 
 # from collections import Counter # Ya está importado arriba
 from qdrant_client.http import models as qdrant_models
 from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto
+from .embedding_service import embed_textos_gemini as embed_textos
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))

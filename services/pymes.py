@@ -23,7 +23,7 @@ from services.qdrant_search import (
 )
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import sugerencias_por_rubro
-from services.logic import es_rubro_publico
+from services.common_utils import es_rubro_publico
 from services.ticket_service import servicio_tickets
 from services.webinfo import obtener_info_web
 from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
@@ -840,8 +840,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     llm_response_structured = llamar_gemini(
         mensaje_usuario=mensaje_para_gemini,
         usuario=usuario_info_for_gemini,
-        historial=historial_chat_para_gemini,
-        chat_session_id=kwargs.get("chat_session_uuid")
+        historial=historial_chat_para_gemini
     )
 
     # Actualizar historial para la próxima llamada a Gemini

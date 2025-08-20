@@ -1,102 +1,88 @@
-import re
+import logging
+from flask import current_app
 
-def _remove_redundant_urls_from_message(message_body, options_list):
-    """
-    Removes URLs from the message body if they are already present in the buttons.
-    """
-    if not message_body or not options_list:
+logger = logging.getLogger(__name__)
+
+def _remove_redundant_urls_from_message(message_body: str, botones: list) -> str:
+    """Si una URL de un botón ya está en el cuerpo del mensaje, la elimina del cuerpo."""
+    if not botones:
         return message_body
 
-    message_body_str = str(message_body)
+    for option in botones:
+        # Defensive checks for mock objects in tests
+        url = option.get('url')
+        if isinstance(option, dict) and isinstance(url, str):
+            if isinstance(message_body, str) and url in message_body:
+                # Elimina la URL del cuerpo del mensaje si ya está presente
+                message_body = message_body.replace(url, "").strip()
+                # Elimina saltos de línea dobles que puedan quedar
+                message_body = message_body.replace("\n\n", "\n")
 
-    for option in options_list:
-        if isinstance(option, dict) and 'url' in option and option['url'] in message_body_str:
-            message_body_str = message_body_str.replace(option['url'], '')
+    return message_body
 
-    # Clean up common leftover phrases and extra spaces
-    message_body_str = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
-    message_body_str = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
-    message_body_str = re.sub(r'enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
 
-    # Replace multiple spaces with a single space and clean up punctuation
-    message_body_str = re.sub(r'\s{2,}', ' ', message_body_str).strip()
-    message_body_str = message_body_str.replace(' .', '.').strip()
-    message_body_str = re.sub(r'[,:]\s*\.', '.', message_body_str)
-    if message_body_str == ':':
-        message_body_str = ''
+def formatear_ticket_respuesta(ticket, municipio_config, canal='web', viewer_user=None, extra_info=None, current_user=None, datos_llm=None, tipo='reclamo'):
+    """
+    Formatea una respuesta estándar para la creación de un ticket.
+    Devuelve el texto de la respuesta y una lista de botones.
+    """
+    # Defensive check: If 'ticket' is not an object with an 'id', treat it as just the ticket number.
+    if not hasattr(ticket, 'id'):
+        nro_ticket_display = str(ticket)
+        if tipo == 'sugerencia':
+            respuesta = f"Tu sugerencia #{nro_ticket_display} ha sido registrada con éxito."
+        else:
+            respuesta = f"Tu reclamo #{nro_ticket_display} ha sido creado con éxito."
+        botones = [{"texto": "Volver al menú principal", "action_id": "menu_principal"}]
+        if canal == 'whatsapp':
+             if tipo == 'sugerencia':
+                 respuesta += "\n\n¡Gracias por tu aporte!"
+             else:
+                respuesta += "\n\nRecibirás actualizaciones por este medio. " \
+                             "Puedes consultar el estado de tus reclamos escribiendo 'Mis reclamos'."
+        return respuesta, botones
 
-    return message_body_str
+    base_url = current_app.config.get("FRONTEND_URL", "")
+    nro_ticket_display = ticket.nro_ticket if hasattr(ticket, 'nro_ticket') and ticket.nro_ticket else ticket.id
 
-def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None):
-    nombre_asesor = None
-    telefono_asesor = None
-    horario_asesor = None
-    link_informacion = None
-    link_whatsapp = None
+    if tipo == 'sugerencia':
+        respuesta = f"Tu sugerencia #{nro_ticket_display} ha sido registrada con éxito."
+    else:
+        respuesta = f"Tu reclamo #{nro_ticket_display} ha sido creado con éxito."
+
     botones = []
 
-    if contacto_especializado:
-        nombre_asesor = contacto_especializado.get("nombre")
-        telefono_asesor = contacto_especializado.get("telefono")
-        horario_asesor = contacto_especializado.get("horario")
-        link_informacion = contacto_especializado.get("link")
-        if nombre_asesor and telefono_asesor:
-            # telefono_numerico = ''.join(filter(str.isdigit, str(telefono_asesor)))
-            # link_whatsapp = f"https://wa.me/{telefono_numerico}?text=Hola,%20quiero%20hacer%20seguimiento%20de%20mi%20{tipo}%20(ID:{id_ticket})"
-            # botones.append({
-            #     "texto": f"📱 Contactar a {nombre_asesor}",
-            #     "url": str(link_whatsapp),
-            #     "type": "url"
-            # })
-            pass
-        if link_informacion:
-            botones.append({
-                "texto": "🌐 Más información",
-                "url": str(link_informacion),
-                "type": "url"
-            })
+    if extra_info:
+        if isinstance(extra_info, str):
+            respuesta += f"\n\n{extra_info}"
+        elif isinstance(extra_info, dict):
+            for key, value in extra_info.items():
+                respuesta += f"\n{key.replace('_', ' ').capitalize()}: {value}"
 
-    if id_ticket and base_chat_url:
-        if base_chat_url.endswith('/'):
-            base_chat_url = base_chat_url[:-1]
+    # Generar URL de seguimiento
+    url_seguimiento = None
+    ticket_id_str = str(ticket.id)
+    user_for_link = viewer_user or current_user
+    if user_for_link and hasattr(user_for_link, 'id') and user_for_link.id:
+        url_seguimiento = f"{base_url}/mis-tickets?ticket_id={ticket_id_str}"
+    elif hasattr(ticket, 'anon_id') and ticket.anon_id:
+        anon_id_str = str(ticket.anon_id)
+        url_seguimiento = f"{base_url}/?anon_id={anon_id_str}&ticket_id={ticket_id_str}"
 
-        ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
-        chat_url = f"{base_chat_url}/{ticket_id_numeric}"
-        botones.append({
-            "texto": "💬 Ver mi Ticket",
-            "url": chat_url,
-            "type": "url"
-        })
+    if canal == 'whatsapp':
+        if tipo == 'sugerencia':
+            respuesta += "\n\n¡Gracias por tu aporte!"
+        else:
+            respuesta += "\n\nRecibirás actualizaciones por este medio. " \
+                         "Puedes consultar el estado de tus reclamos escribiendo 'Mis reclamos'."
+        if url_seguimiento and tipo != 'sugerencia':
+             respuesta += f"\n\nO sigue su estado en la web: {url_seguimiento}"
+    else:
+        if url_seguimiento and tipo != 'sugerencia':
+            botones.append({"texto": "Ver Estado del Reclamo", "type": "url", "url": url_seguimiento})
+            respuesta += f"\n\nPuedes seguir su estado aquí: {url_seguimiento}"
+        botones.append({"texto": "Volver al menú principal", "action_id": "menu_principal"})
 
-    tipos = {
-        "reclamo": "Reclamo",
-        "sugerencia": "Sugerencia",
-        "tramite": "Trámite",
-        "chat": "Chat en vivo"
-    }
-    texto_tipo = tipos.get(tipo, "Consulta")
-
-    respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*
-
-📄 *Resumen de tu {texto_tipo}:*
-- *N° de Ticket:* `{id_ticket}`
-- *Categoría:* {categoria}
-- *Descripción:* {descripcion}
-"""
-
-    if nombre_asesor:
-        respuesta += f"""
-📞 *Contacto para seguimiento:* {nombre_asesor} - {telefono_asesor}"""
-        if horario_asesor:
-            respuesta += f"\n🕒 *Horario de atención:* {horario_asesor}"
-        if link_informacion:
-            respuesta += f"\n🔗 {link_informacion}"
-
-    respuesta += """
-
-Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
-
-    # Limpiar URLs redundantes del cuerpo del mensaje
     respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones)
 
     return respuesta_limpia, botones

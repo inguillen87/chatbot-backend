@@ -124,10 +124,6 @@ def serialize_ticket_to_json(ticket, ticket_type):
 
 
     # Construir el diccionario con la estructura deseada
-    dni_vecino = user_data.get("dni")
-    if dni_vecino == "No especificado" or not dni_vecino:
-        dni_vecino = None
-
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
@@ -146,13 +142,6 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
-        "informacion_personal_vecino": {
-            "nombre": user_data.get("nombre", "No especificado"),
-            "dni": dni_vecino,
-            "direccion": user_data.get("direccion", "No especificada"),
-            "email": user_data.get("email", "No especificado"),
-            "telefono": user_data.get("telefono", "No especificado")
-        }
     }
     return serialized_data
 
@@ -335,48 +324,45 @@ def get_mis_tickets(current_user: User):
 
 # ---------- DETALLE DE TICKET ----------
 def _get_user_info(ticket, user_model):
-    """
-    Helper to consolidate user info extraction, prioritizing the User model
-    over ticket fields.
-    """
-    # 1. Initialize with None to clearly distinguish from empty strings
-    user_info = { "nombre": None, "telefono": None, "email": None, "direccion": None, "dni": None, "descripcion": None }
+    """Helper to consolidate user info extraction."""
+    user_info = {
+        "nombre": "No especificado",
+        "telefono": "No especificado",
+        "email": "No especificado",
+        "direccion": "No especificada",
+        "dni": "No especificado",
+        "descripcion": ""
+    }
 
-    # 2. Prioritize data from the associated User model
+    # 1. Get data from User model if available
     ticket_owner_user = db.session.get(user_model, ticket.user_id) if ticket.user_id else None
     if ticket_owner_user:
-        user_info["nombre"] = ticket_owner_user.name
-        user_info["telefono"] = ticket_owner_user.telefono
-        user_info["email"] = ticket_owner_user.email
-        user_info["direccion"] = ticket_owner_user.direccion
-        # User model doesn't have DNI, so we don't fetch it here.
+        user_info["nombre"] = ticket_owner_user.name or user_info["nombre"]
+        user_info["telefono"] = ticket_owner_user.telefono or user_info["telefono"]
+        user_info["email"] = ticket_owner_user.email or user_info["email"]
+        user_info["direccion"] = ticket_owner_user.direccion or user_info["direccion"]
+        # El modelo User no tiene DNI, así que no lo sacamos de aquí.
 
-    # 3. Fill missing info with data from the ticket itself
-    user_info["nombre"] = user_info["nombre"] or getattr(ticket, 'nombre_vecino', None)
-    user_info["telefono"] = user_info["telefono"] or getattr(ticket, 'telefono_vecino', None) or getattr(ticket, 'telefono', None)
-    user_info["email"] = user_info["email"] or getattr(ticket, 'email_vecino', None) or getattr(ticket, 'email', None)
-    user_info["direccion"] = user_info["direccion"] or getattr(ticket, 'direccion', None)
-    user_info["dni"] = user_info["dni"] or getattr(ticket, 'dni', None) # Only PymeTicket will have this
+    # 2. Fallback to ticket fields (for anonymous or overriding)
+    user_info["nombre"] = getattr(ticket, 'nombre_vecino', user_info["nombre"]) or user_info["nombre"]
+    user_info["telefono"] = getattr(ticket, 'telefono_vecino', getattr(ticket, 'telefono', user_info["telefono"])) or user_info["telefono"]
+    user_info["email"] = getattr(ticket, 'email_vecino', getattr(ticket, 'email', user_info["email"])) or user_info["email"]
+    user_info["direccion"] = getattr(ticket, 'direccion', user_info["direccion"]) or user_info["direccion"]
+    user_info["dni"] = getattr(ticket, 'dni', user_info["dni"]) or user_info["dni"] # Para PymeTicket
 
-    # 4. Fallback to 'detalles' field for any missing info
+    # 3. Fallback to 'detalles' field for any missing info
     detalles_texto = getattr(ticket, 'detalles', '') or ''
     user_info["descripcion"] = detalles_texto
-    if detalles_texto:
-        if not user_info["nombre"]:
-            if "Nombre:" in detalles_texto: user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
-        if not user_info["telefono"]:
-            if "Teléfono:" in detalles_texto: user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
-        if not user_info["email"]:
-            if "Email:" in detalles_texto: user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
-        if not user_info["direccion"]:
-            if "Dirección:" in detalles_texto: user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
-        if not user_info["dni"]:
-            if "DNI:" in detalles_texto: user_info["dni"] = detalles_texto.split("DNI:")[1].split("\n")[0].strip()
-
-    # 5. Final cleanup: replace any remaining None/empty with "No especificado" for display
-    for key, value in user_info.items():
-        if not value: # Catches None and empty strings
-            user_info[key] = "No especificado"
+    if "Nombre:" in detalles_texto and user_info["nombre"] == "No especificado":
+        user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
+    if "Teléfono:" in detalles_texto and user_info["telefono"] == "No especificado":
+        user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
+    if "Email:" in detalles_texto and user_info["email"] == "No especificado":
+        user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
+    if "Dirección:" in detalles_texto and user_info["direccion"] == "No especificada":
+        user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
+    if "DNI:" in detalles_texto and user_info["dni"] == "No especificado":
+        user_info["dni"] = detalles_texto.split("DNI:")[1].split("\n")[0].strip()
 
     return user_info
 
@@ -916,7 +902,6 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         }
     )
     if nuevo_comentario:
-        db.session.commit()
         # Notificación por Websocket
         data = {
             "message": f"Nuevo mensaje en tu ticket #{sala_de_chat.nro_ticket}",
@@ -962,7 +947,6 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
         },
     )
     if nuevo_comentario:
-        db.session.commit()
         data = {
             "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
             "ticket_id": ticket_id,

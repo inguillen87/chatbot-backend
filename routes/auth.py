@@ -1,7 +1,5 @@
-# Contenido COMPLETO para: routes/auth.py
-
 from flask import Blueprint, request, jsonify, current_app, g, make_response
-from services.logic import es_rubro_publico, normalizar_rubro
+from services.common_utils import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified

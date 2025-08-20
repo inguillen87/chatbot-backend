@@ -3,6 +3,41 @@ import re
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 
+# --- START: Moved from services/logic.py to break circular import ---
+RUBROS_PUBLICOS = {
+    "municipio", "municipios", "ong", "gobierno", "hospital_publico",
+    "entidad_publica", "municipal", "publico",
+}
+
+def es_rubro_publico(rubro) -> bool:
+    """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
+    if not rubro:
+        return False
+    # This logic was duplicated, centralizing it here.
+    if isinstance(rubro, str):
+        rubro_str = rubro.strip().lower()
+    elif hasattr(rubro, "nombre") and getattr(rubro, "nombre"):
+        rubro_str = str(rubro.nombre).strip().lower()
+    elif hasattr(rubro, "clave") and getattr(rubro, "clave"):
+        rubro_str = str(rubro.clave).strip().lower()
+    else:
+        rubro_str = str(rubro).strip().lower()
+    return rubro_str in RUBROS_PUBLICOS
+
+def normalizar_rubro(rubro) -> str:
+    """Devuelve el nombre del rubro en minúsculas."""
+    if not rubro:
+        return ""
+    if isinstance(rubro, str):
+        return rubro.strip().lower()
+    if hasattr(rubro, "nombre") and getattr(rubro, "nombre"):
+        return str(rubro.nombre).strip().lower()
+    if hasattr(rubro, "clave") and getattr(rubro, "clave"):
+        return str(rubro.clave).strip().lower()
+    return str(rubro).strip().lower()
+# --- END: Moved from services/logic.py ---
+
+
 # --- PLACEHOLDER DEFINITIONS ---
 # The original definitions for these functions were not found in the codebase.
 # These are basic placeholders to allow the application to load.

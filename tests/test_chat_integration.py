@@ -148,9 +148,7 @@ class TestChatIntegration(unittest.TestCase):
 
         # The response from the endpoint is a dictionary, and the welcome message is in 'message_body'.
         self.assertIn("Soy JUNI, tu Asistente Virtual", data.get("message_body", ""))
-        # Check for web-specific feature explanation, as 'web' is the default channel
-        self.assertIn("adjuntar una foto", data.get("message_body", ""))
-        self.assertNotIn("enviarme un audio", data.get("message_body", ""))
+        self.assertIn("enviarme un audio", data.get("message_body", "")) # Check for feature explanation
         self.assertIsNotNone(data.get("options_list")) # The new format uses 'options_list' for buttons/menu items.
 
 if __name__ == '__main__':

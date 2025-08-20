@@ -1,37 +1,125 @@
-import unicodedata
-import re
 import json
-import emoji
-from .categorias_municipio import CATEGORIAS_RECLAMO, categorias_normalizadas
-from services.google_search import google_search
-from services.scraper_avanzado import extraer_contenido_metadata, extraer_contenido_general
-from fuzzywuzzy import process
-from datetime import datetime, timedelta
-import os
 import logging
-from typing import Dict, Any, List
+import requests
+import os
+import unicodedata # <--- ¡Importante agregar esta línea!
+import re
+from services.config_loader import cargar_configuracion_municipio
+from services.location_service import geocode_address
+from services.google_text_to_speech import TextToSpeechService
+
+# Instanciar el servicio de TTS
+tts_service = TextToSpeechService()
+
+# ... (el resto de tus herramientas y diccionarios)
+
+# --- NUEVA HERRAMIENTA DE SUGERENCIA DE CATEGORÍAS ---
+
+def crear_prompt_sugerir_categorias(texto_usuario: str, categorias_disponibles: list[str]) -> str:
+    """Crea un prompt específico para que el LLM sugiera categorías relevantes."""
+
+    lista_categorias_str = "\n".join(f"- {cat}" for cat in categorias_disponibles)
+
+    prompt = f"""
+Tu tarea es actuar como un experto clasificador de reclamos municipales.
+Dado un RECLAMO DE USUARIO y una LISTA DE CATEGORÍAS, tu única función es seleccionar las 3 categorías más relevantes de la lista que mejor correspondan al reclamo del usuario.
+
+LISTA DE CATEGORÍAS DISPONIBLES:
+{lista_categorias_str}
+
+RECLAMO DE USUARIO: "{texto_usuario}"
+
+INSTRUCCIONES:
+- Analiza el reclamo del usuario y compáralo con la lista de categorías.
+- Devuelve SÓLO un objeto JSON que contenga una única clave "sugerencias" con una lista de hasta 3 nombres de categorías extraídos EXACTAMENTE de la lista proporcionada.
+- Si ninguna categoría parece relevante, devuelve una lista vacía.
+
+Ejemplo 1:
+- Reclamo: "la esquina de mi casa está a oscuras y el asfalto es un desastre"
+- Respuesta: {{"sugerencias": ["Luminaria", "Arreglo de calle"]}}
+
+Ejemplo 2:
+- Reclamo: "quiero saber el teléfono del intendente"
+- Respuesta: {{"sugerencias": []}}
+
+Tu respuesta:
+"""
+    return prompt
+
+def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
+    """
+    Usa el LLM para obtener una lista de categorías sugeridas basadas en el texto del usuario.
+    """
+    todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values()))) # Still useful for keyword matching
+    # LLM call removed. Category suggestion is now expected from the main Gemini call.
+    # This function now performs basic keyword matching as a fallback or primary if called directly.
+    logger.info(f"Sugiriendo categorías (NO-LLM) para: '{texto_usuario[:50]}...'")
+    sugeridas = []
+    if not texto_usuario: return sugeridas
+
+    texto_norm = normalizar_texto(texto_usuario)
+    from services.categorias_municipio import CATEGORIAS_RECLAMO
+    # Contar ocurrencias de keywords para cada categoría
+    conteo_categorias = {cat: 0 for cat in CATEGORIAS_RECLAMO} # Use the defined list
+    palabras_usuario = set(texto_norm.split())
+
+    for keyword, category_target in KEYWORD_TO_CATEGORY_MAP.items():
+        # Usar una keyword normalizada para la comparación si es necesario,
+        # aunque KEYWORD_TO_CATEGORY_MAP ya tiene claves en minúscula y sin acentos (asumido).
+        if keyword in palabras_usuario:
+            conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 1
+            if keyword in texto_norm: # Dar más peso si es una frase
+                 conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 2
+
+
+    # Ordenar por conteo descendente
+    categorias_ordenadas = sorted(conteo_categorias.items(), key=lambda item: item[1], reverse=True)
+
+    for cat, count in categorias_ordenadas:
+        if count > 0 and len(sugeridas) < 3:
+            if cat not in sugeridas: # Evitar duplicados si diferentes keywords apuntan a la misma categoría
+                 sugeridas.append(cat)
+        if len(sugeridas) >= 3:
+            break
+
+    if not sugeridas and texto_usuario:
+        # Si después del keyword matching no hay nada, pero había texto, sugerir "Otro Motivo"
+        # Asegurarse que "Otro Motivo" sea una de las CATEGORIAS_RECLAMO válidas.
+        if "Otro Motivo" in CATEGORIAS_RECLAMO: # Check against the defined list
+            sugeridas.append("Otro Motivo")
+
+    logger.info(f"Categorías sugeridas (NO-LLM) para '{texto_usuario[:50]}...': {sugeridas}")
+    return sugeridas # Devuelve hasta 3, o menos si no hay suficientes matches.
 
 logger = logging.getLogger(__name__)
+Maps_API_KEY = os.environ.get("Maps_API_KEY")
+MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
+CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 
 
+# --- NUEVA FUNCIÓN DE NORMALIZACIÓN ---
 def normalizar_texto(texto: str) -> str:
-    """Quita emojis, tildes, convierte a minúsculas y elimina caracteres no deseados."""
+    """Normaliza un texto eliminando acentos y puntuación sin modificar palabras."""
+
     if not texto:
         return ""
-    # Quitar emojis por completo
-    texto = emoji.replace_emoji(texto, replace='')
-    # Normalización a NFD (forma de descomposición canónica) para separar las tildes
-    nfkd_form = unicodedata.normalize('NFD', texto)
-    # Filtrar para quedarse solo con caracteres ASCII
-    only_ascii = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
-    # Eliminar caracteres especiales y convertir a minúsculas, y quitar espacios extra
-    texto_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', only_ascii).lower().strip()
-    return re.sub(r'\s+', ' ', texto_limpio)
 
-# --- The rest of the file from the read_file output ---
-# ... (I will copy the rest of the file content here)
-# It's too long to put in the thought block. I will just use the functions I know are in there.
+    texto = texto.lower().strip()
 
+    # Quitar diacríticos (acentos)
+    texto = ''.join(
+        c for c in unicodedata.normalize("NFD", texto) if not unicodedata.combining(c)
+    )
+
+    # Mantener solo caracteres alfanuméricos y espacios
+    texto = re.sub(r"[^a-z0-9\s]", "", texto)
+
+    # Normalizar espacios múltiples
+    texto = re.sub(r"\s+", " ", texto).strip()
+
+    return texto
+
+# --- VALIDACIÓN DE DIRECCIONES ---
 def direccion_es_valida(texto: str) -> bool:
     """Verifica si una dirección es válida utilizando el servicio de geocodificación."""
     if not texto:
@@ -99,6 +187,7 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
         logger.error(f"Error al parsear dirección con LLM: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'")
         return None
 
+# --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
     """
     Herramienta profesional que usa la API de Google Maps para geocodificar una dirección
@@ -142,6 +231,11 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
     except requests.exceptions.RequestException as e:
         logger.error(f"[HERRAMIENTA GEO] Error de conexión con la API de Google: {e}")
         return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
+
+
+# --- HERRAMIENTA 2: CATEGORIZACIÓN DE RECLAMOS ---
+
+# En herramientas_municipio.py, reemplaza tu diccionario
 
 KEYWORD_TO_CATEGORY_MAP = {
     # Luminaria
@@ -231,14 +325,18 @@ def consultar_noticias_municipio() -> str:
 
     resultado_scrape = extraer_noticias(url_noticias, limit=3)
 
-    if "error" in resultado_scrape or not resultado_scrape.get("noticias"):
-        error_msg = resultado_scrape.get("error", "No se encontraron noticias.")
+    if "error" in resultado_scrape:
+        error_msg = resultado_scrape.get("error", "Error desconocido.")
         logger.warning(f"[HERRAMIENTA NOTICIAS] Falló el scrapeo: {error_msg}")
-        # Fallback a un link genérico
         return (
             "No pude obtener las últimas noticias en este momento. "
             "Puedes consultarlas directamente en el sitio web: https://www.juninmendoza.gov.ar/noticias/"
         )
+
+    noticias = resultado_scrape.get("noticias", [])
+    if not noticias:
+        logger.info("[HERRAMIENTA NOTICIAS] No se encontraron noticias recientes.")
+        return "No se encontraron noticias recientes en el sitio web del municipio."
 
     mensaje = "Aquí están las últimas noticias de Junín Mendoza:\n\n"
     for i, noticia in enumerate(resultado_scrape.get("noticias", []), 1):
@@ -513,6 +611,7 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     except Exception as e: # Captura errores de JSONDecodeError u otros inesperados
         logger.error(f"Error inesperado en reverse geocoding para {lat},{lon}: {e}", exc_info=True)
         return None
+# --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---
 
 TOOL_REGISTRY = {
     "consultar_recoleccion_por_direccion": {

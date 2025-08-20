@@ -3,74 +3,49 @@ from unittest.mock import patch, MagicMock
 from app import create_app, db
 from models import User, Rubro, ChatSessionContext
 from services.municipio_responder import responder_municipio
+from services.pymes import responder_pyme
+import os
+
+# Set the config to TestingConfig
+os.environ['FLASK_CONFIG'] = 'testing'
 
 @pytest.fixture(scope='module')
 def test_client():
-    """Configura la aplicación Flask para las pruebas."""
-    app = create_app()
-    app.config.update({
-        "TESTING": True,
-        "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
-        "WTF_CSRF_ENABLED": False,
-        "TWILIO_ACCOUNT_SID": "test_sid",
-        "TWILIO_AUTH_TOKEN": "test_token",
-    })
-
-    with app.app_context():
-        db.create_all()
-        # Clean up database before each test run
-        db.session.query(ChatSessionContext).delete()
-        db.session.query(User).delete()
-        db.session.query(Rubro).delete()
-        db.session.commit()
-
-        # Crear datos iniciales si es necesario
-        rubro = Rubro(nombre="municipio", clave="municipio")
-        db.session.add(rubro)
-        user = User(
-            name="Test User",
-            email="test@example.com",
-            password_hash="test",
-            nombre_empresa="Municipalidad de Test",
-            tipo_chat="municipio",
-            rubro=rubro,
-            municipio_id=1
-        )
-        db.session.add(user)
-        db.session.commit()
-
-    with app.test_client() as testing_client:
-        with app.app_context():
+    flask_app = create_app()
+    with flask_app.test_client() as testing_client:
+        with flask_app.app_context():
+            db.create_all()
+            # Create a test user and rubro
+            rubro = Rubro(clave="municipio", nombre="municipio", es_publico=True)
+            user = User(id=1, name="testmunicipio", email="test@municipio.com", municipio_id=1, rubro=rubro)
+            user.set_password("password")
+            db.session.add(rubro)
+            db.session.add(user)
+            db.session.commit()
             yield testing_client
-    # Cleanup after all tests in the module have run
-    with app.app_context():
-        db.drop_all()
+            db.session.remove()
+            db.drop_all()
 
 @pytest.fixture
 def mock_llm():
-    """Mock para la función llamar_gemini."""
     with patch('services.municipio_responder.llamar_gemini') as mock:
         yield mock
 
 def test_full_claim_in_one_go(test_client, mock_llm):
     """Prueba la creación de un reclamo cuando el usuario da toda la info de una vez."""
-    owner_user = User.query.first()
+    owner_user = db.session.get(User, 1)
     chat_session_id = "whatsapp_1_123456789"
     chat_db_context = ChatSessionContext(chat_session_id=chat_session_id, user_id=owner_user.id, anon_id="123456789")
     db.session.add(chat_db_context)
-    db.session.commit()
+    db.session.flush()
 
-    # Simular que el LLM extrae toda la información
     mock_llm.return_value = {
         "accion_backend": "crear_reclamo",
         "datos_estructura": {
-            "target": "municipio",
-            "categoria": "Semáforos",
+            "target": "municipio", "categoria": "Semáforos",
             "descripcion": "El semáforo de la esquina no funciona.",
-            "ubicacion": "Av. Siempre Viva 123",
-            "usuario": "Marcelo Guillen",
-            "telefono": "2613168608",
-            "email": "marcelo.guillen@example.com"
+            "ubicacion": "Av. Siempre Viva 123", "usuario": "Marcelo Guillen",
+            "telefono": "2613168608", "email": "marcelo.guillen@example.com"
         },
         "message_body": "Gracias, he registrado tu reclamo."
     }
@@ -83,68 +58,57 @@ def test_full_claim_in_one_go(test_client, mock_llm):
         mock_crear_ticket.return_value = mock_ticket
 
         respuesta = responder_municipio(
-            pregunta_original=pregunta,
-            owner_user=owner_user,
-            rubro_obj=owner_user.rubro,
-            chat_db_context=chat_db_context,
+            pregunta_original=pregunta, owner_user=owner_user,
+            rubro_obj=owner_user.rubro, chat_db_context=chat_db_context,
             anon_id="123456789"
         )
 
-        assert "M-12345" in respuesta["message_to_user"]
-        assert "Reclamo recibido" in respuesta["message_to_user"]
+        assert f"#{mock_ticket.nro_ticket}" in respuesta["message_to_user"]
         mock_crear_ticket.assert_called_once()
-        args, kwargs = mock_crear_ticket.call_args
-        assert kwargs['ticket_data']['categoria'] == "Semáforos"
-        assert kwargs['ticket_data']['nombre_vecino'] == "Marcelo Guillen"
+        _, kwargs = mock_crear_ticket.call_args
+        call_data = kwargs['ticket_data']
+        assert call_data['categoria'] == "Semáforos"
+        assert call_data['detalles'] == "El semáforo de la esquina no funciona."
+        assert call_data['direccion'] == "Av. Siempre Viva 123"
+        assert call_data['nombre_vecino'] == "Marcelo Guillen"
 
 def test_claim_in_multiple_steps(test_client, mock_llm):
     """Prueba la creación de un reclamo en múltiples interacciones."""
-    owner_user = User.query.first()
+    owner_user = db.session.get(User, 1)
     chat_session_id = "whatsapp_1_987654321"
     chat_db_context = ChatSessionContext(chat_session_id=chat_session_id, user_id=owner_user.id, anon_id="987654321")
     db.session.add(chat_db_context)
-    db.session.commit()
+    db.session.flush()
 
-    # 1. El usuario inicia el reclamo
     mock_llm.return_value = {
         "accion_backend": "crear_reclamo",
-            "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto", "categoria": "Semáforos"},
-        "message_body": "Entendido, ¿dónde es el problema?",
-        "pedir_info": "ubicacion"
+        "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto", "categoria": "Semáforos"},
+        "message_body": "Entendido, ¿dónde es el problema?", "pedir_info": "ubicacion"
     }
     respuesta = responder_municipio(
-        pregunta_original="semáforo roto",
-        owner_user=owner_user,
-        rubro_obj=owner_user.rubro,
-        chat_db_context=chat_db_context,
+        pregunta_original="semáforo roto", owner_user=owner_user,
+        rubro_obj=owner_user.rubro, chat_db_context=chat_db_context,
         anon_id="987654321"
     )
     assert "¿dónde es el problema?" in respuesta["message_body"]
 
-    # 2. El usuario da la ubicación
     mock_llm.return_value = {
         "accion_backend": "crear_reclamo",
         "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
-        "message_body": "Perfecto. ¿Tu nombre?",
-        "pedir_info": "nombre_completo"
+        "message_body": "Perfecto. ¿Tu nombre?", "pedir_info": "nombre_completo"
     }
     respuesta = responder_municipio(
-        pregunta_original="Calle Falsa 123",
-        owner_user=owner_user,
-        rubro_obj=owner_user.rubro,
-        chat_db_context=chat_db_context,
+        pregunta_original="Calle Falsa 123", owner_user=owner_user,
+        rubro_obj=owner_user.rubro, chat_db_context=chat_db_context,
         anon_id="987654321"
     )
     assert "Perfecto. ¿Tu nombre?" in respuesta["message_body"]
 
-    # 3. El usuario da el nombre y el resto de datos
     mock_llm.return_value = {
         "accion_backend": "crear_reclamo",
         "datos_estructura": {
-            "target": "municipio",
-            "usuario": "Lisa Simpson",
-            "telefono": "555-1234",
-            "email": "lisa.simpson@example.com"
+            "target": "municipio", "usuario": "Lisa Simpson",
+            "telefono": "555-1234", "email": "lisa.simpson@example.com"
         },
         "message_body": "Gracias, he registrado tu reclamo."
     }
@@ -156,16 +120,16 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
 
         respuesta = responder_municipio(
             pregunta_original="Lisa Simpson, 555-1234, lisa.simpson@example.com",
-            owner_user=owner_user,
-            rubro_obj=owner_user.rubro,
-            chat_db_context=chat_db_context,
-            anon_id="987654321"
+            owner_user=owner_user, rubro_obj=owner_user.rubro,
+            chat_db_context=chat_db_context, anon_id="987654321"
         )
 
-        assert "M-54321" in respuesta["message_to_user"]
-        assert "Reclamo recibido" in respuesta["message_to_user"]
+        assert f"#{mock_ticket.nro_ticket}" in respuesta["message_to_user"]
         mock_crear_ticket.assert_called_once()
-        args, kwargs = mock_crear_ticket.call_args
-        assert kwargs['ticket_data']['detalles'] == "semáforo roto"
-        assert kwargs['ticket_data']['direccion'] == "Calle Falsa 123"
-        assert kwargs['ticket_data']['nombre_vecino'] == "Lisa Simpson"
+        _, kwargs = mock_crear_ticket.call_args
+        call_data = kwargs['ticket_data']
+        assert call_data['detalles'] == "semáforo roto"
+        assert call_data['direccion'] == "Calle Falsa 123"
+        assert call_data['nombre_vecino'] == "Lisa Simpson"
+        assert call_data['telefono_vecino'] is not None
+        assert call_data['email_vecino'] == "lisa.simpson@example.com"

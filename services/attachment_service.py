@@ -23,43 +23,46 @@ def create_attachment_with_thumbnail(file_storage: FileStorage, user_id: int = N
 
     # 1. Upload to GCS
     upload_result = guardar_adjunto_y_thumbnail(file_storage)
-    if not upload_result:
-        current_app.logger.error("Failed to upload attachment to GCS.")
+    if not upload_result or not isinstance(upload_result, tuple) or len(upload_result) < 1:
+        current_app.logger.error(f"Failed to upload attachment to GCS or invalid return format. Result: {upload_result}")
         return None
 
     try:
+        # Unpack the tuple: (original_file_data, thumbnail_file_data)
+        original_file_data = upload_result[0]
+        thumb_data = upload_result[1] if len(upload_result) > 1 else None
+
         # 2. Create ArchivoAdjunto DB record
         nuevo_adjunto = ArchivoAdjunto(
             user_id=user_id,
             session_id=session_id,
-            filename=upload_result['unique_name'],
-            nombre_original=upload_result['original_name'],
-            mime=upload_result['mimetype'],
-            tamano=upload_result['size'],
-            tipo='chat_adjunto',  # Generic type for these attachments
-            url=upload_result['original_url']
+            filename=original_file_data['unique_name'],
+            nombre_original=original_file_data['original_name'],
+            mime=original_file_data['mimetype'],
+            tamano=original_file_data['size'],
+            tipo='chat_adjunto',
+            url=original_file_data['public_url']  # Correct key is public_url
         )
         db.session.add(nuevo_adjunto)
-        db.session.flush()  # Flush to get the ID for the next step
+        db.session.flush()
 
         # 3. Create AnalisisArchivo to store thumbnail meta
-        thumb_meta = upload_result.get('thumb_meta')
-        if thumb_meta:
+        if thumb_data and thumb_data.get('thumb_meta'):
             analisis = AnalisisArchivo(
                 archivo_adjunto_id=nuevo_adjunto.id,
-                estado_analisis='completado', # Represents that thumbnail meta is stored
+                estado_analisis='completado',
                 tipo_analisis='thumbnail_meta',
-                datos_estructurados=thumb_meta # Store {'width': x, 'height': y, 'pages': z}
+                datos_estructurados=thumb_data['thumb_meta']
             )
             db.session.add(analisis)
 
-        # The calling function is responsible for the commit
         current_app.logger.info(f"ArchivoAdjunto (ID: {nuevo_adjunto.id}) and AnalisisArchivo prepared for commit.")
 
         return nuevo_adjunto
 
+    except (TypeError, KeyError) as e:
+        current_app.logger.error(f"Error processing upload_result tuple/dict: {e}. Result was: {upload_result}", exc_info=True)
+        return None
     except Exception as e:
-        # The calling function should handle the rollback
         current_app.logger.error(f"Error preparing attachment records for DB: {e}", exc_info=True)
-        # Here we should ideally also delete the files from GCS to avoid orphans
         return None

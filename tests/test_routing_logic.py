@@ -43,9 +43,18 @@ class RoutingLogicTests(unittest.TestCase):
         mock_responder_municipio.assert_not_called()
 
     def test_tipo_chat_required(self):
-        """Test that an error is raised if tipo_chat is invalid."""
-        with self.assertRaises(ValueError):
-            responder_chatboc('hola', tipo_chat='invalido', chat_db_context=self.mock_chat_db_context)
+        """Test that an error is returned if tipo_chat is invalid and no rubro is provided."""
+        # With the new logic, an invalid tipo_chat only matters if no rubro can be determined.
+        # If no rubro is given, it should return an error dictionary.
+        response = responder_chatboc('hola', tipo_chat='invalido', chat_db_context=self.mock_chat_db_context)
+        # This path now returns a different error structure.
+        self.assertIn("Error interno: tipo de chat no configurado.", response.get("respuesta"))
+        self.assertEqual(response["fuente"], "sistema_error")
+
+        # Also test that if no tipo_chat and no rubro is given, it fails.
+        response = responder_chatboc('hola', chat_db_context=self.mock_chat_db_context)
+        self.assertIn("Error de configuración", response["message_body"])
+        self.assertEqual(response["fuente"], "error_configuracion_tipo_chat")
 
     @patch('services.logic.responder_municipio')
     @patch('services.logic.responder_pyme')
