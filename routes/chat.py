@@ -50,7 +50,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         # If the question is empty (or not provided) and there's no location,
         # it's the initial message from the widget.
         if not location and (pregunta is None or str(pregunta).strip() == ""):
-            pregunta = "__INIT__" # Special keyword for initial message
+            pregunta = "__INIT__"
 
         if tipo_chat_fijo:
             tipo_chat = tipo_chat_fijo

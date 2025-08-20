@@ -14,6 +14,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     socket.on('connect', () => {
         console.log('Socket connected, id:', socket.id);
+        // Send an initial empty message to get the welcome message and menu
+        socket.emit('message', { pregunta: '' });
     });
     socket.on('disconnect', () => {
         console.log('Socket disconnected');
