@@ -20,8 +20,8 @@ from database import db
 logger = logging.getLogger(__name__)
 
 # --- Modelos de Gemini ---
-GEMINI_MODEL_PRESTAMOS = "gemini-2.5-flash"
-GEMINI_MODEL_STANDARD = "gemini-2.5-flash"
+GEMINI_MODEL_PRESTAMOS = "gemini-2.5-pro"
+GEMINI_MODEL_STANDARD = "gemini-2.5-pro"
 MAX_HISTORIAL_MESSAGES = 10
 
 def _limpiar_historial_gemini(historial: list) -> list:
@@ -93,7 +93,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-        model_name = "gemini-2.5-flash"
+        model_name = "gemini-2.5-pro"
 
         model = GenerativeModel(
             model_name,
