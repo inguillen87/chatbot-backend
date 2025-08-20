@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 from app import create_app, db
-from models import User, MunicipioTicket, Rubro
+from models import User, MunicipioTicket, Rubro, TicketComentario, ArchivoAdjunto
 from config import TestConfig
 import json
 
@@ -94,6 +95,83 @@ class TicketEndpointsTest(unittest.TestCase):
         # Check for new fields
         self.assertIn('id', tickets[0])
         self.assertIn('nro_ticket', tickets[0])
+
+    def test_get_chat_mensajes_with_attachments(self):
+        # 1. Login to get token
+        login_resp = self.client.post('/auth/login', json={'email': 'admin@junin.com', 'password': 'adminpass'})
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+        headers = {'Authorization': f'Bearer {token}'}
+
+        # 2. Create ticket, comment, and attachment
+        ticket = MunicipioTicket.query.first()
+        attachment = ArchivoAdjunto(
+            municipio_ticket_id=ticket.id,
+            filename="test.jpg",
+            nombre_original="test_image.jpg",
+            mime="image/jpeg",
+            url="http://example.com/test.jpg"
+        )
+        db.session.add(attachment)
+        db.session.commit()
+
+        comment = TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario="Test comment with attachment",
+            archivo_adjunto_id=attachment.id,
+            es_admin=True
+        )
+        db.session.add(comment)
+        db.session.commit()
+
+        # 3. Call the endpoint
+        resp = self.client.get(f'/tickets/chat/{ticket.id}/mensajes', headers=headers)
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+
+        # 4. Assertions
+        self.assertIn('mensajes', data)
+        self.assertGreater(len(data['mensajes']), 0)
+
+        comment_with_attachment = data['mensajes'][0]
+        self.assertEqual(comment_with_attachment['comentario'], "Test comment with attachment")
+        self.assertIn('attachment_info', comment_with_attachment)
+        self.assertIsNotNone(comment_with_attachment['attachment_info'])
+        self.assertEqual(comment_with_attachment['attachment_info']['name'], "test_image.jpg")
+        self.assertEqual(comment_with_attachment['attachment_info']['url'], "http://example.com/test.jpg")
+
+    @patch('services.email_service.enviar_email_con_multiples_adjuntos')
+    def test_send_ticket_history_email(self, mock_send_email):
+        mock_send_email.return_value = True
+        # 1. Login to get token
+        login_resp = self.client.post('/auth/login', json={'email': 'admin@junin.com', 'password': 'adminpass'})
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+        headers = {'Authorization': f'Bearer {token}'}
+
+        # 2. Get a ticket to send
+        ticket = MunicipioTicket.query.first()
+
+        # 3. Call the new endpoint
+        resp = self.client.post(f'/tickets/municipio/{ticket.id}/send-history', headers=headers)
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertTrue(data['success'])
+
+        # 4. Assert that the mock was called
+        mock_send_email.assert_called_once()
+
+        # 5. Assert call arguments
+        args, kwargs = mock_send_email.call_args
+        self.assertIn('destinos', kwargs)
+        self.assertIn('asunto', kwargs)
+        self.assertIn('cuerpo_html', kwargs)
+        self.assertIn('adjuntos', kwargs)
+
+        self.assertIn('admin@junin.com', kwargs['destinos']) # Admin email
+        self.assertIn(f'Ticket #{ticket.nro_ticket}', kwargs['asunto'])
+        self.assertIn('<h1>Historial de Conversación</h1>', kwargs['cuerpo_html'])
+
 
 if __name__ == '__main__':
     unittest.main()
