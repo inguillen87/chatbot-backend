@@ -11,6 +11,7 @@ from flask import current_app
 from models import db
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service
+from services.preferences import is_audio_enabled
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
 
 logger = logging.getLogger(__name__)
@@ -281,12 +282,17 @@ def responder_chatboc(
         logger.error(f"Error crítico: tipo_chat '{tipo_chat}' no es ni 'municipio' ni 'pyme' en la parte final de responder_chatboc.")
         response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
 
+    # Auto-enable audio responses when the user sent audio or prefers audio
+    context_data = chat_db_context.context_data if chat_db_context else {}
+    if isinstance(response_data, dict) and not response_data.get('generar_audio'):
+        if context_data.get('source_is_audio') or is_audio_enabled(context_data, current_user):
+            response_data['generar_audio'] = True
+
     # --- Audio Response Generation ---
     if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
         text_to_speak = response_data.get('message_body')
         if text_to_speak:
             from services.google_text_to_speech import generate_audio_url
-            context_data = chat_db_context.context_data if chat_db_context else None
             audio_url = generate_audio_url(text_to_speak, context_data, current_user)
             if audio_url:
                 response_data['audio_url'] = audio_url
