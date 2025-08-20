@@ -165,7 +165,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         self.assertNotIn('esperando_info_llm_reclamo', final_context)
         self.assertEqual(final_context.get('estado_conversacion'), ConversationState.CONVERSACION_GENERAL_LLM.name)
 
-    @pytest.mark.skip(reason="Test is flawed and needs to be rewritten. Mocks wrong handler.")
+    @unittest.skip("Test is flawed and needs to be rewritten. Mocks wrong handler.")
     @patch('services.pymes.llamar_gemini')
     @patch('requests.get')
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
