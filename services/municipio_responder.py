@@ -1102,6 +1102,13 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
                     chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                     flag_modified(chat_db_context, "context_data")
                 return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
+        elif accion_backend_llm == "mostrar_menu":
+            logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú principal.")
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+            if chat_db_context and hasattr(chat_db_context, "context_data"):
+                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                flag_modified(chat_db_context, "context_data")
+            return _get_main_menu_payload(context), contexto_municipio_actual
         elif accion_backend_llm == "mostrar_menu_reclamos":
             logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú de reclamos.")
             # Setear estado y menú para que el siguiente click se procese como selección
