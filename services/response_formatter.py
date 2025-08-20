@@ -119,7 +119,12 @@ def build_interactive_response(options: list,
                 options_text += "\n\nResponde con el número de la opción que necesites."
                 final_body += options_text
             else:
-                logger.warning("No se recibieron opciones para construir el menú de texto")
+                # It's valid for some responses to omit menu options.
+                # In that case we simply return the body text without
+                # additional menu instructions.
+                logger.debug(
+                    "build_interactive_response: no options provided; sending plain text"
+                )
 
             payload = {
                 "type": "text",
