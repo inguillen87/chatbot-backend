@@ -1007,6 +1007,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         try:
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
             respuesta_llm_dict = llamar_gemini(
+                app=current_app._get_current_object(),
                 mensaje_usuario=mensaje_para_gemini,
                 usuario=usuario_info_llm,
                 historial=historial_para_llm,
