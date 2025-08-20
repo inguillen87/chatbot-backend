@@ -1846,6 +1846,24 @@ def responder_municipio(
             response = handle_main_menu_action(selected_action, context, chat_db_context)
             if response:
                 return _finalize_response(response)
+        # --- WEB CHANNEL FIX: If no exact match, try matching just the text for web ---
+        elif channel == 'web':
+            # This is a fallback for the web widget, which sends text instead of action_ids
+            # It tries to find a match based on the button text.
+            for btn in flat_buttons:
+                # Use normalized comparison for robustness
+                if normalizar_texto(btn.get("texto", "")) == normalizar_texto(pregunta_str_menu):
+                    selected_action = btn.get("id")
+                    logger_actual.info(f"Web channel text input '{pregunta_str_menu}' matched to action: '{selected_action}'")
+                    contexto_municipio_actual['estado_conversacion'] = None
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    response = handle_main_menu_action(selected_action, context, chat_db_context)
+                    if response:
+                        return _finalize_response(response)
+            # If still no match after this, then it's an invalid option.
+            logger_actual.info(f"Web input '{pregunta_str_menu}' did not match any menu option text. Re-prompting.")
+            error_message = "Opción no válida. Por favor, elegí una de las siguientes:"
+            return _finalize_response(_get_main_menu_payload(context, welcome_message_override=error_message))
         else:
             # If no match, re-prompt with the menu instead of clearing state
             logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Re-prompting with main menu.")

@@ -113,6 +113,44 @@ class MunicipioLogicTests(unittest.TestCase):
 
         self.assertIn('Te estoy derivando', resp['message_body'])
 
+    def test_web_channel_text_selection(self):
+        """
+        Tests if the web channel correctly handles a text selection that matches a menu option.
+        """
+        from models import ChatSessionContext, db
+        from services.municipio_responder import ConversationState
+
+        # 1. Setup the context for the test
+        session_id = "test_session_web_text_selection"
+        # Start the conversation in the state of waiting for a menu selection
+        initial_context_data = {
+            "contexto_municipio_v2": {
+                "estado_conversacion": ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+            }
+        }
+        chat_context = ChatSessionContext(chat_session_id=session_id, context_data=initial_context_data)
+        db.session.add(chat_context)
+        db.session.commit()
+
+        # 2. Call the responder with the text from the web widget
+        pregunta = "🐾 Veterinaria y Bromatología"
+        resp = responder_municipio(
+            pregunta_original=pregunta,
+            owner_user=self.owner_user,
+            rubro_obj=self.owner_user.rubro,
+            viewer_user=self.viewer_user,
+            chat_db_context=chat_context,
+            channel="web" # Explicitly set the channel to web
+        )
+
+        # 3. Assert the response is correct
+        self.assertIn("Información de Veterinaria y Bromatología", resp['message_body'])
+        self.assertIn("Dra. Laura Funes", resp['message_body'])
+        self.assertIn("+5492634521563", resp['message_body'])
+        self.assertEqual(resp['fuente'], 'info_veterinaria_json')
+        # Check that a WhatsApp button is present
+        self.assertTrue(any(btn['texto'] == 'Contactar por WhatsApp' for btn in resp.get('options_list', [])))
+
     pass
 
 
