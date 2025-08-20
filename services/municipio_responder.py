@@ -1339,6 +1339,8 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     for button in menu_buttons:
         button_text_norm = normalizar_texto(button.get("texto", ""))
         if button_text_norm == normalized_input:
+            # Added log for debugging
+            logger.info(f"DEBUG: Exact match found for '{normalized_input}'. Action: {button.get('action_id')}")
             return button.get('action_id')
 
     # 2. Check for numeric selection
@@ -1368,8 +1370,12 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
         best_match, score = process.extractOne(normalized_input, local_keywords.keys())
 
         if score > 80:
+            # Added log for debugging
+            logger.info(f"DEBUG: Fuzzy match found for '{normalized_input}' with keyword '{best_match}' (score: {score}). Action: {local_keywords[best_match]}")
             return local_keywords[best_match]
 
+    # Added log for debugging
+    logger.warning(f"DEBUG: No menu action found for input: '{user_input}' (normalized: '{normalized_input}')")
     return None
 
 RECLAMO_KEYWORDS = {
@@ -1458,6 +1464,12 @@ def responder_municipio(
     **kwargs
 ):
     logger_actual = current_app.logger if has_app_context() else logger
+
+    # --- START DEBUG LOG ---
+    if chat_db_context and chat_db_context.context_data:
+        estado_conversacion_debug = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {}).get("estado_conversacion")
+        logger_actual.info(f"DEBUG: [START] responder_municipio called for session {chat_db_context.chat_session_id}. Initial state: {estado_conversacion_debug}")
+    # --- END DEBUG LOG ---
 
     def _finalize_response(response):
         """Return the response unchanged; audio is handled upstream."""
@@ -1611,7 +1623,7 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
-    if pregunta_str == "__INIT__" or (not is_from_audio and normalizar_texto(pregunta_str) in (SIMPLE_GREETINGS | RETURN_TO_MAIN_MENU)):
+    if not is_from_audio and normalizar_texto(pregunta_str) in (SIMPLE_GREETINGS | RETURN_TO_MAIN_MENU):
         logger_actual.info(f"Greeting or main menu request '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
@@ -1812,7 +1824,6 @@ def responder_municipio(
     context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Ensure main context points to this sub-context
 
     # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
-    logger_actual.info(f"DEBUG: Checking state. Current state: {estado_conversacion}")
     if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
         pregunta_str_menu = ""
         if isinstance(pregunta_original, str):
@@ -1836,9 +1847,7 @@ def responder_municipio(
                 "action_id": btn.get("id") # The 'id' key holds the action_id
             })
 
-        logger_actual.info(f"DEBUG: Calling find_menu_action_by_input with input='{pregunta_str_menu}'")
         selected_action = find_menu_action_by_input(pregunta_str_menu, buttons_for_finder)
-        logger_actual.info(f"DEBUG: find_menu_action_by_input returned: '{selected_action}'")
 
         if selected_action:
             logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
