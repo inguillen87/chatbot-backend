@@ -406,7 +406,7 @@ if __name__ == '__main__':
     ]
 
     mensaje1 = "necesito un préstamo para terminar la finca"
-    respuesta1 = llamar_gemini(mensaje1, usuario_ejemplo_pyme, historial_ejemplo)
+    respuesta1 = llamar_gemini(None, mensaje1, usuario_ejemplo_pyme, historial_ejemplo)
     print(f"Mensaje: {mensaje1}\nRespuesta LLM (mock): {json.dumps(respuesta1, indent=2, ensure_ascii=False)}\n")
 
     usuario_ejemplo_municipio = {
@@ -416,15 +416,15 @@ if __name__ == '__main__':
         "contacto": {"web": "ana.gomez.vecinos.com"}
     }
     mensaje2 = "Hay una luz quemada en la esquina de San Martín y Rivadavia"
-    respuesta2 = llamar_gemini(mensaje2, usuario_ejemplo_municipio, [])
+    respuesta2 = llamar_gemini(None, mensaje2, usuario_ejemplo_municipio, [])
     print(f"Mensaje: {mensaje2}\nRespuesta LLM (mock): {json.dumps(respuesta2, indent=2, ensure_ascii=False)}\n")
 
     mensaje3 = "Quiero saber el estado de mi reclamo"
-    respuesta3 = llamar_gemini(mensaje3, usuario_ejemplo_municipio, [])
+    respuesta3 = llamar_gemini(None, mensaje3, usuario_ejemplo_municipio, [])
     print(f"Mensaje: {mensaje3}\nRespuesta LLM (mock): {json.dumps(respuesta3, indent=2, ensure_ascii=False)}\n")
 
     mensaje4 = "vender cosas"
-    respuesta4 = llamar_gemini(mensaje4, usuario_ejemplo_pyme, [])
+    respuesta4 = llamar_gemini(None, mensaje4, usuario_ejemplo_pyme, [])
     print(f"Mensaje: {mensaje4}\nRespuesta LLM (mock): {json.dumps(respuesta4, indent=2, ensure_ascii=False)}\n")
 
 """

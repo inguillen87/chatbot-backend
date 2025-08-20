@@ -538,41 +538,6 @@ class IntentClassifierHandler(BaseMunicipioHandler):
 
         return None
 
-# Handlers for specific actions, now simplified
-class LicenciaConducirHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        # This logic can be simplified if the response is in intents.json
-        # For now, we keep it for direct action mapping
-        info = get_tramites_info().get("licencia_de_conducir", {})
-        message_body = info.get("respuesta", "No se encontró información para Licencia de Conducir.")
-        botones = agregar_botones_para_links(message_body, [])
-        return {
-            "message_body": message_body,
-            "options_list": botones,
-            "fuente": "info_licencia_conducir"
-        }
-
-class PagoTasasHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        info = get_tramites_info().get("pago_de_tasas_vigentes", {})
-        message_body = info.get("respuesta", "No se encontró información para el pago de tasas.")
-        botones = agregar_botones_para_links(message_body, [])
-        return {
-            "message_body": message_body,
-            "options_list": botones,
-            "fuente": "info_pago_tasas"
-        }
-
-class DefensaConsumidorHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        info = get_tramites_info().get("defensa_del_consumidor", {})
-        message_body = info.get("respuesta", "Para asesoramiento, escribí a: defensadelconsumidorjuninmza@gmail.com")
-        botones = agregar_botones_para_links(message_body, [])
-        return {
-            "message_body": message_body,
-             "options_list": botones,
-            "fuente": "info_defensa_consumidor"
-        }
 
 def safe_llm_call(prompt, preamble, fallback=None):
     logger.debug(f"[LLM_CALL_PROMPT] Enviando prompt a LLM. Preamble: '{preamble}'. Prompt: '{prompt[:500]}...'")
@@ -1152,9 +1117,6 @@ def responder_municipio(
         response_data['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
         return response_data
 
-    # --- Simple Router for Main Menu Options ---
-    pregunta_str_lower = pregunta_str.strip().lower()
-
     # --- Intent Classifier Logic ---
     intent_handler = IntentClassifierHandler(context)
     intent_response = intent_handler.handle(received_payload)
@@ -1162,33 +1124,6 @@ def responder_municipio(
         logger_actual.info(f"Respuesta generada por IntentClassifier: {intent_response.get('fuente')}")
         intent_response['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
         return intent_response
-
-    response_data = None
-    if pregunta_str_lower == "reclamos":
-        response_data = ReclamosMenuHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "licencia_conducir":
-        response_data = LicenciaConducirHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "pago_tasas":
-        response_data = PagoTasasHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "defensa_consumidor":
-        response_data = DefensaConsumidorHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "veterinaria_bromatologia":
-        response_data = VeterinariaBromatologiaHandler(context).handle(received_payload)
-    elif pregunta_str_lower == "buscar_estacionamiento":
-        from .actions.municipio_actions import BuscarEstacionamientoActionHandler
-        response_data = BuscarEstacionamientoActionHandler(context).handle({})
-    elif pregunta_str_lower == "reclamo_perdida_agua":
-        response_data = PerdidaDeAguaHandler(context).handle(received_payload)
-
-    if response_data:
-        response_data['contexto_actualizado'] = {CONTEXTO_MUNICIPIO: contexto_municipio_actual}
-        return response_data
-
-    if pregunta_str_lower.startswith("reclamo_"):
-        categoria = pregunta_str_lower.replace("reclamo_", "").replace("_", " ").title()
-        contexto_municipio_actual['categoria_reclamo'] = categoria
-        # Let it fall through to the LLM to ask for the claim details
-        pregunta_str = f"Quiero hacer un reclamo de {categoria}."
 
 
     # --- Handle post-login resumption (modifies context[CONTEXTO_MUNICIPIO] and context["intencion"]) ---

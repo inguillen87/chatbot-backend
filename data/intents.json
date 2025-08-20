@@ -393,6 +393,18 @@
         "Seguimiento de mi reclamo"
     ],
     "respuesta": "Para consultar el estado de tu reclamo, por favor decime el número de ticket."
+},
+{
+  "categoria": "defensa_consumidor",
+  "ejemplos": [
+    "Quiero hacer un reclamo en defensa del consumidor",
+    "¿Dónde me quejo por un producto fallado?",
+    "¿Cómo contacto a defensa al consumidor?",
+    "Defensa del consumidor",
+    "Necesito ayuda con una compra",
+    "Problemas con un servicio contratado"
+  ],
+  "respuesta": "Para consultas o reclamos de Defensa del Consumidor, podés comunicarte por email a defensadelconsumidorjuninmza@gmail.com, llamar al [telefono], o acercarte a nuestras oficinas en [direccion]. Más información en [linkWeb]."
 }
   
 ],
