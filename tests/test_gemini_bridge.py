@@ -3,7 +3,15 @@ from unittest.mock import patch, MagicMock
 import json
 import os
 
-from services.gemini_bridge import llamar_gemini, _limpiar_historial_gemini, GEMINI_MODEL_PRESTAMOS, GEMINI_MODEL_STANDARD, GEMINI_SAFETY_SETTINGS, MAX_HISTORIAL_MESSAGES
+from services.gemini_bridge import (
+    llamar_gemini,
+    _limpiar_historial_gemini,
+    _repair_json_response,
+    GEMINI_MODEL_PRESTAMOS,
+    GEMINI_MODEL_STANDARD,
+    GEMINI_SAFETY_SETTINGS,
+    MAX_HISTORIAL_MESSAGES,
+)
 from services import prompts
 
 class TestGeminiBridge(unittest.TestCase):
@@ -64,6 +72,17 @@ class TestGeminiBridge(unittest.TestCase):
         )
         self.assertIn("Lo siento", resultado['message_body'])
         self.assertIn("derivar_humano", resultado['accion_backend'])
+
+    def test_repair_json_truncated_botones(self):
+        """Verifica que el reparador maneja JSON truncado en 'botones'."""
+        raw_json = (
+            '{"message_body": "ok", "accion_backend": "crear_reclamo", '
+            '"datos_estructura": {"target": "municipio"}, "pedir_info": null, "botones":'
+        )
+        fixed = _repair_json_response(raw_json)
+        parsed = json.loads(fixed)
+        self.assertEqual(parsed["botones"], [])
+        self.assertEqual(parsed["accion_backend"], "crear_reclamo")
 
 if __name__ == '__main__':
     unittest.main()
