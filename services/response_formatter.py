@@ -26,6 +26,22 @@ def build_interactive_response(options: list,
         options = original_bot_response['botones']
     elif original_bot_response.get('options_list'):
         options = original_bot_response['options_list']
+    elif (
+        not options
+        and message_type == "interactive_menu"
+        and original_bot_response.get("data", {}).get("items")
+    ):
+        # Convert generic menu items into the standard options structure
+        items = original_bot_response.get("data", {}).get("items", [])
+        options = [
+            {
+                "texto": item.get("label") or item.get("title") or item.get("texto", ""),
+                "id": item.get("key") or item.get("id") or item.get("n") or str(i),
+                "action_id": item.get("key") or item.get("id") or item.get("n") or str(i),
+                "description": item.get("description", ""),
+            }
+            for i, item in enumerate(items, 1)
+        ]
 
     # Ensure options is a list and handle nesting
     if options is None:

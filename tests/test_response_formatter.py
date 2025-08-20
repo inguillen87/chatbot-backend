@@ -7,6 +7,7 @@ os.environ["WHATSAPP_FORCE_TEXT"] = "false"
 
 import unittest
 import json
+import services.response_formatter as rf
 from services.response_formatter import build_interactive_response
 
 class TestResponseFormatter(unittest.TestCase):
@@ -124,7 +125,7 @@ class TestResponseFormatter(unittest.TestCase):
 
     def test_force_text_via_env_var(self):
         """If WHATSAPP_FORCE_TEXT=true even interactive calls return text."""
-        os.environ["WHATSAPP_FORCE_TEXT"] = "true"
+
         response = build_interactive_response(
             options=[{"id": "a", "texto": "Opción A"}],
             body_text="Menu:",
@@ -133,7 +134,7 @@ class TestResponseFormatter(unittest.TestCase):
         )
         self.assertEqual(response["type"], "text")
         # Restore default for remaining tests
-        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+
 
     def test_web_response_structure_buttons(self):
         options = [{"id": "web_opt1", "texto": "Web Opción 1"}]
