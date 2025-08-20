@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Dict, Any, List, Optional
@@ -66,6 +67,33 @@ def robust_chat(model, *args, **kwargs):
     Wrapper para la llamada a `generate_content` con reintentos.
     """
     return model.generate_content(*args, **kwargs)
+
+
+def _repair_json_response(respuesta_texto_crudo: str) -> str:
+    """Intenta reparar JSONs parcialmente truncados o con errores comunes.
+
+    Este reparador es heurístico y busca corregir problemas simples como:
+    - campos sin valor (p. ej., `"botones":` al final de la cadena).
+    - comas sobrantes antes de cierres de objetos/listas.
+    - desbalanceo de llaves o corchetes.
+    - cita faltante en `id_archivo": null`.
+    """
+    fixed = respuesta_texto_crudo.replace('id_archivo": null', 'id_archivo": null"').strip()
+
+    if re.search(r'"botones"\s*:\s*$', fixed):
+        fixed += " []"
+
+    fixed = re.sub(r",\s*(\}|\])", r"\1", fixed)
+
+    brace_diff = fixed.count('{') - fixed.count('}')
+    if brace_diff > 0:
+        fixed += '}' * brace_diff
+
+    bracket_diff = fixed.count('[') - fixed.count(']')
+    if bracket_diff > 0:
+        fixed += ']' * bracket_diff
+
+    return fixed
 
 def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None, chat_session_id: str = None) -> dict:
     logger = logging.getLogger(__name__)
@@ -212,8 +240,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
 
     except json.JSONDecodeError as e_json:
         logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
-        # Attempt to fix the JSON by adding the missing quote
-        fixed_json_str = respuesta_texto_crudo.replace('id_archivo": null', 'id_archivo": null"')
+        fixed_json_str = _repair_json_response(respuesta_texto_crudo)
         try:
             logger.info(f"Intentando parsear JSON reparado: {fixed_json_str[:500]}...")
             parsed_response = json.loads(fixed_json_str)
