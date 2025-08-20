@@ -35,9 +35,17 @@ def google_search(query: str, days=None):
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
-        results = response.json().get("items", [])
+        data = response.json()
+        if "error" in data:
+            error_details = data["error"]
+            logger.error(f"Google Search API error: {error_details.get('message', 'Unknown error')}")
+            return None
+        results = data.get("items", [])
         cache[cache_key] = results
         return results
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP Error performing Google search: {e}. Response: {e.response.text}")
+        return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error performing Google search: {e}")
+        logger.error(f"Network Error performing Google search: {e}")
         return None
