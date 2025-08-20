@@ -132,11 +132,18 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             response_mime_type="application/json"
         )
 
+        # Allow benign personal information (e.g., phone numbers or emails) to pass
+        # through without being blocked by the safety system. Previously the model
+        # would often return an empty response when users shared contact details,
+        # which caused the conversation to stall. Relaxing all harm categories to
+        # `BLOCK_NONE` lets the LLM provide a JSON response while still enabling the
+        # backend to validate and sanitize the data before use.
         safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
 
         response = model.generate_content(

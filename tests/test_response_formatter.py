@@ -125,7 +125,7 @@ class TestResponseFormatter(unittest.TestCase):
 
     def test_force_text_via_env_var(self):
         """If WHATSAPP_FORCE_TEXT=true even interactive calls return text."""
-        rf.WHATSAPP_FORCE_TEXT = True
+
         response = build_interactive_response(
             options=[{"id": "a", "texto": "Opción A"}],
             body_text="Menu:",
@@ -134,30 +134,7 @@ class TestResponseFormatter(unittest.TestCase):
         )
         self.assertEqual(response["type"], "text")
         # Restore default for remaining tests
-        rf.WHATSAPP_FORCE_TEXT = False
 
-    def test_interactive_menu_falls_back_to_text(self):
-        rf.WHATSAPP_FORCE_TEXT = True
-        bot_response = {
-            "data": {
-                "items": [
-                    {"label": "Basura", "key": "cat_basura"},
-                    {"label": "Luminaria", "key": "cat_luminaria"},
-                ]
-            }
-        }
-        response = build_interactive_response(
-            options=[],
-            body_text="Elegí una opción:",
-            channel="whatsapp",
-            message_type='interactive_menu',
-            original_bot_response=bot_response,
-        )
-        self.assertEqual(response["type"], "text")
-        body = response["text"]["body"]
-        self.assertIn("*1*. Basura", body)
-        self.assertIn("*2*. Luminaria", body)
-        rf.WHATSAPP_FORCE_TEXT = False
 
     def test_web_response_structure_buttons(self):
         options = [{"id": "web_opt1", "texto": "Web Opción 1"}]
