@@ -1,7 +1,13 @@
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+# When Twilio hasn't approved interactive templates yet we fall back to
+# rendering every WhatsApp menu as plain text.  The environment variable
+# allows re‑enabling interactive components without touching the code.
+WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() == "true"
 
 def build_interactive_response(options: list,
                                body_text: str,
@@ -46,23 +52,26 @@ def build_interactive_response(options: list,
 
     if channel == "whatsapp":
         original_type = message_type
-        # The line below was forcing all messages to text, breaking interactive tests.
-        # message_type = 'text'
         num_options = len(options)
 
-        # Decide message type based on options, unless it's forced to 'text'
-        is_greeting_menu = original_bot_response.get("fuente") == "greeting_handler_categorized_v2"
-
-        if is_greeting_menu:
+        # If interactive templates aren't yet approved we force plain text
+        # responses so the user still sees every option in the menu.
+        if WHATSAPP_FORCE_TEXT:
             message_type = 'text'
-        elif message_type != 'text':
-            if 1 <= num_options <= 3:
-                message_type = 'interactive_buttons'
-            elif 4 <= num_options <= 10:
-                message_type = 'interactive_list'
-            else:
-                # Fallback for 0 or >10 options
+        else:
+            # Decide message type based on options, unless it's forced to 'text'
+            is_greeting_menu = original_bot_response.get("fuente") == "greeting_handler_categorized_v2"
+
+            if is_greeting_menu:
                 message_type = 'text'
+            elif message_type != 'text':
+                if 1 <= num_options <= 3:
+                    message_type = 'interactive_buttons'
+                elif 4 <= num_options <= 10:
+                    message_type = 'interactive_list'
+                else:
+                    # Fallback for 0 or >10 options
+                    message_type = 'text'
 
         logger.debug(
             "WhatsApp flow | original_type=%s | final_type=%s | num_options=%d",

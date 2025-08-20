@@ -1,3 +1,10 @@
+import os
+
+# Enable interactive responses for these tests even though the production
+# default now falls back to plain text menus. Set the env var before importing
+# the module so the flag is read correctly.
+os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+
 import unittest
 import json
 from services.response_formatter import build_interactive_response
@@ -114,6 +121,19 @@ class TestResponseFormatter(unittest.TestCase):
         )
         self.assertEqual(response["type"], "interactive")
         self.assertEqual(response["interactive"]["type"], "button")
+
+    def test_force_text_via_env_var(self):
+        """If WHATSAPP_FORCE_TEXT=true even interactive calls return text."""
+        os.environ["WHATSAPP_FORCE_TEXT"] = "true"
+        response = build_interactive_response(
+            options=[{"id": "a", "texto": "Opción A"}],
+            body_text="Menu:",
+            channel="whatsapp",
+            message_type='interactive_buttons'
+        )
+        self.assertEqual(response["type"], "text")
+        # Restore default for remaining tests
+        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
 
     def test_web_response_structure_buttons(self):
         options = [{"id": "web_opt1", "texto": "Web Opción 1"}]
