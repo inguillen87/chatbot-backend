@@ -319,7 +319,8 @@ class TestAccionesMunicipio(unittest.TestCase):
                     "parametros_herramienta": {"query": "farmacias de turno cerca de Mendoza, Argentina"}
                 }
             },
-            {}
+            {},
+            None
         )
 
         from services.herramientas_municipio import TOOL_REGISTRY
@@ -358,7 +359,7 @@ class TestAccionesMunicipio(unittest.TestCase):
     def test_points_of_interest_handler_without_location(self, mock_llamar_gemini, mock_google_search):
         # Simulate the LLM asking for location
         mock_llamar_gemini.return_value = ({"message_body": "Para darte información precisa, necesito tu ubicación. ¿Podrías compartirla?",
-                                            "accion_backend": "pedir_info", "pedir_info": "ubicacion"}, {})
+                                            "accion_backend": "pedir_info", "pedir_info": "ubicacion"}, {}, None)
 
         from services.municipio_responder import responder_municipio
         with self.app.test_request_context():

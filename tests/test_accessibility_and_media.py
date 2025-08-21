@@ -72,7 +72,8 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                     "message_body": "Esta es una respuesta de prueba.",
                     "accion_backend": "responder_directamente",
                 },
-                {}
+                {},
+                None
             )
             response_dict = responder_chatboc(
                 pregunta="test",
@@ -110,7 +111,8 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                     "message_body": "Esta es una respuesta de prueba.",
                     "accion_backend": "responder_directamente",
                 },
-                {}
+                {},
+                None
             )
             response_dict = responder_chatboc(
                 pregunta="test",
@@ -170,7 +172,8 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                 "pedir_info": None,
                 "botones": []
             },
-            {}
+            {},
+            None
         )
 
         chat_session = ChatSessionContext(

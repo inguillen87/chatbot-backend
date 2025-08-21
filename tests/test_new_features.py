@@ -69,7 +69,8 @@ class TestNewFeatures(unittest.TestCase):
                 "datos_estructura": {"target": "municipio", "nombre_menu": "principal"},
                 "botones": [{"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}],
             },
-            {}
+            {},
+            None
         )
 
         response = responder_municipio(

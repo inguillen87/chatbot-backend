@@ -89,7 +89,8 @@ def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_g
             },
             "pedir_info": "ubicacion"
         },
-        {}
+        {},
+        None
     )
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -125,7 +126,8 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
             "pedir_info": "ubicacion",
             "botones": []
         },
-        {}
+        {},
+        None
     )
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -155,7 +157,8 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
             "pedir_info": "nombre_completo",
             "botones": []
         },
-        {}
+        {},
+        None
     )
 
     response2 = responder_municipio(

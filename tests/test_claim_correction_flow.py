@@ -43,7 +43,7 @@ class TestClaimCorrectionLogic(unittest.TestCase):
         """
         # Prevent the main LLM call from executing and interfering.
         # It needs a non-empty body to avoid the None check.
-        mock_llamar_gemini.return_value = ({"message_body": "mock"}, {})
+        mock_llamar_gemini.return_value = ({"message_body": "mock"}, {}, None)
 
         # 1. Setup the initial context
         initial_claim_data = {
@@ -90,9 +90,9 @@ class TestClaimCorrectionLogic(unittest.TestCase):
         """
         Tests that a simple 'si' in the confirmation state proceeds to ticket creation.
         """
-        mock_llamar_gemini.return_value = ({"message_body": "mock"}, {}) # Prevent None error
+        mock_llamar_gemini.return_value = ({"message_body": "mock"}, {}, None) # Prevent None error
         mock_check_confirmation.return_value = (None, True) # Simulate a "yes"
-        mock_handle_creation.return_value = ({"message_body": "Ticket creado"}, {})
+        mock_handle_creation.return_value = ({"message_body": "Ticket creado"}, {}, None)
 
         initial_claim_data = {
             'categoria': 'Luminaria',

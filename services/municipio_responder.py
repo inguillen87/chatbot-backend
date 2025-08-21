@@ -1042,15 +1042,22 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     if resumen_analisis:
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
+        from .llm_utils import log_payload_sizes
+        log_payload_sizes(usuario_info_llm, logger_actual)
+        assert "historial" not in usuario_info_llm, "El historial de chat no debe estar en el objeto de usuario."
+
         try:
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-            respuesta_llm_dict, context_dict = llamar_gemini(
+            respuesta_llm_dict, context_dict, usage_metadata = llamar_gemini(
                 app=app,
                 mensaje_usuario=mensaje_para_gemini,
                 usuario=usuario_info_llm,
                 historial=historial_para_llm,
                 chat_session_id=context.get("chat_session_uuid")
             )
+            if usage_metadata:
+                logger_actual.info(f"[LLM_USAGE] prompt_tokens={usage_metadata.prompt_token_count}, candidates_tokens={usage_metadata.candidates_token_count}, total_tokens={usage_metadata.total_token_count}")
+
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
             if isinstance(context_dict, dict) and chat_db_context:
                 chat_db_context.context_data.update(context_dict)

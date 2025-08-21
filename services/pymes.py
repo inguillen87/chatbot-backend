@@ -837,13 +837,20 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     mensaje_para_gemini = pregunta_str # Simplificado, podría añadir info de adjuntos si es relevante aquí
     # (Manejo de adjuntos y su análisis se delega a ActionHandlers si Gemini lo indica)
 
-    llm_response_structured, _ = llamar_gemini(
+    from .llm_utils import log_payload_sizes
+    log_payload_sizes(usuario_info_for_gemini, logger_actual)
+    assert "historial" not in usuario_info_for_gemini, "El historial de chat no debe estar en el objeto de usuario para pymes."
+
+    llm_response_structured, _, usage_metadata = llamar_gemini(
         app=current_app,
         mensaje_usuario=mensaje_para_gemini,
         usuario=usuario_info_for_gemini,
         historial=historial_chat_para_gemini,
         chat_session_id=kwargs.get("chat_session_uuid")
     )
+
+    if usage_metadata:
+        logger_actual.info(f"[LLM_USAGE_PYME] prompt_tokens={usage_metadata.prompt_token_count}, candidates_tokens={usage_metadata.candidates_token_count}, total_tokens={usage_metadata.total_token_count}")
 
     # Actualizar historial para la próxima llamada a Gemini
     if "mensajes_previos_gemini_formato" not in chat_db_context.context_data:
