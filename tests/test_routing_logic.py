@@ -24,8 +24,8 @@ class RoutingLogicTests(unittest.TestCase):
     def tearDown(self):
         self.app_context.pop()
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
     def test_municipio_routing(self, mock_responder_pyme, mock_responder_municipio):
         """Test that 'municipio' type chats are routed to the municipio responder."""
         rubro_obj = SimpleNamespace(nombre="municipio")
@@ -33,8 +33,8 @@ class RoutingLogicTests(unittest.TestCase):
         mock_responder_municipio.assert_called_once()
         mock_responder_pyme.assert_not_called()
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
     def test_pyme_routing(self, mock_responder_pyme, mock_responder_municipio):
         """Test that 'pyme' type chats are routed to the pyme responder."""
         rubro_obj = SimpleNamespace(nombre="pyme")
@@ -47,8 +47,8 @@ class RoutingLogicTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             responder_chatboc('hola', tipo_chat='invalido', chat_db_context=self.mock_chat_db_context)
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
     def test_rubro_overrides_tipo_chat_to_pyme(self, mock_responder_pyme, mock_responder_municipio):
         """Tests that if a rubro is 'pyme', it routes to pyme_responder even if tipo_chat says 'municipio'."""
         rubro_obj = SimpleNamespace(nombre="pyme")
@@ -56,8 +56,8 @@ class RoutingLogicTests(unittest.TestCase):
         mock_responder_pyme.assert_called_once()
         mock_responder_municipio.assert_not_called()
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
     def test_rubro_overrides_tipo_chat_to_municipio(self, mock_responder_pyme, mock_responder_municipio):
         """Tests that if a rubro is public, it routes to municipio_responder even if tipo_chat says 'pyme'."""
         rubro_obj = SimpleNamespace(nombre="gobierno") # 'gobierno' is in RUBROS_PUBLICOS
@@ -65,8 +65,8 @@ class RoutingLogicTests(unittest.TestCase):
         mock_responder_municipio.assert_called_once()
         mock_responder_pyme.assert_not_called()
 
-    @patch('services.logic.responder_municipio')
-    @patch('services.logic.responder_pyme')
+    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.pymes.responder_pyme')
     def test_rubro_sin_nombre_usa_clave(self, mock_responder_pyme, mock_responder_municipio):
         """Debe usar la clave del rubro cuando no hay nombre."""
         rubro_obj = SimpleNamespace(nombre=None, clave="municipio")

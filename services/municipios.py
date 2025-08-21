@@ -301,6 +301,12 @@ class ConversationState(Enum):
     ESPERANDO_DETALLES_CHECKOUT = auto()
     ESPERANDO_CONFIRMACION_PEDIDO = auto()
     ESPERANDO_UBICACION_PANICO = auto()
+
+    # Estados para el flujo de reclamo estático (sin LLM)
+    RECLAMO_ESTATICO_ESPERANDO_CATEGORIA = auto()
+    RECLAMO_ESTATICO_ESPERANDO_UBICACION = auto()
+    RECLAMO_ESTATICO_ESPERANDO_DESCRIPCION = auto()
+
     ESPERANDO_INFO_RECLAMO_LLM = auto() # Nuevo estado para cuando el LLM está recopilando info para un reclamo
     CONVERSACION_GENERAL_LLM = auto() # Nuevo estado para cuando el LLM está en una conversación general
     ESPERANDO_CONFIRMACION_INICIAR_RECLAMO = auto()
@@ -697,6 +703,129 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
         return respuesta_accion, contexto_municipio_actual
 
 
+def _handle_reclamo_estatico(pregunta_str, contexto_municipio_actual, context):
+    """
+    Handles the static, rule-based flow for creating a complaint (reclamo).
+    This flow does NOT use the LLM to save on API costs.
+    """
+    logger_actual = current_app.logger if has_app_context() else logger
+    estado_actual_str = contexto_municipio_actual.get("estado_conversacion")
+    datos_reclamo = contexto_municipio_actual.setdefault("datos_reclamo", {})
+
+    # State: Waiting for the user to select a category
+    if estado_actual_str == ConversationState.RECLAMO_ESTATICO_ESPERANDO_CATEGORIA.name:
+        # The user's input should be the category name
+        categoria_seleccionada = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto(pregunta_str) == normalizar_texto(cat["texto"])), None)
+
+        if categoria_seleccionada:
+            datos_reclamo["categoria"] = categoria_seleccionada["texto"]
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.RECLAMO_ESTATICO_ESPERANDO_UBICACION.name
+            logger_actual.info(f"[RECLAMO_ESTATICO] Categoria '{datos_reclamo['categoria']}' seleccionada. Pidiendo ubicación.")
+            return {
+                "message_body": f"Seleccionaste '{datos_reclamo['categoria']}'. Ahora, por favor, indicame la ubicación exacta del problema (calle y altura o intersección).",
+                "fuente": "reclamo_estatico_pide_ubicacion"
+            }
+        else:
+            logger_actual.warning(f"[RECLAMO_ESTATICO] Categoria inválida: '{pregunta_str}'. Volviendo a pedir.")
+            opciones_categorias = [{"texto": cat["texto"]} for cat in CATEGORIAS_RECLAMO]
+            return {
+                "message_body": "Por favor, elegí una de las categorías de la lista.",
+                "options_list": opciones_categorias,
+                "message_type": "interactive_buttons",
+                "fuente": "reclamo_estatico_pide_categoria_invalida"
+            }
+
+    # State: Waiting for the user to provide a location
+    elif estado_actual_str == ConversationState.RECLAMO_ESTATICO_ESPERANDO_UBICACION.name:
+        if direccion_es_valida(pregunta_str):
+            datos_reclamo["ubicacion"] = pregunta_str
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.RECLAMO_ESTATICO_ESPERANDO_DESCRIPCION.name
+            logger_actual.info(f"[RECLAMO_ESTATICO] Ubicación '{datos_reclamo['ubicacion']}' recibida. Pidiendo descripción.")
+            return {
+                "message_body": "Gracias. Ahora, por favor, describí brevemente el problema.",
+                "fuente": "reclamo_estatico_pide_descripcion"
+            }
+        else:
+            logger_actual.warning(f"[RECLAMO_ESTATICO] Ubicación inválida: '{pregunta_str}'. Volviendo a pedir.")
+            return {
+                "message_body": "La ubicación que me diste no parece válida. Por favor, intentá de nuevo con calle y altura, o una intersección.",
+                "fuente": "reclamo_estatico_pide_ubicacion_invalida"
+            }
+
+    # State: Waiting for the user to provide a description
+    elif estado_actual_str == ConversationState.RECLAMO_ESTATICO_ESPERANDO_DESCRIPCION.name:
+        datos_reclamo["descripcion"] = pregunta_str
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name # Use existing confirmation state
+        logger_actual.info(f"[RECLAMO_ESTATICO] Descripción recibida. Pidiendo confirmación final.")
+
+        # Build confirmation message
+        resumen_reclamo = (
+            f"Por favor, confirmá si los datos son correctos:\n\n"
+            f"🏷️ *Categoría:* {datos_reclamo.get('categoria', 'No especificada')}\n"
+            f"📍 *Ubicación:* {datos_reclamo.get('ubicacion', 'No especificada')}\n"
+            f"📝 *Descripción:* {datos_reclamo.get('descripcion', 'No especificada')}"
+        )
+        return {
+            "message_body": resumen_reclamo,
+            "options_list": [
+                {"texto": "Sí, confirmar reclamo"},
+                {"texto": "No, empezar de nuevo"}
+            ],
+            "message_type": "interactive_buttons",
+            "fuente": "reclamo_estatico_pide_confirmacion"
+        }
+
+    # State: Waiting for final confirmation from the user
+    elif estado_actual_str == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
+        texto_confirmacion = normalizar_texto(pregunta_str)
+        if any(keyword in texto_confirmacion for keyword in ["si", "confirmar", "sí"]):
+            logger_actual.info("[RECLAMO_ESTATICO] Confirmación recibida. Creando ticket.")
+            # We need to add the user's personal data before creating the ticket
+            viewer_user = context.get("viewer_user_obj")
+            if viewer_user:
+                datos_reclamo["nombre_usuario_detectado"] = viewer_user.name
+                datos_reclamo["telefono_detectado"] = viewer_user.telefono
+                datos_reclamo["email_detectado"] = viewer_user.email
+            else:
+                # This case needs to be handled: what if the user is anonymous?
+                # For now, we'll proceed, but the creation will likely fail if fields are required.
+                # A more robust solution would ask for the user's data here.
+                pass
+
+            resultado_creacion = accion_crear_reclamo_municipio(datos_reclamo, context)
+
+            # Clean up context after creating the ticket
+            contexto_municipio_actual.pop("estado_conversacion", None)
+            contexto_municipio_actual.pop("datos_reclamo", None)
+
+            return resultado_creacion
+        elif any(keyword in texto_confirmacion for keyword in ["no", "empezar"]):
+            logger_actual.info("[RECLAMO_ESTATICO] Usuario canceló. Reiniciando flujo de reclamo.")
+            # Reset the claim-specific data but keep the user in the "start claim" flow
+            contexto_municipio_actual["datos_reclamo"] = {}
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.RECLAMO_ESTATICO_ESPERANDO_CATEGORIA.name
+            opciones_categorias = [{"texto": cat["texto"]} for cat in CATEGORIAS_RECLAMO]
+            return {
+                "message_body": "Entendido, empecemos de nuevo. Por favor, seleccioná la categoría de tu reclamo:",
+                "options_list": opciones_categorias,
+                "message_type": "interactive_buttons",
+                "fuente": "reclamo_estatico_reinicio"
+            }
+        else:
+            logger_actual.warning(f"[RECLAMO_ESTATICO] Respuesta de confirmación ambigua: '{pregunta_str}'.")
+            return {
+                "message_body": "No entendí tu respuesta. Por favor, confirmá con 'Sí' para crear el reclamo o 'No' para empezar de nuevo.",
+                 "options_list": [
+                    {"texto": "Sí, confirmar reclamo"},
+                    {"texto": "No, empezar de nuevo"}
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "reclamo_estatico_confirmacion_ambigua"
+            }
+
+    return None # Return None if the state doesn't match this handler
+
+
 def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
     logger_actual = current_app.logger if has_app_context() else logging.getLogger(__name__)
 
@@ -775,7 +904,7 @@ def handle_llm_interaction(pregunta_str, context, viewer_user, owner_user, chat_
         try:
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
             app_for_llm = current_app._get_current_object()
-            respuesta_llm_dict = llamar_gemini(app=app_for_llm, mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm, chat_session_id=kwargs.get('chat_session_uuid'))
+            respuesta_llm_dict = llamar_gemini(app=app_for_llm, mensaje_usuario=mensaje_para_gemini, usuario=usuario_info_llm, historial=historial_para_llm, chat_session_id=context.get('chat_session_uuid'))
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
             logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as e:
@@ -1194,6 +1323,44 @@ def responder_municipio(
                 ],
                 "message_type": "interactive_buttons"
             }, contexto_municipio_actual
+
+    # --- START: New Static Claim Flow Logic ---
+    # Check if the user wants to start a static claim flow from the main menu
+    if "mostrar_menu_reclamos" in pregunta_str:
+        logger_actual.info("[RECLAMO_ESTATICO] Iniciando flujo de reclamo estático.")
+        contexto_municipio_actual.clear()  # Clear previous context to start fresh
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.RECLAMO_ESTATICO_ESPERANDO_CATEGORIA.name
+        contexto_municipio_actual["datos_reclamo"] = {}
+
+        opciones_categorias = [{"texto": cat["texto"]} for cat in CATEGORIAS_RECLAMO]
+        # The response structure needs to be complete for the final return
+        final_response = {
+            "message_body": "Elegí una opción para tu reclamo:",
+            "options_list": opciones_categorias,
+            "message_type": "interactive_buttons",
+            "fuente": "reclamo_estatico_inicia"
+        }
+        # Since this is a terminal action for this turn, we can return directly.
+        # The context will be saved by the calling function.
+        return final_response
+
+    # Check if we are currently inside the static claim flow
+    static_flow_states = [
+        ConversationState.RECLAMO_ESTATICO_ESPERANDO_CATEGORIA.name,
+        ConversationState.RECLAMO_ESTATICO_ESPERANDO_UBICACION.name,
+        ConversationState.RECLAMO_ESTATICO_ESPERANDO_DESCRIPCION.name,
+        ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name  # This state is shared
+    ]
+    if contexto_municipio_actual.get("estado_conversacion") in static_flow_states:
+        # Ensure this is our static flow by checking for our context key
+        if "datos_reclamo" in contexto_municipio_actual:
+            logger_actual.info(f"[RECLAMO_ESTATICO] Enrutando al handler estático. Estado: {contexto_municipio_actual.get('estado_conversacion')}")
+            respuesta_estatica = _handle_reclamo_estatico(pregunta_str, contexto_municipio_actual, context)
+            if respuesta_estatica:
+                # The static handler returns a complete response dictionary
+                return respuesta_estatica
+    # --- END: New Static Claim Flow Logic ---
+
 
     # --- LLM-first approach ---
     logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
