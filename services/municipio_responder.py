@@ -987,7 +987,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         _fill_slot_with_user_input(contexto_municipio_actual, context, pregunta_str, logger_actual)
 
         # 2. Call the Action Handler to get the next step
-        from .actions.municipio_actions import CrearReclamoActionHandler
         handler = CrearReclamoActionHandler(context)
         # The handler will use the data we just put in the context
         handler_response = handler.execute(contexto_municipio_actual.get("datos_parciales_llm_reclamo", {}))
