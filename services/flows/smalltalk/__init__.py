@@ -33,7 +33,8 @@ def handle(msg: str, meta: dict) -> dict:
         historial = chat_db_context.context_data.get('mensajes_previos_gemini_formato', [])
 
         # Corrected the keyword argument from 'pregunta' to 'mensaje_usuario'
-        llm_response_payload = llamar_gemini(
+        llm_response_payload, _ = llamar_gemini(
+            app=meta.get('app'),
             mensaje_usuario=msg,
             usuario=usuario_dict,
             historial=historial,
