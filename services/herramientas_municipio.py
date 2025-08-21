@@ -4,6 +4,7 @@ import requests
 import os
 import unicodedata # <--- ¡Importante agregar esta línea!
 import re
+from numpy import mean
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
 from services.google_text_to_speech import TextToSpeechService
@@ -234,6 +235,94 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 from services.google_search import google_search
 from services.scraper_avanzado import extraer_noticias
 from services.google_search import google_search
+from geopy.distance import great_circle
+import random
+
+def _get_feature_center(feature: dict):
+    """Calculates the center of a GeoJSON feature's geometry."""
+    geom = feature.get("geometry", {})
+    coords = geom.get("coordinates")
+    geom_type = geom.get("type")
+
+    if not coords:
+        return None
+
+    if geom_type == 'Point':
+        # Coords are [lon, lat]
+        return (coords[1], coords[0]) # Return (lat, lon)
+    elif geom_type == 'LineString':
+        # Coords are [[lon1, lat1], [lon2, lat2], ...]
+        # Return the mean of lats and lons
+        lats = [p[1] for p in coords]
+        lons = [p[0] for p in coords]
+        return (mean(lats), mean(lons))
+    elif geom_type == 'Polygon':
+        # Coords are [[ [lon1, lat1], [lon2, lat2], ... ]]
+        # Return the mean of lats and lons of the outer ring
+        points = coords[0]
+        lats = [p[1] for p in points]
+        lons = [p[0] for p in points]
+        return (mean(lats), mean(lons))
+    return None
+
+
+def consultar_estacionamiento(ubicacion: str) -> str:
+    """
+    Consulta la disponibilidad de estacionamiento simulada cerca de una ubicación.
+    """
+    logger.info(f"[HERRAMIENTA ESTACIONAMIENTO] Consultando para: '{ubicacion}'")
+
+    # 1. Geocode user location
+    user_coords = geocode_address(ubicacion)
+    if not user_coords:
+        return "No pude verificar la ubicación que me indicaste. ¿Podrías intentarlo de nuevo con más detalles?"
+
+    user_lat_lon = (user_coords['lat'], user_coords['lng'])
+
+    # 2. Load parking data
+    # Assuming the file is per-municipality, but for now, we load a default.
+    # A proper implementation would get municipio_id from context.
+    municipio_id = "default"
+    parking_data = cargar_configuracion_municipio(municipio_id, "estacionamiento.geojson")
+
+    if not parking_data or not parking_data.get("features"):
+        return "No tengo información sobre estacionamiento disponible en este momento."
+
+    # 3. Find the closest parking feature
+    closest_feature = None
+    min_distance_km = float('inf')
+
+    for feature in parking_data["features"]:
+        center_coords = _get_feature_center(feature)
+        if center_coords:
+            distance = great_circle(user_lat_lon, center_coords).km
+            if distance < min_distance_km:
+                min_distance_km = distance
+                closest_feature = feature
+
+    # 4. Simulate and return result
+    if closest_feature and min_distance_km < 2: # Only report if within 2km
+        props = closest_feature["properties"]
+        total_spots = props.get("total_spots", 0)
+        occupancy_rate = props.get("base_occupancy_rate", 1.0)
+
+        # Simulate some randomness
+        occupied_spots = int(total_spots * occupancy_rate)
+        random_factor = random.randint(-3, 3)
+        occupied_spots += random_factor
+
+        # Clamp values
+        occupied_spots = max(0, min(total_spots, occupied_spots))
+
+        available_spots = total_spots - occupied_spots
+
+        if available_spots > 0:
+            return f"En la zona de '{props.get('name', 'tu ubicación')}', hay aproximadamente {available_spots} lugares de estacionamiento disponibles."
+        else:
+            return f"La zona de '{props.get('name', 'tu ubicación')}' parece estar completa en este momento. Te sugiero buscar en calles aledañas."
+    else:
+        return "No encontré información de estacionamiento cerca de la ubicación que me indicaste."
+
 
 # --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS CON GOOGLE SEARCH ---
 
@@ -669,6 +758,14 @@ TOOL_REGISTRY = {
         "parametros": {
             "rubro": {"type": "string", "description": "El rubro o tipo de negocio a buscar."},
             "localidad": {"type": "string", "description": "La ubicación o localidad de referencia."}
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "consultar_estacionamiento": {
+        "funcion": consultar_estacionamiento,
+        "descripcion": "Consulta la disponibilidad de estacionamiento simulada cerca de una ubicación específica.",
+        "parametros": {
+            "ubicacion": {"type": "string", "description": "La dirección o punto de referencia donde el usuario quiere buscar estacionamiento. Ejemplo: 'Plaza de Junin' o 'San Martín y Lavalle'."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
