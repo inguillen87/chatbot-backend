@@ -838,7 +838,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     # (Manejo de adjuntos y su análisis se delega a ActionHandlers si Gemini lo indica)
 
     llm_response_structured, _ = llamar_gemini(
-        app=current_app,
         mensaje_usuario=mensaje_para_gemini,
         usuario=usuario_info_for_gemini,
         historial=historial_chat_para_gemini,

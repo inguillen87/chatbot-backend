@@ -34,7 +34,6 @@ def handle(msg: str, meta: dict) -> dict:
 
         # Corrected the keyword argument from 'pregunta' to 'mensaje_usuario'
         llm_response_payload, _ = llamar_gemini(
-            app=meta.get('app'),
             mensaje_usuario=msg,
             usuario=usuario_dict,
             historial=historial,
