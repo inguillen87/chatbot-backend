@@ -2035,29 +2035,29 @@ def responder_municipio(
             contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
             contexto_municipio_actual.pop("historial_llm_reclamo", None)
 
-            constructed_prompt = f"Quiero iniciar un reclamo de {selected_category_name}"
-
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+            # A partir de la selección de categoría el flujo es totalmente estático para
+            # evitar llamadas innecesarias al LLM. Se inicializa el contexto del reclamo
+            # y se solicita la ubicación directamente.
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = {"categoria": selected_category_name}
             contexto_municipio_actual["historial_llm_reclamo"] = []
+            contexto_municipio_actual["esperando_info_llm_reclamo"] = "ubicacion"
             contexto_municipio_actual.pop("current_menu", None)
             contexto_municipio_actual.pop("menu_page", None)
 
-            # --- INICIO REFACTOR: Usar el 'context' principal en lugar de crear uno nuevo ---
-            # El diccionario 'context' ya se inicializó al principio de la función
-            # y contiene toda la información necesaria.
-            response_dict, _ = handle_llm_interaction(
-                app, constructed_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            mensaje = (
+                f"Para poder registrar tu reclamo por {selected_category_name.lower()}, necesito que me indiques la ubicación "
+                "exacta (calle y altura o intersección)."
             )
-            # --- FIN REFACTOR ---
-
-            if response_dict is None:
-                return _finalize_response({"message_body": "No pude procesar la selección. Probá de nuevo.",
-                        "message_type": "text", "options_list": [], "fuente": "error_category_selection"})
-
-            response_dict.setdefault("message_type", "text")
-            response_dict.setdefault("options_list", [])
-            return _finalize_response(response_dict)
+            return _finalize_response({
+                "message_body": mensaje,
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "reclamo_categoria_estatica"
+            })
         else:
             logger_actual.warning(f"Input '{pregunta_str_reclamo}' no coincide con ninguna categoría. Mostrando menú de nuevo.")
             return _finalize_response(_get_reclamos_menu())
