@@ -1672,16 +1672,17 @@ def responder_municipio(
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
     if not is_from_audio:
         # --- START INTENT CLASSIFICATION ---
-        # FIX: First, check for simple keywords to be more robust than just the classifier
+        # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
         normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
-        if normalized_input_for_greeting in SIMPLE_GREETINGS:
-            logger_actual.info("Simple greeting keyword detected. Bypassing LLM and showing main menu.")
+        if normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__":
+            logger_actual.info(f"Simple greeting or __INIT__ keyword detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
             handler = GreetingHandler(context)
             response = handler.handle(received_payload)
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response)
 
+        # If it's not a simple greeting, proceed with intent classification
         intent, intent_payload = intent_classifier.classify(pregunta_str)
         logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
 
@@ -1703,8 +1704,6 @@ def responder_municipio(
 
         if intent == "consultar_reclamo":
             logger_actual.info("Claim status check intent detected. Bypassing LLM.")
-            # This would be where you handle the claim status logic
-            # For now, we can just return a message.
             return _finalize_response({
                 "message_body": "Para consultar el estado de tu reclamo, por favor ingresá el número de ticket.",
                 "fuente": "intent_consultar_reclamo"
