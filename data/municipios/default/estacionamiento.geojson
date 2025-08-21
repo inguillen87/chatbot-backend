@@ -1,0 +1,66 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Calle San Martín (frente a la plaza)",
+        "total_spots": 15,
+        "base_occupancy_rate": 0.9,
+        "type": "calle"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-68.4845, -33.0792],
+          [-68.4835, -33.0792]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Calle Lavalle (cerca del banco)",
+        "total_spots": 10,
+        "base_occupancy_rate": 0.95,
+        "type": "calle"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-68.4840, -33.0800],
+          [-68.4830, -33.0800]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Playa de Estacionamiento 'El Sol'",
+        "total_spots": 50,
+        "base_occupancy_rate": 0.6,
+        "type": "playa"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-68.4850, -33.0810]
+      }
+    },
+    {
+        "type": "Feature",
+        "properties": {
+          "name": "Calle Belgrano (zona comercial)",
+          "total_spots": 25,
+          "base_occupancy_rate": 0.8,
+          "type": "calle"
+        },
+        "geometry": {
+          "type": "LineString",
+          "coordinates": [
+            [-68.4860, -33.0785],
+            [-68.4850, -33.0785]
+          ]
+        }
+      }
+  ]
+}
