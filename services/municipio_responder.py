@@ -1278,6 +1278,16 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
         elif accion_backend_llm == "responder_directamente":
             logger.info("[HANDLE_LLM] LLM solicitó responder directamente.")
+
+            # FIX: Si el LLM extrae datos (ej. ubicación), guardarlos en el contexto del reclamo
+            # aunque la acción principal sea solo responder. Esto evita perder información.
+            if datos_estructura_llm:
+                datos_actuales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+                nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
+                if nuevos_datos:
+                    datos_actuales.update(nuevos_datos)
+                    logger_actual.info(f"[CONTEXT_MERGE] Datos parciales de reclamo actualizados en flujo 'responder_directamente': {datos_actuales}")
+
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
             contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
             response_payload = {
