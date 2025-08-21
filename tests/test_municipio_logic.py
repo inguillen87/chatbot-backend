@@ -89,13 +89,16 @@ class MunicipioLogicTests(unittest.TestCase):
     @patch('services.municipio_responder.servicio_tickets')
     @patch('services.municipio_responder.llamar_gemini')
     def test_human_escalation(self, mock_llamar_gemini, mock_servicio_tickets):
-        mock_llamar_gemini.return_value = {
-            "message_body": "Te estoy derivando con un agente.",
-            "accion_backend": "derivar_humano",
-            "datos_estructura": {},
-            "pedir_info": None,
-            "botones": []
-        }
+        mock_llamar_gemini.return_value = (
+            {
+                "message_body": "Te estoy derivando con un agente.",
+                "accion_backend": "derivar_humano",
+                "datos_estructura": {},
+                "pedir_info": None,
+                "botones": []
+            },
+            {}
+        )
         mock_servicio_tickets.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket="M-123456")
 
         from models import ChatSessionContext, db

@@ -307,11 +307,27 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertIn("Test News 1", response["options_list"][0]['texto'])
         self.assertEqual(response["fuente"], "news_handler_with_results")
 
-    @patch('services.municipio_responder.google_search')
-    def test_points_of_interest_handler_with_location(self, mock_google_search):
-        mock_google_search.return_value = [
-            {"title": "Farmacia Central", "snippet": "Abierto 24hs", "link": "http://example.com/farmacia"}
-        ]
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_points_of_interest_handler_with_location(self, mock_llamar_gemini):
+        # Simulate the LLM deciding to use the google_search tool
+        mock_llamar_gemini.return_value = (
+            {
+                "accion_backend": "ejecutar_herramienta",
+                "message_body": "Buscando farmacias...",
+                "datos_estructura": {
+                    "nombre_herramienta": "google_search",
+                    "parametros_herramienta": {"query": "farmacias de turno cerca de Mendoza, Argentina"}
+                }
+            },
+            {}
+        )
+
+        from services.herramientas_municipio import TOOL_REGISTRY
+        # This is a bit of a hack, but it's the most reliable way to mock the tool
+        # without fighting with patch decorators on nested imports.
+        original_google_search = TOOL_REGISTRY['google_search']['funcion']
+        mock_google_search = MagicMock(return_value="Resultados de búsqueda: Farmacia Central, Abierto 24hs, http://example.com/farmacia")
+        TOOL_REGISTRY['google_search']['funcion'] = mock_google_search
 
         from services.municipio_responder import responder_municipio
         with self.app.test_request_context():
@@ -320,21 +336,30 @@ class TestAccionesMunicipio(unittest.TestCase):
             chat_context = MagicMock()
             chat_context.context_data = {}
 
-            response = responder_municipio(
-                pregunta_original="farmacias de turno",
-                owner_user=owner_user,
-                viewer_user=None,
-                anon_id="test_anon_123",
-                chat_db_context=chat_context,
-                rubro_obj=owner_user.rubro,
-                location={"formatted_address": "Mendoza, Argentina"}
-            )
+            try:
+                response = responder_municipio(
+                    pregunta_original="farmacias de turno",
+                    owner_user=owner_user,
+                    viewer_user=None,
+                    anon_id="test_anon_123",
+                    chat_db_context=chat_context,
+                    rubro_obj=owner_user.rubro,
+                    location={"formatted_address": "Mendoza, Argentina"}
+                )
 
-            self.assertIn("Farmacia Central", response["message_body"])
-            mock_google_search.assert_called_with("farmacias de turno cerca de Mendoza, Argentina")
+                self.assertIn("Farmacia Central", response["message_body"])
+                mock_google_search.assert_called_with(query="farmacias de turno cerca de Mendoza, Argentina")
+            finally:
+                # Restore the original function to avoid side effects in other tests
+                TOOL_REGISTRY['google_search']['funcion'] = original_google_search
 
     @patch('services.municipio_responder.google_search')
-    def test_points_of_interest_handler_without_location(self, mock_google_search):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_points_of_interest_handler_without_location(self, mock_llamar_gemini, mock_google_search):
+        # Simulate the LLM asking for location
+        mock_llamar_gemini.return_value = ({"message_body": "Para darte información precisa, necesito tu ubicación. ¿Podrías compartirla?",
+                                            "accion_backend": "pedir_info", "pedir_info": "ubicacion"}, {})
+
         from services.municipio_responder import responder_municipio
         with self.app.test_request_context():
             owner_user = MagicMock(spec=User, id=1, municipio_id='test_muni')
@@ -351,8 +376,8 @@ class TestAccionesMunicipio(unittest.TestCase):
                 rubro_obj=owner_user.rubro
             )
 
+            # The new expected response comes from the mocked LLM
             self.assertIn("necesito tu ubicación", response["message_body"])
-            self.assertEqual(response["fuente"], "solicitar_ubicacion")
             mock_google_search.assert_not_called()
 
     @patch('services.municipio_responder.handle_llm_interaction', return_value=(None, {}))

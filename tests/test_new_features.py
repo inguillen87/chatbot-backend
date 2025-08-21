@@ -62,12 +62,15 @@ class TestNewFeatures(unittest.TestCase):
     @patch('services.municipio_responder.llamar_gemini')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
         """Verifica que la acción "mostrar_menu" del LLM devuelve el menú completo."""
-        mock_llamar_gemini.return_value = {
-            "message_body": "Partial menu",  # Should be replaced by local menu
-            "accion_backend": "mostrar_menu",
-            "datos_estructura": {"target": "municipio", "nombre_menu": "principal"},
-            "botones": [{"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}],
-        }
+        mock_llamar_gemini.return_value = (
+            {
+                "message_body": "Partial menu",  # Should be replaced by local menu
+                "accion_backend": "mostrar_menu",
+                "datos_estructura": {"target": "municipio", "nombre_menu": "principal"},
+                "botones": [{"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}],
+            },
+            {}
+        )
 
         response = responder_municipio(
             pregunta_original="otra consulta",

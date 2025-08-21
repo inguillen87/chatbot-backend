@@ -194,13 +194,11 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         formatted_history = []
         if chat_historial_limpio:
             for item in chat_historial_limpio:
-                # Ensure the item is a dictionary and has the expected structure
-                if isinstance(item, dict) and "role" in item and "parts" in item:
-                    # The 'parts' key should contain a list of dictionaries
-                    if isinstance(item["parts"], list) and item["parts"]:
-                        text_part = item["parts"][0].get("text", "")
-                        if text_part: # Ensure there is text to add
-                             formatted_history.append(Content(role=item["role"], parts=[Part.from_text(text_part)]))
+                if isinstance(item, dict):
+                    if 'pregunta_usuario' in item and item['pregunta_usuario']:
+                        formatted_history.append(Content(role="user", parts=[Part.from_text(item['pregunta_usuario'])]))
+                    if 'respuesta_ia' in item and item['respuesta_ia']:
+                        formatted_history.append(Content(role="model", parts=[Part.from_text(item['respuesta_ia'])]))
 
         chat = model.start_chat(history=formatted_history)
 

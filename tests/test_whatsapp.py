@@ -11,17 +11,20 @@ from services.municipio_responder import responder_municipio
 
 def test_reclamo_handler_categoria_buttons(client):
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = {
-            "message_body": "Por favor, elegí una de las siguientes categorías:",
-            "accion_backend": "iniciar_reclamo",
-            "datos_estructura": {},
-            "pedir_info": "categoria",
-            "botones": [
-                {"texto": "Alumbrado Público", "action_id": "alumbrado_publico"},
-                {"texto": "Bacheo", "action_id": "bacheo"},
-                {"texto": "Recolección de Residuos", "action_id": "recoleccion_de_residuos"},
-            ]
-        }
+        mock_llamar_gemini.return_value = (
+            {
+                "message_body": "Por favor, elegí una de las siguientes categorías:",
+                "accion_backend": "iniciar_reclamo",
+                "datos_estructura": {},
+                "pedir_info": "categoria",
+                "botones": [
+                    {"texto": "Alumbrado Público", "action_id": "alumbrado_publico"},
+                    {"texto": "Bacheo", "action_id": "bacheo"},
+                    {"texto": "Recolección de Residuos", "action_id": "recoleccion_de_residuos"},
+                ]
+            },
+            {}
+        )
         owner_user = MagicMock()
         owner_user.id = 1
         rubro_obj = None
@@ -51,15 +54,18 @@ def test_reclamo_handler_categoria_buttons(client):
 
 def test_reclamo_handler_share_location_button(client):
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = {
-            "message_body": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
-            "accion_backend": "iniciar_reclamo",
-            "datos_estructura": {},
-            "pedir_info": "ubicacion",
-            "botones": [
-                {"texto": "Compartir ubicación", "action_id": "compartir_ubicacion"}
-            ]
-        }
+        mock_llamar_gemini.return_value = (
+            {
+                "message_body": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
+                "accion_backend": "iniciar_reclamo",
+                "datos_estructura": {},
+                "pedir_info": "ubicacion",
+                "botones": [
+                    {"texto": "Compartir ubicación", "action_id": "compartir_ubicacion"}
+                ]
+            },
+            {}
+        )
         owner_user = MagicMock()
         owner_user.id = 1
         rubro_obj = None
@@ -89,14 +95,17 @@ def test_reclamo_handler_share_location_button(client):
 
 def test_ticket_status_handler_ticket_number_shortcut(client):
     with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = {
-            "message_body": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
-            "accion_backend": "consultar_estado_ticket",
-            "datos_estructura": {
-                "id_ticket_mencionado": "12345"
+        mock_llamar_gemini.return_value = (
+            {
+                "message_body": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
+                "accion_backend": "consultar_estado_ticket",
+                "datos_estructura": {
+                    "id_ticket_mencionado": "12345"
+                },
+                "pedir_info": None
             },
-            "pedir_info": None
-        }
+            {}
+        )
         owner_user = MagicMock()
         owner_user.id = 1
         rubro_obj = None

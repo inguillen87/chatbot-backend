@@ -79,15 +79,18 @@ def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_g
         "categoria_sugerida": "Arreglo de calle",
         "descripcion_sugerida": "Bache en la calle"
     }
-    mock_llamar_gemini.return_value = {
-        "message_body": "Gracias por la imagen. Parece un reclamo sobre 'Arreglo de calle'. Para continuar, por favor decime la dirección.",
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {
-            "categoria": "Arreglo de calle",
-            "descripcion": "Bache en la calle"
+    mock_llamar_gemini.return_value = (
+        {
+            "message_body": "Gracias por la imagen. Parece un reclamo sobre 'Arreglo de calle'. Para continuar, por favor decime la dirección.",
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {
+                "categoria": "Arreglo de calle",
+                "descripcion": "Bache en la calle"
+            },
+            "pedir_info": "ubicacion"
         },
-        "pedir_info": "ubicacion"
-    }
+        {}
+    )
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
     viewer_user = User(id=4, name="Vecino Test")
@@ -114,13 +117,16 @@ def test_document_processing_pedido_pyme(mock_db_session):
 @patch('services.municipio_responder.llamar_gemini')
 def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, mock_db_session):
     # 1. Initial request to create a reclamo
-    mock_llamar_gemini.return_value = {
-        "message_body": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {"target": "municipio"},
-        "pedir_info": "ubicacion",
-        "botones": []
-    }
+    mock_llamar_gemini.return_value = (
+        {
+            "message_body": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {"target": "municipio"},
+            "pedir_info": "ubicacion",
+            "botones": []
+        },
+        {}
+    )
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
     viewer_user = User(id=4, name="Vecino Test")
@@ -141,13 +147,16 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
     assert chat_context.context_data['contexto_municipio_v2']['estado_conversacion'] == 'ESPERANDO_INFO_RECLAMO_LLM'
 
     # 2. User provides the location
-    mock_llamar_gemini.return_value = {
-        "message_body": "Gracias. Ahora necesito tu nombre completo.",
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
-        "pedir_info": "nombre_completo",
-        "botones": []
-    }
+    mock_llamar_gemini.return_value = (
+        {
+            "message_body": "Gracias. Ahora necesito tu nombre completo.",
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
+            "pedir_info": "nombre_completo",
+            "botones": []
+        },
+        {}
+    )
 
     response2 = responder_municipio(
         pregunta_original="Calle Falsa 123",

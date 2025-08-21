@@ -108,12 +108,15 @@ class TestClaimCreationFlow(unittest.TestCase):
         """
         with self.app.app_context():
             # El usuario envía un link de Google Maps
-            mock_llamar_gemini.return_value = {
-                "message_body": "Gracias por la dirección. ¿Podrías describir el problema?",
-                "accion_backend": "iniciar_reclamo",
-                "datos_estructura": {"target": "municipio", "ubicacion": "Villegas 900, M5584, San Martín, Mendoza, AR"},
-                "pedir_info": "descripcion"
-            }
+            mock_llamar_gemini.return_value = (
+                {
+                    "message_body": "Gracias por la dirección. ¿Podrías describir el problema?",
+                    "accion_backend": "iniciar_reclamo",
+                    "datos_estructura": {"target": "municipio", "ubicacion": "Villegas 900, M5584, San Martín, Mendoza, AR"},
+                    "pedir_info": "descripcion"
+                },
+                {}
+            )
 
             respuesta = responder_municipio(
                 pregunta_original="https://maps.google.com/maps/search/Hospedaje%20Finca%20La%20Siciliana/@-33.03129332,-68.50156402,17z?hl=es Villegas 900, M5584, AR",

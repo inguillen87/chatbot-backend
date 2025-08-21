@@ -61,19 +61,22 @@ def test_full_claim_in_one_go(test_client, mock_llm):
     db.session.commit()
 
     # Simular que el LLM extrae toda la información
-    mock_llm.return_value = {
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {
-            "target": "municipio",
-            "categoria": "Semáforos",
-            "descripcion": "El semáforo de la esquina no funciona.",
-            "ubicacion": "Av. Siempre Viva 123",
-            "usuario": "Marcelo Guillen",
-            "telefono": "2613168608",
-            "email": "marcelo.guillen@example.com"
+    mock_llm.return_value = (
+        {
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {
+                "target": "municipio",
+                "categoria": "Semáforos",
+                "descripcion": "El semáforo de la esquina no funciona.",
+                "ubicacion": "Av. Siempre Viva 123",
+                "usuario": "Marcelo Guillen",
+                "telefono": "2613168608",
+                "email": "marcelo.guillen@example.com"
+            },
+            "message_body": "Gracias, he registrado tu reclamo."
         },
-        "message_body": "Gracias, he registrado tu reclamo."
-    }
+        {}
+    )
 
     pregunta = "Quiero reportar un semáforo roto en Av. Siempre Viva 123. Mi nombre es Marcelo Guillen, mi teléfono es 2613168608 y mi email es marcelo.guillen@example.com."
 
@@ -106,12 +109,15 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     db.session.commit()
 
     # 1. El usuario inicia el reclamo
-    mock_llm.return_value = {
-        "accion_backend": "crear_reclamo",
-            "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto", "categoria": "Semáforos"},
-        "message_body": "Entendido, ¿dónde es el problema?",
-        "pedir_info": "ubicacion"
-    }
+    mock_llm.return_value = (
+        {
+            "accion_backend": "crear_reclamo",
+                "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto", "categoria": "Semáforos"},
+            "message_body": "Entendido, ¿dónde es el problema?",
+            "pedir_info": "ubicacion"
+        },
+        {}
+    )
     respuesta = responder_municipio(
         pregunta_original="semáforo roto",
         owner_user=owner_user,
@@ -122,12 +128,15 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     assert "¿dónde es el problema?" in respuesta["message_body"]
 
     # 2. El usuario da la ubicación
-    mock_llm.return_value = {
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
-        "message_body": "Perfecto. ¿Tu nombre?",
-        "pedir_info": "nombre_completo"
-    }
+    mock_llm.return_value = (
+        {
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
+            "message_body": "Perfecto. ¿Tu nombre?",
+            "pedir_info": "nombre_completo"
+        },
+        {}
+    )
     respuesta = responder_municipio(
         pregunta_original="Calle Falsa 123",
         owner_user=owner_user,
@@ -138,16 +147,19 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     assert "Perfecto. ¿Tu nombre?" in respuesta["message_body"]
 
     # 3. El usuario da el nombre y el resto de datos
-    mock_llm.return_value = {
-        "accion_backend": "crear_reclamo",
-        "datos_estructura": {
-            "target": "municipio",
-            "usuario": "Lisa Simpson",
-            "telefono": "555-1234",
-            "email": "lisa.simpson@example.com"
+    mock_llm.return_value = (
+        {
+            "accion_backend": "crear_reclamo",
+            "datos_estructura": {
+                "target": "municipio",
+                "usuario": "Lisa Simpson",
+                "telefono": "555-1234",
+                "email": "lisa.simpson@example.com"
+            },
+            "message_body": "Gracias, he registrado tu reclamo."
         },
-        "message_body": "Gracias, he registrado tu reclamo."
-    }
+        {}
+    )
 
     with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
         mock_ticket = MagicMock()
