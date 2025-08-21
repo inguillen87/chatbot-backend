@@ -115,7 +115,8 @@ class TestClaimCreationFlow(unittest.TestCase):
                     "datos_estructura": {"target": "municipio", "ubicacion": "Villegas 900, M5584, San Martín, Mendoza, AR"},
                     "pedir_info": "descripcion"
                 },
-                {}
+                {},
+                None
             )
 
             respuesta = responder_municipio(

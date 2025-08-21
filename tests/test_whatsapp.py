@@ -23,7 +23,8 @@ def test_reclamo_handler_categoria_buttons(client):
                     {"texto": "Recolección de Residuos", "action_id": "recoleccion_de_residuos"},
                 ]
             },
-            {}
+            {},
+            None
         )
         owner_user = MagicMock()
         owner_user.id = 1
@@ -64,7 +65,8 @@ def test_reclamo_handler_share_location_button(client):
                     {"texto": "Compartir ubicación", "action_id": "compartir_ubicacion"}
                 ]
             },
-            {}
+            {},
+            None
         )
         owner_user = MagicMock()
         owner_user.id = 1
@@ -104,7 +106,8 @@ def test_ticket_status_handler_ticket_number_shortcut(client):
                 },
                 "pedir_info": None
             },
-            {}
+            {},
+            None
         )
         owner_user = MagicMock()
         owner_user.id = 1

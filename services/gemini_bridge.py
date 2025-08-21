@@ -203,6 +203,10 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         )
 
         logger.info(f"Respuesta recibida de Gemini. Candidates count: {len(response.candidates)}")
+
+        usage_metadata = response.usage_metadata
+        logger.info(f"Uso de tokens de Gemini: {usage_metadata}")
+
         if not response.candidates or not response.candidates[0].content.parts:
             logger.error("Gemini no devolvió contenido válido.")
             raise ValueError("Respuesta de Gemini sin contenido válido.")
@@ -217,7 +221,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": str(e), "mensaje_original": mensaje_usuario},
         }
-        return error_response, {}
+        return error_response, {}, None
     except Exception as e_gemini_call:
         logger.error(f"Error inesperado en la llamada a Gemini API: {e_gemini_call}", exc_info=True)
         error_response = {
@@ -225,7 +229,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             "accion_backend": "derivar_humano",
             "datos_estructura": {"error_detalle": str(e_gemini_call), "mensaje_original": mensaje_usuario},
         }
-        return error_response, {}
+        return error_response, {}, None
 
     try:
         if respuesta_texto_crudo.startswith("```json"):
@@ -234,14 +238,14 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             respuesta_texto_crudo = respuesta_texto_crudo[:-len("```")].strip()
 
         parsed_response = json.loads(respuesta_texto_crudo)
-        return parsed_response, {} # Devuelve tupla en caso de éxito
+        return parsed_response, {}, usage_metadata
 
     except json.JSONDecodeError as e_json:
         logger.warning(f"Fallo al parsear JSON de Gemini, intentando reparar. Error: {e_json}")
         fixed_json_str = _repair_json_response(respuesta_texto_crudo)
         try:
             parsed_response = json.loads(fixed_json_str)
-            return parsed_response, {} # Devuelve tupla en caso de éxito con reparación
+            return parsed_response, {}, usage_metadata
         except Exception as e_repair:
             logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")
             error_response = {
@@ -249,7 +253,7 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
                 "accion_backend": "derivar_humano",
                 "datos_estructura": {"error_detalle": str(e_repair), "respuesta_llm_cruda": respuesta_texto_crudo},
             }
-            return error_response, {}
+            return error_response, {}, None
 
 
 def llamar_gemini_para_generacion_texto(
@@ -313,8 +317,8 @@ def llamar_gemini(
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje, chat_session_id)
         try:
-            # _llamar_gemini_impl ahora devuelve una tupla
-            respuesta, context_dict = future.result(timeout=timeout_seconds)
+            # _llamar_gemini_impl ahora devuelve una tupla de tres elementos
+            respuesta, context_dict, usage_metadata = future.result(timeout=timeout_seconds)
         except TimeoutError:
             logger.error(f"Llamada a Gemini superó los {timeout_seconds} segundos de timeout.")
             error_response = {
@@ -324,7 +328,7 @@ def llamar_gemini(
                 "pedir_info": None,
                 "botones": []
             }
-            return error_response, {}
+            return error_response, {}, None
         except Exception as e:
             logger.error(f"Excepción inesperada durante la ejecución de _llamar_gemini_impl: {e}", exc_info=True)
             error_response = {
@@ -334,18 +338,21 @@ def llamar_gemini(
                 "pedir_info": None,
                 "botones": []
             }
-            return error_response, {}
+            return error_response, {}, None
 
 
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
+
+    if usage_metadata:
+        logger.info(f"Uso de tokens: prompt={usage_metadata.prompt_token_count}, candidates={usage_metadata.candidates_token_count}, total={usage_metadata.total_token_count}")
 
     if chat_session_id:
         user_query = mensaje_usuario or mensaje
         # Pasamos solo el diccionario de respuesta para el logging
         eventlet.spawn_n(_log_llm_interaction_async, app, chat_session_id, user_query, respuesta)
 
-    return respuesta, context_dict
+    return respuesta, context_dict, usage_metadata
 
 if __name__ == '__main__':
     # Configurar logging básico para pruebas locales si no está ya configurado

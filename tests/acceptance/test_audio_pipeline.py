@@ -40,7 +40,8 @@ def test_tts_caching(mock_synthesize, mock_llamar_gemini, init_database, owner_u
             "accion_backend": "responder_directamente",
             "generar_audio": True
         },
-        {}
+            {},
+            None
     )
     mock_synthesize.return_value = "/static/audio/test.mp3"
     chat_context = ChatSessionContext(chat_session_id="tts_cache", user_id=owner_user.id)
@@ -68,7 +69,8 @@ def test_prefers_audio_flag(mock_synthesize, mock_llamar_gemini, init_database, 
             "accion_backend": "responder_directamente",
             "generar_audio": True
         },
-        {}
+            {},
+            None
     )
     response = responder_municipio("Quiero hacer una consulta", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
     assert response.get("generar_audio") is True
