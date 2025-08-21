@@ -8,6 +8,7 @@ from numpy import mean
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
 from services.google_text_to_speech import TextToSpeechService
+from fuzzywuzzy import process
 
 # Instanciar el servicio de TTS
 tts_service = TextToSpeechService()
@@ -234,9 +235,57 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 
 from services.google_search import google_search
 from services.scraper_avanzado import extraer_noticias
-from services.google_search import google_search
 from geopy.distance import great_circle
 import random
+
+def consultar_info_local(tema: str) -> str:
+    """
+    Busca información específica sobre un tema en los archivos de datos locales del municipio.
+    Es ideal para consultas directas como 'horario de licencias de conducir' o 'teléfono de bromatología'.
+    """
+    logger.info(f"[HERRAMIENTA INFO LOCAL] Buscando tema: '{tema}'")
+    normalized_tema = normalizar_texto(tema)
+
+    municipio_id = 'default'
+
+    # 1. Buscar en Trámites
+    tramites_info = cargar_configuracion_municipio(municipio_id, "tramites.json")
+    if tramites_info:
+        for tramite_key, tramite_data in tramites_info.items():
+            if not isinstance(tramite_data, dict): continue
+
+            nombres_a_chequear = [tramite_data.get('nombre', tramite_key)]
+            nombres_a_chequear.extend(tramite_data.get('keywords', []))
+
+            match, score = process.extractOne(normalized_tema, [normalizar_texto(n) for n in nombres_a_chequear])
+            if score > 88:
+                desc = tramite_data.get("descripcion", "No hay descripción disponible.")
+                botones_texto = []
+                if tramite_data.get("botones"):
+                    for btn in tramite_data["botones"]:
+                        botones_texto.append(f"- {btn.get('texto')}: {btn.get('url', 'No disponible')}")
+
+                respuesta = f"Encontré esto sobre '{tramite_data.get('nombre', tramite_key)}':\n{desc}"
+                if botones_texto:
+                    respuesta += "\n\nEnlaces relacionados:\n" + "\n".join(botones_texto)
+                return respuesta
+
+    # 2. Buscar en Contactos Especializados
+    contactos_info = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
+    if contactos_info:
+        for area, data in contactos_info.items():
+            if not isinstance(data, dict): continue
+
+            match, score = process.extractOne(normalized_tema, [normalizar_texto(area)])
+            if score > 90:
+                message = f"Información de contacto para *{area}*:\n"
+                if "nombre" in data: message += f"  - Encargado/a: {data['nombre']}\n"
+                if "telefono" in data: message += f"  - Teléfono: {data['telefono']}\n"
+                if "horario" in data: message += f"  - Horario: {data['horario']}\n"
+                return message.strip()
+
+    return f"No encontré información local específica sobre '{tema}'. Podrías intentar una búsqueda más general."
+
 
 def _get_feature_center(feature: dict):
     """Calculates the center of a GeoJSON feature's geometry."""

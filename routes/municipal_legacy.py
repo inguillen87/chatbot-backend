@@ -150,8 +150,14 @@ def add_post(current_user):
     descripcion = data.get('descripcion')
     post_type = data.get('tipo', 'general')
 
-    if not titulo or not descripcion:
-        return jsonify({"error": "Missing required fields: titulo and descripcion"}), 400
+    missing_fields = []
+    if not titulo:
+        missing_fields.append('titulo')
+    if not descripcion:
+        missing_fields.append('descripcion')
+
+    if missing_fields:
+        return jsonify({"error": f"Faltan campos obligatorios: {', '.join(missing_fields)}"}), 400
 
     new_post = {
         "id": str(uuid.uuid4()),

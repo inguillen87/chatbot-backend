@@ -295,76 +295,6 @@ def cargar_tramites_info():
 def get_tramites_info() -> dict:
     return cargar_tramites_info()
 
-def buscar_en_datos_locales(pregunta_str: str, municipio_id: str) -> dict | None:
-    """
-    Busca una respuesta en los archivos JSON locales antes de recurrir al LLM.
-    Devuelve un diccionario de respuesta si encuentra una coincidencia, o None si no.
-    """
-    if not pregunta_str:
-        return None
-
-    normalized_input = normalizar_texto(pregunta_str)
-    if not normalized_input:
-        return None
-
-    # 1. Buscar en Trámites
-    tramites_info = cargar_configuracion_municipio(municipio_id, "tramites.json")
-    if tramites_info:
-        for tramite_key, tramite_data in tramites_info.items():
-            nombres_a_chequear = [tramite_data.get('nombre', tramite_key)]
-            # Añadir palabras clave si existen
-            nombres_a_chequear.extend(tramite_data.get('keywords', []))
-
-            for nombre in nombres_a_chequear:
-                # Usar una comparación más simple y directa para keywords
-                if normalizar_texto(nombre) in normalized_input:
-                    botones = tramite_data.get("botones", [])
-                    for btn in botones:
-                        if btn.get("url") and not btn.get("type"):
-                            btn["type"] = "url"
-                    return {
-                        "message_body": tramite_data.get("descripcion", "Encontré información sobre este trámite."),
-                        "options_list": botones,
-                        "message_type": "interactive_buttons" if botones else "text",
-                        "fuente": f"embudo_tramites_json ({tramite_key})"
-                    }
-
-    # 2. Buscar en Posts (Noticias y Eventos)
-    posts = cargar_configuracion_municipio(municipio_id, "posts.json")
-    if posts:
-        for post in posts:
-            titulo_norm = normalizar_texto(post.get("titulo", ""))
-            # Usar una comparación más simple
-            if normalized_input in titulo_norm or titulo_norm in normalized_input:
-                botones = []
-                if post.get("link"):
-                    botones.append({"texto": "Ver más", "url": post.get("link"), "type": "url"})
-                return {
-                    "message_body": f"*{post.get('titulo')}*\n\n{post.get('descripcion')}",
-                    "options_list": botones,
-                    "message_type": "interactive_buttons" if botones else "text",
-                    "fuente": f"embudo_posts_json (ID: {post.get('id')})"
-                }
-
-    # 3. Buscar en Contactos Especializados
-    contactos = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
-    if contactos:
-        for area, data in contactos.items():
-            # Usar una comparación más simple
-            if normalizar_texto(area) in normalized_input:
-                message = f"*{area}*\n"
-                if "nombre" in data: message += f"Encargado/a: {data['nombre']}\n"
-                if "telefono" in data: message += f"Teléfono: {data['telefono']}\n"
-                if "horario" in data: message += f"Horario: {data['horario']}\n"
-                return {
-                    "message_body": message.strip(),
-                    "options_list": [],
-                    "message_type": "text",
-                    "fuente": f"embudo_contactos_json ({area})"
-                }
-
-    return None
-
 def obtener_info_tramite_web(tramite_nombre: str) -> dict:
     """
     Busca información sobre un trámite en la web del municipio.
@@ -520,10 +450,13 @@ from services.google_search import google_search
 
 def _get_main_menu_payload(context: dict, welcome_message_override: str = None) -> dict:
     """
-    Genera dinámicamente el menú principal cargando opciones desde archivos JSON.
+    Generates the main menu payload, allowing for a custom welcome message.
+    This centralizes menu creation to be reused by GreetingHandler and error handlers.
     """
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
+
+    # Prioritize the fresh ProfileName from WhatsApp, then fallback to the database name.
     user_name = None
     if isinstance(profile_name, str) and profile_name.strip():
         user_name = profile_name.strip()
@@ -533,44 +466,42 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
-        welcome_message = f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual. ¿Cómo te puedo ayudar hoy?"
+        welcome_message = (
+            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
+            "reclamos, turnos, noticias y mucho más.\n\n"
+            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+        )
     else:
-        welcome_message = "¡Hola! 👋 Soy JUNI, tu Asistente Virtual. ¿Cómo te puedo ayudar hoy?"
+        # Fallback for when there is no user name available
+        welcome_message = (
+            "¡Hola, Vecino/a! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+            "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
+            "enviarme un audio, una foto de un problema o compartir tu ubicación.\n\n"
+            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+        )
 
-    municipio_id = getattr(context.get("user_obj"), 'municipio_id', 'default') or 'default'
+    categorias = [
+        {"titulo": "🛠️ Reclamos", "botones": [
+            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}
+        ]},
+        {"titulo": "📄 Trámites y Consultas", "botones": [
+            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+            {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
+            {"texto": "❓ Consultar otros trámites", "action_id": "consultar_otros_tramites"}
+        ]},
+        {"titulo": "📅 Servicios y Turnos", "botones": [
+            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+            {"texto": "🚗 Estacionamiento", "action_id": "estacionamiento"},
+            {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"}
+        ]},
+        {"titulo": "📰 Información y Novedades", "botones": [
+            {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
+            {"texto": "🗞️ Últimas Novedades", "action_id": "ultimas_novedades"},
+            {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+        ]}
+    ]
 
-    # Cargar datos dinámicos
-    tramites_info = cargar_configuracion_municipio(municipio_id, "tramites.json")
-    contactos_info = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
-
-    # Construir categorías de menú
-    categorias = [{"titulo": "🛠️ Reclamos", "botones": [{"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}]}]
-
-    # Categoría de Trámites Dinámicos
-    tramites_botones = []
-    if tramites_info:
-        for key, data in tramites_info.items():
-            if isinstance(data, dict) and data.get("nombre"):
-                tramites_botones.append({"texto": data["nombre"], "action_id": key})
-    if tramites_botones:
-        categorias.append({"titulo": "📄 Trámites y Consultas", "botones": tramites_botones})
-
-    # Categoría de Contactos Dinámicos
-    contactos_botones = []
-    if contactos_info:
-        for key, data in contactos_info.items():
-             if isinstance(data, dict):
-                contactos_botones.append({"texto": f"📞 {key}", "action_id": f"contacto_{key}"})
-    if contactos_botones:
-        categorias.append({"titulo": "☎️ Contactos Útiles", "botones": contactos_botones})
-
-    # Categorías estáticas restantes
-    categorias.append({"titulo": "📰 Información y Novedades", "botones": [
-        {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-        {"texto": "🗞️ Últimas Novedades", "action_id": "ultimas_novedades"},
-    ]})
-
-    # Aplanar botones para la lista interactiva
     flat_buttons = []
     for categoria in categorias:
         for boton in categoria.get('botones', []):
@@ -583,7 +514,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         "options_list": flat_buttons,
         "message_type": "interactive_list",
         "accion_backend": "responder_directamente",
-        "fuente": "greeting_handler_dynamic_v1",
+        "fuente": "greeting_handler_universal_v5",
         "categorias": categorias,
         "generar_audio": True
     }
@@ -705,8 +636,6 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     """
     Handles actions from the new categorized main menu.
     """
-    municipio_id = getattr(context.get("user_obj"), 'municipio_id', 'default') or 'default'
-
     if action_id == "mostrar_menu_reclamos":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
@@ -1229,12 +1158,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             # Devolver menú con botones
             return _get_reclamos_menu(), contexto_municipio_actual
         elif accion_backend_llm == "derivar_humano":
-            from .actions.common_actions import DerivarHumanoAction
-            logger.info("[HANDLE_LLM] LLM derivó a humano. Ejecutando DerivarHumanoAction.")
-            context["pregunta_actual_usuario"] = pregunta_str
-            handler = DerivarHumanoAction(context)
-            response_data = handler.execute(datos_estructura_llm or {})
-            return response_data, contexto_municipio_actual
+            context["intencion"] = "hablar_con_agente"
+            contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
+            logger.info("[HANDLE_LLM] LLM derivó a humano.")
+            return None, contexto_municipio_actual
         elif accion_backend_llm == "finalizar_tramite":
             logger.info(
                 "[HANDLE_LLM] LLM finalizó el trámite. Reseteando contexto de reclamo."
@@ -1608,15 +1535,6 @@ def responder_municipio(
     logger_actual.info(
         f"[RESPONDER_MUNICIPIO_START] Pregunta: '{pregunta_original}', UserMunicipio: {getattr(owner_user, 'id', 'N/A')}, ViewerCiudadano: {getattr(viewer_user, 'id', 'N/A')}, Anon: {anon_id}, Channel: {channel}, ChatSessionUUID: {kwargs.get('chat_session_uuid')}"
     )
-
-    # --- START FUNNEL LOGIC ---
-    # Antes de cualquier cosa, intentar resolver con datos locales.
-    # Necesitamos el `municipio_id` del `owner_user` para esto.
-    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
-        respuesta_local = buscar_en_datos_locales(pregunta_original if isinstance(pregunta_original, str) else pregunta_original.get("pregunta", ""), owner_user.municipio_id)
-        if respuesta_local:
-            return _finalize_response(respuesta_local)
-    # --- END FUNNEL LOGIC ---
 
     # --- INICIO REFACTOR: Inicialización de 'context' y 'received_payload' al principio ---
     # Obtener la app actual
