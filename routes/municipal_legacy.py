@@ -124,27 +124,44 @@ def add_post(current_user):
         return jsonify({"error": "User not associated with a municipality"}), 400
 
     flyer_url = None
-    if 'file' in request.files:
-        data = request.form
-        file = request.files['file']
-        from services.archivo_service import guardar_archivo
-        owner_user = User.query.get(current_user.municipio_id) if current_user.municipio_id else current_user
-        saved_file_info = guardar_archivo(file, owner_user)
-        if not saved_file_info.get("success"):
-            return jsonify({"error": "Failed to save flyer image", "details": saved_file_info.get("message")}), 500
-        flyer_url = saved_file_info.get("url")
-    elif request.is_json:
+    data = {}
+
+    content_type = request.content_type.split(';')[0]
+
+    if content_type == 'application/json':
         data = request.get_json()
+    elif content_type == 'multipart/form-data':
+        data = request.form.to_dict()
+        if 'file' in request.files:
+            file = request.files['file']
+            if file and file.filename: # Check if a file was actually uploaded
+                from services.archivo_service import guardar_archivo
+                # Use the main user of the municipality for ownership
+                owner_user = User.query.get(current_user.municipio_id) or current_user
+                saved_file_info = guardar_archivo(file, owner_user)
+                if not saved_file_info.get("success"):
+                    return jsonify({"error": "Failed to save flyer image", "details": saved_file_info.get("message")}), 500
+                flyer_url = saved_file_info.get("url")
     else:
-        return jsonify({"error": "Unsupported media type"}), 415
+        return jsonify({"error": "Unsupported Media Type", "sent_content_type": request.content_type}), 415
+
 
     titulo = data.get('titulo')
     descripcion = data.get('descripcion')
     post_type = data.get('tipo', 'general')
+
     if not titulo or not descripcion:
         return jsonify({"error": "Missing required fields: titulo and descripcion"}), 400
 
-    new_post = {"id": str(uuid.uuid4()), "titulo": titulo, "descripcion": descripcion, "link": data.get('link', ''), "tipo": post_type, "flyer_url": flyer_url, "fecha_publicacion": datetime.utcnow().isoformat()}
+    new_post = {
+        "id": str(uuid.uuid4()),
+        "titulo": titulo,
+        "descripcion": descripcion,
+        "link": data.get('link', ''),
+        "tipo": post_type,
+        "flyer_url": flyer_url,
+        "fecha_publicacion": datetime.utcnow().isoformat()
+    }
 
     posts_path = _get_posts_path(current_user.municipio_id)
     os.makedirs(os.path.dirname(posts_path), exist_ok=True)
@@ -156,11 +173,15 @@ def add_post(current_user):
                 content = f.read()
                 if content:
                     posts = json.loads(content)
+
         posts.insert(0, new_post)
+
         if len(posts) > 10:
             posts = posts[:10]
+
         with open(posts_path, 'w', encoding='utf-8') as f:
             json.dump(posts, f, indent=4, ensure_ascii=False)
+
         return jsonify(new_post), 201
     except Exception as e:
         current_app.logger.error(f"Error writing to posts file for municipio {current_user.municipio_id}: {e}")

@@ -135,7 +135,7 @@ def test_llm_claim_flow_with_slot_gate(mock_llamar_gemini, mock_validar_direccio
 
     # --- Turn 3: User provides description, Handler asks for confirmation ---
     viewer_user = User(
-        id=99, name="Bart Simpson", telefono="5551234", email="bart@test.com"
+        id=99, name="Bart Simpson", telefono="5551234", email="bart@test.com", password_hash="test"
     )
     db.session.add(viewer_user)
     chat_db_context.user_id = viewer_user.id
