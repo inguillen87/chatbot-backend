@@ -729,14 +729,8 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
     if action_id == "agenda_cultural_y_turistica":
         from .herramientas_municipio import consultar_eventos_culturales
-        # For now, we default to "hoy". A more advanced version could ask the user for a date.
-        eventos_hoy = consultar_eventos_culturales(fecha="hoy")
-        return {
-            "message_body": f"Aquí tienes la agenda para hoy:\n\n{eventos_hoy}",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "agenda_cultural_hoy"
-        }
+        # The new function reads from events.json and requires context.
+        return consultar_eventos_culturales(context=context)
 
     if action_id == "estacionamiento":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -883,6 +877,48 @@ def accion_crear_reclamo_municipio(datos_reclamo, context):
     """Wrapper que delega la creación de reclamos al ActionHandler dedicado."""
     handler = CrearReclamoActionHandler(context=context)
     return handler.execute(datos_reclamo)
+def _fill_slot_with_user_input(contexto_municipio_actual, context, pregunta_str, logger_actual):
+    """
+    Fills a slot in the context with user input. Handles text and location objects,
+    including geocoding. Modifies `contexto_municipio_actual` in place.
+    """
+    datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+    campo_esperado = contexto_municipio_actual.get("esperando_info_llm_reclamo")
+
+    # Handle text input
+    if campo_esperado and pregunta_str:
+        logger_actual.info(f"Slot-filling: El bot esperaba '{campo_esperado}', y recibió un texto: '{pregunta_str}'.")
+        if campo_esperado == 'ubicacion':
+            from .herramientas_municipio import validar_y_formatear_direccion
+            logger_actual.info(f"Geocoding text address: '{pregunta_str}'")
+            geocoded_location = validar_y_formatear_direccion(pregunta_str)
+            if geocoded_location:
+                datos_parciales[campo_esperado] = geocoded_location
+            else:
+                datos_parciales[campo_esperado] = {"formatted_address": pregunta_str}
+        else:
+            datos_parciales[campo_esperado] = pregunta_str
+
+        logger_actual.info(f"Contexto de reclamo actualizado con slot de texto: {datos_parciales}")
+        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+
+    # Handle location pin input
+    if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
+        logger_actual.info("Handling location pin from user.")
+        ubicacion_pin = context["ubicacion_usuario"]
+        lat, lon = ubicacion_pin.get("latitude"), ubicacion_pin.get("longitude")
+        from .herramientas_municipio import obtener_direccion_de_coordenadas
+        structured_location = obtener_direccion_de_coordenadas(lat, lon)
+        if structured_location:
+            datos_parciales["ubicacion"] = structured_location
+        else:
+            datos_parciales["ubicacion"] = {"latitude": lat, "longitude": lon, "formatted_address": f"Lat: {lat}, Lon: {lon}"}
+
+        logger_actual.info(f"Contexto de reclamo actualizado con slot de ubicación: {datos_parciales}")
+        if contexto_municipio_actual.get("esperando_info_llm_reclamo") == "ubicacion":
+            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+
+
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
     Prepares the confirmation message for the user before creating a ticket.
@@ -936,6 +972,32 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
 
 def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
     logger_actual = app.logger if app else (current_app.logger if has_app_context() else logging.getLogger(__name__))
+
+    # --- SLOT GATE LOGIC ---
+    # If the bot is waiting for a specific piece of info, we can bypass the LLM.
+    is_slot_filling_turn = (
+        contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name and
+        (pregunta_str or context.get("es_ubicacion"))
+    )
+
+    if is_slot_filling_turn:
+        logger_actual.info("[SLOT_GATE] Detected a slot-filling turn. Bypassing LLM.")
+
+        # 1. Fill the slot using the helper function
+        _fill_slot_with_user_input(contexto_municipio_actual, context, pregunta_str, logger_actual)
+
+        # 2. Call the Action Handler to get the next step
+        from .actions.municipio_actions import CrearReclamoActionHandler
+        handler = CrearReclamoActionHandler(context)
+        # The handler will use the data we just put in the context
+        handler_response = handler.execute(contexto_municipio_actual.get("datos_parciales_llm_reclamo", {}))
+
+        # 3. Return the handler's response directly to the user
+        logger_actual.info(f"[SLOT_GATE] Bypassed LLM. Returning response from CrearReclamoActionHandler: {handler_response}")
+        # The handler's response is a full response dict, but we need to pair it with the context for the return signature
+        return handler_response, contexto_municipio_actual
+    # --- END SLOT GATE LOGIC ---
+
     datos_actuales = {} # Initialize to prevent UnboundLocalError
 
     logger_actual.info(
@@ -1005,31 +1067,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     else:
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
+    # Pre-fill any available slot information before calling the LLM.
+    _fill_slot_with_user_input(contexto_municipio_actual, context, pregunta_str, logger_actual)
+
     try:
-        # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
-        campo_esperado = contexto_municipio_actual.get("esperando_info_llm_reclamo")
-        if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
-             campo_esperado = "ubicacion"
-
-        if campo_esperado and (pregunta_str or context.get("es_ubicacion")):
-            logger_actual.info(f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM.")
-            datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
-
-            valor_a_guardar = None
-            if campo_esperado == "ubicacion":
-                if context.get("ubicacion_usuario"):
-                    lat = context["ubicacion_usuario"].get("latitude")
-                    lon = context["ubicacion_usuario"].get("longitude")
-                    address = context["ubicacion_usuario"].get("address")
-                    valor_a_guardar = address if address else f"Lat: {lat}, Lon: {lon}"
-                else:
-                    valor_a_guardar = pregunta_str
-            else:
-                valor_a_guardar = pregunta_str
-
-            datos_parciales[campo_esperado] = valor_a_guardar
-            logger_actual.info(f"Datos parciales actualizados: {datos_parciales}")
-            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
 
 
         mensaje_completo_para_llm = {"texto": pregunta_str}
@@ -1099,7 +1140,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             # The handler's response is the full dict ready to be returned by responder_municipio
             return response, contexto_municipio_actual
 
-        if accion_backend_llm in ["crear_reclamo", "iniciar_reclamo"] and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
+        if accion_backend_llm in ["crear_reclamo", "iniciar_reclamo"] and datos_estructura_llm:
             # Si es el inicio de un nuevo reclamo, limpiar el contexto anterior para evitar "context bleed".
             if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
                 logger_actual.info("[CONTEXT_RESET] Nuevo reclamo detectado. Limpiando historiales de conversación.")
@@ -2186,9 +2227,9 @@ def responder_municipio(
         if "si" in normalizar_texto(pregunta_str) or action == "confirmar_reclamo_si":
             datos_confirmados = contexto_municipio_actual.pop("datos_a_confirmar", {})
 
-            # Llamar a la acción de creación de reclamo
+            # Llamar a la acción de creación de reclamo, forzando la creación del ticket
             handler = CrearReclamoActionHandler(context)
-            response = handler.execute(datos_confirmados)
+            response = handler.execute(datos_confirmados, create_ticket_now=True)
 
             # Limpiar el estado de la conversación solo si la creación fue exitosa
             if response.get("success"):
