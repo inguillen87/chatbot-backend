@@ -34,11 +34,14 @@ def test_tts_caching(mock_synthesize, mock_llamar_gemini, init_database, owner_u
     viewer_user.prefers_audio = True
     db.session.commit()
 
-    mock_llamar_gemini.return_value = {
-        "message_body": "Esta es una respuesta de prueba.",
-        "accion_backend": "responder_directamente",
-        "generar_audio": True
-    }
+    mock_llamar_gemini.return_value = (
+        {
+            "message_body": "Esta es una respuesta de prueba.",
+            "accion_backend": "responder_directamente",
+            "generar_audio": True
+        },
+        {}
+    )
     mock_synthesize.return_value = "/static/audio/test.mp3"
     chat_context = ChatSessionContext(chat_session_id="tts_cache", user_id=owner_user.id)
     db.session.add(chat_context)
@@ -59,11 +62,14 @@ def test_prefers_audio_flag(mock_synthesize, mock_llamar_gemini, init_database, 
     db.session.add(chat_context)
     db.session.commit()
 
-    mock_llamar_gemini.return_value = {
-        "message_body": "Esta es una respuesta de prueba.",
-        "accion_backend": "responder_directamente",
-        "generar_audio": True
-    }
+    mock_llamar_gemini.return_value = (
+        {
+            "message_body": "Esta es una respuesta de prueba.",
+            "accion_backend": "responder_directamente",
+            "generar_audio": True
+        },
+        {}
+    )
     response = responder_municipio("Quiero hacer una consulta", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
     assert response.get("generar_audio") is True
 

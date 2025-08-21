@@ -283,6 +283,7 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 
 from services.google_search import google_search
 from services.scraper_avanzado import extraer_noticias
+from services.google_search import google_search
 
 # --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS CON GOOGLE SEARCH ---
 
@@ -697,6 +698,14 @@ TOOL_REGISTRY = {
                 "type": "string",
                 "description": "El texto que se convertirá a voz."
             }
+        },
+        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
+    },
+    "google_search": {
+        "funcion": google_search,
+        "descripcion": "Busca en Google cuando ninguna otra herramienta es apropiada. Utilízala para consultas generales, buscar información específica o encontrar puntos de interés no cubiertos por otras herramientas.",
+        "parametros": {
+            "query": {"type": "string", "description": "La consulta de búsqueda precisa para Google."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     }

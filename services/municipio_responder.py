@@ -45,6 +45,11 @@ from .common_utils import (
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
+from services.intent_classifier import IntentClassifier
+
+# Initialize the classifier globally
+INTENTS_FILE_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'intents.json')
+intent_classifier = IntentClassifier(intents_file_path=INTENTS_FILE_PATH)
 
 load_dotenv()
 
@@ -106,6 +111,12 @@ EDIT_KEYWORDS = {
     "no era asi", "me equivoque", "error", "equivocado",
     "editar datos", "editar_reclamo_datos", "quiero editar", "necesito cambiar"
 }
+
+def _super_normalize(s: str) -> str:
+    """More aggressive normalization for matching, removes all non-alphanumeric chars."""
+    s = normalizar_texto(s)
+    return re.sub(r'[^a-z0-9]', '', s)
+
 
 def extract_description_and_check_confirmation(text: str, confirmation_keywords: set) -> tuple[str | None, bool]:
     """
@@ -626,6 +637,10 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     Handles actions from the new categorized main menu.
     """
     if action_id == "mostrar_menu_reclamos":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
+        contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+        contexto_municipio_actual.pop("historial_llm_reclamo", None)
         return _get_reclamos_menu()
 
     tramites_info = get_tramites_info()
@@ -746,16 +761,13 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "fuente": "info_solicitar_turnos_fase1"
         }
 
-    unimplemented_actions = []
-    if action_id in unimplemented_actions:
-        return {
-            "message_body": "Esta función aún no está implementada.",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": f"unimplemented_{action_id}"
-        }
-
-    return None # Return None if the action is not recognized by this handler
+    # Fallback for any other action that is not explicitly handled above
+    return {
+        "message_body": "Esta función no está implementada en este momento. Por favor, intentá con otra opción.",
+        "options_list": [],
+        "message_type": "text",
+        "fuente": f"unimplemented_{action_id}"
+    }
 
 
 def handle_info_requests(action_id: str) -> dict:
@@ -994,6 +1006,32 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
     try:
+        # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
+        campo_esperado = contexto_municipio_actual.get("esperando_info_llm_reclamo")
+        if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
+             campo_esperado = "ubicacion"
+
+        if campo_esperado and (pregunta_str or context.get("es_ubicacion")):
+            logger_actual.info(f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM.")
+            datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+
+            valor_a_guardar = None
+            if campo_esperado == "ubicacion":
+                if context.get("ubicacion_usuario"):
+                    lat = context["ubicacion_usuario"].get("latitude")
+                    lon = context["ubicacion_usuario"].get("longitude")
+                    address = context["ubicacion_usuario"].get("address")
+                    valor_a_guardar = address if address else f"Lat: {lat}, Lon: {lon}"
+                else:
+                    valor_a_guardar = pregunta_str
+            else:
+                valor_a_guardar = pregunta_str
+
+            datos_parciales[campo_esperado] = valor_a_guardar
+            logger_actual.info(f"Datos parciales actualizados: {datos_parciales}")
+            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+
+
         mensaje_completo_para_llm = {"texto": pregunta_str}
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
@@ -1006,7 +1044,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
         try:
             mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-            respuesta_llm_dict = llamar_gemini(
+            respuesta_llm_dict, context_dict = llamar_gemini(
                 app=app,
                 mensaje_usuario=mensaje_para_gemini,
                 usuario=usuario_info_llm,
@@ -1014,6 +1052,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 chat_session_id=context.get("chat_session_uuid")
             )
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
+            if isinstance(context_dict, dict) and chat_db_context:
+                chat_db_context.context_data.update(context_dict)
             logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as e:
             logger.error(
@@ -1036,7 +1076,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
         botones_llm = respuesta_llm_dict.get("botones", [])
 
-        if not respuesta_usuario_llm and accion_backend_llm not in ["crear_reclamo"]:
+        if not respuesta_usuario_llm and accion_backend_llm not in ["crear_reclamo", "ejecutar_herramienta"]:
              logger_actual.warning("[HANDLE_LLM] LLM response did not contain a 'message_body' and was not a parameterless action. Returning None to trigger fallback.")
              return None, contexto_municipio_actual
 
@@ -1334,15 +1374,18 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     if not user_input or not menu_buttons:
         return None
 
-    normalized_input = normalizar_texto(user_input.strip())
+    # Use a more aggressive normalization for matching to handle emojis, etc.
+    normalized_input = _super_normalize(user_input)
 
-    # 1. Check for exact match on normalized button text (most reliable for web channel)
+    # 1. Check for exact match on super-normalized button text
     for button in menu_buttons:
-        button_text_norm = normalizar_texto(button.get("texto", ""))
-        if button_text_norm == normalized_input:
-            # Added log for debugging
-            logger.info(f"DEBUG: Exact match found for '{normalized_input}'. Action: {button.get('action_id')}")
+        button_text_super_norm = _super_normalize(button.get("texto", ""))
+        if button_text_super_norm and button_text_super_norm == normalized_input:
+            logger.info(f"DEBUG: Super-normalized exact match found for '{normalized_input}'. Action: {button.get('action_id')}")
             return button.get('action_id')
+
+    # Fallback to standard normalization if super-norm fails (e.g. numeric input)
+    normalized_input = normalizar_texto(user_input.strip())
 
     # 2. Check for numeric selection
     try:
@@ -1627,14 +1670,46 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
-    if not is_from_audio and normalizar_texto(pregunta_str) in (SIMPLE_GREETINGS | RETURN_TO_MAIN_MENU):
-        logger_actual.info(f"Greeting or main menu request '{pregunta_str}' detected. Bypassing LLM and showing main menu.")
-        handler = GreetingHandler(context)
-        response = handler.handle(received_payload)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return _finalize_response(response)
-    # --- FIN FIX ---
+    if not is_from_audio:
+        # --- START INTENT CLASSIFICATION ---
+        # FIX: First, check for simple keywords to be more robust than just the classifier
+        normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
+        if normalized_input_for_greeting in SIMPLE_GREETINGS:
+            logger_actual.info("Simple greeting keyword detected. Bypassing LLM and showing main menu.")
+            handler = GreetingHandler(context)
+            response = handler.handle(received_payload)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+
+        intent, intent_payload = intent_classifier.classify(pregunta_str)
+        logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
+
+        if intent == "saludar":
+            logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
+            handler = GreetingHandler(context)
+            response = handler.handle(received_payload)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+
+        if intent == "iniciar_reclamo":
+            logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamos menu.")
+            contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(_get_reclamos_menu())
+
+        if intent == "consultar_reclamo":
+            logger_actual.info("Claim status check intent detected. Bypassing LLM.")
+            # This would be where you handle the claim status logic
+            # For now, we can just return a message.
+            return _finalize_response({
+                "message_body": "Para consultar el estado de tu reclamo, por favor ingresá el número de ticket.",
+                "fuente": "intent_consultar_reclamo"
+            })
+        # --- END INTENT CLASSIFICATION ---
 
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
@@ -1660,7 +1735,27 @@ def responder_municipio(
             })
 
     # New main menu handler
-    if action == "mostrar_menu_reclamos":
+    # FIX: Reordered logic. First, check for specific reclamo actions that set state.
+    # Then, handle generic main menu actions that return immediately.
+    reclamo_categories = {
+        "reclamo_luminaria": "Luminaria",
+        "reclamo_arbolado": "Arbolado",
+        "reclamo_limpieza_riego": "Limpieza y riego",
+        "reclamo_arreglo_calle": "Arreglo de calle",
+        "reclamo_otros": "Otros",
+    }
+
+    if action in reclamo_categories:
+        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+        logger_actual.info(f"[ACTION_RECLAMO] New claim started via action '{action}'. Clearing previous claim context.")
+        contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+        contexto_municipio_actual.pop("historial_llm_reclamo", None)
+
+        contexto_municipio_actual.setdefault('datos_parciales_llm_reclamo', {})['categoria'] = reclamo_categories[action]
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+        # After setting state, we let the execution fall through to the LLM handler
+    elif action == "mostrar_menu_reclamos":
         contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
         if chat_db_context:
@@ -1670,18 +1765,6 @@ def responder_municipio(
         response = handle_main_menu_action(action, context, chat_db_context)
         if response:
             return _finalize_response(response)
-
-    reclamo_categories = {
-        "reclamo_luminaria": "Luminaria",
-        "reclamo_arbolado": "Arbolado",
-        "reclamo_limpieza_riego": "Limpieza y riego",
-        "reclamo_arreglo_calle": "Arreglo de calle",
-        "reclamo_otros": "Otros",
-    }
-    if action in reclamo_categories:
-        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual.setdefault('datos_parciales_llm_reclamo', {})['categoria'] = reclamo_categories[action]
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
 
 
     # --- INICIO: Manejo de selección de lista dinámica (Noticias, etc.) ---
@@ -1722,25 +1805,6 @@ def responder_municipio(
             "message_type": "text",
             "fuente": "info_perdida_agua"
         })
-
-    if es_consulta_general(pregunta_str_for_check):
-        current_location = location or flask_session.get("user_location")
-        if current_location:
-            # The location object might be a dict from session or a direct payload
-            address = current_location.get("formatted_address") or current_location.get("address")
-            return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": pregunta_original, "location": address}))
-        else:
-            contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
-            contexto_municipio_actual['consulta_pendiente_ubicacion'] = pregunta_original # Save the original query
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
-            return _finalize_response({
-                "message_body": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
-                "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "No, gracias", "action": "cancelar"}],
-                "message_type": "interactive_buttons",
-                "fuente": "solicitar_ubicacion"
-            })
-
 
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
@@ -1869,12 +1933,12 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
         else:
-            # If no match, re-prompt with the menu instead of clearing state
-            logger_actual.info(f"Input '{pregunta_str_menu}' did not match any menu option. Re-prompting with main menu.")
-            # We keep the state as ESPERANDO_SELECCION_MENU_PRINCIPAL
-            # and just show the menu again with an added error message.
-            error_message = "Opción no válida. Por favor, elegí una de las siguientes:"
-            return _finalize_response(_get_main_menu_payload(context, welcome_message_override=error_message))
+            # If the input doesn't match a menu option, treat it as a general query.
+            # Clear the state so it falls through to the main LLM handler.
+            logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query and falling through to LLM.")
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
     # --- FIN: Manejo de selección de menú principal ---
 
     # --- INICIO: Manejo de la espera por nombre de trámite ---

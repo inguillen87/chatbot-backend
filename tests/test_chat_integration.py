@@ -127,10 +127,13 @@ class TestChatIntegration(unittest.TestCase):
         successfully loads a default owner user and returns a valid response.
         This test now also verifies the new keyword-based GreetingHandler.
         """
-        mock_llamar_gemini.return_value = {
-            "accion_backend": "saludar",
-            "message_body": "¡Hola! ...", # Mock message, will be replaced by handler
-        }
+        mock_llamar_gemini.return_value = (
+            {
+                "accion_backend": "saludar",
+                "message_body": "¡Hola! ...", # Mock message, will be replaced by handler
+            },
+            {}
+        )
 
         chat_payload = {
             "pregunta": "Hola",

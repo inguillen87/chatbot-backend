@@ -153,13 +153,16 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         Tests if the 'finalizar_tramite' action correctly resets the conversation context.
         """
         # --- Setup ---
-        mock_llamar_gemini.return_value = {
-            "message_body": "De nada. ¡Hasta luego!",
-            "accion_backend": "finalizar_tramite",
-            "datos_estructura": {"target": "municipio"},
-            "pedir_info": None,
-            "botones": []
-        }
+        mock_llamar_gemini.return_value = (
+            {
+                "message_body": "De nada. ¡Hasta luego!",
+                "accion_backend": "finalizar_tramite",
+                "datos_estructura": {"target": "municipio"},
+                "pedir_info": None,
+                "botones": []
+            },
+            {}
+        )
 
         chat_session = ChatSessionContext(
             chat_session_id='context_reset_test_session',
