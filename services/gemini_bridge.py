@@ -136,11 +136,12 @@ def _repair_json_response(respuesta_texto_crudo: str) -> str:
 
     return fixed
 
-def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None, chat_session_id: str = None) -> dict:
+def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, historial: list = None, mensaje: str = None, chat_session_id: str = None) -> tuple[dict, dict]:
+    """Función interna que llama a Gemini y siempre devuelve una tupla (respuesta, contexto)."""
     logger = logging.getLogger(__name__)
     try:
         import vertexai
-        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
+        from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold, Content, Part
 
         project_id = os.environ.get("GOOGLE_PROJECT_ID")
         location = "us-central1"
@@ -149,56 +150,35 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
             logger.error("GOOGLE_PROJECT_ID no está configurado. No se puede inicializar Gemini GenAI.")
             raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
 
-        try:
-            vertexai.init(project=project_id, location=location)
-        except ValueError as e:
-            logger.error(f"Error al inicializar Vertex AI: {e}")
-            return {
-                "message_body": "Error de configuración del servicio de IA (región no soportada). Por favor, contacta al administrador.",
-                "accion_backend": "derivar_humano",
-                "datos_estructura": {"error_detalle": str(e), "mensaje_original": mensaje_usuario},
-                "pedir_info": None, "botones": []
-            }
-
-        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+        vertexai.init(project=project_id, location=location)
 
         model_name = "gemini-2.5-flash"
-
-        model = GenerativeModel(
-            model_name,
-            system_instruction=[JULES_SYSTEM_PROMPT]
-        )
+        model = GenerativeModel(model_name, system_instruction=[JULES_SYSTEM_PROMPT])
 
         if mensaje and not mensaje_usuario:
             mensaje_usuario = mensaje
 
-        mensaje_usuario_obj = {}
         texto_mensaje = ""
         try:
             mensaje_usuario_obj = json.loads(mensaje_usuario)
-            if isinstance(mensaje_usuario_obj, dict):
-                texto_mensaje = mensaje_usuario_obj.get("texto", "")
-            else:
-                texto_mensaje = str(mensaje_usuario_obj)
-                mensaje_usuario_obj = {"texto": texto_mensaje}
+            texto_mensaje = mensaje_usuario_obj.get("texto", str(mensaje_usuario_obj))
         except (json.JSONDecodeError, TypeError):
-            texto_mensaje = mensaje_usuario
+            texto_mensaje = str(mensaje_usuario)
             mensaje_usuario_obj = {"texto": texto_mensaje}
 
-        from vertexai.generative_models import Content, Part
-
         chat_historial_limpio = _limpiar_historial_gemini(historial or [])
-
-        # FIX: Convert the history from a list of dicts to a list of Content objects
-        # as required by the new model.start_chat() API.
         formatted_history = []
         if chat_historial_limpio:
             for item in chat_historial_limpio:
-                if isinstance(item, dict):
-                    if 'pregunta_usuario' in item and item['pregunta_usuario']:
-                        formatted_history.append(Content(role="user", parts=[Part.from_text(item['pregunta_usuario'])]))
-                    if 'respuesta_ia' in item and item['respuesta_ia']:
-                        formatted_history.append(Content(role="model", parts=[Part.from_text(item['respuesta_ia'])]))
+                try:
+                    # The history items are dicts like {'role': 'user', 'parts': [{'text': '...'}]}
+                    # We need to convert them into Content objects.
+                    if isinstance(item, dict) and 'role' in item and 'parts' in item:
+                        # Part.from_dict is a convenient way to construct Part objects
+                        parts = [Part.from_dict(p) for p in item['parts']]
+                        formatted_history.append(Content(role=item['role'], parts=parts))
+                except Exception as e:
+                    logger.warning(f"Skipping malformed history item: {item}. Error: {e}")
 
         chat = model.start_chat(history=formatted_history)
 
@@ -212,11 +192,8 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         logger.info(f"Enviando a Gemini ({model_name}). Mensaje: {texto_mensaje[:100]}...")
 
         generation_config = GenerationConfig(
-            temperature=0.2,
-            top_p=0.9,
-            top_k=40,
-            max_output_tokens=1024,  # Aumentado para evitar truncamiento de JSON
-            response_mime_type="application/json"
+            temperature=0.2, top_p=0.9, top_k=40,
+            max_output_tokens=1024, response_mime_type="application/json"
         )
 
         response = chat.send_message(
@@ -226,52 +203,29 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         )
 
         logger.info(f"Respuesta recibida de Gemini. Candidates count: {len(response.candidates)}")
-        if not response.candidates:
-            logger.error("Gemini no devolvió candidatos en la respuesta.")
-            try:
-                block_reason = response.prompt_feedback.block_reason
-                block_reason_message = response.prompt_feedback.block_reason_message
-                logger.error(f"Prompt feedback: block_reason={block_reason}, message='{block_reason_message}'")
-            except Exception:
-                pass
-            raise ValueError("Respuesta de Gemini sin candidatos.")
+        if not response.candidates or not response.candidates[0].content.parts:
+            logger.error("Gemini no devolvió contenido válido.")
+            raise ValueError("Respuesta de Gemini sin contenido válido.")
 
-        if response.candidates and response.candidates[0].content.parts:
-            respuesta_texto_crudo = response.candidates[0].content.parts[0].text.strip()
-            logger.info(f"Respuesta de Gemini (crudo): {respuesta_texto_crudo}")
-        else:
-            logger.error("Gemini no devolvió contenido en el primer candidato.")
-            respuesta_texto_crudo = '{"message_body": "No pude procesar tu solicitud en este momento. Por favor, intenta de nuevo más tarde.", "accion_backend": "error"}'
+        respuesta_texto_crudo = response.candidates[0].content.parts[0].text.strip()
+        logger.info(f"Respuesta de Gemini (crudo): {respuesta_texto_crudo}")
 
-    except ImportError as ie:
-        logger.error(f"Error importando librería google.generativeai: {ie}. Asegúrate que google-genai está instalado.")
-        return {
+    except (ImportError, EnvironmentError, ValueError) as e:
+        logger.error(f"Error de configuración o llamada a Gemini API: {e}", exc_info=True)
+        error_response = {
             "message_body": "Error de configuración del servicio de IA. Por favor, contacta al administrador.",
             "accion_backend": "derivar_humano",
-            "datos_estructura": {"error_detalle": f"Fallo de importación google.generativeai: {str(ie)}", "mensaje_original": mensaje_usuario},
-            "pedir_info": None, "botones": []
+            "datos_estructura": {"error_detalle": str(e), "mensaje_original": mensaje_usuario},
         }
-    except EnvironmentError as ee:
-        logger.error(f"Error de entorno para google.generativeai: {ee}")
-        return {
-            "message_body": "Error de configuración del servicio de IA (entorno). Por favor, contacta al administrador.",
-            "accion_backend": "derivar_humano",
-            "datos_estructura": {"error_detalle": str(ee), "mensaje_original": mensaje_usuario},
-            "pedir_info": None, "botones": []
-        }
+        return error_response, {}
     except Exception as e_gemini_call:
-        logger.error(f"Error en la llamada a Gemini API: {e_gemini_call}", exc_info=True)
-        error_detail_from_api = str(e_gemini_call)
-        try:
-            if hasattr(e_gemini_call, 'message'): error_detail_from_api = e_gemini_call.message
-        except: pass
-
-        return {
-            "message_body": "Lo siento, no pude procesar tu solicitud en este momento debido a un error con el asistente IA. Intenta de nuevo más tarde.",
+        logger.error(f"Error inesperado en la llamada a Gemini API: {e_gemini_call}", exc_info=True)
+        error_response = {
+            "message_body": "Lo siento, no pude procesar tu solicitud en este momento debido a un error con el asistente IA.",
             "accion_backend": "derivar_humano",
-            "datos_estructura": {"error_detalle": f"Error API Gemini: {error_detail_from_api}", "mensaje_original": mensaje_usuario},
-            "pedir_info": None, "botones": []
+            "datos_estructura": {"error_detalle": str(e_gemini_call), "mensaje_original": mensaje_usuario},
         }
+        return error_response, {}
 
     try:
         if respuesta_texto_crudo.startswith("```json"):
@@ -279,38 +233,23 @@ def _llamar_gemini_impl(mensaje_usuario: str = None, usuario: dict = None, histo
         if respuesta_texto_crudo.endswith("```"):
             respuesta_texto_crudo = respuesta_texto_crudo[:-len("```")].strip()
 
-        logger.debug(f"Texto de Gemini para parsear a JSON: {respuesta_texto_crudo[:500]}...")
         parsed_response = json.loads(respuesta_texto_crudo)
-        return parsed_response
+        return parsed_response, {} # Devuelve tupla en caso de éxito
 
     except json.JSONDecodeError as e_json:
-        logger.error(f"Error parseando JSON de Gemini: {e_json}. Respuesta cruda: '{respuesta_texto_crudo}'")
+        logger.warning(f"Fallo al parsear JSON de Gemini, intentando reparar. Error: {e_json}")
         fixed_json_str = _repair_json_response(respuesta_texto_crudo)
         try:
-            logger.info(f"Intentando parsear JSON reparado: {fixed_json_str[:500]}...")
             parsed_response = json.loads(fixed_json_str)
-            return parsed_response
+            return parsed_response, {} # Devuelve tupla en caso de éxito con reparación
         except Exception as e_repair:
             logger.error(f"Error parseando JSON reparado: {e_repair}. Respuesta original: '{respuesta_texto_crudo}'")
-            return {
-                "message_body": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta o contacta a soporte.",
+            error_response = {
+                "message_body": "El asistente IA devolvió una respuesta inesperada. Por favor, intenta reformular tu consulta.",
                 "accion_backend": "derivar_humano",
-                "datos_estructura": {
-                    "error_detalle": f"Fallo al parsear JSON de LLM: {str(e_json)}",
-                    "respuesta_llm_cruda": respuesta_texto_crudo,
-                    "mensaje_original": mensaje_usuario
-                },
-                "pedir_info": None,
-                "botones": []
+                "datos_estructura": {"error_detalle": str(e_repair), "respuesta_llm_cruda": respuesta_texto_crudo},
             }
-    except Exception as e_parse:
-        logger.error(f"Error general post-llamada a Gemini: {e_parse}", exc_info=True)
-        return {
-            "message_body": "Lo siento, hubo un error técnico al procesar la respuesta del asistente IA. Un humano revisará tu caso.",
-            "accion_backend": "derivar_humano",
-            "datos_estructura": {"error_detalle": f"Fallo general post-LLM: {str(e_parse)}", "mensaje_original": mensaje_usuario},
-            "pedir_info": None, "botones": []
-        }
+            return error_response, {}
 
 
 def llamar_gemini_para_generacion_texto(
@@ -363,33 +302,50 @@ def llamar_gemini(
     timeout_seconds: int = 50,
     delay_warning_seconds: int = 8,
     chat_session_id: str = None,
-) -> dict:
-    """Wrapper con timeout y logging para la llamada al LLM."""
+) -> tuple[dict, dict]:
+    """
+    Wrapper con timeout y logging para la llamada al LLM.
+    Devuelve siempre una tupla (respuesta_dict, contexto_dict).
+    """
     logger = logging.getLogger(__name__)
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_llamar_gemini_impl, mensaje_usuario, usuario, historial, mensaje, chat_session_id)
         try:
-            respuesta = future.result(timeout=timeout_seconds)
+            # _llamar_gemini_impl ahora devuelve una tupla
+            respuesta, context_dict = future.result(timeout=timeout_seconds)
         except TimeoutError:
             logger.error(f"Llamada a Gemini superó los {timeout_seconds} segundos de timeout.")
-            return {
+            error_response = {
                 "message_body": "El asistente IA está tardando más de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
                 "accion_backend": "derivar_humano",
                 "datos_estructura": {"error_detalle": "timeout"},
                 "pedir_info": None,
                 "botones": []
             }
+            return error_response, {}
+        except Exception as e:
+            logger.error(f"Excepción inesperada durante la ejecución de _llamar_gemini_impl: {e}", exc_info=True)
+            error_response = {
+                "message_body": "Ocurrió un error inesperado al comunicarse con el asistente de IA.",
+                "accion_backend": "derivar_humano",
+                "datos_estructura": {"error_detalle": "Future execution exception"},
+                "pedir_info": None,
+                "botones": []
+            }
+            return error_response, {}
+
 
     elapsed = time.time() - start_time
     logger.info(f"Tiempo de respuesta de Gemini: {elapsed:.2f}s")
 
     if chat_session_id:
         user_query = mensaje_usuario or mensaje
+        # Pasamos solo el diccionario de respuesta para el logging
         eventlet.spawn_n(_log_llm_interaction_async, app, chat_session_id, user_query, respuesta)
 
-    return respuesta
+    return respuesta, context_dict
 
 if __name__ == '__main__':
     # Configurar logging básico para pruebas locales si no está ya configurado

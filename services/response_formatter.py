@@ -203,54 +203,21 @@ def build_interactive_response(options: list,
                 ]
             }]
 
-        is_interactive = message_type in ['interactive_buttons', 'interactive_list']
-
-        interactive_data = {
-            "header": {"type": "text", "text": header_text or "Menú"} if header_text else None,
-            "body": {"text": body_text},
-            "footer": {"text": footer_text} if footer_text else None,
-            "action": {}
-        }
-
-        # Automatically decide between button and list based on number of options
-        if 1 <= num_options <= 3:
-            interactive_data["type"] = "button"
-            interactive_data["action"]["buttons"] = [
-                {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")}}
-                for i, o in enumerate(options)
-            ]
-        elif 4 <= num_options <= 10:
-            interactive_data["type"] = "list"
-            interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
-            interactive_data["action"]["sections"] = [{
-                "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
-                "rows": [
-                    {
-                        "id": o.get("id", o.get("action_id", str(i))),
-                        "title": o.get("texto", ""),
-                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()
-                    }
-                    for i, o in enumerate(options)
-                ]
-            }]
-        else:
-            # Fallback for 0 or >10 options, format as text
-            final_body = body_text
-            options_text = "\n\n" + "\n".join([f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)])
-            options_text += "\n\nResponde con el número de la opción que necesites."
-            final_body += options_text
-            return {"type": "text", "text": {"body": final_body}}
-
-        # Clean None values from header/footer
-        if not interactive_data["header"]: del interactive_data["header"]
-        if not interactive_data["footer"]: del interactive_data["footer"]
-
-        logger.info(f"build_interactive_response: returning interactive payload: {interactive_data}")
+        # This is the start of the corrected block
         payload = {
             "type": "interactive",
             "interactive": interactive_data,
             "contexto_actualizado": context_update if context_update else None
         }
+
+        # Clean None values from header/footer before returning
+        if "header" in interactive_data and not interactive_data["header"]:
+            del interactive_data["header"]
+        if "footer" in interactive_data and not interactive_data["footer"]:
+            del interactive_data["footer"]
+
+        logger.info(f"build_interactive_response: returning interactive payload: {interactive_data}")
+
         if audio_url:
             payload["audio"] = {"link": audio_url}
         return payload

@@ -27,8 +27,6 @@ if cors_env:
     allowed_urls = [u.strip().rstrip('/') for u in cors_env.split(',') if u.strip()]
 else:
     allowed_urls = [PANEL_URL.rstrip('/'), WIDGET_URL.rstrip('/')]
-    # Add the Vercel demo origin to the list of allowed origins for CORS
-    allowed_urls.append("https://chatboc-demo-widget-oigs.vercel.app")
     host = parsed_backend.hostname
     if host and host != "localhost":
         parts = host.split('.')
