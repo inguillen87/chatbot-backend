@@ -65,7 +65,7 @@ class ChatLogicTestCase(unittest.TestCase):
             json_data = response.get_json()
             self.assertIn('pedir_info', json_data)
 
-    @patch('services.logic.responder_municipio')
+    @patch('services.municipio_responder.responder_municipio')
     @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
     def test_audio_response_is_generated_for_audio_input(self, mock_synthesize_speech, mock_responder_municipio):
         """
