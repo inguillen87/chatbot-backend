@@ -31,7 +31,7 @@ class PymesTestCase(unittest.TestCase):
     @patch('services.google_search.google_search')
     @patch('services.pymes.llamar_gemini')
     def test_fallback_handler(self, mock_llamar_gemini, mock_google_search):
-        mock_llamar_gemini.return_value = ({"accion_backend": "fallback", "datos_estructura": {"pregunta": "unhandled query"}}, {}, None)
+        mock_llamar_gemini.return_value = ({"accion_backend": "fallback", "datos_estructura": {"pregunta": "unhandled query"}}, None)
         mock_google_search.return_value = [
             {"title": "Test Search Result", "link": "http://example.com/search", "snippet": "This is a test search result."}
         ]

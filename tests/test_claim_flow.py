@@ -75,8 +75,7 @@ def test_full_claim_in_one_go(test_client, mock_llm):
             },
             "message_body": "Gracias, he registrado tu reclamo."
         },
-        {},
-        None
+        {}
     )
 
     pregunta = "Quiero reportar un semáforo roto en Av. Siempre Viva 123. Mi nombre es Marcelo Guillen, mi teléfono es 2613168608 y mi email es marcelo.guillen@example.com."
@@ -117,8 +116,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
             "message_body": "Entendido, ¿dónde es el problema?",
             "pedir_info": "ubicacion"
         },
-        {},
-        None
+        {}
     )
     respuesta = responder_municipio(
         pregunta_original="semáforo roto",
@@ -137,8 +135,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
             "message_body": "Perfecto. ¿Tu nombre?",
             "pedir_info": "nombre_completo"
         },
-        {},
-        None
+        {}
     )
     respuesta = responder_municipio(
         pregunta_original="Calle Falsa 123",
@@ -161,8 +158,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
             },
             "message_body": "Gracias, he registrado tu reclamo."
         },
-            {},
-            None
+        {}
     )
 
     with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:

@@ -4,6 +4,20 @@ from flask import request, jsonify, current_app, g, make_response
 from flask_login import current_user
 from models import User
 import jwt
+from datetime import datetime, timedelta, timezone
+
+def generar_token(user_id, rol, tipo_chat, municipio_id, pyme_id):
+    """Genera un token de autenticación para un usuario."""
+    payload = {
+        'exp': datetime.now(timezone.utc) + timedelta(days=1),
+        'iat': datetime.now(timezone.utc),
+        'user_id': user_id,
+        'rol': rol,
+        'tipo_chat': tipo_chat,
+        'municipio_id': municipio_id,
+        'pyme_id': pyme_id,
+    }
+    return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
 def user_from_token(token: str) -> User | None:
     """

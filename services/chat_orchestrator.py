@@ -29,6 +29,11 @@ class ChatOrchestrator:
             and self.global_context.get("target_entity_type") == "pyme"
         ):
             handler_path_str = "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme"
+        elif (
+            action_name == "derivar_humano"
+            and self.global_context.get("target_entity_type") == "municipio"
+        ):
+            handler_path_str = "services.actions.municipio_actions.DerivarHumanoActionHandler"
 
         if not handler_path_str:
             logger.warning(f"No handler found for action: {action_name}")

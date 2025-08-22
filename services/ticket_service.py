@@ -50,7 +50,8 @@ class MunicipioTicketCreator(TicketCreator):
             telefono_vecino=ticket_data.get("telefono_vecino"),
             email_vecino=ticket_data.get("email_vecino"),
             foto_url_directa=ticket_data.get("foto_url_directa"), # Para la foto inicial del reclamo
-            canal_ingreso=ticket_data.get("canal_ingreso")
+            canal_ingreso=ticket_data.get("canal_ingreso"),
+            estado=ticket_data.get("estado", "nuevo")
         )
 
 class PymeTicketCreator(TicketCreator):
@@ -79,7 +80,8 @@ class PymeTicketCreator(TicketCreator):
             longitud=lon,
             telefono=ticket_data.get("telefono_vecino") or ticket_data.get("telefono"),
             email=ticket_data.get("email_vecino") or ticket_data.get("email"),
-            dni=ticket_data.get("dni")
+            dni=ticket_data.get("dni"),
+            estado=ticket_data.get("estado", "nuevo")
         )
 
 class ServicioTickets:
@@ -188,18 +190,18 @@ class ServicioTickets:
                     logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
 
             # Notificar panel en tiempo real
-            try:
-                from socket_service import emit_ticket_update
-                from routes.ticket import serialize_ticket_to_json # Importar la nueva función
-
-                # Serializar el ticket completo para la notificación
-                ticket_json = serialize_ticket_to_json(ticket, tipo_ticket)
-
-                # El evento 'ticket_update' ahora enviará el objeto de ticket completo
-                emit_ticket_update(ticket_json)
-
-            except Exception as e_notify:
-                logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
+            # This logic was moved to the action handlers to avoid circular imports
+            # try:
+            #     from routes.ticket import serialize_ticket_to_json # Importar la nueva función
+            #
+            #     # Serializar el ticket completo para la notificación
+            #     ticket_json = serialize_ticket_to_json(ticket, tipo_ticket)
+            #
+            #     # El evento 'ticket_update' ahora enviará el objeto de ticket completo
+            #     emit_ticket_update(ticket_json)
+            #
+            # except Exception as e_notify:
+            #     logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
 
             return ticket
         except SQLAlchemyError as e:
@@ -274,6 +276,30 @@ class ServicioTickets:
             )
             return None
 
+    def obtener_locations_de_tickets(
+        self,
+        *,
+        municipio_id: int,
+    ) -> list[dict]:
+        """
+        Devuelve una lista de coordenadas de todos los tickets para un municipio
+        que tengan ubicación registrada. Formato: [{ "lat": lat, "lng": lng }]
+        """
+        try:
+            tickets = (
+                MunicipioTicket.query
+                .filter(MunicipioTicket.municipio_id == municipio_id)
+                .filter(MunicipioTicket.latitud.isnot(None), MunicipioTicket.longitud.isnot(None))
+                .all()
+            )
+            return [{"lat": t.latitud, "lng": t.longitud} for t in tickets]
+        except SQLAlchemyError as e:
+            logger.error(
+                f"Error de DB al obtener locations de tickets para municipio {municipio_id}: {e}", exc_info=True
+            )
+            return []
+
+
     def obtener_tickets_con_ubicacion_para_mapa( # Nombre modificado
         self,
         tipo_ticket: Literal["municipio", "pyme"],
@@ -292,7 +318,7 @@ class ServicioTickets:
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
-            query = Model.query().filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
 
             # Filtrar por estado si se proporciona
             if estado:

@@ -7,7 +7,7 @@ from models import User, Rubro, ChatSessionContext
 
 @pytest.fixture
 def mock_db_session():
-    with patch('models.db.session') as mock_session:
+    with patch('services.logic.db.session') as mock_session:
         yield mock_session
 
 
@@ -21,7 +21,7 @@ def mock_document_ai():
     with patch('services.document_processing_service.document_processing_service.process_document') as mock_docai:
         yield mock_docai
 
-@patch('services.pymes.responder_pyme')
+@patch('services.logic.responder_pyme')
 def test_responder_chatboc_pyme_flow(mock_responder_pyme, mock_db_session):
     mock_responder_pyme.return_value = {
         "fuente": "pyme_iniciar_pedido_v2",
@@ -46,7 +46,7 @@ def test_responder_chatboc_pyme_flow(mock_responder_pyme, mock_db_session):
     assert "pyme_iniciar_pedido_v2" in response.get("fuente", "")
     assert "¿Qué productos y cantidades te gustaría pedir? También puedes subir un archivo Excel." in response.get("message_body", "")
 
-@patch('services.municipio_responder.responder_municipio')
+@patch('services.logic.responder_municipio')
 def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_session):
     mock_responder_municipio.return_value = {
         "fuente": "municipio_crear_reclamo_v2",
@@ -89,8 +89,7 @@ def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_g
             },
             "pedir_info": "ubicacion"
         },
-        {},
-        None
+        {}
     )
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -126,8 +125,7 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
             "pedir_info": "ubicacion",
             "botones": []
         },
-        {},
-        None
+        {}
     )
 
     owner_user = User(id=3, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -157,8 +155,7 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
             "pedir_info": "nombre_completo",
             "botones": []
         },
-        {},
-        None
+        {}
     )
 
     response2 = responder_municipio(

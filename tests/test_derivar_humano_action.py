@@ -1,94 +1,166 @@
 import unittest
-from unittest.mock import patch, MagicMock
+import pytest
+from unittest.mock import patch, MagicMock, ANY, call
 from types import SimpleNamespace
-import sys
-import os
-
-# Añadir el directorio raíz al path para importar módulos de la app
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
 
 from app import create_app, db
-from models import User, Rubro
+from models import User, Rubro, MunicipioTicket, PymeTicket
 from config import TestConfig
-from services.actions.common_actions import DerivarHumanoAction
+from services.actions.municipio_actions import DerivarHumanoActionHandler as MunicipioDerivarHandler
+from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme as PymeDerivarHandler
 from services.chat_orchestrator import ChatOrchestrator
-from services.actions.municipio_actions import DerivarHumanoActionHandler
 
-
-class DerivarHumanoActionHandlerTests(unittest.TestCase):
-    def setUp(self):
-        self.app = create_app(TestConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
+@pytest.fixture
+def app_context():
+    app = create_app(TestConfig)
+    with app.app_context():
         db.create_all()
-        self.client = self.app.test_client()
-
-    def tearDown(self):
+        yield
         db.session.remove()
         db.drop_all()
-        self.app_context.pop()
 
-    @patch('services.actions.municipio_actions.servicio_tickets')
-    def test_crea_ticket_municipio(self, mock_service):
-        mock_service.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket=123456)
-        mock_service.crear_comentario.return_value = None
+class TestDerivarHumanoAction:
+
+    @patch('services.actions.municipio_actions.socketio.emit')
+    @patch('services.actions.municipio_actions.emit_ticket_update')
+    def test_crea_ticket_municipio_con_db_y_socket(self, mock_emit_update, mock_socket_emit, app_context):
+        """
+        Tests that a live chat ticket is created for a municipality,
+        persisted in the DB, and a socket event is emitted.
+        """
+        # Arrange
+        owner_user = User(id=1, municipio_id=10, name="Municipio Test", email="municipio@test.com")
+        owner_user.set_password("test")
+        viewer_user = User(id=5, name="Juan", telefono="123456789", email="juan@test.com")
+        viewer_user.set_password("test")
+        db.session.add_all([owner_user, viewer_user])
+        db.session.commit()
+
         context = {
-            'viewer_user_obj': SimpleNamespace(name='Juan', telefono='123', email='a@b.com'),
-            'user_obj': SimpleNamespace(municipio_id=10),
+            'viewer_user_obj': viewer_user,
+            'user_obj': owner_user,
             'cliente_id': 5,
             'anon_id': None,
-            'target_entity_type': 'municipio'
+            'target_entity_type': 'municipio',
+            'pregunta_actual_usuario': 'Necesito ayuda con algo.'
         }
-        handler = DerivarHumanoActionHandler(context)
-        result = handler.execute({'motivo_derivacion': 'prueba'})
-        mock_service.crear_nuevo_ticket.assert_called_once()
-        args, kwargs = mock_service.crear_nuevo_ticket.call_args
-        self.assertEqual(kwargs['tipo_ticket'], 'municipio')
-        ticket_data = kwargs['ticket_data']
-        self.assertIn('Solicitud de Chat en Vivo', ticket_data['asunto'])
-        self.assertTrue(result['success'])
-        self.assertIn('M-', result['data']['chat_id'])
+        handler = MunicipioDerivarHandler(context)
 
-    @patch('services.actions.common_actions.servicio_tickets')
-    def test_crea_ticket_pyme(self, mock_service):
-        mock_service.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket=222222)
-        mock_service.crear_comentario.return_value = None
+        # Act
+        result = handler.execute({'motivo_derivacion': 'prueba de socket'})
+
+        # Assert
+        assert result['success']
+        assert 'M-' in result['data']['chat_id']
+
+        # Check database
+        ticket_id = result['data']['ticket_id']
+        ticket_db = db.session.query(MunicipioTicket).get(ticket_id)
+        assert ticket_db is not None
+        assert ticket_db.estado == 'esperando_agente_en_vivo'
+        assert ticket_db.comentarios.count() == 1
+        assert ticket_db.comentarios.first().comentario == 'Necesito ayuda con algo.'
+
+        # Check socket emission
+        mock_socket_emit.assert_any_call('live_chat_request', ANY, room='municipio_10')
+        mock_emit_update.assert_called_once()
+
+    @patch('services.actions.pyme_actions.emit_ticket_update')
+    def test_crea_ticket_pyme_con_db(self, mock_emit_update, app_context):
+        """
+        Tests that a live chat ticket is created for a Pyme and persisted in the DB.
+        """
+        # Arrange
+        owner_user = User(id=2, pyme_id=20, name="Pyme Test", email="pyme@test.com")
+        owner_user.set_password("test")
+        viewer_user = User(id=9, name="Ana", telefono="987654321", email="ana@test.com")
+        viewer_user.set_password("test")
+        db.session.add_all([owner_user, viewer_user])
+        db.session.commit()
+
         context = {
-            'viewer_user_obj': SimpleNamespace(name='Ana', telefono='456', email='x@y.com'),
-            'user_obj': SimpleNamespace(id=2),
+            'viewer_user_obj': viewer_user,
+            'user_obj': owner_user,
             'cliente_id': 9,
             'anon_id': None,
-            'target_entity_type': 'pyme'
+            'target_entity_type': 'pyme',
+            'pregunta_actual_usuario': 'Consulta de producto.'
         }
-        handler = DerivarHumanoAction(context)
-        result = handler.execute({'motivo_derivacion': 'test'})
-        mock_service.crear_nuevo_ticket.assert_called_once()
-        args, kwargs = mock_service.crear_nuevo_ticket.call_args
-        self.assertEqual(kwargs['tipo_ticket'], 'pyme')
-        ticket_data = kwargs['ticket_data']
-        self.assertIn('Solicitud de Chat en Vivo', ticket_data['asunto'])
-        self.assertTrue(result['success'])
-        self.assertIn('P-', result['data']['chat_id'])
+        handler = PymeDerivarHandler(context)
 
-    @patch('services.actions.pyme_actions.servicio_tickets')
-    def test_orchestrator_routes_to_pyme_handler(self, mock_service):
-        mock_service.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket=333333)
-        mock_service.crear_comentario.return_value = None
+        # Act
+        result = handler.execute({'motivo_derivacion': 'test pyme socket'})
+
+        # Assert
+        assert result['success']
+        assert 'P-' in result['data']['chat_id']
+
+        # Check database
+        ticket_id = result['data']['ticket_id']
+        ticket_db = db.session.query(PymeTicket).get(ticket_id)
+        assert ticket_db is not None
+        assert ticket_db.estado == 'esperando_agente_en_vivo'
+        assert ticket_db.comentarios.count() == 1
+        assert ticket_db.comentarios.first().comentario == 'Consulta de producto.'
+        mock_emit_update.assert_called_once()
+
+    @patch('services.actions.pyme_actions.emit_ticket_update')
+    def test_orchestrator_routes_to_pyme_handler(self, mock_emit_update, app_context):
+        # Arrange
+        owner_user = User(id=2, pyme_id=20, name="Pyme Test", email="pyme@test.com")
+        owner_user.set_password("test")
+        viewer_user = User(id=9, name="Ana", telefono="987654321", email="ana@test.com")
+        viewer_user.set_password("test")
+        db.session.add_all([owner_user, viewer_user])
+        db.session.commit()
+
         context = {
-            'viewer_user_obj': SimpleNamespace(name='Ana', telefono='456', email='x@y.com'),
-            'user_obj': SimpleNamespace(id=2),
+            'viewer_user_obj': viewer_user,
+            'user_obj': owner_user,
             'cliente_id': 9,
             'anon_id': None,
-            'target_entity_type': 'pyme'
+            'target_entity_type': 'pyme',
+            'pregunta_actual_usuario': 'Quiero hablar con alguien.'
         }
         orchestrator = ChatOrchestrator(global_context=context)
-        result = orchestrator.execute_action({'accion_backend': 'derivar_humano', 'datos_estructura': {'motivo_derivacion': 'test'}})
-        mock_service.crear_nuevo_ticket.assert_called_once()
-        self.assertEqual(result['executed_action_handler'], 'DerivarHumanoActionHandlerPyme')
-        self.assertTrue(result['success'])
-        self.assertIn('P-', result['data']['chat_id'])
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
+        # Act
+        result = orchestrator.execute_action({'accion_backend': 'derivar_humano', 'datos_estructura': {'motivo_derivacion': 'test orchestrator'}})
+
+        # Assert
+        assert result['executed_action_handler'] == 'DerivarHumanoActionHandlerPyme'
+        assert result['success']
+        assert 'P-' in result['data']['chat_id']
+        mock_emit_update.assert_called_once()
+
+
+    @patch('services.actions.municipio_actions.socketio.emit')
+    @patch('services.actions.municipio_actions.emit_ticket_update')
+    def test_orchestrator_routes_to_municipio_handler(self, mock_emit_update, mock_socket_emit, app_context):
+        # Arrange
+        owner_user = User(id=1, municipio_id=10, name="Municipio Test", email="municipio@test.com")
+        owner_user.set_password("test")
+        viewer_user = User(id=5, name="Juan", telefono="123456789", email="juan@test.com")
+        viewer_user.set_password("test")
+        db.session.add_all([owner_user, viewer_user])
+        db.session.commit()
+
+        context = {
+            'viewer_user_obj': viewer_user,
+            'user_obj': owner_user,
+            'cliente_id': 5,
+            'anon_id': None,
+            'target_entity_type': 'municipio',
+            'pregunta_actual_usuario': 'Necesito ayuda con la app.'
+        }
+        orchestrator = ChatOrchestrator(global_context=context)
+
+        # Act
+        result = orchestrator.execute_action({'accion_backend': 'derivar_humano', 'datos_estructura': {'motivo_derivacion': 'test orchestrator municipio'}})
+
+        # Assert
+        assert result['executed_action_handler'] == 'DerivarHumanoActionHandler'
+        assert result['success']
+        assert 'M-' in result['data']['chat_id']
+        mock_socket_emit.assert_any_call('live_chat_request', ANY, room='municipio_10')
+        mock_emit_update.assert_called_once()

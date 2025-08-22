@@ -97,8 +97,7 @@ class MunicipioLogicTests(unittest.TestCase):
                 "pedir_info": None,
                 "botones": []
             },
-            {},
-            None
+            {}
         )
         mock_servicio_tickets.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket="M-123456")
 

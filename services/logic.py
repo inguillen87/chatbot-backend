@@ -8,11 +8,11 @@ if project_root_logic not in sys.path:
     sys.path.insert(0, project_root_logic)
 
 from flask import current_app
-# from models import db # No direct use of db here, moved to where needed
-# Service imports are moved into functions to break circular dependencies
-# from services.interpretacion_service import interpretacion_service
-# from services.archivo_service import archivo_service
-# from services.preferences import is_audio_enabled
+from models import db
+from services.interpretacion_service import interpretacion_service
+from services.archivo_service import archivo_service
+from services.preferences import is_audio_enabled
+# servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +50,15 @@ def es_rubro_publico(rubro) -> bool:
     return normalizar_rubro(rubro) in RUBROS_PUBLICOS
 
 
-# from services.llm_utils import clasificar_entidad_con_llm
-# from services.municipio_responder import responder_municipio
-# from services.pymes import responder_pyme
+from services.llm_utils import clasificar_entidad_con_llm
+from services.municipio_responder import responder_municipio
+from services.pymes import responder_pyme
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
 
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
-# from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.attributes import flag_modified
 
 def responder_chatboc(
     pregunta,
@@ -75,11 +75,6 @@ def responder_chatboc(
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
-    from sqlalchemy.orm.attributes import flag_modified
-    from services.preferences import is_audio_enabled
-    from services.municipio_responder import responder_municipio
-    from services.pymes import responder_pyme
-
     logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}', chat_session_uuid='{chat_session_uuid}', channel='{channel}'")
 
     # --- Low-confidence STT handling ---

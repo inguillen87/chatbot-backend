@@ -3,8 +3,7 @@ from typing import Dict, Any
 from pathlib import Path
 from services.google_maps_service import get_coordinates
 from services.logging_config import get_logger
-from services.vision_estacionamiento import analizar_frame_y_contar_autos
-from services.estacionamiento_utils import seleccionar_camara_para_ubicacion, evaluar_ocupacion_rois
+from services.estacionamiento_utils import seleccionar_camara_para_ubicacion, evaluar_ocupacion_rois, simular_detecciones
 
 logger = get_logger(__name__)
 BASE = Path(__file__).resolve().parents[1]
@@ -30,17 +29,12 @@ def consultar_ocupacion(ubicacion_texto_o_coord: Any) -> Dict[str, Any]:
     if not cam:
         return {"texto": "Por ahora no tengo cámaras cerca de esa zona. Probá con otra dirección."}
 
-    # Extraer frame (cada ~10s) -> analizar con visión
-    from services.video_frame import obtener_frame_png
-    frame_png = obtener_frame_png(cam["url"], fps_interval=10)  # devuelve bytes PNG
-    if not frame_png:
-        return {"texto": "No pude obtener video en este momento. Probá más tarde."}
-
     # Cargar ROIs
     with open(cam["rois_file"], "r", encoding="utf-8") as fr:
         rois = json.load(fr)
 
-    detecciones = analizar_frame_y_contar_autos(frame_png)  # devuelve lista de bboxes [{"x1":..,"y1":..,"x2":..,"y2":..}]
+    # Simular detecciones en lugar de analizar un frame real
+    detecciones = simular_detecciones(rois)
     resumen = evaluar_ocupacion_rois(detecciones, rois)
 
     libres = sum(1 for s in resumen if s["libre"])
@@ -48,7 +42,7 @@ def consultar_ocupacion(ubicacion_texto_o_coord: Any) -> Dict[str, Any]:
     ts = time.strftime("%H:%M:%S")
 
     texto = (
-        f"🅿️ *Ocupación estimada* ({cam['nombre']})\n"
+        f"🅿️ *Ocupación estimada (Simulación)* ({cam['nombre']})\n"
         f"• Libres: {libres}\n• Ocupados: {ocupados}\n• {ts}\n\n"
         "Segmentos:\n" + "\n".join([f"- {s['label']}: {'LIBRE ✅' if s['libre'] else 'OCUPADO ❌'}" for s in resumen])
     )

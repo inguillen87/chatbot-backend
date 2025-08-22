@@ -83,14 +83,13 @@ class TicketServiceTests(unittest.TestCase):
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 
-            @classmethod
-            def query(cls):
-                return DummyQuery([
-                    cls(id=1, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
-                    cls(id=2, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
-                    cls(id=3, estado='abierto', latitud=11.0, longitud=21.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
-                    cls(id=4, estado='abierto', latitud=12.0, longitud=22.0, municipio_id=6, fecha=datetime.utcnow(), categoria=None, asunto=None)
-                ])
+        query = DummyQuery([
+            SimpleNamespace(id=1, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+            SimpleNamespace(id=2, estado='abierto', latitud=10.0, longitud=20.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+            SimpleNamespace(id=3, estado='abierto', latitud=11.0, longitud=21.0, municipio_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+            SimpleNamespace(id=4, estado='abierto', latitud=12.0, longitud=22.0, municipio_id=6, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        ])
+        DummyModel.query = query
 
         with patch.object(ts, 'MunicipioTicket', DummyModel):
             service = ServicioTickets()
@@ -138,14 +137,12 @@ class TicketServiceTests(unittest.TestCase):
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 
-            @classmethod
-            def query(cls):
-                return DummyQuery([
-                    cls(id=1, estado='abierto', latitud=10.0, longitud=20.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
-                    cls(id=2, estado='abierto', latitud=11.0, longitud=21.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
-                    cls(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None)
-                ])
-
+        query = DummyQuery([
+            SimpleNamespace(id=1, estado='abierto', latitud=10.0, longitud=20.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+            SimpleNamespace(id=2, estado='abierto', latitud=11.0, longitud=21.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+            SimpleNamespace(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        ])
+        DummyModel.query = query
         with patch.object(ts, 'PymeTicket', DummyModel):
             service = ServicioTickets()
             res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='pyme', rubro_id=5)

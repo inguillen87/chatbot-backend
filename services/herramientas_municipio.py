@@ -4,10 +4,11 @@ import requests
 import os
 import unicodedata # <--- ¡Importante agregar esta línea!
 import re
-from numpy import mean
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
 from services.google_text_to_speech import TextToSpeechService
+from models import MunicipioTicket
+from database import db
 
 # Instanciar el servicio de TTS
 tts_service = TextToSpeechService()
@@ -132,11 +133,61 @@ def direccion_es_valida(texto: str) -> bool:
 
 def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None) -> dict | None:
     """
-    Placeholder function. LLM-based address parsing is deprecated from this helper.
-    Geocoding functions are now the primary source for structured address data.
+    Usa un LLM para extraer componentes estructurados de una dirección.
+    Args:
+        texto_direccion: La dirección proporcionada por el usuario.
+        municipio_config: Configuración del municipio actual (puede contener ciudad/provincia por defecto).
+    Returns:
+        Un diccionario con los campos de la dirección o None si falla la extracción.
     """
-    logger.info(f"Skipping deprecated LLM-based address parsing for: '{texto_direccion}'")
-    return None
+    if not texto_direccion:
+        return None
+
+    if municipio_config is None:
+        # This case should be less frequent if context always provides one (even the global one)
+        logger.warning("[ParseDireccion] municipio_config no fue proporcionado, usando un diccionario vacío como fallback para defaults.")
+        municipio_config = {}
+
+    # Prioritize '_default' suffixed keys, then direct keys, then hardcoded N/A
+    default_localidad = municipio_config.get('ciudad_default', municipio_config.get('ciudad', 'Localidad Desconocida'))
+    default_provincia = municipio_config.get('provincia_default', municipio_config.get('provincia', 'Provincia Desconocida'))
+
+    prompt = f"""
+    Tu tarea es extraer de forma precisa los componentes de una dirección argentina en un objeto JSON.
+
+    Dirección de entrada: "{texto_direccion}"
+
+    Considera estos valores por defecto si no están presentes en la dirección:
+    - Localidad: {default_localidad}
+    - Provincia: {default_provincia}
+
+    Extrae los siguientes campos:
+    - "calle"
+    - "numero"
+    - "piso" (opcional)
+    - "departamento" (opcional)
+    - "barrio" (opcional)
+    - "localidad"
+    - "provincia"
+    - "codigo_postal" (opcional)
+    - "otros_detalles" (cualquier información adicional relevante que no encaje en los otros campos)
+
+    Responde únicamente con el objeto JSON. Si no puedes extraer una calle o una localidad, devuelve un JSON vacío.
+    """
+    try:
+        respuesta_llm = get_cohere_response(
+            message=prompt,
+            preamble="Sos un experto en normalización de direcciones argentinas. Tu única función es devolver un objeto JSON con los datos de la dirección."
+        )
+        parsed_data = json.loads(respuesta_llm)
+        if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
+             logger.warning(f"LLM no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}")
+             return None
+        logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
+        return parsed_data
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error(f"Error al parsear dirección con LLM: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'")
+        return None
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
@@ -235,183 +286,72 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 from services.google_search import google_search
 from services.scraper_avanzado import extraer_noticias
 from services.google_search import google_search
-from geopy.distance import great_circle
-import random
-
-def _get_feature_center(feature: dict):
-    """Calculates the center of a GeoJSON feature's geometry."""
-    geom = feature.get("geometry", {})
-    coords = geom.get("coordinates")
-    geom_type = geom.get("type")
-
-    if not coords:
-        return None
-
-    if geom_type == 'Point':
-        # Coords are [lon, lat]
-        return (coords[1], coords[0]) # Return (lat, lon)
-    elif geom_type == 'LineString':
-        # Coords are [[lon1, lat1], [lon2, lat2], ...]
-        # Return the mean of lats and lons
-        lats = [p[1] for p in coords]
-        lons = [p[0] for p in coords]
-        return (mean(lats), mean(lons))
-    elif geom_type == 'Polygon':
-        # Coords are [[ [lon1, lat1], [lon2, lat2], ... ]]
-        # Return the mean of lats and lons of the outer ring
-        points = coords[0]
-        lats = [p[1] for p in points]
-        lons = [p[0] for p in points]
-        return (mean(lats), mean(lons))
-    return None
-
-
-def consultar_estacionamiento(ubicacion: str) -> str:
-    """
-    Consulta la disponibilidad de estacionamiento simulada cerca de una ubicación.
-    """
-    logger.info(f"[HERRAMIENTA ESTACIONAMIENTO] Consultando para: '{ubicacion}'")
-
-    # 1. Geocode user location
-    user_coords = geocode_address(ubicacion)
-    if not user_coords:
-        return "No pude verificar la ubicación que me indicaste. ¿Podrías intentarlo de nuevo con más detalles?"
-
-    user_lat_lon = (user_coords['lat'], user_coords['lng'])
-
-    # 2. Load parking data
-    # Assuming the file is per-municipality, but for now, we load a default.
-    # A proper implementation would get municipio_id from context.
-    municipio_id = "default"
-    parking_data = cargar_configuracion_municipio(municipio_id, "estacionamiento.geojson")
-
-    if not parking_data or not parking_data.get("features"):
-        return "No tengo información sobre estacionamiento disponible en este momento."
-
-    # 3. Find the closest parking feature
-    closest_feature = None
-    min_distance_km = float('inf')
-
-    for feature in parking_data["features"]:
-        center_coords = _get_feature_center(feature)
-        if center_coords:
-            distance = great_circle(user_lat_lon, center_coords).km
-            if distance < min_distance_km:
-                min_distance_km = distance
-                closest_feature = feature
-
-    # 4. Simulate and return result
-    if closest_feature and min_distance_km < 2: # Only report if within 2km
-        props = closest_feature["properties"]
-        total_spots = props.get("total_spots", 0)
-        occupancy_rate = props.get("base_occupancy_rate", 1.0)
-
-        # Simulate some randomness
-        occupied_spots = int(total_spots * occupancy_rate)
-        random_factor = random.randint(-3, 3)
-        occupied_spots += random_factor
-
-        # Clamp values
-        occupied_spots = max(0, min(total_spots, occupied_spots))
-
-        available_spots = total_spots - occupied_spots
-
-        if available_spots > 0:
-            return f"En la zona de '{props.get('name', 'tu ubicación')}', hay aproximadamente {available_spots} lugares de estacionamiento disponibles."
-        else:
-            return f"La zona de '{props.get('name', 'tu ubicación')}' parece estar completa en este momento. Te sugiero buscar en calles aledañas."
-    else:
-        return "No encontré información de estacionamiento cerca de la ubicación que me indicaste."
-
 
 # --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS CON GOOGLE SEARCH ---
 
-def consultar_publicaciones(context: dict = None, tipo_publicacion: str = 'general') -> dict:
+def consultar_eventos_culturales(fecha: str) -> str:
     """
-    Consulta las últimas publicaciones (noticias o eventos) desde el archivo JSON del municipio.
+    Consulta eventos culturales, recitales o actividades municipales para una fecha específica
+    utilizando Google Search.
     """
-    if not context or not context.get('user_obj'):
-        return {"message_body": "No se pudo determinar el municipio para consultar las publicaciones."}
+    municipio_nombre = CONFIG_MUNICIPIO.get("nombre_display", "nuestro municipio")
+    query = f"eventos culturales y turísticos en {municipio_nombre} para {fecha}"
+    logger.info(f"[HERRAMIENTA EVENTOS] Realizando búsqueda en Google: '{query}'")
 
-    municipio_id = context.get('user_obj').municipio_id
-    if not municipio_id:
-        return {"message_body": "Error: El usuario no está asociado a ningún municipio."}
+    search_results = google_search(query)
 
-    try:
-        posts_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'municipios', str(municipio_id), 'posts.json')
+    if not search_results:
+        return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
 
-        if not os.path.exists(posts_path):
-            return {"message_body": "No hay publicaciones para mostrar en este momento.", "options_list": [], "message_type": "text"}
+    lista_eventos = []
+    for result in search_results:
+        title = result.get('title')
+        link = result.get('link')
+        snippet = result.get('snippet')
 
-        with open(posts_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            all_posts = json.loads(content) if content else []
+        # Formatear la entrada para que sea más legible
+        evento_info = f"- {title}: {snippet} [Ver más]({link})"
+        lista_eventos.append(evento_info)
 
-        if not all_posts:
-            return {"message_body": "No hay publicaciones para mostrar en este momento.", "options_list": [], "message_type": "text"}
-
-        # Filter by type if not 'general'
-        if tipo_publicacion != 'general':
-            filtered_posts = [p for p in all_posts if p.get('tipo') == tipo_publicacion]
-        else:
-            filtered_posts = all_posts
-
-        if not filtered_posts:
-            return {"message_body": f"No hay publicaciones del tipo '{tipo_publicacion}' para mostrar en este momento.", "options_list": [], "message_type": "text"}
-
-        latest_posts = filtered_posts[:5]
-
-        type_title = "publicaciones"
-        if tipo_publicacion == 'news':
-            type_title = "noticias"
-        elif tipo_publicacion == 'event':
-            type_title = "eventos"
-
-        message = f"Aquí están las últimas {type_title} de la municipalidad:\n"
-        buttons = []
-        for post in latest_posts:
-            message += f"\n- *{post.get('titulo')}*: {post.get('descripcion')}"
-            if post.get('link'):
-                buttons.append({
-                    "texto": f"Ver '{post.get('titulo')}'",
-                    "url": post.get('link'),
-                    "type": "url"
-                })
-
-        return {
-            "message_body": message,
-            "options_list": buttons,
-            "message_type": "interactive_buttons" if buttons else "text"
-        }
-
-    except Exception as e:
-        logger.error(f"Error al leer el archivo de publicaciones para el municipio {municipio_id}: {e}", exc_info=True)
-        return {"message_body": "Lo siento, hubo un problema al intentar obtener las publicaciones.", "options_list": [], "message_type": "text"}
+    if lista_eventos:
+        eventos_str = "\n".join(lista_eventos)
+        return f"Para la fecha '{fecha}', encontré los siguientes posibles eventos y noticias:\n{eventos_str}"
+    else:
+        return f"No encontré resultados para eventos en '{fecha}'. Te sugiero visitar el sitio web oficial del municipio para obtener la información más actualizada."
 
 def consultar_noticias_municipio() -> str:
     """
-    Consulta las últimas noticias del municipio y las formatea para el usuario.
+    Consulta las últimas noticias y eventos del municipio desde la base de datos y las formatea para el usuario.
     """
-    # URL hardcodeada temporalmente. Debería venir de la config del municipio.
-    url_noticias = "https://www.juninmendoza.gov.ar/category/noticias/"
+    logger.info("[HERRAMIENTA NOTICIAS] Consultando noticias y eventos desde la base de datos.")
 
-    resultado_scrape = extraer_noticias(url_noticias, limit=3)
+    # Asumimos un municipio_id por defecto. En una implementación real, esto debería ser dinámico.
+    municipio_id = 1
 
-    if "error" in resultado_scrape or not resultado_scrape.get("noticias"):
-        error_msg = resultado_scrape.get("error", "No se encontraron noticias.")
-        logger.warning(f"[HERRAMIENTA NOTICIAS] Falló el scrapeo: {error_msg}")
-        # Fallback a un link genérico
+    try:
+        news_and_events = db.session.query(MunicipioTicket).filter(
+            MunicipioTicket.municipio_id == municipio_id,
+            MunicipioTicket.categoria.in_(['Noticia', 'Evento'])
+        ).order_by(MunicipioTicket.fecha.desc()).limit(3).all()
+
+        if not news_and_events:
+            return "No se encontraron noticias o eventos recientes en la base de datos."
+
+        mensaje = "Aquí están las últimas noticias y eventos de Junín Mendoza:\n\n"
+        for i, item in enumerate(news_and_events, 1):
+            mensaje += f"📰 *{item.asunto}* ({item.categoria})\n"
+            # Podríamos agregar un link si tuviéramos una vista de detalle
+            # mensaje += f"   {item.link}\n\n"
+            mensaje += f"   {item.detalles}\n\n"
+
+        return mensaje.strip()
+
+    except Exception as e:
+        logger.error(f"[HERRAMIENTA NOTICIAS] Error al consultar la base de datos: {e}", exc_info=True)
         return (
-            "No pude obtener las últimas noticias en este momento. "
+            "No pude obtener las últimas noticias en este momento debido a un error interno. "
             "Puedes consultarlas directamente en el sitio web: https://www.juninmendoza.gov.ar/noticias/"
         )
-
-    mensaje = "Aquí están las últimas noticias de Junín Mendoza:\n\n"
-    for i, noticia in enumerate(resultado_scrape.get("noticias", []), 1):
-        mensaje += f"📰 *{noticia['titulo']}*\n"
-        mensaje += f"   {noticia['link']}\n\n"
-
-    return mensaje.strip()
 
 
 def buscar_puntos_de_interes(
@@ -693,11 +633,11 @@ TOOL_REGISTRY = {
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
-    "consultar_publicaciones": {
-        "funcion": consultar_publicaciones,
-        "descripcion": "Consulta las últimas publicaciones, como noticias o eventos, del municipio.",
+    "consultar_eventos_culturales": {
+        "funcion": consultar_eventos_culturales,
+        "descripcion": "Consulta la agenda de eventos culturales, recitales o actividades municipales para una fecha específica, como 'hoy', 'mañana' o 'el sábado'.",
         "parametros": {
-            "tipo_publicacion": {"type": "string", "description": "El tipo de publicación a buscar. Puede ser 'news' para noticias o 'event' para eventos. Si se omite, busca todo."}
+            "fecha": {"type": "string", "description": "La fecha de la consulta. Puede ser una palabra como 'hoy', 'mañana', 'este fin de semana', o una fecha específica como '15 de junio'."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
@@ -758,14 +698,6 @@ TOOL_REGISTRY = {
         "parametros": {
             "rubro": {"type": "string", "description": "El rubro o tipo de negocio a buscar."},
             "localidad": {"type": "string", "description": "La ubicación o localidad de referencia."}
-        },
-        "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
-    },
-    "consultar_estacionamiento": {
-        "funcion": consultar_estacionamiento,
-        "descripcion": "Consulta la disponibilidad de estacionamiento simulada cerca de una ubicación específica.",
-        "parametros": {
-            "ubicacion": {"type": "string", "description": "La dirección o punto de referencia donde el usuario quiere buscar estacionamiento. Ejemplo: 'Plaza de Junin' o 'San Martín y Lavalle'."}
         },
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },

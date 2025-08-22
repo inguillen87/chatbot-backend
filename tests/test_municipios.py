@@ -45,8 +45,7 @@ def test_reclamo_handler_inicio(client):
                 "datos_estructura": {"target": "municipio"},
                 "pedir_info": "descripcion"
             },
-            {},
-            None
+            {}
         )
 
         # Simular una solicitud para iniciar un reclamo
@@ -69,8 +68,7 @@ def test_responder_municipio_imagen(mock_llamar_gemini, client):
             "accion_backend": "confirmar_reclamo_auto",
             "datos_estructura": {"categoria": "Bacheo", "descripcion": "Parece ser un bache."}
         },
-            {},
-            None
+        {}
     )
 
     datos_interpretados = {
@@ -114,8 +112,7 @@ def test_button_click_sets_category_and_advances_flow(client):
                 "datos_estructura": {"target": "municipio"},
                 "pedir_info": "descripcion_y_ubicacion"
             },
-            {},
-            None
+            {}
         )
 
         chat_db_context = MagicMock(context_data={})

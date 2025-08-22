@@ -9,6 +9,7 @@ from flask_login import UserMixin
 import uuid
 import json
 import os
+from services.gcs_service import get_thumb_filename, BUCKET_NAME
 
 
 print("Importing models.py")
@@ -131,43 +132,6 @@ class User(db.Model, UserMixin):
 
     def __repr__(self):
         return f"<User {self.email}>"
-
-class ArchivoAdjunto(db.Model):
-    __tablename__ = "archivo_adjunto"
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
-    session_id = db.Column(db.String(36), nullable=True)
-    filename = db.Column(db.String(255), nullable=False)
-    nombre_original = db.Column(db.String(255), nullable=True)
-    mime = db.Column(db.String(100), nullable=True)
-    tamano = db.Column(db.Integer, nullable=True)
-    tipo = db.Column(db.String(50), nullable=True)
-    pyme_ticket_id = db.Column(db.Integer, db.ForeignKey("pyme_ticket.id"), nullable=True)
-    municipio_ticket_id = db.Column(
-        db.Integer, db.ForeignKey("municipio_ticket.id"), nullable=True
-    )
-    url = db.Column(db.String(255), nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
-
-class AnalisisArchivo(db.Model):
-    __tablename__ = "analisis_archivo"
-    id = db.Column(db.Integer, primary_key=True)
-    archivo_adjunto_id = db.Column(db.Integer, db.ForeignKey("archivo_adjunto.id"), nullable=False, index=True)
-    resumen = db.Column(db.Text, nullable=True)
-    estado_analisis = db.Column(db.String(50), nullable=True, default="pendiente") # ej: pendiente, procesando, completado, error
-    fecha_analisis = db.Column(db.DateTime, nullable=True)
-    error_analisis = db.Column(db.Text, nullable=True) # Para guardar mensajes de error si falla el análisis
-
-    # Nuevos campos para análisis avanzado
-    texto_extraido = db.Column(db.Text, nullable=True) # Para OCR completo o texto de PDF
-    datos_estructurados = db.Column(db.JSON, nullable=True) # Para JSON con data extraída (items, cantidades, etc.)
-    tipo_analisis = db.Column(db.String(100), nullable=True) # ej: 'resumen_texto', 'vision_ocr', 'document_ai_form'
-
-    archivo_adjunto = db.relationship("ArchivoAdjunto", backref=db.backref("analisis", uselist=False, cascade="all, delete-orphan"))
-
-    def __repr__(self):
-        return f"<AnalisisArchivo id={self.id} para archivo_id={self.archivo_adjunto_id} estado='{self.estado_analisis}'>"
-
 
 class MunicipioTicket(db.Model):
     __tablename__ = "municipio_ticket"
@@ -304,6 +268,42 @@ class PymePedido(db.Model):
     def __repr__(self):
         return f"<PymePedido {self.nro_pedido} - {self.asunto}>"
 
+class ArchivoAdjunto(db.Model):
+    __tablename__ = "archivo_adjunto"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    session_id = db.Column(db.String(36), nullable=True)
+    filename = db.Column(db.String(255), nullable=False)
+    nombre_original = db.Column(db.String(255), nullable=True)
+    mime = db.Column(db.String(100), nullable=True)
+    tamano = db.Column(db.Integer, nullable=True)
+    tipo = db.Column(db.String(50), nullable=True)
+    pyme_ticket_id = db.Column(db.Integer, db.ForeignKey("pyme_ticket.id"), nullable=True)
+    municipio_ticket_id = db.Column(
+        db.Integer, db.ForeignKey("municipio_ticket.id"), nullable=True
+    )
+    url = db.Column(db.String(255), nullable=False)
+    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+
+class AnalisisArchivo(db.Model):
+    __tablename__ = "analisis_archivo"
+    id = db.Column(db.Integer, primary_key=True)
+    archivo_adjunto_id = db.Column(db.Integer, db.ForeignKey("archivo_adjunto.id"), nullable=False, index=True)
+    resumen = db.Column(db.Text, nullable=True)
+    estado_analisis = db.Column(db.String(50), nullable=True, default="pendiente") # ej: pendiente, procesando, completado, error
+    fecha_analisis = db.Column(db.DateTime, nullable=True)
+    error_analisis = db.Column(db.Text, nullable=True) # Para guardar mensajes de error si falla el análisis
+
+    # Nuevos campos para análisis avanzado
+    texto_extraido = db.Column(db.Text, nullable=True) # Para OCR completo o texto de PDF
+    datos_estructurados = db.Column(db.JSON, nullable=True) # Para JSON con data extraída (items, cantidades, etc.)
+    tipo_analisis = db.Column(db.String(100), nullable=True) # ej: 'resumen_texto', 'vision_ocr', 'document_ai_form'
+
+    archivo_adjunto = db.relationship("ArchivoAdjunto", backref=db.backref("analisis", uselist=False, cascade="all, delete-orphan"))
+
+    def __repr__(self):
+        return f"<AnalisisArchivo id={self.id} para archivo_id={self.archivo_adjunto_id} estado='{self.estado_analisis}'>"
+
 class Conversacion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
@@ -336,7 +336,6 @@ class TicketComentario(db.Model):
     municipio_ticket = db.relationship('MunicipioTicket', back_populates='comentarios')
 
     def to_dict(self):
-        from services.gcs_service import get_thumb_filename, BUCKET_NAME
         data = {
             "id": self.id,
             "pyme_ticket_id": self.pyme_ticket_id,
