@@ -54,10 +54,10 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("¡Hola, Vecino/a!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
         self.assertIn("options_list", respuesta)
-        self.assertEqual(len(respuesta["options_list"]), 10)
+        self.assertEqual(len(respuesta["options_list"]), 11)
         self.assertEqual(respuesta["options_list"][0]["texto"], "📝 Iniciar un Reclamo")
         self.assertEqual(respuesta["fuente"], "greeting_handler_universal_v5")
-        self.assertEqual(len(respuesta.get("categorias", [])), 4)
+        self.assertEqual(len(respuesta.get("categorias", [])), 5)
 
     @patch('services.municipio_responder.llamar_gemini')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
@@ -69,8 +69,7 @@ class TestNewFeatures(unittest.TestCase):
                 "datos_estructura": {"target": "municipio", "nombre_menu": "principal"},
                 "botones": [{"texto": "🛠️ Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}],
             },
-            {},
-            None
+            {}
         )
 
         response = responder_municipio(

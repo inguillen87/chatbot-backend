@@ -4,7 +4,9 @@ from config import ALLOWED_ORIGINS
 from models import User, db, TicketComentario
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
+from services.google_text_to_speech import TextToSpeechService
 
+tts_service = TextToSpeechService()
 socketio = SocketIO(
     cors_allowed_origins=ALLOWED_ORIGINS,
     cookie=True,
@@ -48,22 +50,21 @@ def on_connect(auth):
     # For sockets, the query parameters are in the auth dict, not request.args
     channel = (auth or {}).get('channel')
 
-    if is_anonymous and channel == 'web':
-        current_app.logger.info(f"Web channel anonymous connection detected for sid: {request.sid}. Sending welcome message.")
-        with current_app.app_context():
+    current_app.logger.info(f"Web channel anonymous connection detected for sid: {request.sid}. Sending welcome message.")
+    with current_app.app_context():
             owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
             if not owner_user:
                 current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
                 return
 
-            rubro = Rubro.query.filter_by(user_id=owner_user.id, nombre="municipios").first()
+            rubro = owner_user.rubro
             if not rubro:
-                current_app.logger.error(f"Rubro 'municipios' not found for user {owner_user.id}")
+                current_app.logger.error(f"Rubro not found for user {owner_user.id}")
                 return
 
             chat_session_uuid = str(uuid4())
             chat_db_context = ChatSessionContext(
-                session_id=chat_session_uuid,
+                chat_session_id=chat_session_uuid,
                 user_id=owner_user.id,
                 context_data={}
             )
@@ -89,6 +90,15 @@ def on_connect(auth):
             # Adapt response for socket if needed
             if "options_list" in respuesta and "botones" not in respuesta:
                 respuesta["botones"] = respuesta["options_list"]
+
+            # Generate audio for the welcome message
+            if respuesta.get("message_body"):
+                try:
+                    audio_url = tts_service.synthesize_speech(text=respuesta["message_body"])
+                    if audio_url:
+                        respuesta["audio_url"] = audio_url
+                except Exception as e:
+                    current_app.logger.error(f"Error generating welcome audio: {e}")
 
             emit('message', respuesta)
             current_app.logger.info(f"Welcome message sent to sid: {request.sid}")

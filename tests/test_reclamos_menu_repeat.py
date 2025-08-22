@@ -39,8 +39,7 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
                 "accion_backend": "mostrar_menu_reclamos",
                 "message_body": "Aquí tienes el menú de reclamos."
             },
-            {},
-            None
+            {}
         )
         response1 = responder_municipio(
             "iniciar reclamo",

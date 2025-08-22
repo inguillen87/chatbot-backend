@@ -14,33 +14,45 @@ logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
-class BuscarEstacionamientoActionHandler:
+class BuscarEstacionamientoActionHandler(BaseActionHandler):
     action_name = "buscar_estacionamiento"
 
-    def handle(self, context):
-        # si ya tenemos ubicación del usuario en context, usarla; si no, pedirla
-        ubic = context.get("ubicacion") or context.get("payload", {}).get("ubicacion")
-        if not ubic:
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing BuscarEstacionamientoActionHandler with data: {action_data}")
+
+        # La ubicación puede venir de la acción del LLM o del contexto si se pidió antes
+        ubicacion = action_data.get("ubicacion") or self.context.get("ubicacion_usuario")
+
+        if not ubicacion:
+            # Si no hay ubicación, la pedimos.
+            self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = "ESPERANDO_UBICACION_GENERAL"
+            self.context[CONTEXTO_MUNICIPIO]["accion_pendiente_tras_ubicacion"] = "buscar_estacionamiento"
+
             return {
-                "texto": (
-                    "Decime la **calle y altura** o compartí tu **ubicación**.\n"
-                    "Ej: *San Martín 1200, Junín* o enviá ubicación por WhatsApp."
-                ),
-                "pedir_info": {"tipo": "ubicacion_o_texto"},
-                "botones": [
-                    {"texto": "Enviar ubicación", "accion": "enviar_ubicacion"},
-                    {"texto": "San Martín 1200", "accion": "texto_libre", "valor": "San Martín 1200, Junín"}
-                ],
+                "success": False,
+                "message_to_user": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección (ej: San Martín 1200).",
+                "pedir_info": "ubicacion"
             }
 
-        # Llamar a servicio
+        # Llamar al servicio de estacionamiento
         from services.estacionamiento_service import consultar_ocupacion
-        resultado = consultar_ocupacion(ubic)
+        resultado = consultar_ocupacion(ubicacion) # resultado es un dict {"texto": "..."}
 
-        return resultado
+        # Limpiar el estado de espera si existía
+        if self.context.get(CONTEXTO_MUNICIPIO, {}).get("accion_pendiente_tras_ubicacion") == "buscar_estacionamiento":
+            self.context[CONTEXTO_MUNICIPIO].pop("accion_pendiente_tras_ubicacion")
+            if "estado_conversacion" in self.context[CONTEXTO_MUNICIPIO]:
+                 self.context[CONTEXTO_MUNICIPIO].pop("estado_conversacion")
+
+
+        return {
+            "success": True,
+            "message_to_user": resultado["texto"],
+            "data": resultado
+        }
 
 class CrearReclamoActionHandler(BaseActionHandler):
-    def execute(self, action_data: Dict[str, Any], create_ticket_now: bool = False) -> Dict[str, Any]:
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")
 
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
@@ -50,27 +62,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         categoria = action_data.get("categoria") or datos_parciales.get("categoria")
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
-        ubicacion_data = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
-
-        ubicacion_str = ""
-        if isinstance(ubicacion_data, dict):
-            ubicacion_str = ubicacion_data.get("formatted_address", "")
-        elif isinstance(ubicacion_data, str):
-            ubicacion_str = ubicacion_data
-
+        ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
 
-        if ubicacion_str and not distrito_llm:
-            logger.info(f"Attempting to parse district from address: {ubicacion_str}")
-            parsed_address = parse_direccion(ubicacion_str)
+        if ubicacion_llm and not distrito_llm:
+            logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
+            parsed_address = parse_direccion(ubicacion_llm)
             if parsed_address and parsed_address.get('localidad'):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
-
-        coordenadas_llm = None
-        if isinstance(ubicacion_data, dict) and "latitude" in ubicacion_data:
-            coordenadas_llm = {"lat": ubicacion_data["latitude"], "lon": ubicacion_data["longitude"]}
-
+        coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
@@ -79,7 +80,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
         profile_name_from_context = self.context.get("profile_name")
 
-        nombre_vecino_final = "Vecino/a"
+        # Prioritize LLM name, then profile from user object, then profile from context.
+        nombre_vecino_final = "Vecino/a"  # Default
         if isinstance(llm_name, str) and llm_name.strip():
             nombre_vecino_final = llm_name
         elif isinstance(profile_name_from_user_obj, str) and profile_name_from_user_obj.strip():
@@ -95,6 +97,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         elif viewer_user and getattr(viewer_user, "telefono", None) and validar_telefono(str(viewer_user.telefono)):
              telefono_final = formatear_telefono_e164(str(viewer_user.telefono))
 
+
         email_from_llm = (action_data.get("email") or datos_parciales.get("email") or
                           action_data.get("email_detectado") or datos_parciales.get("email_detectado"))
         email_final = None
@@ -103,22 +106,34 @@ class CrearReclamoActionHandler(BaseActionHandler):
         elif viewer_user and getattr(viewer_user, "email", None) and validar_email(str(viewer_user.email)):
             email_final = str(viewer_user.email).lower()
 
+
+        # Actualizar el contexto con los datos más recientes para persistencia
         for key, value in [("categoria_reclamo", categoria), ("descripcion_reclamo", descripcion),
-                           ("direccion_reclamo", ubicacion_str), ("coordenadas_reclamo", coordenadas_llm),
+                           ("direccion_reclamo", ubicacion_llm), ("coordenadas_reclamo", coordenadas_llm),
                            ("nombre_vecino", nombre_vecino_final), ("telefono_vecino", telefono_final),
                            ("email_vecino", email_final), ("foto_url", foto_url_llm)]:
             if value:
                 contexto_reclamo[key] = value
 
+        # Validación de datos esenciales para la creación del ticket
         campos_faltantes = []
         if not descripcion:
             campos_faltantes.append("descripcion")
-        if not ubicacion_str and not coordenadas_llm:
+        if not ubicacion_llm and not coordenadas_llm:
             campos_faltantes.append("ubicacion")
+        logger.info(f"DEBUG: viewer_user: {viewer_user}")
+        logger.info(f"DEBUG: nombre_vecino_final: {nombre_vecino_final}")
+        logger.info(f"DEBUG: telefono_final: {telefono_final}")
+        logger.info(f"DEBUG: email_final: {email_final}")
+        logger.info(f"DEBUG: campos_faltantes before: {campos_faltantes}")
         if not viewer_user and (nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final):
              if nombre_vecino_final == "Vecino/a": campos_faltantes.append("nombre")
              if not telefono_final: campos_faltantes.append("telefono")
              if not email_final: campos_faltantes.append("email")
+        logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
+
+        # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
+        # Este handler ahora solo valida y crea.
 
         if campos_faltantes:
             # Eliminar duplicados
@@ -136,40 +151,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "pedir_info": campos_faltantes,
                 "options_list": botones,
                 "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
-            }
-
-        if not create_ticket_now:
-            from services.municipio_responder import ConversationState
-            contexto_reclamo["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
-
-            datos_completos = {
-                "categoria": categoria,
-                "descripcion": descripcion,
-                "ubicacion": ubicacion_data,
-                "nombre_usuario_detectado": nombre_vecino_final,
-                "telefono_detectado": telefono_final,
-                "email_detectado": email_final
-            }
-            contexto_reclamo["datos_a_confirmar"] = datos_completos
-
-            mensaje_confirmacion = (
-                f"Por favor, confirmá si los datos para tu reclamo son correctos:\n"
-                f"- **Categoría**: {categoria}\n"
-                f"- **Descripción**: {descripcion}\n"
-                f"- **Ubicación**: {ubicacion_str}\n"
-                f"- **Nombre**: {nombre_vecino_final}\n"
-                f"- **Teléfono**: {telefono_final}\n"
-                f"- **Email**: {email_final}"
-            )
-
-            return {
-                "success": True,
-                "message_to_user": mensaje_confirmacion,
-                "options_list": [
-                    {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
-                    {"texto": "No, quiero editar", "action_id": "confirmar_reclamo_no"},
-                ],
-                "message_type": "interactive_buttons"
             }
 
         # Recopilación final de datos y creación del ticket
@@ -500,7 +481,7 @@ class ActivarPanicoActionHandler(BaseActionHandler):
             "data": {"alerta_status": "enviada"}
         }
 
-from socket_service import socketio
+from socket_service import socketio, emit_ticket_update
 from routes.ticket import serialize_ticket_to_json
 
 class DerivarHumanoActionHandler(BaseActionHandler):
@@ -537,6 +518,12 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
+
+            try:
+                ticket_json = serialize_ticket_to_json(sala, ticket_type)
+                emit_ticket_update(ticket_json)
+            except Exception as e_notify:
+                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala.nro_ticket}: {e_notify}", exc_info=True)
 
             servicio_tickets.crear_comentario(
                 ticket_id=sala.id,
@@ -642,28 +629,19 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
             "pedir_info": "confirmacion_tras_correccion"
         }
 
-class MenuPrincipalActionHandler:
-    # ...
-    def handle(self, context):
+class MenuPrincipalActionHandler(BaseActionHandler):
+    action_name = "menu_principal"
+
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "texto": "Estas son las cosas que puedo hacer por vos:",
-            "botones": [
-                {"texto": "Hacer un Reclamo", "accion": "crear_reclamo"},
-                {"texto": "Consultas y Turnos", "accion": "consultar_tramite"},
-                {"texto": "Buscar estacionamiento", "accion": "buscar_estacionamiento"},
+            "success": True,
+            "message_to_user": "Estas son las cosas que puedo hacer por vos:",
+            "options_list": [
+                {"texto": "Hacer un Reclamo", "id_accion": "crear_reclamo"},
+                {"texto": "Consultas y Turnos", "id_accion": "consultar_tramite"},
+                {"texto": "Buscar estacionamiento", "id_accion": "buscar_estacionamiento"},
             ],
-        }
-
-class BuscarEstacionamientoActionHandler(BaseActionHandler):
-    def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing BuscarEstacionamientoActionHandler with data: {payload}")
-
-        user_message = "Próximamente, podrás buscar estacionamiento desde aquí. ¡Estamos trabajando en esta funcionalidad!"
-
-        return {
-            "message_body": user_message,
-            "options_list": [],
-            "fuente": "buscar_estacionamiento_placeholder"
+            "message_type": "interactive_buttons"
         }
 
 # Add other handlers as needed

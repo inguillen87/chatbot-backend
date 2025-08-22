@@ -66,22 +66,17 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.session.commit()
 
         # --- Act ---
-        with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-            mock_llamar_gemini.return_value = (
-                {
-                    "message_body": "Esta es una respuesta de prueba.",
-                    "accion_backend": "responder_directamente",
-                },
-                {},
-                None
-            )
+        with patch('services.logic.responder_municipio') as mock_responder_municipio:
+            mock_responder_municipio.return_value = {
+                "message_body": "Esta es una respuesta de prueba.",
+                "generar_audio": True,
+            }
             response_dict = responder_chatboc(
                 pregunta="test",
                 owner_user=self.owner_user,
                 current_user=self.viewer_user,
                 rubro_obj=self.owner_user.rubro,
-                chat_db_context=chat_session,
-                tipo_chat="municipio"
+                chat_db_context=chat_session
             )
 
         # --- Assert ---
@@ -105,22 +100,16 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.session.add(chat_session)
         db.session.commit()
 
-        with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-            mock_llamar_gemini.return_value = (
-                {
-                    "message_body": "Esta es una respuesta de prueba.",
-                    "accion_backend": "responder_directamente",
-                },
-                {},
-                None
-            )
+        with patch('services.logic.responder_municipio') as mock_responder_municipio:
+            mock_responder_municipio.return_value = {
+                "message_body": "Esta es una respuesta de prueba."
+            }
             response_dict = responder_chatboc(
                 pregunta="test",
                 owner_user=self.owner_user,
                 current_user=self.viewer_user,
                 rubro_obj=self.owner_user.rubro,
-                chat_db_context=chat_session,
-                tipo_chat="municipio"
+                chat_db_context=chat_session
             )
 
         mock_generate_audio_url.assert_called_once()
@@ -172,8 +161,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                 "pedir_info": None,
                 "botones": []
             },
-            {},
-            None
+            {}
         )
 
         chat_session = ChatSessionContext(

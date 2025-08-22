@@ -16,5 +16,5 @@ def test_greeting_handler():
     assert response is not None
     assert "¡Hola, Vecino/a!" in response.get("message_body", "")
     assert "Soy JUNI" in response.get("message_body", "")
-    assert len(response.get("categorias", [])) == 4
+    assert len(response.get("categorias", [])) == 5
     assert response.get("fuente") == "greeting_handler_universal_v5"

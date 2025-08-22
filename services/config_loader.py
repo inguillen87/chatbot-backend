@@ -11,51 +11,31 @@ _mtime_cache = {}
 
 
 def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
-    """
-    Carga un archivo de configuración JSON para un municipio.
-    Si el archivo específico del municipio no existe, carga el de 'default'.
+    """Carga un archivo de configuración JSON para el municipio indicado.
+
     La información se recarga automáticamente si el archivo es modificado.
     """
-    if not municipio_id:
-        municipio_id = 'default'
-
-    # 1. Intentar la ruta específica del municipio
-    ruta_especifica = os.path.join(BASE_CONFIG_PATH, str(municipio_id), archivo)
-
-    # 2. Determinar la ruta final (específica o default)
-    if os.path.exists(ruta_especifica):
-        ruta_final = ruta_especifica
-        clave_cache = (str(municipio_id), archivo)
-    else:
-        ruta_final = os.path.join(BASE_CONFIG_PATH, "default", archivo)
-        clave_cache = ("default", archivo)
-        if not os.path.exists(ruta_final):
-             logger.warning(f"[CONFIG] No se encontró ni el archivo específico '{ruta_especifica}' ni el default '{ruta_final}'.")
-             return {}
-
-
-    # 3. Comprobar caché
+    clave = ("default", archivo)
+    ruta = os.path.join(BASE_CONFIG_PATH, "default", archivo)
     try:
-        mtime = os.path.getmtime(ruta_final)
+        mtime = os.path.getmtime(ruta)
     except OSError as e:
-        logger.error(f"[CONFIG] No se pudo acceder a {ruta_final}: {e}")
-        _config_cache[clave_cache] = {}
-        _mtime_cache[clave_cache] = None
+        logger.error(f"[CONFIG] No se pudo acceder a {ruta}: {e}")
+        _config_cache[clave] = {}
+        _mtime_cache[clave] = None
         return {}
 
-    if clave_cache in _config_cache and _mtime_cache.get(clave_cache) == mtime:
-        return _config_cache[clave_cache]
+    if clave in _config_cache and _mtime_cache.get(clave) == mtime:
+        return _config_cache[clave]
 
-    # 4. Cargar archivo si no está en caché o está modificado
     try:
-        with open(ruta_final, "r", encoding="utf-8") as f:
+        with open(ruta, "r", encoding="utf-8") as f:
             datos = json.load(f)
-        _config_cache[clave_cache] = datos
-        _mtime_cache[clave_cache] = mtime
-        logger.info(f"[CONFIG] Configuración '{archivo}' cargada desde '{ruta_final}'.")
+        _config_cache[clave] = datos
+        _mtime_cache[clave] = mtime
         return datos
     except Exception as e:
-        logger.error(f"[CONFIG] No se pudo cargar {ruta_final}: {e}")
-        _config_cache[clave_cache] = {}
-        _mtime_cache[clave_cache] = mtime
+        logger.error(f"[CONFIG] No se pudo cargar {ruta}: {e}")
+        _config_cache[clave] = {}
+        _mtime_cache[clave] = mtime
         return {}

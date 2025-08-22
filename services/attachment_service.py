@@ -1,9 +1,9 @@
 from flask import current_app
+from models import db, ArchivoAdjunto, AnalisisArchivo
 from services.gcs_service import guardar_adjunto_y_thumbnail
 from werkzeug.datastructures import FileStorage
 
-def create_attachment_with_thumbnail(file_storage: FileStorage, user_id: int = None, session_id: str = None):
-    from models import db, ArchivoAdjunto, AnalisisArchivo
+def create_attachment_with_thumbnail(file_storage: FileStorage, user_id: int = None, session_id: str = None) -> ArchivoAdjunto | None:
     """
     Orchestrates the full attachment creation process.
     1. Uploads file and thumbnail to GCS.

@@ -11,6 +11,8 @@ from services.preferences import add_preference
 from models import db
 import models
 from services.common_utils import parse_precio_flexible
+from socket_service import emit_ticket_update
+from routes.ticket import serialize_ticket_to_json
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +270,12 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
             sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_cleaned)
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
+
+            try:
+                ticket_json = serialize_ticket_to_json(sala, "pyme")
+                emit_ticket_update(ticket_json)
+            except Exception as e_notify:
+                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala.nro_ticket}: {e_notify}", exc_info=True)
 
             servicio_tickets.crear_comentario(
                 ticket_id=sala.id,

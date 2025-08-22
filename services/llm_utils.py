@@ -632,19 +632,6 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
 
 print("Done with llm_utils.py basic execution tests.")
 
-def log_payload_sizes(payload: dict, logger_instance=None):
-    """Logs the size of a payload for monitoring LLM input."""
-    if not logger_instance:
-        logger_instance = logging.getLogger(__name__)
-
-    try:
-        payload_str = json.dumps(payload)
-        num_chars = len(payload_str)
-        num_keys = len(payload.keys())
-        logger_instance.info(f"[LLM_PAYLOAD_SIZE] user_keys={num_keys}, user_chars={num_chars}")
-    except Exception as e:
-        logger_instance.error(f"[LLM_PAYLOAD_SIZE] Error calculating payload size: {e}")
-
 def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Utiliza un LLM (Gemini) para extraer una lista de productos y cantidades de un texto OCR.
