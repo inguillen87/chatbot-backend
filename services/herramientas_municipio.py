@@ -285,39 +285,57 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 
 from services.google_search import google_search
 from services.scraper_avanzado import extraer_noticias
-from services.google_search import google_search
+from datetime import datetime, timedelta
 
-# --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS CON GOOGLE SEARCH ---
+# --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS DESDE ARCHIVO ---
 
 def consultar_eventos_culturales(fecha: str) -> str:
     """
-    Consulta eventos culturales, recitales o actividades municipales para una fecha específica
-    utilizando Google Search.
+    Consulta la agenda de eventos culturales desde un archivo JSON local.
     """
-    municipio_nombre = CONFIG_MUNICIPIO.get("nombre_display", "nuestro municipio")
-    query = f"eventos culturales y turísticos en {municipio_nombre} para {fecha}"
-    logger.info(f"[HERRAMIENTA EVENTOS] Realizando búsqueda en Google: '{query}'")
+    logger.info(f"[HERRAMIENTA EVENTOS] Consultando agenda para fecha: '{fecha}'")
 
-    search_results = google_search(query)
+    try:
+        agenda_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'municipios', MUNICIPIO_ID, 'agenda_cultural.json')
+        with open(agenda_path, 'r', encoding='utf-8') as f:
+            agenda_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.error(f"No se pudo cargar o parsear el archivo de agenda cultural: {e}")
+        return "Lo siento, no pude acceder a la agenda cultural en este momento. Por favor, intenta más tarde."
 
-    if not search_results:
-        return f"No encontré eventos programados específicamente para '{fecha}'. Puedes consultar la agenda completa en la web del municipio."
+    # Normalizar la fecha de entrada
+    fecha_norm = normalizar_texto(fecha)
+    target_date_str = None
+
+    if fecha_norm == "hoy":
+        target_date_str = datetime.now().strftime('%Y-%m-%d')
+    elif fecha_norm == "manana":
+        target_date_str = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    else:
+        # Aquí se podría agregar un parseo de fechas más complejo
+        # Por ahora, se asume que si no es "hoy" o "mañana", no se puede procesar.
+        pass
+
+    if not target_date_str:
+        return f"No entiendo la fecha '{fecha}'. Por favor, intentá con 'hoy' o 'mañana'."
+
+    eventos_encontrados = [
+        evento for evento in agenda_data.get('eventos', [])
+        if evento.get('fecha') == target_date_str
+    ]
+
+    if not eventos_encontrados:
+        return f"No encontré eventos programados para '{fecha_norm}'. Puedes consultar la agenda completa en la web del municipio."
 
     lista_eventos = []
-    for result in search_results:
-        title = result.get('title')
-        link = result.get('link')
-        snippet = result.get('snippet')
-
-        # Formatear la entrada para que sea más legible
-        evento_info = f"- {title}: {snippet} [Ver más]({link})"
+    for evento in eventos_encontrados:
+        titulo = evento.get('titulo', 'Sin título')
+        descripcion = evento.get('descripcion', 'Sin descripción')
+        evento_info = f"- *{titulo}*: {descripcion}"
         lista_eventos.append(evento_info)
 
-    if lista_eventos:
-        eventos_str = "\n".join(lista_eventos)
-        return f"Para la fecha '{fecha}', encontré los siguientes posibles eventos y noticias:\n{eventos_str}"
-    else:
-        return f"No encontré resultados para eventos en '{fecha}'. Te sugiero visitar el sitio web oficial del municipio para obtener la información más actualizada."
+    eventos_str = "\n".join(lista_eventos)
+    return f"Para '{fecha_norm}', la agenda es:\n{eventos_str}"
 
 def consultar_noticias_municipio() -> str:
     """

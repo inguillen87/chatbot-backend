@@ -757,3 +757,38 @@ def construir_respuesta_sugerir_registro(mensaje_personalizado: Optional[str] = 
         # Los handlers (pyme/municipio) deben asegurarse de pasar el contexto actual si es necesario.
         f"contexto_{tipo_entidad}": {} # O el contexto que se le pase a esta función
     }
+
+def extract_multiple_contact_details_regex(text: str, potential_fields: list) -> dict:
+    """
+    Extracts multiple contact details from a text string using regex-based validators.
+    This is a non-LLM, cheaper alternative to the LLM-based function.
+    """
+    if not text:
+        return {}
+
+    from utils.validators import extract_email, extract_phone, extract_name, extract_address
+
+    extracted_data = {}
+
+    # The order matters if a field could be a subset of another.
+    # For now, this seems fine.
+    for field in potential_fields:
+        if field not in extracted_data or not extracted_data.get(field):
+            heuristic_value = None
+            # Note: The keys like 'nombre' are coming from the ReclamoFlowHandler
+            # and differ from the 'nombre_cliente' used in the LLM version.
+            # We handle both for flexibility.
+            if field in ["nombre", "nombre_cliente"]:
+                heuristic_value = extract_name(text)
+            elif field in ["telefono", "telefono_cliente"]:
+                heuristic_value = extract_phone(text)
+            elif field in ["direccion", "ubicacion", "direccion_cliente"]:
+                heuristic_value = extract_address(text)
+            elif field in ["email", "email_cliente"]:
+                heuristic_value = extract_email(text)
+
+            if heuristic_value:
+                # Store with the original key requested by the caller
+                extracted_data[field] = heuristic_value
+
+    return extracted_data
