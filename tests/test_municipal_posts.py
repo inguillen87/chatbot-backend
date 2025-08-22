@@ -25,9 +25,12 @@ def client():
         with app.app_context():
             db.drop_all()
 
+import json
+import os
+
 def test_create_municipal_post_success(client):
     """
-    Prueba la creación exitosa de un post municipal (noticia/evento).
+    Prueba la creación exitosa de un post municipal (noticia/evento) en el archivo JSON.
     """
     with app.app_context():
         admin_user = User.query.filter_by(email="admin_muni@test.com").first()
@@ -39,23 +42,32 @@ def test_create_municipal_post_success(client):
 
     post_data = {
         'titulo': 'Gran Evento de Primavera',
-        'descripcion': 'Celebraremos la llegada de la primavera con música y comida.',
-        'categoria': 'evento'
+        'contenido': 'Celebraremos la llegada de la primavera con música y comida.',
+        'tipo_post': 'evento'
     }
+
+    # Ensure the file is clean before the test
+    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
 
     response = client.post('/municipal/posts', data=post_data, headers=headers)
 
     assert response.status_code == 201
     json_data = response.get_json()
     assert json_data['titulo'] == 'Gran Evento de Primavera'
-    assert json_data['categoria'] == 'evento'
-    assert json_data['estado'] == 'publicado'
 
-    with app.app_context():
-        post_in_db = db.session.get(MunicipioTicket, json_data['id'])
-        assert post_in_db is not None
-        assert post_in_db.asunto == 'Gran Evento de Primavera'
-        assert post_in_db.municipio_id == 1
+    # Verificar que el post se guardó en el archivo JSON
+    assert os.path.exists(agenda_path)
+    with open(agenda_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+        agenda = data.get("eventos", [])
+    assert any(p['titulo'] == 'Gran Evento de Primavera' for p in agenda)
+
+    # Clean up the file after test
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
 
 def test_create_municipal_post_no_data(client):
     """
@@ -71,14 +83,14 @@ def test_create_municipal_post_no_data(client):
 
     post_data = {
         'titulo': 'Solo Título'
-        # Falta descripción
+        # Falta contenido y tipo_post
     }
 
     response = client.post('/municipal/posts', data=post_data, headers=headers)
 
     assert response.status_code == 400
     json_data = response.get_json()
-    assert "El título y la descripción son requeridos" in json_data['error']
+    assert "El título, el contenido y el tipo de post son requeridos" in json_data['error']
 
 def test_create_municipal_post_unauthorized(client):
     """

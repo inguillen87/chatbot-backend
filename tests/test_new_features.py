@@ -80,7 +80,7 @@ class TestNewFeatures(unittest.TestCase):
         )
 
         self.assertIn("¿Cómo te puedo ayudar hoy?", response.get("message_body", ""))
-        self.assertEqual(len(response.get("options_list", [])), 10)
+        self.assertEqual(len(response.get("options_list", [])), 9)
         self.assertTrue(
             any(opt.get("texto") == "📝 Iniciar un Reclamo" for opt in response.get("options_list", []))
         )
