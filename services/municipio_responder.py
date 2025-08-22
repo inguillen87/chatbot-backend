@@ -675,7 +675,9 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         if nombre:
             message_body += f"Encargado/a: *{nombre}*\n"
         if telefono:
-            message_body += f"Teléfono: *{telefono}*\n"
+            telefono_numerico = ''.join(filter(str.isdigit, telefono))
+            link_whatsapp = f"https://wa.me/{telefono_numerico}"
+            message_body += f"Teléfono: *{telefono}* (WhatsApp: {link_whatsapp})\n"
         if horario:
             message_body += f"Horario de atención: *{horario}*\n"
 
@@ -1935,12 +1937,25 @@ def responder_municipio(
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response(_get_reclamos_menu())
 
-            # For all other actions, clear state and handle them
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            # For informational actions, handle them and then return to the main menu prompt.
             response = handle_main_menu_action(selected_action, context, chat_db_context)
             if response:
-                return _finalize_response(response)
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+
+                # Add a follow-up message.
+                follow_up_message = "\n\n¿Puedo ayudarte con algo más?"
+                augmented_message = response.get('message_body', '').strip() + follow_up_message
+
+                # Get the main menu to show after the informational message.
+                main_menu_payload = _get_main_menu_payload(context, welcome_message_override=augmented_message)
+
+                # The main_menu_payload now contains the combined message and the full menu structure.
+                # We can use it directly as the new response.
+
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+
+                return _finalize_response(main_menu_payload)
         else:
             # If the input doesn't match a menu option, treat it as a general query.
             # Clear the state so it falls through to the main LLM handler.
