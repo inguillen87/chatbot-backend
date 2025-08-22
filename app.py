@@ -245,6 +245,13 @@ def create_app(config_class=Config):
         """Alias for the /auth/login endpoint."""
         return login_view_func()
 
+    # Explicitly define the /api/login route as an alias for auth.login
+    # This is to support frontend calls that are hardcoded to /api/login
+    @app.route('/api/login', methods=['POST', 'OPTIONS'])
+    def api_login_alias():
+        """Alias for the /auth/login endpoint to support /api prefix."""
+        return login_view_func()
+
     # Explicitly define the /perfil route as an alias for auth.perfil
     @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
     def perfil_alias():
