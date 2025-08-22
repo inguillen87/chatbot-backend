@@ -280,11 +280,12 @@ class TestAccionesMunicipio(unittest.TestCase):
         resultado = direccion_es_valida("don bosco 55 esquina sarmiento junin mendoza")
         self.assertTrue(resultado)
 
-    @patch('services.municipio_responder.google_search')
-    def test_news_handler(self, mock_google_search):
-        mock_google_search.return_value = [
-            {"title": "Test News 1", "link": "http://example.com/news1"},
-            {"title": "Test News 2", "link": "http://example.com/news2"},
+    @patch('services.municipio_responder.cargar_agenda_cultural')
+    def test_news_handler(self, mock_cargar_agenda):
+        mock_cargar_agenda.return_value = [
+            {"titulo": "Noticia de Prueba 1", "contenido": "Este es el cuerpo de la noticia 1.", "tipo_post": "noticia", "fecha": "2025-08-22"},
+            {"titulo": "Evento Cultural", "contenido": "Este es un evento, no una noticia.", "tipo_post": "evento", "fecha": "2025-08-22"},
+            {"titulo": "Noticia de Prueba 2", "contenido": "Este es el cuerpo de la noticia 2.", "tipo_post": "noticia", "fecha": "2025-08-21"},
         ]
 
         from services.municipio_responder import responder_municipio
@@ -295,7 +296,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             chat_context.context_data = {}
 
             response = responder_municipio(
-                pregunta_original={"action": "ultimas_novedades"},
+                pregunta_original={"action": "noticias"},
                 owner_user=owner_user,
                 viewer_user=None,
                 anon_id="test_anon_123",
@@ -303,9 +304,12 @@ class TestAccionesMunicipio(unittest.TestCase):
                 rubro_obj=owner_user.rubro
             )
 
-        self.assertIn("Aquí están las últimas noticias", response["message_body"])
-        self.assertIn("Test News 1", response["options_list"][0]['texto'])
-        self.assertEqual(response["fuente"], "news_handler_with_results")
+        self.assertIn("🗞️ Noticias", response["message_body"])
+        self.assertIn("Noticia de Prueba 1", response["message_body"])
+        self.assertIn("Noticia de Prueba 2", response["message_body"])
+        self.assertNotIn("Evento Cultural", response["message_body"]) # Verify filtering
+        self.assertIn("https://www.facebook.com/municipalidaddejunin", response["message_body"]) # Verify social links
+        self.assertEqual(response["fuente"], "json_noticia")
 
     @patch('services.municipio_responder.llamar_gemini')
     def test_points_of_interest_handler_with_location(self, mock_llamar_gemini):

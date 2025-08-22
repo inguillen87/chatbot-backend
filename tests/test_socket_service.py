@@ -25,30 +25,32 @@ class TestSocketService(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
+    @patch('socket_service.emit')
     @patch('services.municipio_responder.responder_municipio')
     @patch('socket_service.tts_service.synthesize_speech')
-    def test_audio_welcome_message(self, mock_synthesize_speech, mock_responder_municipio):
+    def test_audio_welcome_message(self, mock_synthesize_speech, mock_responder_municipio, mock_emit):
         # Arrange
         mock_responder_municipio.return_value = {
-            "message_body": "¡Hola! Bienvenido a nuestro servicio de atención al cliente.",
-            "options_list": []
+            "message_body": "¡Hola! Bienvenido.",
+            "options_list": [],
+            "generar_audio": True
         }
         mock_synthesize_speech.return_value = "http://example.com/audio.mp3"
 
-        socketio_client = socketio.test_client(self.app)
-        socketio_client.get_received() # clear any previous messages
+        from socket_service import send_welcome_message
 
         # Act
-        # Pass channel in the auth dictionary, which is how the on_connect handler receives it
-        socketio_client.connect(auth={'channel': 'web'})
-        received = socketio_client.get_received()
+        send_welcome_message(sid='test-sid', auth={'channel': 'web'})
 
         # Assert
-        # We expect exactly one message: the welcome message.
-        self.assertEqual(len(received), 1)
-        self.assertEqual(received[0]['name'], 'message')
-        data = received[0]['args'][0]
-        self.assertEqual(data['message_body'], "¡Hola! Bienvenido a nuestro servicio de atención al cliente.")
-        self.assertEqual(data['audio_url'], "http://example.com/audio.mp3")
-        mock_synthesize_speech.assert_called_once_with(text="¡Hola! Bienvenido a nuestro servicio de atención al cliente.")
         mock_responder_municipio.assert_called_once()
+        mock_synthesize_speech.assert_called_once_with(text="¡Hola! Bienvenido.")
+
+        self.assertEqual(mock_emit.call_count, 1)
+        args, kwargs = mock_emit.call_args
+
+        self.assertEqual(args[0], 'message') # Event name
+        response_data = args[1]
+        self.assertEqual(response_data['message_body'], "¡Hola! Bienvenido.")
+        self.assertEqual(response_data['audio_url'], "http://example.com/audio.mp3")
+        self.assertEqual(kwargs['room'], 'test-sid')

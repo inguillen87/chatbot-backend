@@ -47,6 +47,183 @@ import math
 from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 
+class ReclamoState(Enum):
+    ESPERANDO_CATEGORIA = auto()
+    ESPERANDO_DIRECCION = auto()
+    ESPERANDO_DESCRIPCION = auto()
+    ESPERANDO_FOTO = auto()
+    ESPERANDO_DATOS_CONTACTO = auto()
+    ESPERANDO_CONFIRMACION = auto()
+
+def extract_multiple_contact_details_regex(text: str) -> dict:
+    details = {}
+    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    if email_match:
+        details['email'] = email_match.group(0)
+        text = text.replace(email_match.group(0), '')
+    dni_match = re.search(r'\b\d{7,8}\b', text)
+    if dni_match:
+        details['dni'] = dni_match.group(0)
+        text = text.replace(dni_match.group(0), '')
+    phone_match = re.search(r'(?:\+54\s?)?(?:9\s?)?(\d{2,4})\s?(\d{6,8})', text)
+    if phone_match:
+        details['telefono'] = f"{phone_match.group(1)}{phone_match.group(2)}"
+        text = text.replace(phone_match.group(0), '')
+    name_candidate = text.strip(' .,-_/\\')
+    if len(name_candidate.split()) >= 2 and len(name_candidate.split()) <= 4:
+        if 'mi nombre es' in name_candidate.lower():
+            name_candidate = name_candidate.lower().replace('mi nombre es', '').strip()
+        details['nombre'] = ' '.join([word.capitalize() for word in name_candidate.split()])
+    return details
+
+CANCEL_KEYWORDS = {"cancelar", "salir", "volver", "menu", "menú principal", "terminar", "basta"}
+
+class ReclamoFlowHandler:
+    def __init__(self, context, chat_db_context):
+        self.context = context
+        self.chat_db_context = chat_db_context
+        self.flow_context = context.get("chat_db_context_data", {}).setdefault("reclamo_flow_v2", {})
+        self.greeting_handler = GreetingHandler(context)
+
+
+    def check_for_cancel(self, user_input):
+        if normalizar_texto(user_input) in CANCEL_KEYWORDS:
+            return self.end_flow("Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?", show_menu=True)
+        return None
+
+    def handle(self, user_input, payload):
+        cancel_response = self.check_for_cancel(user_input)
+        if cancel_response:
+            return cancel_response
+
+        state_name = self.flow_context.get("state")
+        state = ReclamoState[state_name] if state_name else None
+
+        if state == ReclamoState.ESPERANDO_CATEGORIA:
+            return self.handle_categoria(user_input)
+        elif state == ReclamoState.ESPERANDO_DIRECCION:
+            return self.handle_direccion(user_input, payload)
+        elif state == ReclamoState.ESPERANDO_DESCRIPCION:
+            return self.handle_descripcion(user_input)
+        elif state == ReclamoState.ESPERANDO_FOTO:
+            return self.handle_foto(user_input, payload)
+        elif state == ReclamoState.ESPERANDO_DATOS_CONTACTO:
+            return self.handle_datos_contacto(user_input)
+        elif state == ReclamoState.ESPERANDO_CONFIRMACION:
+            return self.handle_confirmacion(user_input, payload)
+        else:
+            logger.error(f"ReclamoFlowHandler: Estado desconocido o no manejado: {state_name}")
+            return self.end_flow("Hubo un error en el proceso, por favor intentá de nuevo.", show_menu=True)
+
+    def start_flow(self, categoria_inicial=None):
+        logger.info("Iniciando flujo de reclamo v2.")
+        self.flow_context.clear()
+        self.flow_context['datos_reclamo'] = {}
+
+        if categoria_inicial:
+            self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            return {"message_body": f"Perfecto. Iniciemos tu reclamo por *{categoria_inicial}*.\n\nPor favor, indicame la dirección exacta del problema (calle y número). O podés escribir 'cancelar' para volver al menú."}
+        else:
+            self.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
+            return _get_reclamos_menu()
+
+    def handle_categoria(self, user_input):
+        self.flow_context['datos_reclamo']['categoria'] = user_input
+        self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+        return {"message_body": f"Perfecto. Iniciemos tu reclamo por *{user_input}*.\n\nPor favor, indicame la dirección exacta del problema (calle y número). O podés escribir 'cancelar' para volver al menú."}
+
+    def handle_direccion(self, user_input, payload):
+        if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
+            location_data = payload.get("ubicacion_usuario")
+            address = location_data.get("address")
+            self.flow_context['datos_reclamo']['direccion'] = address if address else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+        elif len(user_input) < 5:
+             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
+        else:
+            self.flow_context['datos_reclamo']['direccion'] = user_input
+
+        self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
+        return {"message_body": "Gracias. Ahora, por favor, describí brevemente el problema."}
+
+    def handle_descripcion(self, user_input):
+        if len(user_input) < 10:
+            return {"message_body": "Por favor, dame una descripción un poco más detallada del problema."}
+        self.flow_context['datos_reclamo']['descripcion'] = user_input
+        self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+        return {
+            "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+            "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
+            "message_type": "interactive_buttons"
+        }
+
+    def handle_foto(self, user_input, payload):
+        action = payload.get("action")
+        if payload.get("es_foto") and payload.get("foto_url"):
+            self.flow_context['datos_reclamo']['foto_url'] = payload.get("foto_url")
+            return self.ask_for_contact_details()
+
+        if "no" in user_input.lower() or action == "reclamo_adjuntar_foto_no":
+            self.flow_context['datos_reclamo']['foto_url'] = None
+            return self.ask_for_contact_details()
+        elif "si" in user_input.lower() or action == "reclamo_adjuntar_foto_si":
+            return {"message_body": "Por favor, enviá la foto ahora."}
+        else:
+            return {"message_body": "No entendí tu respuesta. Por favor, enviá una foto o elegí una de las opciones.", "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}]}
+
+    def ask_for_contact_details(self):
+        self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+        return {"message_body": "Ya casi terminamos. Por favor, decime tu nombre completo, DNI, email y teléfono. Podés escribir todo en un solo mensaje."}
+
+    def handle_datos_contacto(self, user_input):
+        contact_details = extract_multiple_contact_details_regex(user_input)
+        if not contact_details:
+            return {"message_body": "No pude identificar tus datos. Por favor, intentá de nuevo incluyendo nombre, DNI, email y teléfono."}
+
+        self.flow_context['datos_reclamo'].update(contact_details)
+        self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
+        return self.get_confirmation_message()
+
+    def get_confirmation_message(self):
+        datos = self.flow_context.get('datos_reclamo', {})
+        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\n"
+        mensaje += f"🏷️ *Categoría:* {datos.get('categoria', 'No especificada')}\n"
+        mensaje += f"📍 *Dirección:* {datos.get('direccion', 'No especificada')}\n"
+        mensaje += f"📝 *Descripción:* {datos.get('descripcion', 'No especificada')}\n"
+        mensaje += f"👤 *Nombre:* {datos.get('nombre', 'No especificado')}\n"
+        mensaje += f"🆔 *DNI:* {datos.get('dni', 'No especificado')}\n"
+        mensaje += f"📧 *Email:* {datos.get('email', 'No especificado')}\n"
+        mensaje += f"📱 *Teléfono:* {datos.get('telefono', 'No especificado')}\n"
+        mensaje += f"📷 *Foto adjunta:* {'Sí' if datos.get('foto_url') else 'No'}\n"
+        return {
+            "message_body": mensaje,
+            "options_list": [{"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"}, {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"}, {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"}],
+            "message_type": "interactive_buttons"
+        }
+
+    def handle_confirmacion(self, user_input, payload):
+        action = payload.get("action")
+        if "si" in user_input.lower() or action == "reclamo_confirmar_si":
+            datos_reclamo = self.flow_context.get('datos_reclamo', {})
+            ticket_id = "R" + str(random.randint(1000, 9999))
+            success_message = f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{ticket_id}*. Te mantendremos informado sobre el estado del mismo por este medio."
+            return self.end_flow(success_message)
+        elif "no" in user_input.lower() or action == "reclamo_confirmar_no":
+            return self.ask_for_contact_details()
+        else: # Cancel
+            return self.end_flow("Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?", show_menu=True)
+
+    def end_flow(self, message, show_menu=False):
+        self.flow_context.clear()
+        if "reclamo_flow_v2" in self.context.get("chat_db_context_data", {}):
+            del self.context["chat_db_context_data"]["reclamo_flow_v2"]
+
+        if show_menu:
+            # Return the main menu payload directly
+            return self.greeting_handler.handle({})
+        else:
+            return {"message_body": message, "message_type": "text"}
+
 # Initialize the classifier globally
 INTENTS_FILE_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'intents.json')
 intent_classifier = IntentClassifier(intents_file_path=INTENTS_FILE_PATH)
@@ -295,6 +472,60 @@ def cargar_tramites_info():
 def get_tramites_info() -> dict:
     return cargar_tramites_info()
 
+_CONTACTOS_UTILES_CACHE = None
+_CONTACTOS_UTILES_MTIME = None
+
+def cargar_contactos_utiles():
+    global _CONTACTOS_UTILES_CACHE, _CONTACTOS_UTILES_MTIME
+    ruta = os.path.join(
+        os.path.dirname(__file__), "..", "data", "municipios", MUNICIPIO_ID, "contactos_utiles.json"
+    )
+    try:
+        mtime = os.path.getmtime(ruta)
+    except OSError as e:
+        logger.error(f"[CONTACTOS] No se pudo acceder a {ruta}: {e}")
+        _CONTACTOS_UTILES_CACHE = {}
+        _CONTACTOS_UTILES_MTIME = None
+        return _CONTACTOS_UTILES_CACHE
+    if _CONTACTOS_UTILES_CACHE is None or _CONTACTOS_UTILES_MTIME != mtime:
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                _CONTACTOS_UTILES_CACHE = json.load(f)
+            logger.info(f"✅ Contactos Útiles cargados desde {ruta}")
+            _CONTACTOS_UTILES_MTIME = mtime
+        except Exception as e:
+            logger.error(f"[CONTACTOS] No se pudo cargar {ruta}: {e}", exc_info=True)
+            _CONTACTOS_UTILES_CACHE = {}
+            _CONTACTOS_UTILES_MTIME = mtime
+    return _CONTACTOS_UTILES_CACHE
+
+_AGENDA_CULTURAL_CACHE = None
+_AGENDA_CULTURAL_MTIME = None
+
+def cargar_agenda_cultural():
+    global _AGENDA_CULTURAL_CACHE, _AGENDA_CULTURAL_MTIME
+    ruta = os.path.join(
+        os.path.dirname(__file__), "..", "data", "municipios", MUNICIPIO_ID, "agenda_cultural.json"
+    )
+    try:
+        mtime = os.path.getmtime(ruta)
+    except OSError as e:
+        logger.error(f"[AGENDA] No se pudo acceder a {ruta}: {e}")
+        _AGENDA_CULTURAL_CACHE = []
+        _AGENDA_CULTURAL_MTIME = None
+        return _AGENDA_CULTURAL_CACHE
+    if _AGENDA_CULTURAL_CACHE is None or _AGENDA_CULTURAL_MTIME != mtime:
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                _AGENDA_CULTURAL_CACHE = json.load(f)
+            logger.info(f"✅ Agenda Cultural cargada desde {ruta}")
+            _AGENDA_CULTURAL_MTIME = mtime
+        except Exception as e:
+            logger.error(f"[AGENDA] No se pudo cargar {ruta}: {e}", exc_info=True)
+            _AGENDA_CULTURAL_CACHE = []
+            _AGENDA_CULTURAL_MTIME = mtime
+    return _AGENDA_CULTURAL_CACHE
+
 def obtener_info_tramite_web(tramite_nombre: str) -> dict:
     """
     Busca información sobre un trámite en la web del municipio.
@@ -353,6 +584,7 @@ class ConversationState(Enum):
     ESPERANDO_NUEVO_DATO_USUARIO = auto()
     ESPERANDO_CONFIRMACION_DATOS_RECLAMO = auto()
     ESPERANDO_CORRECCION_DATOS_RECLAMO = auto()
+    ESPERANDO_SELECCION_CONTACTO_CATEGORIA = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -450,13 +682,11 @@ from services.google_search import google_search
 
 def _get_main_menu_payload(context: dict, welcome_message_override: str = None) -> dict:
     """
-    Generates the main menu payload, allowing for a custom welcome message.
-    This centralizes menu creation to be reused by GreetingHandler and error handlers.
+    Generates the main menu payload with the new, structured layout.
     """
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
 
-    # Prioritize the fresh ProfileName from WhatsApp, then fallback to the database name.
     user_name = None
     if isinstance(profile_name, str) and profile_name.strip():
         user_name = profile_name.strip()
@@ -467,38 +697,31 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         welcome_message = welcome_message_override
     elif user_name:
         welcome_message = (
-            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
-            "Estoy aquí para ayudarte de una forma más inteligente. Podés consultarme sobre trámites, "
-            "reclamos, turnos, noticias y mucho más.\n\n"
-            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "¿Cómo te puedo ayudar hoy?"
         )
     else:
-        # Fallback for when there is no user name available
         welcome_message = (
-            "¡Hola, Vecino/a! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
-            "Estoy aquí para ayudarte de una forma más inteligente. Para empezar, podés escribirme, "
-            "enviarme un audio, una foto de un problema o compartir tu ubicación.\n\n"
-            "¿Cómo te puedo ayudar hoy? Elegí una opción o escribí una palabra clave:"
+            "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "¿Cómo te puedo ayudar hoy?"
         )
 
+    # New structured menu, simplified as requested
     categorias = [
-        {"titulo": "🛠️ Reclamos", "botones": [
-            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"}
-        ]},
-        {"titulo": "📄 Trámites y Consultas", "botones": [
+        {"titulo": "🗣️ Reclamos, Trámites y Turnos", "botones": [
+            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+            {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"},
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+        ]},
+        {"titulo": "📰 Información útil", "botones": [
+            {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
+            {"texto": "🎭 Agenda Cultural", "action_id": "agenda_cultural"},
+            {"texto": "🗞️ Noticias", "action_id": "noticias"},
+        ]},
+        {"titulo": "💵 Tasas y Servicios", "botones": [
             {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-            {"texto": "❓ Consultar otros trámites", "action_id": "consultar_otros_tramites"}
-        ]},
-        {"titulo": "📅 Servicios y Turnos", "botones": [
-            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
-            {"texto": "🚗 Estacionamiento", "action_id": "estacionamiento"},
-            {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"}
-        ]},
-        {"titulo": "📰 Información y Novedades", "botones": [
-            {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
-            {"texto": "🗞️ Últimas Novedades", "action_id": "ultimas_novedades"},
-            {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+            {"texto": "🐾 Zoonosis", "action_id": "zoonosis"},
+            {"texto": "♻️ Recolección de Residuos", "action_id": "recoleccion_residuos"},
         ]}
     ]
 
@@ -514,7 +737,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         "options_list": flat_buttons,
         "message_type": "interactive_list",
         "accion_backend": "responder_directamente",
-        "fuente": "greeting_handler_universal_v5",
+        "fuente": "greeting_handler_structured_menu_v2",
         "categorias": categorias,
         "generar_audio": True
     }
@@ -550,92 +773,89 @@ class GreetingHandler(BaseMunicipioHandler):
         # Usar la función centralizada para obtener el payload del menú.
         return _get_main_menu_payload(self.context)
 
-class NewsHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        contexto_municipio_actual = self.context.get(CONTEXTO_MUNICIPIO, {})
-        municipio_config = self.context.get('municipio_config_actual', {})
-        municipio_name = municipio_config.get('nombre_display', 'del municipio')
-        municipio_website = municipio_config.get('website')
 
-        if municipio_website:
-            query = f"site:{municipio_website} noticias de {municipio_name}"
-        else:
-            query = f"noticias de {municipio_name}"
-
-        search_results = google_search(query, days=1)
-
-        if not search_results:
-            return {
-                "message_body": "No se encontraron noticias recientes.",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "news_handler_no_results"
-            }
-
-        options = []
-        for result in search_results[:5]:
-            options.append({
-                "id": f"news_{result.get('link')}",
-                "texto": result.get('title'),
-                "url": result.get('link'),
-                "type": "url"
-            })
-
-        # Set context for the next turn
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual['opciones_en_pantalla'] = options
-
-
+def handle_contactos_utiles_inicio(context, chat_db_context):
+    """Handles the initial request for 'Contactos Utiles'."""
+    contactos_data = cargar_contactos_utiles()
+    if not contactos_data:
         return {
-            "message_body": "Aquí están las últimas noticias:",
-            "options_list": options,
-            "message_type": "interactive_list",
-            "fuente": "news_handler_with_results"
+            "message_body": "No se encontró información de contactos útiles en este momento.",
+            "message_type": "text"
         }
 
-class PointsOfInterestHandler(BaseMunicipioHandler):
-    def handle(self, payload: dict) -> dict | None:
-        query = payload.get("pregunta", "")
-        location = payload.get("location")
+    # Extract categories
+    categories = list(contactos_data.keys())
+    buttons = [{"texto": category, "action_id": f"select_contact_category_{category}"} for category in categories]
 
-        if not query:
-            return {
-                "message_body": "Por favor, decime qué punto de interés estás buscando.",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "poi_handler_no_query"
-            }
+    # Set state
+    contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+    contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
 
-        if location:
-            search_query = f"{query} cerca de {location}"
-        else:
-            search_query = f"{query} en {self.context.get('municipio_config_actual', {}).get('nombre_display', 'el municipio')}"
+    return {
+        "message_body": "Seleccioná una categoría para ver los contactos:",
+        "options_list": buttons,
+        "message_type": "interactive_buttons",
+        "fuente": "contactos_utiles_show_categories"
+    }
 
-        search_results = google_search(search_query)
+def handle_agenda_noticias_from_json(content_type: str):
+    """
+    Handles requests for 'Agenda Cultural' and 'Noticias' by reading from a JSON file.
+    Filters content based on 'tipo_post' ('evento' or 'noticia').
+    """
+    all_posts = cargar_agenda_cultural()
+    if not all_posts:
+        message = "No hay información disponible en este momento."
+        return {"message_body": message, "message_type": "text"}
 
-        if not search_results:
-            return {
-                "message_body": f"No se encontraron resultados para '{query}'.",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "poi_handler_no_results"
-            }
+    if content_type == 'evento':
+        title = "🎭 Agenda Cultural"
+        posts = [p for p in all_posts if p.get('tipo_post') == 'evento']
+        if not posts:
+            message = "No hay eventos en la agenda cultural en este momento."
+    elif content_type == 'noticia':
+        title = "🗞️ Noticias"
+        posts = [p for p in all_posts if p.get('tipo_post') == 'noticia']
+        if not posts:
+            message = "No hay noticias recientes."
+    else:
+        return {"message_body": "Tipo de contenido no válido.", "message_type": "text"}
 
-        poi_items = []
-        for result in search_results[:3]:
-            poi_items.append(f"- {result.get('title')}\n{result.get('snippet')}\n[Ver más]({result.get('link')})")
+    if not posts:
+        return {"message_body": message, "message_type": "text"}
 
-        return {
-            "message_body": f"Aquí hay algunos resultados para '{query}':\n" + "\n\n".join(poi_items),
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "poi_handler_with_results"
-        }
+    # Sort posts by date, most recent first
+    posts.sort(key=lambda x: x.get('fecha', ''), reverse=True)
+
+    message_body = f"*{title}*\n\n"
+    for post in posts[:5]: # Show latest 5
+        post_title = post.get('titulo', 'Sin título')
+        post_content = post.get('contenido', '')
+        message_body += f"*{post_title}*\n{post_content}\n\n"
+
+    # Add social media links
+    social_links = (
+        "\n\n---\n"
+        "Seguinos en nuestras redes:\n"
+        "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
+        "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
+    )
+    message_body += social_links
+
+    return {
+        "message_body": message_body.strip(),
+        "message_type": "text",
+        "fuente": f"json_{content_type}"
+    }
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
     """
     Handles actions from the new categorized main menu.
     """
+    if action_id == "contactos_utiles":
+        return handle_contactos_utiles_inicio(context, chat_db_context)
     if action_id == "mostrar_menu_reclamos":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
@@ -699,8 +919,11 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     # Placeholder for actions without a defined response yet
-    if action_id == "ultimas_novedades":
-        return NewsHandler(context=context).handle({})
+    if action_id == "noticias":
+        return handle_agenda_noticias_from_json('noticia')
+
+    if action_id == "agenda_cultural":
+        return handle_agenda_noticias_from_json('evento')
 
     if action_id == "consultar_otros_tramites":
         from .actions.municipio_actions import ConsultarInfoTramiteActionHandler
@@ -754,13 +977,11 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     if action_id == "solicitar_turnos":
-        # TODO: Implement a full appointment scheduling flow.
-        # For now, redirect the user to the main municipal website.
         return {
-            "message_body": "📅 Para solicitar turnos, por favor visitá el sitio web oficial del municipio donde encontrarás las opciones disponibles.",
-            "options_list": [{"texto": "Ir al Sitio Web", "url": "https://www.juninmendoza.gov.ar/", "type": "url"}],
+            "message_body": "📅 Para solicitar turnos online, por favor ingresá al siguiente enlace:",
+            "options_list": [{"texto": "Solicitar Turno", "url": "https://www.juninmendoza.gov.ar/turnos-online/", "type": "url"}],
             "message_type": "interactive_buttons",
-            "fuente": "info_solicitar_turnos_fase1"
+            "fuente": "info_solicitar_turnos_direct_link"
         }
 
     # Fallback for any other action that is not explicitly handled above
@@ -1366,15 +1587,20 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         return None, contexto_municipio_actual
 
 MENU_KEYWORDS = {
-    "mostrar_menu_reclamos": ["reclamo", "reclamos", "iniciar", "problema"],
-    "licencia_de_conducir": ["licencia", "conducir", "licencias", "carnet"],
-    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "boletas"],
-    "consultar_otros_tramites": ["consultar", "consulta", "tramites", "tramite", "otros"],
-    "veterinaria_y_bromatologia": ["veterinaria", "animales", "perro", "gato", "mascotas", "bromatologia", "bromatología"],
-    "solicitar_turnos": ["turnos", "turno", "solicitar"],
-    "agenda_cultural_y_turistica": ["agenda", "cultural", "turistica", "turismo", "eventos"],
-    "ultimas_novedades": ["novedades", "noticias", "ultimas"],
-    "defensa_del_consumidor": ["consumidor", "defensa"]
+    # Reclamos, Trámites y Turnos
+    "mostrar_menu_reclamos": ["reclamo", "reclamos", "iniciar reclamo", "denuncia", "problema", "queja", "reportar"],
+    "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online"],
+    "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia"],
+
+    # Información útil
+    "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar"],
+    "agenda_cultural": ["agenda", "cultural", "eventos", "turismo", "actividades", "que hacer", "turista"],
+    "noticias": ["noticias", "novedades", "diario", "informacion", "ultimo"],
+
+    # Tasas y Servicios
+    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal"],
+    "zoonosis": ["zoonosis", "veterinaria", "animales", "perro", "gato", "mascotas", "castracion", "vacunacion"],
+    "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector"]
 }
 
 from fuzzywuzzy import process
@@ -1682,6 +1908,16 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
+    # --- INICIO: Manejo del Flujo de Reclamos Activo ---
+    if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
+        logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response = handler.handle(pregunta_str, received_payload)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
+    # --- FIN: Manejo del Flujo de Reclamos Activo ---
+
     if not is_from_audio:
         # --- START INTENT CLASSIFICATION ---
         # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
@@ -2052,31 +2288,71 @@ def responder_municipio(
 
             constructed_prompt = f"Quiero iniciar un reclamo de {selected_category_name}"
 
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {"categoria": selected_category_name}
-            contexto_municipio_actual["historial_llm_reclamo"] = []
-            contexto_municipio_actual.pop("current_menu", None)
-            contexto_municipio_actual.pop("menu_page", None)
-
-            # --- INICIO REFACTOR: Usar el 'context' principal en lugar de crear uno nuevo ---
-            # El diccionario 'context' ya se inicializó al principio de la función
-            # y contiene toda la información necesaria.
-            response_dict, _ = handle_llm_interaction(
-                app, constructed_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
-            )
-            # --- FIN REFACTOR ---
-
-            if response_dict is None:
-                return _finalize_response({"message_body": "No pude procesar la selección. Probá de nuevo.",
-                        "message_type": "text", "options_list": [], "fuente": "error_category_selection"})
-
-            response_dict.setdefault("message_type", "text")
-            response_dict.setdefault("options_list", [])
+            # --- INICIO: Integración del nuevo ReclamoFlowHandler ---
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            response_dict = handler.start_flow(categoria_inicial=selected_category_name)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)
+            # --- FIN: Integración del nuevo ReclamoFlowHandler ---
         else:
             logger_actual.warning(f"Input '{pregunta_str_reclamo}' no coincide con ninguna categoría. Mostrando menú de nuevo.")
             return _finalize_response(_get_reclamos_menu())
     # --- FIN: Manejo de selección de menú de reclamos ---
+
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name:
+        selected_category_action = received_payload.get("action")
+        pregunta_str_norm = normalizar_texto(pregunta_str or "")
+
+        # Find the category either by action_id or by text matching
+        selected_category = None
+        contactos_data = cargar_contactos_utiles()
+
+        if selected_category_action and selected_category_action.startswith("select_contact_category_"):
+            selected_category = selected_category_action.replace("select_contact_category_", "")
+        elif pregunta_str_norm:
+            # Fuzzy match against category names
+            from fuzzywuzzy import process
+            category_names = list(contactos_data.keys())
+            match, score = process.extractOne(pregunta_str_norm, category_names)
+            if score > 80:
+                selected_category = match
+
+        if not selected_category:
+            # Fallback if the input is not a valid action or text match
+            return _finalize_response({
+                "message_body": "Por favor, seleccioná una categoría de la lista.",
+                "fuente": "contactos_utiles_invalid_category_selection"
+            })
+
+        contactos = contactos_data.get(selected_category, [])
+
+        if not contactos:
+            message_body = f"No se encontraron contactos para la categoría '{selected_category}'."
+        else:
+            message_body = f"📞 *Contactos para {selected_category}:*\n\n"
+            for contacto in contactos:
+                nombre = contacto.get('nombre', 'N/A')
+                telefono = contacto.get('telefono')
+                horario = contacto.get('horario')
+
+                message_body += f"*{nombre}*\n"
+                if telefono:
+                    message_body += f"  - Teléfono: {telefono}\n"
+                if horario:
+                    message_body += f"  - Horario: {horario}\n"
+                message_body += "\n"
+
+        # Reset state
+        contexto_municipio_actual['estado_conversacion'] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        return _finalize_response({
+            "message_body": message_body.strip(),
+            "message_type": "text",
+            "fuente": "contactos_utiles_show_contacts"
+        })
 
     # --- INICIO: Manejo de actualización de datos de usuario ---
     elif estado_conversacion == ConversationState.ESPERANDO_NUEVO_DATO_USUARIO.name:

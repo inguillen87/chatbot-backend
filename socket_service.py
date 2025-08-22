@@ -16,92 +16,84 @@ socketio = SocketIO(
 def emit_ticket_update(data):
     socketio.emit('ticket_update', data)
 
-@socketio.on('connect')
-def on_connect(auth):
-    """
-    Handles new Socket.IO connections.
-    Authenticates the user if a token is provided in the `auth` payload.
-    Rejects the connection if the token is invalid.
-    Allows anonymous connections if no token is provided.
-    """
-    current_app.logger.info(f"Socket.IO client connected: {request.sid}")
-
-    token = (auth or {}).get('token')
-
-    if token:
-        current_app.logger.info(f"Socket.IO connection attempt with token for sid: {request.sid}")
-        try:
-            # Attempt to decode the token to validate it
-            jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
-            current_app.logger.info(f"Socket.IO token validated successfully for sid: {request.sid}")
-        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
-            current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
-            return False  # Reject the connection
-    else:
-        current_app.logger.info(f"Socket.IO client connected anonymously: {request.sid}")
-
-    # Automatic welcome message for anonymous web connections
+def send_welcome_message(sid, auth):
+    """Sends a welcome message to a newly connected anonymous client."""
     from services.municipio_responder import responder_municipio
     from models import User, ChatSessionContext, Rubro, db
     from uuid import uuid4
     from flask import g
 
-    is_anonymous = not token
-    # For sockets, the query parameters are in the auth dict, not request.args
+    current_app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
+    with current_app.app_context():
+        owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
+        if not owner_user:
+            current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
+            return
+
+        rubro = owner_user.rubro
+        if not rubro:
+            current_app.logger.error(f"Rubro not found for user {owner_user.id}")
+            return
+
+        chat_session_uuid = str(uuid4())
+        chat_db_context = ChatSessionContext(
+            chat_session_id=chat_session_uuid,
+            user_id=owner_user.id,
+            context_data={}
+        )
+        db.session.add(chat_db_context)
+        db.session.commit()
+
+        anon_id = str(uuid4())
+        if 'viewer' in g:
+            del g.viewer
+
+        respuesta = responder_municipio(
+            pregunta_original="__INIT__",
+            owner_user=owner_user,
+            rubro_obj=rubro,
+            viewer_user=None,
+            chat_db_context=chat_db_context,
+            anon_id=anon_id,
+            channel='web',
+            chat_session_uuid=chat_session_uuid
+        )
+
+        if "options_list" in respuesta and "botones" not in respuesta:
+            respuesta["botones"] = respuesta["options_list"]
+
+        if respuesta.get("generar_audio"):
+            try:
+                audio_url = tts_service.synthesize_speech(text=respuesta["message_body"])
+                if audio_url:
+                    respuesta["audio_url"] = audio_url
+            except Exception as e:
+                current_app.logger.error(f"Error generating welcome audio: {e}")
+
+        emit('message', respuesta, room=sid)
+        current_app.logger.info(f"Welcome message sent to sid: {sid}")
+
+@socketio.on('connect')
+def on_connect(auth):
+    """
+    Handles new Socket.IO connections.
+    Authenticates the user if a token is provided.
+    For anonymous web connections, sends a welcome message.
+    """
+    current_app.logger.info(f"Socket.IO client connected: {request.sid}")
+    token = (auth or {}).get('token')
     channel = (auth or {}).get('channel')
 
-    current_app.logger.info(f"Web channel anonymous connection detected for sid: {request.sid}. Sending welcome message.")
-    with current_app.app_context():
-            owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-            if not owner_user:
-                current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
-                return
-
-            rubro = owner_user.rubro
-            if not rubro:
-                current_app.logger.error(f"Rubro not found for user {owner_user.id}")
-                return
-
-            chat_session_uuid = str(uuid4())
-            chat_db_context = ChatSessionContext(
-                chat_session_id=chat_session_uuid,
-                user_id=owner_user.id,
-                context_data={}
-            )
-            db.session.add(chat_db_context)
-            db.session.commit()
-
-            anon_id = str(uuid4())
-            # Ensure g.viewer is clean for this anonymous session
-            if 'viewer' in g:
-                del g.viewer
-
-            respuesta = responder_municipio(
-                pregunta_original="hola",
-                owner_user=owner_user,
-                rubro_obj=rubro,
-                viewer_user=None,
-                chat_db_context=chat_db_context,
-                anon_id=anon_id,
-                channel='web',
-                chat_session_uuid=chat_session_uuid
-            )
-
-            # Adapt response for socket if needed
-            if "options_list" in respuesta and "botones" not in respuesta:
-                respuesta["botones"] = respuesta["options_list"]
-
-            # Generate audio for the welcome message
-            if respuesta.get("message_body"):
-                try:
-                    audio_url = tts_service.synthesize_speech(text=respuesta["message_body"])
-                    if audio_url:
-                        respuesta["audio_url"] = audio_url
-                except Exception as e:
-                    current_app.logger.error(f"Error generating welcome audio: {e}")
-
-            emit('message', respuesta)
-            current_app.logger.info(f"Welcome message sent to sid: {request.sid}")
+    if token:
+        try:
+            jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+            current_app.logger.info(f"Socket.IO token validated successfully for sid: {request.sid}")
+        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
+            current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
+            return False
+    elif channel == 'web':
+        # Defer the welcome message to a separate thread to not block the connection
+        socketio.start_background_task(send_welcome_message, request.sid, auth)
 
 @socketio.on('join')
 def on_join(data):

@@ -257,8 +257,8 @@ def create_municipal_post(current_user):
     fecha_evento_inicio = request.form.get('fecha_evento_inicio')
     fecha_evento_fin = request.form.get('fecha_evento_fin')
 
-    if not titulo or not contenido:
-        return jsonify({"error": "El título y el contenido son requeridos."}), 400
+    if not all([titulo, contenido, tipo_post]):
+        return jsonify({"error": "El título, el contenido y el tipo de post son requeridos."}), 400
 
     # --- Manejo del archivo de imagen (flyer) ---
     flyer_image_url = ''
