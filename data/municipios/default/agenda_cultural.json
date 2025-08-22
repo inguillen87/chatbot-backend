@@ -1,0 +1,24 @@
+{
+  "eventos": [
+    {
+      "fecha": "2025-08-22",
+      "titulo": "Concierto de Rock en la Plaza Principal",
+      "descripcion": "Las mejores bandas locales se presentan en un concierto gratuito para toda la familia."
+    },
+    {
+      "fecha": "2025-08-23",
+      "titulo": "Feria de Artesanos y Emprendedores",
+      "descripcion": "Más de 100 artesanos locales exhiben y venden sus productos. No te lo pierdas."
+    },
+    {
+      "fecha": "2025-08-23",
+      "titulo": "Obra de Teatro 'El Viaje'",
+      "descripcion": "Disfruta de una noche de teatro con la aclamada obra 'El Viaje' en el Teatro Municipal."
+    },
+    {
+      "fecha": "2025-08-24",
+      "titulo": "Maratón Solidaria 5K",
+      "descripcion": "Participa en la maratón anual a beneficio del comedor infantil. ¡Inscripciones abiertas!"
+    }
+  ]
+}

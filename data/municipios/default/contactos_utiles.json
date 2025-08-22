@@ -1,0 +1,403 @@
+{
+  "categorias": [
+    {
+      "nombre_categoria": "Emergencias",
+      "contactos": [
+        {
+          "nombre": "Policía",
+          "descripcion": "Para emergencias policiales.",
+          "telefono": "911",
+          "url": ""
+        },
+        {
+          "nombre": "Bomberos",
+          "descripcion": "Para incendios y rescates.",
+          "telefono": "100",
+          "url": ""
+        },
+        {
+          "nombre": "Defensa Civil",
+          "descripcion": "Para asistencia en desastres naturales.",
+          "telefono": "103",
+          "url": ""
+        }
+      ]
+    },
+    {
+      "nombre_categoria": "Servicios Municipales",
+      "contactos": [
+        {
+          "nombre": "default",
+          "descripcion": "Mesa de Ayuda General",
+          "telefono": "+5492613168608",
+          "url": ""
+        },
+        {
+          "nombre": "Arreglo de calle",
+          "descripcion": "Encargado de Bacheo y Calles",
+          "telefono": "+5492610000001",
+          "url": ""
+        },
+        {
+          "nombre": "Luminaria",
+          "descripcion": "Supervisora de Alumbrado",
+          "telefono": "+5492610000002",
+          "url": ""
+        },
+        {
+          "nombre": "Arbolado",
+          "descripcion": "Encargado de Arbolado",
+          "telefono": "+5492610000003",
+          "url": ""
+        },
+        {
+          "nombre": "Limpieza y riego",
+          "descripcion": "Coordinadora de Limpieza",
+          "telefono": "+5492610000004",
+          "url": ""
+        },
+        {
+          "nombre": "Veterinaria y Bromatologia",
+          "descripcion": "Encargada de Veterinaria y Bromatología",
+          "telefono": "+5492634521563",
+          "url": ""
+        },
+        {
+          "nombre": "Licencia de Conducir",
+          "descripcion": "Consultas sobre Licencias",
+          "telefono": "+5492610000005",
+          "url": ""
+        },
+        {
+          "nombre": "Pago de Tasas",
+          "descripcion": "Consultas sobre Tasas y Pagos",
+          "telefono": "+5492610000006",
+          "url": ""
+        },
+        {
+          "nombre": "Defensa del Consumidor",
+          "descripcion": "Consultas y Denuncias",
+          "telefono": "+5492610000007",
+          "url": ""
+        },
+        {
+          "nombre": "Otros",
+          "descripcion": "Mesa de Ayuda General",
+          "telefono": "+5492613168608",
+          "url": ""
+        }
+      ]
+    },
+    {
+      "nombre_categoria": "Trámites Frecuentes",
+      "contactos": [
+        {
+          "nombre": "mesa_de_entrada",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1603"
+        },
+        {
+          "nombre": "funciones",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1603"
+        },
+        {
+          "nombre": "solicitud_y_certificacin",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1645"
+        },
+        {
+          "nombre": "rentas",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=346"
+        },
+        {
+          "nombre": "vencimientos",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=346"
+        },
+        {
+          "nombre": "sellados",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1632"
+        },
+        {
+          "nombre": "valores_especficos",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1609"
+        },
+        {
+          "nombre": "descuentos",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1616"
+        },
+        {
+          "nombre": "excepciones",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1616"
+        },
+        {
+          "nombre": "obras_privadas",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Cartel%20de Obra.pdf"
+        },
+        {
+          "nombre": "cartel_de_obra",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Cartel%20de Obra.pdf"
+        },
+        {
+          "nombre": "cerco_provisorio",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Cerco%20Provisorio MJ.pdf"
+        },
+        {
+          "nombre": "declaracin_jurada_conexiones_provisorias",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Declaración%20Jurada Conexiones Provisorias.pdf"
+        },
+        {
+          "nombre": "formulario_conexin_elctrica",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Formulario conexion-electrica.pdf"
+        },
+        {
+          "nombre": "formulario_instalacin_sanitaria",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Formulario%20Instalación Sanitaria -12-2020.pdf"
+        },
+        {
+          "nombre": "notificacin_para_demoliciones",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Notificación%20para demoliciones.pdf"
+        },
+        {
+          "nombre": "notificacin_viviendas_prefabricadas_no_reglamentarias",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Notificacion%20Viviendas Prefabricadas No Reglamentarias.pdf"
+        },
+        {
+          "nombre": "planilla_deie",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Planilla%20DEIE.pdf"
+        },
+        {
+          "nombre": "planos_pilastras_elctricas",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Planos%20Pilastras Eléctricas.zip"
+        },
+        {
+          "nombre": "protocolo_covid19",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Protocolo-Covid-19.pdf"
+        },
+        {
+          "nombre": "requisitos_remocin_de_piso",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Requisitos%20para Remoción de Piso.pdf"
+        },
+        {
+          "nombre": "requisitos_conexin_elctrica",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Requisitos-para-conexión-eléctrica%2024-08-20.pdf"
+        },
+        {
+          "nombre": "solicitud_de_inspeccin",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud%20de Inspección.pdf"
+        },
+        {
+          "nombre": "solicitud_de_remocin_de_piso_agua_cloaca_y_gas",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud%20de Remoción de piso -agua cloaca gas-06-2020.pdf"
+        },
+        {
+          "nombre": "solicitud_nica_de_obra__trmite_digital",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://juninmendoza.gov.ar/formularios/obras_privadas/Solicitud-Unica-d-Obra-p-Trámite-Digital-v003-10-06-2020.pdf"
+        },
+        {
+          "nombre": "modelo_de_rotulos_municipales_dwg",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-DE-ROTULOS-MUNICIPALES.zip"
+        },
+        {
+          "nombre": "obra_nueva_arquitectura",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-ARQUITECTURA.pdf"
+        },
+        {
+          "nombre": "obra_nueva_estructura",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-ESTRUCTURA.pdf"
+        },
+        {
+          "nombre": "obra_nueva_instalacion_electrica",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-ELECTRICA.pdf"
+        },
+        {
+          "nombre": "obra_nueva_instalacion_sanitaria_conexion_a_pozo",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-SANITARIA-CONEXION-A-POZO.pdf"
+        },
+        {
+          "nombre": "obra_nueva_instalacion_sanitaria_conexion_a_red",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-OBRA-NUEVA-INSTALACION-SANITARIA-CONEXION-A-RED.pdf"
+        },
+        {
+          "nombre": "relevamiento_arquitectura",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-ARQUITECTURA.pdf"
+        },
+        {
+          "nombre": "relevamiento_instalacion_electrica",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-ELECTRICA.pdf"
+        },
+        {
+          "nombre": "relevamiento_instalacion_sanitaria_conexion_a_pozo",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-SANITARIA-CONEXION-A-POZO.pdf"
+        },
+        {
+          "nombre": "relevamiento_instalacion_sanitaria_conexion_a_red",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/MODELO-ROTULO-RELEVAMIENTO-INSTALACION-SANITARIA-CONEXION-A-RED.pdf"
+        },
+        {
+          "nombre": "catastro",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx"
+        },
+        {
+          "nombre": "formulario_de_transferencia",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/wp-content/uploads/Formulario-Transferencia.docx"
+        },
+        {
+          "nombre": "forestales",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=4355"
+        },
+        {
+          "nombre": "solicitud",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=4355"
+        },
+        {
+          "nombre": "erradicacion",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=3777"
+        },
+        {
+          "nombre": "carnet_de_sanidad",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1599"
+        },
+        {
+          "nombre": "requisitos",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1599"
+        },
+        {
+          "nombre": "registro_de_artesanos",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1636"
+        },
+        {
+          "nombre": "formulario",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/?page_id=1636"
+        },
+        {
+          "nombre": "promocin_econmica_y_oficina_de_empleo",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#b2c2d7d1dddcdddfdbd1d3f2d8c7dcdbdcdfd7dcd6ddc8d39cd5ddc49cd3c0"
+        },
+        {
+          "nombre": "emailprotected",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#aec3cfdbdcc7cdc7c1dccfc3c7dccbd4d8c7d8c7cbc0cacfeef7cfc6c1c180cdc1c380cfdc"
+        },
+        {
+          "nombre": "subdireccin_de_rentas",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#fd8f9893899c8ebd97889394939098939992879cd39a928bd39c8f"
+        },
+        {
+          "nombre": "direccin_de_viviendas",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/cdn-cgi/l/email-protection#8cfae5fae5e9e2e8edcce6f9e2e5e2e1e9e2e8e3f6eda2ebe3faa2edfe"
+        },
+        {
+          "nombre": "licencia_de_conducir",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
+        },
+        {
+          "nombre": "pago_de_tasas_vigentes",
+          "descripcion": "",
+          "telefono": "",
+          "url": "https://epagos.juninmendoza.gov.ar/jrentas/"
+        },
+        {
+          "nombre": "defensa_del_consumidor",
+          "descripcion": "",
+          "telefono": "",
+          "url": ""
+        }
+      ]
+    }
+  ]
+}
