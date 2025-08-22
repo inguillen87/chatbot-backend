@@ -1,7 +1,7 @@
 import logging
 from services.conversation_state import ConversationState
 from services.config_loader import cargar_configuracion_municipio
-from services.flows.reclamo_handler import _get_reclamos_menu
+from services.flows.reclamos import _get_reclamos_menu
 from services.handlers.news_handler import NewsHandler
 from services.handlers.poi_handler import PointsOfInterestHandler
 
