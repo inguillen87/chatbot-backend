@@ -291,19 +291,23 @@ from datetime import datetime, timedelta
 
 def consultar_eventos_culturales(fecha: str) -> str:
     """
-    Consulta la agenda de eventos culturales desde un archivo JSON local.
+    Consulta la agenda de eventos culturales desde un archivo JSON local,
+    filtrando por tipo de post 'evento' y por fecha.
     """
-    logger.info(f"[HERRAMIENTA EVENTOS] Consultando agenda para fecha: '{fecha}'")
+    logger.info(f"[HERRAMIENTA EVENTOS] Consultando agenda de eventos para fecha: '{fecha}'")
 
     try:
         agenda_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'municipios', MUNICIPIO_ID, 'agenda_cultural.json')
         with open(agenda_path, 'r', encoding='utf-8') as f:
-            agenda_data = json.load(f)
+            agenda_data = json.load(f).get('eventos', [])
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logger.error(f"No se pudo cargar o parsear el archivo de agenda cultural: {e}")
         return "Lo siento, no pude acceder a la agenda cultural en este momento. Por favor, intenta más tarde."
 
-    # Normalizar la fecha de entrada
+    # 1. Filtrar solo los que son 'eventos'
+    eventos_culturales = [post for post in agenda_data if post.get('tipo_post') == 'evento']
+
+    # 2. Filtrar por fecha
     fecha_norm = normalizar_texto(fecha)
     target_date_str = None
 
@@ -312,30 +316,40 @@ def consultar_eventos_culturales(fecha: str) -> str:
     elif fecha_norm == "manana":
         target_date_str = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     else:
-        # Aquí se podría agregar un parseo de fechas más complejo
-        # Por ahora, se asume que si no es "hoy" o "mañana", no se puede procesar.
-        pass
-
-    if not target_date_str:
         return f"No entiendo la fecha '{fecha}'. Por favor, intentá con 'hoy' o 'mañana'."
 
+    # Filtrar por fecha de inicio del evento
     eventos_encontrados = [
-        evento for evento in agenda_data.get('eventos', [])
-        if evento.get('fecha') == target_date_str
+        evento for evento in eventos_culturales
+        if evento.get('fecha_evento_inicio') and evento.get('fecha_evento_inicio').startswith(target_date_str)
     ]
 
     if not eventos_encontrados:
-        return f"No encontré eventos programados para '{fecha_norm}'. Puedes consultar la agenda completa en la web del municipio."
+        return f"No encontré eventos culturales programados para '{fecha_norm}'. Puedes consultar la agenda completa en la web del municipio."
 
-    lista_eventos = []
+    # 3. Formatear la respuesta
+    lista_eventos_str = []
     for evento in eventos_encontrados:
         titulo = evento.get('titulo', 'Sin título')
+        subtitulo = evento.get('subtitulo')
         descripcion = evento.get('descripcion', 'Sin descripción')
-        evento_info = f"- *{titulo}*: {descripcion}"
-        lista_eventos.append(evento_info)
 
-    eventos_str = "\n".join(lista_eventos)
-    return f"Para '{fecha_norm}', la agenda es:\n{eventos_str}"
+        evento_str = f"*{titulo}*"
+        if subtitulo:
+            evento_str += f"\n_{subtitulo}_"
+        evento_str += f"\n{descripcion}"
+
+        lista_eventos_str.append(evento_str)
+
+    respuesta = f"Para '{fecha_norm}', la agenda cultural es:\n\n" + "\n\n---\n\n".join(lista_eventos_str)
+
+    # Add social media links
+    respuesta += "\n\n---\n"
+    respuesta += "Seguinos en nuestras redes para más eventos y noticias:\n"
+    respuesta += "Facebook: https://www.facebook.com/JuninMunicipio\n"
+    respuesta += "Instagram: https://www.instagram.com/munijuninmdz"
+
+    return respuesta
 
 def consultar_noticias_municipio() -> str:
     """
