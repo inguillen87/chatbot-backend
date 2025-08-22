@@ -234,57 +234,83 @@ def municipal_metrics(current_user):
     return jsonify(_municipal_message_metrics(eid))
 
 
+import os
+import json
+from werkzeug.utils import secure_filename
+
 @municipal_bp.route('/posts', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
 def create_municipal_post(current_user):
     """
-    Crea un nuevo post municipal (evento, noticia, etc.).
-    Utiliza el modelo MunicipioTicket con una categoría específica.
+    Crea un nuevo post municipal (evento o noticia) y lo guarda en agenda_cultural.json.
     """
     if current_user.tipo_chat != "municipio":
         return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
 
-    # El frontend envía 'titulo' y 'descripcion' en un FormData.
+    # --- Recopilar datos del formulario ---
     titulo = request.form.get('titulo')
-    descripcion = request.form.get('descripcion')
-    categoria = request.form.get('categoria', 'noticia') # Default a 'noticia'
+    subtitulo = request.form.get('subtitulo')
+    contenido = request.form.get('contenido')
+    tipo_post = request.form.get('tipo_post', 'noticia') # 'noticia' o 'evento'
+    imagen_url_externa = request.form.get('imagen_url', '')
+    fecha_evento_inicio = request.form.get('fecha_evento_inicio')
+    fecha_evento_fin = request.form.get('fecha_evento_fin')
 
-    if not titulo or not descripcion:
-        return jsonify({"error": "El título y la descripción son requeridos."}), 400
+    if not titulo or not contenido:
+        return jsonify({"error": "El título y el contenido son requeridos."}), 400
+
+    # --- Manejo del archivo de imagen (flyer) ---
+    flyer_image_url = ''
+    if 'flyer_image' in request.files:
+        file = request.files['flyer_image']
+        if file.filename != '':
+            filename = secure_filename(file.filename)
+            # Asegurarse de que el directorio de subida exista
+            upload_folder = os.path.join(current_app.root_path, 'data', 'archivos')
+            os.makedirs(upload_folder, exist_ok=True)
+            file_path = os.path.join(upload_folder, filename)
+            file.save(file_path)
+            # Generar una URL pública para el archivo.
+            # Esto asume que 'data/archivos' es servido públicamente en '/static/archivos' o similar.
+            # Para una app en producción, esto debería ser una URL de GCS o S3.
+            flyer_image_url = f"/data/archivos/{filename}"
+
+    # --- Construir el nuevo post ---
+    nuevo_post = {
+        "id": str(int(datetime.now().timestamp())), # ID simple basado en timestamp
+        "titulo": titulo,
+        "subtitulo": subtitulo,
+        "descripcion": contenido, # Mapear 'contenido' a 'descripcion' para consistencia
+        "tipo_post": tipo_post,
+        "imagen_url": flyer_image_url or imagen_url_externa,
+        "fecha_evento_inicio": fecha_evento_inicio,
+        "fecha_evento_fin": fecha_evento_fin,
+        "fecha_publicacion": datetime.now().isoformat()
+    }
+
+    # --- Leer, actualizar y escribir el archivo JSON ---
+    agenda_path = os.path.join(current_app.root_path, 'data', 'municipios', 'default', 'agenda_cultural.json')
 
     try:
-        nuevo_post = MunicipioTicket(
-            asunto=titulo,
-            detalles=descripcion,
-            pregunta=descripcion, # Llenamos pregunta para consistencia
-            categoria=categoria,
-            municipio_id=current_user.municipio_id,
-            user_id=current_user.id, # El admin que lo crea
-            estado='publicado', # Un estado específico para posts
-            nombre_vecino=current_user.name, # Nombre del admin
-            email_vecino=current_user.email, # Email del admin
-        )
-        db.session.add(nuevo_post)
-        db.session.commit()
+        if os.path.exists(agenda_path):
+            with open(agenda_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if 'eventos' not in data or not isinstance(data['eventos'], list):
+                    data['eventos'] = []
+        else:
+            data = {"eventos": []}
 
-        # Serializar el post creado para la respuesta
-        # Usamos una serialización simple aquí, podría crearse una dedicada si es necesario
-        post_data = {
-            "id": nuevo_post.id,
-            "titulo": nuevo_post.asunto,
-            "descripcion": nuevo_post.detalles,
-            "categoria": nuevo_post.categoria,
-            "fecha": nuevo_post.fecha.isoformat(),
-            "estado": nuevo_post.estado,
-            "autor_id": nuevo_post.user_id,
-        }
+        data['eventos'].insert(0, nuevo_post) # Insertar al principio para que aparezca primero
 
-        return jsonify(post_data), 201
+        with open(agenda_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return jsonify(nuevo_post), 201
+
     except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error al crear post municipal: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al crear el post."}), 500
+        current_app.logger.error(f"Error al actualizar agenda_cultural.json: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al guardar el post."}), 500
 
 
 @municipal_bp.route('/analytics', methods=['GET'])
