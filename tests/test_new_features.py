@@ -9,7 +9,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from services.ticket_utils import formatear_ticket_respuesta
-from services.municipios import GreetingHandler
+from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
 from config import TestConfig
 from app import create_app
@@ -45,19 +45,20 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("Juan Obras", message_body)
         self.assertEqual(len(buttons), 0)
 
-    def test_greeting_handler_enhanced_message(self):
+    def test_greeting_handler_final_menu(self):
         """
-        Verifica que el GreetingHandler devuelve el nuevo menú principal.
+        Verifica que el GreetingHandler devuelve el menú principal final (v5).
         """
-        handler = GreetingHandler(context={})
+        handler = GreetingHandler(context={'profile_name': 'Tester'})
         respuesta = handler.handle(payload={})
-        self.assertIn("¡Hola, Vecino/a!", respuesta["message_body"])
+        self.assertIn("¡Hola, Tester!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
         self.assertIn("options_list", respuesta)
-        self.assertEqual(len(respuesta["options_list"]), 11)
+        # 3 (Reclamos) + 3 (Trámites) + 3 (Info) + 1 (Estacionamiento) = 10
+        self.assertEqual(len(respuesta["options_list"]), 10)
         self.assertEqual(respuesta["options_list"][0]["texto"], "📝 Iniciar un Reclamo")
-        self.assertEqual(respuesta["fuente"], "greeting_handler_universal_v5")
-        self.assertEqual(len(respuesta.get("categorias", [])), 5)
+        self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
+        self.assertEqual(len(respuesta.get("categorias", [])), 4)
 
     @patch('services.municipio_responder.llamar_gemini')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
@@ -80,7 +81,8 @@ class TestNewFeatures(unittest.TestCase):
         )
 
         self.assertIn("¿Cómo te puedo ayudar hoy?", response.get("message_body", ""))
-        self.assertEqual(len(response.get("options_list", [])), 9)
+        # 3 (Reclamos) + 3 (Trámites) + 3 (Info) + 1 (Estacionamiento) = 10
+        self.assertEqual(len(response.get("options_list", [])), 10)
         self.assertTrue(
             any(opt.get("texto") == "📝 Iniciar un Reclamo" for opt in response.get("options_list", []))
         )

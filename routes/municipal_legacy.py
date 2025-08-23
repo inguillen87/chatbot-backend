@@ -3,7 +3,7 @@ from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime, timedelta
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
-from services.municipios import TODAS_LAS_CATEGORIAS_UNICAS
+from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from models import MunicipioTicket, db
 from sqlalchemy import text

@@ -148,7 +148,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 @celery_app.task
 def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file_info_whatsapp, chat_session_id):
-    from services.municipios import CONTEXTO_MUNICIPIO, ConversationState
+    from services.municipio_responder import CONTEXTO_MUNICIPIO, ConversationState
     """
     Celery task to process an image for a chat session.
     """

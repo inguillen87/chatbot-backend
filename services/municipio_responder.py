@@ -706,22 +706,25 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             "¿Cómo te puedo ayudar hoy?"
         )
 
-    # New structured menu v3
+    # Final Menu Structure (v5)
     categorias = [
-        {"titulo": "🗣️ Reclamos y Solicitudes", "botones": [
+        {"titulo": "🗣️ Reclamos y Consultas", "botones": [
             {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"},
-        ]},
-        {"titulo": "📰 Información Municipal", "botones": [
+            {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
             {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
-            {"texto": "🎭 Agenda Cultural", "action_id": "agenda_cultural"},
-            {"texto": "🗞️ Noticias", "action_id": "noticias"},
         ]},
-        {"titulo": "🚗 Servicios y Trámites", "botones": [
+        {"titulo": "🚗 Trámites y Turnos", "botones": [
             {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
-            {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-            {"texto": "🅿️ Estacionamiento", "action_id": "estacionamiento"},
-            {"texto": "🐾 Mascotas / Zoonosis", "action_id": "zoonosis"},
+            {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
+            {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
+        ]},
+        {"titulo": "📰 Información del Municipio", "botones": [
+            {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
+            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+            {"texto": "🏛️ Visitar la Web del Municipio", "action_id": "web_municipio"},
+        ]},
+        {"titulo": "🅿️ Buscar Estacionamiento Libre", "botones": [
+             {"texto": "🅿️ Buscar Estacionamiento Ahora", "action_id": "buscar_estacionamiento"},
         ]}
     ]
 
@@ -751,19 +754,19 @@ class GreetingHandler(BaseMunicipioHandler):
             logger.warning("[GreetingHandler] chat_db_context_data no encontrado. No se puede hacer un reseteo completo.")
             contexto_municipio_actual = {}
         else:
-            logger.info("[GreetingHandler] Saludo detectado. Realizando reseteo completo del contexto del municipio.")
-            # Guardar información del usuario si existe, para no perderla entre reseteos.
-            contexto_municipio_viejo = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {})
-            user_info = contexto_municipio_viejo.get('user', {})
+            logger.info("[GreetingHandler] Saludo detectado. Realizando reseteo completo del contexto.")
 
-            # Crear un diccionario de contexto completamente nuevo y limpio.
-            contexto_municipio_nuevo = {}
+            # Preserve essential info if it exists
+            user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
+
+            # Clear the entire context to prevent stale data from any flow
+            chat_db_context_data.clear()
+
+            # Restore essential info into a fresh context
+            contexto_municipio_nuevo = chat_db_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
             if user_info:
                 contexto_municipio_nuevo['user'] = user_info
 
-            # Reemplazar el diccionario de contexto viejo con el nuevo.
-            # Esto elimina todo estado de conversación, historiales, datos parciales, etc.
-            chat_db_context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_nuevo
             contexto_municipio_actual = contexto_municipio_nuevo
 
         # Establecer el estado para esperar una selección del menú principal en el próximo turno.
@@ -800,62 +803,42 @@ def handle_contactos_utiles_inicio(context, chat_db_context):
         "fuente": "contactos_utiles_show_categories"
     }
 
-def handle_agenda_noticias_from_json(content_type: str):
-    """
-    Handles requests for 'Agenda Cultural' and 'Noticias' by reading from a JSON file.
-    Filters content based on 'tipo_post' ('evento' or 'noticia').
-    """
-    all_posts = cargar_agenda_cultural()
-    if not all_posts:
-        message = "No hay información disponible en este momento."
-        return {"message_body": message, "message_type": "text"}
+def _get_posts_from_json(content_type: str) -> str:
+    """Helper to get formatted posts of a specific type from the JSON file."""
+    all_posts_data = cargar_agenda_cultural()
+    all_posts = all_posts_data.get("eventos", [])
 
-    if content_type == 'evento':
-        title = "🎭 Agenda Cultural"
-        posts = [p for p in all_posts if p.get('tipo_post') == 'evento']
-        if not posts:
-            message = "No hay eventos en la agenda cultural en este momento."
-    elif content_type == 'noticia':
-        title = "🗞️ Noticias"
-        posts = [p for p in all_posts if p.get('tipo_post') == 'noticia']
-        if not posts:
-            message = "No hay noticias recientes."
-    else:
-        return {"message_body": "Tipo de contenido no válido.", "message_type": "text"}
+    if not all_posts:
+        return ""
+
+    # Filter by type and sort by date
+    posts = [p for p in all_posts if p.get('tipo_post') == content_type]
+    posts.sort(key=lambda x: x.get('fecha_publicacion', ''), reverse=True)
 
     if not posts:
-        return {"message_body": message, "message_type": "text"}
+        return ""
 
-    # Sort posts by date, most recent first
-    posts.sort(key=lambda x: x.get('fecha', ''), reverse=True)
-
-    message_body = f"*{title}*\n\n"
-    for post in posts[:5]: # Show latest 5
+    message_body = ""
+    for post in posts[:3]: # Limit to 3 of each type
         post_title = post.get('titulo', 'Sin título')
-        post_content = post.get('contenido', '')
-        message_body += f"*{post_title}*\n{post_content}\n\n"
-
-    # Add social media links
-    social_links = (
-        "\n\n---\n"
-        "Seguinos en nuestras redes:\n"
-        "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
-        "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
-    )
-    message_body += social_links
-
-    return {
-        "message_body": message_body.strip(),
-        "message_type": "text",
-        "fuente": f"json_{content_type}"
-    }
+        post_desc = post.get('descripcion', 'Sin descripción.')
+        message_body += f"*{post_title}*\n{post_desc}\n\n"
+    return message_body
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
     """
     Handles actions from the new categorized main menu.
     """
+    # --- Aliases for new action_ids to reuse existing logic ---
+    if action_id == "veterinaria_bromatologia":
+        action_id = "zoonosis" # Re-route to existing logic
+    if action_id == "buscar_estacionamiento":
+        action_id = "estacionamiento" # Re-route to existing logic
+
+    # --- Handlers for New/Modified Menu Options ---
     if action_id == "contactos_utiles":
         return handle_contactos_utiles_inicio(context, chat_db_context)
+
     if action_id == "mostrar_menu_reclamos":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
@@ -863,6 +846,54 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         contexto_municipio_actual.pop("historial_llm_reclamo", None)
         return _get_reclamos_menu()
 
+    if action_id == "consultar_estado_reclamo":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return {
+            "message_body": "Por favor, ingresá el número de tu reclamo para consultar el estado.",
+            "message_type": "text",
+            "fuente": "handler_consultar_reclamo"
+        }
+
+    if action_id == "agenda_y_noticias":
+        noticias_body = _get_posts_from_json('noticia')
+        eventos_body = _get_posts_from_json('evento')
+
+        full_body = ""
+        if noticias_body:
+            full_body += "*🗞️ Noticias Recientes*\n" + noticias_body
+        if eventos_body:
+            full_body += "*🎭 Próximos Eventos*\n" + eventos_body
+
+        if not full_body:
+            full_body = "No hay noticias ni eventos para mostrar en este momento."
+        else:
+            social_links = (
+                "\n\n---\n"
+                "Seguinos en nuestras redes:\n"
+                "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
+                "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
+            )
+            full_body += social_links
+
+        return {
+            "message_body": full_body.strip(),
+            "message_type": "text",
+            "fuente": "handler_agenda_y_noticias"
+        }
+
+    if action_id == "web_municipio":
+        website_url = context.get("municipio_config_actual", {}).get("website_url", "https://www.juninmendoza.gov.ar/")
+        return {
+            "message_body": f"Podés encontrar toda la información oficial en nuestro sitio web.",
+            "options_list": [{"texto": "Visitar Sitio Web", "url": website_url, "type": "url"}],
+            "message_type": "interactive_buttons",
+            "fuente": "handler_web_municipio"
+        }
+
+    # --- Handlers for existing options that are kept ---
     tramites_info = get_tramites_info()
     if action_id in tramites_info:
         data = tramites_info[action_id] or {}
@@ -876,101 +907,15 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "message_type": "interactive_buttons" if botones else "text",
             "fuente": f"info_{action_id}_json",
         }
-    if action_id == "veterinaria_y_bromatologia":
-        contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
-        contacto_data = contactos_info.get("Veterinaria y Bromatologia", {})
-
-        if not contacto_data:
-            # Fallback message if data is missing
-            return {
-                "message_body": "No se encontró la información de contacto para Veterinaria y Bromatología en este momento.",
-                "message_type": "text"
-            }
-
-        nombre = contacto_data.get("nombre")
-        telefono = contacto_data.get("telefono")
-        horario = contacto_data.get("horario")
-
-        message_body = f"🐾 *Información de Veterinaria y Bromatología*\n\n"
-        if nombre:
-            message_body += f"Encargado/a: *{nombre}*\n"
-        if telefono:
-            telefono_numerico = ''.join(filter(str.isdigit, telefono))
-            link_whatsapp = f"https://wa.me/{telefono_numerico}"
-            message_body += f"Teléfono: *{telefono}* (WhatsApp: {link_whatsapp})\n"
-        if horario:
-            message_body += f"Horario de atención: *{horario}*\n"
-
-        botones = []
-        if telefono:
-            telefono_numerico = ''.join(filter(str.isdigit, telefono))
-            link_whatsapp = f"https://wa.me/{telefono_numerico}"
-            botones.append({
-                "texto": "Contactar por WhatsApp",
-                "url": link_whatsapp,
-                "type": "url"
-            })
-
-        return {
-            "message_body": message_body.strip(),
-            "options_list": botones,
-            "message_type": "interactive_buttons" if botones else "text",
-            "fuente": "info_veterinaria_json"
-        }
-
-    # Placeholder for actions without a defined response yet
-    if action_id == "noticias":
-        return handle_agenda_noticias_from_json('noticia')
-
-    if action_id == "agenda_cultural":
-        return handle_agenda_noticias_from_json('evento')
-
-    if action_id == "consultar_otros_tramites":
-        from .actions.municipio_actions import ConsultarInfoTramiteActionHandler
-        handler_response = ConsultarInfoTramiteActionHandler(context).execute({})
-
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-
-        if not handler_response.get('success', True):
-            # This is the case where the handler needs more info.
-            # We set the state and return a standardized response.
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_TRAMITE.name
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-
-            return {
-                "message_body": handler_response.get('message_to_user', '¿Sobre qué trámite necesitas información?'),
-                "message_type": "text",
-                "options_list": [],
-                "fuente": "fix_tramites_bug_wrapper_v2"
-            }
-        else:
-            # If the handler succeeded, we assume it returned a standard response.
-            # We clear the state to avoid getting stuck.
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return handler_response
-
-    if action_id == "agenda_cultural_y_turistica":
-        from .herramientas_municipio import consultar_eventos_culturales
-        # For now, we default to "hoy". A more advanced version could ask the user for a date.
-        eventos_hoy = consultar_eventos_culturales(fecha="hoy")
-        return {
-            "message_body": f"Aquí tienes la agenda para hoy:\n\n{eventos_hoy}",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "agenda_cultural_hoy"
-        }
 
     if action_id == "estacionamiento":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
-        contexto_municipio_actual['consulta_pendiente_ubicacion'] = 'estacionamiento' # The query to run after getting location
+        contexto_municipio_actual['consulta_pendiente_ubicacion'] = 'estacionamiento'
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return {
-            "message_body": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección.",
+            "message_body": "Para encontrar estacionamiento libre, por favor compartí tu ubicación o escribí una dirección.",
             "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
             "message_type": "interactive_buttons",
             "fuente": "pedir_ubicacion_estacionamiento"
@@ -984,20 +929,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "fuente": "info_solicitar_turnos_direct_link"
         }
 
-    if action_id == "estacionamiento":
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
-        contexto_municipio_actual['consulta_pendiente_ubicacion'] = 'estacionamiento'
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return {
-            "message_body": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección.",
-            "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
-            "message_type": "interactive_buttons",
-            "fuente": "pedir_ubicacion_estacionamiento"
-        }
-
-    if action_id == "zoonosis":
+    if action_id == "zoonosis": # Handles the 'veterinaria_bromatologia' alias
         contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
         contacto_data = contactos_info.get("Veterinaria y Bromatologia", {})
         if not contacto_data:
@@ -1007,7 +939,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         telefono = contacto_data.get("telefono")
         horario = contacto_data.get("horario")
 
-        message_body = f"🐾 *Información de Mascotas / Zoonosis*\n\n"
+        message_body = f"🐾 *Información de Veterinaria y Bromatología*\n\n"
         if nombre:
             message_body += f"Encargado/a: *{nombre}*\n"
         if telefono:
@@ -1025,7 +957,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "message_body": message_body.strip(),
             "options_list": botones,
             "message_type": "interactive_buttons" if botones else "text",
-            "fuente": "info_zoonosis_json"
+            "fuente": "info_veterinaria_json"
         }
 
     # Fallback for any other action that is not explicitly handled above
@@ -2211,31 +2143,30 @@ def responder_municipio(
         if selected_action:
             logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
 
-            # Special handling for actions that lead to a sub-menu
-            if selected_action == "mostrar_menu_reclamos":
-                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
-                return _finalize_response(_get_reclamos_menu())
+            # The state should be cleared so we don't get stuck here.
+            # The handler itself will set a new state if it needs to continue a flow.
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
 
-            # For informational actions, handle them and then return to the main menu prompt.
             response = handle_main_menu_action(selected_action, context, chat_db_context)
             if response:
-                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+                # After the action, ask a generic follow-up question unless the handler
+                # wants to take control of the conversation (e.g., by setting a new state).
+                # We check if a new state was set by the handler.
+                new_state = contexto_municipio_actual.get("estado_conversacion")
+                if not new_state:
+                    # Append a follow-up question and show the main menu again.
+                    # This creates a clear "turn" and returns control to the user.
+                    follow_up_message = "\n\n¿En qué más puedo ayudarte?"
+                    response['message_body'] = response.get('message_body', '').strip() + follow_up_message
 
-                # Add a follow-up message.
-                follow_up_message = "\n\n¿Puedo ayudarte con algo más?"
-                augmented_message = response.get('message_body', '').strip() + follow_up_message
+                    # We will not send the full menu again here.
+                    # We will send a simpler prompt.
+                    # A better approach would be to have a "back to menu" button.
+                    # For now, we just add the text.
 
-                # Get the main menu to show after the informational message.
-                main_menu_payload = _get_main_menu_payload(context, welcome_message_override=augmented_message)
-
-                # The main_menu_payload now contains the combined message and the full menu structure.
-                # We can use it directly as the new response.
-
-                if chat_db_context:
-                    flag_modified(chat_db_context, "context_data")
-
-                return _finalize_response(main_menu_payload)
+                return _finalize_response(response)
         else:
             # If the input doesn't match a menu option, treat it as a general query.
             # Clear the state so it falls through to the main LLM handler.

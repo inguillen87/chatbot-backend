@@ -440,7 +440,7 @@ def _procesar_chat(
         # Marcar explícitamente context_data como modificado para SQLAlchemy
         if chat_context_obj:
             # Importar la función de serialización
-            from services.municipios import serializar_enum, CONTEXTO_MUNICIPIO # CONTEXTO_MUNICIPIO for logging clarity
+            from services.municipio_responder import serializar_enum, CONTEXTO_MUNICIPIO # CONTEXTO_MUNICIPIO for logging clarity
 
             # Serializar el context_data COMPLETO antes de marcarlo como modificado y hacer commit
             if chat_context_obj.context_data:

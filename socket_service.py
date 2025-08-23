@@ -186,6 +186,6 @@ def on_location(data):
     The data is expected to be a dictionary with 'lat' and 'lon' keys.
     e.g., {'lat': -34.6037, 'lon': -58.3816}
     """
-    from services.municipios import handle_location_update
+    from services.municipio_responder import handle_location_update
     response = handle_location_update(data)
     socketio.emit('message', response)

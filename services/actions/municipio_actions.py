@@ -345,7 +345,7 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
 
 class ConsultarInfoTramiteActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        from services.municipios import get_tramites_info
+        from services.municipio_responder import get_tramites_info
         logger.info(f"Executing ConsultarInfoTramiteActionHandler with data: {action_data}")
         tramite_nombre = action_data.get("nombre_tramite") or action_data.get("categoria") # Categoria might be used if specific tramite name isn't clear
         if not tramite_nombre:
@@ -355,7 +355,7 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
                 "pedir_info": "nombre_tramite"
             }
 
-        from services.municipios import obtener_info_tramite_web
+        from services.municipio_responder import obtener_info_tramite_web
 
         info_tramite = obtener_info_tramite_web(tramite_nombre)
 
