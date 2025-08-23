@@ -7,7 +7,7 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from services.municipios import responder_municipio
+from services.municipio_responder import responder_municipio
 
 class TestEndToEnd(unittest.TestCase):
 

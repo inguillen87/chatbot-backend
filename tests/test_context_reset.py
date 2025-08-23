@@ -7,7 +7,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 from flask import Flask
-from services.municipios import responder_municipio, ConversationState, CONTEXTO_MUNICIPIO
+from services.municipio_responder import responder_municipio, ConversationState, CONTEXTO_MUNICIPIO
 from models import db, User, Rubro, ChatSessionContext
 
 

@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch
-from services.municipios import GreetingHandler
+from services.municipio_responder import GreetingHandler
 
 def test_greeting_handler():
     # Create a mock context
@@ -14,7 +14,9 @@ def test_greeting_handler():
 
     # Assert that the response is correct
     assert response is not None
-    assert "¡Hola, Vecino/a!" in response.get("message_body", "")
-    assert "Soy JUNI" in response.get("message_body", "")
-    assert len(response.get("categorias", [])) == 5
-    assert response.get("fuente") == "greeting_handler_universal_v5"
+    # Check for the new generic greeting message
+    assert "¡Hola! 👋 Soy JUNI" in response.get("message_body", "")
+    # Check for the correct number of categories in the new menu
+    assert len(response.get("categorias", [])) == 4
+    # Check for the correct source
+    assert response.get("fuente") == "greeting_handler_structured_menu_v2"

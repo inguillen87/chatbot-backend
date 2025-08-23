@@ -281,12 +281,14 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertTrue(resultado)
 
     @patch('services.municipio_responder.cargar_agenda_cultural')
-    def test_news_handler(self, mock_cargar_agenda):
-        mock_cargar_agenda.return_value = [
-            {"titulo": "Noticia de Prueba 1", "contenido": "Este es el cuerpo de la noticia 1.", "tipo_post": "noticia", "fecha": "2025-08-22"},
-            {"titulo": "Evento Cultural", "contenido": "Este es un evento, no una noticia.", "tipo_post": "evento", "fecha": "2025-08-22"},
-            {"titulo": "Noticia de Prueba 2", "contenido": "Este es el cuerpo de la noticia 2.", "tipo_post": "noticia", "fecha": "2025-08-21"},
-        ]
+    def test_agenda_y_noticias_handler(self, mock_cargar_agenda):
+        mock_cargar_agenda.return_value = {
+            "eventos": [
+                {"titulo": "Noticia de Prueba 1", "descripcion": "Este es el cuerpo de la noticia 1.", "tipo_post": "noticia", "fecha_publicacion": "2025-08-22"},
+                {"titulo": "Evento Cultural de Prueba", "descripcion": "Este es un evento.", "tipo_post": "evento", "fecha_publicacion": "2025-08-22"},
+                {"titulo": "Noticia de Prueba 2", "descripcion": "Este es el cuerpo de la noticia 2.", "tipo_post": "noticia", "fecha_publicacion": "2025-08-21"},
+            ]
+        }
 
         from services.municipio_responder import responder_municipio
         with self.app.test_request_context():
@@ -296,7 +298,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             chat_context.context_data = {}
 
             response = responder_municipio(
-                pregunta_original={"action": "noticias"},
+                pregunta_original={"action": "agenda_y_noticias"},
                 owner_user=owner_user,
                 viewer_user=None,
                 anon_id="test_anon_123",
@@ -304,12 +306,12 @@ class TestAccionesMunicipio(unittest.TestCase):
                 rubro_obj=owner_user.rubro
             )
 
-        self.assertIn("🗞️ Noticias", response["message_body"])
+        self.assertIn("Noticias Recientes", response["message_body"])
+        self.assertIn("Próximos Eventos", response["message_body"])
         self.assertIn("Noticia de Prueba 1", response["message_body"])
-        self.assertIn("Noticia de Prueba 2", response["message_body"])
-        self.assertNotIn("Evento Cultural", response["message_body"]) # Verify filtering
-        self.assertIn("https://www.facebook.com/municipalidaddejunin", response["message_body"]) # Verify social links
-        self.assertEqual(response["fuente"], "json_noticia")
+        self.assertIn("Evento Cultural de Prueba", response["message_body"])
+        self.assertIn("https://www.facebook.com/municipalidaddejunin", response["message_body"])
+        self.assertEqual(response["fuente"], "handler_agenda_y_noticias")
 
     @patch('services.municipio_responder.llamar_gemini')
     def test_points_of_interest_handler_with_location(self, mock_llamar_gemini):

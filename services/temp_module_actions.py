@@ -10,7 +10,7 @@ from .herramientas_municipio import parse_direccion_completa, direccion_es_valid
 from .common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from .config_loader import CONFIG_MUNICIPIO # Para fallback de config
 from services.gemini_bridge import llamar_gemini # Necesario para el type hint, aunque no se usa en esta función
-from services.municipios import enviar_notificacion_whatsapp_con_plantilla # Importar desde el mismo módulo si está allí
+from services.whatsapp_service import enviar_notificacion_whatsapp_con_plantilla
 
 # Definición completa de accion_crear_reclamo_municipio
 def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
