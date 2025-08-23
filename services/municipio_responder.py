@@ -706,22 +706,22 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             "¿Cómo te puedo ayudar hoy?"
         )
 
-    # New structured menu, simplified as requested
+    # New structured menu v3
     categorias = [
-        {"titulo": "🗣️ Reclamos, Trámites y Turnos", "botones": [
+        {"titulo": "🗣️ Reclamos y Solicitudes", "botones": [
             {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
             {"texto": "🗓️ Solicitar Turnos", "action_id": "solicitar_turnos"},
-            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
         ]},
-        {"titulo": "📰 Información útil", "botones": [
+        {"titulo": "📰 Información Municipal", "botones": [
             {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
             {"texto": "🎭 Agenda Cultural", "action_id": "agenda_cultural"},
             {"texto": "🗞️ Noticias", "action_id": "noticias"},
         ]},
-        {"titulo": "💵 Tasas y Servicios", "botones": [
+        {"titulo": "🚗 Servicios y Trámites", "botones": [
+            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
             {"texto": "💵 Pagar Tasas", "action_id": "pago_de_tasas_vigentes"},
-            {"texto": "🐾 Zoonosis", "action_id": "zoonosis"},
-            {"texto": "♻️ Recolección de Residuos", "action_id": "recoleccion_residuos"},
+            {"texto": "🅿️ Estacionamiento", "action_id": "estacionamiento"},
+            {"texto": "🐾 Mascotas / Zoonosis", "action_id": "zoonosis"},
         ]}
     ]
 
@@ -982,6 +982,50 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "options_list": [{"texto": "Solicitar Turno", "url": "https://www.juninmendoza.gov.ar/turnos-online/", "type": "url"}],
             "message_type": "interactive_buttons",
             "fuente": "info_solicitar_turnos_direct_link"
+        }
+
+    if action_id == "estacionamiento":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
+        contexto_municipio_actual['consulta_pendiente_ubicacion'] = 'estacionamiento'
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return {
+            "message_body": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección.",
+            "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
+            "message_type": "interactive_buttons",
+            "fuente": "pedir_ubicacion_estacionamiento"
+        }
+
+    if action_id == "zoonosis":
+        contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
+        contacto_data = contactos_info.get("Veterinaria y Bromatologia", {})
+        if not contacto_data:
+            return {"message_body": "No se encontró la información de contacto en este momento.", "message_type": "text"}
+
+        nombre = contacto_data.get("nombre")
+        telefono = contacto_data.get("telefono")
+        horario = contacto_data.get("horario")
+
+        message_body = f"🐾 *Información de Mascotas / Zoonosis*\n\n"
+        if nombre:
+            message_body += f"Encargado/a: *{nombre}*\n"
+        if telefono:
+            link_whatsapp = f"https://wa.me/{''.join(filter(str.isdigit, telefono))}"
+            message_body += f"Teléfono: *{telefono}* (WhatsApp: {link_whatsapp})\n"
+        if horario:
+            message_body += f"Horario de atención: *{horario}*\n"
+
+        botones = []
+        if telefono:
+            link_whatsapp = f"https://wa.me/{''.join(filter(str.isdigit, telefono))}"
+            botones.append({"texto": "Contactar por WhatsApp", "url": link_whatsapp, "type": "url"})
+
+        return {
+            "message_body": message_body.strip(),
+            "options_list": botones,
+            "message_type": "interactive_buttons" if botones else "text",
+            "fuente": "info_zoonosis_json"
         }
 
     # Fallback for any other action that is not explicitly handled above
