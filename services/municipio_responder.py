@@ -743,7 +743,6 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         {"titulo": "📰 Información del Municipio", "botones": [
             {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
             {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
-            {"texto": "🏛️ Visitar la Web del Municipio", "action_id": "web_municipio"},
         ]},
         {"titulo": "🅿️ Buscar Estacionamiento Libre", "botones": [
              {"texto": "🅿️ Buscar Estacionamiento Ahora", "action_id": "buscar_estacionamiento"},
