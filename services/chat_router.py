@@ -2,7 +2,7 @@ from importlib import import_module
 
 HANDLER_MAP = {
     "pyme": "services.pymes.responder_pyme",
-    "municipio": "services.municipios.responder_municipio",
+    "municipio": "services.municipio_responder.responder_municipio",
 }
 
 

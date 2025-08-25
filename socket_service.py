@@ -4,9 +4,8 @@ from config import ALLOWED_ORIGINS
 from models import User, db, TicketComentario
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
-from services.google_text_to_speech import TextToSpeechService
+from services.tts_orchestrator import generar_audio_con_fallback
 
-tts_service = TextToSpeechService()
 socketio = SocketIO(
     cors_allowed_origins=ALLOWED_ORIGINS,
     cookie=True,
@@ -64,7 +63,7 @@ def send_welcome_message(sid, auth):
 
         if respuesta.get("generar_audio"):
             try:
-                audio_url = tts_service.synthesize_speech(text=respuesta["message_body"])
+                audio_url = generar_audio_con_fallback(text=respuesta["message_body"])
                 if audio_url:
                     respuesta["audio_url"] = audio_url
             except Exception as e:
