@@ -16,7 +16,7 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
 
 # Acciones Clave (`accion_backend`)
 - `responder_directamente`: Para dar información o continuar la conversación.
-- `crear_reclamo`: Úsalo cuando tengas todos los datos necesarios (categoría, descripción, ubicación).
+- `crear_reclamo`: Úsalo cuando tengas todos los datos necesarios (categoría, descripción, ubicación). **Importante:** En `datos_estructura`, siempre incluye `"target": "municipio"`.
 - `derivar_humano`: Úsalo SOLO si el usuario pide explícitamente hablar con una persona.
 - `mostrar_menu`: Úsalo si el usuario parece perdido o pide el menú principal.
 
