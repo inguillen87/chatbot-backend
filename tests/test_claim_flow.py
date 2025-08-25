@@ -18,13 +18,11 @@ def test_client():
 
     with app.app_context():
         db.create_all()
-        # Clean up database before each test run
         db.session.query(ChatSessionContext).delete()
         db.session.query(User).delete()
         db.session.query(Rubro).delete()
         db.session.commit()
 
-        # Crear datos iniciales si es necesario
         rubro = Rubro(nombre="municipio", clave="municipio")
         db.session.add(rubro)
         user = User(
@@ -42,7 +40,6 @@ def test_client():
     with app.test_client() as testing_client:
         with app.app_context():
             yield testing_client
-    # Cleanup after all tests in the module have run
     with app.app_context():
         db.drop_all()
 
@@ -60,7 +57,6 @@ def test_full_claim_in_one_go(test_client, mock_llm):
     db.session.add(chat_db_context)
     db.session.commit()
 
-    # Simular que el LLM extrae toda la información
     mock_llm.return_value = (
         {
             "accion_backend": "crear_reclamo",
@@ -81,9 +77,7 @@ def test_full_claim_in_one_go(test_client, mock_llm):
     pregunta = "Quiero reportar un semáforo roto en Av. Siempre Viva 123. Mi nombre es Marcelo Guillen, mi teléfono es 2613168608 y mi email es marcelo.guillen@example.com."
 
     with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
-        mock_ticket = MagicMock()
-        mock_ticket.nro_ticket = "12345"
-        mock_crear_ticket.return_value = mock_ticket
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345"}
 
         respuesta = responder_municipio(
             pregunta_original=pregunta,
@@ -108,11 +102,10 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     db.session.add(chat_db_context)
     db.session.commit()
 
-    # 1. El usuario inicia el reclamo
     mock_llm.return_value = (
         {
             "accion_backend": "crear_reclamo",
-                "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto", "categoria": "Semáforos"},
+            "datos_estructura": {"target": "municipio", "descripcion": "semáforo roto", "categoria": "Semáforos"},
             "message_body": "Entendido, ¿dónde es el problema?",
             "pedir_info": "ubicacion"
         },
@@ -127,7 +120,6 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     )
     assert "¿dónde es el problema?" in respuesta["message_body"]
 
-    # 2. El usuario da la ubicación
     mock_llm.return_value = (
         {
             "accion_backend": "crear_reclamo",
@@ -146,7 +138,6 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     )
     assert "Perfecto. ¿Tu nombre?" in respuesta["message_body"]
 
-    # 3. El usuario da el nombre y el resto de datos
     mock_llm.return_value = (
         {
             "accion_backend": "crear_reclamo",
@@ -162,9 +153,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
     )
 
     with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
-        mock_ticket = MagicMock()
-        mock_ticket.nro_ticket = "54321"
-        mock_crear_ticket.return_value = mock_ticket
+        mock_crear_ticket.return_value = {"id": 2, "nro_ticket": "54321"}
 
         respuesta = responder_municipio(
             pregunta_original="Lisa Simpson, 555-1234, lisa.simpson@example.com",

@@ -117,18 +117,37 @@ class ReclamoFlowHandler:
             logger.error(f"ReclamoFlowHandler: Estado desconocido o no manejado: {state_name}")
             return self.end_flow("Hubo un error en el proceso, por favor intentá de nuevo.", show_menu=True)
 
-    def start_flow(self, categoria_inicial=None):
+    def start_flow(self, datos_iniciales=None, categoria_inicial=None):
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
-        self.flow_context['datos_reclamo'] = {}
-
-        if categoria_inicial:
+        self.flow_context['datos_reclamo'] = datos_iniciales or {}
+        if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
-            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
-            return {"message_body": f"Perfecto. Iniciemos tu reclamo por *{categoria_inicial}*.\n\nPor favor, indicame la dirección exacta del problema (calle y número). O podés escribir 'cancelar' para volver al menú."}
-        else:
+
+        # Check what data is missing and transition to the correct state
+        if not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
             return _get_reclamos_menu()
+        elif not self.flow_context['datos_reclamo'].get('descripcion'):
+            # This case is less likely if categoria is present, but good to have
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
+            categoria = self.flow_context['datos_reclamo']['categoria']
+            return {"message_body": f"Entendido, el reclamo es por *{categoria}*. Ahora, por favor, describí brevemente el problema."}
+        elif not self.flow_context['datos_reclamo'].get('direccion'):
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            # Construct a message confirming the data we have
+            categoria = self.flow_context['datos_reclamo']['categoria']
+            descripcion = self.flow_context['datos_reclamo'].get('descripcion', 'No especificada')
+
+            # If the description came from an image, it might be generic.
+            # We can tailor the message.
+            if self.flow_context['datos_reclamo'].get('origen_descripcion') == 'imagen':
+                 return {"message_body": f"Gracias a tu imagen, entiendo que el reclamo es por *{categoria}* (problema similar a: '{descripcion}').\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
+            else:
+                 return {"message_body": f"Reclamo por *{categoria}*.\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
+        else:
+            # All initial data is present, move to confirmation or next step
+            return self.ask_for_contact_details()
 
     def handle_categoria(self, user_input):
         self.flow_context['datos_reclamo']['categoria'] = user_input
@@ -221,7 +240,6 @@ class ReclamoFlowHandler:
             del self.context["chat_db_context_data"]["reclamo_flow_v2"]
 
         if show_menu:
-            # Return the main menu payload directly
             return self.greeting_handler.handle({})
         else:
             return {"message_body": message, "message_type": "text"}
@@ -587,6 +605,7 @@ class ConversationState(Enum):
     ESPERANDO_CONFIRMACION_DATOS_RECLAMO = auto()
     ESPERANDO_CORRECCION_DATOS_RECLAMO = auto()
     ESPERANDO_SELECCION_CONTACTO_CATEGORIA = auto()
+    ESPERANDO_INTENCION_UBICACION = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -712,6 +731,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     categorias = [
         {"titulo": "🗣️ Reclamos y Consultas", "botones": [
             {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+            {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
             {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
             {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
         ]},
@@ -857,6 +877,17 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "message_body": "Por favor, ingresá el número de tu reclamo para consultar el estado.",
             "message_type": "text",
             "fuente": "handler_consultar_reclamo"
+        }
+
+    if action_id == "enviar_sugerencia":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return {
+            "message_body": "¡Gracias por tu iniciativa! Por favor, escribí tu sugerencia o propuesta a continuación.",
+            "message_type": "text",
+            "fuente": "handler_enviar_sugerencia"
         }
 
     if action_id == "agenda_y_noticias":
@@ -1774,6 +1805,10 @@ def responder_municipio(
         for key, value in kwargs.items():
             received_payload[key] = value
 
+    chat_db_context_live_data = {}
+    if chat_db_context and chat_db_context.context_data is not None:
+        chat_db_context_live_data = chat_db_context.context_data
+
     # Crear el diccionario de contexto principal una sola vez
     context = {
         "user_obj": owner_user,
@@ -1784,10 +1819,11 @@ def responder_municipio(
         "channel": channel,
         "municipio_config_actual": final_municipio_config,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": {}, # Se poblará después de cargar desde la DB
+        "chat_db_context_data": chat_db_context_live_data, # Usar el dict vivo
         "intencion": kwargs.get("intencion"),
         "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
-        "es_foto": False, "foto_url": None,
+        "es_foto": received_payload.get("es_foto", False),
+        "foto_url": received_payload.get("foto_url"),
         "es_ubicacion": received_payload.get("es_ubicacion", False),
         "es_archivo": received_payload.get("es_archivo", False),
         "action": received_payload.get("action"),
@@ -1818,19 +1854,20 @@ def responder_municipio(
 
         if analysis_result and analysis_result.get("raw_response"):
             try:
-                # Attempt to parse the JSON from the raw response string
                 parsed_response = json.loads(analysis_result.get("raw_response"))
                 if parsed_response.get("intent") == "crear_reclamo":
                     logger_actual.info(f"Multimodal analysis successful. Intent: 'crear_reclamo'. Data: {parsed_response.get('data')}")
-                    # Pre-fill the context with the extracted data
-                    contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-                    reclamo_data = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
-                    reclamo_data.update(parsed_response.get("data", {}))
 
-                    # Create a synthetic prompt to guide the next step
-                    pregunta_str = f"El usuario ha enviado una imagen. El análisis sugiere un reclamo de '{reclamo_data.get('categoria', 'N/A')}'. Por favor, confirma esto con el usuario y pide la ubicación del problema."
-                    received_payload["pregunta"] = pregunta_str
-                    logger_actual.info(f"Synthetic prompt created: {pregunta_str}")
+                    datos_iniciales = parsed_response.get("data", {})
+                    datos_iniciales['origen_descripcion'] = 'imagen' # Add origin marker
+
+                    handler = ReclamoFlowHandler(context, chat_db_context)
+                    response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
+
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+
+                    return _finalize_response(response_dict)
 
             except json.JSONDecodeError:
                 logger_actual.error(f"Failed to parse JSON from vision model response: {analysis_result.get('raw_response')}")
@@ -1842,10 +1879,22 @@ def responder_municipio(
 
         address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
 
-        # Create a synthetic prompt to ask the user what they want to do
-        pregunta_str = f"El usuario compartió una ubicación ({address}) sin texto adicional. Por favor, pregúntale qué le gustaría hacer en esa dirección y ofrécele las siguientes opciones: 'Iniciar un reclamo', 'Hacer una sugerencia', o 'Consultar información del lugar'."
-        received_payload["pregunta"] = pregunta_str
-        logger_actual.info(f"Synthetic prompt for location created: {pregunta_str}")
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+        contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        return _finalize_response({
+            "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+            "options_list": [
+                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                {"texto": "Cancelar", "action_id": "cancelar"}
+            ],
+            "message_type": "interactive_buttons",
+            "fuente": "proactive_location_handler"
+        })
     # --- FIN: Manejo Proactivo de Ubicación ---
 
 
@@ -1993,96 +2042,135 @@ def responder_municipio(
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
     # que debe devolver accion_backend: "saludar".
 
+    # --- RESTRUCTURED LOGIC ---
     # Obtener el estado actual de la conversación antes de evaluar acciones
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action")
 
-    if estado_conversacion == 'ESPERANDO_CONFIRMACION_STT':
-        transcript_pendiente = contexto_municipio_actual.get('stt_transcript_pendiente')
-        contexto_municipio_actual['estado_conversacion'] = None
-        contexto_municipio_actual.pop('stt_transcript_pendiente', None)
+    # 1. Handle active conversation states first.
+    if estado_conversacion:
+        if estado_conversacion == 'ESPERANDO_CONFIRMACION_STT':
+            transcript_pendiente = contexto_municipio_actual.get('stt_transcript_pendiente')
+            contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('stt_transcript_pendiente', None)
 
-        if "si" in normalizar_texto(pregunta_str) or (action and "si" in action):
-            pregunta_str = transcript_pendiente
-            if "pregunta" in received_payload:
-                received_payload["pregunta"] = pregunta_str
-        else:
-            return _finalize_response({
-                "message_body": "Entendido. Por favor, intentá de nuevo o escribí tu consulta.",
-                "options_list": []
-            })
+            if "si" in normalizar_texto(pregunta_str) or (action and "si" in action):
+                pregunta_str = transcript_pendiente
+                if "pregunta" in received_payload:
+                    received_payload["pregunta"] = pregunta_str
+            else:
+                return _finalize_response({
+                    "message_body": "Entendido. Por favor, intentá de nuevo o escribí tu consulta.",
+                    "options_list": []
+                })
 
-    # New main menu handler
-    # FIX: Reordered logic. First, check for specific reclamo actions that set state.
-    # Then, handle generic main menu actions that return immediately.
-    reclamo_categories = {
-        "reclamo_luminaria": "Luminaria",
-        "reclamo_arbolado": "Arbolado",
-        "reclamo_limpieza_riego": "Limpieza y riego",
-        "reclamo_arreglo_calle": "Arreglo de calle",
-        "reclamo_otros": "Otros",
-    }
+        elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
+            pregunta_str_menu = ""
+            if isinstance(pregunta_original, str):
+                pregunta_str_menu = pregunta_original
+            elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+                pregunta_str_menu = pregunta_original["pregunta"]
 
-    if action in reclamo_categories:
-        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            selected_action = action or find_menu_action_by_input(pregunta_str_menu, _get_main_menu_payload(context).get('options_list', []))
 
-        logger_actual.info(f"[ACTION_RECLAMO] New claim started via action '{action}'. Clearing previous claim context.")
-        contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
-        contexto_municipio_actual.pop("historial_llm_reclamo", None)
+            if selected_action:
+                contexto_municipio_actual['estado_conversacion'] = None
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                response = handle_main_menu_action(selected_action, context, chat_db_context)
+                if response:
+                    return _finalize_response(response)
+            else:
+                logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
+                contexto_municipio_actual['estado_conversacion'] = None
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
 
-        contexto_municipio_actual.setdefault('datos_parciales_llm_reclamo', {})['categoria'] = reclamo_categories[action]
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-        # After setting state, we let the execution fall through to the LLM handler
-    elif action == "mostrar_menu_reclamos":
-        contexto_municipio_actual = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return _finalize_response(_get_reclamos_menu())
+        elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name:
+            pregunta_str_reclamo = ""
+            if isinstance(pregunta_original, str):
+                pregunta_str_reclamo = pregunta_original
+            elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+                pregunta_str_reclamo = pregunta_original["pregunta"]
+
+            logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}', Action: '{action}'")
+
+            reclamo_categories = {
+                "reclamo_luminaria": "Luminaria", "reclamo_arbolado": "Arbolado",
+                "reclamo_limpieza_riego": "Limpieza y riego", "reclamo_arreglo_calle": "Arreglo de calle",
+                "reclamo_otros": "Otros"
+            }
+
+            selected_category_name = None
+            if action in reclamo_categories:
+                selected_category_name = reclamo_categories[action]
+            else:
+                normalized_input = normalizar_texto(pregunta_str_reclamo or "")
+                if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
+                    return _finalize_response(GreetingHandler(context).handle({}))
+
+                reclamo_options = _get_reclamos_menu().get("options_list", [])
+                if pregunta_str_reclamo.isdigit():
+                    for option in reclamo_options:
+                        if option.get("id_accion") == pregunta_str_reclamo:
+                            selected_category_name = option.get("category_name")
+                            break
+                if not selected_category_name:
+                    plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+                    selected_category_name = find_reclamo_category_by_input(pregunta_str_reclamo, plain_text_options)
+
+            if selected_category_name:
+                handler = ReclamoFlowHandler(context, chat_db_context)
+                response_dict = handler.start_flow(categoria_inicial=selected_category_name)
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response(response_dict)
+            else:
+                return _finalize_response(_get_reclamos_menu())
+
+        elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
+            ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+            address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
+
+            if action == "iniciar_reclamo_con_ubicacion":
+                handler = ReclamoFlowHandler(context, chat_db_context)
+                datos_iniciales = {"direccion": address}
+                if ubicacion_contextual:
+                    datos_iniciales['coordenadas'] = {"lat": ubicacion_contextual.get("latitude"), "lon": ubicacion_contextual.get("longitude")}
+                response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response(response_dict)
+            elif action == "enviar_sugerencia_con_ubicacion":
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
+                contexto_municipio_actual['ubicacion_contextual_sugerencia'] = address
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
+            else:
+                contexto_municipio_actual['estado_conversacion'] = None
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return GreetingHandler(context).handle({})
+
+        elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
+            sugerencia_texto = pregunta_str
+            if len(sugerencia_texto) < 10:
+                return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
+
+            ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
+            datos_sugerencia = {"categoria": "Sugerencia", "descripcion": sugerencia_texto, "ubicacion": ubicacion_sugerencia}
+
+            handler = CrearReclamoActionHandler(context)
+            response = handler.execute(datos_sugerencia)
+
+            if response.get("success"):
+                response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
+
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+
+    # 2. If no state is active, then handle actions that start new flows.
     elif action:
         response = handle_main_menu_action(action, context, chat_db_context)
         if response:
             return _finalize_response(response)
 
-
-    # --- INICIO: Manejo de selección de lista dinámica (Noticias, etc.) ---
-    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_DE_LISTA.name:
-        opciones_guardadas = contexto_municipio_actual.get('opciones_en_pantalla', [])
-        seleccion = None
-        if pregunta_str.isdigit():
-            try:
-                indice = int(pregunta_str) - 1
-                if 0 <= indice < len(opciones_guardadas):
-                    seleccion = opciones_guardadas[indice]
-            except (ValueError, IndexError):
-                pass
-
-        # Limpiar contexto para el siguiente turno
-        contexto_municipio_actual['estado_conversacion'] = None
-        contexto_municipio_actual.pop('opciones_en_pantalla', None)
-
-        if seleccion and seleccion.get('url'):
-            return _finalize_response({
-                "message_body": f"Aquí tienes el enlace que pediste: {seleccion.get('url')}",
-                "options_list": [{"texto": "Menú Principal", "action_id": "saludar"}],
-                "message_type": "interactive_buttons",
-                "fuente": "seleccion_lista_dinamica"
-            })
-        else:
-            # Si no se pudo procesar la selección, volver al menú principal
-            return _finalize_response(GreetingHandler(context).handle({}))
-
-
-    if action == "iniciar_reclamo": # Kept for backward compatibility or other flows
-        return _finalize_response(_get_reclamos_menu())
-
-    if action == "reclamo_perdida_agua":
-        return _finalize_response({
-            "message_body": "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "info_perdida_agua"
-        })
 
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
@@ -2523,6 +2611,41 @@ def responder_municipio(
                 "fuente": "pide_correccion_reclamo"
             })
 
+    elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
+        ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+        address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
+
+        if action == "iniciar_reclamo_con_ubicacion":
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            datos_iniciales = {"direccion": address}
+            if ubicacion_contextual:
+                datos_iniciales['coordenadas'] = {
+                    "lat": ubicacion_contextual.get("latitude"),
+                    "lon": ubicacion_contextual.get("longitude")
+                }
+            # The original implementation was missing the 'categoria_inicial' argument for start_flow
+            response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response_dict)
+
+        elif action == "enviar_sugerencia_con_ubicacion":
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
+            contexto_municipio_actual['ubicacion_contextual_sugerencia'] = address
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.",
+                "fuente": "handler_enviar_sugerencia_con_ubicacion"
+            })
+
+        else: # Cancelar o no se entiende
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return GreetingHandler(context).handle({})
+
+
     elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:
         logger_actual.info(f"Handling input in ESPERANDO_CORRECCION_DATOS_RECLAMO state. Input: '{pregunta_str}'")
 
@@ -2645,6 +2768,37 @@ def responder_municipio(
                 "message_type": "text",
                 "fuente": "pedir_nueva_ubicacion"
             })
+
+    elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
+        sugerencia_texto = pregunta_str
+        if len(sugerencia_texto) < 10:
+            return _finalize_response({
+                "message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?",
+                "fuente": "sugerencia_muy_corta"
+            })
+
+        ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
+
+        # Crear ticket para la sugerencia
+        datos_sugerencia = {
+            "categoria": "Sugerencia",
+            "descripcion": sugerencia_texto,
+            "ubicacion": ubicacion_sugerencia,
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        response = handler.execute(datos_sugerencia)
+
+        # Modificar el mensaje de éxito para que sea específico para sugerencias
+        if response.get("success"):
+            response["message_body"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('ticket_nro', 'N/A')}` para su seguimiento."
+
+        # Limpiar el estado de la conversación
+        contexto_municipio_actual['estado_conversacion'] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        return _finalize_response(response)
 
     if USAR_LLM_PARA_RECLAMOS:
         # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---

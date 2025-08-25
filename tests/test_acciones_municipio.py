@@ -50,10 +50,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
-        mock_ticket_simulado = MagicMock()
-        mock_ticket_simulado.nro_ticket = "12345"
-        mock_ticket_simulado.id = 1
-        mock_crear_ticket.return_value = mock_ticket_simulado
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345"}
 
         mock_validar_telefono.return_value = True
         mock_formatear_tel.return_value = "+5491122334455"
@@ -89,8 +86,8 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         self.assertTrue(respuesta["success"])
         self.assertIn("message_to_user", respuesta)
-        self.assertIn(mock_ticket_simulado.nro_ticket, respuesta["message_to_user"])
-        self.assertEqual(respuesta["data"]["ticket_id"], mock_ticket_simulado.id)
+        self.assertIn("12345", respuesta["message_to_user"])
+        self.assertEqual(respuesta["data"]["ticket_id"], 1)
         mock_crear_ticket.assert_called_once()
         _, kwargs = mock_crear_ticket.call_args
         self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Homero Simpson")
@@ -112,10 +109,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
-        mock_ticket_simulado = MagicMock()
-        mock_ticket_simulado.nro_ticket = "55555"
-        mock_ticket_simulado.id = 5
-        mock_crear_ticket.return_value = mock_ticket_simulado
+        mock_crear_ticket.return_value = {"id": 5, "nro_ticket": "55555"}
 
         mock_validar_telefono.return_value = True
         mock_formatear_tel.return_value = "+5499988776655"
@@ -188,8 +182,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email_func, mock_validar_telefono_func, mock_crear_ticket
     ):
-        mock_ticket_simulado = MagicMock(); mock_ticket_simulado.nro_ticket = "67890"; mock_ticket_simulado.id = 2
-        mock_crear_ticket.return_value = mock_ticket_simulado
+        mock_crear_ticket.return_value = {"id": 2, "nro_ticket": "67890"}
         mock_parse_direccion.return_value = {"calle": "Avenida Falsa", "numero": "456", "localidad": "Testville"}
 
         # Simular que el teléfono del LLM es inválido, pero el del perfil es válido.

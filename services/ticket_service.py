@@ -203,7 +203,28 @@ class ServicioTickets:
             # except Exception as e_notify:
             #     logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
 
-            return ticket
+            # Convertir el objeto ticket a un diccionario para un retorno consistente
+            ticket_dict = {
+                "id": ticket.id,
+                "nro_ticket": ticket.nro_ticket,
+                "asunto": ticket.asunto,
+                "categoria": ticket.categoria,
+                "estado": ticket.estado,
+                "direccion": ticket.direccion,
+                "user_id": ticket.user_id,
+                "anon_id": ticket.anon_id
+            }
+            if tipo_ticket == "municipio":
+                ticket_dict["detalles"] = ticket.detalles
+                ticket_dict["nombre_vecino"] = getattr(ticket, 'nombre_vecino', None)
+                ticket_dict["telefono_vecino"] = getattr(ticket, 'telefono_vecino', None)
+                ticket_dict["email_vecino"] = getattr(ticket, 'email_vecino', None)
+                ticket_dict["municipio_id"] = getattr(ticket, 'municipio_id', None)
+            elif tipo_ticket == "pyme":
+                ticket_dict["detalles"] = ticket.pregunta # PymeTicket uses 'pregunta'
+                ticket_dict["rubro_id"] = getattr(ticket, 'rubro_id', None)
+
+            return ticket_dict
         except SQLAlchemyError as e:
             db.session.rollback()
             logger.error(f"Error de DB al crear ticket: {e}", exc_info=True)

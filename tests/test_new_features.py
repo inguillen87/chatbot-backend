@@ -54,8 +54,8 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("¡Hola, Tester!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
         self.assertIn("options_list", respuesta)
-        # 3 (Reclamos) + 3 (Trámites) + 3 (Info) + 1 (Estacionamiento) = 10
-        self.assertEqual(len(respuesta["options_list"]), 10)
+        # 4 (Reclamos) + 3 (Trámites) + 3 (Info) + 1 (Estacionamiento) = 11
+        self.assertEqual(len(respuesta["options_list"]), 11)
         self.assertEqual(respuesta["options_list"][0]["texto"], "📝 Iniciar un Reclamo")
         self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
         self.assertEqual(len(respuesta.get("categorias", [])), 4)
@@ -81,8 +81,8 @@ class TestNewFeatures(unittest.TestCase):
         )
 
         self.assertIn("¿Cómo te puedo ayudar hoy?", response.get("message_body", ""))
-        # 3 (Reclamos) + 3 (Trámites) + 3 (Info) + 1 (Estacionamiento) = 10
-        self.assertEqual(len(response.get("options_list", [])), 10)
+        # 4 (Reclamos) + 3 (Trámites) + 3 (Info) + 1 (Estacionamiento) = 11
+        self.assertEqual(len(response.get("options_list", [])), 11)
         self.assertTrue(
             any(opt.get("texto") == "📝 Iniciar un Reclamo" for opt in response.get("options_list", []))
         )
