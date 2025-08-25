@@ -208,7 +208,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             if not ticket_creado:
                 raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
 
-            nro_ticket_str = f"M-{ticket_creado.nro_ticket}"
+            # 'ticket_creado' is now always a dict.
+            ticket_nro = ticket_creado.get('nro_ticket')
+            if not ticket_nro:
+                raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
+            nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
             # Cargar contactos y encontrar el específico para la categoría
@@ -272,7 +276,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     enviar_notificacion_whatsapp_con_plantilla(
                         ticket_data_cleaned["telefono_vecino"],
                         ticket_data_cleaned.get("nombre_vecino", "Vecino"),
-                        str(ticket_creado.nro_ticket),
+                        str(ticket_nro),
                         ticket_data_cleaned.get("categoria", "Varios")
                     )
                 except Exception as e_whatsapp:
@@ -281,7 +285,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 try:
                     enviar_notificacion_sms(
                         ticket_data_cleaned["telefono_vecino"],
-                        f"Hola {ticket_data_cleaned.get('nombre_vecino', 'Vecino')}! Tu reclamo M-{ticket_creado.nro_ticket} ({ticket_data_cleaned.get('categoria', 'Varios')}) fue generado."
+                        f"Hola {ticket_data_cleaned.get('nombre_vecino', 'Vecino')}! Tu reclamo M-{ticket_nro} ({ticket_data_cleaned.get('categoria', 'Varios')}) fue generado."
                     )
                 except Exception as e_sms:
                     logger.error(f"Error enviando notificación por SMS para {nro_ticket_str}: {e_sms}")
@@ -307,7 +311,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "message_to_user": mensaje_respuesta,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
-                "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
+                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
         except Exception as e:
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
@@ -414,16 +418,39 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             if not ticket_creado:
                 raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
 
-            nro_ticket_str = f"S-{ticket_creado.nro_ticket}"
+            nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
 
-            botones = [{"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"}]
+            # Limpiar el contexto para evitar estados pegajosos
+            if CONTEXTO_MUNICIPIO in self.context:
+                self.context[CONTEXTO_MUNICIPIO].clear()
+                from services.municipio_responder import ConversationState
+                self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+            # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
+            municipio_config = self.context.get('municipio_config_actual', {})
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
+
+            respuesta_formateada, botones_generados = formatear_ticket_respuesta(
+                "sugerencia",
+                nombre_vecino_final,
+                descripcion_sugerencia,
+                "Sugerencia",
+                nro_ticket_str,
+                {}, # No hay contacto especializado para sugerencias
+                base_chat_url
+            )
+
+            # Añadir el botón de acción específico para sugerencias
+            botones_finales = botones_generados
+            botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
+
             return {
                 "success": True,
-                "message_to_user": formatear_ticket_respuesta("sugerencia", nombre_vecino_final, descripcion_sugerencia, "Sugerencia", nro_ticket_str),
-                "options_list": botones,
+                "message_to_user": respuesta_formateada,
+                "options_list": botones_finales,
                 "message_type": "interactive_buttons",
-                "data": {"ticket_id": ticket_creado.id, "nro_ticket": nro_ticket_str, "status": "creado"}
+                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
         except Exception as e:
             logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
@@ -515,18 +542,24 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
             ticket_data_cleaned['tipo_ticket'] = ticket_type
-            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
-            if not sala:
+            sala_dict = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
+            if not sala_dict:
                 raise Exception("crear_nuevo_ticket devolvió None")
 
+            # Since downstream functions need the object, fetch it from the DB
+            from models import MunicipioTicket
+            sala_obj = db.session.get(MunicipioTicket, sala_dict['id'])
+            if not sala_obj:
+                raise Exception(f"No se pudo recuperar el ticket recién creado con ID {sala_dict['id']}")
+
             try:
-                ticket_json = serialize_ticket_to_json(sala, ticket_type)
+                ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
                 emit_ticket_update(ticket_json)
             except Exception as e_notify:
-                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala.nro_ticket}: {e_notify}", exc_info=True)
+                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala_dict['nro_ticket']}: {e_notify}", exc_info=True)
 
             servicio_tickets.crear_comentario(
-                ticket_id=sala.id,
+                ticket_id=sala_dict['id'],
                 tipo_ticket=ticket_type,
                 comentario_data={
                     "comentario": pregunta_original,
@@ -538,21 +571,22 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             # Emitir evento de socket para notificar al panel de administración
             try:
-                ticket_json = serialize_ticket_to_json(sala, ticket_type)
-                room_name = f"municipio_{sala.municipio_id}"
+                ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
+                room_name = f"municipio_{sala_obj.municipio_id}"
                 socketio.emit('live_chat_request', ticket_json, room=room_name)
-                logger.info(f"Socket event 'live_chat_request' emitted to room '{room_name}' for ticket {sala.id}")
+                logger.info(f"Socket event 'live_chat_request' emitted to room '{room_name}' for ticket {sala_obj.id}")
             except Exception as e_socket:
-                logger.error(f"Failed to emit socket event for new live chat ticket {sala.id}: {e_socket}", exc_info=True)
+                logger.error(f"Failed to emit socket event for new live chat ticket {sala_obj.id}: {e_socket}", exc_info=True)
 
 
-            chat_id = f"M-{sala.nro_ticket}"
+            chat_id = f"M-{sala_dict['nro_ticket']}"
 
-            user_message = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
+            # formatear_ticket_respuesta now returns a tuple (message, buttons)
+            user_message, _ = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {"ticket_id": sala_dict['id'], "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandler: {e}", exc_info=True)

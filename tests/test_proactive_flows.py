@@ -11,7 +11,7 @@ sys.path.insert(0, project_root)
 from app import create_app, db
 from config import TestConfig
 from models import User, Rubro, ChatSessionContext
-from services.municipio_responder import responder_municipio
+from services.municipio_responder import responder_municipio, ConversationState
 
 class TestProactiveFlows(unittest.TestCase):
 
@@ -32,9 +32,9 @@ class TestProactiveFlows(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.municipio_responder.handle_llm_interaction')
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
     @patch('services.municipio_responder.analizar_imagen_con_fallback')
-    def test_image_upload_triggers_proactive_flow(self, mock_analizar_imagen, mock_handle_llm):
+    def test_image_upload_triggers_proactive_flow(self, mock_analizar_imagen, mock_start_flow):
         # Arrange
         mock_analizar_imagen.return_value = {
             "raw_response": json.dumps({
@@ -45,7 +45,7 @@ class TestProactiveFlows(unittest.TestCase):
                 }
             })
         }
-        mock_handle_llm.return_value = ({"message_body": "OK"}, {})
+        mock_start_flow.return_value = {"message_body": "OK, starting claim."}
 
         owner_user = User.query.get(1)
         rubro_obj = owner_user.rubro
@@ -70,16 +70,14 @@ class TestProactiveFlows(unittest.TestCase):
 
         # Assert
         mock_analizar_imagen.assert_called_once()
-        # The prompt is now created inside the function, so we can't check the exact string easily.
-        # We check that the LLM handler was called, implying a synthetic prompt was generated.
-        mock_handle_llm.assert_called_once()
+        mock_start_flow.assert_called_once()
+        call_args = mock_start_flow.call_args[1]
+        self.assertEqual(call_args['datos_iniciales']['categoria'], "Arreglo de calle")
+        self.assertEqual(call_args['datos_iniciales']['descripcion'], "Hay un bache grande en la calle.")
 
 
-    @patch('services.municipio_responder.handle_llm_interaction')
-    def test_location_upload_triggers_proactive_flow(self, mock_handle_llm):
+    def test_location_upload_triggers_proactive_flow(self):
         # Arrange
-        mock_handle_llm.return_value = ({"message_body": "OK"}, {})
-
         owner_user = User.query.get(1)
         rubro_obj = owner_user.rubro
         chat_context = ChatSessionContext(chat_session_id='test_session_location', user_id=1, context_data={})
@@ -97,7 +95,7 @@ class TestProactiveFlows(unittest.TestCase):
         }
 
         # Act
-        responder_municipio(
+        response = responder_municipio(
             pregunta_original=location_payload,
             owner_user=owner_user,
             rubro_obj=rubro_obj,
@@ -106,7 +104,31 @@ class TestProactiveFlows(unittest.TestCase):
         )
 
         # Assert
-        mock_handle_llm.assert_called_once()
+        self.assertIn("Recibí tu ubicación", response["message_body"])
+        self.assertIn("Iniciar un Reclamo", [btn["texto"] for btn in response["options_list"]])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_INTENCION_UBICACION.name
+        )
+        self.assertIsNotNone(chat_context.context_data['contexto_municipio_v2'].get('ubicacion_contextual'))
+
+        # Now, simulate user choosing to create a claim
+        with patch('services.municipio_responder.ReclamoFlowHandler.start_flow') as mock_start_flow:
+            mock_start_flow.return_value = {"message_body": "OK, starting claim."}
+
+            action_payload = {"action": "iniciar_reclamo_con_ubicacion"}
+
+            response_2 = responder_municipio(
+                pregunta_original=action_payload,
+                owner_user=owner_user,
+                rubro_obj=rubro_obj,
+                viewer_user=owner_user,
+                chat_db_context=chat_context
+            )
+
+            mock_start_flow.assert_called_once()
+            call_args = mock_start_flow.call_args[1]
+            self.assertIn("Plaza Independencia, Mendoza", call_args['datos_iniciales']['direccion'])
 
 if __name__ == '__main__':
     unittest.main()
