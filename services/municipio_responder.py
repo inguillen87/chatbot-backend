@@ -46,6 +46,8 @@ from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_d
 import math
 from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
+from services.multimodal_analyzer import analizar_imagen_con_fallback
+import json
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -1793,6 +1795,59 @@ def responder_municipio(
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
     }
     # --- FIN REFACTOR ---
+
+    # --- INICIO: Análisis de Imágenes Multimodal ---
+    if received_payload.get("es_foto") and received_payload.get("foto_url"):
+        logger_actual.info(f"Image received. Starting multimodal analysis for URL: {received_payload.get('foto_url')}")
+
+        # Define a detailed prompt for the vision model
+        vision_prompt = """
+        Analiza la siguiente imagen desde la perspectiva de un asistente municipal. Tu objetivo es identificar el problema principal y clasificarlo.
+        Responde SÓLO con un objeto JSON con la siguiente estructura:
+        {
+          "intent": "crear_reclamo",
+          "data": {
+            "categoria": "Una de las siguientes: Luminaria, Arbolado, Limpieza y riego, Arreglo de calle, Pérdida de agua, Otros",
+            "descripcion": "Una descripción breve y clara del problema que se ve en la imagen."
+          }
+        }
+        Si no puedes identificar un problema claro o la imagen no es relevante para un reclamo municipal, devuelve un JSON con "intent": "invalido".
+        """
+
+        analysis_result = analizar_imagen_con_fallback(received_payload.get("foto_url"), vision_prompt)
+
+        if analysis_result and analysis_result.get("raw_response"):
+            try:
+                # Attempt to parse the JSON from the raw response string
+                parsed_response = json.loads(analysis_result.get("raw_response"))
+                if parsed_response.get("intent") == "crear_reclamo":
+                    logger_actual.info(f"Multimodal analysis successful. Intent: 'crear_reclamo'. Data: {parsed_response.get('data')}")
+                    # Pre-fill the context with the extracted data
+                    contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+                    reclamo_data = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+                    reclamo_data.update(parsed_response.get("data", {}))
+
+                    # Create a synthetic prompt to guide the next step
+                    pregunta_str = f"El usuario ha enviado una imagen. El análisis sugiere un reclamo de '{reclamo_data.get('categoria', 'N/A')}'. Por favor, confirma esto con el usuario y pide la ubicación del problema."
+                    received_payload["pregunta"] = pregunta_str
+                    logger_actual.info(f"Synthetic prompt created: {pregunta_str}")
+
+            except json.JSONDecodeError:
+                logger_actual.error(f"Failed to parse JSON from vision model response: {analysis_result.get('raw_response')}")
+    # --- FIN: Análisis de Imágenes Multimodal ---
+
+    # --- INICIO: Manejo Proactivo de Ubicación ---
+    if received_payload.get("es_ubicacion") and not pregunta_str.strip():
+        logger_actual.info(f"Location received without text. Starting proactive location handling.")
+
+        address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
+
+        # Create a synthetic prompt to ask the user what they want to do
+        pregunta_str = f"El usuario compartió una ubicación ({address}) sin texto adicional. Por favor, pregúntale qué le gustaría hacer en esa dirección y ofrécele las siguientes opciones: 'Iniciar un reclamo', 'Hacer una sugerencia', o 'Consultar información del lugar'."
+        received_payload["pregunta"] = pregunta_str
+        logger_actual.info(f"Synthetic prompt for location created: {pregunta_str}")
+    # --- FIN: Manejo Proactivo de Ubicación ---
+
 
     pregunta_str_for_check = pregunta_str
 
