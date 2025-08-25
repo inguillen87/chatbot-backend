@@ -63,14 +63,14 @@ class TestMunicipioImprovements(unittest.TestCase):
             db.session.commit()
 
             # Mock the Gemini call to return a response that includes a list in 'pedir_info'
-            with patch('services.municipios.llamar_gemini') as mock_llamar_gemini:
-                mock_llamar_gemini.return_value = {
+            with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
+                mock_llamar_gemini.return_value = ({
                     "message_body": "Some response",
                     "accion_backend": "iniciar_reclamo",
                     "datos_estructura": {},
                     "pedir_info": ["una descripción del problema", "tu nombre"],
                     "botones": []
-                }
+                }, None)
 
                 # The call to responder_municipio should not raise a TypeError
                 try:

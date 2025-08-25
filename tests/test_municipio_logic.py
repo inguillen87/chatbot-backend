@@ -58,7 +58,7 @@ class DummyTicket:
 class DummyUser(SimpleNamespace):
     pass
 
-@patch('services.municipios.flag_modified', MagicMock())
+@patch('services.municipio_responder.flag_modified', MagicMock())
 class MunicipioLogicTests(unittest.TestCase):
     def setUp(self):
         from app import create_app

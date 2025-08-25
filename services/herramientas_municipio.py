@@ -6,12 +6,9 @@ import unicodedata # <--- ¡Importante agregar esta línea!
 import re
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
-from services.google_text_to_speech import TextToSpeechService
+from services.tts_orchestrator import generar_audio_con_fallback
 from models import MunicipioTicket
 from database import db
-
-# Instanciar el servicio de TTS
-tts_service = TextToSpeechService()
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -734,7 +731,7 @@ TOOL_REGISTRY = {
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
     "generar_respuesta_audio": {
-        "funcion": tts_service.synthesize_speech,
+        "funcion": generar_audio_con_fallback,
         "descripcion": "Convierte un texto a voz y devuelve la URL de un archivo de audio.",
         "parametros": {
             "text": {
