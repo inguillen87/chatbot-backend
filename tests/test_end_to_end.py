@@ -28,7 +28,7 @@ class TestEndToEnd(unittest.TestCase):
     def tearDown(self):
         self.app_context.pop()
 
-    @patch('services.municipios.responder_municipio')
+    @patch('services.municipio_responder.responder_municipio')
     def test_end_to_end_pothole_complaint(self, mock_responder_municipio):
         # 1. User sends image
         mock_responder_municipio.return_value = {"message_body": "He recibido tu foto. Para continuar con el reclamo, por favor, decime la dirección del problema."}

@@ -93,6 +93,8 @@ grpcio==1.62.1
 grpcio-status==1.62.1
 google-generativeai==0.5.2
 cohere==5.3.3
+openai==1.28.0
+anthropic==0.25.0
 
 # GEO / MAPS
 geopy==2.4.1

@@ -783,7 +783,7 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
         logger.error(f"Error al crear el usuario Pyme para el token '{token[:10]}...': {e}", exc_info=True)
         return None
 
-from services.gemini_bridge import llamar_gemini # Importar llamar_gemini
+from services.llm_orchestrator import llamar_llm_con_fallback
 from .chat_orchestrator import ChatOrchestrator # Importar el nuevo Orchestrator
 
 def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
@@ -837,7 +837,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     mensaje_para_gemini = pregunta_str # Simplificado, podría añadir info de adjuntos si es relevante aquí
     # (Manejo de adjuntos y su análisis se delega a ActionHandlers si Gemini lo indica)
 
-    llm_response_structured, _ = llamar_gemini(
+    llm_response_structured, _ = llamar_llm_con_fallback(
         app=current_app,
         mensaje_usuario=mensaje_para_gemini,
         usuario=usuario_info_for_gemini,

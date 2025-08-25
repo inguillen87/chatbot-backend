@@ -27,15 +27,15 @@ class TestSocketService(unittest.TestCase):
 
     @patch('socket_service.emit')
     @patch('services.municipio_responder.responder_municipio')
-    @patch('socket_service.tts_service.synthesize_speech')
-    def test_audio_welcome_message(self, mock_synthesize_speech, mock_responder_municipio, mock_emit):
+    @patch('socket_service.generar_audio_con_fallback')
+    def test_audio_welcome_message(self, mock_generar_audio, mock_responder_municipio, mock_emit):
         # Arrange
         mock_responder_municipio.return_value = {
             "message_body": "¡Hola! Bienvenido.",
             "options_list": [],
             "generar_audio": True
         }
-        mock_synthesize_speech.return_value = "http://example.com/audio.mp3"
+        mock_generar_audio.return_value = "http://example.com/audio.mp3"
 
         from socket_service import send_welcome_message
 
@@ -44,7 +44,7 @@ class TestSocketService(unittest.TestCase):
 
         # Assert
         mock_responder_municipio.assert_called_once()
-        mock_synthesize_speech.assert_called_once_with(text="¡Hola! Bienvenido.")
+        mock_generar_audio.assert_called_once_with(text="¡Hola! Bienvenido.")
 
         self.assertEqual(mock_emit.call_count, 1)
         args, kwargs = mock_emit.call_args

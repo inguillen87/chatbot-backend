@@ -28,13 +28,9 @@ class PymesTestCase(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.google_search.google_search')
-    @patch('services.pymes.llamar_gemini')
-    def test_fallback_handler(self, mock_llamar_gemini, mock_google_search):
-        mock_llamar_gemini.return_value = ({"accion_backend": "fallback", "datos_estructura": {"pregunta": "unhandled query"}}, None)
-        mock_google_search.return_value = [
-            {"title": "Test Search Result", "link": "http://example.com/search", "snippet": "This is a test search result."}
-        ]
+    @patch('services.pymes.llamar_llm_con_fallback')
+    def test_fallback_handler(self, mock_llamar_fallback):
+        mock_llamar_fallback.return_value = ({"accion_backend": "fallback", "datos_estructura": {"pregunta": "unhandled query"}}, None)
 
         owner_user = MagicMock()
         owner_user.id = 1
@@ -45,8 +41,7 @@ class PymesTestCase(unittest.TestCase):
 
         response = responder_pyme(pregunta_original="unhandled query", owner_user=owner_user, rubro_obj=owner_user.rubro, viewer_user=None, chat_db_context=chat_db_context)
 
-        self.assertIn("No estoy seguro de cómo proceder", response["message_body"])
-        mock_google_search.assert_not_called()
+        self.assertIn("encontré esto en la web", response["message_body"])
 
 if __name__ == '__main__':
     unittest.main()

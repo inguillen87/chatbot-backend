@@ -1,6 +1,6 @@
 from typing import List, Dict
 
-from .municipios import get_tramites_info
+from .municipio_responder import get_tramites_info
 
 
 def buscar_tramites(query: str | None = None) -> List[Dict]:
