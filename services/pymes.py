@@ -413,7 +413,7 @@ class PedidoHandler(BaseActionHandler):
         # For now, it returns a simple message.
         return {
             "success": True,
-            "message_to_user": "Estoy procesando tu pedido.",
+            "message_body": "Estoy procesando tu pedido.",
             "fuente": "pyme_pedido_handler_placeholder"
         }
 
@@ -543,7 +543,7 @@ class TicketStatusHandler(BaseActionHandler):
         # For now, it returns a simple message.
         return {
             "success": True,
-            "message_to_user": "Estoy consultando el estado de tu ticket.",
+            "message_body": "Estoy consultando el estado de tu ticket.",
             "fuente": "pyme_ticket_status_handler_placeholder"
         }
 
@@ -595,7 +595,7 @@ class FinalizarPedidoHandler(BaseHandler):
 
             return {
                 "success": True,
-                "message_to_user": f"¡Gracias por tu compra! Tu pedido #{nuevo_pedido.nro_pedido} ha sido creado con éxito. Te mantendremos informado sobre el estado.",
+                "message_body": f"¡Gracias por tu compra! Tu pedido #{nuevo_pedido.nro_pedido} ha sido creado con éxito. Te mantendremos informado sobre el estado.",
                 "fuente": "pyme_pedido_finalizado_exitosamente",
                 "data": {"pedido_id": nuevo_pedido.id, "nro_pedido": nuevo_pedido.nro_pedido}
             }
@@ -604,7 +604,7 @@ class FinalizarPedidoHandler(BaseHandler):
             logger.error(f"Error al crear pedido final desde carrito para pyme {self.pyme_id_actual}: {e}", exc_info=True)
             return {
                 "success": False,
-                "message_to_user": "Hubo un problema al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
+                "message_body": "Hubo un problema al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
                 "fuente": "pyme_pedido_finalizado_error"
             }
 
@@ -883,7 +883,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         action_handler_result = orchestrator.execute_action(llm_response_structured)
 
     # --- 6. Procesar Resultado del Action Handler y Formatear Respuesta ---
-    respuesta_final_texto = action_handler_result.get("message_to_user")
+    respuesta_final_texto = action_handler_result.get("message_body")
     if not respuesta_final_texto:
         respuesta_final_texto = llm_response_structured.get("message_body", "No estoy seguro de cómo proceder. ¿Podrías intentarlo de nuevo?")
 
