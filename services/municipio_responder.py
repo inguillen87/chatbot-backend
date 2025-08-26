@@ -472,18 +472,39 @@ def cargar_agenda_cultural(municipio_id: str = MUNICIPIO_ID):
     return cargar_configuracion_municipio(municipio_id, "agenda_cultural.json")
 
 def obtener_info_tramite_web(tramite_nombre: str, municipio_id: str = MUNICIPIO_ID) -> dict:
-    """
-    Busca información sobre un trámite en la web del municipio.
-    """
-    from services.scraper_avanzado import extraer_contenido_general
+    """Obtiene la descripción y enlaces de un trámite desde ``tramites.json``.
 
-    tramites_links = cargar_configuracion_municipio(municipio_id, "tramites_links.json")
-    if not tramites_links:
-        return {"error": "No se encontraron links de trámites."}
+    El archivo ``tramites_links.json`` ya no se utiliza. En su lugar, la información
+    de cada trámite (incluyendo enlaces asociados) se mantiene dentro de
+    ``tramites.json`` para cada municipio.
 
-    for nombre, url in tramites_links.items():
-        if tramite_nombre.lower() in nombre.lower():
-            return extraer_contenido_general(url)
+    Args:
+        tramite_nombre: Nombre del trámite buscado.
+        municipio_id: Identificador del municipio.
+
+    Returns:
+        dict: Un diccionario con las claves ``contenido`` y ``botones`` si el
+        trámite se encuentra. Si no existe, se devuelve ``{"error": ...}``.
+    """
+
+    tramites = cargar_tramites_info(municipio_id)
+    if not tramites:
+        return {"error": "No se encontraron trámites configurados."}
+
+    nombre_norm = normalizar_texto(tramite_nombre)
+
+    for key, info in tramites.items():
+        if nombre_norm in normalizar_texto(key):
+            return {
+                "contenido": info.get("descripcion", ""),
+                "botones": info.get("botones", []),
+            }
+        for boton in info.get("botones", []):
+            if nombre_norm in normalizar_texto(boton.get("texto", "")):
+                return {
+                    "contenido": info.get("descripcion", ""),
+                    "botones": info.get("botones", []),
+                }
 
     return {"error": "No se encontró información sobre el trámite."}
 
