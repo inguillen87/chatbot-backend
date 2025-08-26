@@ -80,7 +80,7 @@ class TestSugerenciaFlow(unittest.TestCase):
             # 4. Check the final confirmation message
             self.assertTrue(response_2.get("success"))
             self.assertIn("Hemos recibido tu sugerencia", response_2.get("message_to_user", ""))
-            self.assertIn("S-S-12345", response_2.get("message_to_user", ""))
+            self.assertIn("M-S-12345", response_2.get("message_to_user", ""))
 
 if __name__ == '__main__':
     unittest.main()
