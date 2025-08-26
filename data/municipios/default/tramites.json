@@ -586,7 +586,7 @@
                 "botones": [
                     {
                         "texto": "Ir a Rentas",
-                        "url": "https://epagos.juninmendoza.gov.ar/jrentas/"
+
                     },
                     {
                         "texto": "Otros Trámites",
@@ -638,7 +638,7 @@
             },
             {
                 "texto": "WhatsApp",
-                "url": "https://wa.me/5492610005407"
+
             }
         ]
     }
