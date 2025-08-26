@@ -15,8 +15,8 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
 
     La información se recarga automáticamente si el archivo es modificado.
     """
-    clave = ("default", archivo)
-    ruta = os.path.join(BASE_CONFIG_PATH, "default", archivo)
+    clave = (municipio_id, archivo)
+    ruta = os.path.join(BASE_CONFIG_PATH, municipio_id, archivo)
     try:
         mtime = os.path.getmtime(ruta)
     except OSError as e:
