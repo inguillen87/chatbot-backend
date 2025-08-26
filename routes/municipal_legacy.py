@@ -266,8 +266,9 @@ def create_municipal_post(current_user):
         file = request.files['flyer_image']
         if file.filename != '':
             filename = secure_filename(file.filename)
-            # Asegurarse de que el directorio de subida exista
-            upload_folder = os.path.join(current_app.root_path, 'data', 'archivos')
+            # Use persistent data directory when available
+            from services.config_loader import BASE_DATA_PATH
+            upload_folder = os.path.join(BASE_DATA_PATH, 'archivos')
             os.makedirs(upload_folder, exist_ok=True)
             file_path = os.path.join(upload_folder, filename)
             file.save(file_path)
@@ -290,7 +291,8 @@ def create_municipal_post(current_user):
     }
 
     # --- Leer, actualizar y escribir el archivo JSON ---
-    agenda_path = os.path.join(current_app.root_path, 'data', 'municipios', 'default', 'agenda_cultural.json')
+    from services.config_loader import BASE_CONFIG_PATH
+    agenda_path = os.path.join(BASE_CONFIG_PATH, 'default', 'agenda_cultural.json')
 
     try:
         if os.path.exists(agenda_path):
