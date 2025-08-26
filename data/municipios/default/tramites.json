@@ -586,7 +586,7 @@
                 "botones": [
                     {
                         "texto": "Ir a Rentas",
-                        "url": "https://epagos.juninmendoza.gov.ar/jrentas/"
+                        "url": "https://www.juninmendoza.gov.ar/tramites/"
                     },
                     {
                         "texto": "Otros Trámites",
@@ -638,7 +638,16 @@
             },
             {
                 "texto": "WhatsApp",
-                "url": "https://wa.me/5492610005407"
+                "url": "https://wa.me/5492610000007"
+            }
+        ]
+    },
+    "recoleccion_residuos": {
+        "descripcion": "El camión recolector pasa de lunes a viernes a partir de las 21 hs. Consultá el calendario completo en la web municipal.",
+        "botones": [
+            {
+                "texto": "Calendario de recolección",
+                "url": "https://www.juninmendoza.gov.ar/tramites/"
             }
         ]
     }

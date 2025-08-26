@@ -113,5 +113,31 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("estacionamiento libre", response.get("message_body", "").lower())
         mock_llamar_gemini.assert_not_called()
 
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_keyword_defensa_consumidor(self, mock_llamar_gemini):
+        """Preguntar por defensa del consumidor devuelve contacto y evita LLM."""
+        mock_llamar_gemini.return_value = ({}, {})
+        response = responder_municipio(
+            pregunta_original="Necesito defensa del consumidor",
+            owner_user=MagicMock(id=1),
+            rubro_obj=MagicMock(nombre='municipio'),
+            chat_db_context=MagicMock(context_data={}),
+        )
+        self.assertIn("Defensa del Consumidor", response.get("message_body", ""))
+        mock_llamar_gemini.assert_not_called()
+
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_keyword_recoleccion_residuos(self, mock_llamar_gemini):
+        """Consultas sobre recolección deben responder con horarios sin usar LLM."""
+        mock_llamar_gemini.return_value = ({}, {})
+        response = responder_municipio(
+            pregunta_original="¿Cuando pasa el camión de basura?",
+            owner_user=MagicMock(id=1),
+            rubro_obj=MagicMock(nombre='municipio'),
+            chat_db_context=MagicMock(context_data={}),
+        )
+        self.assertIn("camión recolector", response.get("message_body", ""))
+        mock_llamar_gemini.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()

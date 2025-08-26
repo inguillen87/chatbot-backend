@@ -458,10 +458,6 @@ CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
 
-MINI_FAQ_TRAMITES = cargar_configuracion_municipio(
-    MUNICIPIO_ID, "mini_faq_tramites.json"
-)
-
 _TRAMITES_CACHE = None
 _TRAMITES_MTIME = None
 
@@ -1606,6 +1602,7 @@ MENU_KEYWORDS = {
     "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar"],
     "agenda_y_noticias": ["agenda", "cultural", "eventos", "noticias", "novedades", "informacion", "actividades"],
     "veterinaria_bromatologia": ["veterinaria", "bromatologia", "zoonosis", "animales", "perro", "gato", "mascotas"],
+    "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor"],
 
     # Tasas y Servicios
     "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal"],
