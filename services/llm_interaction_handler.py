@@ -3,7 +3,10 @@ import json
 from flask import current_app, has_app_context
 from sqlalchemy.orm.attributes import flag_modified
 
-from services.gemini_bridge import llamar_gemini
+# Utiliza el orquestador de LLMs (OpenAI → Cohere → Gemini) en lugar de una
+# llamada directa a un único proveedor. Se mantiene el nombre `llamar_gemini`
+# para evitar cambios extensivos en el resto del código y las pruebas.
+from services.llm_orchestrator import llamar_llm_con_fallback as llamar_gemini
 from services.conversation_state import ConversationState
 from services.actions.municipio_actions import CrearReclamoActionHandler
 from services.handlers.greeting_handler import GreetingHandler, _get_main_menu_payload
