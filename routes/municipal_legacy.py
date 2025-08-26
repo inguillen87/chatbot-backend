@@ -292,18 +292,24 @@ def create_municipal_post(current_user):
 
     # --- Leer, actualizar y escribir el archivo JSON ---
     from services.config_loader import BASE_CONFIG_PATH
-    agenda_path = os.path.join(BASE_CONFIG_PATH, 'default', 'agenda_cultural.json')
+    agenda_dir = os.path.join(BASE_CONFIG_PATH, 'default')
+    os.makedirs(agenda_dir, exist_ok=True)
+    agenda_path = os.path.join(agenda_dir, 'agenda_cultural.json')
 
     try:
+        data = {"eventos": []}
         if os.path.exists(agenda_path):
             with open(agenda_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if 'eventos' not in data or not isinstance(data['eventos'], list):
-                    data['eventos'] = []
-        else:
-            data = {"eventos": []}
+                contenido = f.read().strip()
+                if contenido:
+                    try:
+                        data = json.loads(contenido)
+                    except json.JSONDecodeError:
+                        current_app.logger.warning("agenda_cultural.json corrupto, se recreará.")
+        if 'eventos' not in data or not isinstance(data['eventos'], list):
+            data['eventos'] = []
 
-        data['eventos'].insert(0, nuevo_post) # Insertar al principio para que aparezca primero
+        data['eventos'].insert(0, nuevo_post)  # Insertar al principio para que aparezca primero
 
         with open(agenda_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
