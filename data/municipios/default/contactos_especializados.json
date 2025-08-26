@@ -51,7 +51,8 @@
     "nombre": "Asesor de Defensa del Consumidor",
     "titulo": "Consultas y Denuncias",
     "telefono": "+5492610000007",
-    "horario": "Lunes a Viernes de 8:00 a 18:00 hs."
+    "horario": "Lunes a Viernes de 8:00 a 18:00 hs.",
+    "email": "defensadelconsumidorjuninmza@gmail.com"
   },
   "Otros": {
     "nombre": "Atención al Vecino",
@@ -60,3 +61,4 @@
     "horario": "Lunes a Viernes de 8:00 a 18:00 hs."
   }
 }
+

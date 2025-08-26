@@ -744,8 +744,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
             {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
         ]},
-        {"titulo": "🅿️ Buscar Estacionamiento Libre", "botones": [
-             {"texto": "🅿️ Buscar Estacionamiento Ahora", "action_id": "buscar_estacionamiento"},
+        {"titulo": "🅿️ Estacionamiento", "botones": [
+             {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
         ]}
     ]
 
@@ -1599,15 +1599,17 @@ MENU_KEYWORDS = {
     "mostrar_menu_reclamos": ["reclamo", "reclamos", "iniciar reclamo", "denuncia", "problema", "queja", "reportar"],
     "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online"],
     "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia"],
+    "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo"],
+    "consultar_estado_reclamo": ["consultar reclamo", "estado reclamo", "seguimiento", "ver reclamo"],
 
     # Información útil
     "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar"],
-    "agenda_cultural": ["agenda", "cultural", "eventos", "turismo", "actividades", "que hacer", "turista"],
-    "noticias": ["noticias", "novedades", "diario", "informacion", "ultimo"],
+    "agenda_y_noticias": ["agenda", "cultural", "eventos", "noticias", "novedades", "informacion", "actividades"],
+    "veterinaria_bromatologia": ["veterinaria", "bromatologia", "zoonosis", "animales", "perro", "gato", "mascotas"],
 
     # Tasas y Servicios
     "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal"],
-    "zoonosis": ["zoonosis", "veterinaria", "animales", "perro", "gato", "mascotas", "castracion", "vacunacion"],
+    "buscar_estacionamiento": ["estacionamiento", "estacionar", "aparcamiento", "parking", "estacionar auto"],
     "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector"]
 }
 
@@ -2169,6 +2171,17 @@ def responder_municipio(
         response = handle_main_menu_action(action, context, chat_db_context)
         if response:
             return _finalize_response(response)
+    else:
+        menu_payload = _get_main_menu_payload(context)
+        buttons_for_finder = [
+            {"texto": btn.get("texto"), "action_id": btn.get("id")}
+            for btn in menu_payload.get("options_list", [])
+        ]
+        inferred_action = find_menu_action_by_input(pregunta_str or "", buttons_for_finder)
+        if inferred_action:
+            response = handle_main_menu_action(inferred_action, context, chat_db_context)
+            if response:
+                return _finalize_response(response)
 
 
     USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
