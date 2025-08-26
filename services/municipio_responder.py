@@ -1139,8 +1139,11 @@ def handle_location_update(data):
 
 BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
 
-import random # Asegurar que random está importado para el mock_ticket_nro
-from services.gemini_bridge import llamar_gemini # Asegurar import
+import random  # Asegurar que random está importado para el mock_ticket_nro
+# Utiliza el orquestador de LLMs que intenta OpenAI, Cohere y Gemini (como
+# último recurso). Se expone con el nombre `llamar_gemini` para mantener
+# compatibilidad con el código existente y las pruebas.
+from services.llm_orchestrator import llamar_llm_con_fallback as llamar_gemini
 
 # Imports necesarios para la función accion_crear_reclamo_municipio
 # (Algunos pueden estar ya importados globalmente en el archivo)
