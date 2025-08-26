@@ -453,102 +453,31 @@ TWILIO_WHATSAPP_NUMBER = os.environ.get(
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
-CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
+# Configuración base (se puede sobrescribir por municipio en cada request)
+CONFIG_MUNICIPIO = cargar_configuracion_municipio("default", "config.json")
 
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
 
-_TRAMITES_CACHE = None
-_TRAMITES_MTIME = None
+def cargar_tramites_info(municipio_id: str = MUNICIPIO_ID):
+    return cargar_configuracion_municipio(municipio_id, "tramites.json")
 
-def cargar_tramites_info():
-    global _TRAMITES_CACHE, _TRAMITES_MTIME
-    ruta = os.path.join(
-        os.path.dirname(__file__), "..", "data", "municipios", MUNICIPIO_ID, "tramites.json"
-    )
-    try:
-        mtime = os.path.getmtime(ruta)
-    except OSError as e:
-        logger.error(f"[TRAMITES] No se pudo acceder a {ruta}: {e}")
-        _TRAMITES_CACHE = {}
-        _TRAMITES_MTIME = None
-        return _TRAMITES_CACHE
-    if _TRAMITES_CACHE is None or _TRAMITES_MTIME != mtime:
-        try:
-            with open(ruta, "r", encoding="utf-8") as f:
-                _TRAMITES_CACHE = json.load(f)
-            logger.info(f"✅ Trámites cargados desde {ruta}")
-            _TRAMITES_MTIME = mtime
-        except Exception as e:
-            logger.error(f"[TRAMITES] No se pudo cargar {ruta}: {e}", exc_info=True)
-            _TRAMITES_CACHE = {}
-            _TRAMITES_MTIME = mtime
-    return _TRAMITES_CACHE
+def get_tramites_info(municipio_id: str = MUNICIPIO_ID) -> dict:
+    return cargar_tramites_info(municipio_id)
 
-def get_tramites_info() -> dict:
-    return cargar_tramites_info()
+def cargar_contactos_utiles(municipio_id: str = MUNICIPIO_ID):
+    return cargar_configuracion_municipio(municipio_id, "contactos_utiles.json")
 
-_CONTACTOS_UTILES_CACHE = None
-_CONTACTOS_UTILES_MTIME = None
+def cargar_agenda_cultural(municipio_id: str = MUNICIPIO_ID):
+    return cargar_configuracion_municipio(municipio_id, "agenda_cultural.json")
 
-def cargar_contactos_utiles():
-    global _CONTACTOS_UTILES_CACHE, _CONTACTOS_UTILES_MTIME
-    ruta = os.path.join(
-        os.path.dirname(__file__), "..", "data", "municipios", MUNICIPIO_ID, "contactos_utiles.json"
-    )
-    try:
-        mtime = os.path.getmtime(ruta)
-    except OSError as e:
-        logger.error(f"[CONTACTOS] No se pudo acceder a {ruta}: {e}")
-        _CONTACTOS_UTILES_CACHE = {}
-        _CONTACTOS_UTILES_MTIME = None
-        return _CONTACTOS_UTILES_CACHE
-    if _CONTACTOS_UTILES_CACHE is None or _CONTACTOS_UTILES_MTIME != mtime:
-        try:
-            with open(ruta, "r", encoding="utf-8") as f:
-                _CONTACTOS_UTILES_CACHE = json.load(f)
-            logger.info(f"✅ Contactos Útiles cargados desde {ruta}")
-            _CONTACTOS_UTILES_MTIME = mtime
-        except Exception as e:
-            logger.error(f"[CONTACTOS] No se pudo cargar {ruta}: {e}", exc_info=True)
-            _CONTACTOS_UTILES_CACHE = {}
-            _CONTACTOS_UTILES_MTIME = mtime
-    return _CONTACTOS_UTILES_CACHE
-
-_AGENDA_CULTURAL_CACHE = None
-_AGENDA_CULTURAL_MTIME = None
-
-def cargar_agenda_cultural():
-    global _AGENDA_CULTURAL_CACHE, _AGENDA_CULTURAL_MTIME
-    ruta = os.path.join(
-        os.path.dirname(__file__), "..", "data", "municipios", MUNICIPIO_ID, "agenda_cultural.json"
-    )
-    try:
-        mtime = os.path.getmtime(ruta)
-    except OSError as e:
-        logger.error(f"[AGENDA] No se pudo acceder a {ruta}: {e}")
-        _AGENDA_CULTURAL_CACHE = []
-        _AGENDA_CULTURAL_MTIME = None
-        return _AGENDA_CULTURAL_CACHE
-    if _AGENDA_CULTURAL_CACHE is None or _AGENDA_CULTURAL_MTIME != mtime:
-        try:
-            with open(ruta, "r", encoding="utf-8") as f:
-                _AGENDA_CULTURAL_CACHE = json.load(f)
-            logger.info(f"✅ Agenda Cultural cargada desde {ruta}")
-            _AGENDA_CULTURAL_MTIME = mtime
-        except Exception as e:
-            logger.error(f"[AGENDA] No se pudo cargar {ruta}: {e}", exc_info=True)
-            _AGENDA_CULTURAL_CACHE = []
-            _AGENDA_CULTURAL_MTIME = mtime
-    return _AGENDA_CULTURAL_CACHE
-
-def obtener_info_tramite_web(tramite_nombre: str) -> dict:
+def obtener_info_tramite_web(tramite_nombre: str, municipio_id: str = MUNICIPIO_ID) -> dict:
     """
     Busca información sobre un trámite en la web del municipio.
     """
     from services.scraper_avanzado import extraer_contenido_general
 
-    tramites_links = cargar_configuracion_municipio(MUNICIPIO_ID, "tramites_links.json")
+    tramites_links = cargar_configuracion_municipio(municipio_id, "tramites_links.json")
     if not tramites_links:
         return {"error": "No se encontraron links de trámites."}
 
@@ -795,21 +724,31 @@ class GreetingHandler(BaseMunicipioHandler):
 
 
 def handle_contactos_utiles_inicio(context, chat_db_context):
-    """Handles the initial request for 'Contactos Utiles'."""
-    contactos_data = cargar_contactos_utiles()
-    if not contactos_data:
+    """Handles the initial request for 'Contactos Útiles'."""
+    municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+    contactos_data = cargar_contactos_utiles(municipio_id)
+    categorias = contactos_data.get("categorias", []) if isinstance(contactos_data, dict) else []
+    if not categorias:
         return {
             "message_body": "No se encontró información de contactos útiles en este momento.",
             "message_type": "text"
         }
 
-    # Extract categories
-    categories = list(contactos_data.keys())
-    buttons = [{"texto": category, "action_id": f"select_contact_category_{category}"} for category in categories]
+    # Build buttons and map slug -> contactos
+    categorias_map = {}
+    buttons = []
+    for cat in categorias:
+        nombre = cat.get("nombre_categoria", "Sin categoría")
+        slug = normalizar_texto(nombre).replace(" ", "_")
+        categorias_map[slug] = {
+            "nombre": nombre,
+            "contactos": cat.get("contactos", [])
+        }
+        buttons.append({"texto": nombre, "action_id": f"select_contact_category_{slug}"})
 
-    # Set state
     contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
     contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name
+    contexto_municipio_actual['contactos_categorias'] = categorias_map
     if chat_db_context:
         flag_modified(chat_db_context, "context_data")
 
@@ -820,26 +759,101 @@ def handle_contactos_utiles_inicio(context, chat_db_context):
         "fuente": "contactos_utiles_show_categories"
     }
 
-def _get_posts_from_json(content_type: str) -> str:
+def _format_post(post: dict, channel: str) -> str:
+    """Return a formatted string for a single news/event entry."""
+    title = post.get("titulo", "Sin título")
+    subtitle = post.get("subtitulo")
+    desc = post.get("descripcion", "Sin descripción.")
+    link = post.get("enlace") or post.get("url")
+    fecha = (
+        post.get("fecha_evento")
+        or post.get("fecha_inicio")
+        or post.get("fecha_publicacion")
+    )
+    ubicacion = post.get("ubicacion")
+
+    if channel == "whatsapp":
+        lines = [f"*{title}*"]
+        if subtitle:
+            lines.append(f"_{subtitle}_")
+        if fecha:
+            lines.append(f"📅 {fecha}")
+        if ubicacion:
+            lines.append(f"📍 {ubicacion}")
+        if desc:
+            lines.append(desc)
+        if link:
+            lines.append(link)
+        return "\n".join(lines) + "\n\n"
+
+    # Default to web/HTML formatting
+    parts = [f"<strong>{title}</strong>"]
+    if subtitle:
+        parts.append(f"<em>{subtitle}</em>")
+    if fecha:
+        parts.append(f"📅 {fecha}")
+    if ubicacion:
+        parts.append(f"📍 {ubicacion}")
+    if desc:
+        parts.append(desc)
+    if link:
+        parts.append(f'<a href="{link}" target="_blank">{link}</a>')
+    return "<br>".join(parts) + "<br><br>"
+
+
+def _format_contact(contact: dict, channel: str) -> str:
+    """Formatea un contacto individual según el canal."""
+    nombre = contact.get("nombre", "Sin nombre")
+    descripcion = contact.get("descripcion")
+    telefono = contact.get("telefono")
+    url = contact.get("url")
+    horario = contact.get("horario")
+    lines = []
+    if channel == "whatsapp":
+        lines.append(f"*{nombre}*")
+        if descripcion:
+            lines.append(descripcion)
+        if horario:
+            lines.append(f"🕑 {horario}")
+        if telefono:
+            digits = re.sub(r"\D", "", telefono)
+            lines.append(f"📞 {telefono}")
+            lines.append(f"👉 https://wa.me/{digits}")
+        if url:
+            lines.append(f"🔗 {url}")
+        lines.append("")
+        return "\n".join(lines)
+    else:
+        lines.append(f"<strong>{nombre}</strong>")
+        if descripcion:
+            lines.append(descripcion)
+        if horario:
+            lines.append(f"<em>{horario}</em>")
+        if telefono:
+            digits = re.sub(r"\D", "", telefono)
+            lines.append(f'Tel: <a href="tel:{digits}">{telefono}</a>')
+            lines.append(f'WhatsApp: <a href="https://wa.me/{digits}" target="_blank">{telefono}</a>')
+        if url:
+            lines.append(f'<a href="{url}" target="_blank">Más información</a>')
+        lines.append("<br>")
+        return "<br>".join(lines)
+
+
+def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> str:
     """Helper to get formatted posts of a specific type from the JSON file."""
-    all_posts_data = cargar_agenda_cultural()
+    all_posts_data = cargar_agenda_cultural(municipio_id)
     all_posts = all_posts_data.get("eventos", [])
 
     if not all_posts:
         return ""
 
-    # Filter by type and sort by date
-    posts = [p for p in all_posts if p.get('tipo_post') == content_type]
-    posts.sort(key=lambda x: x.get('fecha_publicacion', ''), reverse=True)
+    posts = [p for p in all_posts if p.get("tipo_post") == content_type]
+    posts.sort(key=lambda x: x.get("fecha_publicacion", ""), reverse=True)
 
     if not posts:
         return ""
 
-    message_body = ""
-    for post in posts[:3]: # Limit to 3 of each type
-        post_title = post.get('titulo', 'Sin título')
-        post_desc = post.get('descripcion', 'Sin descripción.')
-        message_body += f"*{post_title}*\n{post_desc}\n\n"
+    message_body = "".join(_format_post(p, channel) for p in posts[:3])
     return message_body
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
@@ -886,30 +900,45 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     if action_id == "agenda_y_noticias":
-        noticias_body = _get_posts_from_json('noticia')
-        eventos_body = _get_posts_from_json('evento')
+        channel = context.get("channel", "web")
+        municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+        noticias_body = _get_posts_from_json("noticia", channel, municipio_id)
+        eventos_body = _get_posts_from_json("evento", channel, municipio_id)
 
         full_body = ""
         if noticias_body:
-            full_body += "*🗞️ Noticias Recientes*\n" + noticias_body
+            if channel == "whatsapp":
+                full_body += "*🗞️ Noticias Recientes*\n" + noticias_body
+            else:
+                full_body += "<h3>🗞️ Noticias Recientes</h3>" + noticias_body
         if eventos_body:
-            full_body += "*🎭 Próximos Eventos*\n" + eventos_body
+            if channel == "whatsapp":
+                full_body += "*🎭 Próximos Eventos*\n" + eventos_body
+            else:
+                full_body += "<h3>🎭 Próximos Eventos</h3>" + eventos_body
 
         if not full_body:
             full_body = "No hay noticias ni eventos para mostrar en este momento."
         else:
-            social_links = (
-                "\n\n---\n"
-                "Seguinos en nuestras redes:\n"
-                "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
-                "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
-            )
+            if channel == "whatsapp":
+                social_links = (
+                    "\n---\n"
+                    "Seguinos en nuestras redes:\n"
+                    "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
+                    "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
+                )
+            else:
+                social_links = (
+                    "<hr>Seguinos en nuestras redes:<br>"
+                    '<a href="https://www.facebook.com/municipalidaddejunin" target="_blank">📘 Facebook</a><br>'
+                    '<a href="https://www.instagram.com/municipalidaddejunin" target="_blank">📸 Instagram</a>'
+                )
             full_body += social_links
 
         return {
             "message_body": full_body.strip(),
             "message_type": "text",
-            "fuente": "handler_agenda_y_noticias"
+            "fuente": "handler_agenda_y_noticias",
         }
 
     if action_id == "web_municipio":
@@ -922,7 +951,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     # --- Handlers for existing options that are kept ---
-    tramites_info = get_tramites_info()
+    tramites_info = get_tramites_info(context.get("municipio_id", MUNICIPIO_ID))
     if action_id in tramites_info:
         data = tramites_info[action_id] or {}
         botones = data.get("botones", [])
@@ -958,7 +987,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     if action_id == "zoonosis": # Handles the 'veterinaria_bromatologia' alias
-        contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
+        contactos_info = cargar_configuracion_municipio(context.get("municipio_id", MUNICIPIO_ID), "contactos_especializados.json")
         contacto_data = contactos_info.get("Veterinaria y Bromatologia", {})
         if not contacto_data:
             return {"message_body": "No se encontró la información de contacto en este momento.", "message_type": "text"}
@@ -1001,8 +1030,8 @@ def handle_info_requests(action_id: str) -> dict:
     """
     Handles simple informational requests based on action IDs from buttons.
     """
-    tramites_info = get_tramites_info()
-    contactos_info = cargar_configuracion_municipio(MUNICIPIO_ID, "contactos_especializados.json")
+    tramites_info = get_tramites_info(context.get("municipio_id", MUNICIPIO_ID))
+    contactos_info = cargar_configuracion_municipio(context.get("municipio_id", MUNICIPIO_ID), "contactos_especializados.json")
 
     info_map = {
         "info_licencia_conducir": "licencia_de_conducir",
@@ -1776,12 +1805,11 @@ def responder_municipio(
     app = current_app._get_current_object()
 
     # Cargar config específica del municipio (si existe)
-    final_municipio_config = CONFIG_MUNICIPIO # Default global
-    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
-        owner_user_municipio_id_str = str(owner_user.municipio_id)
-        loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
-        if loaded_specific_config:
-            final_municipio_config = loaded_specific_config
+    final_municipio_config = CONFIG_MUNICIPIO  # Default global
+    owner_user_municipio_id_str = str(owner_user.municipio_id) if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id else MUNICIPIO_ID
+    loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+    if loaded_specific_config:
+        final_municipio_config = loaded_specific_config
 
     # Poblar el payload con los datos de la solicitud
     received_payload = {}
@@ -1816,6 +1844,7 @@ def responder_municipio(
         "rubro_obj": rubro_obj,
         "channel": channel,
         "municipio_config_actual": final_municipio_config,
+        "municipio_id": owner_user_municipio_id_str,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # Usar el dict vivo
         "intencion": kwargs.get("intencion"),
@@ -2433,42 +2462,38 @@ def responder_municipio(
 
         # Find the category either by action_id or by text matching
         selected_category = None
-        contactos_data = cargar_contactos_utiles()
-
+        categorias_map = contexto_municipio_actual.get('contactos_categorias', {})
         if selected_category_action and selected_category_action.startswith("select_contact_category_"):
-            selected_category = selected_category_action.replace("select_contact_category_", "")
-        elif pregunta_str_norm:
-            # Fuzzy match against category names
+            slug = selected_category_action.replace("select_contact_category_", "")
+            selected = categorias_map.get(slug)
+        elif pregunta_str_norm and categorias_map:
             from fuzzywuzzy import process
-            category_names = list(contactos_data.keys())
-            match, score = process.extractOne(pregunta_str_norm, category_names)
-            if score > 80:
-                selected_category = match
+            name_map = {v['nombre']: k for k, v in categorias_map.items()}
+            match, score = process.extractOne(pregunta_str_norm, list(name_map.keys()))
+            selected = categorias_map.get(name_map[match]) if score > 80 else None
+        else:
+            selected = None
 
-        if not selected_category:
-            # Fallback if the input is not a valid action or text match
+        if not selected:
             return _finalize_response({
                 "message_body": "Por favor, seleccioná una categoría de la lista.",
                 "fuente": "contactos_utiles_invalid_category_selection"
             })
 
-        contactos = contactos_data.get(selected_category, [])
-
+        channel = context.get("channel", "web")
+        contactos = selected.get("contactos", [])
+        nombre_categoria = selected.get("nombre", "")
         if not contactos:
-            message_body = f"No se encontraron contactos para la categoría '{selected_category}'."
+            message_body = f"No se encontraron contactos para la categoría '{nombre_categoria}'."
         else:
-            message_body = f"📞 *Contactos para {selected_category}:*\n\n"
-            for contacto in contactos:
-                nombre = contacto.get('nombre', 'N/A')
-                telefono = contacto.get('telefono')
-                horario = contacto.get('horario')
-
-                message_body += f"*{nombre}*\n"
-                if telefono:
-                    message_body += f"  - Teléfono: {telefono}\n"
-                if horario:
-                    message_body += f"  - Horario: {horario}\n"
-                message_body += "\n"
+            if channel == "whatsapp":
+                message_body = f"📞 *Contactos para {nombre_categoria}:*\n\n"
+                for c in contactos:
+                    message_body += _format_contact(c, channel) + "\n"
+            else:
+                message_body = f"<h4>📞 Contactos para {nombre_categoria}</h4>"
+                for c in contactos:
+                    message_body += _format_contact(c, channel)
 
         # Reset state
         contexto_municipio_actual['estado_conversacion'] = None
