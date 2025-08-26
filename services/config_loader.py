@@ -10,11 +10,14 @@ logger = logging.getLogger(__name__)
 _default_data_path = os.environ.get("DATA_DIR")
 if not _default_data_path:
     persistent_path = "/data"
-    if os.path.exists(persistent_path):
+    repo_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+
+    # Prefer the persistent volume only if it actually contains municipal data.
+    persistent_municipios = os.path.join(persistent_path, "municipios")
+    if os.path.exists(os.path.join(persistent_municipios, "default")):
         _default_data_path = persistent_path
     else:
-        # Fall back to the repo's bundled data directory
-        _default_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+        _default_data_path = repo_data_path
 
 BASE_DATA_PATH = _default_data_path
 BASE_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "municipios")
