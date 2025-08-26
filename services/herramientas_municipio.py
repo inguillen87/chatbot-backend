@@ -283,6 +283,7 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 from services.google_search import google_search
 from services.scraper_avanzado import extraer_noticias
 from datetime import datetime, timedelta
+from services.config_loader import BASE_CONFIG_PATH
 
 # --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS DESDE ARCHIVO ---
 
@@ -294,7 +295,7 @@ def consultar_eventos_culturales(fecha: str) -> str:
     logger.info(f"[HERRAMIENTA EVENTOS] Consultando agenda de eventos para fecha: '{fecha}'")
 
     try:
-        agenda_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'municipios', MUNICIPIO_ID, 'agenda_cultural.json')
+        agenda_path = os.path.join(BASE_CONFIG_PATH, MUNICIPIO_ID, 'agenda_cultural.json')
         with open(agenda_path, 'r', encoding='utf-8') as f:
             agenda_data = json.load(f).get('eventos', [])
     except (FileNotFoundError, json.JSONDecodeError) as e:

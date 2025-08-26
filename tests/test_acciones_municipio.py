@@ -9,7 +9,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from app import create_app, db
-from services.actions.municipio_actions import CrearReclamoActionHandler
+from services.actions.municipio_actions import CrearReclamoActionHandler, ConsultarEstadoTicketActionHandler
 from services.herramientas_municipio import direccion_es_valida
 from models import User
 from config import Config
@@ -97,6 +97,20 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_enviar_whatsapp.assert_called_once_with(
             "+5491122334455", "Homero Simpson", "12345", "Alumbrado"
         )
+
+    def test_accion_consultar_estado_ticket(self):
+        from models import MunicipioTicket
+
+        ticket = MunicipioTicket(pregunta="p", nro_ticket="88888", estado="en_proceso", categoria="Alumbrado")
+        db.session.add(ticket)
+        db.session.commit()
+
+        handler = ConsultarEstadoTicketActionHandler({})
+        result = handler.execute({"id_ticket_mencionado": "88888"})
+
+        self.assertTrue(result["success"])
+        self.assertIn("88888", result["message_to_user"])
+        self.assertIn("en_proceso", result["message_to_user"])
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')

@@ -59,13 +59,12 @@ def build_interactive_response(options: list,
         audio_url,
     )
 
-    # Track options sent so numeric replies can be mapped later
+    # Prepare context update placeholder; final options (including navigation
+    # buttons) will be attached later once we know the message type and the
+    # number of options we can send.
     context_update = original_bot_response.get("contexto_actualizado")
-    if channel == "whatsapp" and options:
-        # Store the raw option objects so we can resolve numeric responses
+    if channel == "whatsapp":
         context_update = (context_update or {}).copy()
-        context_update["last_options_sent"] = options
-
 
     if channel == "whatsapp":
         original_type = message_type
@@ -96,6 +95,30 @@ def build_interactive_response(options: list,
             message_type,
             num_options,
         )
+
+        # Append default navigation buttons so users can always return or
+        # cancel from any menu. We respect Twilio limits (3 buttons for
+        # interactive buttons, 10 for lists/text).
+        nav_buttons = [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+        limit = 10 if message_type in ("text", "interactive_list") else 3
+        existing_ids = {
+            str(o.get("action_id") or o.get("id") or o.get("texto"))
+            for o in options
+        }
+        for btn in nav_buttons:
+            if len(options) >= limit:
+                break
+            if str(btn["action_id"]) not in existing_ids and btn["texto"] not in existing_ids:
+                options.append(btn)
+                existing_ids.add(str(btn["action_id"]))
+
+        # After appending navigation buttons track the final options so the
+        # webhook can map numeric replies back to actions.
+        if options:
+            context_update["last_options_sent"] = options
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
         if message_type == 'text':
