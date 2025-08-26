@@ -4,7 +4,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-BASE_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "municipios")
+# Determine the base directory for municipal data. On platforms like Render the
+# `/data` directory persists across deployments, so prefer it when available.
+# Allow overriding via the `DATA_DIR` environment variable for flexibility.
+_default_data_path = os.environ.get("DATA_DIR")
+if not _default_data_path:
+    persistent_path = "/data"
+    if os.path.exists(persistent_path):
+        _default_data_path = persistent_path
+    else:
+        # Fall back to the repo's bundled data directory
+        _default_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+
+BASE_DATA_PATH = _default_data_path
+BASE_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "municipios")
 
 _config_cache = {}
 _mtime_cache = {}

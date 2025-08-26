@@ -1,5 +1,6 @@
 # services/actions/municipio_actions.py
 import logging
+import re
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 from services.ticket_service import servicio_tickets
@@ -9,6 +10,7 @@ from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.gemini_bridge import llamar_gemini
 from services.config_loader import cargar_configuracion_municipio
+from models import MunicipioTicket
 
 logger = logging.getLogger(__name__)
 
@@ -328,23 +330,40 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
         logger.info(f"Executing ConsultarEstadoTicketActionHandler with data: {action_data}")
         ticket_id = action_data.get("id_ticket_mencionado")
         if not ticket_id:
+            # Try to parse from raw user question stored in context
+            raw_question = self.context.get("pregunta_actual_usuario", "")
+            match = re.search(r"\d+", raw_question)
+            if match:
+                ticket_id = match.group(0)
+        if not ticket_id:
             return {
                 "success": False,
                 "message_to_user": "Para consultar el estado, necesito el número de ticket.",
                 "pedir_info": "id_ticket_mencionado"
             }
-        # Simulate fetching ticket status
-        # ticket = MunicipioTicket.query.filter_by(nro_ticket=ticket_id).first()
-        simulated_status = "En proceso"
-        simulated_asunto = "Luminaria Rota"
-        user_message = f"El ticket M-{ticket_id} sobre '{simulated_asunto}' se encuentra actualmente: **{simulated_status}**."
+
+        ticket_id_str = str(ticket_id).replace("M-", "").strip()
+
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=ticket_id_str).first()
+        if not ticket:
+            return {
+                "success": False,
+                "message_to_user": f"No encontré el ticket M-{ticket_id_str}.",
+                "options_list": [{"texto": "Ingresar otro número", "id_accion": "consultar_estado_ticket"}],
+                "message_type": "interactive_buttons"
+            }
+
+        asunto = ticket.asunto or ticket.categoria or "Reclamo"
+        user_message = (
+            f"El ticket M-{ticket.nro_ticket} sobre '{asunto}' se encuentra actualmente: **{ticket.estado}**."
+        )
         botones = [{"texto": "Consultar otro ticket", "id_accion": "consultar_estado_ticket"}]
         return {
             "success": True,
             "message_to_user": user_message,
             "options_list": botones,
             "message_type": "interactive_buttons",
-            "data": {"ticket_id": ticket_id, "status": simulated_status}
+            "data": {"ticket_id": ticket.nro_ticket, "status": ticket.estado}
         }
 
 class ConsultarInfoTramiteActionHandler(BaseActionHandler):
