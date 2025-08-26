@@ -952,7 +952,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     if action_id == "solicitar_turnos":
         return {
             "message_body": "📅 Para solicitar turnos online, por favor ingresá al siguiente enlace:",
-            "options_list": [{"texto": "Solicitar Turno", "url": "https://www.juninmendoza.gov.ar/turnos-online/", "type": "url"}],
+            "options_list": [{"texto": "Solicitar Turno", "url": "https://tlc.mendoza.gov.ar/turnos", "type": "url"}],
             "message_type": "interactive_buttons",
             "fuente": "info_solicitar_turnos_direct_link"
         }
