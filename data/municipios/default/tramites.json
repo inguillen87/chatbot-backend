@@ -564,25 +564,42 @@
         ]
     },
     "licencia_de_conducir": {
-        "descripcion": "Para requisitos y turnos de licencia de conducir visitá:",
+        "descripcion": "Solicitá turno, revisá requisitos y encontrá información sobre la Licencia de Conducir.",
         "botones": [
             {
-                "texto": "Ir a Licencia de Conducir",
+                "texto": "Pedir turno",
+                "url": "https://tlc.mendoza.gov.ar/turnos"
+            },
+            {
+                "texto": "Requisitos y costos",
                 "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
             }
         ]
     },
     "pago_de_tasas_vigentes": {
-        "descripcion": "Para pagar o descargar boletos vigentes, dirigite a:",
+        "descripcion": "Pagá o descargá tus tasas municipales vigentes de forma online o consultá oficinas de pago.",
         "botones": [
             {
                 "texto": "Ir a ePagos",
                 "url": "https://epagos.juninmendoza.gov.ar/jrentas/"
+            },
+            {
+                "texto": "WhatsApp Rentas",
+                "url": "https://wa.me/5492610000006"
             }
         ]
     },
     "defensa_del_consumidor": {
-        "descripcion": "Para asesoramiento, escribí a: defensadelconsumidorjuninmza@gmail.com",
-        "botones": []
+        "descripcion": "Para reclamos o asesoramiento de consumo, contactá a Defensa del Consumidor municipal.",
+        "botones": [
+            {
+                "texto": "Enviar correo",
+                "url": "mailto:defensadelconsumidorjuninmza@gmail.com"
+            },
+            {
+                "texto": "WhatsApp",
+                "url": "https://wa.me/5492610000007"
+            }
+        ]
     }
 }
