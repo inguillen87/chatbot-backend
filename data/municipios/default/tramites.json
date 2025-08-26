@@ -564,25 +564,82 @@
         ]
     },
     "licencia_de_conducir": {
-        "descripcion": "Para requisitos y turnos de licencia de conducir visitá:",
+        "descripcion": "Solicitá turno, revisá requisitos y encontrá información sobre la Licencia de Conducir.",
         "botones": [
             {
-                "texto": "Ir a Licencia de Conducir",
+                "texto": "Pedir turno",
+                "url": "https://tlc.mendoza.gov.ar/turnos"
+            },
+            {
+                "texto": "Requisitos y costos",
                 "url": "https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
+            }
+        ],
+        "faq": [
+            {
+                "q": "cuánto cuesta",
+                "a": "El costo de la Licencia depende de la categoría. Consultalo en la web oficial del municipio o en mesa de entrada."
+            },
+            {
+                "q": "pago multa",
+                "a": "Para sacar o renovar tu Licencia necesitás no tener multas impagas.",
+                "botones": [
+                    {
+                        "texto": "Ir a Rentas",
+                        "url": "https://www.juninmendoza.gov.ar/tramites/"
+                    },
+                    {
+                        "texto": "Otros Trámites",
+                        "url": "https://www.juninmendoza.gov.ar/tramites/"
+                    }
+                ]
+            },
+            {
+                "q": "vencimiento",
+                "a": "La fecha de vencimiento y los requisitos están en el reverso de tu Licencia o en la web del municipio."
+            },
+            {
+                "q": "curso",
+                "a": "El curso de seguridad vial se hace online (Agencia Nacional de Seguridad Vial) o presencial en el Centro de Licencias."
+            },
+            {
+                "q": "requisitos",
+                "a": "DNI actualizado, no tener multas, hacer el curso y, si corresponde, apto médico."
+            },
+            {
+                "q": "turno",
+                "a": "Solicitá turno en: https://tlc.mendoza.gov.ar/turnos"
+            },
+            {
+                "q": "horario",
+                "a": "La oficina de licencias atiende de lunes a viernes de 8 a 13 hs."
             }
         ]
     },
     "pago_de_tasas_vigentes": {
-        "descripcion": "Para pagar o descargar boletos vigentes, dirigite a:",
+        "descripcion": "Pagá o descargá tus tasas municipales vigentes de forma online o consultá oficinas de pago.",
         "botones": [
             {
                 "texto": "Ir a ePagos",
                 "url": "https://epagos.juninmendoza.gov.ar/jrentas/"
+            },
+            {
+                "texto": "WhatsApp Rentas",
+                "url": "https://wa.me/5492610000006"
             }
         ]
     },
     "defensa_del_consumidor": {
-        "descripcion": "Para asesoramiento, escribí a: defensadelconsumidorjuninmza@gmail.com",
-        "botones": []
+        "descripcion": "Para reclamos o asesoramiento de consumo, contactá a Defensa del Consumidor municipal.",
+        "botones": [
+            {
+                "texto": "Enviar correo",
+                "url": "mailto:defensadelconsumidorjuninmza@gmail.com"
+            },
+            {
+                "texto": "WhatsApp",
+                "url": "https://wa.me/5492610000007"
+            }
+        ]
     }
 }
