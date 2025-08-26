@@ -349,7 +349,6 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
 
 class ConsultarInfoTramiteActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        from services.municipio_responder import get_tramites_info
         logger.info(f"Executing ConsultarInfoTramiteActionHandler with data: {action_data}")
         tramite_nombre = action_data.get("nombre_tramite") or action_data.get("categoria") # Categoria might be used if specific tramite name isn't clear
         if not tramite_nombre:
@@ -370,13 +369,14 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
                 "pedir_info": "nombre_tramite"
             }
         else:
-            botones = [{"texto": "Consultar otro trámite", "id_accion": "info_tramite"}]
+            botones = info_tramite.get("botones", []).copy()
+            botones.append({"texto": "Consultar otro trámite", "id_accion": "info_tramite"})
             return {
                 "success": True,
                 "message_to_user": info_tramite.get("contenido", "No hay información disponible para este trámite."),
                 "options_list": botones,
                 "message_type": "interactive_buttons",
-                "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "web"}
+                "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "json"}
             }
 
 class HacerSugerenciaActionHandler(BaseActionHandler):
