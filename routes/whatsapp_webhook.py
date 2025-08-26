@@ -22,6 +22,33 @@ from services.media_classifier import clasificar_adjunto_whatsapp
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
 
+# Twilio imposes a 1600 character limit on message bodies. When the bot
+# generates very long responses (e.g. large contact lists) the request can
+# fail with `HTTP 400: The concatenated message body exceeds the 1600 character
+# limit`.  To prevent this we define a helper that splits long texts into
+# chunks that comply with Twilio's limits and send them sequentially.
+
+MAX_TWILIO_BODY_LENGTH = 1600
+
+
+def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
+    """Split `text` into chunks no longer than `limit` characters.
+
+    Preference is given to splitting on newlines or spaces to avoid breaking
+    words when possible.
+    """
+    parts: list[str] = []
+    while len(text) > limit:
+        split_idx = text.rfind("\n", 0, limit)
+        if split_idx == -1:
+            split_idx = text.rfind(" ", 0, limit)
+        if split_idx == -1:
+            split_idx = limit
+        parts.append(text[:split_idx])
+        text = text[split_idx:].lstrip()
+    parts.append(text)
+    return parts
+
 # Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -468,9 +495,23 @@ def whatsapp_webhook():
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
-            # Send the main message (text or interactive)
-            main_message = twilio_client.messages.create(**message_params)
-            print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
+            # Send the main message. If the body exceeds Twilio's 1600 character
+            # limit (and isn't an interactive payload), split it into multiple
+            # messages to avoid HTTP 400 errors.
+            body_text = message_params.get('body', '') or ''
+            if 'persistent_action' not in message_params and len(body_text) > MAX_TWILIO_BODY_LENGTH:
+                chunks = _split_message(body_text)
+                for idx, chunk in enumerate(chunks, start=1):
+                    chunk_params = {
+                        'from_': to_number_raw,
+                        'to': from_number_raw,
+                        'body': chunk,
+                    }
+                    main_message = twilio_client.messages.create(**chunk_params)
+                    print(f"Mensaje parte {idx}/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
+            else:
+                main_message = twilio_client.messages.create(**message_params)
+                print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
 
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')
