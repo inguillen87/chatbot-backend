@@ -339,6 +339,17 @@ class ServicioTickets:
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
+            logger.info(
+                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s",
+                tipo_ticket,
+                municipio_id,
+                rubro_id,
+                fecha_inicio,
+                fecha_fin,
+                categoria,
+                estado,
+            )
+
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
 
             # Filtrar por estado si se proporciona
@@ -369,6 +380,10 @@ class ServicioTickets:
                 query = query.filter(Model.categoria == categoria)
 
             tickets = query.all()
+            logger.info(
+                "[TICKET_SERVICE_MAPA] tickets_raw=%s",
+                len(tickets),
+            )
 
             # El agrupamiento por ubicación y el cálculo de 'weight' permanecen igual.
             # Si se desea devolver todos los puntos individualmente para que el frontend agrupe/clusterice:
@@ -400,7 +415,11 @@ class ServicioTickets:
                     "location": {"lat": lat, "lng": lng},
                     "weight": weight
                 })
-
+            logger.info(
+                "[TICKET_SERVICE_MAPA] puntos_heatmap=%s ejemplo=%s",
+                len(resultado_heatmap),
+                resultado_heatmap[:3] if resultado_heatmap else [],
+            )
             return resultado_heatmap
         except SQLAlchemyError as e:
             logger.error(
