@@ -270,7 +270,7 @@ def llamar_gemini_para_generacion_texto(
             raise EnvironmentError("GOOGLE_PROJECT_ID no configurado.")
 
         vertexai.init(project=project_id, location=location)
-        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[system_prompt_especifico])
+        model = GenerativeModel("gemini-1.5-flash", system_instruction=[system_prompt_especifico])
         
         generation_config = GenerationConfig(
             temperature=temperature,
