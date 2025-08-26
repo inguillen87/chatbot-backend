@@ -1379,7 +1379,25 @@ def mapa_de_tickets(current_user: User, tipo: str):
         len(datos),
         datos[:3] if datos else [],
     )
-    return jsonify(datos)
+
+    # Convert the aggregated points to a GeoJSON FeatureCollection for MapLibre
+    features = [
+        {
+            "type": "Feature",
+            "properties": {"weight": punto.get("weight", 1)},
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    punto.get("location", {}).get("lng"),
+                    punto.get("location", {}).get("lat"),
+                ],
+            },
+        }
+        for punto in datos
+        if punto.get("location")
+    ]
+
+    return jsonify({"type": "FeatureCollection", "features": features})
 
 # ---------- ENVIAR HISTORIAL POR CORREO ----------
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
