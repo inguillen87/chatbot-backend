@@ -1,5 +1,6 @@
 import logging
 from services.openai_tts_bridge import generar_audio_openai
+from services.cohere_tts_bridge import generar_audio_cohere
 from services.google_text_to_speech import TextToSpeechService
 
 logger = logging.getLogger(__name__)
@@ -7,7 +8,7 @@ logger = logging.getLogger(__name__)
 def generar_audio_con_fallback(text: str) -> str | None:
     """
     Generates audio from text using a fallback mechanism.
-    It tries OpenAI first, then falls back to Google.
+    It tries OpenAI first, luego Cohere y finalmente Google.
 
     Args:
         text (str): The text to synthesize.
@@ -28,7 +29,18 @@ def generar_audio_con_fallback(text: str) -> str | None:
     except Exception as e:
         logger.error(f"TTS Orchestrator: OpenAI failed with an exception: {e}", exc_info=True)
 
-    # 2. Fallback to Google
+    # 2. Try Cohere
+    try:
+        logger.info("TTS Orchestrator: Trying Cohere...")
+        audio_url = generar_audio_cohere(text)
+        if audio_url:
+            logger.info("TTS Orchestrator: Cohere successful.")
+            return audio_url
+        logger.warning("TTS Orchestrator: Cohere returned None, but did not raise an exception.")
+    except Exception as e:
+        logger.error(f"TTS Orchestrator: Cohere failed with an exception: {e}", exc_info=True)
+
+    # 3. Fallback to Google
     try:
         logger.warning("TTS Orchestrator: Falling back to Google...")
         google_tts = TextToSpeechService()
