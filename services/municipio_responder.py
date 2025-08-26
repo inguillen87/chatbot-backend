@@ -820,7 +820,49 @@ def handle_contactos_utiles_inicio(context, chat_db_context):
         "fuente": "contactos_utiles_show_categories"
     }
 
-def _get_posts_from_json(content_type: str) -> str:
+def _format_post(post: dict, channel: str) -> str:
+    """Return a formatted string for a single news/event entry."""
+    title = post.get("titulo", "Sin título")
+    subtitle = post.get("subtitulo")
+    desc = post.get("descripcion", "Sin descripción.")
+    link = post.get("enlace") or post.get("url")
+    fecha = (
+        post.get("fecha_evento")
+        or post.get("fecha_inicio")
+        or post.get("fecha_publicacion")
+    )
+    ubicacion = post.get("ubicacion")
+
+    if channel == "whatsapp":
+        lines = [f"*{title}*"]
+        if subtitle:
+            lines.append(f"_{subtitle}_")
+        if fecha:
+            lines.append(f"📅 {fecha}")
+        if ubicacion:
+            lines.append(f"📍 {ubicacion}")
+        if desc:
+            lines.append(desc)
+        if link:
+            lines.append(link)
+        return "\n".join(lines) + "\n\n"
+
+    # Default to web/HTML formatting
+    parts = [f"<strong>{title}</strong>"]
+    if subtitle:
+        parts.append(f"<em>{subtitle}</em>")
+    if fecha:
+        parts.append(f"📅 {fecha}")
+    if ubicacion:
+        parts.append(f"📍 {ubicacion}")
+    if desc:
+        parts.append(desc)
+    if link:
+        parts.append(f'<a href="{link}" target="_blank">{link}</a>')
+    return "<br>".join(parts) + "<br><br>"
+
+
+def _get_posts_from_json(content_type: str, channel: str) -> str:
     """Helper to get formatted posts of a specific type from the JSON file."""
     all_posts_data = cargar_agenda_cultural()
     all_posts = all_posts_data.get("eventos", [])
@@ -828,18 +870,13 @@ def _get_posts_from_json(content_type: str) -> str:
     if not all_posts:
         return ""
 
-    # Filter by type and sort by date
-    posts = [p for p in all_posts if p.get('tipo_post') == content_type]
-    posts.sort(key=lambda x: x.get('fecha_publicacion', ''), reverse=True)
+    posts = [p for p in all_posts if p.get("tipo_post") == content_type]
+    posts.sort(key=lambda x: x.get("fecha_publicacion", ""), reverse=True)
 
     if not posts:
         return ""
 
-    message_body = ""
-    for post in posts[:3]: # Limit to 3 of each type
-        post_title = post.get('titulo', 'Sin título')
-        post_desc = post.get('descripcion', 'Sin descripción.')
-        message_body += f"*{post_title}*\n{post_desc}\n\n"
+    message_body = "".join(_format_post(p, channel) for p in posts[:3])
     return message_body
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
@@ -886,30 +923,44 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     if action_id == "agenda_y_noticias":
-        noticias_body = _get_posts_from_json('noticia')
-        eventos_body = _get_posts_from_json('evento')
+        channel = context.get("channel", "web")
+        noticias_body = _get_posts_from_json("noticia", channel)
+        eventos_body = _get_posts_from_json("evento", channel)
 
         full_body = ""
         if noticias_body:
-            full_body += "*🗞️ Noticias Recientes*\n" + noticias_body
+            if channel == "whatsapp":
+                full_body += "*🗞️ Noticias Recientes*\n" + noticias_body
+            else:
+                full_body += "<h3>🗞️ Noticias Recientes</h3>" + noticias_body
         if eventos_body:
-            full_body += "*🎭 Próximos Eventos*\n" + eventos_body
+            if channel == "whatsapp":
+                full_body += "*🎭 Próximos Eventos*\n" + eventos_body
+            else:
+                full_body += "<h3>🎭 Próximos Eventos</h3>" + eventos_body
 
         if not full_body:
             full_body = "No hay noticias ni eventos para mostrar en este momento."
         else:
-            social_links = (
-                "\n\n---\n"
-                "Seguinos en nuestras redes:\n"
-                "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
-                "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
-            )
+            if channel == "whatsapp":
+                social_links = (
+                    "\n---\n"
+                    "Seguinos en nuestras redes:\n"
+                    "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
+                    "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
+                )
+            else:
+                social_links = (
+                    "<hr>Seguinos en nuestras redes:<br>"
+                    '<a href="https://www.facebook.com/municipalidaddejunin" target="_blank">📘 Facebook</a><br>'
+                    '<a href="https://www.instagram.com/municipalidaddejunin" target="_blank">📸 Instagram</a>'
+                )
             full_body += social_links
 
         return {
             "message_body": full_body.strip(),
             "message_type": "text",
-            "fuente": "handler_agenda_y_noticias"
+            "fuente": "handler_agenda_y_noticias",
         }
 
     if action_id == "web_municipio":
