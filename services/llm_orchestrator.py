@@ -1,30 +1,30 @@
 import logging
-from services.cohere_bridge import llamar_cohere
 from services.openai_bridge import llamar_openai
+from services.cohere_bridge import llamar_cohere
 from services.gemini_bridge import llamar_gemini
 
 logger = logging.getLogger(__name__)
 
 def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str):
     """
-    Tries to call LLMs in a specific priority order (Cohere -> OpenAI -> Gemini),
+    Tries to call LLMs in a specific priority order (OpenAI -> Cohere -> Gemini),
     with fallbacks in case of errors.
 
     Returns a tuple of (response_dict, context_dict), where context_dict is currently unused.
     """
-    # Priority 1: Cohere
-    try:
-        logger.info("Attempting LLM call with provider: Cohere")
-        return llamar_cohere(app, mensaje_usuario, usuario, historial, chat_session_id)
-    except Exception as e_cohere:
-        logger.warning(f"Cohere call failed with error: {e_cohere}. Falling back to OpenAI.")
-
-    # Priority 2: OpenAI
+    # Priority 1: OpenAI
     try:
         logger.info("Attempting LLM call with provider: OpenAI")
         return llamar_openai(app, mensaje_usuario, usuario, historial, chat_session_id)
     except Exception as e_openai:
-        logger.warning(f"OpenAI call failed with error: {e_openai}. Falling back to Gemini.")
+        logger.warning(f"OpenAI call failed with error: {e_openai}. Falling back to Cohere.")
+
+    # Priority 2: Cohere
+    try:
+        logger.info("Attempting LLM call with provider: Cohere")
+        return llamar_cohere(app, mensaje_usuario, usuario, historial, chat_session_id)
+    except Exception as e_cohere:
+        logger.warning(f"Cohere call failed with error: {e_cohere}. Falling back to Gemini.")
 
     # Priority 3: Gemini
     try:
