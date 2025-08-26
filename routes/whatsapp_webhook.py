@@ -131,6 +131,39 @@ def whatsapp_webhook():
     list_id = post_vars.get("ListId")
     incoming_text = button_payload or list_id or post_vars.get("Body", "")
 
+    # --- Handle pending paginated messages ---
+    pending_chunks = session_context_db_entry.context_data.get("pending_chunks", [])
+    if pending_chunks and incoming_text.strip().lower() in ["mas", "más", "mostrar mas", "mostrar más", "show_more"]:
+        next_chunk = pending_chunks.pop(0)
+        session_context_db_entry.context_data["pending_chunks"] = pending_chunks
+        flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+        if twilio_client:
+            twilio_client.messages.create(
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=next_chunk,
+            )
+            if pending_chunks:
+                more_payload = {
+                    "type": "button",
+                    "body": {"text": "¿Mostrar más resultados?"},
+                    "action": {
+                        "buttons": [
+                            {"type": "reply", "reply": {"id": "show_more", "title": "Mostrar más"}},
+                            {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
+                        ]
+                    },
+                }
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body="Seleccioná una opción",
+                    persistent_action=[f"whatsapp:{json.dumps(more_payload)}"],
+                )
+        return "OK", 200
+
     # --- Profile confirmation flow ---
     if not session_context_db_entry.context_data.get("perfil_confirmado"):
         perfil = session_context_db_entry.context_data.get("perfil_en_revision") or {
@@ -496,20 +529,46 @@ def whatsapp_webhook():
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
             # Send the main message. If the body exceeds Twilio's 1600 character
-            # limit (and isn't an interactive payload), split it into multiple
-            # messages to avoid HTTP 400 errors.
+            # limit (and isn't an interactive payload), send the first chunk and
+            # store the remainder so the user can request more with a button.
             body_text = message_params.get('body', '') or ''
             if 'persistent_action' not in message_params and len(body_text) > MAX_TWILIO_BODY_LENGTH:
                 chunks = _split_message(body_text)
-                for idx, chunk in enumerate(chunks, start=1):
-                    chunk_params = {
-                        'from_': to_number_raw,
-                        'to': from_number_raw,
-                        'body': chunk,
+                session_context_db_entry.context_data['pending_chunks'] = chunks[1:]
+                flag_modified(session_context_db_entry, 'context_data')
+                db.session.add(session_context_db_entry)
+                db.session.commit()
+
+                first_chunk_params = {
+                    'from_': to_number_raw,
+                    'to': from_number_raw,
+                    'body': chunks[0],
+                }
+                main_message = twilio_client.messages.create(**first_chunk_params)
+                print(f"Mensaje parte 1/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
+
+                if session_context_db_entry.context_data['pending_chunks']:
+                    more_payload = {
+                        "type": "button",
+                        "body": {"text": "¿Mostrar más resultados?"},
+                        "action": {
+                            "buttons": [
+                                {"type": "reply", "reply": {"id": "show_more", "title": "Mostrar más"}},
+                                {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
+                            ]
+                        },
                     }
-                    main_message = twilio_client.messages.create(**chunk_params)
-                    print(f"Mensaje parte {idx}/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        body="Seleccioná una opción",
+                        persistent_action=[f"whatsapp:{json.dumps(more_payload)}"],
+                    )
             else:
+                session_context_db_entry.context_data.pop('pending_chunks', None)
+                flag_modified(session_context_db_entry, 'context_data')
+                db.session.add(session_context_db_entry)
+                db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
 
