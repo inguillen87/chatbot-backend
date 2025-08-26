@@ -1337,6 +1337,16 @@ def mapa_de_tickets(current_user: User, tipo: str):
     categoria = request.args.get("categoria")
     estado = request.args.get("estado") # Nuevo filtro de estado
 
+    logger.info(
+        "[MAPA_TICKETS] tipo=%s user_id=%s filtros: fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s",
+        tipo,
+        getattr(current_user, "id", None),
+        fecha_inicio,
+        fecha_fin,
+        categoria,
+        estado,
+    )
+
     if tipo == "municipio":
         if not (current_user.tipo_chat == "municipio"):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
@@ -1364,7 +1374,11 @@ def mapa_de_tickets(current_user: User, tipo: str):
         )
     else:
         return jsonify({"error": "Tipo de mapa no válido."}), 400
-
+    logger.info(
+        "[MAPA_TICKETS] puntos_retornados=%s ejemplo=%s",
+        len(datos),
+        datos[:3] if datos else [],
+    )
     return jsonify(datos)
 
 # ---------- ENVIAR HISTORIAL POR CORREO ----------
