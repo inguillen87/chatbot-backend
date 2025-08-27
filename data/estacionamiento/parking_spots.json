@@ -1,0 +1,602 @@
+[
+  {
+    "id": 1,
+    "address": "Las Heras 105, Junín, Mendoza",
+    "lat": -33.023818,
+    "lon": -68.497164
+  },
+  {
+    "id": 2,
+    "address": "Sarmiento 110, Junín, Mendoza",
+    "lat": -33.033311,
+    "lon": -68.493997
+  },
+  {
+    "id": 3,
+    "address": "San Martin 115, Junín, Mendoza",
+    "lat": -33.021182,
+    "lon": -68.4907
+  },
+  {
+    "id": 4,
+    "address": "Patricias Mendocinas 120, Junín, Mendoza",
+    "lat": -33.023667,
+    "lon": -68.500225
+  },
+  {
+    "id": 5,
+    "address": "Mitre 125, Junín, Mendoza",
+    "lat": -33.024346,
+    "lon": -68.503492
+  },
+  {
+    "id": 6,
+    "address": "Lavalle 130, Junín, Mendoza",
+    "lat": -33.033696,
+    "lon": -68.50583
+  },
+  {
+    "id": 7,
+    "address": "Lavalle 135, Junín, Mendoza",
+    "lat": -33.038869,
+    "lon": -68.499919
+  },
+  {
+    "id": 8,
+    "address": "Las Heras 140, Junín, Mendoza",
+    "lat": -33.021536,
+    "lon": -68.501096
+  },
+  {
+    "id": 9,
+    "address": "Italia 145, Junín, Mendoza",
+    "lat": -33.026767,
+    "lon": -68.501453
+  },
+  {
+    "id": 10,
+    "address": "Mitre 150, Junín, Mendoza",
+    "lat": -33.022338,
+    "lon": -68.498883
+  },
+  {
+    "id": 11,
+    "address": "Patricias Mendocinas 155, Junín, Mendoza",
+    "lat": -33.02115,
+    "lon": -68.494709
+  },
+  {
+    "id": 12,
+    "address": "Las Heras 160, Junín, Mendoza",
+    "lat": -33.020332,
+    "lon": -68.498387
+  },
+  {
+    "id": 13,
+    "address": "San Martin 165, Junín, Mendoza",
+    "lat": -33.032137,
+    "lon": -68.493861
+  },
+  {
+    "id": 14,
+    "address": "Mitre 170, Junín, Mendoza",
+    "lat": -33.024738,
+    "lon": -68.497861
+  },
+  {
+    "id": 15,
+    "address": "San Martin 175, Junín, Mendoza",
+    "lat": -33.021873,
+    "lon": -68.509952
+  },
+  {
+    "id": 16,
+    "address": "Rivadavia 180, Junín, Mendoza",
+    "lat": -33.029541,
+    "lon": -68.491898
+  },
+  {
+    "id": 17,
+    "address": "Italia 185, Junín, Mendoza",
+    "lat": -33.031822,
+    "lon": -68.496839
+  },
+  {
+    "id": 18,
+    "address": "Sarmiento 190, Junín, Mendoza",
+    "lat": -33.031035,
+    "lon": -68.495426
+  },
+  {
+    "id": 19,
+    "address": "Rivadavia 195, Junín, Mendoza",
+    "lat": -33.034192,
+    "lon": -68.493778
+  },
+  {
+    "id": 20,
+    "address": "Mitre 200, Junín, Mendoza",
+    "lat": -33.023274,
+    "lon": -68.506768
+  },
+  {
+    "id": 21,
+    "address": "Patricias Mendocinas 205, Junín, Mendoza",
+    "lat": -33.035568,
+    "lon": -68.493474
+  },
+  {
+    "id": 22,
+    "address": "Mitre 210, Junín, Mendoza",
+    "lat": -33.026196,
+    "lon": -68.507517
+  },
+  {
+    "id": 23,
+    "address": "Belgrano 215, Junín, Mendoza",
+    "lat": -33.036031,
+    "lon": -68.509621
+  },
+  {
+    "id": 24,
+    "address": "Rivadavia 220, Junín, Mendoza",
+    "lat": -33.021068,
+    "lon": -68.498425
+  },
+  {
+    "id": 25,
+    "address": "Lavalle 225, Junín, Mendoza",
+    "lat": -33.034659,
+    "lon": -68.501704
+  },
+  {
+    "id": 26,
+    "address": "Las Heras 230, Junín, Mendoza",
+    "lat": -33.02928,
+    "lon": -68.496137
+  },
+  {
+    "id": 27,
+    "address": "San Martin 235, Junín, Mendoza",
+    "lat": -33.035359,
+    "lon": -68.500193
+  },
+  {
+    "id": 28,
+    "address": "Belgrano 240, Junín, Mendoza",
+    "lat": -33.031119,
+    "lon": -68.49359
+  },
+  {
+    "id": 29,
+    "address": "San Martin 245, Junín, Mendoza",
+    "lat": -33.019945,
+    "lon": -68.503379
+  },
+  {
+    "id": 30,
+    "address": "Las Heras 250, Junín, Mendoza",
+    "lat": -33.031225,
+    "lon": -68.50406
+  },
+  {
+    "id": 31,
+    "address": "Rivadavia 255, Junín, Mendoza",
+    "lat": -33.02548,
+    "lon": -68.498207
+  },
+  {
+    "id": 32,
+    "address": "Sarmiento 260, Junín, Mendoza",
+    "lat": -33.019504,
+    "lon": -68.498054
+  },
+  {
+    "id": 33,
+    "address": "Las Heras 265, Junín, Mendoza",
+    "lat": -33.03327,
+    "lon": -68.502591
+  },
+  {
+    "id": 34,
+    "address": "Mitre 270, Junín, Mendoza",
+    "lat": -33.032792,
+    "lon": -68.503841
+  },
+  {
+    "id": 35,
+    "address": "Italia 275, Junín, Mendoza",
+    "lat": -33.027673,
+    "lon": -68.500378
+  },
+  {
+    "id": 36,
+    "address": "Patricias Mendocinas 280, Junín, Mendoza",
+    "lat": -33.020873,
+    "lon": -68.496436
+  },
+  {
+    "id": 37,
+    "address": "Italia 285, Junín, Mendoza",
+    "lat": -33.024819,
+    "lon": -68.508736
+  },
+  {
+    "id": 38,
+    "address": "Patricias Mendocinas 290, Junín, Mendoza",
+    "lat": -33.025599,
+    "lon": -68.498048
+  },
+  {
+    "id": 39,
+    "address": "Belgrano 295, Junín, Mendoza",
+    "lat": -33.025305,
+    "lon": -68.492606
+  },
+  {
+    "id": 40,
+    "address": "Colón 300, Junín, Mendoza",
+    "lat": -33.038792,
+    "lon": -68.492793
+  },
+  {
+    "id": 41,
+    "address": "Rivadavia 305, Junín, Mendoza",
+    "lat": -33.032696,
+    "lon": -68.491561
+  },
+  {
+    "id": 42,
+    "address": "Lavalle 310, Junín, Mendoza",
+    "lat": -33.03868,
+    "lon": -68.507232
+  },
+  {
+    "id": 43,
+    "address": "Mitre 315, Junín, Mendoza",
+    "lat": -33.035566,
+    "lon": -68.496242
+  },
+  {
+    "id": 44,
+    "address": "Las Heras 320, Junín, Mendoza",
+    "lat": -33.032752,
+    "lon": -68.508571
+  },
+  {
+    "id": 45,
+    "address": "Rivadavia 325, Junín, Mendoza",
+    "lat": -33.030937,
+    "lon": -68.492485
+  },
+  {
+    "id": 46,
+    "address": "Colón 330, Junín, Mendoza",
+    "lat": -33.021837,
+    "lon": -68.505104
+  },
+  {
+    "id": 47,
+    "address": "San Martin 335, Junín, Mendoza",
+    "lat": -33.037529,
+    "lon": -68.501485
+  },
+  {
+    "id": 48,
+    "address": "Las Heras 340, Junín, Mendoza",
+    "lat": -33.029111,
+    "lon": -68.509587
+  },
+  {
+    "id": 49,
+    "address": "Patricias Mendocinas 345, Junín, Mendoza",
+    "lat": -33.033561,
+    "lon": -68.492915
+  },
+  {
+    "id": 50,
+    "address": "San Martin 350, Junín, Mendoza",
+    "lat": -33.038451,
+    "lon": -68.498393
+  },
+  {
+    "id": 51,
+    "address": "Belgrano 355, Junín, Mendoza",
+    "lat": -33.019917,
+    "lon": -68.506606
+  },
+  {
+    "id": 52,
+    "address": "Colón 360, Junín, Mendoza",
+    "lat": -33.030576,
+    "lon": -68.492263
+  },
+  {
+    "id": 53,
+    "address": "Colón 365, Junín, Mendoza",
+    "lat": -33.023849,
+    "lon": -68.5093
+  },
+  {
+    "id": 54,
+    "address": "Colón 370, Junín, Mendoza",
+    "lat": -33.019308,
+    "lon": -68.491714
+  },
+  {
+    "id": 55,
+    "address": "Belgrano 375, Junín, Mendoza",
+    "lat": -33.038674,
+    "lon": -68.499496
+  },
+  {
+    "id": 56,
+    "address": "Italia 380, Junín, Mendoza",
+    "lat": -33.03819,
+    "lon": -68.501712
+  },
+  {
+    "id": 57,
+    "address": "Sarmiento 385, Junín, Mendoza",
+    "lat": -33.034848,
+    "lon": -68.49271
+  },
+  {
+    "id": 58,
+    "address": "San Martin 390, Junín, Mendoza",
+    "lat": -33.033552,
+    "lon": -68.490317
+  },
+  {
+    "id": 59,
+    "address": "Mitre 395, Junín, Mendoza",
+    "lat": -33.026174,
+    "lon": -68.490484
+  },
+  {
+    "id": 60,
+    "address": "Mitre 400, Junín, Mendoza",
+    "lat": -33.032418,
+    "lon": -68.496993
+  },
+  {
+    "id": 61,
+    "address": "Belgrano 405, Junín, Mendoza",
+    "lat": -33.02996,
+    "lon": -68.505684
+  },
+  {
+    "id": 62,
+    "address": "Belgrano 410, Junín, Mendoza",
+    "lat": -33.020422,
+    "lon": -68.501678
+  },
+  {
+    "id": 63,
+    "address": "Belgrano 415, Junín, Mendoza",
+    "lat": -33.028255,
+    "lon": -68.508238
+  },
+  {
+    "id": 64,
+    "address": "Mitre 420, Junín, Mendoza",
+    "lat": -33.029629,
+    "lon": -68.496762
+  },
+  {
+    "id": 65,
+    "address": "Italia 425, Junín, Mendoza",
+    "lat": -33.030473,
+    "lon": -68.507883
+  },
+  {
+    "id": 66,
+    "address": "Lavalle 430, Junín, Mendoza",
+    "lat": -33.021469,
+    "lon": -68.500192
+  },
+  {
+    "id": 67,
+    "address": "Las Heras 435, Junín, Mendoza",
+    "lat": -33.021823,
+    "lon": -68.504664
+  },
+  {
+    "id": 68,
+    "address": "Belgrano 440, Junín, Mendoza",
+    "lat": -33.037276,
+    "lon": -68.501401
+  },
+  {
+    "id": 69,
+    "address": "Belgrano 445, Junín, Mendoza",
+    "lat": -33.023532,
+    "lon": -68.503239
+  },
+  {
+    "id": 70,
+    "address": "Lavalle 450, Junín, Mendoza",
+    "lat": -33.032564,
+    "lon": -68.508996
+  },
+  {
+    "id": 71,
+    "address": "Mitre 455, Junín, Mendoza",
+    "lat": -33.019938,
+    "lon": -68.498575
+  },
+  {
+    "id": 72,
+    "address": "Italia 460, Junín, Mendoza",
+    "lat": -33.03294,
+    "lon": -68.494666
+  },
+  {
+    "id": 73,
+    "address": "San Martin 465, Junín, Mendoza",
+    "lat": -33.024851,
+    "lon": -68.497733
+  },
+  {
+    "id": 74,
+    "address": "Rivadavia 470, Junín, Mendoza",
+    "lat": -33.036114,
+    "lon": -68.496782
+  },
+  {
+    "id": 75,
+    "address": "Mitre 475, Junín, Mendoza",
+    "lat": -33.037888,
+    "lon": -68.50022
+  },
+  {
+    "id": 76,
+    "address": "Colón 480, Junín, Mendoza",
+    "lat": -33.023893,
+    "lon": -68.5073
+  },
+  {
+    "id": 77,
+    "address": "Rivadavia 485, Junín, Mendoza",
+    "lat": -33.032821,
+    "lon": -68.499986
+  },
+  {
+    "id": 78,
+    "address": "Italia 490, Junín, Mendoza",
+    "lat": -33.034792,
+    "lon": -68.500936
+  },
+  {
+    "id": 79,
+    "address": "Sarmiento 495, Junín, Mendoza",
+    "lat": -33.032701,
+    "lon": -68.505988
+  },
+  {
+    "id": 80,
+    "address": "Mitre 500, Junín, Mendoza",
+    "lat": -33.030539,
+    "lon": -68.505373
+  },
+  {
+    "id": 81,
+    "address": "Las Heras 505, Junín, Mendoza",
+    "lat": -33.037679,
+    "lon": -68.492328
+  },
+  {
+    "id": 82,
+    "address": "Sarmiento 510, Junín, Mendoza",
+    "lat": -33.031695,
+    "lon": -68.502322
+  },
+  {
+    "id": 83,
+    "address": "Las Heras 515, Junín, Mendoza",
+    "lat": -33.022704,
+    "lon": -68.494809
+  },
+  {
+    "id": 84,
+    "address": "Italia 520, Junín, Mendoza",
+    "lat": -33.031714,
+    "lon": -68.496374
+  },
+  {
+    "id": 85,
+    "address": "Patricias Mendocinas 525, Junín, Mendoza",
+    "lat": -33.036308,
+    "lon": -68.492791
+  },
+  {
+    "id": 86,
+    "address": "Patricias Mendocinas 530, Junín, Mendoza",
+    "lat": -33.031156,
+    "lon": -68.496048
+  },
+  {
+    "id": 87,
+    "address": "Colón 535, Junín, Mendoza",
+    "lat": -33.026899,
+    "lon": -68.505564
+  },
+  {
+    "id": 88,
+    "address": "Belgrano 540, Junín, Mendoza",
+    "lat": -33.03211,
+    "lon": -68.498236
+  },
+  {
+    "id": 89,
+    "address": "San Martin 545, Junín, Mendoza",
+    "lat": -33.033641,
+    "lon": -68.504652
+  },
+  {
+    "id": 90,
+    "address": "Belgrano 550, Junín, Mendoza",
+    "lat": -33.031284,
+    "lon": -68.50232
+  },
+  {
+    "id": 91,
+    "address": "Patricias Mendocinas 555, Junín, Mendoza",
+    "lat": -33.020853,
+    "lon": -68.505278
+  },
+  {
+    "id": 92,
+    "address": "Belgrano 560, Junín, Mendoza",
+    "lat": -33.021023,
+    "lon": -68.509277
+  },
+  {
+    "id": 93,
+    "address": "Colón 565, Junín, Mendoza",
+    "lat": -33.030682,
+    "lon": -68.497419
+  },
+  {
+    "id": 94,
+    "address": "Sarmiento 570, Junín, Mendoza",
+    "lat": -33.019197,
+    "lon": -68.5051
+  },
+  {
+    "id": 95,
+    "address": "Patricias Mendocinas 575, Junín, Mendoza",
+    "lat": -33.030009,
+    "lon": -68.491461
+  },
+  {
+    "id": 96,
+    "address": "Las Heras 580, Junín, Mendoza",
+    "lat": -33.036332,
+    "lon": -68.50512
+  },
+  {
+    "id": 97,
+    "address": "Lavalle 585, Junín, Mendoza",
+    "lat": -33.020294,
+    "lon": -68.50845
+  },
+  {
+    "id": 98,
+    "address": "Mitre 590, Junín, Mendoza",
+    "lat": -33.031662,
+    "lon": -68.506695
+  },
+  {
+    "id": 99,
+    "address": "Lavalle 595, Junín, Mendoza",
+    "lat": -33.034213,
+    "lon": -68.501448
+  },
+  {
+    "id": 100,
+    "address": "Mitre 600, Junín, Mendoza",
+    "lat": -33.029288,
+    "lon": -68.501883
+  }
+]
