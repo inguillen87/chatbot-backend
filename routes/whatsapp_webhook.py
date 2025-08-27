@@ -18,6 +18,8 @@ from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
+from utils.maps_utils import extract_coordinates_from_google_maps_url
+from services.openai_maps_service import reverse_geocode_llm
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -252,6 +254,20 @@ def whatsapp_webhook():
         if label:
             location_info["label"] = label
         print(f"Received location data: {location_info}")
+    else:
+        coords = extract_coordinates_from_google_maps_url(incoming_text)
+        if coords:
+            latitude, longitude = coords
+            location_info = {"latitude": str(latitude), "longitude": str(longitude)}
+            try:
+                addr = reverse_geocode_llm(latitude, longitude)
+                if addr and addr.get("formatted_address"):
+                    location_info["address"] = addr["formatted_address"]
+            except Exception as e:
+                current_app.logger.error(f"Error reverse geocoding {coords}: {e}")
+            # treat message as location input only
+            incoming_text = ""
+            message_body = ""
 
     # --- Human Chat Check ---
     if session_context_db_entry.context_data.get("human_chat_in_progress"):
@@ -302,8 +318,10 @@ def whatsapp_webhook():
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
         if location_info:
-            # Pass location_info directly to the 'location' parameter of the bot logic
+            # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
+            kwargs_for_bot["es_ubicacion"] = True
+            kwargs_for_bot["ubicacion_usuario"] = location_info
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
             # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
