@@ -221,6 +221,7 @@ def create_app(config_class=Config):
             "X-Chat-Session-Id",
             "X-Anon-Id",
             "Anon-Id",
+            "Cache-Control",
         ],
         expose_headers=["X-Anon-Id", "Anon-Id"],
     )

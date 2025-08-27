@@ -390,7 +390,12 @@
         "Quiero saber el estado de mi reclamo",
         "¿Cómo va mi reclamo?",
         "Consultar estado de reclamo",
-        "Seguimiento de mi reclamo"
+        "Seguimiento de mi reclamo",
+        "Quiero consultar un reclamo",
+        "Consultar un reclamo",
+        "Hola quiero consultar un reclamo",
+        "Consultar ticket",
+        "Quiero consultar el ticket 123456"
     ],
     "respuesta": "Para consultar el estado de tu reclamo, por favor decime el número de ticket."
 },
