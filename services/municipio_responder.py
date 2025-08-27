@@ -2204,6 +2204,39 @@ def responder_municipio(
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return GreetingHandler(context).handle({})
 
+        elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
+            numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
+            if not numero_ticket:
+                return _finalize_response({
+                    "message_body": "Por favor, ingresá un número de reclamo válido.",
+                    "fuente": "handler_consultar_reclamo"
+                })
+
+            municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_ticket)
+            try:
+                ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
+            except (TypeError, ValueError):
+                pass
+            ticket = ticket_query.first()
+
+            if ticket:
+                mensaje = f"El reclamo *{numero_ticket}* está en estado *{ticket.estado}*."
+            else:
+                mensaje = (
+                    f"No encontramos un reclamo con número *{numero_ticket}*. "
+                    "Por favor, verificá el número."
+                )
+
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return _finalize_response({
+                "message_body": mensaje,
+                "fuente": "handler_consultar_reclamo"
+            })
+
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
             sugerencia_texto = pregunta_str
             if len(sugerencia_texto) < 10:
@@ -2240,7 +2273,7 @@ def responder_municipio(
                 return _finalize_response(response)
 
 
-    USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
+    USAR_LLM_PARA_RECLAMOS = False # Feature flag desactivado para usar flujo estático
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
 
     # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
