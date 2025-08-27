@@ -29,18 +29,19 @@ def create(data: dict) -> dict:
         return None
 
 
-def status(ticket_id: str) -> dict:
+def status(ticket_id: str, pin: str) -> dict:
     """
     Checks the status of an existing ticket.
     `ticket_id` is the ticket number (e.g., "M-123456").
+    Requires the 6-digit PIN associated with the ticket.
     """
-    if not ticket_id or not ticket_id.upper().startswith('M-'):
+    if not ticket_id or not ticket_id.upper().startswith('M-') or not pin:
         return None
 
     nro_ticket = ticket_id.split('-')[1]
 
     try:
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket, consulta_pin=pin).first()
         if not ticket:
             return None
 

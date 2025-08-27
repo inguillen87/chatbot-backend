@@ -2302,21 +2302,41 @@ def responder_municipio(
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return GreetingHandler(context).handle({})
 
+
         elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
-            numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
-            if not numero_ticket:
+            numero_guardado = contexto_municipio_actual.get('numero_ticket_consulta')
+            if not numero_guardado:
+                numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
+                if not numero_ticket:
+                    return _finalize_response({
+                        "message_body": "Por favor, ingresá un número de reclamo válido.",
+                        "fuente": "handler_consultar_reclamo"
+                    })
+                contexto_municipio_actual['numero_ticket_consulta'] = numero_ticket
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({
-                    "message_body": "Por favor, ingresá un número de reclamo válido.",
+                    "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.",
+                    "fuente": "handler_consultar_reclamo"
+                })
+
+            pin = ''.join(filter(str.isdigit, pregunta_str or ''))
+            if len(pin) != 6:
+                return _finalize_response({
+                    "message_body": "El PIN debe tener 6 dígitos.",
                     "fuente": "handler_consultar_reclamo"
                 })
 
             municipio_id = context.get("municipio_id", MUNICIPIO_ID)
-            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_ticket)
+            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_guardado, consulta_pin=pin)
             try:
                 ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
             except (TypeError, ValueError):
                 pass
             ticket = ticket_query.first()
+
+            contexto_municipio_actual.pop('numero_ticket_consulta', None)
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
 
             botones = []
             if ticket:
@@ -2336,13 +2356,8 @@ def responder_municipio(
                 mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
             else:
                 mensaje = (
-                    f"No encontramos un reclamo con número *{numero_ticket}*. "
-                    "Por favor, verificá el número."
+                    "No encontramos un ticket con ese número y PIN. Por favor, verifica los datos e intenta nuevamente."
                 )
-
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
 
             return _finalize_response({
                 "message_body": mensaje,

@@ -101,12 +101,12 @@ class TestAccionesMunicipio(unittest.TestCase):
     def test_accion_consultar_estado_ticket(self):
         from models import MunicipioTicket
 
-        ticket = MunicipioTicket(pregunta="p", nro_ticket="88888", estado="en_proceso", categoria="Alumbrado")
+        ticket = MunicipioTicket(pregunta="p", nro_ticket="88888", estado="en_proceso", categoria="Alumbrado", consulta_pin="123456")
         db.session.add(ticket)
         db.session.commit()
 
         handler = ConsultarEstadoTicketActionHandler({})
-        result = handler.execute({"id_ticket_mencionado": "88888"})
+        result = handler.execute({"id_ticket_mencionado": "88888", "pin": "123456"})
 
         self.assertTrue(result["success"])
         self.assertIn("88888", result["message_to_user"])

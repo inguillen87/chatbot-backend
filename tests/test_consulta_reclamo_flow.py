@@ -22,7 +22,7 @@ class TestConsultaReclamoFlow(unittest.TestCase):
         owner_user.set_password('password')
         db.session.add_all([rubro, owner_user])
 
-        ticket = MunicipioTicket(nro_ticket='123456', municipio_id=1, categoria='Luminaria', estado='en_proceso')
+        ticket = MunicipioTicket(nro_ticket='123456', municipio_id=1, categoria='Luminaria', estado='en_proceso', consulta_pin='654321')
         db.session.add(ticket)
         db.session.commit()
 
@@ -61,7 +61,21 @@ class TestConsultaReclamoFlow(unittest.TestCase):
             chat_db_context=chat_context
         )
 
-        self.assertIn("en_proceso", response2["message_body"])
+        self.assertIn("PIN", response2["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_NUMERO_TICKET.name
+        )
+
+        response3 = responder_municipio(
+            pregunta_original='654321',
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context
+        )
+
+        self.assertIn("en_proceso", response3["message_body"])
         self.assertIsNone(chat_context.context_data['contexto_municipio_v2'].get('estado_conversacion'))
 
     def test_consulta_estado_reclamo_text_action(self):
