@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from app import create_app, db
 from models import MunicipioTicket, User
 
@@ -25,11 +26,16 @@ class TicketPublicEndpointTest(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    def test_public_lookup_by_number(self):
-        resp = self.client.get('/tickets/municipio/por_numero/123456')
+    @patch('routes.ticket.verify_recaptcha', return_value=True)
+    def test_public_lookup_by_number(self, mock_recaptcha):
+        resp = self.client.get('/tickets/municipio/por_numero/123456?recaptcha_token=test')
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertEqual(data['id_ticket'], 'M-123456')
+
+    def test_public_lookup_requires_recaptcha(self):
+        resp = self.client.get('/tickets/municipio/por_numero/123456')
+        self.assertEqual(resp.status_code, 400)
 
 if __name__ == '__main__':
     unittest.main()

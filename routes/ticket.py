@@ -21,6 +21,8 @@ from utils.permissions import require_role
 from collections import defaultdict
 logger = logging.getLogger("app")
 
+from utils.recaptcha import verify_recaptcha
+
 ticket_bp = Blueprint('ticket_bp', __name__)
 
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
@@ -453,6 +455,10 @@ def _serialize_ticket_details(ticket, ticket_type):
 @ticket_bp.route('/tickets/municipio/por_numero/<string:nro_ticket>', methods=['GET'])
 def get_ticket_by_number_public(nro_ticket: str):
     """Permite consultar un ticket municipal por su número sin autenticación."""
+    token = request.args.get("recaptcha_token")
+    if not token or not verify_recaptcha(token):
+        return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
+
     normalizado = str(nro_ticket).upper()
     if normalizado.startswith("M-"):
         normalizado = normalizado.split("-", 1)[1]
