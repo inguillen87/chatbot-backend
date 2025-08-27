@@ -203,17 +203,24 @@ class ReclamoFlowHandler:
             }
     def handle_foto(self, user_input, payload):
         action = payload.get("action")
+        normalized = user_input.lower()
         if payload.get("es_foto") and payload.get("foto_url"):
             self.flow_context['datos_reclamo']['foto_url'] = payload.get("foto_url")
             return self.ask_for_contact_details()
 
-        if "no" in user_input.lower() or action == "reclamo_adjuntar_foto_no":
+        no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
+        yes_words = {"si", "sí", "enviar", "adjunto", "mandar"}
+
+        if any(w in normalized for w in no_words) or action == "reclamo_adjuntar_foto_no":
             self.flow_context['datos_reclamo']['foto_url'] = None
             return self.ask_for_contact_details()
-        elif "si" in user_input.lower() or action == "reclamo_adjuntar_foto_si":
+        elif any(w in normalized for w in yes_words) or action == "reclamo_adjuntar_foto_si":
             return {"message_body": "Por favor, enviá la foto ahora."}
         else:
-            return {"message_body": "No entendí tu respuesta. Por favor, enviá una foto o elegí una de las opciones.", "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}]}
+            return {
+                "message_body": "No entendí tu respuesta. Por favor, enviá una foto o elegí una de las opciones.",
+                "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
+            }
 
     def ask_for_contact_details(self):
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
@@ -247,7 +254,10 @@ class ReclamoFlowHandler:
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action")
-        if "si" in user_input.lower() or action == "reclamo_confirmar_si":
+        normalized = user_input.lower()
+        affirmatives = {"si", "sí", "confirmo", "confirmar", "ok", "okay", "acepto", "aceptar", "dale"}
+        negatives = {"no", "editar", "modificar", "cambiar"}
+        if any(word in normalized for word in affirmatives) or action == "reclamo_confirmar_si":
             datos = self.flow_context.get('datos_reclamo', {})
             action_data = {
                 "categoria": datos.get("categoria"),
@@ -277,7 +287,7 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde."
             )
             return self.end_flow(error_message, show_menu=True)
-        elif "no" in user_input.lower() or action == "reclamo_confirmar_no":
+        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
             return self.ask_for_contact_details()
         else:  # Cancel
             return self.end_flow("Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?", show_menu=True)
