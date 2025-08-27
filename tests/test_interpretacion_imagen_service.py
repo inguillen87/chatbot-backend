@@ -54,7 +54,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         self.app_context.pop() # Desactiva el contexto de la aplicación
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
-    @patch('services.interpretacion_imagen_service.analyze_image_from_content')
+    @patch('services.interpretacion_imagen_service.analyze_image_smart')
     @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
     def test_interpretar_imagen_reclamo_exito_total(self, mock_extract_llm, mock_analyze_vision, mock_descargar):
         # --- Configuración de Mocks ---
@@ -112,7 +112,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
-    @patch('services.interpretacion_imagen_service.analyze_image_from_content')
+    @patch('services.interpretacion_imagen_service.analyze_image_smart')
     @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
     def test_interpretar_imagen_reclamo_sin_keywords_ni_texto_ocr(self, mock_extract_llm, mock_analyze_vision, mock_descargar):
         mock_descargar.return_value = b"imagen_sin_nada_relevante"
@@ -151,7 +151,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         self.assertEqual(analisis_guardado.error_analisis, "Fallo al descargar la imagen.")
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
-    @patch('services.interpretacion_imagen_service.analyze_image_from_content')
+    @patch('services.interpretacion_imagen_service.analyze_image_smart')
     def test_interpretar_imagen_error_vision_api(self, mock_analyze_vision, mock_descargar):
         mock_descargar.return_value = b"bytes_imagen"
         mock_analyze_vision.return_value = {"error": "Error de Vision simulado"}
@@ -168,7 +168,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         self.assertIn("Error de Vision API: Error de Vision simulado", analisis_guardado.error_analisis)
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
-    @patch('services.interpretacion_imagen_service.analyze_image_from_content')
+    @patch('services.interpretacion_imagen_service.analyze_image_smart')
     @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
     def test_interpretar_imagen_keywords_pero_llm_no_confirma(self, mock_extract_llm, mock_analyze_vision, mock_descargar):
         mock_descargar.return_value = b"imagen_ambigua"
@@ -214,7 +214,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
-    @patch('services.interpretacion_imagen_service.analyze_image_from_content')
+    @patch('services.interpretacion_imagen_service.analyze_image_smart')
     @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
     def test_interpretar_imagen_reclamo_analisis_existente(self, mock_extract_llm, mock_analyze_vision, mock_descargar):
         # --- Configuración de Mocks (similar al test de éxito) ---
