@@ -67,7 +67,8 @@ def test_full_claim_in_one_go(test_client, mock_llm):
                 "ubicacion": "Av. Siempre Viva 123",
                 "usuario": "Marcelo Guillen",
                 "telefono": "2613168608",
-                "email": "marcelo.guillen@example.com"
+                "email": "marcelo.guillen@example.com",
+                "dni": "32877851"
             },
             "message_body": "Gracias, he registrado tu reclamo."
         },
@@ -145,7 +146,8 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
                 "target": "municipio",
                 "usuario": "Lisa Simpson",
                 "telefono": "555-1234",
-                "email": "lisa.simpson@example.com"
+                "email": "lisa.simpson@example.com",
+                "dni": "30111222"
             },
             "message_body": "Gracias, he registrado tu reclamo."
         },

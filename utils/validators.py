@@ -105,3 +105,13 @@ def extract_address(text: str) -> Optional[str]:
         if validate_address(addr):
             return addr
     return None
+
+
+def extract_dni(text: str) -> Optional[str]:
+    """Extract an Argentine DNI number (7-8 digits) from text."""
+    if not text:
+        return None
+    match = re.search(r"\b\d{7,8}\b", text)
+    if match:
+        return match.group(0)
+    return None

@@ -48,6 +48,7 @@ from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
+from services.ticket_utils import formatear_ticket_respuesta
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -202,17 +203,24 @@ class ReclamoFlowHandler:
             }
     def handle_foto(self, user_input, payload):
         action = payload.get("action")
+        normalized = user_input.lower()
         if payload.get("es_foto") and payload.get("foto_url"):
             self.flow_context['datos_reclamo']['foto_url'] = payload.get("foto_url")
             return self.ask_for_contact_details()
 
-        if "no" in user_input.lower() or action == "reclamo_adjuntar_foto_no":
+        no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
+        yes_words = {"si", "sí", "enviar", "adjunto", "mandar"}
+
+        if any(w in normalized for w in no_words) or action == "reclamo_adjuntar_foto_no":
             self.flow_context['datos_reclamo']['foto_url'] = None
             return self.ask_for_contact_details()
-        elif "si" in user_input.lower() or action == "reclamo_adjuntar_foto_si":
+        elif any(w in normalized for w in yes_words) or action == "reclamo_adjuntar_foto_si":
             return {"message_body": "Por favor, enviá la foto ahora."}
         else:
-            return {"message_body": "No entendí tu respuesta. Por favor, enviá una foto o elegí una de las opciones.", "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}]}
+            return {
+                "message_body": "No entendí tu respuesta. Por favor, enviá una foto o elegí una de las opciones.",
+                "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
+            }
 
     def ask_for_contact_details(self):
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
@@ -246,14 +254,42 @@ class ReclamoFlowHandler:
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action")
-        if "si" in user_input.lower() or action == "reclamo_confirmar_si":
-            datos_reclamo = self.flow_context.get('datos_reclamo', {})
-            ticket_id = "R" + str(random.randint(1000, 9999))
-            success_message = f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{ticket_id}*. Te mantendremos informado sobre el estado del mismo por este medio."
-            return self.end_flow(success_message)
-        elif "no" in user_input.lower() or action == "reclamo_confirmar_no":
+        normalized = user_input.lower()
+        affirmatives = {"si", "sí", "confirmo", "confirmar", "ok", "okay", "acepto", "aceptar", "dale"}
+        negatives = {"no", "editar", "modificar", "cambiar"}
+        if any(word in normalized for word in affirmatives) or action == "reclamo_confirmar_si":
+            datos = self.flow_context.get('datos_reclamo', {})
+            action_data = {
+                "categoria": datos.get("categoria"),
+                "descripcion": datos.get("descripcion"),
+                "ubicacion": datos.get("direccion"),
+                "usuario": datos.get("nombre"),
+                "dni": datos.get("dni"),
+                "email": datos.get("email"),
+                "telefono": datos.get("telefono"),
+                "foto_url_adjunta": datos.get("foto_url"),
+            }
+            handler = CrearReclamoActionHandler(self.context)
+            result = handler.execute(action_data)
+            if result.get("success"):
+                nro_ticket = result.get("data", {}).get("nro_ticket")
+                message = result.get(
+                    "message_to_user",
+                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio."
+                )
+                return {
+                    "message_body": message,
+                    "options_list": result.get("options_list", []),
+                    "message_type": result.get("message_type", "text"),
+                }
+            error_message = result.get(
+                "message_to_user",
+                "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde."
+            )
+            return self.end_flow(error_message, show_menu=True)
+        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
             return self.ask_for_contact_details()
-        else: # Cancel
+        else:  # Cancel
             return self.end_flow("Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?", show_menu=True)
 
     def end_flow(self, message, show_menu=False):
@@ -1195,7 +1231,6 @@ def handle_location_update(data):
 
 BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
 
-import random  # Asegurar que random está importado para el mock_ticket_nro
 # Utiliza el orquestador de LLMs que intenta OpenAI, Cohere y Gemini (como
 # último recurso). Se expone con el nombre `llamar_gemini` para mantener
 # compatibilidad con el código existente y las pruebas.
@@ -2270,8 +2305,22 @@ def responder_municipio(
                 pass
             ticket = ticket_query.first()
 
+            botones = []
             if ticket:
-                mensaje = f"El reclamo *{numero_ticket}* está en estado *{ticket.estado}*."
+                contactos = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
+                contacto_especializado = contactos.get(ticket.categoria, contactos.get("default", {})) if isinstance(contactos, dict) else {}
+                municipio_config = context.get("municipio_config_actual", {})
+                base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
+                mensaje, botones = formatear_ticket_respuesta(
+                    "reclamo",
+                    ticket.nombre_vecino or "Vecino/a",
+                    ticket.detalles or ticket.pregunta or "",
+                    ticket.categoria,
+                    f"M-{ticket.nro_ticket}",
+                    contacto_especializado,
+                    base_chat_url,
+                )
+                mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
             else:
                 mensaje = (
                     f"No encontramos un reclamo con número *{numero_ticket}*. "
@@ -2284,6 +2333,8 @@ def responder_municipio(
 
             return _finalize_response({
                 "message_body": mensaje,
+                "options_list": botones,
+                "message_type": "interactive_buttons" if botones else "text",
                 "fuente": "handler_consultar_reclamo"
             })
 
@@ -2323,7 +2374,7 @@ def responder_municipio(
                 return _finalize_response(response)
 
 
-    USAR_LLM_PARA_RECLAMOS = False # Feature flag desactivado para usar flujo estático
+    USAR_LLM_PARA_RECLAMOS = True  # Habilita el flujo con LLM para reclamos
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
 
     # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM

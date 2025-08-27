@@ -349,14 +349,18 @@ def _get_user_info(ticket, user_model):
         user_info["telefono"] = ticket_owner_user.telefono
         user_info["email"] = ticket_owner_user.email
         user_info["direccion"] = ticket_owner_user.direccion
-        # User model doesn't have DNI, so we don't fetch it here.
+        user_info["dni"] = ticket_owner_user.dni
 
     # 3. Fill missing info with data from the ticket itself
     user_info["nombre"] = user_info["nombre"] or getattr(ticket, 'nombre_vecino', None)
     user_info["telefono"] = user_info["telefono"] or getattr(ticket, 'telefono_vecino', None) or getattr(ticket, 'telefono', None)
     user_info["email"] = user_info["email"] or getattr(ticket, 'email_vecino', None) or getattr(ticket, 'email', None)
     user_info["direccion"] = user_info["direccion"] or getattr(ticket, 'direccion', None)
-    user_info["dni"] = user_info["dni"] or getattr(ticket, 'dni', None) # Only PymeTicket will have this
+    user_info["dni"] = (
+        user_info["dni"]
+        or getattr(ticket, 'dni', None)
+        or getattr(ticket, 'dni_vecino', None)
+    )
 
     # 4. Fallback to 'detalles' field for any missing info
     detalles_texto = getattr(ticket, 'detalles', '') or ''

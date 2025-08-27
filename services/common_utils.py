@@ -758,26 +758,36 @@ def construir_respuesta_sugerir_registro(mensaje_personalizado: Optional[str] = 
         f"contexto_{tipo_entidad}": {} # O el contexto que se le pase a esta función
     }
 
-def extract_multiple_contact_details_regex(text: str, potential_fields: list) -> dict:
-    """
-    Extracts multiple contact details from a text string using regex-based validators.
-    This is a non-LLM, cheaper alternative to the LLM-based function.
+def extract_multiple_contact_details_regex(text: str, potential_fields: list | None = None) -> dict:
+    """Extract contact details using simple regex heuristics.
+
+    Parameters
+    ----------
+    text: str
+        The raw user input.
+    potential_fields: list | None
+        Which fields to try to extract. Defaults to common ones used in the
+        reclamo flow (nombre, dni, email, telefono).
     """
     if not text:
         return {}
 
-    from utils.validators import extract_email, extract_phone, extract_name, extract_address
+    if potential_fields is None:
+        potential_fields = ["nombre", "dni", "email", "telefono"]
 
-    extracted_data = {}
+    from utils.validators import (
+        extract_email,
+        extract_phone,
+        extract_name,
+        extract_address,
+        extract_dni,
+    )
 
-    # The order matters if a field could be a subset of another.
-    # For now, this seems fine.
+    extracted_data: dict[str, str] = {}
+
     for field in potential_fields:
         if field not in extracted_data or not extracted_data.get(field):
             heuristic_value = None
-            # Note: The keys like 'nombre' are coming from the ReclamoFlowHandler
-            # and differ from the 'nombre_cliente' used in the LLM version.
-            # We handle both for flexibility.
             if field in ["nombre", "nombre_cliente"]:
                 heuristic_value = extract_name(text)
             elif field in ["telefono", "telefono_cliente"]:
@@ -786,9 +796,10 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list) ->
                 heuristic_value = extract_address(text)
             elif field in ["email", "email_cliente"]:
                 heuristic_value = extract_email(text)
+            elif field in ["dni", "dni_cliente"]:
+                heuristic_value = extract_dni(text)
 
             if heuristic_value:
-                # Store with the original key requested by the caller
                 extracted_data[field] = heuristic_value
 
     return extracted_data
