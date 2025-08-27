@@ -27,7 +27,7 @@ def _remove_redundant_urls_from_message(message_body, options_list):
 
     return message_body_str
 
-def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None):
+def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None, consulta_pin=None):
     nombre_asesor = None
     telefono_asesor = None
     horario_asesor = None
@@ -62,6 +62,8 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 
         ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
         chat_url = f"{base_chat_url}/{ticket_id_numeric}"
+        if consulta_pin:
+            chat_url += f"?pin={consulta_pin}"
         botones.append({
             "texto": "💬 Ver mi Ticket",
             "url": chat_url,
@@ -85,6 +87,8 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 """
     if dni:
         respuesta += f"\n- *DNI:* {dni}"
+    if consulta_pin:
+        respuesta += f"\n- *PIN:* {consulta_pin}"
 
     if nombre_asesor:
         respuesta += f"""

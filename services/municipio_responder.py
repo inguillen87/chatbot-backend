@@ -2352,6 +2352,7 @@ def responder_municipio(
                     f"M-{ticket.nro_ticket}",
                     contacto_especializado,
                     base_chat_url,
+                    consulta_pin=ticket.consulta_pin,
                 )
                 mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
             else:

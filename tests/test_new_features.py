@@ -45,6 +45,20 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("Juan Obras", message_body)
         self.assertEqual(len(buttons), 0)
 
+    def test_formatear_ticket_respuesta_incluye_pin_y_url(self):
+        message, buttons = formatear_ticket_respuesta(
+            "reclamo",
+            "Ana",
+            "Descripción",
+            "Categoria",
+            "M-99999",
+            contacto_especializado=None,
+            base_chat_url="https://example.com/tickets",
+            consulta_pin="654321",
+        )
+        self.assertIn("654321", message)
+        self.assertTrue(any("pin=654321" in b.get("url", "") for b in buttons))
+
     def test_greeting_handler_final_menu(self):
         """
         Verifica que el GreetingHandler devuelve el menú principal final (v5).

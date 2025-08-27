@@ -324,7 +324,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 nro_ticket_str,
                 contacto_especializado,
                 base_chat_url,
-                dni=ticket_data_cleaned.get("dni_vecino")
+                dni=ticket_data_cleaned.get("dni_vecino"),
+                consulta_pin=ticket_creado.get("consulta_pin"),
             )
 
             # Log para debug
@@ -503,7 +504,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 nro_ticket_str,
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
-                dni=dni_vecino
+                dni=dni_vecino,
+                consulta_pin=ticket_creado.get("consulta_pin"),
             )
 
             # Añadir el botón de acción específico para sugerencias
