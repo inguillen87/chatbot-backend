@@ -202,18 +202,18 @@ def whatsapp_webhook():
                 session_id=chat_session_id_internal
             )
 
-            if not adjunto:
-                 raise Exception("create_attachment_with_thumbnail failed to return an attachment object.")
-
-            # Prepare the info for the chatbot logic, which will be used for all media types
-            uploaded_file_info = {
-                "id": adjunto.id,
-                "url": adjunto.url,
-                "mime_type": adjunto.mime,
-                "name": adjunto.nombre_original,
-                "source": "whatsapp"
-            }
-            current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
+            if adjunto:
+                # Prepare the info for the chatbot logic, which will be used for all media types
+                uploaded_file_info = {
+                    "id": adjunto.id,
+                    "url": adjunto.url,
+                    "mime_type": adjunto.mime,
+                    "name": adjunto.nombre_original,
+                    "source": "whatsapp"
+                }
+                current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
+            else:
+                current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")
 
             if media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True

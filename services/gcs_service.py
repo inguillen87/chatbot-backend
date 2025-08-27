@@ -19,6 +19,39 @@ def get_thumb_filename(original_filename: str) -> str:
     base, _ = os.path.splitext(original_filename)
     return f"{base}_thumb.webp"
 
+
+def _save_to_local(original_filename: str, file_bytes: bytes, unique_name: str,
+                   mimetype: str, thumbnail_bytes: bytes | None,
+                   thumb_meta: dict | None) -> dict:
+    """Save files to the local filesystem when GCS is unavailable."""
+    upload_dir = current_app.config.get(
+        "LOCAL_UPLOAD_FOLDER",
+        os.path.join(current_app.root_path, "static", "uploads"),
+    )
+    os.makedirs(upload_dir, exist_ok=True)
+
+    original_path = os.path.join(upload_dir, unique_name)
+    with open(original_path, "wb") as f:
+        f.write(file_bytes)
+
+    if thumbnail_bytes and thumb_meta:
+        thumb_filename = get_thumb_filename(unique_name)
+        thumb_path = os.path.join(upload_dir, thumb_filename)
+        with open(thumb_path, "wb") as f:
+            f.write(thumbnail_bytes)
+
+    rel_path = os.path.relpath(original_path, current_app.root_path)
+    original_url = "/" + rel_path.replace(os.sep, "/")
+
+    return {
+        "unique_name": unique_name,
+        "original_url": original_url,
+        "size": len(file_bytes),
+        "original_name": original_filename,
+        "mimetype": mimetype,
+        "thumb_meta": thumb_meta,
+    }
+
 def upload_to_gcs(file_storage) -> dict | None:
     """
     Uploads a file to Google Cloud Storage and returns its metadata.
@@ -88,6 +121,7 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
 
     # Create a new stream for thumbnail generation
     file_stream_for_thumb = io.BytesIO(file_bytes)
+    thumbnail_bytes, thumb_meta = generar_thumbnail(file_stream_for_thumb, file_storage.mimetype)
 
     try:
         storage_client = _get_gcs_client()
@@ -97,16 +131,12 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
         blob_original = bucket.blob(unique_name)
         blob_original.upload_from_string(file_bytes, content_type=file_storage.mimetype)
 
-        # 2. Generate and Upload Thumbnail
-        thumbnail_bytes, thumb_meta = generar_thumbnail(file_stream_for_thumb, file_storage.mimetype)
-
-        thumb_url = None
+        # 2. Upload Thumbnail if available
         if thumbnail_bytes and thumb_meta:
             thumb_filename = get_thumb_filename(unique_name)
             blob_thumb = bucket.blob(thumb_filename)
             blob_thumb.upload_from_string(thumbnail_bytes, content_type='image/webp')
-            thumb_url = blob_thumb.public_url # We can store this if we ever add the DB column
-            current_app.logger.info(f"Thumbnail uploaded to {thumb_url}")
+            current_app.logger.info(f"Thumbnail uploaded to {blob_thumb.public_url}")
 
         return {
             "unique_name": unique_name,
@@ -114,9 +144,20 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
             "size": len(file_bytes),
             "original_name": original_filename,
             "mimetype": file_storage.mimetype,
-            "thumb_meta": thumb_meta # Contains width, height, pages
+            "thumb_meta": thumb_meta
         }
 
     except Exception as e:
-        current_app.logger.error(f"Error in guardar_adjunto_y_thumbnail for {original_filename}: {e}", exc_info=True)
-        return None
+        current_app.logger.error(
+            f"Error in guardar_adjunto_y_thumbnail for {original_filename}: {e}",
+            exc_info=True,
+        )
+        current_app.logger.warning("Falling back to local file storage for attachments.")
+        return _save_to_local(
+            original_filename,
+            file_bytes,
+            unique_name,
+            file_storage.mimetype,
+            thumbnail_bytes,
+            thumb_meta,
+        )
