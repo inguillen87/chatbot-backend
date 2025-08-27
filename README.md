@@ -245,3 +245,12 @@ This project can be deployed as a multi-tenant SaaS solution. Each company has i
 - The LLM now asks to confirm stored addresses before searching.
 - Queries like "veterinarias" reset any ongoing complaint context and clear previous complaint details.
 - Tool executions log parameters and show a fallback message when no results are found.
+
+## Log Utilities
+You can inspect log files using `script_filter_logs.py`.
+This helper allows filtering by log level, searching with a regular expression
+and limiting the output to the last N lines. Example:
+
+```bash
+python script_filter_logs.py logs/chatbot.log --level ERROR --contains reclamo --tail 50
+```
