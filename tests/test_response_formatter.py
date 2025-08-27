@@ -6,9 +6,10 @@ import os
 os.environ["WHATSAPP_FORCE_TEXT"] = "false"
 
 import unittest
+from unittest import mock
 import json
 import services.response_formatter as rf
-from services.response_formatter import build_interactive_response
+from services.response_formatter import build_interactive_response, render_audio_text
 
 class TestResponseFormatter(unittest.TestCase):
 
@@ -76,22 +77,34 @@ class TestResponseFormatter(unittest.TestCase):
             options=options, body_text="Demasiadas opciones de lista:", channel="whatsapp", message_type='interactive_list'
         )
         self.assertEqual(response["type"], "text")
-        expected_body = "Demasiadas opciones de lista:\n\n" + "\n".join([f"*{i+1}*. Lista Item {i}" for i in range(15)]) + "\n\nResponde con el número de la opción que necesites."
+        expected_body = (
+            "Demasiadas opciones de lista:\n\n" +
+            "\n".join([f"*{i+1}*. Lista Item {i}" for i in range(15)]) +
+            "\n*16*. Menú\n*17*. Cancelar\n\nResponde con el número de la opción que necesites."
+        )
         self.assertEqual(response["text"]["body"], expected_body)
+
+    def test_render_audio_text_numbers_options(self):
+        text = render_audio_text("Menú", options=[{"texto": "Uno"}, {"texto": "Dos"}])
+        self.assertIn("1. Uno", text)
+        self.assertIn("2. Dos", text)
+        self.assertTrue(text.strip().endswith("opción que necesites."))
 
     def test_whatsapp_text_message(self):
         response = build_interactive_response(
             options=[], body_text="Hola mundo", channel="whatsapp", message_type='text'
         )
         self.assertEqual(response["type"], "text")
-        self.assertEqual(response["text"]["body"], "Hola mundo")
+        expected_body = "Hola mundo\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+        self.assertEqual(response["text"]["body"], expected_body)
 
     def test_whatsapp_fallback_to_text_if_no_options_for_interactive(self):
         response = build_interactive_response(
             options=[], body_text="Sin opciones", channel="whatsapp", message_type='interactive_buttons'
         )
         self.assertEqual(response["type"], "text")
-        self.assertEqual(response["text"]["body"], "Sin opciones")
+        expected_body = "Sin opciones\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+        self.assertEqual(response["text"]["body"], expected_body)
 
     def test_whatsapp_list_section_and_button_text_from_original_response(self):
         original_bot_response_data = {
@@ -246,11 +259,15 @@ class TestResponseFormatter(unittest.TestCase):
             channel="whatsapp",
             audio_url=audio_url
         )
+        expected_body = "This is a caption.\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         expected_payload = {
             "type": "text",
-            "text": {"body": "This is a caption."},
+            "text": {"body": expected_body},
             "audio": {"link": audio_url},
-            "contexto_actualizado": None,
+            "contexto_actualizado": {"last_options_sent": [
+                {"texto": "Menú", "action_id": "menu_principal"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ]},
         }
         self.assertEqual(formatted_response, expected_payload)
 
@@ -264,10 +281,14 @@ class TestResponseFormatter(unittest.TestCase):
             channel="whatsapp",
             audio_url=None # Explicitly None
         )
+        expected_body = "This is a standard text message.\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         expected_payload = {
             "type": "text",
-            "text": {"body": "This is a standard text message."},
-            "contexto_actualizado": None,
+            "text": {"body": expected_body},
+            "contexto_actualizado": {"last_options_sent": [
+                {"texto": "Menú", "action_id": "menu_principal"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ]},
         }
         self.assertEqual(formatted_response, expected_payload)
 
