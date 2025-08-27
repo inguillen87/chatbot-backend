@@ -9,6 +9,7 @@ from flask_login import UserMixin
 import uuid
 import json
 import os
+import random
 from services.gcs_service import get_thumb_filename, BUCKET_NAME
 
 
@@ -145,6 +146,7 @@ class MunicipioTicket(db.Model):
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     nro_ticket = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    consulta_pin = db.Column(db.String(6), nullable=False, default=lambda: f"{random.randint(100000, 999999)}")
     detalles = db.Column(db.Text, nullable=True)
     direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
