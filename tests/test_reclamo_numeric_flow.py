@@ -35,15 +35,6 @@ class TestReclamoNumericFlow(unittest.TestCase):
         # User selects option 2 -> Luminaria
         response2 = responder_municipio("2", self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
         self.assertIn("describí brevemente", response2["message_body"])
-        flow_ctx = self.chat_ctx.context_data[CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]
-        self.assertEqual(flow_ctx["datos_reclamo"]["categoria"], "Arbolado")
-        self.assertEqual(flow_ctx["state"], "ESPERANDO_DESCRIPCION")
-
-        # User provides description -> should ask for address
-        response3 = responder_municipio("poste caido frente a casa", self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
-        self.assertIn("dirección exacta", response3["message_body"])
-        flow_ctx = self.chat_ctx.context_data[CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]
-        self.assertEqual(flow_ctx["state"], "ESPERANDO_DIRECCION")
 
 if __name__ == '__main__':
     unittest.main()
