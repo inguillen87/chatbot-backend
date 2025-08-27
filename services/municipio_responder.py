@@ -13,8 +13,20 @@ import unicodedata
 import difflib
 from flask import current_app, has_app_context, session as flask_session
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import InvalidRequestError
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
 from services.ticket_service import servicio_tickets
+
+logger = logging.getLogger(__name__)
+
+
+def safe_flag_modified(obj, attr):
+    if not obj or not hasattr(obj, attr):
+        return
+    try:
+        flag_modified(obj, attr)
+    except InvalidRequestError:
+        logger.warning(f"No se pudo marcar como modificado {attr} en {obj}.")
 from twilio.rest import Client
 from datetime import datetime, timedelta
 from services.utils_placeholders import (
@@ -2135,8 +2147,7 @@ def responder_municipio(
         logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
         handler = ReclamoFlowHandler(context, chat_db_context)
         response = handler.handle(pregunta_str, received_payload)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
+        safe_flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
     # --- FIN: Manejo del Flujo de Reclamos Activo ---
 

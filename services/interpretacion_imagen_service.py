@@ -1,5 +1,6 @@
 # services/interpretacion_imagen_service.py
 import logging
+import os
 import requests
 import random # Para el mock de AnalisisArchivo en las pruebas
 from typing import Dict, Any, List, Optional
@@ -34,8 +35,18 @@ PALABRAS_CLAVE_RECLAMO_ETIQUETAS = {
 
 
 def _descargar_imagen(url: str) -> Optional[bytes]:
-    """Descarga el contenido de una imagen desde una URL."""
+    """Descarga el contenido de una imagen desde una URL o un path local."""
     from app import app
+    if not url:
+        return None
+    if url.startswith("/"):
+        local_path = os.path.join(app.root_path, url.lstrip("/"))
+        try:
+            with open(local_path, "rb") as f:
+                return f.read()
+        except OSError as e:
+            logger.error(f"❌ Error al leer imagen local {local_path}: {e}", exc_info=True)
+            return None
     try:
         response = requests.get(
             url,
