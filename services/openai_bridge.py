@@ -2,12 +2,18 @@ import os
 import openai
 import logging
 import json
+import httpx
 
 logger = logging.getLogger(__name__)
 
 # The API key is loaded automatically from the environment variable OPENAI_API_KEY.
 try:
-    client = openai.OpenAI()
+    # Use a custom HTTP client that ignores system proxy settings. Without
+    # this, environments with `http_proxy`/`https_proxy` variables can cause
+    # `openai.OpenAI` to raise `TypeError: Client.__init__() got an unexpected
+    # keyword argument 'proxies'` during initialization.
+    http_client = httpx.Client(proxy=None, trust_env=False)
+    client = openai.OpenAI(http_client=http_client)
 except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {e}")
     client = None

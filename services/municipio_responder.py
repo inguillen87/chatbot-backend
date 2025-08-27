@@ -653,12 +653,18 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     """
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
+    owner_user = context.get("user_obj")
 
     user_name = None
-    if isinstance(profile_name, str) and profile_name.strip():
-        user_name = profile_name.strip()
-    elif viewer_user:
+    if viewer_user:
         user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
+    elif isinstance(profile_name, str) and profile_name.strip():
+        owner_name = None
+        if owner_user:
+            owner_name = getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
+        # Avoid greeting with the admin/owner name when the session is anonymous
+        if not owner_name or profile_name.strip().lower() != str(owner_name).strip().lower():
+            user_name = profile_name.strip()
 
     if welcome_message_override:
         welcome_message = welcome_message_override
@@ -670,7 +676,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     else:
         welcome_message = (
             "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
+            "¿Cómo te llamás?"
         )
 
     # Final Menu Structure (v5)
@@ -1139,8 +1145,11 @@ def handle_location_update(data):
 
 BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
 
-import random # Asegurar que random está importado para el mock_ticket_nro
-from services.gemini_bridge import llamar_gemini # Asegurar import
+import random  # Asegurar que random está importado para el mock_ticket_nro
+# Utiliza el orquestador de LLMs que intenta OpenAI, Cohere y Gemini (como
+# último recurso). Se expone con el nombre `llamar_gemini` para mantener
+# compatibilidad con el código existente y las pruebas.
+from services.llm_orchestrator import llamar_llm_con_fallback as llamar_gemini
 
 # Imports necesarios para la función accion_crear_reclamo_municipio
 # (Algunos pueden estar ya importados globalmente en el archivo)
