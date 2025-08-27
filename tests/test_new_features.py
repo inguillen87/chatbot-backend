@@ -80,7 +80,7 @@ class TestNewFeatures(unittest.TestCase):
             chat_db_context=MagicMock(context_data={}),
         )
 
-        self.assertIn("¿Cómo te puedo ayudar hoy?", response.get("message_body", ""))
+        self.assertIn("¿Cómo te llamás?", response.get("message_body", ""))
         # 4 (Reclamos) + 3 (Trámites) + 2 (Info) + 1 (Estacionamiento) = 10
         self.assertEqual(len(response.get("options_list", [])), 10)
         self.assertTrue(

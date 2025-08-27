@@ -653,12 +653,18 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     """
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
+    owner_user = context.get("user_obj")
 
     user_name = None
-    if isinstance(profile_name, str) and profile_name.strip():
-        user_name = profile_name.strip()
-    elif viewer_user:
+    if viewer_user:
         user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
+    elif isinstance(profile_name, str) and profile_name.strip():
+        owner_name = None
+        if owner_user:
+            owner_name = getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
+        # Avoid greeting with the admin/owner name when the session is anonymous
+        if not owner_name or profile_name.strip().lower() != str(owner_name).strip().lower():
+            user_name = profile_name.strip()
 
     if welcome_message_override:
         welcome_message = welcome_message_override
@@ -670,7 +676,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     else:
         welcome_message = (
             "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
+            "¿Cómo te llamás?"
         )
 
     # Final Menu Structure (v5)
