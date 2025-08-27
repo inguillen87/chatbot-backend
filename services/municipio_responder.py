@@ -84,7 +84,13 @@ class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
         self.context = context
         self.chat_db_context = chat_db_context
-        self.flow_context = context.get("chat_db_context_data", {}).setdefault("reclamo_flow_v2", {})
+        # Ensure the flow data lives inside the main municipio context so it
+        # survives across turns just like other conversation state.
+        municipal_ctx = context.get("chat_db_context_data", {}).setdefault(
+            CONTEXTO_MUNICIPIO, {}
+        )
+        self.municipal_ctx = municipal_ctx
+        self.flow_context = municipal_ctx.setdefault("reclamo_flow_v2", {})
         self.greeting_handler = GreetingHandler(context)
 
 
@@ -151,33 +157,49 @@ class ReclamoFlowHandler:
 
     def handle_categoria(self, user_input):
         self.flow_context['datos_reclamo']['categoria'] = user_input
-        self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
-        return {"message_body": f"Perfecto. Iniciemos tu reclamo por *{user_input}*.\n\nPor favor, indicame la dirección exacta del problema (calle y número). O podés escribir 'cancelar' para volver al menú."}
+        self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
+        return {
+            "message_body": f"Perfecto. Iniciemos tu reclamo por *{user_input}*.\n\nPor favor, describí brevemente el problema."
+        }
 
     def handle_direccion(self, user_input, payload):
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
-            self.flow_context['datos_reclamo']['direccion'] = address if address else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+            self.flow_context['datos_reclamo']['direccion'] = (
+                address
+                if address
+                else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+            )
         elif len(user_input) < 5:
-             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
+            return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
             self.flow_context['datos_reclamo']['direccion'] = user_input
 
-        self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
-        return {"message_body": "Gracias. Ahora, por favor, describí brevemente el problema."}
+        self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+        return {
+            "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+            "options_list": [
+                {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
+                {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
+            ],
+            "message_type": "interactive_buttons",
+        }
 
     def handle_descripcion(self, user_input):
         if len(user_input) < 10:
             return {"message_body": "Por favor, dame una descripción un poco más detallada del problema."}
         self.flow_context['datos_reclamo']['descripcion'] = user_input
-        self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
-        return {
-            "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
-            "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
-            "message_type": "interactive_buttons"
-        }
-
+        if not self.flow_context['datos_reclamo'].get('direccion'):
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            return {"message_body": "Gracias. ¿Cuál es la dirección exacta del problema (calle y número)?"}
+        else:
+            self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+            return {
+                "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+                "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
+                "message_type": "interactive_buttons"
+            }
     def handle_foto(self, user_input, payload):
         action = payload.get("action")
         if payload.get("es_foto") and payload.get("foto_url"):
@@ -236,8 +258,9 @@ class ReclamoFlowHandler:
 
     def end_flow(self, message, show_menu=False):
         self.flow_context.clear()
-        if "reclamo_flow_v2" in self.context.get("chat_db_context_data", {}):
-            del self.context["chat_db_context_data"]["reclamo_flow_v2"]
+        # Remove flow data from municipio context so subsequent turns don't
+        # enter this handler unintentionally.
+        self.municipal_ctx.pop("reclamo_flow_v2", None)
 
         if show_menu:
             return self.greeting_handler.handle({})
