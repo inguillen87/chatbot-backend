@@ -27,7 +27,7 @@ def _remove_redundant_urls_from_message(message_body, options_list):
 
     return message_body_str
 
-def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None):
+def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None):
     nombre_asesor = None
     telefono_asesor = None
     horario_asesor = None
@@ -83,6 +83,8 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 - *Categoría:* {categoria}
 - *Descripción:* {descripcion}
 """
+    if dni:
+        respuesta += f"\n- *DNI:* {dni}"
 
     if nombre_asesor:
         respuesta += f"""

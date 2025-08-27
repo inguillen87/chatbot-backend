@@ -323,7 +323,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 categoria,
                 nro_ticket_str,
                 contacto_especializado,
-                base_chat_url
+                base_chat_url,
+                dni=ticket_data_cleaned.get("dni_vecino")
             )
 
             # Log para debug
@@ -429,13 +430,24 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "message_to_user": "Claro, ¿cuál es tu sugerencia?",
                 "pedir_info": "descripcion_sugerencia"
             }
+
+        nombre_vecino = action_data.get("nombre")
+        dni_vecino = action_data.get("dni")
+        email_vecino = action_data.get("email")
+        direccion_vecino = action_data.get("direccion")
+        if not all([nombre_vecino, dni_vecino, email_vecino, direccion_vecino]):
+            return {
+                "success": False,
+                "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
+                "pedir_info": "datos_contacto_sugerencia"
+            }
         # Create a ticket for the suggestion
         viewer_user = self.context.get("viewer_user_obj")
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
         anon_id_db = self.context.get("anon_id") if not user_id_db else None
         municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
-        nombre_vecino_final = getattr(viewer_user, "nombre", "Ciudadano Anónimo")
+        nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
         ticket_data = {
             "asunto": "Sugerencia de Ciudadano",
@@ -444,7 +456,11 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "estado": "nuevo",
             "user_id": user_id_db,
             "anon_id": anon_id_db,
-            "origen_reclamo": "LLM_CHATBOT"
+            "origen_reclamo": "LLM_CHATBOT",
+            "nombre_vecino": nombre_vecino_final,
+            "dni_vecino": dni_vecino,
+            "email_vecino": email_vecino,
+            "direccion": direccion_vecino,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
@@ -478,7 +494,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "Sugerencia",
                 nro_ticket_str,
                 {}, # No hay contacto especializado para sugerencias
-                base_chat_url
+                base_chat_url,
+                dni=dni_vecino
             )
 
             # Añadir el botón de acción específico para sugerencias

@@ -11,13 +11,15 @@ from extensions import db  # Import db instance for database operations
 import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
-from sqlalchemy.orm.attributes import flag_modified
+from utils.db_utils import safe_flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
+from utils.maps_utils import extraer_coordenadas_de_url_google_maps
+from services.openai_maps_service import geocodificar_inversa_llm
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -136,7 +138,7 @@ def whatsapp_webhook():
     if pending_chunks and incoming_text.strip().lower() in ["mas", "más", "mostrar mas", "mostrar más", "show_more"]:
         next_chunk = pending_chunks.pop(0)
         session_context_db_entry.context_data["pending_chunks"] = pending_chunks
-        flag_modified(session_context_db_entry, "context_data")
+        safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
         if twilio_client:
@@ -168,7 +170,7 @@ def whatsapp_webhook():
     if not session_context_db_entry.context_data.get("perfil_confirmado"):
         session_context_db_entry.context_data["perfil_confirmado"] = True
         session_context_db_entry.context_data.setdefault("estado_conversacion", "activo")
-        flag_modified(session_context_db_entry, "context_data")
+        safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
 
@@ -240,18 +242,41 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.pop('source_is_audio', None)
 
     # --- Location Handling ---
-    latitude = post_vars.get("Latitude")
-    longitude = post_vars.get("Longitude")
+    latitud = post_vars.get("Latitude")
+    longitud = post_vars.get("Longitude")
     location_info = None
-    if latitude and longitude:
-        location_info = {"latitude": latitude, "longitude": longitude}
+    if latitud and longitud:
+        location_info = {"latitude": latitud, "longitude": longitud}
         address = post_vars.get("Address")
         label = post_vars.get("Label")
         if address:
             location_info["address"] = address
+        else:
+            try:
+                addr = geocodificar_inversa_llm(latitud, longitud)
+                if addr and addr.get("formatted_address"):
+                    location_info["address"] = addr["formatted_address"]
+            except Exception as e:
+                current_app.logger.error(f"Error al geocodificar inversamente {latitud, longitud}: {e}")
         if label:
             location_info["label"] = label
         print(f"Received location data: {location_info}")
+    else:
+        coordenadas = extraer_coordenadas_de_url_google_maps(incoming_text)
+        if coordenadas:
+            latitud, longitud = coordenadas
+            location_info = {"latitude": str(latitud), "longitude": str(longitud)}
+            try:
+                addr = geocodificar_inversa_llm(latitud, longitud)
+                if addr and addr.get("formatted_address"):
+                    location_info["address"] = addr["formatted_address"]
+            except Exception as e:
+                current_app.logger.error(
+                    f"Error al geocodificar inversamente {coordenadas}: {e}"
+                )
+            # treat message as location input only
+            incoming_text = ""
+            message_body = ""
 
     # --- Human Chat Check ---
     if session_context_db_entry.context_data.get("human_chat_in_progress"):
@@ -302,8 +327,10 @@ def whatsapp_webhook():
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
         if location_info:
-            # Pass location_info directly to the 'location' parameter of the bot logic
+            # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
+            kwargs_for_bot["es_ubicacion"] = True
+            kwargs_for_bot["ubicacion_usuario"] = location_info
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
             # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
@@ -427,7 +454,7 @@ def whatsapp_webhook():
 
         # Save the merged context
         session_context_db_entry.context_data = merged_context
-        flag_modified(session_context_db_entry, "context_data")
+        safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
         print(f"Session saved for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
@@ -467,7 +494,7 @@ def whatsapp_webhook():
             if 'persistent_action' not in message_params and len(body_text) > MAX_TWILIO_BODY_LENGTH:
                 chunks = _split_message(body_text)
                 session_context_db_entry.context_data['pending_chunks'] = chunks[1:]
-                flag_modified(session_context_db_entry, 'context_data')
+                safe_flag_modified(session_context_db_entry, 'context_data')
                 db.session.add(session_context_db_entry)
                 db.session.commit()
 
@@ -498,7 +525,7 @@ def whatsapp_webhook():
                     )
             else:
                 session_context_db_entry.context_data.pop('pending_chunks', None)
-                flag_modified(session_context_db_entry, 'context_data')
+                safe_flag_modified(session_context_db_entry, 'context_data')
                 db.session.add(session_context_db_entry)
                 db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)
