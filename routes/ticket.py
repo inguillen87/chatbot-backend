@@ -390,9 +390,31 @@ def _serialize_ticket_details(ticket, ticket_type):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
 
-    comentarios = [
-        c.to_dict() for c in ticket.comentarios
+    comentarios = [c.to_dict() for c in ticket.comentarios]
+    comentarios_sorted = sorted(comentarios, key=lambda c: c['fecha'])
+
+    timeline = [
+        {
+            "tipo": "ticket_creado",
+            "estado": ticket.estado,
+            "fecha": ticket.fecha.isoformat(),
+        }
     ]
+    for c in comentarios_sorted:
+        if c.get("estado_ticket"):
+            timeline.append({
+                "tipo": "estado",
+                "estado": c["estado_ticket"],
+                "fecha": c["fecha"],
+            })
+        else:
+            timeline.append({
+                "tipo": "comentario",
+                "texto": c["comentario"],
+                "fecha": c["fecha"],
+                "es_admin": c["es_admin"],
+                "user_id": c["user_id"],
+            })
 
     archivos_adjuntos_data = []
     if hasattr(ticket, 'archivos'):
@@ -445,9 +467,12 @@ def _serialize_ticket_details(ticket, ticket_type):
         },
         "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
-        "nombre_y_avatar_whatsapp": { "nombre": getattr(ticket, 'nombre_display_whatsapp', None), "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None)
+        "nombre_y_avatar_whatsapp": {
+            "nombre": getattr(ticket, 'nombre_display_whatsapp', None),
+            "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None),
         },
-        "informacion_personal_vecino": informacion_personal
+        "informacion_personal_vecino": informacion_personal,
+        "timeline": timeline,
     }
     return ticket_data
 
@@ -760,6 +785,16 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     )
 
     ticket_obj.estado = nuevo_estado
+    comentario_estado = TicketComentario(
+        municipio_ticket_id=ticket_obj.id if tipo == "municipio" else None,
+        pyme_ticket_id=ticket_obj.id if tipo == "pyme" else None,
+        comentario=f"Estado actualizado a '{nuevo_estado}'",
+        user_id=current_user.id,
+        es_admin=True,
+        origen="sistema",
+        estado_ticket=nuevo_estado,
+    )
+    db.session.add(comentario_estado)
     db.session.commit()
     try:
         from services.email_service import (

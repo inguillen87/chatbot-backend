@@ -328,6 +328,7 @@ class TicketComentario(db.Model):
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     es_admin = db.Column(db.Boolean, default=False)
     origen = db.Column(db.String(20), default='chat') # Nuevo campo para 'chat' o 'email'
+    estado_ticket = db.Column(db.String(30), nullable=True)  # Registro de cambios de estado
 
     # New field to link a comment directly to an attachment
     archivo_adjunto_id = db.Column(db.Integer, db.ForeignKey('archivo_adjunto.id'), nullable=True)
@@ -346,7 +347,8 @@ class TicketComentario(db.Model):
             "user_id": self.user_id,
             "anon_id": self.anon_id,
             "es_admin": self.es_admin,
-            "origen": self.origen
+            "origen": self.origen,
+            "estado_ticket": self.estado_ticket
         }
         if self.archivo_adjunto:
             attachment_info = {

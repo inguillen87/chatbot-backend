@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-from models import MunicipioTicket, User
+from models import MunicipioTicket, User, TicketComentario
 
 class TicketPublicEndpointTest(unittest.TestCase):
     def setUp(self):
@@ -20,6 +20,7 @@ class TicketPublicEndpointTest(unittest.TestCase):
         ticket = MunicipioTicket(nro_ticket='123456', municipio_id=user.id, pregunta='p')
         db.session.add(ticket)
         db.session.commit()
+        self.ticket_id = ticket.id
 
     def tearDown(self):
         db.session.remove()
@@ -28,10 +29,26 @@ class TicketPublicEndpointTest(unittest.TestCase):
 
     @patch('routes.ticket.verify_recaptcha', return_value=True)
     def test_public_lookup_by_number(self, mock_recaptcha):
+        # add timeline data
+        comentario = TicketComentario(municipio_ticket_id=self.ticket_id, comentario='primer mensaje')
+        cambio_estado = TicketComentario(
+            municipio_ticket_id=self.ticket_id,
+            comentario="Estado actualizado a 'en progreso'",
+            es_admin=True,
+            origen='sistema',
+            estado_ticket='en progreso'
+        )
+        db.session.add_all([comentario, cambio_estado])
+        db.session.commit()
+
         resp = self.client.get('/tickets/municipio/por_numero/123456?recaptcha_token=test')
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertEqual(data['id_ticket'], 'M-123456')
+        self.assertEqual(len(data['timeline']), 3)
+        self.assertEqual(data['timeline'][0]['tipo'], 'ticket_creado')
+        self.assertEqual(data['timeline'][1]['tipo'], 'comentario')
+        self.assertEqual(data['timeline'][2]['estado'], 'en progreso')
 
     def test_public_lookup_requires_recaptcha(self):
         resp = self.client.get('/tickets/municipio/por_numero/123456')
