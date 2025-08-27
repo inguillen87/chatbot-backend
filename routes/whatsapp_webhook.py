@@ -166,79 +166,11 @@ def whatsapp_webhook():
 
     # --- Profile confirmation flow ---
     if not session_context_db_entry.context_data.get("perfil_confirmado"):
-        perfil = session_context_db_entry.context_data.get("perfil_en_revision") or {
-            "nombre": getattr(end_user, "name", ""),
-            "dni": session_context_db_entry.context_data.get("dni", ""),
-            "email": getattr(end_user, "email", ""),
-            "telefono": getattr(end_user, "telefono", from_number_cleaned),
-        }
-
-        if session_context_db_entry.context_data.get("estado_conversacion") == "esperando_confirmacion_perfil":
-            texto = incoming_text.strip()
-            updated = False
-            if texto.lower() not in ["si", "sí", "s", "ok", "correcto"]:
-                potential_fields = ["nombre", "dni", "email", "telefono"]
-                nuevos = extract_multiple_contact_details_llm(texto, potential_fields)
-                for key in potential_fields:
-                    if nuevos.get(key):
-                        perfil[key] = nuevos[key]
-                        updated = True
-                update_payload = {}
-                if perfil.get("nombre"):
-                    update_payload["name"] = perfil["nombre"]
-                if perfil.get("telefono"):
-                    update_payload["telefono"] = perfil["telefono"]
-                if perfil.get("email"):
-                    update_payload["email"] = perfil["email"]
-                if update_payload:
-                    update_user_profile(end_user, update_payload)
-                if perfil.get("dni"):
-                    session_context_db_entry.context_data["dni"] = perfil["dni"]
-
-            resumen = []
-            if perfil.get("nombre"): resumen.append(f"Nombre: {perfil['nombre']}")
-            if perfil.get("dni"): resumen.append(f"DNI: {perfil['dni']}")
-            if perfil.get("email"): resumen.append(f"Email: {perfil['email']}")
-            if perfil.get("telefono"): resumen.append(f"Teléfono: {perfil['telefono']}")
-
-            session_context_db_entry.context_data["perfil_confirmado"] = True
-            session_context_db_entry.context_data["estado_conversacion"] = "activo"
-            session_context_db_entry.context_data["perfil_en_revision"] = perfil
-            flag_modified(session_context_db_entry, "context_data")
-            db.session.add(session_context_db_entry)
-            db.session.commit()
-
-            if twilio_client:
-                twilio_client.messages.create(
-                    from_=to_number_raw,
-                    to=from_number_raw,
-                    body="Gracias, tus datos fueron " + ("actualizados" if updated else "confirmados") + ".\n" + "\n".join(resumen)
-                )
-            return "OK", 200
-        else:
-            resumen = []
-            if perfil.get("nombre"): resumen.append(f"Nombre: {perfil['nombre']}")
-            if perfil.get("dni"): resumen.append(f"DNI: {perfil['dni']}")
-            if perfil.get("email"): resumen.append(f"Email: {perfil['email']}")
-            if perfil.get("telefono"): resumen.append(f"Teléfono: {perfil['telefono']}")
-            mensaje = (
-                "Estos son los datos que tengo registrados:\n" +
-                "\n".join(resumen) +
-                "\n¿Son correctos? Responde 'sí' para confirmar o envía los correctos."
-            )
-            session_context_db_entry.context_data["estado_conversacion"] = "esperando_confirmacion_perfil"
-            session_context_db_entry.context_data["perfil_en_revision"] = perfil
-            flag_modified(session_context_db_entry, "context_data")
-            db.session.add(session_context_db_entry)
-            db.session.commit()
-
-            if twilio_client:
-                twilio_client.messages.create(
-                    from_=to_number_raw,
-                    to=from_number_raw,
-                    body=mensaje
-                )
-            return "OK", 200
+        session_context_db_entry.context_data["perfil_confirmado"] = True
+        session_context_db_entry.context_data.setdefault("estado_conversacion", "activo")
+        flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
 
     # --- Message and Media Handling SECOND ---
     media_url = post_vars.get("MediaUrl0")

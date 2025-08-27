@@ -29,8 +29,12 @@ _mtime_cache = {}
 def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
     """Carga un archivo de configuración JSON para el municipio indicado.
 
+    `municipio_id` puede recibirse como ``int`` o ``str``. Para evitar errores
+    al construir la ruta del archivo, se fuerza su conversión a cadena.
+
     La información se recarga automáticamente si el archivo es modificado.
     """
+    municipio_id = str(municipio_id)
     clave = (municipio_id, archivo)
     ruta = os.path.join(BASE_CONFIG_PATH, municipio_id, archivo)
     try:
