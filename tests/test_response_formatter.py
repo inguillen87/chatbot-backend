@@ -141,6 +141,34 @@ class TestResponseFormatter(unittest.TestCase):
         os.environ["WHATSAPP_FORCE_TEXT"] = "false"
         importlib.reload(rf)
 
+    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
+    def test_text_menu_includes_url_and_actionable_numbers(self):
+        """URL-only options should be rendered inline while action buttons keep numbering."""
+        import importlib
+        importlib.reload(rf)
+
+        response = build_interactive_response(
+            options=[{"texto": "Ir a ePagos", "url": "https://example.com"}],
+            body_text="Pagá",
+            channel="whatsapp",
+            message_type='interactive_buttons'
+        )
+
+        expected_body = (
+            "Pagá\n\nIr a ePagos: https://example.com\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+        )
+
+        self.assertEqual(response["type"], "text")
+        self.assertEqual(response["text"]["body"], expected_body)
+
+        last_options = response.get("contexto_actualizado", {}).get("last_options_sent", [])
+        self.assertEqual(len(last_options), 2)
+        self.assertEqual(last_options[0]["action_id"], "menu_principal")
+
+        # Restore module with default env var
+        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+        importlib.reload(rf)
+
 
     def test_web_response_structure_buttons(self):
         options = [{"id": "web_opt1", "texto": "Web Opción 1"}]

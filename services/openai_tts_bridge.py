@@ -2,6 +2,7 @@ import os
 import openai
 import logging
 import uuid
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,12 @@ def generar_audio_openai(text: str) -> str | None:
         return None
 
     try:
-        client = openai.OpenAI(api_key=api_key)
+        # Disable reading proxy settings from the environment to avoid passing
+        # unsupported `proxies` arguments into the OpenAI client. Some
+        # environments (like CI) define `http_proxy`/`https_proxy` which would
+        # otherwise cause `openai.OpenAI` to fail during initialization.
+        http_client = httpx.Client(proxy=None, trust_env=False)
+        client = openai.OpenAI(api_key=api_key, http_client=http_client)
 
         logger.info(f"Requesting OpenAI speech synthesis for text: '{text[:50]}...'")
 
