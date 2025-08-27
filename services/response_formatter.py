@@ -116,14 +116,36 @@ def build_interactive_response(options: list,
                 existing_ids.add(str(btn["action_id"]))
 
         # After appending navigation buttons track the final options so the
-        # webhook can map numeric replies back to actions.
-        if options:
+        # webhook can map numeric replies back to actions (for interactive
+        # messages). When falling back to plain text we will set this field
+        # later after filtering out URL-only entries that shouldn't be
+        # associated with numeric replies.
+        if options and message_type != 'text':
             context_update["last_options_sent"] = options
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
         if message_type == 'text':
             final_body = body_text
-            if options:
+
+            # Separate options that are simple URLs from those that require a
+            # numeric reply. URL-only options should be displayed inline and
+            # excluded from the context mapping so replying with "1" doesn't
+            # mistakenly reference them.
+            url_options = []
+            actionable_options = []
+            for o in options:
+                if o.get("url") and not (o.get("action_id") or o.get("id")):
+                    url_options.append(o)
+                else:
+                    actionable_options.append(o)
+
+            if url_options:
+                url_lines = [
+                    f"{o.get('texto', '')}: {o.get('url', '')}" for o in url_options
+                ]
+                final_body += "\n\n" + "\n".join(url_lines)
+
+            if actionable_options:
                 categorias = original_bot_response.get("categorias")
                 if categorias:
                     lines = []
@@ -138,16 +160,17 @@ def build_interactive_response(options: list,
                     options_text = "\n\n" + "\n".join(lines)
                 else:
                     options_text = "\n\n" + "\n".join(
-                        [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(options)]
+                        [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(actionable_options)]
                     )
                 options_text += "\n\nResponde con el número de la opción que necesites."
                 final_body += options_text
+
+                # Update context with only the actionable options so numeric
+                # replies map correctly.
+                context_update["last_options_sent"] = actionable_options
             else:
-                # It's valid for some responses to omit menu options.
-                # In that case we simply return the body text without
-                # additional menu instructions.
                 logger.debug(
-                    "build_interactive_response: no options provided; sending plain text"
+                    "build_interactive_response: no actionable options; sending plain text"
                 )
 
             payload = {
