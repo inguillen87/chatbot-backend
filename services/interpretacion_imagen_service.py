@@ -6,7 +6,7 @@ import random # Para el mock de AnalisisArchivo en las pruebas
 from typing import Dict, Any, List, Optional
 
 from models import ArchivoAdjunto, AnalisisArchivo, User, CatalogoItem, db
-from services.google_vision_service import GoogleVisionService, analyze_image_from_content
+from services.vision_fallback_service import analyze_image_smart
 from services.llm_utils import extract_complaint_details_llm
 from services.common_utils import limpiar_texto_base, parse_precio_flexible # Para procesar texto de pedido
 from services.pedido_processor_service import calcular_similitud_levenshtein, UMBRAL_SIMILITUD_PRODUCTO_PEDIDO # Reutilizar lógica de matching
@@ -137,8 +137,8 @@ def interpretar_imagen_para_chat(
             return {'error': error_message, 'analisis_id': None, 'raw_analysis': None}
 
     if "image" in input_mime_type:
-        logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a Vision API...")
-        vision_results = analyze_image_from_content(file_content) # Esta función ya loguea sus errores
+        logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a servicios de visión...")
+        vision_results = analyze_image_smart(file_content)  # OpenAI -> Cohere -> Google
     elif "pdf" in input_mime_type or "spreadsheet" in input_mime_type or "excel" in input_mime_type:
         from services.document_processing_service import document_processing_service
         doc_ai_result = document_processing_service.process_document(file_content, input_mime_type)
