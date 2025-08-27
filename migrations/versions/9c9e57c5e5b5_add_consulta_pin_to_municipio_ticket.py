@@ -1,46 +1,34 @@
-"""add consulta_pin to municipio_ticket"""
-
 from alembic import op
 import sqlalchemy as sa
-import random
 
-# revision identifiers, used by Alembic.
+# Revisiones
 revision = '9c9e57c5e5b5'
 down_revision = '8d9127b93083'
 branch_labels = None
 depends_on = None
 
-
 def _has_column(bind, table, column):
     insp = sa.inspect(bind)
-    return column in [c['name'] for c in insp.get_columns(table)]
-
+    return any(c['name'] == column for c in insp.get_columns(table))
 
 def upgrade():
     bind = op.get_bind()
+
+    # 1) Crear columna si no existe
     if not _has_column(bind, 'municipio_ticket', 'consulta_pin'):
-        op.add_column('municipio_ticket', sa.Column('consulta_pin', sa.String(length=6), nullable=True))
-
-        # Populate existing rows with random pins
-        municipio_ticket = sa.table(
+        op.add_column(
             'municipio_ticket',
-            sa.column('id', sa.Integer),
-            sa.column('consulta_pin', sa.String(length=6))
+            sa.Column('consulta_pin', sa.String(length=12), nullable=True)
         )
-        res = bind.execute(sa.select(municipio_ticket.c.id)).fetchall()
-        for (ticket_id,) in res:
-            bind.execute(
-                sa.update(municipio_ticket)
-                .where(municipio_ticket.c.id == ticket_id)
-                .values(consulta_pin=f"{random.randint(100000, 999999)}")
-            )
 
-        op.alter_column('municipio_ticket', 'consulta_pin', nullable=False)
+    # 2) Rellenar nulos con un valor por defecto
+    op.execute("UPDATE municipio_ticket SET consulta_pin = '000000' WHERE consulta_pin IS NULL")
 
+    # 3) Dejamos la columna nullable en SQLite para evitar recrear tablas
+    #    (cuando pasemos a Postgres se hace NOT NULL en otra migration)
 
 def downgrade():
+    # En downgrade, simplemente dejamos nullable otra vez si existe
     bind = op.get_bind()
     if _has_column(bind, 'municipio_ticket', 'consulta_pin'):
-        # Column removal is a no-op for SQLite compatibility
-        pass
-
+        op.alter_column('municipio_ticket', 'consulta_pin', nullable=True)
