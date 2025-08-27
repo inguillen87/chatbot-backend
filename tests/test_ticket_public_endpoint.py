@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 from app import create_app, db
 from models import MunicipioTicket, User, TicketComentario
+from utils.auth_helpers import generar_token
 
 class TicketPublicEndpointTest(unittest.TestCase):
     def setUp(self):
@@ -15,6 +16,7 @@ class TicketPublicEndpointTest(unittest.TestCase):
         user.set_password('pass')
         db.session.add(user)
         db.session.commit()
+        self.user = user
 
         # create sample ticket linked to the user
         ticket = MunicipioTicket(nro_ticket='123456', municipio_id=user.id, pregunta='p', consulta_pin='654321')
@@ -58,6 +60,12 @@ class TicketPublicEndpointTest(unittest.TestCase):
     def test_public_lookup_requires_pin(self, mock_recaptcha):
         resp = self.client.get('/tickets/municipio/por_numero/123456?recaptcha_token=test')
         self.assertEqual(resp.status_code, 400)
+
+    def test_authenticated_lookup_without_recaptcha_or_pin(self):
+        token = generar_token(self.user.id, self.user.rol, self.user.tipo_chat, self.user.municipio_id, self.user.pyme_id)
+        headers = {'Authorization': f'Bearer {token}'}
+        resp = self.client.get('/tickets/municipio/por_numero/123456', headers=headers)
+        self.assertEqual(resp.status_code, 200)
 
 if __name__ == '__main__':
     unittest.main()

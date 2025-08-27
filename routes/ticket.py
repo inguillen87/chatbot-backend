@@ -478,21 +478,29 @@ def _serialize_ticket_details(ticket, ticket_type):
 
 
 @ticket_bp.route('/tickets/municipio/por_numero/<string:nro_ticket>', methods=['GET'])
-def get_ticket_by_number_public(nro_ticket: str):
-    """Permite consultar un ticket municipal por su número sin autenticación."""
-    token = request.args.get("recaptcha_token")
-    if not token or not verify_recaptcha(token):
-        return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
-
-    pin = request.args.get("pin")
-    if not pin:
-        return jsonify({"error": "PIN requerido."}), 400
+@anon_o_token_requerido
+def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: str):
+    """Consulta un ticket municipal por su número."""
 
     normalizado = str(nro_ticket).upper()
     if normalizado.startswith("M-"):
         normalizado = normalizado.split("-", 1)[1]
 
-    ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado, consulta_pin=pin).first()
+    ticket = None
+    if current_user:
+        # Petición autenticada: no requiere PIN ni reCAPTCHA
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado).first()
+    else:
+        token = request.args.get("recaptcha_token")
+        if not token or not verify_recaptcha(token):
+            return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
+
+        pin = request.args.get("pin")
+        if not pin:
+            return jsonify({"error": "PIN requerido."}), 400
+
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado, consulta_pin=pin).first()
+
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
