@@ -251,6 +251,13 @@ def whatsapp_webhook():
         label = post_vars.get("Label")
         if address:
             location_info["address"] = address
+        else:
+            try:
+                addr = reverse_geocode_llm(latitude, longitude)
+                if addr and addr.get("formatted_address"):
+                    location_info["address"] = addr["formatted_address"]
+            except Exception as e:
+                current_app.logger.error(f"Error reverse geocoding {latitude, longitude}: {e}")
         if label:
             location_info["label"] = label
         print(f"Received location data: {location_info}")
