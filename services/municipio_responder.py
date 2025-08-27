@@ -39,6 +39,7 @@ from .herramientas_municipio import (
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
+from .points_of_interest_handler import PointsOfInterestHandler
 from .categorias_municipio import CATEGORIAS_RECLAMO, categorias_normalizadas
 from .common_utils import (
     validar_email,
@@ -2192,6 +2193,40 @@ def responder_municipio(
                 "fuente": "intent_consultar_reclamo"
             })
         # --- END INTENT CLASSIFICATION ---
+
+        # If the user is asking for a general point of interest (e.g., farmacias,
+        # veterinarias) handle it with the PointsOfInterestHandler. This needs to
+        # happen before fuzzy matching to menu keywords to avoid misclassifications
+        # such as interpreting "farmacias de turno" as a request for appointments.
+        if es_consulta_general(pregunta_str):
+            poi_handler = PointsOfInterestHandler(context)
+            loc_str = None
+            if isinstance(location, dict):
+                loc_str = location.get("formatted_address") or location.get("address")
+            elif isinstance(location, str):
+                loc_str = location
+            contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+            # Clear any pending claim-related context since the user switched topics
+            for campo in [
+                "historial_llm_reclamo",
+                "esperando_info_llm_reclamo",
+                "esperando_info_llm",
+                "categoria_reclamo",
+                "descripcion_reclamo",
+                "direccion_reclamo",
+                "coordenadas_reclamo",
+                "nombre_vecino",
+                "telefono_vecino",
+                "email_vecino",
+                "foto_url",
+            ]:
+                contexto_municipio_actual.pop(campo, None)
+            # Ensure datos_parciales_llm_reclamo exists as empty dict
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(poi_handler.handle({"pregunta": pregunta_str, "location": loc_str}))
 
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM

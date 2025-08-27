@@ -10,6 +10,7 @@ instance/*
 !data/respuestas_municipio.json
 !data/product_synonyms.json
 !data/estacionamiento/camaras.json
+!data/estacionamiento/parking_spots.json
 !data/municipios/**
 __pycache__/
 *.pyc
