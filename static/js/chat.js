@@ -191,9 +191,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Function to play an audio URL
     function playAudio(url) {
-        const audioElement = new Audio(url);
-        audioElement.play()
-            .catch(error => console.error('Error playing audio:', error));
+        const container = document.createElement('div');
+        container.classList.add('message', 'bot-message');
+
+        const audioElement = document.createElement('audio');
+        audioElement.src = url;
+        audioElement.controls = true;
+        audioElement.autoplay = true;
+
+        audioElement.addEventListener('error', (error) => {
+            console.error('Error playing audio:', error);
+        });
+
+        container.appendChild(audioElement);
+        chatMessages.appendChild(container);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
     // Function to display buttons
