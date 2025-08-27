@@ -154,6 +154,7 @@ class MunicipioTicket(db.Model):
     nombre_vecino = db.Column(db.String(150), nullable=True)
     telefono_vecino = db.Column(db.String(30), nullable=True)
     email_vecino = db.Column(db.String(120), nullable=True)
+    dni_vecino = db.Column(db.String(20), nullable=True)
     foto_url_directa = db.Column(db.String(255), nullable=True) # For simple photo URL if not using full ArchivoAdjunto flow initially
     # Nuevos campos requeridos
     canal_ingreso = db.Column(db.String(50), nullable=True) # ej: WhatsApp, Web, API
