@@ -107,12 +107,26 @@ class CrearReclamoActionHandler(BaseActionHandler):
         elif viewer_user and getattr(viewer_user, "email", None) and validar_email(str(viewer_user.email)):
             email_final = str(viewer_user.email).lower()
 
+        dni_from_llm = action_data.get("dni") or datos_parciales.get("dni")
+        dni_final = None
+        if dni_from_llm and isinstance(dni_from_llm, str) and dni_from_llm.isdigit():
+            dni_final = dni_from_llm
+        elif viewer_user and getattr(viewer_user, "dni", None) and str(viewer_user.dni).isdigit():
+            dni_final = str(viewer_user.dni)
+
 
         # Actualizar el contexto con los datos más recientes para persistencia
-        for key, value in [("categoria_reclamo", categoria), ("descripcion_reclamo", descripcion),
-                           ("direccion_reclamo", ubicacion_llm), ("coordenadas_reclamo", coordenadas_llm),
-                           ("nombre_vecino", nombre_vecino_final), ("telefono_vecino", telefono_final),
-                           ("email_vecino", email_final), ("foto_url", foto_url_llm)]:
+        for key, value in [
+            ("categoria_reclamo", categoria),
+            ("descripcion_reclamo", descripcion),
+            ("direccion_reclamo", ubicacion_llm),
+            ("coordenadas_reclamo", coordenadas_llm),
+            ("nombre_vecino", nombre_vecino_final),
+            ("telefono_vecino", telefono_final),
+            ("email_vecino", email_final),
+            ("dni_vecino", dni_final),
+            ("foto_url", foto_url_llm),
+        ]:
             if value:
                 contexto_reclamo[key] = value
 
@@ -127,10 +141,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
         logger.info(f"DEBUG: telefono_final: {telefono_final}")
         logger.info(f"DEBUG: email_final: {email_final}")
         logger.info(f"DEBUG: campos_faltantes before: {campos_faltantes}")
-        if not viewer_user and (nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final):
-             if nombre_vecino_final == "Vecino/a": campos_faltantes.append("nombre")
-             if not telefono_final: campos_faltantes.append("telefono")
-             if not email_final: campos_faltantes.append("email")
+        if not viewer_user and (nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final or not dni_final):
+             if nombre_vecino_final == "Vecino/a":
+                 campos_faltantes.append("nombre")
+             if not telefono_final:
+                 campos_faltantes.append("telefono")
+             if not email_final:
+                 campos_faltantes.append("email")
+             if not dni_final:
+                 campos_faltantes.append("dni")
         logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
@@ -168,6 +187,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 updated = True
             if email_final and not viewer_user.email:
                 viewer_user.email = email_final
+                updated = True
+            if dni_final and not getattr(viewer_user, "dni", None):
+                viewer_user.dni = dni_final
                 updated = True
             if updated:
                 from models import db
@@ -293,7 +315,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
-            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
                 ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
@@ -447,7 +469,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
-            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",

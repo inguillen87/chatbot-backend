@@ -37,6 +37,14 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
     municipio_id = str(municipio_id)
     clave = (municipio_id, archivo)
     ruta = os.path.join(BASE_CONFIG_PATH, municipio_id, archivo)
+
+    if not os.path.exists(ruta) and municipio_id != "default":
+        # Fallback to the shared "default" configuration when a municipality
+        # specific file is missing. This prevents noisy errors in logs and
+        # keeps behaviour consistent for municipalities that have not yet
+        # provided their own overrides.
+        return cargar_configuracion_municipio("default", archivo)
+
     try:
         mtime = os.path.getmtime(ruta)
     except OSError as e:
