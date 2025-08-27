@@ -449,6 +449,21 @@ def _serialize_ticket_details(ticket, ticket_type):
     }
     return ticket_data
 
+
+@ticket_bp.route('/tickets/municipio/por_numero/<string:nro_ticket>', methods=['GET'])
+def get_ticket_by_number_public(nro_ticket: str):
+    """Permite consultar un ticket municipal por su número sin autenticación."""
+    normalizado = str(nro_ticket).upper()
+    if normalizado.startswith("M-"):
+        normalizado = normalizado.split("-", 1)[1]
+
+    ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado).first()
+    if not ticket:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    ticket_data = _serialize_ticket_details(ticket, "municipio")
+    return jsonify(ticket_data)
+
 @ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
 @token_requerido
 def get_ticket_details(current_user: User, ticket_id: int):
