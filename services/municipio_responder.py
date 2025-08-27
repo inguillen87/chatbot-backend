@@ -788,15 +788,33 @@ def handle_contactos_utiles_inicio(context, chat_db_context):
 
 def _format_post(post: dict, channel: str) -> str:
     """Return a formatted string for a single news/event entry."""
+
+    def _format_fecha(fecha_str: str) -> str:
+        try:
+            if not fecha_str:
+                return ""
+            fecha_str = fecha_str.rstrip("Z")
+            dt = datetime.fromisoformat(fecha_str)
+            fecha_formateada = dt.strftime("%d/%m/%Y")
+            if dt.time() != datetime.min.time():
+                fecha_formateada += f" {dt.strftime('%H:%M')} hs"
+            return fecha_formateada
+        except Exception:
+            return fecha_str
+
     title = post.get("titulo", "Sin título")
     subtitle = post.get("subtitulo")
     desc = post.get("descripcion", "Sin descripción.")
     link = post.get("enlace") or post.get("url")
-    fecha = (
-        post.get("fecha_evento")
-        or post.get("fecha_inicio")
-        or post.get("fecha_publicacion")
-    )
+    imagen = post.get("imagen_url")
+
+    fecha_inicio = post.get("fecha_evento_inicio") or post.get("fecha_inicio")
+    fecha_fin = post.get("fecha_evento_fin")
+    if fecha_inicio and fecha_fin and fecha_fin != fecha_inicio:
+        fecha = f"{_format_fecha(fecha_inicio)} - {_format_fecha(fecha_fin)}"
+    else:
+        fecha = _format_fecha(fecha_inicio or fecha_fin or post.get("fecha_publicacion", "")) if (fecha_inicio or fecha_fin or post.get("fecha_publicacion")) else None
+
     ubicacion = post.get("ubicacion")
 
     if channel == "whatsapp":
@@ -808,10 +826,12 @@ def _format_post(post: dict, channel: str) -> str:
         if ubicacion:
             lines.append(f"📍 {ubicacion}")
         if desc:
-            lines.append(desc)
+            lines.extend(["", desc])
+        if imagen:
+            lines.extend(["", imagen])
         if link:
-            lines.append(link)
-        return "\n".join(lines) + "\n\n"
+            lines.extend(["", f"🔗 {link}"])
+        return "\n".join(lines)
 
     # Default to web/HTML formatting
     parts = [f"<strong>{title}</strong>"]
@@ -821,11 +841,13 @@ def _format_post(post: dict, channel: str) -> str:
         parts.append(f"📅 {fecha}")
     if ubicacion:
         parts.append(f"📍 {ubicacion}")
+    if imagen:
+        parts.append(f'<img src="{imagen}" alt="flyer" style="max-width:100%;height:auto;">')
     if desc:
         parts.append(desc)
     if link:
-        parts.append(f'<a href="{link}" target="_blank">{link}</a>')
-    return "<br>".join(parts) + "<br><br>"
+        parts.append(f'<a href="{link}" target="_blank">Ver más</a>')
+    return "<br>".join(parts)
 
 
 def _format_contact(contact: dict, channel: str) -> str:
@@ -880,8 +902,10 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
     if not posts:
         return ""
 
-    message_body = "".join(_format_post(p, channel) for p in posts[:3])
-    return message_body
+    formatted = [_format_post(p, channel) for p in posts[:3]]
+    if channel == "whatsapp":
+        return ("\n────────\n\n").join(formatted) + "\n"
+    return "<hr>".join(formatted)
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
     """
@@ -2204,6 +2228,39 @@ def responder_municipio(
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return GreetingHandler(context).handle({})
 
+        elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
+            numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
+            if not numero_ticket:
+                return _finalize_response({
+                    "message_body": "Por favor, ingresá un número de reclamo válido.",
+                    "fuente": "handler_consultar_reclamo"
+                })
+
+            municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_ticket)
+            try:
+                ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
+            except (TypeError, ValueError):
+                pass
+            ticket = ticket_query.first()
+
+            if ticket:
+                mensaje = f"El reclamo *{numero_ticket}* está en estado *{ticket.estado}*."
+            else:
+                mensaje = (
+                    f"No encontramos un reclamo con número *{numero_ticket}*. "
+                    "Por favor, verificá el número."
+                )
+
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return _finalize_response({
+                "message_body": mensaje,
+                "fuente": "handler_consultar_reclamo"
+            })
+
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
             sugerencia_texto = pregunta_str
             if len(sugerencia_texto) < 10:
@@ -2240,7 +2297,7 @@ def responder_municipio(
                 return _finalize_response(response)
 
 
-    USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
+    USAR_LLM_PARA_RECLAMOS = False # Feature flag desactivado para usar flujo estático
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
 
     # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
