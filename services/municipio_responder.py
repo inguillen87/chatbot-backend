@@ -926,6 +926,9 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
         contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
         contexto_municipio_actual.pop("historial_llm_reclamo", None)
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
         return _get_reclamos_menu()
 
     if action_id == "consultar_estado_reclamo":
@@ -2475,7 +2478,7 @@ def responder_municipio(
 
         normalized_input = normalizar_texto(pregunta_str_reclamo or "")
 
-        if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
+        if pregunta_str_reclamo in {"0", "1"} or normalized_input in RETURN_TO_MAIN_MENU:
             logger_actual.info("User requested to return to main menu from reclamos menu.")
             handler = GreetingHandler(context)
             response = handler.handle({})
@@ -2495,14 +2498,15 @@ def responder_municipio(
             logger_actual.info("Input requests reclamos menu again. Returning submenu.")
             return _finalize_response(_get_reclamos_menu())
 
-        # El menú ahora tiene id_accion numéricos.
-        # Primero, intentar matchear el input numérico con el id_accion.
+        # El menú se muestra numerado a partir de 1, mientras que los id_accion
+        # comienzan en 0. Convertimos la elección del usuario a id_accion.
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         selected_category_name = None
 
         if pregunta_str_reclamo.isdigit():
+            expected_id = str(int(pregunta_str_reclamo) - 1)
             for option in reclamo_options:
-                if option.get("id_accion") == pregunta_str_reclamo:
+                if option.get("id_accion") == expected_id:
                     selected_category_name = option.get("category_name")
                     break
 
