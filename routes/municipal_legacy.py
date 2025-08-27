@@ -254,6 +254,7 @@ def create_municipal_post(current_user):
     contenido = request.form.get('contenido')
     tipo_post = request.form.get('tipo_post', 'noticia') # 'noticia' o 'evento'
     imagen_url_externa = request.form.get('imagen_url', '')
+    enlace = request.form.get('enlace') or request.form.get('url')
     fecha_evento_inicio = request.form.get('fecha_evento_inicio')
     fecha_evento_fin = request.form.get('fecha_evento_fin')
 
@@ -287,7 +288,8 @@ def create_municipal_post(current_user):
         "imagen_url": flyer_image_url or imagen_url_externa,
         "fecha_evento_inicio": fecha_evento_inicio,
         "fecha_evento_fin": fecha_evento_fin,
-        "fecha_publicacion": datetime.now().isoformat()
+        "fecha_publicacion": datetime.now().isoformat(),
+        "enlace": enlace,
     }
 
     # --- Leer, actualizar y escribir el archivo JSON ---

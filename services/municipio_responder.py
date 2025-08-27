@@ -84,7 +84,13 @@ class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
         self.context = context
         self.chat_db_context = chat_db_context
-        self.flow_context = context.get("chat_db_context_data", {}).setdefault("reclamo_flow_v2", {})
+        # Ensure the flow data lives inside the main municipio context so it
+        # survives across turns just like other conversation state.
+        municipal_ctx = context.get("chat_db_context_data", {}).setdefault(
+            CONTEXTO_MUNICIPIO, {}
+        )
+        self.municipal_ctx = municipal_ctx
+        self.flow_context = municipal_ctx.setdefault("reclamo_flow_v2", {})
         self.greeting_handler = GreetingHandler(context)
 
 
@@ -151,33 +157,49 @@ class ReclamoFlowHandler:
 
     def handle_categoria(self, user_input):
         self.flow_context['datos_reclamo']['categoria'] = user_input
-        self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
-        return {"message_body": f"Perfecto. Iniciemos tu reclamo por *{user_input}*.\n\nPor favor, indicame la dirección exacta del problema (calle y número). O podés escribir 'cancelar' para volver al menú."}
+        self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
+        return {
+            "message_body": f"Perfecto. Iniciemos tu reclamo por *{user_input}*.\n\nPor favor, describí brevemente el problema."
+        }
 
     def handle_direccion(self, user_input, payload):
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
-            self.flow_context['datos_reclamo']['direccion'] = address if address else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+            self.flow_context['datos_reclamo']['direccion'] = (
+                address
+                if address
+                else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+            )
         elif len(user_input) < 5:
-             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
+            return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
             self.flow_context['datos_reclamo']['direccion'] = user_input
 
-        self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
-        return {"message_body": "Gracias. Ahora, por favor, describí brevemente el problema."}
+        self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+        return {
+            "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+            "options_list": [
+                {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
+                {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
+            ],
+            "message_type": "interactive_buttons",
+        }
 
     def handle_descripcion(self, user_input):
         if len(user_input) < 10:
             return {"message_body": "Por favor, dame una descripción un poco más detallada del problema."}
         self.flow_context['datos_reclamo']['descripcion'] = user_input
-        self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
-        return {
-            "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
-            "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
-            "message_type": "interactive_buttons"
-        }
-
+        if not self.flow_context['datos_reclamo'].get('direccion'):
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            return {"message_body": "Gracias. ¿Cuál es la dirección exacta del problema (calle y número)?"}
+        else:
+            self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+            return {
+                "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+                "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
+                "message_type": "interactive_buttons"
+            }
     def handle_foto(self, user_input, payload):
         action = payload.get("action")
         if payload.get("es_foto") and payload.get("foto_url"):
@@ -236,8 +258,9 @@ class ReclamoFlowHandler:
 
     def end_flow(self, message, show_menu=False):
         self.flow_context.clear()
-        if "reclamo_flow_v2" in self.context.get("chat_db_context_data", {}):
-            del self.context["chat_db_context_data"]["reclamo_flow_v2"]
+        # Remove flow data from municipio context so subsequent turns don't
+        # enter this handler unintentionally.
+        self.municipal_ctx.pop("reclamo_flow_v2", None)
 
         if show_menu:
             return self.greeting_handler.handle({})
@@ -788,15 +811,33 @@ def handle_contactos_utiles_inicio(context, chat_db_context):
 
 def _format_post(post: dict, channel: str) -> str:
     """Return a formatted string for a single news/event entry."""
+
+    def _format_fecha(fecha_str: str) -> str:
+        try:
+            if not fecha_str:
+                return ""
+            fecha_str = fecha_str.rstrip("Z")
+            dt = datetime.fromisoformat(fecha_str)
+            fecha_formateada = dt.strftime("%d/%m/%Y")
+            if dt.time() != datetime.min.time():
+                fecha_formateada += f" {dt.strftime('%H:%M')} hs"
+            return fecha_formateada
+        except Exception:
+            return fecha_str
+
     title = post.get("titulo", "Sin título")
     subtitle = post.get("subtitulo")
     desc = post.get("descripcion", "Sin descripción.")
     link = post.get("enlace") or post.get("url")
-    fecha = (
-        post.get("fecha_evento")
-        or post.get("fecha_inicio")
-        or post.get("fecha_publicacion")
-    )
+    imagen = post.get("imagen_url")
+
+    fecha_inicio = post.get("fecha_evento_inicio") or post.get("fecha_inicio")
+    fecha_fin = post.get("fecha_evento_fin")
+    if fecha_inicio and fecha_fin and fecha_fin != fecha_inicio:
+        fecha = f"{_format_fecha(fecha_inicio)} - {_format_fecha(fecha_fin)}"
+    else:
+        fecha = _format_fecha(fecha_inicio or fecha_fin or post.get("fecha_publicacion", "")) if (fecha_inicio or fecha_fin or post.get("fecha_publicacion")) else None
+
     ubicacion = post.get("ubicacion")
 
     if channel == "whatsapp":
@@ -808,10 +849,12 @@ def _format_post(post: dict, channel: str) -> str:
         if ubicacion:
             lines.append(f"📍 {ubicacion}")
         if desc:
-            lines.append(desc)
+            lines.extend(["", desc])
+        if imagen:
+            lines.extend(["", imagen])
         if link:
-            lines.append(link)
-        return "\n".join(lines) + "\n\n"
+            lines.extend(["", f"🔗 {link}"])
+        return "\n".join(lines)
 
     # Default to web/HTML formatting
     parts = [f"<strong>{title}</strong>"]
@@ -821,11 +864,13 @@ def _format_post(post: dict, channel: str) -> str:
         parts.append(f"📅 {fecha}")
     if ubicacion:
         parts.append(f"📍 {ubicacion}")
+    if imagen:
+        parts.append(f'<img src="{imagen}" alt="flyer" style="max-width:100%;height:auto;">')
     if desc:
         parts.append(desc)
     if link:
-        parts.append(f'<a href="{link}" target="_blank">{link}</a>')
-    return "<br>".join(parts) + "<br><br>"
+        parts.append(f'<a href="{link}" target="_blank">Ver más</a>')
+    return "<br>".join(parts)
 
 
 def _format_contact(contact: dict, channel: str) -> str:
@@ -880,8 +925,10 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
     if not posts:
         return ""
 
-    message_body = "".join(_format_post(p, channel) for p in posts[:3])
-    return message_body
+    formatted = [_format_post(p, channel) for p in posts[:3]]
+    if channel == "whatsapp":
+        return ("\n────────\n\n").join(formatted) + "\n"
+    return "<hr>".join(formatted)
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
     """
@@ -902,6 +949,9 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
         contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
         contexto_municipio_actual.pop("historial_llm_reclamo", None)
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
         return _get_reclamos_menu()
 
     if action_id == "consultar_estado_reclamo":
@@ -2204,6 +2254,39 @@ def responder_municipio(
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return GreetingHandler(context).handle({})
 
+        elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
+            numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
+            if not numero_ticket:
+                return _finalize_response({
+                    "message_body": "Por favor, ingresá un número de reclamo válido.",
+                    "fuente": "handler_consultar_reclamo"
+                })
+
+            municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_ticket)
+            try:
+                ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
+            except (TypeError, ValueError):
+                pass
+            ticket = ticket_query.first()
+
+            if ticket:
+                mensaje = f"El reclamo *{numero_ticket}* está en estado *{ticket.estado}*."
+            else:
+                mensaje = (
+                    f"No encontramos un reclamo con número *{numero_ticket}*. "
+                    "Por favor, verificá el número."
+                )
+
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return _finalize_response({
+                "message_body": mensaje,
+                "fuente": "handler_consultar_reclamo"
+            })
+
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
             sugerencia_texto = pregunta_str
             if len(sugerencia_texto) < 10:
@@ -2240,7 +2323,7 @@ def responder_municipio(
                 return _finalize_response(response)
 
 
-    USAR_LLM_PARA_RECLAMOS = True # Feature flag para la nueva lógica LLM
+    USAR_LLM_PARA_RECLAMOS = False # Feature flag desactivado para usar flujo estático
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
 
     # >>> INICIO FIX: Si la pregunta está vacía pero se recibió una ubicación, crear una pregunta para el LLM
@@ -2418,7 +2501,7 @@ def responder_municipio(
 
         normalized_input = normalizar_texto(pregunta_str_reclamo or "")
 
-        if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
+        if pregunta_str_reclamo in {"0", "1"} or normalized_input in RETURN_TO_MAIN_MENU:
             logger_actual.info("User requested to return to main menu from reclamos menu.")
             handler = GreetingHandler(context)
             response = handler.handle({})
@@ -2438,14 +2521,15 @@ def responder_municipio(
             logger_actual.info("Input requests reclamos menu again. Returning submenu.")
             return _finalize_response(_get_reclamos_menu())
 
-        # El menú ahora tiene id_accion numéricos.
-        # Primero, intentar matchear el input numérico con el id_accion.
+        # El menú se muestra numerado a partir de 1, mientras que los id_accion
+        # comienzan en 0. Convertimos la elección del usuario a id_accion.
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         selected_category_name = None
 
         if pregunta_str_reclamo.isdigit():
+            expected_id = str(int(pregunta_str_reclamo) - 1)
             for option in reclamo_options:
-                if option.get("id_accion") == pregunta_str_reclamo:
+                if option.get("id_accion") == expected_id:
                     selected_category_name = option.get("category_name")
                     break
 
