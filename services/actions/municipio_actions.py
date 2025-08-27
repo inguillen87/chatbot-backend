@@ -323,7 +323,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 categoria,
                 nro_ticket_str,
                 contacto_especializado,
-                base_chat_url
+                base_chat_url,
+                dni=ticket_data_cleaned.get("dni_vecino")
             )
 
             # Log para debug
@@ -493,7 +494,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "Sugerencia",
                 nro_ticket_str,
                 {}, # No hay contacto especializado para sugerencias
-                base_chat_url
+                base_chat_url,
+                dni=dni_vecino
             )
 
             # Añadir el botón de acción específico para sugerencias

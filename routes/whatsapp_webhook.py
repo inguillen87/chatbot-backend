@@ -11,7 +11,7 @@ from extensions import db  # Import db instance for database operations
 import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
-from sqlalchemy.orm.attributes import flag_modified
+from utils.db_utils import safe_flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
@@ -138,7 +138,7 @@ def whatsapp_webhook():
     if pending_chunks and incoming_text.strip().lower() in ["mas", "más", "mostrar mas", "mostrar más", "show_more"]:
         next_chunk = pending_chunks.pop(0)
         session_context_db_entry.context_data["pending_chunks"] = pending_chunks
-        flag_modified(session_context_db_entry, "context_data")
+        safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
         if twilio_client:
@@ -170,7 +170,7 @@ def whatsapp_webhook():
     if not session_context_db_entry.context_data.get("perfil_confirmado"):
         session_context_db_entry.context_data["perfil_confirmado"] = True
         session_context_db_entry.context_data.setdefault("estado_conversacion", "activo")
-        flag_modified(session_context_db_entry, "context_data")
+        safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
 
@@ -454,7 +454,7 @@ def whatsapp_webhook():
 
         # Save the merged context
         session_context_db_entry.context_data = merged_context
-        flag_modified(session_context_db_entry, "context_data")
+        safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
         print(f"Session saved for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
@@ -494,7 +494,7 @@ def whatsapp_webhook():
             if 'persistent_action' not in message_params and len(body_text) > MAX_TWILIO_BODY_LENGTH:
                 chunks = _split_message(body_text)
                 session_context_db_entry.context_data['pending_chunks'] = chunks[1:]
-                flag_modified(session_context_db_entry, 'context_data')
+                safe_flag_modified(session_context_db_entry, 'context_data')
                 db.session.add(session_context_db_entry)
                 db.session.commit()
 
@@ -525,7 +525,7 @@ def whatsapp_webhook():
                     )
             else:
                 session_context_db_entry.context_data.pop('pending_chunks', None)
-                flag_modified(session_context_db_entry, 'context_data')
+                safe_flag_modified(session_context_db_entry, 'context_data')
                 db.session.add(session_context_db_entry)
                 db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)

@@ -58,7 +58,7 @@ from services.response_formatter import render_audio_text
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
 
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
-from sqlalchemy.orm.attributes import flag_modified
+from utils.db_utils import safe_flag_modified
 
 def responder_chatboc(
     pregunta,
@@ -84,7 +84,7 @@ def responder_chatboc(
         if confidence < 0.8 and transcript:
             if chat_db_context:
                 chat_db_context.context_data['stt_pending_confirmation'] = transcript
-                flag_modified(chat_db_context, "context_data")
+                safe_flag_modified(chat_db_context, "context_data")
             return {
                 "message_body": f"Escuché: \"{transcript}\". ¿Es correcto?",
                 "options_list": [
@@ -99,14 +99,14 @@ def responder_chatboc(
     if pregunta == "confirmar_stt_si":
         if chat_db_context and 'stt_pending_confirmation' in chat_db_context.context_data:
             pregunta = chat_db_context.context_data.pop('stt_pending_confirmation')
-            flag_modified(chat_db_context, "context_data")
+            safe_flag_modified(chat_db_context, "context_data")
         else:
             return {"message_body": "Hubo un error, no recuerdo qué estábamos confirmando. Por favor, inténtalo de nuevo."}
 
     if pregunta == "confirmar_stt_no":
         if chat_db_context:
             chat_db_context.context_data.pop('stt_pending_confirmation', None)
-            flag_modified(chat_db_context, "context_data")
+            safe_flag_modified(chat_db_context, "context_data")
         return {"message_body": "Entendido. Por favor, envía tu mensaje de nuevo."}
 
     # 1. Determinar el 'effective_owner_user' (la entidad o bot dueño)
