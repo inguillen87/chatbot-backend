@@ -1767,6 +1767,16 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     if not user_input or not menu_buttons:
         return None
 
+    # 0. Direct action_id match to support clients sending the action identifier
+    normalized_action = normalizar_texto(user_input.strip())
+    for button in menu_buttons:
+        action_id_norm = normalizar_texto(button.get("action_id", ""))
+        if action_id_norm and action_id_norm == normalized_action:
+            logger.info(
+                f"DEBUG: Direct action_id match found for '{user_input}'. Action: {button.get('action_id')}"
+            )
+            return button.get("action_id")
+
     # Use a more aggressive normalization for matching to handle emojis, etc.
     normalized_input = _super_normalize(user_input)
 
