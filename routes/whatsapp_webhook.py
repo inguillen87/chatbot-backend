@@ -18,8 +18,8 @@ from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
-from utils.maps_utils import extract_coordinates_from_google_maps_url
-from services.openai_maps_service import reverse_geocode_llm
+from utils.maps_utils import extraer_coordenadas_de_url_google_maps
+from services.openai_maps_service import geocodificar_inversa_llm
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -242,36 +242,38 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.pop('source_is_audio', None)
 
     # --- Location Handling ---
-    latitude = post_vars.get("Latitude")
-    longitude = post_vars.get("Longitude")
+    latitud = post_vars.get("Latitude")
+    longitud = post_vars.get("Longitude")
     location_info = None
-    if latitude and longitude:
-        location_info = {"latitude": latitude, "longitude": longitude}
+    if latitud and longitud:
+        location_info = {"latitude": latitud, "longitude": longitud}
         address = post_vars.get("Address")
         label = post_vars.get("Label")
         if address:
             location_info["address"] = address
         else:
             try:
-                addr = reverse_geocode_llm(latitude, longitude)
+                addr = geocodificar_inversa_llm(latitud, longitud)
                 if addr and addr.get("formatted_address"):
                     location_info["address"] = addr["formatted_address"]
             except Exception as e:
-                current_app.logger.error(f"Error reverse geocoding {latitude, longitude}: {e}")
+                current_app.logger.error(f"Error al geocodificar inversamente {latitud, longitud}: {e}")
         if label:
             location_info["label"] = label
         print(f"Received location data: {location_info}")
     else:
-        coords = extract_coordinates_from_google_maps_url(incoming_text)
-        if coords:
-            latitude, longitude = coords
-            location_info = {"latitude": str(latitude), "longitude": str(longitude)}
+        coordenadas = extraer_coordenadas_de_url_google_maps(incoming_text)
+        if coordenadas:
+            latitud, longitud = coordenadas
+            location_info = {"latitude": str(latitud), "longitude": str(longitud)}
             try:
-                addr = reverse_geocode_llm(latitude, longitude)
+                addr = geocodificar_inversa_llm(latitud, longitud)
                 if addr and addr.get("formatted_address"):
                     location_info["address"] = addr["formatted_address"]
             except Exception as e:
-                current_app.logger.error(f"Error reverse geocoding {coords}: {e}")
+                current_app.logger.error(
+                    f"Error al geocodificar inversamente {coordenadas}: {e}"
+                )
             # treat message as location input only
             incoming_text = ""
             message_body = ""

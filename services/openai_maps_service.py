@@ -9,14 +9,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = os.environ.get("OPENAI_MAP_MODEL", "gpt-4.1-mini")
 
 
-def reverse_geocode_llm(lat: float, lon: float) -> dict | None:
-    """Return a formatted address for coordinates using OpenAI.
+def geocodificar_inversa_llm(latitud: float, longitud: float) -> dict | None:
+    """Obtiene una dirección formateada para coordenadas usando OpenAI.
 
-    The function sends a prompt to an OpenAI model requesting a human
-    readable address in Spanish for the provided latitude and longitude.
-    It expects the model to return a JSON object with a
-    ``formatted_address`` field. If anything goes wrong ``None`` is
-    returned.
+    La función envía un mensaje a un modelo de OpenAI solicitando una
+    dirección humana en español para la latitud y longitud provistas.
+    Se espera que el modelo retorne un objeto JSON con el campo
+    ``formatted_address``. Si ocurre un error se devuelve ``None``.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -27,7 +26,7 @@ def reverse_geocode_llm(lat: float, lon: float) -> dict | None:
         client = openai.OpenAI(api_key=api_key, http_client=http_client)
         prompt = (
             "Convierte las coordenadas en una dirección humana. "
-            f"Latitud: {lat}, Longitud: {lon}. "
+            f"Latitud: {latitud}, Longitud: {longitud}. "
             "Responde solamente en JSON con el campo 'formatted_address'."
         )
         schema = {
@@ -50,5 +49,8 @@ def reverse_geocode_llm(lat: float, lon: float) -> dict | None:
         data = json.loads(text)
         return data
     except Exception as e:
-        logger.error(f"Error reverse geocoding with OpenAI: {e}", exc_info=True)
+        logger.error(
+            f"Error al geocodificar inversamente con OpenAI: {e}",
+            exc_info=True,
+        )
         return None
