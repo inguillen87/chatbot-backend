@@ -348,8 +348,8 @@ def _get_user_info(ticket, user_model):
         user_info["nombre"] = ticket_owner_user.name
         user_info["telefono"] = ticket_owner_user.telefono
         user_info["email"] = ticket_owner_user.email
-        user_info["direccion"] = ticket_owner_user.direccion
-        user_info["dni"] = ticket_owner_user.dni
+        user_info["direccion"] = getattr(ticket_owner_user, "direccion", None)
+        user_info["dni"] = getattr(ticket_owner_user, "dni", None)
 
     # 3. Fill missing info with data from the ticket itself
     user_info["nombre"] = user_info["nombre"] or getattr(ticket, 'nombre_vecino', None)
