@@ -12,21 +12,13 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from flask import current_app, has_app_context, session as flask_session
-from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy.exc import InvalidRequestError
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
 from services.ticket_service import servicio_tickets
+from utils.db_utils import safe_flag_modified
+# Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
+flag_modified = safe_flag_modified
 
 logger = logging.getLogger(__name__)
-
-
-def safe_flag_modified(obj, attr):
-    if not obj or not hasattr(obj, attr):
-        return
-    try:
-        flag_modified(obj, attr)
-    except InvalidRequestError:
-        logger.warning(f"No se pudo marcar como modificado {attr} en {obj}.")
 from twilio.rest import Client
 from datetime import datetime, timedelta
 from services.utils_placeholders import (
