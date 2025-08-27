@@ -324,7 +324,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 nro_ticket_str,
                 contacto_especializado,
                 base_chat_url,
-                dni=ticket_data_cleaned.get("dni_vecino")
+                dni=ticket_data_cleaned.get("dni_vecino"),
+                consulta_pin=ticket_creado.get("consulta_pin"),
             )
 
             # Log para debug
@@ -366,13 +367,21 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
 
         ticket_id_str = str(ticket_id).replace("M-", "").strip()
 
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=ticket_id_str).first()
+        pin = action_data.get("pin")
+        if not pin:
+            return {
+                "success": False,
+                "message_to_user": "Necesito el PIN de 6 dígitos para consultar el ticket.",
+                "pedir_info": "pin_ticket",
+            }
+
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=ticket_id_str, consulta_pin=pin).first()
         if not ticket:
             return {
                 "success": False,
-                "message_to_user": f"No encontré el ticket M-{ticket_id_str}.",
+                "message_to_user": f"No encontré el ticket M-{ticket_id_str} o el PIN es incorrecto.",
                 "options_list": [{"texto": "Ingresar otro número", "id_accion": "consultar_estado_ticket"}],
-                "message_type": "interactive_buttons"
+                "message_type": "interactive_buttons",
             }
 
         asunto = ticket.asunto or ticket.categoria or "Reclamo"
@@ -495,7 +504,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 nro_ticket_str,
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
-                dni=dni_vecino
+                dni=dni_vecino,
+                consulta_pin=ticket_creado.get("consulta_pin"),
             )
 
             # Añadir el botón de acción específico para sugerencias

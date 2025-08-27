@@ -50,7 +50,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
-        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345"}
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "111222"}
 
         mock_validar_telefono.return_value = True
         mock_formatear_tel.return_value = "+5491122334455"
@@ -87,6 +87,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertTrue(respuesta["success"])
         self.assertIn("message_to_user", respuesta)
         self.assertIn("12345", respuesta["message_to_user"])
+        self.assertIn("111222", respuesta["message_to_user"])
+        self.assertTrue(any("pin=111222" in opt.get("url", "") for opt in respuesta.get("options_list", [])))
         self.assertEqual(respuesta["data"]["ticket_id"], 1)
         mock_crear_ticket.assert_called_once()
         _, kwargs = mock_crear_ticket.call_args
@@ -101,12 +103,12 @@ class TestAccionesMunicipio(unittest.TestCase):
     def test_accion_consultar_estado_ticket(self):
         from models import MunicipioTicket
 
-        ticket = MunicipioTicket(pregunta="p", nro_ticket="88888", estado="en_proceso", categoria="Alumbrado")
+        ticket = MunicipioTicket(pregunta="p", nro_ticket="88888", estado="en_proceso", categoria="Alumbrado", consulta_pin="123456")
         db.session.add(ticket)
         db.session.commit()
 
         handler = ConsultarEstadoTicketActionHandler({})
-        result = handler.execute({"id_ticket_mencionado": "88888"})
+        result = handler.execute({"id_ticket_mencionado": "88888", "pin": "123456"})
 
         self.assertTrue(result["success"])
         self.assertIn("88888", result["message_to_user"])
