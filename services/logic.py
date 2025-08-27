@@ -52,6 +52,7 @@ def es_rubro_publico(rubro) -> bool:
 from services.llm_utils import clasificar_entidad_con_llm
 from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
+from services.response_formatter import render_audio_text
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
@@ -288,7 +289,13 @@ def responder_chatboc(
 
     # --- Audio Response Generation ---
     if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
-        text_to_speak = response_data.get('message_body')
+        text_to_speak = response_data.get('audio_text')
+        if not text_to_speak:
+            text_to_speak = render_audio_text(
+                response_data.get('message_body', ''),
+                response_data.get('options_list'),
+                response_data.get('categorias'),
+            )
         if text_to_speak:
             from services.tts_orchestrator import generar_audio_con_fallback
             audio_url = generar_audio_con_fallback(text_to_speak)

@@ -8,7 +8,6 @@ from services.notifications import enviar_notificacion_whatsapp_con_plantilla, e
 from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
 from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
-from services.gemini_bridge import llamar_gemini
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket
 
