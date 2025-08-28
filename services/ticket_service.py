@@ -42,6 +42,7 @@ class MunicipioTicketCreator(TicketCreator):
             pregunta=ticket_data.get("pregunta", ""),    # Reclamo original
             detalles=ticket_data.get("detalles", ""),    # Dirección, nombre, tel, etc.
             nro_ticket=ticket_data.get("nro_ticket"),
+            consulta_pin=ticket_data.get("consulta_pin"),
             direccion=ticket_data.get("direccion"),
             latitud=lat,
             longitud=lon,
