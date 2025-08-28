@@ -23,7 +23,9 @@ class TestCrearReclamoActionHandler(unittest.TestCase):
             "ubicacion": "San Martín 15",
             "usuario": "Marcelo",
             "telefono": "2613168608",
-            "email": "prueb@prueb.com"
+            "email": "prueb@prueb.com",
+            "pin": "654321",
+            "dni": "33333333"
         }
         result = handler.execute(action_data)
         self.assertTrue(result["success"])
