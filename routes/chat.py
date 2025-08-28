@@ -20,7 +20,11 @@ from services.logic import (
     normalizar_rubro,
     es_rubro_publico,
 )
-from utils.auth_helpers import anon_o_token_requerido
+from utils.auth_helpers import (
+    anon_o_token_requerido,
+    obtener_token,
+    user_from_token,
+)
 from datetime import datetime, timedelta
 
 chat_bp = Blueprint("chat_bp", __name__)
@@ -626,6 +630,29 @@ def widget_attention():
             "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
         )
     return jsonify({"mensaje": mensaje})
+
+
+@chat_bp.route("/widget/config", methods=["GET"])
+def widget_config():
+    token = obtener_token()
+    if not token:
+        return jsonify({"error": "Token requerido"}), 400
+
+    user = user_from_token(token)
+    if not user:
+        user = User.query.filter_by(token=token).first()
+    if not user:
+        return jsonify({"error": "Token inválido"}), 404
+
+    return jsonify(
+        {
+            "nombre_empresa": user.nombre_empresa or user.name,
+            "logo_url": user.logo_url,
+            "color_primario": user.color_primario,
+            "color_secundario": user.color_secundario,
+            "badge_tipo": user.badge_tipo,
+        }
+    )
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():
