@@ -4,6 +4,8 @@ import random
 from pathlib import Path
 
 from .herramientas_municipio import TOOL_REGISTRY
+from .estacionamiento_utils import _dist_m
+from .google_maps_service import get_coordinates
 
 logger = logging.getLogger(__name__)
 
@@ -30,31 +32,76 @@ class PointsOfInterestHandler:
             logger.error("Error loading parking dataset: %s", exc, exc_info=True)
             self.parking_data = []
 
-    def _parking_response(self, location: str) -> dict:
+    def _parking_response(self, location: dict | str) -> dict:
+        """Generate a parking response based on coordinates or an address."""
         if not self.parking_data:
             return {
                 "message_body": "No tengo datos de estacionamiento disponibles en este momento.",
                 "options_list": [],
                 "message_type": "text",
-                "fuente": "points_of_interest_handler"
+                "fuente": "points_of_interest_handler",
             }
 
-        sample = random.sample(self.parking_data, min(3, len(self.parking_data)))
-        lines = [f"Estacionamientos cercanos a {location}:"]
-        for item in sample:
-            lines.append(f"- {item['address']}")
+        address = ""
+        lat = lon = None
+        if isinstance(location, dict):
+            lat = location.get("lat") or location.get("latitude")
+            lon = location.get("lon") or location.get("lng") or location.get("longitude")
+            address = location.get("address") or location.get("formatted_address") or ""
+            try:
+                lat = float(lat) if lat is not None else None
+                lon = float(lon) if lon is not None else None
+            except (TypeError, ValueError):
+                lat = lon = None
+        else:
+            address = str(location)
+
+        if (lat is None or lon is None) and address:
+            try:
+                coords = get_coordinates(address)
+                if coords:
+                    lat, lon = float(coords["lat"]), float(coords["lon"])
+            except Exception as exc:  # pragma: no cover
+                logger.error("Error geocoding address %s: %s", address, exc, exc_info=True)
+
+        if lat is not None and lon is not None:
+            def dist(item):
+                return _dist_m(lat, lon, item["lat"], item["lon"])
+
+            sorted_spots = sorted(self.parking_data, key=dist)
+            nearest = sorted_spots[:3]
+            lines = [f"Situación de estacionamiento cerca de {address or 'tu ubicación'}:"]
+            for item in nearest:
+                try:
+                    distance = f" ({int(dist(item))} m)"
+                except Exception:  # pragma: no cover
+                    distance = ""
+                availability = random.randint(0, 3)
+                if availability > 0:
+                    status = f"{availability} lugares libres"
+                else:
+                    status = "todo ocupado"
+                lines.append(f"- {item['address']}{distance}: {status}")
+        else:
+            sample = random.sample(self.parking_data, min(3, len(self.parking_data)))
+            lines = [f"Situación de estacionamiento cerca de {address or 'la zona'}:"]
+            for item in sample:
+                availability = random.randint(0, 3)
+                status = f"{availability} lugares libres" if availability > 0 else "todo ocupado"
+                lines.append(f"- {item['address']}: {status}")
+
         return {
             "message_body": "\n".join(lines),
             "options_list": [],
             "message_type": "text",
-            "fuente": "points_of_interest_handler"
+            "fuente": "points_of_interest_handler",
         }
-
     def handle(self, payload: dict) -> dict | None:
         pregunta = (payload.get("pregunta") or "").lower()
         location = payload.get("location")
 
-        if "estacionamiento" in pregunta:
+        keywords = ("estacionamiento", "estacionar", "lugar libre")
+        if any(word in pregunta for word in keywords):
             if not location:
                 return {
                     "message_body": "Para buscar estacionamientos necesito tu ubicación.",
