@@ -598,5 +598,35 @@
     "address": "Mitre 600, Junín, Mendoza",
     "lat": -33.029288,
     "lon": -68.501883
+  },
+  {
+    "id": 101,
+    "address": "Playa Municipal, Rivadavia 200, Junín, Mendoza",
+    "lat": -33.0285,
+    "lon": -68.4925
+  },
+  {
+    "id": 102,
+    "address": "Estacionamiento Centro, San Martín 220, Junín, Mendoza",
+    "lat": -33.0225,
+    "lon": -68.499
+  },
+  {
+    "id": 103,
+    "address": "Playa Sur, Italia 300, Junín, Mendoza",
+    "lat": -33.035,
+    "lon": -68.497
+  },
+  {
+    "id": 104,
+    "address": "Playa Norte, Colón 400, Junín, Mendoza",
+    "lat": -33.0205,
+    "lon": -68.503
+  },
+  {
+    "id": 105,
+    "address": "Estacionamiento Hospital, Rivadavia 450, Junín, Mendoza",
+    "lat": -33.027,
+    "lon": -68.506
   }
 ]
