@@ -3,6 +3,8 @@ from extensions import db
 from datetime import datetime, timedelta
 from routes.auth import token_requerido
 from utils.plan_limits import limite_para_usuario
+from services.metricas_service import MetricasService
+from services.municipio_metricas_service import MunicipioMetricasService
 
 metricas_bp = Blueprint("metricas_bp", __name__)
 
@@ -49,8 +51,6 @@ def obtener_metricas(usuario_actual):
         return jsonify({"error": f"Error al obtener métricas: {str(e)}"}), 500
 
 
-from services.metricas_service import MetricasService
-
 @metricas_bp.route('/api/metrics/summary', methods=['GET'])
 @token_requerido
 def get_metrics_summary(usuario_actual):
@@ -65,12 +65,33 @@ def get_metrics_summary(usuario_actual):
     summary = {
         "total_sales": service.get_total_ingresos(),
         "total_orders": service.get_total_pedidos(),
-        "new_customers": 0, # Placeholder
-        "conversion_rate": 0 # Placeholder
+        "new_customers": service.get_new_customers(),
+        "conversion_rate": service.get_conversion_rate(),
     }
     return jsonify(summary)
 
-from services.metricas_service import MetricasService
+
+@metricas_bp.route('/api/municipal/metrics/summary', methods=['GET'])
+@metricas_bp.route('/api/municipal/metricas/summary', methods=['GET'])
+@token_requerido
+def get_municipal_metrics_summary(usuario_actual):
+    """Resumen de métricas para municipios."""
+    if (
+        not usuario_actual.is_authenticated
+        or not hasattr(usuario_actual, 'municipio_id')
+        or not usuario_actual.municipio_id
+    ):
+        return jsonify({"error": "No autorizado"}), 403
+
+    service = MunicipioMetricasService(municipio_id=usuario_actual.municipio_id)
+    summary = {
+        "total_tickets": service.get_total_tickets(),
+        "open_tickets": service.get_open_tickets(),
+        "closed_tickets": service.get_closed_tickets(),
+        "unique_citizens": service.get_unique_citizens(),
+        "resolution_rate": service.get_resolution_rate(),
+    }
+    return jsonify(summary)
 
 @metricas_bp.route('/api/metrics/kpis', methods=['GET'])
 @token_requerido
@@ -85,8 +106,6 @@ def get_metrics_kpis(usuario_actual):
     kpis = service.get_kpis()
     return jsonify(kpis)
 
-from services.metricas_service import MetricasService
-
 @metricas_bp.route('/api/metrics/sales-over-time', methods=['GET'])
 @token_requerido
 def get_sales_over_time(usuario_actual):
@@ -100,8 +119,6 @@ def get_sales_over_time(usuario_actual):
     sales_over_time = service.get_sales_over_time()
     return jsonify(sales_over_time)
 
-from services.metricas_service import MetricasService
-
 @metricas_bp.route('/api/metrics/top-products', methods=['GET'])
 @token_requerido
 def get_top_products(usuario_actual):
@@ -114,8 +131,6 @@ def get_top_products(usuario_actual):
     service = MetricasService(pyme_id=usuario_actual.pyme_id)
     top_products = service.get_top_products()
     return jsonify(top_products)
-
-from services.metricas_service import MetricasService
 
 @metricas_bp.route('/api/metrics/sales-by-region', methods=['GET'])
 @token_requerido
