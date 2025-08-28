@@ -117,7 +117,66 @@ class TicketRoutesTests(unittest.TestCase):
             self.assertEqual(personal_info['direccion'], 'Calle Falsa 123')
             self.assertEqual(personal_info['email'], 'juan.perez@test.com')
             self.assertEqual(personal_info['telefono'], '+5491122334455')
-            self.assertIsNone(personal_info['dni'])
+        self.assertIsNone(personal_info['dni'])
+
+    def test_ticket_prefers_ticket_contact_over_user_profile(self):
+        """Si el ticket contiene datos de contacto distintos a los del perfil,
+        debe mostrarse la información propia del ticket."""
+        with self.app.app_context():
+            admin_user = User(
+                name="Municipalidad de Test",
+                email="admin@test.gov",
+                rol="admin",
+                tipo_chat="municipio",
+                municipio_id=1
+            )
+            admin_user.set_password("admin_password")
+
+            vecino_user = User(
+                name="Juan Perez",
+                email="juan.perez@test.com",
+                telefono="+5490000000000",
+                dni="11111111",
+                rol="usuario",
+                direccion="Calle Falsa 123",
+                empresa_id=admin_user.id
+            )
+            vecino_user.set_password("vecino_password")
+
+            db.session.add(admin_user)
+            db.session.add(vecino_user)
+            db.session.commit()
+
+            # El ticket contiene otros datos de contacto
+            ticket = MunicipioTicket(
+                pregunta="Luz quemada",
+                municipio_id=admin_user.municipio_id,
+                user_id=vecino_user.id,
+                nombre_vecino="Pedro P",
+                telefono_vecino="+5491122334455",
+                email_vecino="otro@mail.com",
+                dni_vecino="32877851",
+            )
+            db.session.add(ticket)
+            db.session.commit()
+
+            import jwt
+            from datetime import datetime, timedelta
+            token = jwt.encode(
+                {'user_id': admin_user.id, 'exp': datetime.utcnow() + timedelta(days=1)},
+                self.app.config['SECRET_KEY'],
+                algorithm="HS256"
+            )
+
+            response = self.client.get('/tickets', headers={'Authorization': f'Bearer {token}'})
+            self.assertEqual(response.status_code, 200)
+            data = json.loads(response.data)
+            personal_info = data['tickets'][0]['informacion_personal_vecino']
+
+            self.assertEqual(personal_info['nombre'], 'Pedro P')
+            self.assertEqual(personal_info['telefono'], '+5491122334455')
+            self.assertEqual(personal_info['email'], 'otro@mail.com')
+            self.assertEqual(personal_info['dni'], '32877851')
 
 
 if __name__ == '__main__':

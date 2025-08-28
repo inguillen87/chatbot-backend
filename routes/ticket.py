@@ -338,31 +338,28 @@ def get_mis_tickets(current_user: User):
 # ---------- DETALLE DE TICKET ----------
 def _get_user_info(ticket, user_model):
     """
-    Helper to consolidate user info extraction, prioritizing the User model
-    over ticket fields.
+    Consolidate user info giving precedence to the data stored on the ticket
+    itself. This ensures the panel displays the information provided when the
+    ticket was created even if the user's profile has outdated values.
     """
     # 1. Initialize with None to clearly distinguish from empty strings
-    user_info = { "nombre": None, "telefono": None, "email": None, "direccion": None, "dni": None, "descripcion": None }
+    user_info = {"nombre": None, "telefono": None, "email": None, "direccion": None, "dni": None, "descripcion": None}
 
-    # 2. Prioritize data from the associated User model
+    # 2. Start with the explicit data saved on the ticket
+    user_info["nombre"] = getattr(ticket, 'nombre_vecino', None)
+    user_info["telefono"] = getattr(ticket, 'telefono_vecino', None) or getattr(ticket, 'telefono', None)
+    user_info["email"] = getattr(ticket, 'email_vecino', None) or getattr(ticket, 'email', None)
+    user_info["direccion"] = getattr(ticket, 'direccion', None)
+    user_info["dni"] = getattr(ticket, 'dni', None) or getattr(ticket, 'dni_vecino', None)
+
+    # 3. Fill remaining data with the associated User model as fallback
     ticket_owner_user = db.session.get(user_model, ticket.user_id) if ticket.user_id else None
     if ticket_owner_user:
-        user_info["nombre"] = ticket_owner_user.name
-        user_info["telefono"] = ticket_owner_user.telefono
-        user_info["email"] = ticket_owner_user.email
-        user_info["direccion"] = getattr(ticket_owner_user, "direccion", None)
-        user_info["dni"] = getattr(ticket_owner_user, "dni", None)
-
-    # 3. Fill missing info with data from the ticket itself
-    user_info["nombre"] = user_info["nombre"] or getattr(ticket, 'nombre_vecino', None)
-    user_info["telefono"] = user_info["telefono"] or getattr(ticket, 'telefono_vecino', None) or getattr(ticket, 'telefono', None)
-    user_info["email"] = user_info["email"] or getattr(ticket, 'email_vecino', None) or getattr(ticket, 'email', None)
-    user_info["direccion"] = user_info["direccion"] or getattr(ticket, 'direccion', None)
-    user_info["dni"] = (
-        user_info["dni"]
-        or getattr(ticket, 'dni', None)
-        or getattr(ticket, 'dni_vecino', None)
-    )
+        user_info["nombre"] = user_info["nombre"] or ticket_owner_user.name
+        user_info["telefono"] = user_info["telefono"] or ticket_owner_user.telefono
+        user_info["email"] = user_info["email"] or ticket_owner_user.email
+        user_info["direccion"] = user_info["direccion"] or getattr(ticket_owner_user, "direccion", None)
+        user_info["dni"] = user_info["dni"] or getattr(ticket_owner_user, "dni", None)
 
     # 4. Fallback to 'detalles' field for any missing info
     detalles_texto = getattr(ticket, 'detalles', '') or ''
