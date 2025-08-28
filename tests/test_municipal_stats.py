@@ -27,6 +27,18 @@ class DummySession:
             ]
             return SimpleNamespace(fetchall=lambda: rows)
         if self.calls == 4:
+            rows = [
+                SimpleNamespace(distrito='Centro', total=3),
+                SimpleNamespace(distrito='Sur', total=1),
+            ]
+            return SimpleNamespace(fetchall=lambda: rows)
+        if self.calls == 5:
+            rows = [
+                SimpleNamespace(mes='2023-01', total=2),
+                SimpleNamespace(mes='2023-02', total=3),
+            ]
+            return SimpleNamespace(fetchall=lambda: rows)
+        if self.calls == 6:
             return SimpleNamespace(scalar=lambda: 120.0)
         return SimpleNamespace()
 
@@ -42,6 +54,8 @@ class MunicipalStatsTests(unittest.TestCase):
         self.assertEqual(resp['totales']['abiertos'], 5)
         self.assertEqual(resp['totales']['cerrados'], 3)
         self.assertEqual(len(resp['por_categoria']), 2)
+        self.assertEqual(len(resp['por_distrito']), 2)
+        self.assertEqual(len(resp['por_mes']), 2)
         self.assertEqual(resp['tiempo_respuesta_promedio_segundos'], 120.0)
 
 if __name__ == '__main__':
