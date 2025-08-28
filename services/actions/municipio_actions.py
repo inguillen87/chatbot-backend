@@ -173,6 +173,32 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
             }
 
+        # --- Solicitar PIN de consulta si aún no se proporcionó ---
+        pin_llm = (
+            action_data.get("pin")
+            or datos_parciales.get("pin")
+            or datos_parciales.get("consulta_pin")
+        )
+        pin_final = None
+        if pin_llm:
+            pin_str = str(pin_llm).strip()
+            if pin_str.isdigit() and len(pin_str) == 6:
+                pin_final = pin_str
+            else:
+                return {
+                    "success": False,
+                    "message_to_user": "El PIN debe ser un número de 6 dígitos. Por favor, ingresá un PIN válido.",
+                    "pedir_info": "pin_ticket",
+                }
+        else:
+            return {
+                "success": False,
+                "message_to_user": "Antes de finalizar, elegí un PIN de 6 dígitos para consultar tu reclamo más adelante.",
+                "pedir_info": "pin_ticket",
+            }
+
+        contexto_reclamo["pin_ticket"] = pin_final
+
         # Recopilación final de datos y creación del ticket
         owner_user = self.context.get("user_obj")
 
@@ -207,6 +233,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "nombre_vecino": nombre_vecino_final,
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,
+            "dni_vecino": dni_final,
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id") if not getattr(viewer_user, "id", None) else None,
