@@ -391,30 +391,8 @@ def _serialize_ticket_details(ticket, ticket_type):
     user_data = _get_user_info(ticket, User)
 
     comentarios = [c.to_dict() for c in ticket.comentarios]
-    comentarios_sorted = sorted(comentarios, key=lambda c: c['fecha'])
 
-    timeline = [
-        {
-            "tipo": "ticket_creado",
-            "estado": ticket.estado,
-            "fecha": ticket.fecha.isoformat(),
-        }
-    ]
-    for c in comentarios_sorted:
-        if c.get("estado_ticket"):
-            timeline.append({
-                "tipo": "estado",
-                "estado": c["estado_ticket"],
-                "fecha": c["fecha"],
-            })
-        else:
-            timeline.append({
-                "tipo": "comentario",
-                "texto": c["comentario"],
-                "fecha": c["fecha"],
-                "es_admin": c["es_admin"],
-                "user_id": c["user_id"],
-            })
+    timeline = servicio_tickets.obtener_timeline_ticket(ticket)
 
     archivos_adjuntos_data = []
     if hasattr(ticket, 'archivos'):
@@ -943,6 +921,39 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
     except Exception as e:
         current_app.logger.error(f"Error en get_chat_mensajes_pyme para ticket {ticket_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+
+# ---------- TIMELINE DEL TICKET ----------
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/timeline', methods=['GET'])
+@anon_o_token_requerido
+def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    """Devuelve la línea de tiempo de un ticket con mensajes y cambios de estado."""
+    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket if tipo == "pyme" else None
+    if not TicketModel:
+        return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
+
+    ticket_obj = db.session.get(TicketModel, ticket_id)
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    if tipo == "municipio":
+        es_agente = current_user and current_user.tipo_chat == "municipio"
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        if not (es_agente or es_dueno or es_anon):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+        if ticket_obj.estado == "cerrado" and not es_agente:
+            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
+    else:  # pyme
+        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        if not (es_agente or es_dueno or es_anon):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+        if ticket_obj.estado == "cerrado" and not es_agente:
+            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
+
+    timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
+    return jsonify({"estado_chat": ticket_obj.estado, "timeline": timeline})
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
