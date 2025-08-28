@@ -428,6 +428,43 @@ class ServicioTickets:
             )
             return []
 
+    def obtener_timeline_ticket(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+        """Construye la línea de tiempo de un ticket con comentarios y cambios de estado."""
+        try:
+            comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+        except Exception:
+            comentarios = []
+
+        timeline = [
+            {
+                "tipo": "ticket_creado",
+                "estado": ticket.estado,
+                "fecha": ticket.fecha.isoformat(),
+            }
+        ]
+
+        for c in comentarios:
+            if c.estado_ticket:
+                timeline.append(
+                    {
+                        "tipo": "estado",
+                        "estado": c.estado_ticket,
+                        "fecha": c.fecha.isoformat(),
+                    }
+                )
+            else:
+                timeline.append(
+                    {
+                        "tipo": "comentario",
+                        "texto": c.comentario,
+                        "fecha": c.fecha.isoformat(),
+                        "es_admin": c.es_admin,
+                        "user_id": c.user_id,
+                    }
+                )
+
+        return timeline
+
     def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:
         """Asigna a ``nuevo_user_id`` todos los tickets y comentarios
         vinculados al ``anon_id`` proporcionado."""
