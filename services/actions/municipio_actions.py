@@ -207,6 +207,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "nombre_vecino": nombre_vecino_final,
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,
+            "dni_vecino": dni_final,
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id") if not getattr(viewer_user, "id", None) else None,
