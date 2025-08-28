@@ -18,6 +18,24 @@ class MetricasService:
         total = PymePedido.query.filter_by(pyme_id=self.pyme_id).count()
         return total
 
+    def get_new_customers(self):
+        """Cantidad de clientes únicos con pedidos."""
+        return (
+            db.session.query(db.func.count(db.func.distinct(PymePedido.user_id)))
+            .filter(
+                PymePedido.pyme_id == self.pyme_id,
+                PymePedido.user_id.isnot(None),
+            )
+            .scalar()
+            or 0
+        )
+
+    def get_conversion_rate(self):
+        """Relación entre pedidos y clientes únicos."""
+        clientes = self.get_new_customers()
+        pedidos = self.get_total_pedidos()
+        return round(pedidos / clientes, 2) if clientes else 0
+
     def get_top_productos_vendidos(self):
         """
         Obtiene los productos más vendidos para una pyme.

@@ -27,7 +27,8 @@ class MetricasTestCase(unittest.TestCase):
             pyme_id=1,
             monto_total=100,
             asunto="Test Order",
-            detalles="{}"
+            detalles="{}",
+            user_id=self.user.id,
         )
         db.session.add(self.order)
         db.session.commit()
@@ -55,6 +56,8 @@ class MetricasTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json['total_sales'], 100)
         self.assertEqual(response.json['total_orders'], 1)
+        self.assertEqual(response.json['new_customers'], 1)
+        self.assertEqual(response.json['conversion_rate'], 1.0)
 
     def test_get_metrics_kpis(self):
         response = self._login()
