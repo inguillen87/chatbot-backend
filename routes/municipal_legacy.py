@@ -82,6 +82,30 @@ def municipal_stats(current_user):
         for r in rows
     ]
 
+    rows_distrito = db.session.execute(
+        text(
+            "SELECT distrito, COUNT(*) as total "
+            "FROM municipio_ticket WHERE municipio_id = :mid "
+            "GROUP BY distrito"
+        ),
+        {"mid": mid},
+    ).fetchall()
+    por_distrito = [
+        {"distrito": r.distrito, "total": r.total}
+        for r in rows_distrito
+        if r.distrito is not None
+    ]
+
+    rows_mes = db.session.execute(
+        text(
+            "SELECT strftime('%Y-%m', fecha) AS mes, COUNT(*) as total "
+            "FROM municipio_ticket WHERE municipio_id = :mid "
+            "GROUP BY mes ORDER BY mes"
+        ),
+        {"mid": mid},
+    ).fetchall()
+    por_mes = [{"mes": r.mes, "total": r.total} for r in rows_mes]
+
     tiempo_respuesta = db.session.execute(
         text(
             "SELECT AVG(julianday(tc.fecha) - julianday(mt.fecha)) * 86400 "
@@ -95,6 +119,8 @@ def municipal_stats(current_user):
     datos = {
         "totales": {"abiertos": abiertos, "cerrados": cerrados},
         "por_categoria": por_categoria,
+        "por_distrito": por_distrito,
+        "por_mes": por_mes,
         "tiempo_respuesta_promedio_segundos": round(tiempo_respuesta or 0, 2),
     }
 
