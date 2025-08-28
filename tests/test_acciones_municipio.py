@@ -50,7 +50,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
-        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "111222"}
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
 
         mock_validar_telefono.return_value = True
         mock_formatear_tel.return_value = "+5491122334455"
@@ -64,7 +64,8 @@ class TestAccionesMunicipio(unittest.TestCase):
             "categoria": "Alumbrado", "descripcion": "Poste de luz caído y chispas.",
             "ubicacion": "Calle Falsa 123, Springfield",
             "coordenadas": {"lat": -32.8908, "lon": -68.8272},
-            "usuario": "Homero Simpson", "telefono": "91122334455", "email": "homero@example.com"
+            "usuario": "Homero Simpson", "telefono": "91122334455", "email": "homero@example.com",
+            "pin": "555444"
         }
 
         mock_viewer_user = MagicMock(spec=User)
@@ -87,14 +88,15 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertTrue(respuesta["success"])
         self.assertIn("message_to_user", respuesta)
         self.assertIn("12345", respuesta["message_to_user"])
-        self.assertIn("111222", respuesta["message_to_user"])
-        self.assertTrue(any("pin=111222" in opt.get("url", "") for opt in respuesta.get("options_list", [])))
+        self.assertIn("555444", respuesta["message_to_user"])
+        self.assertTrue(any("pin=555444" in opt.get("url", "") for opt in respuesta.get("options_list", [])))
         self.assertEqual(respuesta["data"]["ticket_id"], 1)
         mock_crear_ticket.assert_called_once()
         _, kwargs = mock_crear_ticket.call_args
         self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Homero Simpson")
         self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5491122334455")
         self.assertEqual(kwargs['ticket_data']['email_vecino'], "homero@example.com")
+        self.assertEqual(kwargs['ticket_data']['consulta_pin'], "555444")
         # The call is positional, so the assertion should be positional
         mock_enviar_whatsapp.assert_called_once_with(
             "+5491122334455", "Homero Simpson", "12345", "Alumbrado"
@@ -125,7 +127,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
-        mock_crear_ticket.return_value = {"id": 5, "nro_ticket": "55555"}
+        mock_crear_ticket.return_value = {"id": 5, "nro_ticket": "55555", "consulta_pin": "123456"}
 
         mock_validar_telefono.return_value = True
         mock_formatear_tel.return_value = "+5499988776655"
@@ -141,7 +143,9 @@ class TestAccionesMunicipio(unittest.TestCase):
             "ubicacion": "Ruta 40 1, Mendoza",
             "telefono_detectado": "9988776655",
             "email_detectado": "vecino@ejemplo.com",
-            "nombre_usuario_detectado": "Vecino Detectado"
+            "nombre_usuario_detectado": "Vecino Detectado",
+            "pin": "123456",
+            "dni": "12345678"
         }
 
         context = {
@@ -160,6 +164,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Vecino Detectado")
         self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5499988776655")
         self.assertEqual(kwargs['ticket_data']['email_vecino'], "vecino@ejemplo.com")
+        self.assertEqual(kwargs['ticket_data']['consulta_pin'], "123456")
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
@@ -173,7 +178,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
         # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **descripcion, email, telefono**", respuesta["message_to_user"])
+        self.assertIn("necesito algunos datos más: **descripcion, dni, email, telefono**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -184,7 +189,31 @@ class TestAccionesMunicipio(unittest.TestCase):
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
         # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **email, telefono, ubicacion**", respuesta["message_to_user"])
+        self.assertIn("necesito algunos datos más: **dni, email, telefono, ubicacion**", respuesta["message_to_user"])
+        mock_crear_ticket.assert_not_called()
+
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+541234567890")
+    def test_accion_crear_reclamo_sin_pin_pide_pin(
+        self, mock_formatear_tel, mock_validar_email, mock_validar_tel, mock_crear_ticket
+    ):
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Luz apagada",
+            "ubicacion": "Calle Falsa 321",
+            "telefono": "1234567890",
+            "email": "vecino@example.com",
+            "usuario": "Juan",
+            "dni": "12345678"
+        }
+        context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon"}
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_llm)
+        self.assertFalse(respuesta["success"])
+        self.assertEqual(respuesta["pedir_info"], "pin_ticket")
+        self.assertIn("PIN", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -198,7 +227,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email_func, mock_validar_telefono_func, mock_crear_ticket
     ):
-        mock_crear_ticket.return_value = {"id": 2, "nro_ticket": "67890"}
+        mock_crear_ticket.return_value = {"id": 2, "nro_ticket": "67890", "consulta_pin": "246810"}
         mock_parse_direccion.return_value = {"calle": "Avenida Falsa", "numero": "456", "localidad": "Testville"}
 
         # Simular que el teléfono del LLM es inválido, pero el del perfil es válido.
@@ -212,7 +241,8 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         datos_llm = {
             "categoria": "Varios", "descripcion": "Problema general", "ubicacion": "Avenida Falsa 456",
-            "usuario": "Usuario LLM", "telefono": "tel_invalido_llm", "email": "email_invalido_llm@llm.bad"
+            "usuario": "Usuario LLM", "telefono": "tel_invalido_llm", "email": "email_invalido_llm@llm.bad",
+            "pin": "246810"
         }
 
         mock_viewer_user = MagicMock(spec=User)
@@ -236,6 +266,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+549876543210") # Tomado y formateado del perfil
         self.assertEqual(kwargs['ticket_data']['email_vecino'], "perfil_valido@example.com") # Tomado del perfil
         self.assertEqual(kwargs['ticket_data']['pregunta'], "mi pregunta de prueba")
+        self.assertEqual(kwargs['ticket_data']['consulta_pin'], "246810")
 
         # The call is positional, so the assertion should be positional
         mock_enviar_whatsapp.assert_called_once_with(
@@ -253,7 +284,8 @@ class TestAccionesMunicipio(unittest.TestCase):
             "coordenadas": {"lat": -32.8908, "lon": -68.8272},
             "usuario": "Homero Simpson",
             "telefono": None,
-            "email": None
+            "email": None,
+            "pin": "135790"
         }
 
         mock_viewer_user = MagicMock(spec=User)

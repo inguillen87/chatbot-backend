@@ -30,7 +30,7 @@ class TestSystemStability(unittest.TestCase):
 
         # Create necessary users and rubros for tests
         self.rubro = Rubro(nombre="municipio", clave="municipio")
-        self.owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=self.rubro, municipio_id='test_muni')
+        self.owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=self.rubro, municipio_id='test_muni', password_hash='hash')
         db.session.add_all([self.rubro, self.owner_user])
         db.session.commit()
 
@@ -65,7 +65,9 @@ class TestSystemStability(unittest.TestCase):
             "ubicacion": "Don Bosco 55, Junín, Mendoza",
             "distrito": "Junín",
             "telefono_detectado": "+5491122334455",
-            "email_detectado": "marcelo.test@example.com"
+            "email_detectado": "marcelo.test@example.com",
+            "pin": "112233",
+            "dni": "12345678"
             # Note: 'nombre_vecino' or 'usuario' is intentionally missing
         }
 
