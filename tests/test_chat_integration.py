@@ -1,6 +1,8 @@
 import unittest
 import json
 from unittest.mock import patch, MagicMock
+from datetime import datetime, timedelta
+import jwt
 from app import create_app, db
 from models import User, Rubro, ArchivoAdjunto, AnalisisArchivo, ChatSessionContext
 from config import Config
@@ -149,10 +151,84 @@ class TestChatIntegration(unittest.TestCase):
         # Check that we don't get a JSON error response.
         self.assertNotIn("error", data)
 
+    @patch('services.tts_orchestrator.generar_audio_con_fallback', return_value=None)
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_anonymous_chat_greets_with_saved_name(self, mock_llamar_gemini, mock_tts):
+        """Ensure the greeting uses the stored profile name from a prior request."""
+        mock_llamar_gemini.return_value = (
+            {"accion_backend": "saludar"},
+            {}
+        )
+
+        session_id = "test-session-name"
+        save_resp = self.client.post(
+            '/profile-name',
+            json={"nombre_usuario": "Carlos"},
+            headers={"X-Chat-Session-Id": session_id}
+        )
+        self.assertEqual(save_resp.status_code, 200)
+
+        ctx = ChatSessionContext.query.get(session_id)
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx.context_data.get("profile_name"), "Carlos")
+
+        chat_payload = {
+            "pregunta": "Hola",
+            "tipo_chat": "municipio",
+        }
+        response = self.client.post(
+            '/ask/municipio',
+            json=chat_payload,
+            headers={"X-Chat-Session-Id": session_id}
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertIn("Carlos", data.get("message_body", ""))
+
         # The response from the endpoint is a dictionary, and the welcome message is in 'message_body'.
         self.assertIn("Soy JUNI, tu Asistente Virtual", data.get("message_body", ""))
-        self.assertIn("Soy JUNI", data.get("message_body", "")) # Check for new welcome message
-        self.assertIsNotNone(data.get("options_list")) # The new format uses 'options_list' for buttons/menu items.
+        self.assertIn("Soy JUNI", data.get("message_body", ""))  # Check for new welcome message
+        self.assertIsNotNone(data.get("options_list"))  # The new format uses 'options_list' for buttons/menu items.
+
+    @patch('services.tts_orchestrator.generar_audio_con_fallback', return_value=None)
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_authenticated_chat_prefers_profile_name(self, mock_llamar_gemini, mock_tts):
+        """An authenticated request should still greet with the stored profile name."""
+        mock_llamar_gemini.return_value = (
+            {"accion_backend": "saludar"},
+            {},
+        )
+
+        session_id = "auth-session-name"
+        save_resp = self.client.post(
+            '/profile-name',
+            json={"profile_name": "Carla"},
+            headers={"X-Chat-Session-Id": session_id},
+        )
+        self.assertEqual(save_resp.status_code, 200)
+
+        token = jwt.encode(
+            {"user_id": self.default_municipio_user.id, "exp": datetime.utcnow() + timedelta(days=1)},
+            self.app.config['SECRET_KEY'],
+            algorithm="HS256",
+        )
+
+        chat_payload = {
+            "pregunta": "Hola",
+            "tipo_chat": "municipio",
+        }
+        response = self.client.post(
+            '/ask/municipio',
+            json=chat_payload,
+            headers={
+                "X-Chat-Session-Id": session_id,
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertIn("Carla", data.get("message_body", ""))
+        self.assertNotIn(self.default_municipio_user.name, data.get("message_body", ""))
 
 if __name__ == '__main__':
     unittest.main()
