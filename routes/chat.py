@@ -70,6 +70,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         location = data.get("location")
         ticket_id = data.get("ticket_id")
         tipo_ticket = data.get("tipo_ticket")
+        profile_name = data.get("nombre_usuario") or data.get("profile_name")
 
 
         if attachment_info:
@@ -83,18 +84,48 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         ):
             raise ValueError("El campo 'location' es inválido.")
 
-        return pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, attachment_info, location, ticket_id, tipo_ticket, None
+        return (
+            pregunta,
+            contexto_previo,
+            tipo_chat,
+            rubro_id,
+            rubro_clave,
+            attachment_info,
+            location,
+            ticket_id,
+            tipo_ticket,
+            profile_name,
+            None,
+        )
 
     except (TypeError, ValueError) as e:
         current_app.logger.warning(f"Error al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             jsonify({"error": str(e)}),
         )
     except Exception as e:
         current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
         return (
-            None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             jsonify({"error": "Formato JSON inválido"}),
         )
 
@@ -181,10 +212,17 @@ def _procesar_chat(
                 location,
                 ticket_id,
                 tipo_ticket,
+                profile_name,
                 error_response,
             ) = _parse_request(tipo_chat_fijo)
             if error_response:
                 return error_response, 400
+
+            # Fallback to cookies or stored session context if profile name not provided in JSON
+            if not profile_name:
+                profile_name = request.cookies.get("nombre_usuario") or request.cookies.get("profile_name")
+            if not profile_name and chat_context_obj and chat_context_obj.context_data:
+                profile_name = chat_context_obj.context_data.get("profile_name")
 
             # Si la solicitud solo contenía una ubicación, creamos una pregunta sintética para que el backend la procese.
             if not pregunta and location:
@@ -431,6 +469,7 @@ def _procesar_chat(
             channel="web", # Set channel to web
             attachment_info=attachment_info,
             location=location,
+            profile_name=profile_name,
             user_data={
                 "name": actor_principal.name,
                 "email": actor_principal.email,
@@ -619,6 +658,35 @@ def ask_pyme(current_user=None, anon_id=None, owner_user=None):
 def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
     return _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
+
+
+@chat_bp.route("/profile-name", methods=["POST", "OPTIONS"])
+def set_profile_name():
+    """Store the visitor's profile name in cookies and session context."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    data = request.get_json(silent=True) or {}
+    profile_name = data.get("nombre_usuario") or data.get("profile_name")
+    if not profile_name:
+        return jsonify({"error": "'nombre_usuario' requerido"}), 400
+
+    resp = jsonify({"profile_name": profile_name})
+    resp.set_cookie("nombre_usuario", profile_name, max_age=60 * 60 * 24 * 30, samesite="Lax")
+
+    chat_session_id = request.headers.get("X-Chat-Session-Id")
+    if chat_session_id:
+        chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
+        if not chat_context_obj:
+            chat_context_obj = ChatSessionContext(chat_session_id=chat_session_id, context_data={})
+            db.session.add(chat_context_obj)
+        if chat_context_obj.context_data is None:
+            chat_context_obj.context_data = {}
+        chat_context_obj.context_data["profile_name"] = profile_name
+        flag_modified(chat_context_obj, "context_data")
+        db.session.commit()
+
+    return resp, 200
 
 @chat_bp.route("/widget/attention", methods=["GET"])
 def widget_attention():
