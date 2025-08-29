@@ -1474,7 +1474,10 @@ def mapa_de_tickets(current_user: User, tipo: str):
     features = [
         {
             "type": "Feature",
-            "properties": {"weight": punto.get("weight", 1)},
+            "properties": {
+                "weight": punto.get("weight", 1),
+                "categoria": punto.get("categoria"),
+            },
             "geometry": {
                 "type": "Point",
                 "coordinates": [
