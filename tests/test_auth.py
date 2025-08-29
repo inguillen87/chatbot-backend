@@ -122,6 +122,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
     # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
     description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
 
+    historial_chat = servicio_tickets.obtener_historial_chat(ticket)
 
     # Construir el diccionario con la estructura deseada
     serialized_data = {
@@ -142,6 +143,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
+        "historial_chat": historial_chat,
     }
     return serialized_data
 
