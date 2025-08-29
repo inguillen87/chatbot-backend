@@ -47,3 +47,50 @@ class TestParkingPOI(unittest.TestCase):
         handler = PointsOfInterestHandler(context={})
         res = handler.handle({"pregunta": "quiero estacionar", "location": None})
         self.assertIn("Compartir ubicación", str(res))
+
+    def test_stateful_location_triggers_parking(self):
+        from app import create_app, db
+        from config import TestConfig
+        from models import User, Rubro, ChatSessionContext
+        from services.municipio_responder import responder_municipio, ConversationState
+
+        app = create_app(TestConfig)
+        with app.app_context():
+            db.create_all()
+            rubro = Rubro(id=1, clave='municipios', nombre='municipios')
+            owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=rubro)
+            owner_user.set_password('pass')
+            db.session.add_all([rubro, owner_user])
+            db.session.commit()
+
+            ctx = ChatSessionContext(
+                chat_session_id='test_parking_state',
+                user_id=1,
+                context_data={'contexto_municipio_v2': {
+                    'estado_conversacion': ConversationState.ESPERANDO_UBICACION_GENERAL.name,
+                    'consulta_pendiente_ubicacion': 'estacionamiento'
+                }}
+            )
+            db.session.add(ctx)
+            db.session.commit()
+
+            location_payload = {
+                'pregunta': '',
+                'es_ubicacion': True,
+                'ubicacion_usuario': {
+                    'latitude': -33.023818,
+                    'longitude': -68.497164,
+                    'address': 'Las Heras 105, Junín, Mendoza'
+                }
+            }
+
+            resp = responder_municipio(
+                pregunta_original=location_payload,
+                owner_user=owner_user,
+                rubro_obj=rubro,
+                viewer_user=owner_user,
+                chat_db_context=ctx,
+                location=location_payload['ubicacion_usuario']
+            )
+
+            self.assertIn('Las Heras 105', resp.get('message_body', ''))
