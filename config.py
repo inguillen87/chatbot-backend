@@ -27,21 +27,24 @@ if cors_env:
     allowed_urls = [u.strip().rstrip('/') for u in cors_env.split(',') if u.strip()]
 else:
     allowed_urls = [PANEL_URL.rstrip('/'), WIDGET_URL.rstrip('/')]
-    host = parsed_backend.hostname
-    if host and host != "localhost":
-        parts = host.split('.')
-        if len(parts) >= 2:
-            root_domain = ".".join(parts[-2:])
-            allowed_urls.extend([
-                f"https://{root_domain}",
-                f"https://www.{root_domain}",
-            ])
-    public_root = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
-    if public_root and public_root not in ("localhost", "127.0.0.1"):
+
+# Always add the root domain(s) so that the public widget can reach the API
+host = parsed_backend.hostname
+if host and host != "localhost":
+    parts = host.split('.')
+    if len(parts) >= 2:
+        root_domain = ".".join(parts[-2:])
         allowed_urls.extend([
-            f"https://{public_root}",
-            f"https://www.{public_root}",
+            f"https://{root_domain}",
+            f"https://www.{root_domain}",
         ])
+
+public_root = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
+if public_root and public_root not in ("localhost", "127.0.0.1"):
+    allowed_urls.extend([
+        f"https://{public_root}",
+        f"https://www.{public_root}",
+    ])
 
 ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
 
