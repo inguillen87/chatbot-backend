@@ -1,12 +1,13 @@
 import unittest
 from unittest.mock import patch, MagicMock
+
 from services.audio_transcription_service import transcribe_audio_from_url
 
 class TestAudioTranscriptionService(unittest.TestCase):
 
     @patch('services.audio_transcription_service.requests.get')
-    @patch('services.audio_transcription_service.speech.SpeechClient')
-    def test_transcribe_audio_from_url_success(self, mock_speech_client, mock_requests_get):
+    @patch('services.audio_transcription_service.openai_client')
+    def test_transcribe_audio_from_url_success(self, mock_openai_client, mock_requests_get):
         # Mock the requests.get call
         mock_audio_content = b'fake_audio_content'
         mock_response = MagicMock()
@@ -14,13 +15,12 @@ class TestAudioTranscriptionService(unittest.TestCase):
         mock_response.content = mock_audio_content
         mock_requests_get.return_value = mock_response
 
-        # Mock the speech.SpeechClient and its recognize method
-        mock_speech_instance = mock_speech_client.return_value
-        mock_recognize_response = MagicMock()
-        mock_recognize_response.results = [MagicMock()]
-        mock_recognize_response.results[0].alternatives = [MagicMock()]
-        mock_recognize_response.results[0].alternatives[0].transcript = 'hello world'
-        mock_speech_instance.recognize.return_value = mock_recognize_response
+        # Mock OpenAI transcription
+        mock_transcriptions = mock_openai_client.audio.transcriptions
+        mock_create = mock_transcriptions.create
+        mock_result = MagicMock()
+        mock_result.text = 'hello world'
+        mock_create.return_value = mock_result
 
         # Call the function
         result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
@@ -28,8 +28,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
         # Assertions
         self.assertEqual(result, 'hello world')
         mock_requests_get.assert_called_once_with('http://example.com/audio.ogg', auth=('fake_sid', 'fake_token'))
-        mock_speech_client.assert_called_once()
-        mock_speech_instance.recognize.assert_called_once()
+        mock_create.assert_called_once()
 
     @patch('services.audio_transcription_service.requests.get')
     def test_transcribe_audio_from_url_download_fails(self, mock_requests_get):
@@ -43,8 +42,8 @@ class TestAudioTranscriptionService(unittest.TestCase):
         self.assertIsNone(result)
 
     @patch('services.audio_transcription_service.requests.get')
-    @patch('services.audio_transcription_service.speech.SpeechClient')
-    def test_transcribe_audio_from_url_transcription_fails(self, mock_speech_client, mock_requests_get):
+    @patch('services.audio_transcription_service.openai_client')
+    def test_transcribe_audio_from_url_transcription_fails(self, mock_openai_client, mock_requests_get):
         # Mock the requests.get call
         mock_audio_content = b'fake_audio_content'
         mock_response = MagicMock()
@@ -52,9 +51,8 @@ class TestAudioTranscriptionService(unittest.TestCase):
         mock_response.content = mock_audio_content
         mock_requests_get.return_value = mock_response
 
-        # Mock the speech.SpeechClient and its recognize method to raise an exception
-        mock_speech_instance = mock_speech_client.return_value
-        mock_speech_instance.recognize.side_effect = Exception('Transcription failed')
+        # Mock OpenAI transcription to raise an exception
+        mock_openai_client.audio.transcriptions.create.side_effect = Exception('Transcription failed')
 
         # Call the function
         result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
