@@ -22,8 +22,6 @@ class GoogleVisionService:
                 # Intenta usar las credenciales de entorno por defecto (Application Default Credentials)
                 logger.warning("⚠️ No explicit credentials found. Attempting to use Application Default Credentials (ADC).")
                 self.client = vision.ImageAnnotatorClient()
-                # La siguiente línea verificará si ADC funcionó, si no, lanzará una excepción
-                self.client.feature_level_lfp_response_handler()
                 logger.info("✅ [VISION_SVC] Cliente de Google Vision inicializado con ADC.")
         except Exception as e:
             logger.error(f"❌ ADC not found. Could not automatically determine credentials.")
