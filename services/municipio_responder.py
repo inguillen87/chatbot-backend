@@ -2032,26 +2032,31 @@ def responder_municipio(
 
     # --- INICIO: Manejo Proactivo de Ubicación ---
     if received_payload.get("es_ubicacion") and not pregunta_str.strip():
-        logger_actual.info(f"Location received without text. Starting proactive location handling.")
-
-        address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
-
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
-        contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
+        # When already waiting for a location to answer a pending query (e.g., estacionamiento),
+        # skip proactive handling so that the dedicated state logic can process it.
+        if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_UBICACION_GENERAL.name:
+            logger_actual.info(
+                "Location received without text. Starting proactive location handling."
+            )
 
-        return _finalize_response({
-            "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
-            "options_list": [
-                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                {"texto": "Cancelar", "action_id": "cancelar"}
-            ],
-            "message_type": "interactive_buttons",
-            "fuente": "proactive_location_handler"
-        })
+            address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
+
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return _finalize_response({
+                "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+                "options_list": [
+                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                    {"texto": "Cancelar", "action_id": "cancelar"}
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "proactive_location_handler",
+            })
     # --- FIN: Manejo Proactivo de Ubicación ---
 
 
@@ -2200,11 +2205,11 @@ def responder_municipio(
         # such as interpreting "farmacias de turno" as a request for appointments.
         if es_consulta_general(pregunta_str):
             poi_handler = PointsOfInterestHandler(context)
-            loc_str = None
+            loc_data = None
             if isinstance(location, dict):
-                loc_str = location.get("formatted_address") or location.get("address")
+                loc_data = location
             elif isinstance(location, str):
-                loc_str = location
+                loc_data = location
             contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
             # Clear any pending claim-related context since the user switched topics
             for campo in [
@@ -2226,7 +2231,7 @@ def responder_municipio(
             contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            return _finalize_response(poi_handler.handle({"pregunta": pregunta_str, "location": loc_str}))
+            return _finalize_response(poi_handler.handle({"pregunta": pregunta_str, "location": loc_data}))
 
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
@@ -2791,7 +2796,7 @@ def responder_municipio(
 
             if consulta_guardada:
                 logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
-                return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location.get("address")}))
+                return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location}))
             else:
                 logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
                 return _finalize_response({"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"})
@@ -2812,8 +2817,12 @@ def responder_municipio(
 
                     if consulta_guardada:
                         logger_actual.info(f"Geocoded address successfully. Processing saved query: '{consulta_guardada}'")
-                        # The handler expects the address string in the 'location' key
-                        return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": geocoded_location.get("formatted_address")}))
+                        loc_payload = {
+                            "address": geocoded_location.get("formatted_address"),
+                            "lat": geocoded_location.get("lat"),
+                            "lon": geocoded_location.get("lng"),
+                        }
+                        return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": loc_payload}))
                     else:
                         # This case is unlikely but handled for safety
                         logger_actual.warning("Geocoded address but no saved query found.")
