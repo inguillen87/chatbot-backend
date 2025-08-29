@@ -342,7 +342,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 contacto_especializado,
                 base_chat_url,
                 dni=ticket_data_cleaned.get("dni_vecino"),
-                consulta_pin=ticket_creado.get("consulta_pin"),
+                consulta_pin=pin_final,
             )
 
             # Log para debug
@@ -353,7 +353,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "message_to_user": mensaje_respuesta,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
-                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
+                "data": {
+                    "ticket_id": ticket_creado.get('id'),
+                    "nro_ticket": nro_ticket_str,
+                    "status": "creado",
+                    "consulta_pin": pin_final,
+                }
             }
         except Exception as e:
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
