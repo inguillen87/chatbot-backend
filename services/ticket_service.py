@@ -397,7 +397,7 @@ class ServicioTickets:
             # ]
             # Por ahora, mantendremos la agrupación existente que devuelve 'weight'.
 
-            ubicaciones_agrupadas = {} # (lat, lng) -> count
+            ubicaciones_agrupadas = {}  # (lat, lng, categoria) -> count
 
             for t in tickets:
                 # Redondear lat/lng a un número de decimales para agrupar puntos cercanos.
@@ -406,17 +406,24 @@ class ServicioTickets:
                 # 4 decimales dan una precisión de ~11 metros.
                 # 3 decimales dan una precisión de ~110 metros.
                 # Consideremos 4 decimales para agrupar problemáticas en una misma "zona pequeña".
-                lat_lng_key = (round(t.latitud, 4), round(t.longitud, 4))
+                lat_lng_key = (
+                    round(t.latitud, 4),
+                    round(t.longitud, 4),
+                    getattr(t, "categoria", None),
+                )
                 if lat_lng_key not in ubicaciones_agrupadas:
                     ubicaciones_agrupadas[lat_lng_key] = 0
                 ubicaciones_agrupadas[lat_lng_key] += 1
 
             resultado_heatmap = []
-            for (lat, lng), weight in ubicaciones_agrupadas.items():
-                resultado_heatmap.append({
-                    "location": {"lat": lat, "lng": lng},
-                    "weight": weight
-                })
+            for (lat, lng, cat), weight in ubicaciones_agrupadas.items():
+                resultado_heatmap.append(
+                    {
+                        "location": {"lat": lat, "lng": lng},
+                        "weight": weight,
+                        "categoria": cat,
+                    }
+                )
             logger.info(
                 "[TICKET_SERVICE_MAPA] puntos_heatmap=%s ejemplo=%s",
                 len(resultado_heatmap),

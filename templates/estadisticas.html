@@ -15,6 +15,10 @@
 </head>
 <body>
     <h1>Estadísticas y Mapas de Calor</h1>
+    <div>
+        <input id="categoria-input" placeholder="Filtrar por categoría" />
+        <button id="categoria-btn">Aplicar</button>
+    </div>
     <div id="map"></div>
     <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/@maptiler/geocoding-control@1.0.5/dist/maptiler-geocoding-control.umd.min.js"></script>
@@ -37,6 +41,20 @@
             keepOpen: false,
         }), 'top-left');
 
+        function cargarDatos() {
+            const categoria = document.getElementById('categoria-input').value;
+            const url = categoria
+                ? `/tickets/municipio/mapa?categoria=${encodeURIComponent(categoria)}`
+                : '/tickets/municipio/mapa';
+            fetch(url)
+                .then(r => r.json())
+                .then(data => {
+                    if (map.getSource('puntos')) {
+                        map.getSource('puntos').setData(data);
+                    }
+                });
+        }
+
         map.on('load', () => {
             map.addSource('puntos', {
                 type: 'geojson',
@@ -56,6 +74,8 @@
                 },
             });
         });
+
+        document.getElementById('categoria-btn').addEventListener('click', cargarDatos);
     </script>
 </body>
 </html>

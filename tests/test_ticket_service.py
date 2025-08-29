@@ -104,7 +104,7 @@ class TicketServiceTests(unittest.TestCase):
             service = ServicioTickets()
             res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='municipio', municipio_id=5)
 
-        # The method now returns a list of dicts with "location" and "weight"
+        # The method now returns a list of dicts with "location", "weight" and "categoria"
         # We expect two distinct locations for municipio_id=5: (10.0, 20.0) with weight 2, and (11.0, 21.0) with weight 1
         self.assertEqual(len(res), 2)
 
@@ -112,9 +112,19 @@ class TicketServiceTests(unittest.TestCase):
         found_loc2 = False
         for item in res:
             # Rounding might occur in the service, so compare with tolerance or ensure mock data uses expected precision
-            if abs(item['location']['lat'] - 10.0) < 0.0001 and abs(item['location']['lng'] - 20.0) < 0.0001 and item['weight'] == 2:
+            if (
+                abs(item['location']['lat'] - 10.0) < 0.0001
+                and abs(item['location']['lng'] - 20.0) < 0.0001
+                and item['weight'] == 2
+                and item.get('categoria') is None
+            ):
                 found_loc1 = True
-            if abs(item['location']['lat'] - 11.0) < 0.0001 and abs(item['location']['lng'] - 21.0) < 0.0001 and item['weight'] == 1:
+            if (
+                abs(item['location']['lat'] - 11.0) < 0.0001
+                and abs(item['location']['lng'] - 21.0) < 0.0001
+                and item['weight'] == 1
+                and item.get('categoria') is None
+            ):
                 found_loc2 = True
 
         self.assertTrue(found_loc1, "Location (10.0, 20.0) with weight 2 not found")
@@ -192,8 +202,22 @@ class TicketServiceTests(unittest.TestCase):
 
         # Expecting two items for rubro_id=5, each with weight 1 as they are distinct locations
         self.assertEqual(len(res), 2)
-        self.assertTrue(any(abs(d['location']['lat'] - 10.0) < 0.0001 and d['weight'] == 1 for d in res))
-        self.assertTrue(any(abs(d['location']['lat'] - 11.0) < 0.0001 and d['weight'] == 1 for d in res))
+        self.assertTrue(
+            any(
+                abs(d['location']['lat'] - 10.0) < 0.0001
+                and d['weight'] == 1
+                and d.get('categoria') is None
+                for d in res
+            )
+        )
+        self.assertTrue(
+            any(
+                abs(d['location']['lat'] - 11.0) < 0.0001
+                and d['weight'] == 1
+                and d.get('categoria') is None
+                for d in res
+            )
+        )
 
 
 if __name__ == '__main__':
