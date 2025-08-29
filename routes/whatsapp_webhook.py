@@ -107,10 +107,12 @@ def whatsapp_webhook():
 
     if not session_context_db_entry:
         initial_session_data = {
-            "historial_chat": [], "estado_conversacion": "inicio",
-            "user_id_empresa": empresa_id, "telefono_usuario": from_number_cleaned,
+            "historial_chat": [],
+            "estado_conversacion": "inicio",
+            "user_id_empresa": empresa_id,
+            "telefono_usuario": from_number_cleaned,
             "canal_origen": "whatsapp",
-            "mensajes_previos_gemini_formato": []
+            "mensajes_previos_llm_formato": []
         }
         session_context_db_entry = ChatSessionContext(
             chat_session_id=chat_session_id_internal, user_id=empresa_id,

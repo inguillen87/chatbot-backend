@@ -30,7 +30,10 @@ def handle(msg: str, meta: dict) -> dict:
             "id": getattr(usuario_actual, 'id', None),
             "tipo_entidad": "municipio"
         }
-        historial = chat_db_context.context_data.get('mensajes_previos_gemini_formato', [])
+        historial = (
+            chat_db_context.context_data.get("mensajes_previos_llm_formato")
+            or chat_db_context.context_data.get("mensajes_previos_gemini_formato", [])
+        )
 
         # Corrected the keyword argument from 'pregunta' to 'mensaje_usuario'
         llm_response_payload, _ = llamar_llm_con_fallback(

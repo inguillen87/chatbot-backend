@@ -1236,10 +1236,8 @@ def handle_location_update(data):
 
 BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
 
-# Utiliza el orquestador de LLMs que intenta OpenAI, Cohere y Gemini (como
-# último recurso). Se expone con el nombre `llamar_gemini` para mantener
-# compatibilidad con el código existente y las pruebas.
-from services.llm_orchestrator import llamar_llm_con_fallback as llamar_gemini
+# Utiliza el orquestador de LLMs que intenta OpenAI y Cohere.
+from services.llm_orchestrator import llamar_llm_con_fallback
 
 # Imports necesarios para la función accion_crear_reclamo_municipio
 # (Algunos pueden estar ya importados globalmente en el archivo)
@@ -1419,10 +1417,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
         try:
-            mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-            respuesta_llm_dict, context_dict = llamar_gemini(
+            mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
+            respuesta_llm_dict, context_dict = llamar_llm_con_fallback(
                 app=app,
-                mensaje_usuario=mensaje_para_gemini,
+                mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
                 historial=historial_para_llm,
                 chat_session_id=context.get("chat_session_uuid")
@@ -1433,7 +1431,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as e:
             logger.error(
-                f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada a Gemini: {e}",
+                f"[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada al LLM: {e}",
                 exc_info=True,
             )
             return (

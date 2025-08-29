@@ -55,7 +55,7 @@ from services.pymes import responder_pyme
 from services.response_formatter import render_audio_text
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
-# La clasificación de intención ahora es responsabilidad de llamar_gemini con JULES_SYSTEM_PROMPT.
+# La clasificación de intención ahora es responsabilidad de llamar_llm_con_fallback con JULES_SYSTEM_PROMPT.
 
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
 from utils.db_utils import safe_flag_modified

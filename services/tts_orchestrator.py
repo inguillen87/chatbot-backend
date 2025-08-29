@@ -24,6 +24,8 @@ def generar_audio_con_fallback(text: str) -> str | None:
         # Remove URLs and markdown characters so the audio doesn't read them
         cleaned = re.sub(r"https?://\S+", "", raw)
         cleaned = cleaned.replace("*", "")
+        # Replace numbered lists with a more speech-friendly format
+        cleaned = re.sub(r"(?m)^\s*(\d+)\.\s*", r"Opción \1: ", cleaned)
         return " ".join(cleaned.split())
 
     text = sanitize_for_tts(text)
@@ -53,7 +55,7 @@ def generar_audio_con_fallback(text: str) -> str | None:
     # 1. Try OpenAI
     try:
         logger.info("TTS Orchestrator: Trying OpenAI...")
-        audio_url = generar_audio_openai(text)
+        audio_url = generar_audio_openai(text, speed=1.25)
         if audio_url:
             logger.info("TTS Orchestrator: OpenAI successful.")
             return cache_and_return(audio_url)

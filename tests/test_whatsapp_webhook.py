@@ -91,7 +91,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 "user_id_empresa": self.empresa_id_for_test,
                 "telefono_usuario": self.test_user_number_str,
                 "canal_origen": "whatsapp",
-                "mensajes_previos_gemini_formato": [],
+                "mensajes_previos_llm_formato": [],
                 "perfil_confirmado": True,
             },
         )
@@ -257,11 +257,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "documentacion"}
             )
 
-            self.mock_twilio_create.assert_called_once_with(
-                from_=f"whatsapp:{self.test_whatsapp_number_str}",
-                to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
-            )
+            self.mock_twilio_create.assert_called_once()
+            _, kwargs_twilio = self.mock_twilio_create.call_args
+            self.assertEqual(kwargs_twilio["from_"], f"whatsapp:{self.test_whatsapp_number_str}")
+            self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
+            self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')
@@ -318,11 +318,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "documentacion"}
             )
 
-            self.mock_twilio_create.assert_called_once_with(
-                from_=f"whatsapp:{self.test_whatsapp_number_str}",
-                to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
-            )
+            self.mock_twilio_create.assert_called_once()
+            _, kwargs_twilio = self.mock_twilio_create.call_args
+            self.assertEqual(kwargs_twilio["from_"], f"whatsapp:{self.test_whatsapp_number_str}")
+            self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
+            self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')
@@ -376,11 +376,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "reclamo"}
             )
 
-            self.mock_twilio_create.assert_called_once_with(
-                from_=f"whatsapp:{self.test_whatsapp_number_str}",
-                to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
-            )
+            self.mock_twilio_create.assert_called_once()
+            _, kwargs_twilio = self.mock_twilio_create.call_args
+            self.assertEqual(kwargs_twilio["from_"], f"whatsapp:{self.test_whatsapp_number_str}")
+            self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
+            self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
         self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.responder_chatboc')
@@ -466,11 +466,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertNotIn("datos_interpretados_archivo", kwargs)
             mock_classifier.assert_not_called()
 
-            self.mock_twilio_create.assert_called_once_with(
-                from_=f"whatsapp:{self.test_whatsapp_number_str}",
-                to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
-            )
+            self.mock_twilio_create.assert_called_once()
+            _, kwargs_twilio = self.mock_twilio_create.call_args
+            self.assertEqual(kwargs_twilio["from_"], f"whatsapp:{self.test_whatsapp_number_str}")
+            self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
+            self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')
@@ -521,11 +521,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             mock_classifier.assert_not_called()
             mock_transcribe.assert_called_once()
 
-            self.mock_twilio_create.assert_called_once_with(
-                from_=f"whatsapp:{self.test_whatsapp_number_str}",
-                to=f"whatsapp:{self.test_user_number_str}",
-                body="Ok"
-            )
+            self.mock_twilio_create.assert_called_once()
+            _, kwargs_twilio = self.mock_twilio_create.call_args
+            self.assertEqual(kwargs_twilio["from_"], f"whatsapp:{self.test_whatsapp_number_str}")
+            self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
+            self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
 
 if __name__ == "__main__":

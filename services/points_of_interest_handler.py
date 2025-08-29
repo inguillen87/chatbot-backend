@@ -113,9 +113,9 @@ class PointsOfInterestHandler:
 
         # --- Generic POI flow delegated to LLM + tools ---
         try:
-            from .municipio_responder import llamar_gemini  # delayed import to avoid circular dependency
+            from .municipio_responder import llamar_llm_con_fallback  # delayed import to avoid circular dependency
             mensaje_usuario = json.dumps({"pregunta": pregunta, "ubicacion": location})
-            llm_result = llamar_gemini(
+            llm_result = llamar_llm_con_fallback(
                 None, mensaje_usuario, {"tipo_entidad": "municipio"}, [], None
             )
             if isinstance(llm_result, tuple):
