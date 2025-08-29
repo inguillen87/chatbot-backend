@@ -3,6 +3,7 @@ import logging
 import re
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
+import random
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
@@ -173,29 +174,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
             }
 
-        # --- Solicitar PIN de consulta si aún no se proporcionó ---
+        # --- Handle PIN (generate if missing) ---
         pin_llm = (
             action_data.get("pin")
             or datos_parciales.get("pin")
             or datos_parciales.get("consulta_pin")
         )
-        pin_final = None
-        if pin_llm:
-            pin_str = str(pin_llm).strip()
-            if pin_str.isdigit() and len(pin_str) == 6:
-                pin_final = pin_str
-            else:
-                return {
-                    "success": False,
-                    "message_to_user": "El PIN debe ser un número de 6 dígitos. Por favor, ingresá un PIN válido.",
-                    "pedir_info": "pin_ticket",
-                }
+        pin_str = str(pin_llm).strip() if pin_llm else ""
+        if pin_str.isdigit() and len(pin_str) == 6:
+            pin_final = pin_str
         else:
-            return {
-                "success": False,
-                "message_to_user": "Antes de finalizar, elegí un PIN de 6 dígitos para consultar tu reclamo más adelante.",
-                "pedir_info": "pin_ticket",
-            }
+            pin_final = f"{random.randint(0, 999999):06d}"
 
         contexto_reclamo["pin_ticket"] = pin_final
 
@@ -243,6 +232,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "origen_reclamo": "LLM_CHATBOT",
             "foto_url_directa": foto_url_llm,
             "canal_ingreso": self.context.get("channel"),
+            "consulta_pin": pin_final,
         }
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}

@@ -9,6 +9,7 @@ from services.location_service import geocode_address
 from services.tts_orchestrator import generar_audio_con_fallback
 from models import MunicipioTicket
 from database import db
+from services.openai_bridge import client as openai_client
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -172,18 +173,35 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     Responde únicamente con el objeto JSON. Si no puedes extraer una calle o una localidad, devuelve un JSON vacío.
     """
     try:
-        respuesta_llm = get_cohere_response(
-            message=prompt,
-            preamble="Sos un experto en normalización de direcciones argentinas. Tu única función es devolver un objeto JSON con los datos de la dirección."
+        if not openai_client:
+            logger.error("OpenAI client is not initialized.")
+            return None
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Sos un experto en normalización de direcciones argentinas. Tu única función es devolver un objeto JSON con los datos de la dirección.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
         )
+        respuesta_llm = response.choices[0].message.content
         parsed_data = json.loads(respuesta_llm)
         if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
-             logger.warning(f"LLM no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}")
-             return None
+            logger.warning(
+                f"LLM no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}"
+            )
+            return None
         logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
         return parsed_data
     except (json.JSONDecodeError, Exception) as e:
-        logger.error(f"Error al parsear dirección con LLM: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'")
+        logger.error(
+            f"Error al parsear dirección con LLM: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
+        )
         return None
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
