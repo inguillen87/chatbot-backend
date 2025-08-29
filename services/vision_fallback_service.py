@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
+import httpx
 from openai import OpenAI
 import cohere
 
@@ -19,7 +20,10 @@ def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
         return None
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
-        client = OpenAI(api_key=api_key)
+        # Use a client that ignores proxy environment variables to avoid
+        # `Client.__init__()` receiving unsupported arguments.
+        http_client = httpx.Client(proxy=None, trust_env=False)
+        client = OpenAI(api_key=api_key, http_client=http_client)
         prompt = (
             "Describe the image for a municipal complaint system. "
             "Return a JSON with keys: labels (list of keywords), "
@@ -54,12 +58,14 @@ def _call_cohere(image_bytes: bytes) -> Optional[Dict[str, Any]]:
             "Describe the image for a municipal complaint system. "
             "Return JSON with keys: labels, objects, text."
         )
-        resp = co.chat(
+        # Cohere's chat endpoint does not accept an `images` argument.
+        # Instead, send the image as a data URL using generate().
+        resp = co.generate(
             model="command-r-plus",
-            message=prompt,
-            images=[{"base64": b64}]
+            prompt=prompt,
+            image_url=f"data:image/jpeg;base64,{b64}",
         )
-        return json.loads(resp.text)
+        return json.loads(resp.generations[0].text)
     except Exception as e:
         logger.error(f"Cohere vision failed: {e}", exc_info=True)
         return None
