@@ -10,6 +10,7 @@ from services.tts_orchestrator import generar_audio_con_fallback
 from models import MunicipioTicket
 from database import db
 from services.openai_bridge import client as openai_client
+from services.cohere_bridge import co as cohere_client
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -174,8 +175,7 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     """
     try:
         if not openai_client:
-            logger.error("OpenAI client is not initialized.")
-            return None
+            raise ConnectionError("OpenAI client is not initialized.")
 
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -195,12 +195,37 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
             logger.warning(
                 f"LLM no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}"
             )
+        else:
+            logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
+            return parsed_data
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error(
+            f"Error al parsear dirección con LLM (OpenAI): {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
+        )
+
+    # Fallback to Cohere if OpenAI fails or returns incomplete data
+    if not cohere_client:
+        logger.error("Cohere client is not initialized.")
+        return None
+
+    try:
+        cohere_response = cohere_client.generate(
+            model="command-r-plus",
+            prompt=prompt + "\nResponde únicamente con el objeto JSON.",
+            max_tokens=300,
+        )
+        respuesta_llm = cohere_response.generations[0].text
+        parsed_data = json.loads(respuesta_llm)
+        if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
+            logger.warning(
+                f"Cohere no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}"
+            )
             return None
-        logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
+        logger.info(f"Dirección parseada con Cohere para '{texto_direccion}': {parsed_data}")
         return parsed_data
     except (json.JSONDecodeError, Exception) as e:
         logger.error(
-            f"Error al parsear dirección con LLM: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
+            f"Error al parsear dirección con Cohere: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
         )
         return None
 
