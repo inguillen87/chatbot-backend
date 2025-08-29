@@ -2156,80 +2156,91 @@ def responder_municipio(
         safe_flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
     # --- FIN: Manejo del Flujo de Reclamos Activo ---
+    # --- START DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
+    reclamo_options = _get_reclamos_menu().get("options_list", [])
+    plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+    detected_category = find_reclamo_category_by_input(pregunta_str, plain_text_options)
+    if detected_category:
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response_dict = handler.start_flow(categoria_inicial=detected_category)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response_dict)
+    # --- END DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
 
-    if not is_from_audio:
-        # --- START INTENT CLASSIFICATION ---
-        # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
-        normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
-        if normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__":
-            logger_actual.info(f"Simple greeting or __INIT__ keyword detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
-            handler = GreetingHandler(context)
-            response = handler.handle(received_payload)
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response)
+    # --- START INTENT CLASSIFICATION ---
+    # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
+    normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
+    if normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__":
+        logger_actual.info(f"Simple greeting or __INIT__ keyword detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
+        handler = GreetingHandler(context)
+        response = handler.handle(received_payload)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
 
-        # If it's not a simple greeting, proceed with intent classification
-        intent, intent_payload = intent_classifier.classify(pregunta_str)
-        logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
+    # If it's not a simple greeting, proceed with intent classification
+    intent, intent_payload = intent_classifier.classify(pregunta_str)
+    logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
 
-        if intent == "saludar":
-            logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
-            handler = GreetingHandler(context)
-            response = handler.handle(received_payload)
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response)
+    if intent == "saludar":
+        logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
+        handler = GreetingHandler(context)
+        response = handler.handle(received_payload)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
 
-        if intent == "iniciar_reclamo":
-            logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamos menu.")
-            contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(_get_reclamos_menu())
+    if intent == "iniciar_reclamo":
+        logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamos menu.")
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(_get_reclamos_menu())
 
-        if intent == "consultar_reclamo":
-            logger_actual.info("Claim status check intent detected. Bypassing LLM.")
-            return _finalize_response({
-                "message_body": "Para consultar el estado de tu reclamo, por favor ingresá el número de ticket.",
-                "fuente": "intent_consultar_reclamo"
-            })
-        # --- END INTENT CLASSIFICATION ---
+    if intent == "consultar_reclamo":
+        logger_actual.info("Claim status check intent detected. Bypassing LLM.")
+        return _finalize_response({
+            "message_body": "Para consultar el estado de tu reclamo, por favor ingresá el número de ticket.",
+            "fuente": "intent_consultar_reclamo"
+        })
+    # --- END INTENT CLASSIFICATION ---
 
-        # If the user is asking for a general point of interest (e.g., farmacias,
-        # veterinarias) handle it with the PointsOfInterestHandler. This needs to
-        # happen before fuzzy matching to menu keywords to avoid misclassifications
-        # such as interpreting "farmacias de turno" as a request for appointments.
-        if es_consulta_general(pregunta_str):
-            poi_handler = PointsOfInterestHandler(context)
-            loc_data = None
-            if isinstance(location, dict):
-                loc_data = location
-            elif isinstance(location, str):
-                loc_data = location
-            contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-            # Clear any pending claim-related context since the user switched topics
-            for campo in [
-                "historial_llm_reclamo",
-                "esperando_info_llm_reclamo",
-                "esperando_info_llm",
-                "categoria_reclamo",
-                "descripcion_reclamo",
-                "direccion_reclamo",
-                "coordenadas_reclamo",
-                "nombre_vecino",
-                "telefono_vecino",
-                "email_vecino",
-                "foto_url",
-            ]:
-                contexto_municipio_actual.pop(campo, None)
-            # Ensure datos_parciales_llm_reclamo exists as empty dict
-            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(poi_handler.handle({"pregunta": pregunta_str, "location": loc_data}))
+    # If the user is asking for a general point of interest (e.g., farmacias,
+    # veterinarias) handle it with the PointsOfInterestHandler. This needs to
+    # happen before fuzzy matching to menu keywords to avoid misclassifications
+    # such as interpreting "farmacias de turno" as a request for appointments.
+    if es_consulta_general(pregunta_str):
+        poi_handler = PointsOfInterestHandler(context)
+        loc_data = None
+        location = received_payload.get("location")
+        if isinstance(location, dict):
+            loc_data = location
+        elif isinstance(location, str):
+            loc_data = location
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        # Clear any pending claim-related context since the user switched topics
+        for campo in [
+            "historial_llm_reclamo",
+            "esperando_info_llm_reclamo",
+            "esperando_info_llm",
+            "categoria_reclamo",
+            "descripcion_reclamo",
+            "direccion_reclamo",
+            "coordenadas_reclamo",
+            "nombre_vecino",
+            "telefono_vecino",
+            "email_vecino",
+            "foto_url",
+        ]:
+            contexto_municipio_actual.pop(campo, None)
+        # Ensure datos_parciales_llm_reclamo exists as empty dict
+        contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(poi_handler.handle({"pregunta": pregunta_str, "location": loc_data}))
 
 
     # El manejo de reseteo por palabra clave ahora es manejado por el LLM
