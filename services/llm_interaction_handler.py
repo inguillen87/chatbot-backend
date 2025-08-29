@@ -3,13 +3,12 @@ import json
 from flask import current_app, has_app_context
 from sqlalchemy.orm.attributes import flag_modified
 
-# Utiliza el orquestador de LLMs (OpenAI → Cohere → Gemini) en lugar de una
-# llamada directa a un único proveedor. Se mantiene el nombre `llamar_gemini`
-# para evitar cambios extensivos en el resto del código y las pruebas.
-from services.llm_orchestrator import llamar_llm_con_fallback as llamar_gemini
+# Utiliza el orquestador de LLMs (OpenAI → Cohere) en lugar de una
+# llamada directa a un único proveedor.
+from services.llm_orchestrator import llamar_llm_con_fallback
 from services.conversation_state import ConversationState
 from services.actions.municipio_actions import CrearReclamoActionHandler
-from services.handlers.greeting_handler import GreetingHandler, _get_main_menu_payload
+from services.municipio_responder import GreetingHandler, _get_main_menu_payload
 from services.flows.reclamos import _get_reclamos_menu
 from services.herramientas_municipio import TOOL_REGISTRY, es_consulta_general
 from services.llm_utils import extract_multiple_contact_details_llm
@@ -96,19 +95,35 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         "datos_reclamo_actuales": datos_reclamo
     }
 
-    historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", []) if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name else contexto_municipio_actual.get("historial_conversacion_general_llm", [])
+    historial_para_llm = (
+        contexto_municipio_actual.get("historial_llm_reclamo", [])
+        if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+        else contexto_municipio_actual.get("historial_conversacion_general_llm", [])
+    )
+
+    historial_formateado = []
+    if historial_para_llm and isinstance(historial_para_llm, list) and historial_para_llm and "pregunta_usuario" in historial_para_llm[0]:
+        for turno in historial_para_llm:
+            pregunta = turno.get("pregunta_usuario")
+            respuesta = turno.get("respuesta_ia")
+            if pregunta:
+                historial_formateado.append({"role": "user", "parts": [{"text": pregunta}]})
+            if respuesta:
+                historial_formateado.append({"role": "model", "parts": [{"text": respuesta}]})
+    else:
+        historial_formateado = historial_para_llm or []
 
     try:
         mensaje_completo_para_llm = {"texto": pregunta_str}
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
 
-        mensaje_para_gemini = json.dumps(mensaje_completo_para_llm)
-        respuesta_llm_dict, context_dict = llamar_gemini(
+        mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
+        respuesta_llm_dict, context_dict = llamar_llm_con_fallback(
             app=app,
-            mensaje_usuario=mensaje_para_gemini,
+            mensaje_usuario=mensaje_para_llm,
             usuario=usuario_info_llm,
-            historial=historial_para_llm,
+            historial=historial_formateado,
             chat_session_id=context.get("chat_session_uuid")
         )
 
@@ -135,6 +150,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
             datos_actuales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
             datos_actuales.update({k: v for k, v in datos_estructura_llm.items() if v is not None})
+            if not datos_actuales.get("categoria"):
+                datos_actuales["categoria"] = "otros"
 
             if not pedir_info_llm:
                 handler = CrearReclamoActionHandler(context)

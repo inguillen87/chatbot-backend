@@ -6,7 +6,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-def generar_audio_openai(text: str) -> str | None:
+def generar_audio_openai(text: str, speed: float = 1.25) -> str | None:
     """
     Generates audio from text using OpenAI's Text-to-Speech API.
 
@@ -35,6 +35,7 @@ def generar_audio_openai(text: str) -> str | None:
             model="tts-1",
             voice="alloy",
             input=text,
+            speed=speed,
         )
 
         # Generate a unique filename

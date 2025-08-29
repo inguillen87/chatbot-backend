@@ -35,7 +35,11 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         # OpenAI uses 'assistant' for the model's role
         if role == "model":
             role = "assistant"
+        if role not in {"assistant", "user", "system"}:
+            continue
         text = item.get("parts", [{}])[0].get("text", "")
+        if not text:
+            continue
         messages.append({"role": role, "content": text})
 
     # The current user message

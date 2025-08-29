@@ -817,38 +817,40 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if chat_db_context.context_data is None:
         chat_db_context.context_data = {}
 
-    if "mensajes_previos_gemini_formato" not in chat_db_context.context_data:
-        chat_db_context.context_data["mensajes_previos_gemini_formato"] = []
+    if "mensajes_previos_llm_formato" not in chat_db_context.context_data:
+        old_hist = chat_db_context.context_data.pop("mensajes_previos_gemini_formato", [])
+        chat_db_context.context_data["mensajes_previos_llm_formato"] = old_hist
 
     pyme_ctx_actual = chat_db_context.context_data.get(CONTEXTO_PYME, {})
-    historial_chat_para_gemini = chat_db_context.context_data.get("mensajes_previos_gemini_formato", [])
+    historial_chat_llm = chat_db_context.context_data.get("mensajes_previos_llm_formato", [])
 
-    # --- 2. Construir Información de Usuario para Gemini ---
+    # --- 2. Construir Información de Usuario para el LLM ---
     nombre_pyme_display = getattr(owner_user, "nombre_empresa", "la tienda") if owner_user else "la tienda"
-    usuario_info_for_gemini = {
+    usuario_info_for_llm = {
         "nombre": getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None) or pyme_ctx_actual.get("nombre_cliente") or "Cliente",
         "tipo_entidad": "pyme",
         "pyme_info": {"nombre_pyme": nombre_pyme_display, "rubro": getattr(owner_user.rubro, "nombre", "general") if owner_user and hasattr(owner_user, "rubro") else "general"}
     }
     loc_usuario_texto = getattr(viewer_user, "direccion", None) or pyme_ctx_actual.get("direccion_cliente")
-    if loc_usuario_texto: usuario_info_for_gemini["ubicacion_conocida"] = loc_usuario_texto
+    if loc_usuario_texto:
+        usuario_info_for_llm["ubicacion_conocida"] = loc_usuario_texto
 
-    # --- 3. Llamada Principal a Gemini ---
-    mensaje_para_gemini = pregunta_str # Simplificado, podría añadir info de adjuntos si es relevante aquí
-    # (Manejo de adjuntos y su análisis se delega a ActionHandlers si Gemini lo indica)
+    # --- 3. Llamada Principal al LLM ---
+    mensaje_para_llm = pregunta_str  # Simplificado, podría añadir info de adjuntos si es relevante aquí
+    # (Manejo de adjuntos y su análisis se delega a ActionHandlers si el LLM lo indica)
 
     llm_response_structured, _ = llamar_llm_con_fallback(
         app=current_app,
-        mensaje_usuario=mensaje_para_gemini,
-        usuario=usuario_info_for_gemini,
-        historial=historial_chat_para_gemini,
+        mensaje_usuario=mensaje_para_llm,
+        usuario=usuario_info_for_llm,
+        historial=historial_chat_llm,
         chat_session_id=kwargs.get("chat_session_uuid")
     )
 
-    # Actualizar historial para la próxima llamada a Gemini
-    if "mensajes_previos_gemini_formato" not in chat_db_context.context_data:
-        chat_db_context.context_data["mensajes_previos_gemini_formato"] = []
-    chat_db_context.context_data["mensajes_previos_gemini_formato"].append({"role": "user", "parts": [{"text": mensaje_para_gemini}]})
+    # Actualizar historial para la próxima llamada al LLM
+    if "mensajes_previos_llm_formato" not in chat_db_context.context_data:
+        chat_db_context.context_data["mensajes_previos_llm_formato"] = []
+    chat_db_context.context_data["mensajes_previos_llm_formato"].append({"role": "user", "parts": [{"text": mensaje_para_llm}]})
     # La respuesta del modelo al historial se añade después del ActionHandler
 
     # --- 4. Preparar Contexto Global para ChatOrchestrator y Action Handlers ---
@@ -909,9 +911,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             logger_actual.warning(f"No se pudo mapear pedir_info_pyme '{pedir_info_final}' a PymeConversationState.")
 
     # Guardar historial de chat_db_context con respuesta final
-    chat_db_context.context_data["mensajes_previos_gemini_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})
-    if len(chat_db_context.context_data["mensajes_previos_gemini_formato"]) > 20:
-        chat_db_context.context_data["mensajes_previos_gemini_formato"] = chat_db_context.context_data["mensajes_previos_gemini_formato"][-20:]
+    chat_db_context.context_data["mensajes_previos_llm_formato"].append({"role": "model", "parts": [{"text": respuesta_final_texto}]})
+    if len(chat_db_context.context_data["mensajes_previos_llm_formato"]) > 20:
+        chat_db_context.context_data["mensajes_previos_llm_formato"] = chat_db_context.context_data["mensajes_previos_llm_formato"][-20:]
 
     # --- Lógica de sugerencia de registro PROACTIVA (simplificada, similar a municipio) ---
     if not viewer_user and anon_id and current_app and \
@@ -985,7 +987,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             db.session.rollback()
 
     # Proactive suggestions
-    sugerencia_proactiva = sugerir_productos_relacionados(historial_chat_para_gemini, owner_user.id)
+    sugerencia_proactiva = sugerir_productos_relacionados(historial_chat_llm, owner_user.id)
     if sugerencia_proactiva:
         final_response_dict["message_body"] += f"\n\n{sugerencia_proactiva}"
 
