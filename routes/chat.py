@@ -163,6 +163,21 @@ def _procesar_chat(
             context_data={}
         )
         db.session.add(chat_context_obj)
+        try:
+            commit_with_retry(db.session)
+            current_app.logger.info(
+                f"ChatSessionContext inicial guardado para {chat_session_id_header} (commit temprano)."
+            )
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(
+                f"Error guardando ChatSessionContext inicial para {chat_session_id_header}: {e}",
+                exc_info=True,
+            )
+            return (
+                jsonify({"error": "Error de base de datos"}),
+                500,
+            )
 
     # --- Request Parsing (Audio or JSON) ---
     if 'audio_file' in request.files:
