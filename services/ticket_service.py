@@ -121,10 +121,10 @@ class ServicioTickets:
             if telefono_llm and not user_existente.telefono:
                 user_existente.telefono = telefono_llm
 
-            # Usar los datos del perfil (potencialmente actualizados) para el ticket
-            ticket_data['nombre_vecino'] = user_existente.name
-            ticket_data['email_vecino'] = user_existente.email
-            ticket_data['telefono_vecino'] = user_existente.telefono
+            # Usar los datos del perfil como fallback solo cuando el ticket no los provee
+            ticket_data['nombre_vecino'] = ticket_data.get('nombre_vecino') or user_existente.name
+            ticket_data['email_vecino'] = ticket_data.get('email_vecino') or user_existente.email
+            ticket_data['telefono_vecino'] = ticket_data.get('telefono_vecino') or user_existente.telefono
 
         elif ticket_data.get("user_id"):
             # Si no se encontró por email pero se pasó un user_id (ej. usuario logueado anónimo), usamos ese.

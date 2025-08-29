@@ -23,10 +23,18 @@ class _DummySession:
 models_stub.MunicipioTicket = type('MunicipioTicket', (), {})
 models_stub.PymeTicket = type('PymeTicket', (), {})
 models_stub.TicketComentario = type('TicketComentario', (), {})
+models_stub.Conversacion = type('Conversacion', (), {})
 class DummySurvey(SimpleNamespace):
     pass
 models_stub.TicketSatisfaccion = DummySurvey
 models_stub.db = SimpleNamespace(session=_DummySession())
+models_stub.db.func = SimpleNamespace(lower=lambda x: x)
+class DummyUser:
+    email = 'existing@example.com'
+    name = 'Existing'
+    telefono = '2636160364'
+    id = 2
+models_stub.User = DummyUser
 
 import importlib
 import services.ticket_service as ts
@@ -38,6 +46,7 @@ class TicketServiceTests(unittest.TestCase):
         self.mod_patch = patch.dict(sys.modules, {'models': models_stub})
         self.mod_patch.start()
         importlib.reload(ts) # Reload to make sure it picks up the patched models
+        models_stub.db.session.flush = MagicMock()
 
     def tearDown(self):
         self.mod_patch.stop()
@@ -110,6 +119,40 @@ class TicketServiceTests(unittest.TestCase):
 
         self.assertTrue(found_loc1, "Location (10.0, 20.0) with weight 2 not found")
         self.assertTrue(found_loc2, "Location (11.0, 21.0) with weight 1 not found")
+
+    def test_preserves_user_provided_phone_when_user_exists(self):
+        service = ServicioTickets()
+        class DummyCreator:
+            def __init__(self):
+                self.last_ticket_data = None
+            def create(self, td):
+                self.last_ticket_data = td
+                class DummyTicket(SimpleNamespace):
+                    def __getattr__(self, name):
+                        return None
+                return DummyTicket(id=1, nro_ticket=123, asunto='a')
+
+        dummy_creator = DummyCreator()
+        service.creators['municipio'] = dummy_creator
+
+        existing_user = SimpleNamespace(id=2, name='Existing', email='existing@example.com', telefono='2636160364')
+        class DummyQuery:
+            def filter(self, *args, **kwargs):
+                return self
+            def first(self):
+                return existing_user
+
+        models_stub.User.query = DummyQuery()
+
+        ticket_data = {
+            'email_vecino': 'existing@example.com',
+            'telefono_vecino': '351122395',
+            'categoria': 'General',
+            'detalles': 'algo'
+        }
+
+        service.crear_nuevo_ticket('municipio', ticket_data)
+        self.assertEqual(dummy_creator.last_ticket_data['telefono_vecino'], '351122395')
 
 
     def test_mapa_filtra_por_rubro(self):
