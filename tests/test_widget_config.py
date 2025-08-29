@@ -45,5 +45,17 @@ class WidgetConfigEndpointTests(unittest.TestCase):
         self.assertEqual(data["logo_url"], self.user.logo_url)
         self.assertEqual(data["nombre_empresa"], self.user.nombre_empresa)
 
+    def test_widget_config_includes_customization_for_full_plan(self):
+        self.user.plan = "full"
+        self.user.widget_icon_url = "http://example.com/icon.png"
+        self.user.widget_animation = "bounce"
+        db.session.commit()
+
+        resp = self.client.get("/widget/config", headers={"Authorization": self.user.token})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["widget_icon_url"], self.user.widget_icon_url)
+        self.assertEqual(data["widget_animation"], self.user.widget_animation)
+
 if __name__ == "__main__":
     unittest.main()
