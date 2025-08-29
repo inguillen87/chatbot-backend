@@ -13,6 +13,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
 from models import User, Rubro, Conversacion, db, ChatSessionContext # Added ChatSessionContext
+from utils.db_utils import commit_with_retry
 from socket_service import socketio # Import socketio
 from services.logic import (
     responder_chatboc,
@@ -277,7 +278,7 @@ def _procesar_chat(
             )
 
             if nuevo_comentario:
-                db.session.commit() # Commit the new comment
+                commit_with_retry(db.session) # Commit the new comment
                 room_name = f"ticket_{tipo_ticket}_{ticket_id}"
                 socketio.emit('new_chat_message', {
                     'ticket_id': ticket_id,
@@ -508,7 +509,7 @@ def _procesar_chat(
             current_app.logger.info(f"ChatSessionContext.context_data (post-serialization) marcado como modificado para {chat_session_id_header}.")
 
         try:
-            db.session.commit() # Commit principal para ChatSessionContext y User.preguntas_usadas
+            commit_with_retry(db.session) # Commit principal para ChatSessionContext y User.preguntas_usadas
             current_app.logger.info(f"ChatSessionContext para {chat_session_id_header} guardado/actualizado en DB (Commit Principal).")
         except Exception as e_commit:
             db.session.rollback()
@@ -592,7 +593,7 @@ def _procesar_chat(
 
         # This commit is for User.preguntas_usadas and ChatSessionContext primarily
         try:
-            db.session.commit()
+            commit_with_retry(db.session)
         except Exception as e:
             db.session.rollback()
             current_app.logger.error(f"Error during final commit: {e}", exc_info=True)
@@ -684,7 +685,7 @@ def set_profile_name():
             chat_context_obj.context_data = {}
         chat_context_obj.context_data["profile_name"] = profile_name
         flag_modified(chat_context_obj, "context_data")
-        db.session.commit()
+        commit_with_retry(db.session)
 
     return resp, 200
 

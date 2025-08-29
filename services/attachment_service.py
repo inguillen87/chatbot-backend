@@ -6,9 +6,9 @@ from werkzeug.datastructures import FileStorage
 def create_attachment_with_thumbnail(file_storage: FileStorage, user_id: int = None, session_id: str = None) -> ArchivoAdjunto | None:
     """
     Orchestrates the full attachment creation process.
-    1. Uploads file and thumbnail to GCS.
-    2. Creates an ArchivoAdjunto record for the original file.
-    3. Creates an AnalisisArchivo record to store thumbnail metadata.
+    1. Uploads file and thumbnail to the configured storage backend.
+    2. Creates an ``ArchivoAdjunto`` record for the original file.
+    3. Creates an ``AnalisisArchivo`` record to store thumbnail metadata.
 
     Args:
         file_storage: The FileStorage object from the request.
@@ -21,10 +21,10 @@ def create_attachment_with_thumbnail(file_storage: FileStorage, user_id: int = N
     if not file_storage:
         return None
 
-    # 1. Upload to GCS
+    # 1. Upload to storage (GCS or local fallback)
     upload_result = guardar_adjunto_y_thumbnail(file_storage)
     if not upload_result:
-        current_app.logger.error("Failed to upload attachment to GCS.")
+        current_app.logger.error("Failed to upload attachment to storage.")
         return None
 
     try:
@@ -61,5 +61,5 @@ def create_attachment_with_thumbnail(file_storage: FileStorage, user_id: int = N
     except Exception as e:
         # The calling function should handle the rollback
         current_app.logger.error(f"Error preparing attachment records for DB: {e}", exc_info=True)
-        # Here we should ideally also delete the files from GCS to avoid orphans
+        # Here we should ideally also delete the files from storage to avoid orphans
         return None
