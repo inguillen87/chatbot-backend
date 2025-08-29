@@ -21,11 +21,13 @@ def generar_audio_con_fallback(text: str) -> str | None:
         str: The public URL path to the generated audio file, or None if all providers fail.
     """
     def sanitize_for_tts(raw: str) -> str:
-        # Remove URLs and markdown characters so the audio doesn't read them
-        cleaned = re.sub(r"https?://\S+", "", raw)
+        """Prepare text so synthesized audio is clear and accessible."""
+        cleaned = re.sub(r"https?://\S+", "", raw)  # strip URLs
         cleaned = cleaned.replace("*", "")
-        # Replace numbered lists with a more speech-friendly format
-        cleaned = re.sub(r"(?m)^\s*(\d+)\.\s*", r"Opción \1: ", cleaned)
+        # remove emojis and nonstandard symbols
+        cleaned = re.sub(r"[^\w\s.,;:0-9áéíóúÁÉÍÓÚñÑüÜ-]", "", cleaned)
+        # Normalize numbered options like "1.", "1)" or "1-" to "Opción 1:"
+        cleaned = re.sub(r"(?m)^\s*(\d+)[\.)-]\s*", r"Opción \1: ", cleaned)
         return " ".join(cleaned.split())
 
     text = sanitize_for_tts(text)
@@ -54,8 +56,13 @@ def generar_audio_con_fallback(text: str) -> str | None:
 
     # 1. Try OpenAI
     try:
+        speed_env = os.getenv("TTS_SPEECH_SPEED", "0.9")
+        try:
+            speech_speed = float(speed_env)
+        except ValueError:
+            speech_speed = 0.9
         logger.info("TTS Orchestrator: Trying OpenAI...")
-        audio_url = generar_audio_openai(text, speed=1.25)
+        audio_url = generar_audio_openai(text, speed=speech_speed)
         if audio_url:
             logger.info("TTS Orchestrator: OpenAI successful.")
             return cache_and_return(audio_url)

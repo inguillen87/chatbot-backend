@@ -1,10 +1,17 @@
 import os
 import uuid
 from flask import current_app
-from google.cloud import storage
 from werkzeug.utils import secure_filename
 import io
 from services.thumbnail_service import generar_thumbnail
+
+# Google Cloud Storage can be optionally disabled (e.g., when billing is off).
+GCS_ENABLED = os.environ.get("GCS_ENABLED", "false").lower() == "true"
+
+if GCS_ENABLED:
+    from google.cloud import storage
+else:  # pragma: no cover - avoid import errors when disabled
+    storage = None
 
 BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
@@ -53,21 +60,36 @@ def _save_to_local(original_filename: str, file_bytes: bytes, unique_name: str,
     }
 
 def upload_to_gcs(file_storage) -> dict | None:
-    """
-    Uploads a file to Google Cloud Storage and returns its metadata.
+    """Upload a file to the configured storage backend.
+
+    If ``GCS_ENABLED`` is false, the file is saved to the local filesystem instead of
+    Google Cloud Storage.
 
     Args:
-        file_storage: The FileStorage object from Flask request.
+        file_storage: The ``FileStorage`` object from Flask request.
 
     Returns:
-        A dictionary containing the file's metadata (unique_name, public_url, size, etc.)
-        or None if the upload fails.
+        A dictionary containing the file's metadata (unique name, URL, size, etc.) or
+        ``None`` if the upload fails.
     """
     if not file_storage or not file_storage.filename:
         return None
 
     original_filename = secure_filename(file_storage.filename)
     unique_name = f"{uuid.uuid4().hex}_{original_filename}"
+
+    # If GCS is disabled, store locally and return its metadata
+    if not GCS_ENABLED:
+        file_storage.seek(0)
+        file_bytes = file_storage.read()
+        local = _save_to_local(original_filename, file_bytes, unique_name, file_storage.mimetype, None, None)
+        return {
+            "unique_name": local["unique_name"],
+            "public_url": local["original_url"],
+            "size": local["size"],
+            "original_name": local["original_name"],
+            "mimetype": local["mimetype"],
+        }
 
     try:
         storage_client = storage.Client()
@@ -80,7 +102,9 @@ def upload_to_gcs(file_storage) -> dict | None:
 
         # Check file size after upload
         if blob.size > MAX_FILE_SIZE:
-            current_app.logger.warning(f"User uploaded a file larger than MAX_FILE_SIZE: {original_filename} ({blob.size} bytes)")
+            current_app.logger.warning(
+                f"User uploaded a file larger than MAX_FILE_SIZE: {original_filename} ({blob.size} bytes)"
+            )
             blob.delete()  # Clean up the oversized file
             return None
 
@@ -92,18 +116,21 @@ def upload_to_gcs(file_storage) -> dict | None:
             "mimetype": file_storage.mimetype,
         }
     except Exception as e:
-        current_app.logger.error(f"Error uploading file {original_filename} to GCS: {e}", exc_info=True)
+        current_app.logger.error(
+            f"Error uploading file {original_filename} to GCS: {e}", exc_info=True
+        )
         return None
 
 def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
-    """
-    Uploads a file and its generated thumbnail to GCS.
+    """Upload a file and its generated thumbnail to storage.
+
+    Uses GCS when enabled, otherwise falls back to local filesystem storage.
 
     Args:
-        file_storage: The FileStorage object from the request.
+        file_storage: The ``FileStorage`` object from the request.
 
     Returns:
-        A dictionary with original file URL, and thumbnail metadata, or None on failure.
+        A dictionary with the file URL and thumbnail metadata, or ``None`` on failure.
     """
     if not file_storage or not file_storage.filename:
         return None
@@ -122,6 +149,16 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     # Create a new stream for thumbnail generation
     file_stream_for_thumb = io.BytesIO(file_bytes)
     thumbnail_bytes, thumb_meta = generar_thumbnail(file_stream_for_thumb, file_storage.mimetype)
+
+    if not GCS_ENABLED:
+        return _save_to_local(
+            original_filename,
+            file_bytes,
+            unique_name,
+            file_storage.mimetype,
+            thumbnail_bytes,
+            thumb_meta,
+        )
 
     try:
         storage_client = _get_gcs_client()
