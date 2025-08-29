@@ -2032,26 +2032,31 @@ def responder_municipio(
 
     # --- INICIO: Manejo Proactivo de Ubicación ---
     if received_payload.get("es_ubicacion") and not pregunta_str.strip():
-        logger_actual.info(f"Location received without text. Starting proactive location handling.")
-
-        address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
-
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
-        contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
+        # When already waiting for a location to answer a pending query (e.g., estacionamiento),
+        # skip proactive handling so that the dedicated state logic can process it.
+        if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_UBICACION_GENERAL.name:
+            logger_actual.info(
+                "Location received without text. Starting proactive location handling."
+            )
 
-        return _finalize_response({
-            "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
-            "options_list": [
-                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                {"texto": "Cancelar", "action_id": "cancelar"}
-            ],
-            "message_type": "interactive_buttons",
-            "fuente": "proactive_location_handler"
-        })
+            address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
+
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return _finalize_response({
+                "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+                "options_list": [
+                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                    {"texto": "Cancelar", "action_id": "cancelar"}
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "proactive_location_handler",
+            })
     # --- FIN: Manejo Proactivo de Ubicación ---
 
 

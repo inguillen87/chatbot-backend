@@ -185,6 +185,39 @@ class TestChatIntegration(unittest.TestCase):
         data = response.get_json()
         self.assertIn("Carlos", data.get("message_body", ""))
 
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_anonymous_chat_greets_with_saved_name(self, mock_llamar_gemini):
+        """Ensure the greeting uses the stored profile name from a prior request."""
+        mock_llamar_gemini.return_value = (
+            {"accion_backend": "saludar"},
+            {}
+        )
+
+        session_id = "test-session-name"
+        save_resp = self.client.post(
+            '/profile-name',
+            json={"nombre_usuario": "Carlos"},
+            headers={"X-Chat-Session-Id": session_id}
+        )
+        self.assertEqual(save_resp.status_code, 200)
+
+        ctx = ChatSessionContext.query.get(session_id)
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx.context_data.get("profile_name"), "Carlos")
+
+        chat_payload = {
+            "pregunta": "Hola",
+            "tipo_chat": "municipio",
+        }
+        response = self.client.post(
+            '/ask/municipio',
+            json=chat_payload,
+            headers={"X-Chat-Session-Id": session_id}
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertIn("Carlos", data.get("message_body", ""))
+
         # The response from the endpoint is a dictionary, and the welcome message is in 'message_body'.
         self.assertIn("Soy JUNI, tu Asistente Virtual", data.get("message_body", ""))
         self.assertIn("Soy JUNI", data.get("message_body", ""))  # Check for new welcome message
