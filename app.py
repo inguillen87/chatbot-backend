@@ -244,6 +244,9 @@ def create_app(config_class=Config):
     @app.route('/login', methods=['POST', 'OPTIONS'])
     def login_alias():
         """Alias for the /auth/login endpoint."""
+        if request.method == "OPTIONS":
+            # Allow CORS preflight requests without hitting the login logic
+            return "", 204
         return login_view_func()
 
     # Explicitly define the /api/login route as an alias for auth.login
@@ -251,12 +254,18 @@ def create_app(config_class=Config):
     @app.route('/api/login', methods=['POST', 'OPTIONS'])
     def api_login_alias():
         """Alias for the /auth/login endpoint to support /api prefix."""
+        if request.method == "OPTIONS":
+            # Allow CORS preflight requests without hitting the login logic
+            return "", 204
         return login_view_func()
 
     # Explicitly define the /perfil route as an alias for auth.perfil
     @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
     def perfil_alias():
         """Alias for the /auth/perfil endpoint to fix frontend incorrect URL calls."""
+        # Handle CORS preflight without enforcing authentication
+        if request.method == "OPTIONS":
+            return "", 204
         # This function is decorated with @token_requerido, which handles user extraction
         return me_perfil_view_func()
 
