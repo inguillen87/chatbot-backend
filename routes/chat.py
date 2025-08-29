@@ -712,15 +712,19 @@ def widget_config():
     if not user:
         return jsonify({"error": "Token inválido"}), 404
 
-    return jsonify(
-        {
-            "nombre_empresa": user.nombre_empresa or user.name,
-            "logo_url": user.logo_url,
-            "color_primario": user.color_primario,
-            "color_secundario": user.color_secundario,
-            "badge_tipo": user.badge_tipo,
-        }
-    )
+    config = {
+        "nombre_empresa": user.nombre_empresa or user.name,
+        "logo_url": user.logo_url,
+        "color_primario": user.color_primario,
+        "color_secundario": user.color_secundario,
+        "badge_tipo": user.badge_tipo,
+    }
+
+    if user.plan == "full":
+        config["widget_icon_url"] = user.widget_icon_url
+        config["widget_animation"] = user.widget_animation
+
+    return jsonify(config)
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():
