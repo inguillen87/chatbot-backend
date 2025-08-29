@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-from models import User, MunicipioTicket, Rubro, TicketComentario, ArchivoAdjunto
+from models import User, MunicipioTicket, Rubro, TicketComentario, ArchivoAdjunto, Conversacion
 from config import TestConfig
 import json
 
@@ -36,7 +36,8 @@ class TicketEndpointsTest(unittest.TestCase):
             user_id=admin_user.id,
             asunto='Bache en la calle',
             categoria='calle',
-            pregunta='Hay un bache grande en la calle principal.'
+            pregunta='Hay un bache grande en la calle principal.',
+            anon_id='session123'
         )
         ticket2 = MunicipioTicket(
             municipio_id=1,
@@ -60,6 +61,10 @@ class TicketEndpointsTest(unittest.TestCase):
             pregunta='Un arbol se cayo sobre la vereda.'
         )
         db.session.add_all([ticket1, ticket2, ticket3])
+        db.session.commit()
+
+        # Conversación asociada al ticket1
+        db.session.add(Conversacion(session_id='session123', pregunta='Hola', respuesta='Hola, ¿en qué puedo ayudarte?', fuente='chat'))
         db.session.commit()
 
 
@@ -95,6 +100,28 @@ class TicketEndpointsTest(unittest.TestCase):
         # Check for new fields
         self.assertIn('id', tickets[0])
         self.assertIn('nro_ticket', tickets[0])
+
+        ticket_map = {t['asunto']: t for t in tickets}
+        self.assertIn('historial_chat', ticket_map['Bache en la calle'])
+        self.assertEqual(len(ticket_map['Bache en la calle']['historial_chat']), 1)
+        self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['pregunta'], 'Hola')
+
+    def test_ticket_details_includes_chat_history(self):
+        login_resp = self.client.post('/auth/login', json={
+            'email': 'admin@junin.com',
+            'password': 'adminpass'
+        })
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+        headers = {'Authorization': f'Bearer {token}'}
+
+        ticket = MunicipioTicket.query.filter_by(asunto='Bache en la calle').first()
+        resp = self.client.get(f'/tickets/municipio/{ticket.id}', headers=headers)
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertIn('historial_chat', data)
+        self.assertEqual(len(data['historial_chat']), 1)
+        self.assertEqual(data['historial_chat'][0]['pregunta'], 'Hola')
 
     def test_get_chat_mensajes_with_attachments(self):
         # 1. Login to get token

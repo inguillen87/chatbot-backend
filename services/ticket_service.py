@@ -9,6 +9,7 @@ from models import (
     PymeTicket,
     TicketComentario,
     TicketSatisfaccion,
+    Conversacion,
     db,
 )
 from sqlalchemy.exc import SQLAlchemyError
@@ -427,6 +428,28 @@ class ServicioTickets:
                 f"Error de DB al obtener tickets para mapa de calor: {e}", exc_info=True
             )
             return []
+
+    def obtener_historial_chat(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+        """Devuelve el historial de conversación asociado a un ticket."""
+        if not getattr(ticket, "anon_id", None):
+            return []
+        try:
+            conversaciones = (
+                Conversacion.query.filter_by(session_id=ticket.anon_id)
+                .order_by(Conversacion.timestamp.asc())
+                .all()
+            )
+        except Exception:
+            conversaciones = []
+
+        return [
+            {
+                "pregunta": conv.pregunta,
+                "respuesta": conv.respuesta,
+                "fecha": conv.timestamp.isoformat(),
+            }
+            for conv in conversaciones
+        ]
 
     def obtener_timeline_ticket(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
         """Construye la línea de tiempo de un ticket con comentarios y cambios de estado."""

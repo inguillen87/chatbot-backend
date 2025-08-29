@@ -10,6 +10,7 @@ from models import (
     User,
     TicketComentario,
     TicketSatisfaccion,
+    Conversacion,
     ArchivoAdjunto,
     db,
 )
@@ -124,6 +125,8 @@ def serialize_ticket_to_json(ticket, ticket_type):
     # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
     description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
 
+    historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+
 
     # Construir el diccionario con la estructura deseada
     dni_vecino = user_data.get("dni")
@@ -148,6 +151,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
+        "historial_chat": historial_chat,
         "informacion_personal_vecino": {
             "nombre": user_data.get("nombre", "No especificado"),
             "dni": dni_vecino,
@@ -391,6 +395,8 @@ def _serialize_ticket_details(ticket, ticket_type):
 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket)
 
+    historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+
     archivos_adjuntos_data = []
     if hasattr(ticket, 'archivos'):
         archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
@@ -447,6 +453,7 @@ def _serialize_ticket_details(ticket, ticket_type):
             "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None),
         },
         "informacion_personal_vecino": informacion_personal,
+        "historial_chat": historial_chat,
         "timeline": timeline,
     }
     return ticket_data
