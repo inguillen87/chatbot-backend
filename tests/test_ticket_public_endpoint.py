@@ -55,11 +55,15 @@ class TicketPublicEndpointTest(unittest.TestCase):
     def test_public_lookup_requires_recaptcha(self):
         resp = self.client.get('/tickets/municipio/por_numero/123456?pin=654321')
         self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertEqual(data["error"], "recaptcha_token requerido.")
 
     @patch('routes.ticket.verify_recaptcha', return_value=True)
     def test_public_lookup_requires_pin(self, mock_recaptcha):
         resp = self.client.get('/tickets/municipio/por_numero/123456?recaptcha_token=test')
         self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertEqual(data["error"], "PIN requerido.")
 
     def test_authenticated_lookup_without_recaptcha_or_pin(self):
         token = generar_token(self.user.id, self.user.rol, self.user.tipo_chat, self.user.municipio_id, self.user.pyme_id)
