@@ -10,6 +10,8 @@ from services.tts_orchestrator import generar_audio_con_fallback
 from models import MunicipioTicket
 from database import db
 from services.openai_bridge import client as openai_client
+from services.cohere_bridge import co as cohere_client
+from services.openai_maps_service import geocodificar_inversa_llm
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -174,8 +176,7 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     """
     try:
         if not openai_client:
-            logger.error("OpenAI client is not initialized.")
-            return None
+            raise ConnectionError("OpenAI client is not initialized.")
 
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -195,12 +196,37 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
             logger.warning(
                 f"LLM no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}"
             )
+        else:
+            logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
+            return parsed_data
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error(
+            f"Error al parsear dirección con LLM (OpenAI): {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
+        )
+
+    # Fallback to Cohere if OpenAI fails or returns incomplete data
+    if not cohere_client:
+        logger.error("Cohere client is not initialized.")
+        return None
+
+    try:
+        cohere_response = cohere_client.generate(
+            model="command-r-plus",
+            prompt=prompt + "\nResponde únicamente con el objeto JSON.",
+            max_tokens=300,
+        )
+        respuesta_llm = cohere_response.generations[0].text
+        parsed_data = json.loads(respuesta_llm)
+        if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
+            logger.warning(
+                f"Cohere no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}"
+            )
             return None
-        logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
+        logger.info(f"Dirección parseada con Cohere para '{texto_direccion}': {parsed_data}")
         return parsed_data
     except (json.JSONDecodeError, Exception) as e:
         logger.error(
-            f"Error al parsear dirección con LLM: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
+            f"Error al parsear dirección con Cohere: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
         )
         return None
 
@@ -584,52 +610,87 @@ def validar_y_formatear_direccion(direccion: str) -> dict | None:
         return None
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
+    """Obtiene una dirección formateada y sus componentes a partir de coordenadas.
+
+    El orden de preferencia es:
+    1. OpenAI (geocodificación inversa por LLM)
+    2. Cohere (fallback si falla OpenAI)
+    3. Google Geocoding API como último recurso
     """
-    Obtiene una dirección formateada y componentes estructurados a partir de coordenadas lat/lon
-    usando la API de Google Geocoding.
-    """
+
+    # --- Intento con OpenAI ---
+    try:
+        openai_result = geocodificar_inversa_llm(lat, lon)
+        formatted = openai_result.get("formatted_address") if openai_result else None
+        if formatted:
+            parsed = parse_direccion_completa(formatted)
+            if parsed:
+                parsed["formatted_address"] = formatted
+                return parsed
+    except Exception as e:
+        logger.error(f"OpenAI inverse geocoding failed: {e}", exc_info=True)
+
+    # --- Fallback a Cohere ---
+    if cohere_client:
+        try:
+            prompt = (
+                "Convierte las coordenadas en una dirección humana. "
+                f"Latitud: {lat}, Longitud: {lon}. "
+                "Responde únicamente con un objeto JSON con el campo 'formatted_address'."
+            )
+            co_resp = cohere_client.generate(
+                model="command-r-plus",
+                prompt=prompt,
+                max_tokens=100,
+            )
+            text = co_resp.generations[0].text
+            data = json.loads(text)
+            formatted = data.get("formatted_address")
+            if formatted:
+                parsed = parse_direccion_completa(formatted)
+                if parsed:
+                    parsed["formatted_address"] = formatted
+                    return parsed
+        except Exception as e:
+            logger.error(f"Cohere inverse geocoding failed: {e}", exc_info=True)
+    else:
+        logger.error("Cohere client is not initialized.")
+
+    # --- Último recurso: Google Geocoding ---
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
         return None
 
-    reverse_geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={Maps_API_KEY}&language=es"
+    reverse_geocode_url = (
+        f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={Maps_API_KEY}&language=es"
+    )
 
     try:
         response = requests.get(reverse_geocode_url)
-        response.raise_for_status() # Lanza HTTPError para respuestas 4xx/5xx
+        response.raise_for_status()
         data = response.json()
 
-        if data and data.get('status') == 'OK' and data.get('results'):
-            # La primera resultado suele ser la más específica.
-            best_result = data['results'][0]
-            formatted_address = best_result.get('formatted_address')
+        if data and data.get("status") == "OK" and data.get("results"):
+            best_result = data["results"][0]
+            formatted_address = best_result.get("formatted_address")
 
-            # Inicializar campos
-            calle, numero, localidad, provincia, cp, barrio = "", "", "", "", "", ""
+            calle = numero = localidad = provincia = cp = barrio = ""
+            for component in best_result.get("address_components", []):
+                types = component.get("types", [])
+                if "street_number" in types:
+                    numero = component["long_name"]
+                if "route" in types:
+                    calle = component["long_name"]
+                if "locality" in types or "postal_town" in types:
+                    localidad = component["long_name"]
+                if "administrative_area_level_1" in types:
+                    provincia = component["long_name"]
+                if "postal_code" in types:
+                    cp = component["long_name"]
+                if "neighborhood" in types:
+                    barrio = component["long_name"]
 
-            for component in best_result.get('address_components', []):
-                types = component.get('types', [])
-                if 'street_number' in types:
-                    numero = component['long_name']
-                if 'route' in types: # 'route' suele ser el nombre de la calle
-                    calle = component['long_name']
-                # 'locality' es la ciudad/localidad principal. 'postal_town' puede ser un fallback.
-                if 'locality' in types or 'postal_town' in types:
-                    localidad = component['long_name']
-                # 'administrative_area_level_1' suele ser la provincia/estado.
-                if 'administrative_area_level_1' in types:
-                    provincia = component['long_name']
-                if 'postal_code' in types:
-                    cp = component['long_name']
-                if 'neighborhood' in types: # Barrio
-                    barrio = component['long_name']
-
-            # Si no se pudo extraer calle pero sí localidad, y la dirección formateada existe,
-            # es posible que la dirección formateada contenga más detalles.
-            # No intentaremos un parseo complejo de formatted_address aquí,
-            # priorizamos los componentes estructurados.
-
-            if formatted_address: # Devolver siempre si hay una dirección formateada
+            if formatted_address:
                 return {
                     "formatted_address": formatted_address,
                     "calle": calle or None,
@@ -637,35 +698,42 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
                     "localidad": localidad or None,
                     "provincia": provincia or None,
                     "codigo_postal": cp or None,
-                    "barrio": barrio or None
+                    "barrio": barrio or None,
                 }
-            # Si no hay formatted_address pero sí componentes mínimos (calle y localidad)
             elif calle and localidad:
-                 # Construir una dirección formateada básica si es posible
-                constructed_address_parts = []
-                if calle: constructed_address_parts.append(calle)
-                if numero: constructed_address_parts.append(numero)
-                if localidad: constructed_address_parts.append(localidad)
-                if provincia and localidad != provincia : constructed_address_parts.append(provincia) # Avoid "Junin, Junin"
-
+                parts = [calle, numero, localidad]
+                if provincia and localidad != provincia:
+                    parts.append(provincia)
                 return {
-                    "formatted_address": ", ".join(filter(None,constructed_address_parts)),
-                    "calle": calle, "numero": numero, "localidad": localidad, "provincia": provincia,
-                    "codigo_postal": cp, "barrio": barrio
+                    "formatted_address": ", ".join(filter(None, parts)),
+                    "calle": calle,
+                    "numero": numero,
+                    "localidad": localidad,
+                    "provincia": provincia,
+                    "codigo_postal": cp,
+                    "barrio": barrio,
                 }
-            else: # No hay suficiente información para una dirección útil
-                logger.warning(f"Google API no devolvió dirección formateada ni componentes suficientes para {lat},{lon}.")
+            else:
+                logger.warning(
+                    f"Google API no devolvió dirección formateada ni componentes suficientes para {lat},{lon}."
+                )
                 return None
-
         else:
-            logger.warning(f"Google API no pudo obtener dirección para {lat},{lon}. Status: {data.get('status')}, Error: {data.get('error_message', 'N/A')}")
+            logger.warning(
+                f"Google API no pudo obtener dirección para {lat},{lon}. Status: {data.get('status')}, Error: {data.get('error_message', 'N/A')}"
+            )
             return None
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error de conexión con Google API para reverse geocoding ({lat},{lon}): {e}")
+        logger.error(
+            f"Error de conexión con Google API para reverse geocoding ({lat},{lon}): {e}"
+        )
         return None
-    except Exception as e: # Captura errores de JSONDecodeError u otros inesperados
-        logger.error(f"Error inesperado en reverse geocoding para {lat},{lon}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(
+            f"Error inesperado en reverse geocoding para {lat},{lon}: {e}",
+            exc_info=True,
+        )
         return None
 # --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---
 
