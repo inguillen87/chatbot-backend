@@ -1049,33 +1049,6 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
-    if action_id == "mostrar_menu_tramites":
-        submenu = _get_tramites_menu()
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
-
-    if action_id == "mostrar_menu_informacion":
-        submenu = _get_informacion_menu()
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
-
-    if action_id == "mostrar_menu_estacionamiento":
-        submenu = _get_estacionamiento_menu()
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
-
     if action_id == "consultar_estado_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET.name
