@@ -29,18 +29,40 @@ def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
             "Return a JSON with keys: labels (list of keywords), "
             "objects (list of main objects) and text (string with any text found)."
         )
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt},
-                    {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}}
-                ]
-            }],
-            max_output_tokens=300
-        )
-        text = response.output[0].content[0].text
+
+        # Use the modern Responses API when available; otherwise fall back
+        # to chat completions for older OpenAI client versions.
+        if hasattr(client, "responses"):
+            response = client.responses.create(
+                model="gpt-4.1-mini",
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
+                    ],
+                }],
+                max_output_tokens=300,
+            )
+            text = response.output[0].content[0].text
+        else:
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    ],
+                }],
+                max_tokens=300,
+            )
+            content = completion.choices[0].message.get("content")
+            if isinstance(content, list):
+                text = "".join(part.get("text", "") for part in content)
+            else:
+                text = content
+
         return json.loads(text)
     except Exception as e:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
