@@ -1,5 +1,15 @@
+import os
 import unittest
 from unittest.mock import patch
+
+# Avoid runtime errors from optional third-party clients when running tests
+os.environ.setdefault("OPENAI_API_KEY", "test")
+os.environ.setdefault("CO_API_KEY", "test")
+os.environ.pop("http_proxy", None)
+os.environ.pop("https_proxy", None)
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+
 from services.points_of_interest_handler import PointsOfInterestHandler
 
 class TestParkingPOI(unittest.TestCase):
@@ -58,6 +68,9 @@ class TestParkingPOI(unittest.TestCase):
         self.assertIn("Compartir ubicación", str(res))
 
     def test_stateful_location_triggers_parking(self):
+        import eventlet
+        eventlet.monkey_patch = lambda *args, **kwargs: None
+
         from app import create_app, db
         from config import TestConfig
         from models import User, Rubro, ChatSessionContext
