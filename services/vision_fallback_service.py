@@ -8,8 +8,6 @@ import httpx
 from openai import OpenAI
 import cohere
 
-from .google_vision_service import analyze_image_from_content as analyze_google
-
 logger = logging.getLogger(__name__)
 
 def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
@@ -29,18 +27,49 @@ def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
             "Return a JSON with keys: labels (list of keywords), "
             "objects (list of main objects) and text (string with any text found)."
         )
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt},
-                    {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}}
-                ]
-            }],
-            max_output_tokens=300
-        )
-        text = response.output[0].content[0].text
+
+        # Use the modern Responses API when available; otherwise fall back
+        # to chat completions for older OpenAI client versions.
+        if hasattr(client, "responses"):
+            response = client.responses.create(
+                model="gpt-4.1-mini",
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
+                    ],
+                }],
+                max_output_tokens=300,
+            )
+            text = response.output[0].content[0].text
+        else:
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    ],
+                }],
+                max_tokens=300,
+            )
+            message = completion.choices[0].message
+            # ``message`` may be a dict (old SDK) or a pydantic object (new SDK)
+            content = (
+                message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            )
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    parts.append(
+                        part.get("text") if isinstance(part, dict) else getattr(part, "text", "")
+                    )
+                text = "".join(parts)
+            else:
+                text = content
+
         return json.loads(text)
     except Exception as e:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
@@ -58,14 +87,22 @@ def _call_cohere(image_bytes: bytes) -> Optional[Dict[str, Any]]:
             "Describe the image for a municipal complaint system. "
             "Return JSON with keys: labels, objects, text."
         )
-        # Cohere's chat endpoint does not accept an `images` argument.
-        # Instead, send the image as a data URL using generate().
-        resp = co.generate(
-            model="command-r-plus",
-            prompt=prompt,
-            image_url=f"data:image/jpeg;base64,{b64}",
-        )
-        return json.loads(resp.generations[0].text)
+        try:
+            resp = co.chat(
+                model="command-r-plus",
+                message=prompt,
+                images=[{"data": b64, "mime_type": "image/jpeg"}],
+            )
+            text = resp.text
+        except TypeError:
+            # Older SDKs may not support the ``images`` parameter; fall back to generate()
+            resp = co.generate(
+                model="command-r-plus",
+                prompt=prompt,
+                image_url=f"data:image/jpeg;base64,{b64}",
+            )
+            text = resp.generations[0].text
+        return json.loads(text)
     except Exception as e:
         logger.error(f"Cohere vision failed: {e}", exc_info=True)
         return None
@@ -85,7 +122,7 @@ def _normalize_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def analyze_image_smart(image_bytes: bytes) -> Dict[str, Any]:
-    """Analyze image bytes using OpenAI, then Cohere, then Google Vision."""
+    """Analyze image bytes using OpenAI, then Cohere."""
     result = _call_openai(image_bytes)
     if result:
         return _normalize_result(result)
@@ -93,5 +130,5 @@ def analyze_image_smart(image_bytes: bytes) -> Dict[str, Any]:
     result = _call_cohere(image_bytes)
     if result:
         return _normalize_result(result)
-    logger.warning("Falling back to Google Vision service...")
-    return analyze_google(image_bytes)
+    logger.error("All vision providers failed")
+    return {"labels": [], "objects": []}
