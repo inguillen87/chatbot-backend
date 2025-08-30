@@ -763,22 +763,53 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             "¿Cómo te llamás?"
         )
 
-    # Final Menu Structure: show only top-level categories initially
-    categorias = [{
-        "titulo": "Categorías",
-        "botones": [
-            {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
-            {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
-            {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
-        ]
-    }]
+    channel = context.get("channel", "web")
+    if channel == "whatsapp":
+        # Simplified menu for WhatsApp: only top-level categories
+        categorias = [{
+            "titulo": "Categorías",
+            "botones": [
+                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+                {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+            ]
+        }]
 
-    flat_buttons = []
-    for boton in categorias[0].get('botones', []):
-        new_boton = boton.copy()
-        new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
-        flat_buttons.append(new_boton)
+        flat_buttons = []
+        for boton in categorias[0].get('botones', []):
+            new_boton = boton.copy()
+            new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+            flat_buttons.append(new_boton)
+    else:
+        # Full accordion-style menu for web/widget channels
+        categorias = [
+            {"titulo": "🗣️ Reclamos y Consultas", "botones": [
+                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
+                {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
+                {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
+            ]},
+            {"titulo": "🚗 Trámites y Turnos", "botones": [
+                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
+                {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
+            ]},
+            {"titulo": "📰 Información del Municipio", "botones": [
+                {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
+                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+            ]},
+            {"titulo": "🅿️ Estacionamiento", "botones": [
+                {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+            ]}
+        ]
+
+        flat_buttons = []
+        for categoria in categorias:
+            for boton in categoria.get('botones', []):
+                new_boton = boton.copy()
+                new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+                flat_buttons.append(new_boton)
 
     return {
         "message_body": welcome_message,
