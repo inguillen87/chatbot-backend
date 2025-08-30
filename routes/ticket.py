@@ -480,8 +480,6 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
         if token and token.lower() not in ("undefined", "null"):
             if not verify_recaptcha(token):
                 return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
-        if token and not verify_recaptcha(token):
-            return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
 
         ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado, consulta_pin=pin).first()
 
