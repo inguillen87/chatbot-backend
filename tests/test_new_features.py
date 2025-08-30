@@ -68,11 +68,9 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("¡Hola, Tester!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
         self.assertIn("options_list", respuesta)
-        # 4 (Reclamos) + 3 (Trámites) + 2 (Info) + 1 (Estacionamiento) = 10
-        self.assertEqual(len(respuesta["options_list"]), 10)
-        self.assertEqual(respuesta["options_list"][0]["texto"], "📝 Iniciar un Reclamo")
+        self.assertEqual(len(respuesta["options_list"]), 4)
+        self.assertEqual(respuesta["options_list"][0]["texto"], "🗣️ Reclamos y Consultas")
         self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
-        self.assertEqual(len(respuesta.get("categorias", [])), 4)
 
     @patch('services.municipio_responder.llamar_gemini')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
@@ -95,10 +93,9 @@ class TestNewFeatures(unittest.TestCase):
         )
 
         self.assertIn("¿Cómo te llamás?", response.get("message_body", ""))
-        # 4 (Reclamos) + 3 (Trámites) + 2 (Info) + 1 (Estacionamiento) = 10
-        self.assertEqual(len(response.get("options_list", [])), 10)
+        self.assertEqual(len(response.get("options_list", [])), 4)
         self.assertTrue(
-            any(opt.get("texto") == "📝 Iniciar un Reclamo" for opt in response.get("options_list", []))
+            any(opt.get("texto") == "🗣️ Reclamos y Consultas" for opt in response.get("options_list", []))
         )
 
     @patch('services.municipio_responder.llamar_gemini')

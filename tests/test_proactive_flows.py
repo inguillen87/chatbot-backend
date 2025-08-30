@@ -105,7 +105,7 @@ class TestProactiveFlows(unittest.TestCase):
 
         # Assert
         self.assertIn("Recibí tu ubicación", response["message_body"])
-        self.assertIn("Iniciar un Reclamo", [btn["texto"] for btn in response["options_list"]])
+        self.assertIn("Reclamos y Consultas", [btn["texto"] for btn in response["options_list"]])
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_INTENCION_UBICACION.name
