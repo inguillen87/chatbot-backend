@@ -43,6 +43,8 @@ class TestNewFeatures(unittest.TestCase):
         )
         message_body, buttons = respuesta
         self.assertIn("Juan Obras", message_body)
+        self.assertIn("Jefe de Bacheo", message_body)
+        self.assertIn("+5491122334455", message_body)
         self.assertEqual(len(buttons), 0)
 
     def test_formatear_ticket_respuesta_incluye_pin_y_url(self):

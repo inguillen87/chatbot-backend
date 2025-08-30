@@ -76,7 +76,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_owner_user.id = 1; mock_owner_user.municipio_id = "springfield_municipio"
 
         context = {
-            "viewer_user_obj": mock_viewer_user, "user_obj": mock_owner_user, "anon_id": None,
+            "viewer_user_obj": mock_viewer_user, "user_obj": mock_owner_user, "anon_id": "session123",
             "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
             "chat_session_uuid": "test-session-uuid-123",
             "chat_db_context_data": {"processed_idempotency_keys": {}}
@@ -97,10 +97,55 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5491122334455")
         self.assertEqual(kwargs['ticket_data']['email_vecino'], "homero@example.com")
         self.assertEqual(kwargs['ticket_data']['consulta_pin'], "555444")
+        self.assertEqual(kwargs['ticket_data']['anon_id'], "session123")
         # The call is positional, so the assertion should be positional
         mock_enviar_whatsapp.assert_called_once_with(
             "+5491122334455", "Homero Simpson", "12345", "Alumbrado"
         )
+
+    @patch('services.actions.municipio_actions.formatear_ticket_respuesta')
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+5492611234567")
+    @patch('services.herramientas_municipio.parse_direccion_completa', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.location_service.geocode_address')
+    def test_categoria_con_emoji_usa_contacto_especializado(
+        self, mock_geocode, mock_enviar, mock_parse, mock_formatear_tel, mock_validar_email,
+        mock_validar_tel, mock_crear_ticket, mock_formatear_respuesta
+    ):
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "88888", "consulta_pin": "123456"}
+        mock_formatear_respuesta.return_value = ("ok", [])
+
+        datos_llm = {
+            "categoria": "💡 Luminaria",
+            "descripcion": "Poste caido",
+            "ubicacion": "Calle Falsa 123", 
+            "telefono": "2611234567",
+            "email": "vecino@example.com",
+            "usuario": "Marcelo",
+            "dni": "32877851"
+        }
+
+        context = {
+            "viewer_user_obj": None,
+            "user_obj": MagicMock(id=1, municipio_id="default"),
+            "anon_id": "anon123",
+            "municipio_config_actual": {}
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        handler.execute(datos_llm)
+
+        args, _ = mock_formatear_respuesta.call_args
+        contacto = args[5]
+        self.assertEqual(contacto.get("nombre"), "Ana María de Servicios")
+        self.assertEqual(contacto.get("telefono"), "+5492610000002")
+
+        _, kwargs = mock_crear_ticket.call_args
+        self.assertEqual(kwargs['ticket_data']['categoria'], 'Luminaria')
+        self.assertEqual(kwargs['ticket_data']['anon_id'], 'anon123')
 
     def test_accion_consultar_estado_ticket(self):
         from models import MunicipioTicket

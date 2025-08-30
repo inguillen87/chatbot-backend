@@ -63,6 +63,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         categoria = action_data.get("categoria") or datos_parciales.get("categoria")
+        if categoria:
+            categoria = re.sub(r'^[^\w]+', '', categoria).strip()
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
         ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
@@ -212,6 +214,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 db.session.commit()
                 logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
+
+        contactos = cargar_configuracion_municipio(
+            getattr(owner_user, "municipio_id", "default"),
+            "contactos_especializados.json",
+        )
+        categoria_lookup = None
+        if categoria:
+            for key in contactos.keys():
+                if key.lower() == categoria.lower():
+                    categoria_lookup = key
+                    break
+        if categoria_lookup:
+            categoria = categoria_lookup
+        contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
+
         ticket_data = {
             "pregunta": pregunta_original,
             "asunto": f"Reclamo (LLM): {categoria or 'General'}",
@@ -225,7 +242,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "dni_vecino": dni_final,
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
-            "anon_id": self.context.get("anon_id") if not getattr(viewer_user, "id", None) else None,
+            "anon_id": self.context.get("anon_id"),
             "municipio_id": getattr(owner_user, "municipio_id", None),  # Asegurar que el municipio_id se pasa aquí
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
@@ -255,19 +272,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
-            # Cargar contactos y encontrar el específico para la categoría
-            contactos = cargar_configuracion_municipio(
-                getattr(owner_user, "municipio_id", "default"),
-                "contactos_especializados.json",
-            )
-            contacto_especializado = dict(contactos.get(categoria, contactos.get("default", {})))
-
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
                 getattr(owner_user, "municipio_id", "default"),
                 "tramites.json",
             )
-            tramite_info = tramites_cfg.get(categoria, {}) if isinstance(tramites_cfg, dict) else {}
+            tramite_info = tramites_cfg.get(categoria_lookup, {}) if isinstance(tramites_cfg, dict) else {}
             if isinstance(tramite_info, dict):
                 if not contacto_especializado.get("telefono") and tramite_info.get("telefono"):
                     contacto_especializado["telefono"] = tramite_info.get("telefono")
@@ -333,11 +343,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            categoria_display = categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
                 ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
                 descripcion,
-                categoria,
+                categoria_display,
                 nro_ticket_str,
                 contacto_especializado,
                 base_chat_url,

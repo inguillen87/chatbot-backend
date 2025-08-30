@@ -148,6 +148,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "nombre_usuario": user_data.get("nombre", "No especificado"),
         "email": user_data.get("email", "No especificado"),
         "telefono": user_data.get("telefono", "No especificado"),
+        "dni": dni_vecino,
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
@@ -320,6 +321,7 @@ def get_mis_tickets(current_user: User):
             else:
                 base.update({
                     "categoria": getattr(t, "categoria", None),
+                    "dni": getattr(t, "dni", None) or getattr(t, "dni_vecino", None),
                 })
             return base
 
