@@ -63,7 +63,7 @@ class TestNewFeatures(unittest.TestCase):
         """
         Verifica que el GreetingHandler devuelve el menú principal final (v5).
         """
-        handler = GreetingHandler(context={'profile_name': 'Tester'})
+        handler = GreetingHandler(context={'profile_name': 'Tester', 'channel': 'whatsapp'})
         respuesta = handler.handle(payload={})
         self.assertIn("¡Hola, Tester!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
@@ -90,6 +90,7 @@ class TestNewFeatures(unittest.TestCase):
             owner_user=MagicMock(id=1),
             rubro_obj=MagicMock(nombre='municipio'),
             chat_db_context=MagicMock(context_data={}),
+            channel="whatsapp",
         )
 
         self.assertIn("¿Cómo te llamás?", response.get("message_body", ""))

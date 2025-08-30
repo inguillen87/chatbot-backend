@@ -65,7 +65,8 @@ class TestProactiveFlows(unittest.TestCase):
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=owner_user,
-            chat_db_context=chat_context
+            chat_db_context=chat_context,
+            channel="whatsapp",
         )
 
         # Assert
@@ -100,7 +101,8 @@ class TestProactiveFlows(unittest.TestCase):
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=owner_user,
-            chat_db_context=chat_context
+            chat_db_context=chat_context,
+            channel="whatsapp",
         )
 
         # Assert
@@ -123,7 +125,8 @@ class TestProactiveFlows(unittest.TestCase):
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
                 viewer_user=owner_user,
-                chat_db_context=chat_context
+                chat_db_context=chat_context,
+                channel="whatsapp",
             )
 
             mock_start_flow.assert_called_once()
