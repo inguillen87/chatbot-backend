@@ -84,7 +84,19 @@ def extract_multiple_contact_details_regex(text: str) -> dict:
         details['nombre'] = ' '.join([word.capitalize() for word in name_candidate.split()])
     return details
 
-CANCEL_KEYWORDS = {"cancelar", "salir", "volver", "menu", "menú principal", "terminar", "basta"}
+CANCEL_KEYWORDS = {
+    normalizar_texto(k)
+    for k in [
+        "cancelar",
+        "salir",
+        "volver",
+        "menu",
+        "menú principal",
+        "menu principal",
+        "terminar",
+        "basta",
+    ]
+}
 
 class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
@@ -100,13 +112,21 @@ class ReclamoFlowHandler:
         self.greeting_handler = GreetingHandler(context)
 
 
-    def check_for_cancel(self, user_input):
-        if normalizar_texto(user_input) in CANCEL_KEYWORDS:
-            return self.end_flow("Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?", show_menu=True)
+    def check_for_cancel(self, user_input, payload):
+        normalized_input = normalizar_texto(user_input)
+        action = (payload.get("action_id") or payload.get("action") or "").lower()
+        if (
+            normalized_input in CANCEL_KEYWORDS
+            or action in {"cancelar", "menu_principal"}
+        ):
+            return self.end_flow(
+                "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?",
+                show_menu=True,
+            )
         return None
 
     def handle(self, user_input, payload):
-        cancel_response = self.check_for_cancel(user_input)
+        cancel_response = self.check_for_cancel(user_input, payload)
         if cancel_response:
             return cancel_response
 
@@ -2216,6 +2236,15 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
+    normalized_input_menu = normalizar_texto(pregunta_str or "")
+    action_id = received_payload.get("action_id") or received_payload.get("action")
+    if normalized_input_menu in {"menu", "menu principal"} or action_id == "menu_principal":
+        contexto_municipio_actual.pop("reclamo_flow_v2", None)
+        handler = GreetingHandler(context)
+        response = handler.handle(received_payload)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
     # --- INICIO: Manejo del Flujo de Reclamos Activo ---
     if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
         logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
