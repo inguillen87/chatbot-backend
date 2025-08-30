@@ -25,16 +25,22 @@ class TestReclamoNumericFlow(unittest.TestCase):
         self.app_context.pop()
 
     def test_numeric_selection_starts_flow(self):
-        # Show reclamos menu via direct action
+        # Show reclamos submenu via direct action
         payload = {"action": "mostrar_menu_reclamos"}
         response = responder_municipio(payload, self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
-        self.assertIn("Elegí una opción para tu reclamo", response["message_body"])
+        self.assertIn("Iniciar un Reclamo", " ".join(opt["texto"] for opt in response.get("options_list", [])))
+        estado = self.chat_ctx.context_data[CONTEXTO_MUNICIPIO]["estado_conversacion"]
+        self.assertEqual(estado, ConversationState.ESPERANDO_SELECCION_DE_LISTA.name)
+
+        # Start reclamo flow from submenu
+        response2 = responder_municipio({"action": "iniciar_reclamo"}, self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
+        self.assertIn("Elegí una opción para tu reclamo", response2["message_body"])
         estado = self.chat_ctx.context_data[CONTEXTO_MUNICIPIO]["estado_conversacion"]
         self.assertEqual(estado, ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name)
 
         # User selects option 2 -> Luminaria
-        response2 = responder_municipio("2", self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
-        self.assertIn("describí brevemente", response2["message_body"])
+        response3 = responder_municipio("2", self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
+        self.assertIn("describí brevemente", response3["message_body"])
 
 if __name__ == '__main__':
     unittest.main()
