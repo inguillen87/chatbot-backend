@@ -120,3 +120,41 @@ def test_create_municipal_post_unauthorized(client):
     response_pyme = client.post('/municipal/posts', data={'titulo': 't', 'descripcion': 'd'}, headers=headers_pyme)
     assert response_pyme.status_code == 403
     assert "Se requiere un usuario municipal" in response_pyme.get_json()['error']
+
+
+def test_bulk_create_municipal_posts(client):
+    """Prueba la creación de múltiples eventos vía JSON."""
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+    }
+
+    events = [
+        {"title": "Entrega de Certificados", "day": "Sábado 30", "time": "11.30 hs.", "location": "Centro Universitario"},
+        {"title": "Torneo de Fútbol", "day": "Domingo 31", "time": "10.00 hs.", "location": "Club Social"},
+    ]
+
+    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    response = client.post('/municipal/posts/bulk', data=json.dumps({"events": events}), headers=headers)
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert len(data_resp['created']) == 2
+
+    assert os.path.exists(agenda_path)
+    with open(agenda_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+        agenda = data.get('eventos', [])
+    titles = [p['titulo'] for p in agenda]
+    assert "Entrega de Certificados" in titles and "Torneo de Fútbol" in titles
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+

@@ -263,6 +263,7 @@ def municipal_metrics(current_user):
 import os
 import json
 from werkzeug.utils import secure_filename
+from uuid import uuid4
 
 @municipal_bp.route('/posts', methods=['POST'])
 @token_requerido
@@ -347,6 +348,68 @@ def create_municipal_post(current_user):
     except Exception as e:
         current_app.logger.error(f"Error al actualizar agenda_cultural.json: {e}", exc_info=True)
         return jsonify({"error": "Error interno al guardar el post."}), 500
+
+
+@municipal_bp.route('/posts/bulk', methods=['POST'])
+@token_requerido
+@admin_o_empleado_requerido
+def create_municipal_posts_bulk(current_user):
+    """Crea múltiples posts municipales a partir de una lista de eventos."""
+    if current_user.tipo_chat != "municipio":
+        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    payload = request.get_json(silent=True) or {}
+    events = payload.get("events")
+    if not isinstance(events, list):
+        return jsonify({"error": "Se requiere un JSON con la lista 'events'."}), 400
+
+    from services.config_loader import BASE_CONFIG_PATH
+    agenda_dir = os.path.join(BASE_CONFIG_PATH, 'default')
+    os.makedirs(agenda_dir, exist_ok=True)
+    agenda_path = os.path.join(agenda_dir, 'agenda_cultural.json')
+
+    try:
+        data = {"eventos": []}
+        if os.path.exists(agenda_path):
+            with open(agenda_path, 'r', encoding='utf-8') as f:
+                contenido = f.read().strip()
+                if contenido:
+                    try:
+                        data = json.loads(contenido)
+                    except json.JSONDecodeError:
+                        current_app.logger.warning("agenda_cultural.json corrupto, se recreará.")
+        if 'eventos' not in data or not isinstance(data['eventos'], list):
+            data['eventos'] = []
+
+        created_posts = []
+        for ev in events:
+            title = ev.get("title")
+            if not title:
+                continue
+            post = {
+                "id": str(uuid4()),
+                "titulo": title,
+                "subtitulo": ev.get("day"),
+                "descripcion": ev.get("description", ""),
+                "tipo_post": "evento",
+                "imagen_url": ev.get("imagen_url", ""),
+                "fecha_evento_inicio": f"{ev.get('day', '')} {ev.get('time', '')}".strip(),
+                "fecha_evento_fin": ev.get("fecha_evento_fin"),
+                "fecha_publicacion": datetime.now().isoformat(),
+                "enlace": ev.get("enlace"),
+                "ubicacion": ev.get("location"),
+            }
+            data['eventos'].insert(0, post)
+            created_posts.append(post)
+
+        with open(agenda_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return jsonify({"created": created_posts}), 201
+
+    except Exception as e:
+        current_app.logger.error(f"Error al actualizar agenda_cultural.json: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al guardar los posts."}), 500
 
 
 @municipal_bp.route('/analytics', methods=['GET'])
