@@ -65,7 +65,8 @@ class TestProactiveFlows(unittest.TestCase):
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=owner_user,
-            chat_db_context=chat_context
+            chat_db_context=chat_context,
+            channel="whatsapp",
         )
 
         # Assert
@@ -100,12 +101,13 @@ class TestProactiveFlows(unittest.TestCase):
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=owner_user,
-            chat_db_context=chat_context
+            chat_db_context=chat_context,
+            channel="whatsapp",
         )
 
         # Assert
         self.assertIn("Recibí tu ubicación", response["message_body"])
-        self.assertIn("Iniciar un Reclamo", [btn["texto"] for btn in response["options_list"]])
+        self.assertIn("Reclamos y Consultas", [btn["texto"] for btn in response["options_list"]])
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_INTENCION_UBICACION.name
@@ -123,7 +125,8 @@ class TestProactiveFlows(unittest.TestCase):
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
                 viewer_user=owner_user,
-                chat_db_context=chat_context
+                chat_db_context=chat_context,
+                channel="whatsapp",
             )
 
             mock_start_flow.assert_called_once()

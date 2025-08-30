@@ -84,7 +84,19 @@ def extract_multiple_contact_details_regex(text: str) -> dict:
         details['nombre'] = ' '.join([word.capitalize() for word in name_candidate.split()])
     return details
 
-CANCEL_KEYWORDS = {"cancelar", "salir", "volver", "menu", "menú principal", "terminar", "basta"}
+CANCEL_KEYWORDS = {
+    normalizar_texto(k)
+    for k in [
+        "cancelar",
+        "salir",
+        "volver",
+        "menu",
+        "menú principal",
+        "menu principal",
+        "terminar",
+        "basta",
+    ]
+}
 
 class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
@@ -100,13 +112,21 @@ class ReclamoFlowHandler:
         self.greeting_handler = GreetingHandler(context)
 
 
-    def check_for_cancel(self, user_input):
-        if normalizar_texto(user_input) in CANCEL_KEYWORDS:
-            return self.end_flow("Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?", show_menu=True)
+    def check_for_cancel(self, user_input, payload):
+        normalized_input = normalizar_texto(user_input)
+        action = (payload.get("action_id") or payload.get("action") or "").lower()
+        if (
+            normalized_input in CANCEL_KEYWORDS
+            or action in {"cancelar", "menu_principal"}
+        ):
+            return self.end_flow(
+                "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?",
+                show_menu=True,
+            )
         return None
 
     def handle(self, user_input, payload):
-        cancel_response = self.check_for_cancel(user_input)
+        cancel_response = self.check_for_cancel(user_input, payload)
         if cancel_response:
             return cancel_response
 
@@ -743,34 +763,53 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             "¿Cómo te llamás?"
         )
 
-    # Final Menu Structure (v5)
-    categorias = [
-        {"titulo": "🗣️ Reclamos y Consultas", "botones": [
-            {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
-            {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
-            {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
-        ]},
-        {"titulo": "🚗 Trámites y Turnos", "botones": [
-            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
-            {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
-            {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
-        ]},
-        {"titulo": "📰 Información del Municipio", "botones": [
-            {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
-            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
-        ]},
-        {"titulo": "🅿️ Estacionamiento", "botones": [
-             {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
-        ]}
-    ]
+    channel = context.get("channel", "web")
+    if channel == "whatsapp":
+        # Simplified menu for WhatsApp: only top-level categories
+        categorias = [{
+            "titulo": "Categorías",
+            "botones": [
+                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+                {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+            ]
+        }]
 
-    flat_buttons = []
-    for categoria in categorias:
-        for boton in categoria.get('botones', []):
+        flat_buttons = []
+        for boton in categorias[0].get('botones', []):
             new_boton = boton.copy()
             new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
             flat_buttons.append(new_boton)
+    else:
+        # Full accordion-style menu for web/widget channels
+        categorias = [
+            {"titulo": "🗣️ Reclamos y Consultas", "botones": [
+                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
+                {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
+                {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
+            ]},
+            {"titulo": "🚗 Trámites y Turnos", "botones": [
+                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
+                {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
+            ]},
+            {"titulo": "📰 Información del Municipio", "botones": [
+                {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
+                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+            ]},
+            {"titulo": "🅿️ Estacionamiento", "botones": [
+                {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+            ]}
+        ]
+
+        flat_buttons = []
+        for categoria in categorias:
+            for boton in categoria.get('botones', []):
+                new_boton = boton.copy()
+                new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+                flat_buttons.append(new_boton)
 
     return {
         "message_body": welcome_message,
@@ -985,15 +1024,61 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     if action_id == "contactos_utiles":
         return handle_contactos_utiles_inicio(context, chat_db_context)
 
+    if action_id == "menu_principal":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        contexto_municipio_actual.pop('menu_opciones', None)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _get_main_menu_payload(context)
+
     if action_id == "mostrar_menu_reclamos":
+        submenu = _get_reclamos_consultas_menu()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
+    if action_id == "iniciar_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
         contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
         contexto_municipio_actual.pop("historial_llm_reclamo", None)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response_dict = handler.start_flow()
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-        return _get_reclamos_menu()
+        return response_dict
+
+    if action_id == "mostrar_menu_tramites":
+        submenu = _get_tramites_menu()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
+    if action_id == "mostrar_menu_informacion":
+        submenu = _get_informacion_menu()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
+    if action_id == "mostrar_menu_estacionamiento":
+        submenu = _get_estacionamiento_menu()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
 
     if action_id == "consultar_estado_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -1739,7 +1824,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 MENU_KEYWORDS = {
     # Reclamos, Trámites y Turnos
-    "mostrar_menu_reclamos": ["reclamo", "reclamos", "iniciar reclamo", "denuncia", "problema", "queja", "reportar"],
+    "mostrar_menu_reclamos": ["reclamo", "reclamos", "denuncia", "problema", "queja", "reportar"],
+    "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo"],
     "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online"],
     "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia"],
     "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo"],
@@ -1873,6 +1959,69 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
         return all_keywords[best_match]
 
     return None
+
+
+def _get_reclamos_consultas_menu():
+    opciones = [
+        {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo"},
+        {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
+        {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
+        {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+    return {
+        "message_body": "Elegí una opción para tu consulta:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_reclamos_consultas_v1",
+        "generar_audio": True,
+    }
+
+
+def _get_tramites_menu():
+    opciones = [
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+        {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
+        {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
+    ]
+    return {
+        "message_body": "Elegí una opción:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_tramites_v1",
+        "generar_audio": True,
+    }
+
+
+def _get_informacion_menu():
+    opciones = [
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
+        {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+    ]
+    return {
+        "message_body": "Seleccioná una opción:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_informacion_v1",
+        "generar_audio": True,
+    }
+
+
+def _get_estacionamiento_menu():
+    opciones = [
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+    ]
+    return {
+        "message_body": "Opciones de estacionamiento:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_estacionamiento_v1",
+        "generar_audio": True,
+    }
 
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
@@ -2148,6 +2297,15 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
+    normalized_input_menu = normalizar_texto(pregunta_str or "")
+    action_id = received_payload.get("action_id") or received_payload.get("action")
+    if normalized_input_menu in {"menu", "menu principal"} or action_id == "menu_principal":
+        contexto_municipio_actual.pop("reclamo_flow_v2", None)
+        handler = GreetingHandler(context)
+        response = handler.handle(received_payload)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
     # --- INICIO: Manejo del Flujo de Reclamos Activo ---
     if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
         logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
@@ -2598,6 +2756,40 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
     # --- FIN: Manejo de selección de menú principal ---
+
+    # --- INICIO: Manejo genérico de selección de submenús ---
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_DE_LISTA.name:
+        pregunta_str_menu = ""
+        action_payload = None
+        if isinstance(pregunta_original, str):
+            pregunta_str_menu = pregunta_original
+        elif isinstance(pregunta_original, dict):
+            pregunta_str_menu = pregunta_original.get("pregunta", "")
+            action_payload = pregunta_original.get("action")
+
+        menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
+        selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)
+
+        if selected_action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('menu_opciones', None)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(selected_action, context, chat_db_context)
+            if response:
+                new_state = contexto_municipio_actual.get("estado_conversacion")
+                if not new_state:
+                    response['message_body'] = response.get('message_body', '').strip() + "\n\n¿En qué más puedo ayudarte?"
+                return _finalize_response(response)
+        else:
+            # Reenviar el mismo submenú si la opción no es válida
+            return _finalize_response({
+                "message_body": "No reconocí esa opción. Por favor, elegí una opción del menú.",
+                "message_type": "interactive_buttons",
+                "options_list": menu_opciones,
+                "fuente": "submenu_opcion_invalida",
+            })
+    # --- FIN: Manejo genérico de selección de submenús ---
 
     # --- INICIO: Manejo de la espera por nombre de trámite ---
     elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_TRAMITE.name:
