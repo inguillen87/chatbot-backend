@@ -63,6 +63,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         categoria = action_data.get("categoria") or datos_parciales.get("categoria")
+        categoria_original = categoria
+        if categoria:
+            categoria = re.sub(r'^[^\w]+', '', categoria).strip()
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
         ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
@@ -260,14 +263,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 getattr(owner_user, "municipio_id", "default"),
                 "contactos_especializados.json",
             )
-            contacto_especializado = dict(contactos.get(categoria, contactos.get("default", {})))
+            categoria_lookup = None
+            if categoria:
+                for key in contactos.keys():
+                    if key.lower() == categoria.lower():
+                        categoria_lookup = key
+                        break
+            contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
                 getattr(owner_user, "municipio_id", "default"),
                 "tramites.json",
             )
-            tramite_info = tramites_cfg.get(categoria, {}) if isinstance(tramites_cfg, dict) else {}
+            tramite_info = tramites_cfg.get(categoria_lookup, {}) if isinstance(tramites_cfg, dict) else {}
             if isinstance(tramite_info, dict):
                 if not contacto_especializado.get("telefono") and tramite_info.get("telefono"):
                     contacto_especializado["telefono"] = tramite_info.get("telefono")
@@ -333,11 +342,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            categoria_display = categoria_original or categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
                 ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
                 descripcion,
-                categoria,
+                categoria_display,
                 nro_ticket_str,
                 contacto_especializado,
                 base_chat_url,

@@ -65,6 +65,7 @@ class MisTicketsEndpointTest(unittest.TestCase):
         self.assertIsInstance(resp, dict)
         self.assertIn('tickets', resp)
         self.assertEqual(len(resp['tickets']), 2)
+        self.assertIn('dni', resp['tickets'][0])
 
 if __name__ == '__main__':
     unittest.main()
