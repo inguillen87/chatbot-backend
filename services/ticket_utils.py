@@ -29,6 +29,7 @@ def _remove_redundant_urls_from_message(message_body, options_list):
 
 def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None, consulta_pin=None):
     nombre_asesor = None
+    titulo_asesor = None
     telefono_asesor = None
     horario_asesor = None
     link_informacion = None
@@ -37,6 +38,7 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 
     if contacto_especializado:
         nombre_asesor = contacto_especializado.get("nombre")
+        titulo_asesor = contacto_especializado.get("titulo")
         telefono_asesor = contacto_especializado.get("telefono")
         horario_asesor = contacto_especializado.get("horario")
         link_informacion = contacto_especializado.get("link")
@@ -91,8 +93,12 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
         respuesta += f"\n- *PIN:* {consulta_pin}"
 
     if nombre_asesor:
-        respuesta += f"""
-📞 *Contacto para seguimiento:* {nombre_asesor} - {telefono_asesor}"""
+        partes_contacto = [nombre_asesor]
+        if titulo_asesor:
+            partes_contacto.append(titulo_asesor)
+        if telefono_asesor:
+            partes_contacto.append(str(telefono_asesor))
+        respuesta += "\n📞 *Contacto para seguimiento:* " + " - ".join(partes_contacto)
         if horario_asesor:
             respuesta += f"\n🕒 *Horario de atención:* {horario_asesor}"
         if link_informacion:
