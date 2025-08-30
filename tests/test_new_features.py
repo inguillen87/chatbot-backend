@@ -72,7 +72,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(respuesta["options_list"][0]["texto"], "🗣️ Reclamos y Consultas")
         self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
         """Verifica que la acción "mostrar_menu" del LLM devuelve el menú completo."""
         mock_llamar_gemini.return_value = (
@@ -98,7 +98,7 @@ class TestNewFeatures(unittest.TestCase):
             any(opt.get("texto") == "🗣️ Reclamos y Consultas" for opt in response.get("options_list", []))
         )
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_keyword_pago_tasas(self, mock_llamar_gemini):
         """Ingresar un mensaje sobre impuestos debe devolver info de tasas sin usar el LLM."""
         mock_llamar_gemini.return_value = ({}, {})
@@ -111,7 +111,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("tasas municipales", response.get("message_body", ""))
         mock_llamar_gemini.assert_not_called()
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_keyword_estacionamiento(self, mock_llamar_gemini):
         """Solicitar estacionamiento por texto debe activar la acción correspondiente."""
         mock_llamar_gemini.return_value = ({}, {})
@@ -124,7 +124,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("estacionamiento libre", response.get("message_body", "").lower())
         mock_llamar_gemini.assert_not_called()
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_keyword_defensa_consumidor(self, mock_llamar_gemini):
         """Preguntar por defensa del consumidor devuelve contacto y evita LLM."""
         mock_llamar_gemini.return_value = ({}, {})
@@ -137,7 +137,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("Defensa del Consumidor", response.get("message_body", ""))
         mock_llamar_gemini.assert_not_called()
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_keyword_recoleccion_residuos(self, mock_llamar_gemini):
         """Consultas sobre recolección deben responder con horarios sin usar LLM."""
         mock_llamar_gemini.return_value = ({}, {})

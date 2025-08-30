@@ -31,7 +31,7 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_repeating_reclamo_command_returns_menu(self, mock_llamar_gemini):
         # Mock the LLM to return an action that shows the menu
         mock_llamar_gemini.return_value = (
@@ -48,7 +48,7 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
             chat_db_context=self.chat_context,
             anon_id="123"
         )
-        self.assertIn("Elegí una opción para tu reclamo", response1["message_body"])
+        self.assertIn("Iniciar un Reclamo", " ".join(opt["texto"] for opt in response1.get("options_list", [])))
 
         response2 = responder_municipio(
             "Hacer un Reclamo",
@@ -57,7 +57,7 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
             chat_db_context=self.chat_context,
             anon_id="123"
         )
-        self.assertIn("Elegí una opción para tu reclamo", response2["message_body"])
+        self.assertIn("Iniciar un Reclamo", " ".join(opt["texto"] for opt in response2.get("options_list", [])))
         self.assertGreater(len(response2.get("options_list", [])), 0)
 
 if __name__ == "__main__":
