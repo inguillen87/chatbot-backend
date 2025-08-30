@@ -99,6 +99,7 @@ def _call_cohere(image_bytes: bytes) -> Optional[Dict[str, Any]]:
             resp = co.generate(
                 model="command-r-plus",
                 prompt=prompt,
+                image_url=f"data:image/jpeg;base64,{b64}",
             )
             text = resp.generations[0].text
         return json.loads(text)

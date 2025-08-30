@@ -1,6 +1,7 @@
+import base64
 import os
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, ANY
 
 from services.vision_fallback_service import analyze_image_smart
 
@@ -33,6 +34,27 @@ class TestVisionFallbackService(unittest.TestCase):
         mock_cohere.return_value = {"labels": ["road"], "objects": ["pothole"], "text": ""}
         result = analyze_image_smart(b"bytes")
         self.assertEqual(result["objects"][0]["name"], "pothole")
+
+    @patch("services.vision_fallback_service.cohere.Client")
+    def test_generate_receives_image_url(self, mock_client_cls):
+        from services.vision_fallback_service import _call_cohere
+
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = TypeError("no images param")
+        gen_resp = MagicMock()
+        gen_resp.generations = [MagicMock(text='{"labels": [], "objects": [], "text": ""}')]
+        mock_client.generate.return_value = gen_resp
+        mock_client_cls.return_value = mock_client
+
+        os.environ["COHERE_API_KEY"] = "abc"
+        _call_cohere(b"img-bytes")
+
+        b64 = base64.b64encode(b"img-bytes").decode("utf-8")
+        mock_client.generate.assert_called_once_with(
+            model="command-r-plus",
+            prompt=ANY,
+            image_url=f"data:image/jpeg;base64,{b64}",
+        )
 
 
 if __name__ == "__main__":
