@@ -29,8 +29,7 @@ class TicketPublicEndpointTest(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('routes.ticket.verify_recaptcha', return_value=True)
-    def test_public_lookup_by_number(self, mock_recaptcha):
+    def test_public_lookup_by_number(self):
         # add timeline data
         comentario = TicketComentario(municipio_ticket_id=self.ticket_id, comentario='primer mensaje')
         cambio_estado = TicketComentario(
@@ -43,7 +42,7 @@ class TicketPublicEndpointTest(unittest.TestCase):
         db.session.add_all([comentario, cambio_estado])
         db.session.commit()
 
-        resp = self.client.get('/tickets/municipio/por_numero/123456?recaptcha_token=test&pin=654321')
+        resp = self.client.get('/tickets/municipio/por_numero/123456?pin=654321')
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertEqual(data['id_ticket'], 'M-123456')
@@ -52,15 +51,15 @@ class TicketPublicEndpointTest(unittest.TestCase):
         self.assertEqual(data['timeline'][1]['tipo'], 'comentario')
         self.assertEqual(data['timeline'][2]['estado'], 'en progreso')
 
-    def test_public_lookup_requires_recaptcha(self):
-        resp = self.client.get('/tickets/municipio/por_numero/123456?pin=654321')
+    @patch('routes.ticket.verify_recaptcha', return_value=False)
+    def test_public_lookup_invalid_recaptcha(self, mock_recaptcha):
+        resp = self.client.get('/tickets/municipio/por_numero/123456?pin=654321&recaptcha_token=test')
         self.assertEqual(resp.status_code, 400)
         data = resp.get_json()
-        self.assertEqual(data["error"], "recaptcha_token requerido.")
+        self.assertEqual(data["error"], "Verificación reCAPTCHA fallida.")
 
-    @patch('routes.ticket.verify_recaptcha', return_value=True)
-    def test_public_lookup_requires_pin(self, mock_recaptcha):
-        resp = self.client.get('/tickets/municipio/por_numero/123456?recaptcha_token=test')
+    def test_public_lookup_requires_pin(self):
+        resp = self.client.get('/tickets/municipio/por_numero/123456')
         self.assertEqual(resp.status_code, 400)
         data = resp.get_json()
         self.assertEqual(data["error"], "PIN requerido.")
