@@ -58,6 +58,13 @@ class TicketPublicEndpointTest(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data["error"], "Verificación reCAPTCHA fallida.")
 
+<<<<<<< Updated upstream
+=======
+    def test_public_lookup_ignores_undefined_recaptcha(self):
+        resp = self.client.get('/tickets/municipio/por_numero/123456?pin=654321&recaptcha_token=undefined')
+        self.assertEqual(resp.status_code, 200)
+
+>>>>>>> Stashed changes
     def test_public_lookup_requires_pin(self):
         resp = self.client.get('/tickets/municipio/por_numero/123456')
         self.assertEqual(resp.status_code, 400)
