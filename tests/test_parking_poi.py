@@ -20,6 +20,15 @@ class TestParkingPOI(unittest.TestCase):
         self.assertIn("Las Heras 105", body_lines[1])
 
     @patch("services.points_of_interest_handler.get_coordinates")
+    def test_parking_zero_latitude_does_not_geocode(self, mock_geo):
+        handler = PointsOfInterestHandler(context={})
+        loc = {"lat": 0, "lon": -68.497164, "address": "Las Heras 105, Junín, Mendoza"}
+        res = handler.handle({"pregunta": "estacionamiento", "location": loc})
+        body_lines = res.get("message_body", "").splitlines()
+        self.assertGreaterEqual(len(body_lines), 2)
+        self.assertFalse(mock_geo.called)
+
+    @patch("services.points_of_interest_handler.get_coordinates")
     def test_parking_response_geocode_string(self, mock_geo):
         mock_geo.return_value = {"lat": -33.023818, "lon": -68.497164}
         handler = PointsOfInterestHandler(context={})

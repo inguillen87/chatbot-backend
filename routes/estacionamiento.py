@@ -8,6 +8,7 @@ def get_est():
     q = request.args.get("q")
     lat = request.args.get("lat", type=float)
     lon = request.args.get("lon", type=float)
-    ubic = {"lat":lat,"lon":lon} if lat and lon else q
+    # Preserve zero coordinates by checking explicitly for None
+    ubic = {"lat": lat, "lon": lon} if lat is not None and lon is not None else q
     res = consultar_ocupacion(ubic)
     return jsonify(res)

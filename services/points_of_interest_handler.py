@@ -45,8 +45,15 @@ class PointsOfInterestHandler:
         address = ""
         lat = lon = None
         if isinstance(location, dict):
-            lat = location.get("lat") or location.get("latitude")
-            lon = location.get("lon") or location.get("lng") or location.get("longitude")
+            # Use explicit None checks to avoid discarding valid zero values
+            lat = location.get("lat")
+            if lat is None:
+                lat = location.get("latitude")
+            lon = location.get("lon")
+            if lon is None:
+                lon = location.get("lng")
+            if lon is None:
+                lon = location.get("longitude")
             address = location.get("address") or location.get("formatted_address") or ""
             try:
                 lat = float(lat) if lat is not None else None
