@@ -29,8 +29,14 @@ def consultar_ocupacion(ubicacion_texto_o_coord: Any) -> Dict[str, Any]:
     if not cam:
         return {"texto": "Por ahora no tengo cámaras cerca de esa zona. Probá con otra dirección."}
 
-    # Cargar ROIs
-    with open(cam["rois_file"], "r", encoding="utf-8") as fr:
+    # Cargar ROIs usando rutas relativas al directorio base del proyecto.
+    # En algunos entornos la aplicación puede ejecutarse con un *cwd*
+    # diferente al repositorio, lo que provocaba `FileNotFoundError` al
+    # intentar abrir `cam["rois_file"]` directamente.  Construimos la ruta
+    # absoluta respecto a ``BASE`` para que siempre se encuentre el archivo
+    # de regiones de interés.
+    rois_path = BASE / cam["rois_file"]
+    with open(rois_path, "r", encoding="utf-8") as fr:
         rois = json.load(fr)
 
     # Simular detecciones en lugar de analizar un frame real
