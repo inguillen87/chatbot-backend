@@ -136,7 +136,6 @@ def test_get_municipal_posts(client):
         'Authorization': f'Bearer {token}'
     }
 
-    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
