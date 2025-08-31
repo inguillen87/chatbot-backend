@@ -2493,6 +2493,19 @@ def responder_municipio(
             ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
             address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
 
+            if not action:
+                pregunta_menu = ""
+                if isinstance(pregunta_original, str):
+                    pregunta_menu = pregunta_original
+                elif isinstance(pregunta_original, dict):
+                    pregunta_menu = pregunta_original.get("pregunta", "")
+                opciones = [
+                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                    {"texto": "Cancelar", "action_id": "cancelar"},
+                ]
+                action = find_menu_action_by_input(pregunta_menu, opciones)
+
             if action == "iniciar_reclamo_con_ubicacion":
                 handler = ReclamoFlowHandler(context, chat_db_context)
                 datos_iniciales = {"direccion": address}
@@ -2507,9 +2520,23 @@ def responder_municipio(
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
             else:
-                contexto_municipio_actual['estado_conversacion'] = None
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
-                return GreetingHandler(context).handle({})
+                # If the user response doesn't match any option, keep the flow active
+                # and re-send the proactive menu instead of resetting the conversation.
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    {
+                        "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
+                        "options_list": [
+                            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                            {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                            {"texto": "Cancelar", "action_id": "cancelar"},
+                            {"texto": "Menú", "action_id": "menu_principal"},
+                        ],
+                        "fuente": "proactive_location_handler",
+                    }
+                )
 
 
         elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
@@ -3188,6 +3215,18 @@ def responder_municipio(
     elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
         ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
         address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
+        if not action:
+            pregunta_menu = ""
+            if isinstance(pregunta_original, str):
+                pregunta_menu = pregunta_original
+            elif isinstance(pregunta_original, dict):
+                pregunta_menu = pregunta_original.get("pregunta", "")
+            opciones = [
+                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ]
+            action = find_menu_action_by_input(pregunta_menu, opciones)
 
         if action == "iniciar_reclamo_con_ubicacion":
             handler = ReclamoFlowHandler(context, chat_db_context)
