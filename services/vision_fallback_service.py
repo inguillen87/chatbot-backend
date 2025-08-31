@@ -2,8 +2,8 @@ import base64
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, Optional
-
 import httpx
 from openai import OpenAI
 import cohere
@@ -70,7 +70,15 @@ def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
             else:
                 text = content
 
-        return json.loads(text)
+        if not text:
+            raise ValueError("No content returned from OpenAI")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+            raise
     except Exception as e:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
         return None

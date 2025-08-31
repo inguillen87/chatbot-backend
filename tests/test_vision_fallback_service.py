@@ -28,6 +28,25 @@ class TestVisionFallbackService(unittest.TestCase):
         self.assertEqual(result["labels"][0]["description"], "street")
         self.assertEqual(result["objects"][0]["name"], "car")
 
+    @patch("services.vision_fallback_service.OpenAI")
+    def test_openai_extra_text(self, mock_openai):
+        from types import SimpleNamespace
+
+        message = SimpleNamespace(
+            content='Here you go {"labels": ["road"], "objects": ["pothole"], "text": ""}'
+        )
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock(message=message)]
+        mock_chat = MagicMock()
+        mock_chat.completions.create.return_value = mock_completion
+        mock_client = MagicMock(spec=["chat"])
+        mock_client.chat = mock_chat
+        mock_openai.return_value = mock_client
+
+        os.environ["OPENAI_API_KEY"] = "test-key"
+        result = analyze_image_smart(b"img")
+        self.assertEqual(result["objects"][0]["name"], "pothole")
+
     @patch("services.vision_fallback_service._call_cohere")
     @patch("services.vision_fallback_service._call_openai", return_value=None)
     def test_cohere_fallback(self, mock_openai, mock_cohere):
