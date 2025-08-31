@@ -244,35 +244,72 @@ def interpretar_imagen_para_chat(
     return resultado_procesamiento
 
 # Define mapping from common Vision API labels (in lowercase normalized form) to our claim categories
-# This needs to be expanded and refined.
+# This list now includes Spanish synonyms and uses lowercase categories to match
+# ``CATEGORIAS_RECLAMO``. It serves as a lightweight fallback when the LLM is
+# unavailable or returns an empty result.
 VISION_LABEL_TO_RECLAMO_CATEGORIA = {
-    "pothole": "Arreglo de calle",
-    "street light": "Luminaria", "lamp post": "Luminaria",
-    "traffic light": "Rotura de semaforo",
-    "tree": "Arbol Caido",
-    "fallen tree": "Arbol Caido",
-    "fire": "Incendio", "smoke": "Incendio", "flame": "Incendio",
-    "trash": "Limpieza", "garbage": "Limpieza", "waste": "Limpieza",
-    "water leak": "Falta de agua, rotura de caño", "pipe": "Falta de agua, rotura de caño", "leak": "Falta de agua, rotura de caño",
-    "leakage": "Falta de agua, rotura de caño",
-    "road": "Arreglo de calle", # Generic, might need more context
-    "signage": "Rotura de semaforo", # If context implies damage/issue, could be other types of signs
-    "power line": "Luminaria", # Or a generic public service issue
-    "sidewalk": "Arreglo de calle",
-    "driveway": "Arreglo de calle",
-    "tar": "Arreglo de calle",
-    "asphalt": "Arreglo de calle",
-    "roadway": "Arreglo de calle",
-    "public utility": "Otro Motivo",
-    "infrastructure": "Otro Motivo",
-    "hazard": "Otro Motivo",
-    "danger": "Otro Motivo",
-    "damage": "Otro Motivo",
-    "broken": "Otro Motivo",
-    "fallen": "Otro Motivo",
-    "overflowing": "Limpieza",
-    "vandalism": "Otro Motivo",
-    "neglect": "Otro Motivo"
+    # Vía pública / calzadas
+    "pothole": "arreglo de calle",
+    "socavon": "arreglo de calle",
+    "bache": "arreglo de calle",
+    "hole": "arreglo de calle",
+    "crack": "arreglo de calle",
+    "broken pavement": "arreglo de calle",
+    "sidewalk": "arreglo de calle",
+    "driveway": "arreglo de calle",
+    "tar": "arreglo de calle",
+    "asphalt": "arreglo de calle",
+    "roadway": "arreglo de calle",
+    "road": "arreglo de calle",  # Generic, might need more context
+
+    # Alumbrado
+    "street light": "luminaria",
+    "streetlight": "luminaria",
+    "lamp post": "luminaria",
+    "power line": "luminaria",
+
+    # Semáforos / señalización
+    "traffic light": "rotura de semaforo",
+    "traffic signal": "rotura de semaforo",
+    "semaforo": "rotura de semaforo",
+    "signage": "rotura de semaforo",  # If context implies damage/issue
+
+    # Árboles
+    "tree": "arbol caido",
+    "fallen tree": "arbol caido",
+    "arbol": "arbol caido",
+
+    # Incendios
+    "fire": "incendio",
+    "smoke": "incendio",
+    "flame": "incendio",
+
+    # Limpieza / residuos
+    "trash": "limpieza",
+    "garbage": "limpieza",
+    "waste": "limpieza",
+    "basura": "limpieza",
+    "residuos": "limpieza",
+    "overflowing": "limpieza",
+
+    # Agua / cañerías
+    "water leak": "falta de agua, rotura de caño",
+    "pipe": "falta de agua, rotura de caño",
+    "leak": "falta de agua, rotura de caño",
+    "leakage": "falta de agua, rotura de caño",
+    "caño": "falta de agua, rotura de caño",
+    "fuga": "falta de agua, rotura de caño",
+
+    # Catch-all / otros
+    "public utility": "otro motivo",
+    "infrastructure": "otro motivo",
+    "hazard": "otro motivo",
+    "danger": "otro motivo",
+    "damage": "otro motivo",
+    "broken": "otro motivo",
+    "fallen": "otro motivo",
+    "vandalism": "otro motivo",
+    "neglect": "otro motivo",
 }
 # Also import CATEGORIAS_RECLAMO from municipios to validate against
 try:
@@ -394,6 +431,27 @@ def _procesar_interpretacion_reclamo(
     llm_descripcion = detalles_llm.get("descripcion_problema", "").strip()
 
     if not llm_tipo_problema:
+        # Si el LLM no devolvió categoría, intentar con la inferida por visión
+        if sugerida_categoria_vision:
+            final_categoria_sugerida = sugerida_categoria_vision
+            datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
+            datos_internos_analisis['final_descripcion_sugerida'] = imagen_descripcion_para_llm
+            datos_internos_analisis['es_reclamo_sugerido'] = True
+            if analisis_db_record:
+                analisis_db_record.estado_analisis = "completado"
+                current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+                current_datos_db.update(datos_internos_analisis)
+                analisis_db_record.datos_estructurados = current_datos_db
+                db.session.commit()
+            return {
+                'es_reclamo': True,
+                'categoria_sugerida': final_categoria_sugerida,
+                'descripcion_sugerida': imagen_descripcion_para_llm,
+                'texto_ocr': extracted_ocr_text,
+                'analisis_id': analisis_db_record.id if analisis_db_record else None,
+                'error': None,
+                'analisis_interno': datos_internos_analisis,
+            }
         if analisis_db_record:
             analisis_db_record.estado_analisis = "completado"
             current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}

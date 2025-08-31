@@ -173,12 +173,12 @@ class TestInterpretacionImagenService(unittest.TestCase):
     def test_interpretar_imagen_keywords_pero_llm_no_confirma(self, mock_extract_llm, mock_analyze_vision, mock_descargar):
         mock_descargar.return_value = b"imagen_ambigua"
         mock_analyze_vision.return_value = {
-            "objects": [{"name": "pothole", "confidence": 0.7}],
+            "objects": [{"name": "socavon", "confidence": 0.7}],
             "labels": [], "text_annotations": []
         }
         mock_extract_llm.return_value = {
             "tipo_problema": "",
-            "descripcion_problema": ""
+            "descripcion_problema": "",
         }
 
         archivo_adjunto = ArchivoAdjunto(id=5, user_id=self.test_user.id, filename="ambigua.jpg", url="http://example.com/ambigua.jpg", mime="image/jpeg")
@@ -187,7 +187,8 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
-        self.assertFalse(resultado.get("es_reclamo"))
+        self.assertTrue(resultado.get("es_reclamo"))
+        self.assertEqual(resultado.get("categoria_sugerida"), "arreglo de calle")
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "completado")
         self.assertEqual(analisis_guardado.tipo_analisis, "reclamo_vision_llm_v1")
