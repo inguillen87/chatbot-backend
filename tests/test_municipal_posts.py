@@ -27,6 +27,7 @@ def client():
 
 import json
 import os
+import io
 
 def test_create_municipal_post_success(client):
     """
@@ -154,6 +155,69 @@ def test_bulk_create_municipal_posts(client):
         agenda = data.get('eventos', [])
     titles = [p['titulo'] for p in agenda]
     assert "Entrega de Certificados" in titles and "Torneo de Fútbol" in titles
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+
+SAMPLE_TEXT = (
+    "*Viernes 29*\n"
+    "🕑10.00 hs.\n"
+    "✅Expo Educativa 2026\n"
+    "📍Centro Universitario del Este\n\n"
+    "🕑18.30 hs.\n"
+    "✅Capacitación Internacional 'Taller de Juegos'\n"
+    "📍Casa del Bicentenario\n"
+)
+
+
+def test_bulk_create_from_text(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    response = client.post('/municipal/posts/bulk', data={'text': SAMPLE_TEXT}, headers=headers)
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert len(data_resp['created']) == 2
+    titles = [p['titulo'] for p in data_resp['created']]
+    assert 'Expo Educativa 2026' in titles
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+
+def test_bulk_create_from_file(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    file_data = io.BytesIO(SAMPLE_TEXT.encode('utf-8'))
+    data = {'file': (file_data, 'agenda.txt')}
+    response = client.post('/municipal/posts/bulk', data=data, headers=headers, content_type='multipart/form-data')
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert len(data_resp['created']) == 2
+    titles = [p['titulo'] for p in data_resp['created']]
+    assert 'Expo Educativa 2026' in titles
 
     if os.path.exists(agenda_path):
         os.remove(agenda_path)

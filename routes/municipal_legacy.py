@@ -360,8 +360,28 @@ def create_municipal_posts_bulk(current_user):
 
     payload = request.get_json(silent=True) or {}
     events = payload.get("events")
+
+    if events is None:
+        # Allow a raw agenda text via JSON or form field ``text``
+        text = payload.get("text") or request.form.get("text")
+        if text:
+            from utils.agenda_parser import parse_agenda_text
+            events = parse_agenda_text(text)
+
+    if events is None and "file" in request.files:
+        # Parse agenda from uploaded file (.txt or .docx)
+        file = request.files["file"]
+        from utils.agenda_parser import parse_agenda_text
+        if file.filename.lower().endswith(".docx"):
+            from docx import Document
+            document = Document(file)
+            text = "\n".join(p.text for p in document.paragraphs)
+        else:
+            text = file.read().decode("utf-8")
+        events = parse_agenda_text(text)
+
     if not isinstance(events, list):
-        return jsonify({"error": "Se requiere un JSON con la lista 'events'."}), 400
+        return jsonify({"error": "Se requiere un JSON con la lista 'events' o un campo 'text' o archivo 'file'."}), 400
 
     from services.config_loader import BASE_CONFIG_PATH
     agenda_dir = os.path.join(BASE_CONFIG_PATH, 'default')
