@@ -37,7 +37,7 @@ class QA(db.Model):
     answer = db.Column(db.Text, nullable=False)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=get_local_now)
 
 class Sugerencia(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -92,7 +92,7 @@ class User(db.Model, UserMixin):
     plan = db.Column(db.String(20), default="gratis")
     preguntas_usadas = db.Column(db.Integer, default=0)
     limite_preguntas = db.Column(db.Integer, default=50)
-    last_reset = db.Column(db.DateTime, default=datetime.utcnow)
+    last_reset = db.Column(db.DateTime, default=get_local_now)
     empresa_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     empresa = db.relationship('User', remote_side=[id], backref='clientes')
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
@@ -101,7 +101,7 @@ class User(db.Model, UserMixin):
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
     municipio_tickets = db.relationship('MunicipioTicket', backref='municipio', lazy=True)
-    fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow) # Nuevo campo
+    fecha_creacion = db.Column(db.DateTime, default=get_local_now) # Nuevo campo
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -146,7 +146,7 @@ class MunicipioTicket(db.Model):
     municipio_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
     anon_id = db.Column(db.String(80), nullable=True, index=True)
-    ultima_actividad = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ultima_actividad = db.Column(db.DateTime, default=get_local_now, onupdate=get_local_now)
     nro_ticket = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
     consulta_pin = db.Column(db.String(6), nullable=False, default=lambda: f"{random.randint(100000, 999999)}")
     detalles = db.Column(db.Text, nullable=True)
@@ -218,7 +218,7 @@ class PymePedido(db.Model):
     estado = db.Column(db.String(30), default="pendiente")
     detalles = db.Column(db.Text, nullable=True) # JSON string
     monto_total = db.Column(db.Float, nullable=True)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha = db.Column(db.DateTime, default=get_local_now)
     nombre_cliente = db.Column(db.String(100), nullable=True)
     email_cliente = db.Column(db.String(100), nullable=True)
     telefono_cliente = db.Column(db.String(50), nullable=True)
@@ -288,7 +288,7 @@ class ArchivoAdjunto(db.Model):
         db.Integer, db.ForeignKey("municipio_ticket.id"), nullable=True
     )
     url = db.Column(db.String(255), nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha = db.Column(db.DateTime, default=get_local_now)
 
 class AnalisisArchivo(db.Model):
     __tablename__ = "analisis_archivo"
@@ -317,7 +317,7 @@ class Conversacion(db.Model):
     respuesta = db.Column(db.Text, nullable=False)
     fuente = db.Column(db.String(50), nullable=False)
     rubro = db.Column(db.String(100), nullable=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=get_local_now)
     session_id = db.Column(db.String(36), default=lambda: str(uuid.uuid4()), nullable=False)
     __table_args__ = (Index('ix_conversacion_session_id', 'session_id'),)
 
@@ -327,7 +327,7 @@ class TicketComentario(db.Model):
     pyme_ticket_id = db.Column(db.Integer, db.ForeignKey('pyme_ticket.id'), nullable=True)
     municipio_ticket_id = db.Column(db.Integer, db.ForeignKey('municipio_ticket.id'), nullable=True)
     comentario = db.Column(db.Text, nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha = db.Column(db.DateTime, default=get_local_now)
     user_id = db.Column(db.Integer, nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     es_admin = db.Column(db.Boolean, default=False)
@@ -401,7 +401,7 @@ class CatalogoItem(db.Model):
     texto = db.Column(db.Text, nullable=True)
     embedding = db.Column(db.PickleType, nullable=True) # Este campo podría eliminarse si los embeddings solo viven en Qdrant
     imagen_url = db.Column(db.String(512), nullable=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=get_local_now)
 
     def __repr__(self):
         return f"<CatalogoItem {self.id} para user {self.user_id}>"
@@ -423,7 +423,7 @@ class SitioWebInfo(db.Model):
     rubro_id = db.Column(db.Integer, db.ForeignKey("rubro.id"), nullable=True)
     url = db.Column(db.String(255), nullable=False)
     datos_json = db.Column(db.Text, nullable=False)
-    fecha_scraping = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha_scraping = db.Column(db.DateTime, default=get_local_now)
     actualizado = db.Column(db.Boolean, default=False)
 
     def __repr__(self):
@@ -434,7 +434,7 @@ class Log(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=False)
     pregunta = db.Column(db.String(500), nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha = db.Column(db.DateTime, default=get_local_now)
 
 class TicketSatisfaccion(db.Model):
     __tablename__ = "ticket_satisfaccion"
@@ -443,7 +443,7 @@ class TicketSatisfaccion(db.Model):
     tipo = db.Column(db.String(10), nullable=False)
     puntuacion = db.Column(db.Integer, nullable=False)
     comentario = db.Column(db.Text, nullable=True)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha = db.Column(db.DateTime, default=get_local_now)
 
 class Recordatorio(db.Model):
     __tablename__ = "recordatorio"
@@ -461,7 +461,7 @@ class Reaccion(db.Model):
     conversacion_id = db.Column(db.Integer, db.ForeignKey("conversacion.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     emoji = db.Column(db.String(5), nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha = db.Column(db.DateTime, default=get_local_now)
     conversacion = db.relationship("Conversacion", backref="reacciones")
     user = db.relationship("User")
 
@@ -492,8 +492,8 @@ class ClienteNota(db.Model):
     # ID del admin/empleado que escribió la nota
     creada_por_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     nota = db.Column(db.Text, nullable=False)
-    fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow)
-    fecha_actualizacion = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    fecha_creacion = db.Column(db.DateTime, default=get_local_now)
+    fecha_actualizacion = db.Column(db.DateTime, default=get_local_now, onupdate=get_local_now)
 
     # Relationship to the client User object
     cliente = db.relationship('User', foreign_keys=[cliente_user_id], backref=db.backref('notas_recibidas', lazy='dynamic'))
@@ -512,8 +512,8 @@ class PlantillasRespuesta(db.Model):
     embedding = db.Column(db.JSON, nullable=True) # Almacenará el embedding de Cohere
     keywords = db.Column(db.JSON, nullable=True) # Array de strings
     is_active = db.Column(db.Boolean, default=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime, default=get_local_now, onupdate=get_local_now, nullable=False)
     # Opcional: Para vincular plantillas a un usuario/empresa específica si fuera necesario en el futuro
     # user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     # user = db.relationship('User', backref=db.backref('plantillas_respuesta', lazy='dynamic'))
@@ -527,8 +527,8 @@ class WhatsappNumero(db.Model):
     numero_whatsapp = db.Column(db.String(25), unique=True, nullable=False, index=True) # e.g., "+17432643718"
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) # FK to User.id
     is_active = db.Column(db.Boolean, default=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_local_now)
+    updated_at = db.Column(db.DateTime, default=get_local_now, onupdate=get_local_now)
 
     # Relationship to the User model (the company/municipality account)
     user = db.relationship('User', backref=db.backref('whatsapp_numeros', lazy='dynamic'))
@@ -578,7 +578,7 @@ class Promocion(db.Model):
     # Para TOTAL_CARRITO...
     monto_minimo_carrito = db.Column(db.Float, nullable=True)
 
-    fecha_inicio = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    fecha_inicio = db.Column(db.DateTime, nullable=False, default=get_local_now)
     fecha_fin = db.Column(db.DateTime, nullable=True) # Nullable si la promo no tiene fin
     is_active = db.Column(db.Boolean, default=True, nullable=False)
 
@@ -587,8 +587,8 @@ class Promocion(db.Model):
     usos_actuales_general = db.Column(db.Integer, default=0)
     uso_maximo_por_cliente = db.Column(db.Integer, nullable=True) # Límite por cliente
 
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_local_now)
+    updated_at = db.Column(db.DateTime, default=get_local_now, onupdate=get_local_now)
 
     pyme = db.relationship('User', backref=db.backref('promociones', lazy='dynamic'))
     alcances = db.relationship('PromocionAlcance', back_populates='promocion', cascade="all, delete-orphan", lazy='dynamic')
@@ -625,7 +625,7 @@ class PromocionAlcance(db.Model):
 #     promocion_id = db.Column(db.String(36), db.ForeignKey('promocion.id'), nullable=False, index=True)
 #     cliente_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True) # El User cliente
 #     pyme_pedido_id = db.Column(db.Integer, db.ForeignKey('pyme_pedido.id'), nullable=True, index=True) # Pedido donde se usó
-#     fecha_uso = db.Column(db.DateTime, default=datetime.utcnow)
+#     fecha_uso = db.Column(db.DateTime, default=get_local_now)
 #     # Se podría añadir info sobre el descuento aplicado si es variable o para auditoría
 #
 #     promocion = db.relationship('Promocion', backref='usos_por_clientes')
@@ -638,7 +638,7 @@ class ChatSessionContext(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True) # Similar to MunicipioTicket.anon_id
     context_data = db.Column(db.JSON, nullable=True) # Stores combined context (municipio, pyme, history, idempotency keys)
-    last_updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_updated = db.Column(db.DateTime, default=get_local_now, onupdate=get_local_now)
 
     user = db.relationship('User', backref=db.backref('chat_session_contexts', lazy='dynamic'))
 
@@ -653,7 +653,7 @@ class CatalogoCompartido(db.Model):
     catalogo_id = db.Column(db.Integer, db.ForeignKey('archivo_adjunto.id'), nullable=False)
     owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     shared_with_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    fecha_compartido = db.Column(db.DateTime, default=datetime.utcnow)
+    fecha_compartido = db.Column(db.DateTime, default=get_local_now)
 
     catalogo = db.relationship('ArchivoAdjunto', backref='compartidos')
     owner = db.relationship('User', foreign_keys=[owner_id])
@@ -665,8 +665,8 @@ class CatalogMapping(db.Model):
     pyme_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     name = db.Column(db.String(255), nullable=False)
     mapping = db.Column(db.JSON, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_local_now)
+    updated_at = db.Column(db.DateTime, default=get_local_now, onupdate=get_local_now)
 
     pyme = db.relationship('User', backref=db.backref('catalog_mappings', lazy='dynamic'))
 
@@ -687,7 +687,7 @@ class LlmInteractionLog(db.Model):
     user_query = db.Column(db.Text, nullable=False)
     llm_response_raw = db.Column(db.JSON, nullable=True)
     status = db.Column(db.String(50), default='pending_review', nullable=False, index=True) # pending_review, converted_to_faq, rejected
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_local_now)
 
     chat_session = db.relationship('ChatSessionContext', backref=db.backref('llm_interaction_logs', lazy='dynamic'))
 

@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request, current_app
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
-from datetime import datetime, timedelta
+from datetime import timedelta
+from utils.time_utils import get_local_now
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
@@ -231,7 +232,7 @@ def municipal_incidents(current_user):
 def _municipal_message_metrics(eid: int) -> list[dict]:
     """Calcula métricas de mensajes recibidos en distintos períodos."""
 
-    ahora = datetime.now()
+    ahora = get_local_now()
 
     def _contar_desde(dias: int) -> int:
         desde = ahora - timedelta(days=dias)
@@ -342,7 +343,7 @@ def create_municipal_post(current_user):
 
     # --- Construir el nuevo post ---
     nuevo_post = {
-        "id": str(int(datetime.now().timestamp())), # ID simple basado en timestamp
+        "id": str(int(get_local_now().timestamp())), # ID simple basado en timestamp
         "titulo": titulo,
         "subtitulo": subtitulo,
         "descripcion": contenido, # Mapear 'contenido' a 'descripcion' para consistencia
@@ -350,7 +351,7 @@ def create_municipal_post(current_user):
         "imagen_url": flyer_image_url or imagen_url_externa,
         "fecha_evento_inicio": fecha_evento_inicio,
         "fecha_evento_fin": fecha_evento_fin,
-        "fecha_publicacion": datetime.now().isoformat(),
+        "fecha_publicacion": get_local_now().isoformat(),
         "enlace": enlace,
         "ubicacion": ubicacion,
     }
@@ -451,7 +452,7 @@ def create_municipal_posts_bulk(current_user):
                 "imagen_url": ev.get("imagen_url", ""),
                 "fecha_evento_inicio": f"{ev.get('day', '')} {ev.get('time', '')}".strip(),
                 "fecha_evento_fin": ev.get("fecha_evento_fin"),
-                "fecha_publicacion": datetime.now().isoformat(),
+                "fecha_publicacion": get_local_now().isoformat(),
                 "enlace": ev.get("enlace"),
                 "ubicacion": ev.get("location"),
             }

@@ -139,7 +139,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
         "estado": ticket.estado,
-        "fecha": ticket.fecha.isoformat() + "Z",  # Asegurar formato ISO con Z para UTC
+        "fecha": ticket.fecha.isoformat(),
         "categoria": getattr(ticket, 'categoria', 'Sin Categoría'),
         "direccion": user_data.get("direccion", "No especificada"),
         "distrito": getattr(ticket, 'distrito', None),
