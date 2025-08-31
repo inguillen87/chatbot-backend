@@ -12,7 +12,7 @@ class TestVisionFallbackService(unittest.TestCase):
         from types import SimpleNamespace
 
         message = SimpleNamespace(
-            content='{"labels": ["street"], "objects": ["car"], "text": "hola"}'
+            content='{"labels": ["calle"], "objects": ["auto"], "text": "hola"}'
         )
         mock_completion = MagicMock()
         mock_completion.choices = [MagicMock(message=message)]
@@ -25,15 +25,15 @@ class TestVisionFallbackService(unittest.TestCase):
         os.environ["OPENAI_API_KEY"] = "test-key"
         result = analyze_image_smart(b"image-bytes")
 
-        self.assertEqual(result["labels"][0]["description"], "street")
-        self.assertEqual(result["objects"][0]["name"], "car")
+        self.assertEqual(result["labels"][0]["description"], "calle")
+        self.assertEqual(result["objects"][0]["name"], "auto")
 
     @patch("services.vision_fallback_service.OpenAI")
     def test_openai_extra_text(self, mock_openai):
         from types import SimpleNamespace
 
         message = SimpleNamespace(
-            content='Here you go {"labels": ["road"], "objects": ["pothole"], "text": ""}'
+            content='Aquí tienes {"labels": ["calle"], "objects": ["bache"], "text": ""}'
         )
         mock_completion = MagicMock()
         mock_completion.choices = [MagicMock(message=message)]
@@ -45,14 +45,14 @@ class TestVisionFallbackService(unittest.TestCase):
 
         os.environ["OPENAI_API_KEY"] = "test-key"
         result = analyze_image_smart(b"img")
-        self.assertEqual(result["objects"][0]["name"], "pothole")
+        self.assertEqual(result["objects"][0]["name"], "bache")
 
     @patch("services.vision_fallback_service._call_cohere")
     @patch("services.vision_fallback_service._call_openai", return_value=None)
     def test_cohere_fallback(self, mock_openai, mock_cohere):
-        mock_cohere.return_value = {"labels": ["road"], "objects": ["pothole"], "text": ""}
+        mock_cohere.return_value = {"labels": ["calle"], "objects": ["bache"], "text": ""}
         result = analyze_image_smart(b"bytes")
-        self.assertEqual(result["objects"][0]["name"], "pothole")
+        self.assertEqual(result["objects"][0]["name"], "bache")
 
     @patch("services.vision_fallback_service.cohere.Client")
     def test_generate_receives_image_url(self, mock_client_cls):

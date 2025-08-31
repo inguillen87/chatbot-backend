@@ -23,27 +23,34 @@ def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
         http_client = httpx.Client(proxy=None, trust_env=False)
         client = OpenAI(api_key=api_key, http_client=http_client)
         prompt = (
-            "Describe the image for a municipal complaint system. "
-            "Return a JSON with keys: labels (list of keywords), "
-            "objects (list of main objects) and text (string with any text found)."
+            "Describe la imagen en español para un sistema de reclamos municipales. "
+            "Devuelve un JSON con las claves: labels (lista de palabras clave en español), "
+            "objects (lista de objetos principales en español) y text (cadena con cualquier texto encontrado en español)."
         )
 
         # Use the modern Responses API when available; otherwise fall back
-        # to chat completions for older OpenAI client versions.
+        # to chat completions for older OpenAI client versions. If the
+        # Responses API call fails for any reason, attempt the chat
+        # completions path.
+        text = ""
         if hasattr(client, "responses"):
-            response = client.responses.create(
-                model="gpt-4.1-mini",
-                input=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
-                    ],
-                }],
-                max_output_tokens=300,
-            )
-            text = response.output[0].content[0].text
-        else:
+            try:
+                response = client.responses.create(
+                    model="gpt-4.1-mini",
+                    input=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
+                        ],
+                    }],
+                    max_output_tokens=300,
+                )
+                text = response.output[0].content[0].text
+            except Exception as exc:
+                logger.warning("Responses API unavailable (%s); falling back to chat completions", exc)
+
+        if not text:
             completion = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{
