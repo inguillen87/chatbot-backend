@@ -265,6 +265,37 @@ import json
 from werkzeug.utils import secure_filename
 from uuid import uuid4
 
+@municipal_bp.route('/posts', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def list_municipal_posts(current_user):
+    """Devuelve los posts municipales (eventos o noticias) guardados."""
+    if current_user.tipo_chat != "municipio":
+        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    from services.config_loader import BASE_CONFIG_PATH
+    agenda_dir = os.path.join(BASE_CONFIG_PATH, 'default')
+    agenda_path = os.path.join(agenda_dir, 'agenda_cultural.json')
+
+    if not os.path.exists(agenda_path):
+        return jsonify([]), 200
+
+    try:
+        with open(agenda_path, 'r', encoding='utf-8') as f:
+            contenido = f.read().strip()
+            if not contenido:
+                return jsonify([]), 200
+            try:
+                data = json.loads(contenido)
+            except json.JSONDecodeError:
+                current_app.logger.warning("agenda_cultural.json corrupto, se recreará.")
+                return jsonify([]), 200
+        eventos = data.get('eventos', [])
+        return jsonify(eventos), 200
+    except Exception as e:
+        current_app.logger.error(f"Error al leer agenda_cultural.json: {e}", exc_info=True)
+        return jsonify({"error": "Error interno al leer la agenda."}), 500
+
 @municipal_bp.route('/posts', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
@@ -284,6 +315,7 @@ def create_municipal_post(current_user):
     enlace = request.form.get('enlace') or request.form.get('url')
     fecha_evento_inicio = request.form.get('fecha_evento_inicio')
     fecha_evento_fin = request.form.get('fecha_evento_fin')
+    ubicacion = request.form.get('ubicacion')
 
     if not all([titulo, contenido, tipo_post]):
         return jsonify({"error": "El título, el contenido y el tipo de post son requeridos."}), 400
@@ -317,6 +349,7 @@ def create_municipal_post(current_user):
         "fecha_evento_fin": fecha_evento_fin,
         "fecha_publicacion": datetime.now().isoformat(),
         "enlace": enlace,
+        "ubicacion": ubicacion,
     }
 
     # --- Leer, actualizar y escribir el archivo JSON ---
