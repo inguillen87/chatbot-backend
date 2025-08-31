@@ -178,6 +178,12 @@ class TestLLMUtils(unittest.TestCase):
         self.assertEqual(result, expected_data)
 
     @patch('services.llm_utils.robust_chat')
+    def test_extract_complaint_details_llm_handles_invalid_json(self, mock_robust_chat):
+        mock_robust_chat.return_value = "Mocked LLM response."
+        result = extract_complaint_details_llm("Texto de prueba")
+        self.assertEqual(result, {})
+
+    @patch('services.llm_utils.robust_chat')
     def test_update_summary_with_llm_extraction_basic_append(self, mock_robust_chat):
         # Test the basic append logic (mocking LLM to simulate it not being the advanced one)
         # To force basic append, we make robust_chat behave like the simple mock defined in llm_utils.py

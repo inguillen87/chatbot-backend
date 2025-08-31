@@ -2632,11 +2632,22 @@ def responder_municipio(
 
     # --- INICIO: Manejo proactivo de multimedia y ubicación ---
     # Si el usuario envía solo una imagen o ubicación, el bot debe actuar proactivamente.
-    if not pregunta_str.strip(): # Solo actuar si no hay texto del usuario
+    if not pregunta_str.strip():  # Solo actuar si no hay texto del usuario
         synthetic_prompt = None
-        datos_interpretados = kwargs.get("datos_interpretados_archivo")
+        datos_interpretados = context.get("datos_interpretados_archivo") or kwargs.get("datos_interpretados_archivo")
 
         if datos_interpretados and isinstance(datos_interpretados, dict):
+            # Si el análisis automático ya determinó que es un reclamo, iniciar el flujo directamente
+            if datos_interpretados.get("es_reclamo"):
+                logger_actual.info("Iniciando flujo de reclamo desde imagen interpretada")
+                handler = ReclamoFlowHandler(context, chat_db_context)
+                datos_iniciales = {
+                    "categoria": datos_interpretados.get("categoria_sugerida"),
+                    "descripcion": datos_interpretados.get("descripcion_sugerida"),
+                    "origen_descripcion": "imagen",
+                }
+                return _finalize_response(handler.start_flow(datos_iniciales=datos_iniciales))
+
             logger_actual.info(f"Manejando proactivamente un archivo interpretado: {datos_interpretados}")
             categoria = datos_interpretados.get("categoria_sugerida", "No especificada")
             descripcion = datos_interpretados.get("descripcion_sugerida", "No especificada")
@@ -3275,7 +3286,7 @@ def responder_municipio(
 
     if USAR_LLM_PARA_RECLAMOS:
         # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---
-        datos_interpretados = kwargs.get("datos_interpretados_archivo")
+        datos_interpretados = context.get("datos_interpretados_archivo") or kwargs.get("datos_interpretados_archivo")
         if datos_interpretados and isinstance(datos_interpretados, dict):
             logger_actual.info("[CONTEXT_RESET] Se detectaron datos de archivo interpretados. Forzando reseteo de contexto de reclamo.")
 
