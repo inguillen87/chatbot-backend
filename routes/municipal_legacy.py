@@ -145,19 +145,22 @@ def municipal_tramite(nombre):
 @admin_o_empleado_requerido
 def municipal_tickets_map_data(current_user):
     """
-    Devuelve datos de tickets municipales abiertos con ubicación
-    para el municipio del usuario actual, optimizado para mostrar en un mapa.
+    Devuelve datos de tickets municipales con ubicación para el municipio del
+    usuario actual, optimizados para mostrar en un mapa. Se puede filtrar por
+    estado (p.ej. ``abierto`` o ``cerrado``); si no se especifica, se incluyen
+    todos los estados.
     """
-    from services.ticket_service import servicio_tickets # Importación local
+    from services.ticket_service import servicio_tickets  # Importación local
 
     municipio_id_del_admin = current_user.municipio_id
     if not municipio_id_del_admin:
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
+    estado = request.args.get("estado")
     tickets_con_ubicacion = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket="municipio",
         municipio_id=municipio_id_del_admin,
-        estado="abierto"  # Explicitly request open tickets for map data consistency
+        estado=estado,
     )
     return jsonify(tickets_con_ubicacion)
 

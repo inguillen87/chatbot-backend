@@ -136,7 +136,7 @@ def test_get_municipal_posts(client):
         'Authorization': f'Bearer {token}'
     }
 
-    if os.path.exists(agenda_path):
+f os.path.exists(agenda_path):
         os.remove(agenda_path)
 
     # Crear un post con todos los campos para asegurarse de que se devuelven completos
