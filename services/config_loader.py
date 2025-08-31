@@ -4,20 +4,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Determine the base directory for municipal data. On platforms like Render the
-# `/data` directory persists across deployments, so prefer it when available.
-# Allow overriding via the `DATA_DIR` environment variable for flexibility.
-_default_data_path = os.environ.get("DATA_DIR")
-if not _default_data_path:
-    persistent_path = "/data"
-    repo_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# Determine the base directory for municipal data. Deployments on services like
+# Render provide a persistent volume mounted at `/data`. We want to always store
+# mutable configuration (like `agenda_cultural.json`) there so it survives
+# redeploys. Allow overriding via the `DATA_DIR` environment variable, and fall
+# back to the repository's `data` directory only if writing to `/data` is not
+# possible (e.g. during local development without permissions).
 
-    # Prefer the persistent volume only if it actually contains municipal data.
-    persistent_municipios = os.path.join(persistent_path, "municipios")
-    if os.path.exists(os.path.join(persistent_municipios, "default")):
-        _default_data_path = persistent_path
-    else:
-        _default_data_path = repo_data_path
+_default_data_path = os.environ.get("DATA_DIR", "/data")
+
+try:
+    # Ensure the directory exists so subsequent code can rely on it.
+    os.makedirs(os.path.join(_default_data_path, "municipios"), exist_ok=True)
+except OSError:
+    # Fallback to repo `data` directory if `/data` cannot be created/written.
+    _default_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    os.makedirs(os.path.join(_default_data_path, "municipios"), exist_ok=True)
 
 BASE_DATA_PATH = _default_data_path
 BASE_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "municipios")

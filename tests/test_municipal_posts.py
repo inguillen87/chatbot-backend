@@ -28,6 +28,9 @@ def client():
 import json
 import os
 import io
+from services.config_loader import BASE_CONFIG_PATH
+
+AGENDA_PATH = os.path.join(BASE_CONFIG_PATH, 'default', 'agenda_cultural.json')
 
 def test_create_municipal_post_success(client):
     """
@@ -48,7 +51,7 @@ def test_create_municipal_post_success(client):
     }
 
     # Ensure the file is clean before the test
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -133,7 +136,6 @@ def test_get_municipal_posts(client):
         'Authorization': f'Bearer {token}'
     }
 
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -204,7 +206,7 @@ def test_bulk_create_municipal_posts(client):
         },
     ]
 
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -262,7 +264,7 @@ def test_bulk_create_from_text(client):
         'Authorization': f'Bearer {token}'
     }
 
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -287,7 +289,7 @@ def test_bulk_create_from_file(client):
         'Authorization': f'Bearer {token}'
     }
 
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
