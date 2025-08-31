@@ -253,6 +253,8 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
     "socavon": "arreglo de calle",
     "bache": "arreglo de calle",
     "hole": "arreglo de calle",
+    "hoyo": "arreglo de calle",
+    "pozo": "arreglo de calle",
     "crack": "arreglo de calle",
     "broken pavement": "arreglo de calle",
     "sidewalk": "arreglo de calle",
@@ -311,6 +313,16 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
     "vandalism": "otro motivo",
     "neglect": "otro motivo",
 }
+# Fallback helper to map keywords in free-form descriptions to claim categories
+def _infer_category_from_text(description: str) -> Optional[str]:
+    """Infer a claim category from a free-form description using keyword mapping."""
+    if not description:
+        return None
+    desc_norm = normalizar_texto_municipios(description)
+    for keyword, category in VISION_LABEL_TO_RECLAMO_CATEGORIA.items():
+        if keyword in desc_norm and category in CATEGORIAS_RECLAMO:
+            return category
+    return None
 # Also import CATEGORIAS_RECLAMO from municipios to validate against
 try:
     from services.categorias_municipio import CATEGORIAS_RECLAMO, normalizar_texto as normalizar_texto_municipios
@@ -415,7 +427,9 @@ def _procesar_interpretacion_reclamo(
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
     logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis_id_for_log})")
 
-    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm)
+    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm) or {}
+    if not isinstance(detalles_llm, dict):
+        detalles_llm = {}
 
     datos_internos_analisis['llm_raw'] = detalles_llm
     datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
@@ -434,6 +448,27 @@ def _procesar_interpretacion_reclamo(
         # Si el LLM no devolvió categoría, intentar con la inferida por visión
         if sugerida_categoria_vision:
             final_categoria_sugerida = sugerida_categoria_vision
+            datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
+            datos_internos_analisis['final_descripcion_sugerida'] = imagen_descripcion_para_llm
+            datos_internos_analisis['es_reclamo_sugerido'] = True
+            if analisis_db_record:
+                analisis_db_record.estado_analisis = "completado"
+                current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
+                current_datos_db.update(datos_internos_analisis)
+                analisis_db_record.datos_estructurados = current_datos_db
+                db.session.commit()
+            return {
+                'es_reclamo': True,
+                'categoria_sugerida': final_categoria_sugerida,
+                'descripcion_sugerida': imagen_descripcion_para_llm,
+                'texto_ocr': extracted_ocr_text,
+                'analisis_id': analisis_db_record.id if analisis_db_record else None,
+                'error': None,
+                'analisis_interno': datos_internos_analisis,
+            }
+        fallback_categoria = _infer_category_from_text(imagen_descripcion_para_llm)
+        if fallback_categoria:
+            final_categoria_sugerida = fallback_categoria
             datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
             datos_internos_analisis['final_descripcion_sugerida'] = imagen_descripcion_para_llm
             datos_internos_analisis['es_reclamo_sugerido'] = True
