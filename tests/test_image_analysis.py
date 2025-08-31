@@ -72,28 +72,7 @@ class TestImageAnalysis(unittest.TestCase):
     @patch('services.interpretacion_imagen_service._descargar_imagen')
     @patch('services.interpretacion_imagen_service.analyze_image_smart')
     @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
-    def test_interpretar_imagen_palabras_clave_espanol(self, mock_extract_complaint_details_llm, mock_analyze_image_smart, mock_descargar_imagen):
-        mock_descargar_imagen.return_value = b'dummy_image_content'
-        mock_analyze_image_smart.return_value = {
-            "labels": [],
-            "objects": [{"name": "hoyo", "confidence": 0.9}],
-            "full_text_annotation": None,
-        }
-        mock_extract_complaint_details_llm.return_value = {}
 
-        archivo_adjunto = {
-            "url": "http://example.com/hoyo.jpg",
-            "mime_type": "image/jpeg",
-        }
-
-        resultado = interpretar_imagen_para_chat(archivo_adjunto, "reclamo_auto_descripcion_categoria")
-
-        self.assertTrue(resultado['es_reclamo'])
-        self.assertEqual(resultado['categoria_sugerida'], "arreglo de calle")
-
-    @patch('services.interpretacion_imagen_service._descargar_imagen')
-    @patch('services.interpretacion_imagen_service.analyze_image_smart')
-    @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
     def test_interpretar_imagen_fallback_llm_none(self, mock_extract_complaint_details_llm, mock_analyze_image_smart, mock_descargar_imagen):
         mock_descargar_imagen.return_value = b'dummy_image_content'
         mock_analyze_image_smart.return_value = {

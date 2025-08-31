@@ -28,6 +28,9 @@ def client():
 import json
 import os
 import io
+from services.config_loader import BASE_CONFIG_PATH
+
+AGENDA_PATH = os.path.join(BASE_CONFIG_PATH, 'default', 'agenda_cultural.json')
 
 def test_create_municipal_post_success(client):
     """
@@ -48,7 +51,7 @@ def test_create_municipal_post_success(client):
     }
 
     # Ensure the file is clean before the test
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -123,6 +126,56 @@ def test_create_municipal_post_unauthorized(client):
     assert "Se requiere un usuario municipal" in response_pyme.get_json()['error']
 
 
+def test_get_municipal_posts(client):
+    """Prueba la obtención de posts municipales existentes."""
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+f os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    # Crear un post con todos los campos para asegurarse de que se devuelven completos
+    client.post(
+        '/municipal/posts',
+        data={
+            'titulo': 'Evento',
+            'subtitulo': 'Subtitulo',
+            'contenido': 'Desc',
+            'tipo_post': 'evento',
+            'imagen_url': 'http://img.test/evento.jpg',
+            'enlace': 'http://evento.test',
+            'fecha_evento_inicio': '2025-01-01T10:00',
+            'fecha_evento_fin': '2025-01-01T12:00',
+            'ubicacion': 'Centro Cultural',
+        },
+        headers=headers,
+    )
+
+    response = client.get('/municipal/posts', headers=headers)
+    assert response.status_code == 200
+    data = response.get_json()
+    assert isinstance(data, list)
+    post = next(p for p in data if p['titulo'] == 'Evento')
+    assert post['subtitulo'] == 'Subtitulo'
+    assert post['descripcion'] == 'Desc'
+    assert post['tipo_post'] == 'evento'
+    assert post['imagen_url'] == 'http://img.test/evento.jpg'
+    assert post['enlace'] == 'http://evento.test'
+    assert post['fecha_evento_inicio'] == '2025-01-01T10:00'
+    assert post['fecha_evento_fin'] == '2025-01-01T12:00'
+    assert post['ubicacion'] == 'Centro Cultural'
+    assert 'fecha_publicacion' in post
+    assert 'id' in post
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+
 def test_bulk_create_municipal_posts(client):
     """Prueba la creación de múltiples eventos vía JSON."""
     with app.app_context():
@@ -135,11 +188,25 @@ def test_bulk_create_municipal_posts(client):
     }
 
     events = [
-        {"title": "Entrega de Certificados", "day": "Sábado 30", "time": "11.30 hs.", "location": "Centro Universitario"},
-        {"title": "Torneo de Fútbol", "day": "Domingo 31", "time": "10.00 hs.", "location": "Club Social"},
+        {
+            "title": "Entrega de Certificados",
+            "day": "Sábado 30",
+            "time": "11.30 hs.",
+            "location": "Centro Universitario",
+            "enlace": "https://certificados.example.com",
+            "imagen_url": "http://img.test/certificados.jpg",
+        },
+        {
+            "title": "Torneo de Fútbol",
+            "day": "Domingo 31",
+            "time": "10.00 hs.",
+            "location": "Club Social",
+            "enlace": "https://futbol.example.com",
+            "imagen_url": "http://img.test/futbol.jpg",
+        },
     ]
 
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -148,6 +215,8 @@ def test_bulk_create_municipal_posts(client):
     assert response.status_code == 201
     data_resp = response.get_json()
     assert len(data_resp['created']) == 2
+    assert data_resp['created'][0]['enlace'] == "https://certificados.example.com"
+    assert data_resp['created'][0]['imagen_url'] == "http://img.test/certificados.jpg"
 
     assert os.path.exists(agenda_path)
     with open(agenda_path, 'r', encoding='utf-8') as f:
@@ -161,13 +230,28 @@ def test_bulk_create_municipal_posts(client):
 
 
 SAMPLE_TEXT = (
+    "*Jueves 28*\n"
+    "🕑9.30 hs.\n"
+    "✅Entrega de reconocimientos a los cuatro primeros Presidentes del HCD en democracia.\n"
+    "📍HCD\n\n"
     "*Viernes 29*\n"
     "🕑10.00 hs.\n"
     "✅Expo Educativa 2026\n"
     "📍Centro Universitario del Este\n\n"
     "🕑18.30 hs.\n"
-    "✅Capacitación Internacional 'Taller de Juegos'\n"
-    "📍Casa del Bicentenario\n"
+    "✅Capacitación Internacional 'Taller de Juegos' (para docentes de jardines maternales)\n"
+    "📍Casa del Bicentenario\n\n"
+    "*Sábado 30*\n"
+    "🕑11.30 hs.\n"
+    "✅Entrega de Certificados del Curso de Lengua de Señas\n"
+    "📍Centro Universitario del Este\n\n"
+    "*Domingo 31*\n"
+    "🕑9.00 a 16.00 hs.\n"
+    "✅Encuentro Femenino de Vóley\n"
+    "📍Polideportivo Posta El Retamo\n\n"
+    "🕑10.00 hs.\n"
+    "✅Torneo de Fútbol 'Desafío Libertadores'\n"
+    "📍Club Social y Deportivo Los Barriales\n"
 )
 
 
@@ -180,7 +264,7 @@ def test_bulk_create_from_text(client):
         'Authorization': f'Bearer {token}'
     }
 
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -188,7 +272,7 @@ def test_bulk_create_from_text(client):
 
     assert response.status_code == 201
     data_resp = response.get_json()
-    assert len(data_resp['created']) == 2
+    assert len(data_resp['created']) == 6
     titles = [p['titulo'] for p in data_resp['created']]
     assert 'Expo Educativa 2026' in titles
 
@@ -205,7 +289,7 @@ def test_bulk_create_from_file(client):
         'Authorization': f'Bearer {token}'
     }
 
-    agenda_path = 'data/municipios/default/agenda_cultural.json'
+    agenda_path = AGENDA_PATH
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
@@ -215,7 +299,7 @@ def test_bulk_create_from_file(client):
 
     assert response.status_code == 201
     data_resp = response.get_json()
-    assert len(data_resp['created']) == 2
+    assert len(data_resp['created']) == 6
     titles = [p['titulo'] for p in data_resp['created']]
     assert 'Expo Educativa 2026' in titles
 

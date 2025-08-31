@@ -614,6 +614,8 @@ class ConversationState(Enum):
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
     ESPERANDO_TEXTO_SUGERENCIA = auto()
+    ESPERANDO_DATOS_CONTACTO_SUGERENCIA = auto()
+    ESPERANDO_CONFIRMACION_SUGERENCIA = auto()
     ESPERANDO_PRODUCTO_PARA_CONSULTA = auto()
     MOSTRANDO_PRODUCTOS = auto()
     ESPERANDO_CONFIRMACION_AGREGAR_CARRITO = auto()
@@ -2580,17 +2582,105 @@ def responder_municipio(
                 return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
 
             ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
-            datos_sugerencia = {"categoria": "Sugerencia", "descripcion": sugerencia_texto, "ubicacion": ubicacion_sugerencia}
+            viewer_user_obj = context.get("viewer_user_obj")
+            datos_sugerencia = {
+                "categoria": "Sugerencia",
+                "descripcion": sugerencia_texto,
+                "ubicacion": ubicacion_sugerencia,
+                "nombre": getattr(viewer_user_obj, "name", None) or getattr(viewer_user_obj, "nombre", None),
+                "dni": getattr(viewer_user_obj, "dni", None),
+                "email": getattr(viewer_user_obj, "email", None),
+                "direccion": getattr(viewer_user_obj, "direccion", None),
+                "telefono": getattr(viewer_user_obj, "telefono", None),
+            }
 
-            handler = CrearReclamoActionHandler(context)
-            response = handler.execute(datos_sugerencia)
+            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
+            contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
+            if campos_faltantes:
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": f"Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Faltan: {', '.join(campos_faltantes)}. Podés escribir todo en un solo mensaje.",
+                    "fuente": "pide_datos_contacto_sugerencia"
+                })
 
-            if response.get("success"):
-                response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
-
-            contexto_municipio_actual['estado_conversacion'] = None
+            mensaje_confirmacion = (
+                "Por favor, confirmá si los datos para tu sugerencia son correctos:\n"
+                f"- **Nombre**: {datos_sugerencia.get('nombre')}\n"
+                f"- **DNI**: {datos_sugerencia.get('dni')}\n"
+                f"- **Email**: {datos_sugerencia.get('email')}\n"
+                f"- **Dirección**: {datos_sugerencia.get('direccion')}\n"
+                f"- **Sugerencia**: {sugerencia_texto}"
+            )
+            botones = [
+                {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+                {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+            ]
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
             if chat_db_context: flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response)
+            return _finalize_response({
+                "message_body": mensaje_confirmacion,
+                "options_list": botones,
+                "message_type": "interactive_buttons",
+                "fuente": "pide_confirmacion_sugerencia"
+            })
+
+        elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name:
+            datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
+            nuevos_datos = extract_multiple_contact_details_llm(pregunta_str, ["nombre", "dni", "email", "direccion", "telefono"])
+            if nuevos_datos.get("nombre"): datos_guardados["nombre"] = nuevos_datos["nombre"]
+            if nuevos_datos.get("dni"): datos_guardados["dni"] = nuevos_datos["dni"]
+            if nuevos_datos.get("email"): datos_guardados["email"] = nuevos_datos["email"]
+            if nuevos_datos.get("direccion"): datos_guardados["direccion"] = nuevos_datos["direccion"]
+            if nuevos_datos.get("telefono"): datos_guardados["telefono"] = nuevos_datos["telefono"]
+
+            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_guardados.get(c)]
+            contexto_municipio_actual['datos_sugerencia'] = datos_guardados
+            if campos_faltantes:
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos.",
+                    "fuente": "datos_contacto_sugerencia_incompletos"
+                })
+
+            mensaje_confirmacion = (
+                "Por favor, confirmá si los datos para tu sugerencia son correctos:\n"
+                f"- **Nombre**: {datos_guardados.get('nombre')}\n"
+                f"- **DNI**: {datos_guardados.get('dni')}\n"
+                f"- **Email**: {datos_guardados.get('email')}\n"
+                f"- **Dirección**: {datos_guardados.get('direccion')}\n"
+                f"- **Sugerencia**: {datos_guardados.get('descripcion')}"
+            )
+            botones = [
+                {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+                {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+            ]
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": mensaje_confirmacion,
+                "options_list": botones,
+                "message_type": "interactive_buttons",
+                "fuente": "pide_confirmacion_sugerencia"
+            })
+
+        elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name:
+            if "si" in normalizar_texto(pregunta_str) or action == "confirmar_sugerencia_si":
+                datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
+                handler = CrearReclamoActionHandler(context)
+                response = handler.execute(datos_confirmados)
+                if response.get("success"):
+                    response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
+                    contexto_municipio_actual['estado_conversacion'] = None
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response(response)
+            else:
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": "Entendido. Por favor, enviá los datos correctos en un solo mensaje.",
+                    "fuente": "pide_correccion_sugerencia"
+                })
 
     # 2. If no state is active, then handle actions that start new flows.
     elif action:
