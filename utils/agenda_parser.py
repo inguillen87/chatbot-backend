@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 from typing import List, Dict, Union
 
-from docx import Document
 
 DAY_PATTERN = re.compile(r"^\*([A-Za-zÁÉÍÓÚáéíóúñÑ]+ \d{1,2})\*")
 TIME_PREFIX = "🕑"
@@ -84,6 +83,12 @@ def parse_agenda_file(path: Union[str, Path]) -> List[Dict[str, str]]:
 
     file_path = Path(path)
     if file_path.suffix.lower() == ".docx":
+        try:
+            from docx import Document  # type: ignore
+        except ImportError as exc:  # pragma: no cover - handled in tests
+            raise ImportError(
+                "python-docx is required to parse .docx files"
+            ) from exc
         document = Document(file_path)
         text = "\n".join(paragraph.text for paragraph in document.paragraphs)
     else:

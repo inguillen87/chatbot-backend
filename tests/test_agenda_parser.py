@@ -2,7 +2,10 @@ import os
 import tempfile
 import unittest
 
-from docx import Document
+try:
+    from docx import Document
+except ImportError:  # pragma: no cover - optional dependency for tests
+    Document = None
 
 from utils.agenda_parser import parse_agenda_text, parse_agenda_file
 
@@ -66,6 +69,7 @@ class TestAgendaParser(unittest.TestCase):
         finally:
             os.remove(path)
 
+    @unittest.skipIf(Document is None, "python-docx not installed")
     def test_parse_docx_file(self):
         document = Document()
         for line in SAMPLE.splitlines():
