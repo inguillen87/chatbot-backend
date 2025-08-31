@@ -99,6 +99,31 @@ def test_responder_municipio_imagen(mock_llamar_gemini, client):
         # In this specific flow, responder_municipio returns the dictionary directly.
         assert "Para continuar, aún necesito estos datos: ubicación, nombre, teléfono, email." in response["message_body"]
 
+@patch('services.municipio_responder.handle_llm_interaction')
+def test_image_without_text_triggers_synthetic_prompt(mock_handle_llm, client):
+    mock_handle_llm.return_value = ({"message_body": "procesando", "accion_backend": "confirmar_reclamo_auto", "botones": []}, {})
+
+    datos_interpretados = {
+        "es_reclamo": True,
+        "categoria_sugerida": "Bacheo",
+        "descripcion_sugerida": "Parece ser un bache."
+    }
+
+    owner_user_mock = MagicMock(id=1, municipio_id=1)
+
+    responder_municipio(
+        pregunta_original="",
+        owner_user=owner_user_mock,
+        viewer_user=MagicMock(),
+        chat_db_context=MagicMock(context_data={}),
+        rubro_obj=MagicMock(nombre='municipio'),
+        datos_interpretados_archivo=datos_interpretados
+    )
+
+    mock_handle_llm.assert_called_once()
+    synthetic_prompt = mock_handle_llm.call_args[0][1]
+    assert "bache" in synthetic_prompt.lower()
+
 def test_button_click_sets_category_and_advances_flow(client):
     """
     Tests that clicking a sub-category button correctly sets the category
