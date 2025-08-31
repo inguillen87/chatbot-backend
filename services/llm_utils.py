@@ -324,7 +324,9 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
             logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM returned empty response for text: {text}")
 
     except json.JSONDecodeError as e:
-        logger.error(f"[LLM_COMPLAINT_EXTRACT] JSONDecodeError parsing LLM response: {e}. Response: '{response_content}' for text: '{text}'")
+        logger.info(
+            f"[LLM_COMPLAINT_EXTRACT] Unable to parse LLM response; using fallback. Response: '{response_content}' for text: '{text}'. Error: {e}"
+        )
     except Exception as e: # Captura genérica al final
         # Si hemos identificado un error específico de Cohere y es de ese tipo, loguearlo específicamente.
         if CohereAPIError and isinstance(e, CohereAPIError):
