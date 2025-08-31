@@ -253,6 +253,8 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
     "socavon": "arreglo de calle",
     "bache": "arreglo de calle",
     "hole": "arreglo de calle",
+    "hoyo": "arreglo de calle",
+    "pozo": "arreglo de calle",
     "crack": "arreglo de calle",
     "broken pavement": "arreglo de calle",
     "sidewalk": "arreglo de calle",

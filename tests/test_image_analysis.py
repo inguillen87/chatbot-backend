@@ -72,6 +72,7 @@ class TestImageAnalysis(unittest.TestCase):
     @patch('services.interpretacion_imagen_service._descargar_imagen')
     @patch('services.interpretacion_imagen_service.analyze_image_smart')
     @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
+
     def test_interpretar_imagen_fallback_llm_none(self, mock_extract_complaint_details_llm, mock_analyze_image_smart, mock_descargar_imagen):
         mock_descargar_imagen.return_value = b'dummy_image_content'
         mock_analyze_image_smart.return_value = {
