@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, current_app
 from models import db, User, Promocion, PromocionAlcance, CatalogoItem
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime
+from utils.time_utils import get_local_now
 import uuid # Asegurar que uuid esté importado para los defaults de los modelos
 
 promociones_bp = Blueprint('promociones_bp', __name__, url_prefix='/api/pymes/<int:pyme_id>/promociones')
@@ -93,7 +94,7 @@ def crear_promocion(current_user, pyme_id):
     # Ej: si es COMPRA_X_LLEVA_Y, cantidad_condicion_x y cantidad_resultado_y deben existir.
 
     try:
-        fecha_inicio_dt = datetime.fromisoformat(data['fecha_inicio']) if data.get('fecha_inicio') else datetime.utcnow()
+        fecha_inicio_dt = datetime.fromisoformat(data['fecha_inicio']) if data.get('fecha_inicio') else get_local_now()
         fecha_fin_dt = datetime.fromisoformat(data['fecha_fin']) if data.get('fecha_fin') else None
     except ValueError:
         return jsonify({"error": "Formato de fecha_inicio o fecha_fin inválido. Usar ISO 8601 (YYYY-MM-DDTHH:MM:SS)."}), 400
