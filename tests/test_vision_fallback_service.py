@@ -75,6 +75,28 @@ class TestVisionFallbackService(unittest.TestCase):
             image_url=f"data:image/jpeg;base64,{b64}",
         )
 
+    @patch("services.vision_fallback_service.OpenAI")
+    def test_responses_api_used_when_available(self, mock_openai):
+        from types import SimpleNamespace
+
+        output = [SimpleNamespace(content=[SimpleNamespace(text='{"labels": ["bache"], "objects": ["auto"], "text": "peligro"}')])]
+        responses_obj = MagicMock()
+        responses_obj.create.return_value = SimpleNamespace(output=output)
+        mock_client = MagicMock()
+        mock_client.responses = responses_obj
+        mock_openai.return_value = mock_client
+
+        os.environ["OPENAI_API_KEY"] = "key"
+        result = analyze_image_smart(b"img")
+        self.assertEqual(result["labels"][0]["description"], "bache")
+        self.assertEqual(result["objects"][0]["name"], "auto")
+
+    @patch("services.vision_fallback_service._call_openai", return_value=None)
+    @patch("services.vision_fallback_service._call_cohere", return_value=None)
+    def test_all_providers_fail(self, mock_cohere, mock_openai):
+        result = analyze_image_smart(b"img")
+        self.assertEqual(result, {"labels": [], "objects": []})
+
 
 if __name__ == "__main__":
     unittest.main()
