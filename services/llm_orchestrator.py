@@ -1,13 +1,12 @@
 import logging
 from services.openai_bridge import llamar_openai
 from services.cohere_bridge import llamar_cohere
-from services.gemini_bridge import llamar_gemini
 
 logger = logging.getLogger(__name__)
 
 def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str):
     """
-    Try LLM providers in priority order (OpenAI, then Cohere, then Gemini).
+    Try LLM providers in priority order (OpenAI, then Cohere).
     Falls back to the next provider on failure and returns the first successful
     response. If all providers fail, a generic error response is returned.
 
@@ -20,7 +19,6 @@ def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial:
     providers = [
         ("OpenAI", llamar_openai),
         ("Cohere", llamar_cohere),
-        ("Gemini", llamar_gemini),
     ]
 
     last_error = None
