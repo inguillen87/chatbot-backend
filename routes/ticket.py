@@ -20,6 +20,8 @@ from services.gcs_service import upload_to_gcs # Import the new GCS service
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
+from sqlalchemy import or_
+from utils.ticket_utils import normalize_category
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -140,7 +142,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
         "estado": ticket.estado,
         "fecha": ticket.fecha.isoformat(),
-        "categoria": getattr(ticket, 'categoria', 'Sin Categoría'),
+        "categoria": normalize_category(getattr(ticket, 'categoria', 'Sin Categoría')),
         "direccion": user_data.get("direccion", "No especificada"),
         "distrito": getattr(ticket, 'distrito', None),
         "latitud": getattr(ticket, 'latitud', None),
@@ -197,7 +199,10 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
         if requested_categoria_filter:
-            query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
+            if requested_categoria_filter.lower() == "luminarias":
+                query_base = query_base.filter(TicketModel.categoria.ilike("%lumin%"))
+            else:
+                query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
 
         # Aplicar filtro de categorías asignadas al empleado (afecta tanto al summary como a la lista)
         employee_specific_categories = []
@@ -210,8 +215,12 @@ def get_tickets_del_usuario_logic(current_user: User):
                  # query_base = query_base.filter(TicketModel.categoria.in_(employee_specific_categories))
                  # SQLAlchemy no tiene un `ANY` directo como SQL puro para listas de strings de esta forma.
                  # Se puede usar OR:
-                from sqlalchemy import or_
-                category_conditions = [TicketModel.categoria.ilike(cat_name) for cat_name in employee_specific_categories]
+                category_conditions = []
+                for cat_name in employee_specific_categories:
+                    if cat_name.lower() == "luminarias":
+                        category_conditions.append(TicketModel.categoria.ilike("%lumin%"))
+                    else:
+                        category_conditions.append(TicketModel.categoria.ilike(cat_name))
                 query_base = query_base.filter(or_(*category_conditions))
 
 
@@ -232,6 +241,27 @@ def get_tickets_del_usuario_logic(current_user: User):
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
         current_app.logger.info(f"Filtros aplicados: estado={requested_estado_filter}, categoria={requested_categoria_filter}")
         final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
+
+        search_query = request.args.get("q")
+        if search_query:
+            like_pattern = f"%{search_query}%"
+            search_filters = [
+                User.name.ilike(like_pattern),
+                TicketModel.nro_ticket.ilike(like_pattern),
+                TicketModel.estado.ilike(like_pattern),
+            ]
+            if hasattr(TicketModel, "nombre_vecino"):
+                search_filters.append(TicketModel.nombre_vecino.ilike(like_pattern))
+            if hasattr(TicketModel, "dni"):
+                search_filters.append(TicketModel.dni.ilike(like_pattern))
+            if hasattr(TicketModel, "dni_vecino"):
+                search_filters.append(TicketModel.dni_vecino.ilike(like_pattern))
+            final_tickets_query = (
+                final_tickets_query
+                .join(User, TicketModel.user_id == User.id)
+                .filter(or_(*search_filters))
+            )
+
         if requested_estado_filter and requested_estado_filter != 'todos':
             final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
 
