@@ -52,6 +52,21 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
     parts.append(text)
     return parts
 
+
+def _esperando_info_libre(municipio_ctx: dict) -> bool:
+    """True if any LLM prompt awaits free-form user input.
+
+    Both generic conversation fields and claim-specific flows use different
+    context keys when asking the user for additional information. This helper
+    centralizes the check so numeric shortcuts and other automated handlers
+    can pause while the bot waits for a free-form response.
+    """
+
+    return (
+        municipio_ctx.get("esperando_info_llm")
+        or municipio_ctx.get("esperando_info_llm_reclamo")
+    )
+
 # Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -295,10 +310,7 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
         or session_context_db_entry.context_data.get("contexto_municipio", {})
     )
-    esperando_info = (
-        municipio_ctx.get("esperando_info_llm")
-        or municipio_ctx.get("esperando_info_llm_reclamo")
-    )
+    esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
     if message_body.isdigit() and last_options and not esperando_info:
