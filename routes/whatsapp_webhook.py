@@ -20,6 +20,7 @@ from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
+from services.municipio_responder import CONTEXTO_MUNICIPIO
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -50,6 +51,21 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
         text = text[split_idx:].lstrip()
     parts.append(text)
     return parts
+
+
+def _esperando_info_libre(municipio_ctx: dict) -> bool:
+    """True if any LLM prompt awaits free-form user input.
+
+    Both generic conversation fields and claim-specific flows use different
+    context keys when asking the user for additional information. This helper
+    centralizes the check so numeric shortcuts and other automated handlers
+    can pause while the bot waits for a free-form response.
+    """
+
+    return (
+        municipio_ctx.get("esperando_info_llm")
+        or municipio_ctx.get("esperando_info_llm_reclamo")
+    )
 
 # Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -290,7 +306,14 @@ def whatsapp_webhook():
 
     # --- Numeric Menu Handling ---
     last_options = session_context_db_entry.context_data.get("last_options_sent")
-    if message_body.isdigit() and last_options:
+    municipio_ctx = (
+        session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
+        or session_context_db_entry.context_data.get("contexto_municipio", {})
+    )
+    esperando_info = _esperando_info_libre(municipio_ctx)
+
+    # Solo traducir números a acciones cuando no estamos esperando información libre.
+    if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
             selected = last_options[idx]
