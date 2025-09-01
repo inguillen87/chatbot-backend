@@ -641,8 +641,8 @@ class ConversationState(Enum):
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
-    "veterinaria", "veterinarias", "farmacia", "supermercado", "negocio",
-    "servicio", "buscar", "comercio", "local"
+    "farmacia", "supermercado", "negocio", "servicio", "buscar",
+    "comercio", "local"
 ]
 
 def es_consulta_general(texto: str) -> bool:
@@ -1862,7 +1862,12 @@ MENU_KEYWORDS = {
     # Información útil
     "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar"],
     "agenda_y_noticias": ["agenda", "cultural", "eventos", "noticias", "novedades", "informacion", "actividades"],
-    "veterinaria_bromatologia": ["veterinaria", "bromatologia", "zoonosis", "animales", "perro", "gato", "mascotas"],
+    "veterinaria_bromatologia": [
+        "veterinaria", "bromatologia", "zoonosis", "animales", "animal",
+        "perro", "perros", "gato", "gatos", "mascota", "mascotas",
+        "vacuna", "vacunas", "vacunacion", "antirrabica", "antirrábica",
+        "rabia"
+    ],
     "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor"],
 
     # Tasas y Servicios
@@ -2457,6 +2462,17 @@ def responder_municipio(
     # Obtener el estado actual de la conversación antes de evaluar acciones
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action")
+
+    # Allow keyword shortcuts even when a conversation state is active
+    if not action and pregunta_str:
+        inferred_action = find_global_menu_action(pregunta_str)
+        if inferred_action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(inferred_action, context, chat_db_context)
+            if response:
+                return _finalize_response(response)
 
     # 1. Handle active conversation states first.
     if estado_conversacion:
