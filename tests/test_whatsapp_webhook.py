@@ -32,6 +32,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
     def setUp(self):
         os.environ["TWILIO_ACCOUNT_SID"] = TestConfig.TWILIO_ACCOUNT_SID
         os.environ["TWILIO_AUTH_TOKEN"] = TestConfig.TWILIO_AUTH_TOKEN
+        os.environ.setdefault("OPENAI_API_KEY", "test")
 
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
@@ -181,13 +182,41 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch('services.logic.responder_chatboc') as mock_bot:
+        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot:
             mock_bot.return_value = {"message_body": "ok"}
             response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
             self.assertEqual(response.status_code, 200)
             kwargs = mock_bot.call_args.kwargs
             # The numeric input should remain as text because estamos esperando ubicacion
             self.assertEqual(kwargs["pregunta"], "3")
+
+    def test_numeric_input_ignored_when_waiting_claim_info(self):
+        """Numeric shortcuts are disabled when waiting claim-specific data."""
+        self._create_confirmed_session()
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        ctx.context_data["last_options_sent"] = [
+            {"id": "menu_principal", "texto": "Menú"},
+            {"id": "cancelar", "texto": "Cancelar"},
+        ]
+        ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm_reclamo": "descripcion"}
+        db.session.add(ctx)
+        db.session.commit()
+
+        self.mock_validator.validate.return_value = True
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "2",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot:
+            mock_bot.return_value = {"message_body": "ok"}
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            kwargs = mock_bot.call_args.kwargs
+            self.assertEqual(kwargs["pregunta"], "2")
 
     def test_whatsapp_webhook_number_not_found_in_db(self):
         # Arrange
