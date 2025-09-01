@@ -913,7 +913,7 @@ def _format_post(post: dict, channel: str) -> str:
     title = post.get("titulo", "Sin título")
     subtitle = post.get("subtitulo")
     desc = post.get("descripcion", "Sin descripción.")
-    link = post.get("enlace") or post.get("url")
+    link = post.get("enlace") or post.get("link") or post.get("url")
     imagen = post.get("imagen_url")
 
     fecha_inicio = post.get("fecha_evento_inicio") or post.get("fecha_inicio")
@@ -998,6 +998,7 @@ def _format_contact(contact: dict, channel: str) -> str:
 
 def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> str:
     """Helper to get formatted posts of a specific type from the JSON file."""
+
     all_posts_data = cargar_agenda_cultural(municipio_id)
     all_posts = all_posts_data.get("eventos", [])
 
@@ -1005,12 +1006,34 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
         return ""
 
     posts = [p for p in all_posts if p.get("tipo_post") == content_type]
-    posts.sort(key=lambda x: x.get("fecha_publicacion", ""), reverse=True)
 
     if not posts:
         return ""
 
-    formatted = [_format_post(p, channel) for p in posts[:3]]
+    limit = 6
+
+    def _parse_date(date_str: str):
+        if not date_str:
+            return None
+        try:
+            return datetime.fromisoformat(date_str.rstrip("Z"))
+        except Exception:
+            return None
+
+    if content_type == "evento":
+        for p in posts:
+            p["_start"] = _parse_date(
+                p.get("fecha_evento_inicio")
+                or p.get("fecha_inicio")
+                or p.get("fecha_publicacion")
+            )
+        future_posts = [p for p in posts if p.get("_start") and p["_start"] >= datetime.now(p.get("_start").tzinfo)]
+        posts = future_posts or posts
+        posts.sort(key=lambda x: x.get("_start") or datetime.max)
+    else:
+        posts.sort(key=lambda x: x.get("fecha_publicacion", ""), reverse=True)
+
+    formatted = [_format_post(p, channel) for p in posts[:limit]]
     if channel == "whatsapp":
         return ("\n────────\n\n").join(formatted) + "\n"
     return "<hr>".join(formatted)
@@ -2140,6 +2163,22 @@ def responder_municipio(
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
     }
     # --- FIN REFACTOR ---
+
+    # --- Manejo rápido de reclamos detectados vía imagen ---
+    datos_interpretados_archivo = context.get("datos_interpretados_archivo")
+    if (
+        datos_interpretados_archivo
+        and isinstance(datos_interpretados_archivo, dict)
+        and datos_interpretados_archivo.get("es_reclamo")
+    ):
+        logger_actual.info("Auto-starting claim flow from image analysis")
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        datos_iniciales = {
+            "categoria": datos_interpretados_archivo.get("categoria_sugerida"),
+            "descripcion": datos_interpretados_archivo.get("descripcion_sugerida"),
+            "origen_descripcion": "imagen",
+        }
+        return _finalize_response(handler.start_flow(datos_iniciales=datos_iniciales))
 
     # --- INICIO: Análisis de Imágenes Multimodal ---
     if received_payload.get("es_foto") and received_payload.get("foto_url"):

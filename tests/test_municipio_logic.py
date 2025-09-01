@@ -87,9 +87,9 @@ class MunicipioLogicTests(unittest.TestCase):
         self.app_context.pop()
 
     @patch('services.municipio_responder.servicio_tickets')
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_human_escalation(self, mock_llamar_gemini, mock_servicio_tickets):
-        mock_llamar_gemini.return_value = (
+    @patch('services.municipio_responder.llamar_llm_con_fallback')
+    def test_human_escalation(self, mock_llamar_llm, mock_servicio_tickets):
+        mock_llamar_llm.return_value = (
             {
                 "message_body": "Te estoy derivando con un agente.",
                 "accion_backend": "derivar_humano",
@@ -116,12 +116,33 @@ class MunicipioLogicTests(unittest.TestCase):
 
         self.assertIn('Te estoy derivando', resp['message_body'])
 
-    pass
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
+    def test_auto_flow_triggered_by_image(self, mock_start_flow):
+        mock_start_flow.return_value = {"message_body": "flujoiniciado"}
+
+        from models import ChatSessionContext, db
+        chat_context = ChatSessionContext(chat_session_id="test_session_auto", context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        datos_interpretados = {
+            "es_reclamo": True,
+            "categoria_sugerida": "luminaria",
+            "descripcion_sugerida": "farola rota",
+        }
+
+        resp = responder_municipio(
+            pregunta_original='',
+            owner_user=self.owner_user,
+            rubro_obj=self.owner_user.rubro,
+            viewer_user=self.viewer_user,
+            chat_db_context=chat_context,
+            datos_interpretados_archivo=datos_interpretados,
+        )
+
+        mock_start_flow.assert_called_once()
+        self.assertEqual(resp["message_body"], "flujoiniciado")
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-pass
 if __name__ == '__main__':
     unittest.main()

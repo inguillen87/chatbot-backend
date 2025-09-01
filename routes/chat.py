@@ -729,16 +729,14 @@ def widget_config():
         return jsonify({"error": "Token inválido"}), 404
 
     config = {
-        "nombre_empresa": user.nombre_empresa or user.name,
-        "logo_url": user.logo_url,
-        "color_primario": user.color_primario,
-        "color_secundario": user.color_secundario,
-        "badge_tipo": user.badge_tipo,
+        "nombre_empresa": user.nombre_empresa or user.name or "",
+        "logo_url": user.logo_url or "",
+        "color_primario": user.color_primario or "#000000",
+        "color_secundario": user.color_secundario or "#FFFFFF",
+        "badge_tipo": user.badge_tipo or "",
+        "widget_icon_url": user.widget_icon_url or "",
+        "widget_animation": user.widget_animation or "",
     }
-
-    if user.plan == "full":
-        config["widget_icon_url"] = user.widget_icon_url
-        config["widget_animation"] = user.widget_animation
 
     return jsonify(config)
 
