@@ -836,6 +836,7 @@ class GreetingHandler(BaseMunicipioHandler):
 
             # Preserve essential info if it exists
             user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
+            profile_name = chat_db_context_data.get('profile_name')
 
             # Clear the entire context to prevent stale data from any flow
             chat_db_context_data.clear()
@@ -844,6 +845,8 @@ class GreetingHandler(BaseMunicipioHandler):
             contexto_municipio_nuevo = chat_db_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
             if user_info:
                 contexto_municipio_nuevo['user'] = user_info
+            if profile_name:
+                chat_db_context_data['profile_name'] = profile_name
 
             contexto_municipio_actual = contexto_municipio_nuevo
 
