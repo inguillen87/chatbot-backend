@@ -295,7 +295,10 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
         or session_context_db_entry.context_data.get("contexto_municipio", {})
     )
-    esperando_info = municipio_ctx.get("esperando_info_llm")
+    esperando_info = (
+        municipio_ctx.get("esperando_info_llm")
+        or municipio_ctx.get("esperando_info_llm_reclamo")
+    )
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
     if message_body.isdigit() and last_options and not esperando_info:
